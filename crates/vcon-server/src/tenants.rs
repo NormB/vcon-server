@@ -12,12 +12,16 @@ use time::OffsetDateTime;
 
 use crate::audit::{self, Action, Actor, Entry};
 use crate::catalog::{self, CatalogError};
-use crate::clock::{Clock, nanos};
+use crate::clock::{Clock, from_nanos, nanos};
 use crate::envelope::{self, Context, Key, WrapLimit};
 use crate::fs::Fs;
 use crate::ids::{KeyId, TenantId};
 use crate::retention::Retention;
 use crate::store::Store;
+
+mod keys;
+
+pub use keys::{KeyInfo, NewKey};
 
 /// The tables of server.sqlite, besides the admin audit log. A key column
 /// says NOT NULL because SQLite lets a PRIMARY KEY other than an INTEGER
@@ -39,6 +43,16 @@ CREATE TABLE master_key_use (
     wraps INTEGER NOT NULL,
     since INTEGER NOT NULL
 );
+CREATE TABLE api_key (
+    id BLOB PRIMARY KEY NOT NULL,
+    tenant BLOB,
+    token_hash BLOB NOT NULL,
+    scopes TEXT NOT NULL,
+    label TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    revoked_at INTEGER
+);
+CREATE INDEX api_key_tenant ON api_key (tenant);
 ";
 
 /// Why a Tenants call was refused or failed.
@@ -59,6 +73,10 @@ pub enum TenantError {
     AuditFailed,
     /// The tenant is being removed.
     Closing,
+    /// Only the command line may do this: make an operator key.
+    CliOnly,
+    /// Scopes a key of its kind cannot hold.
+    BadScopes,
     /// server.sqlite was made under another master key.
     WrongKey,
     Io,
@@ -302,8 +320,7 @@ impl Tenants {
                     retention: retention
                         .map(|text| Retention::parse(&text).ok_or(TenantError::Io))
                         .transpose()?,
-                    created_at: OffsetDateTime::from_unix_timestamp_nanos(i128::from(created_at))
-                        .map_err(io)?,
+                    created_at: from_nanos(created_at).ok_or(TenantError::Io)?,
                 })
             })
             .collect::<Result<Vec<_>, TenantError>>()?;
@@ -427,6 +444,11 @@ impl Tenants {
             let tx = immediate(&mut conn)?;
             tx.execute("DELETE FROM tenant WHERE id = ?1", [id.0])
                 .map_err(io)?;
+            tx.execute(
+                "UPDATE api_key SET revoked_at = ?2 WHERE tenant = ?1 AND revoked_at IS NULL",
+                params![id.0, nanos(self.clock.now())],
+            )
+            .map_err(io)?;
             self.record(&tx, &entry(204))?;
             tx.commit().map_err(io)?;
         }
@@ -636,12 +658,12 @@ mod tests {
         }
     }
 
-    struct Fixture {
-        dir: tempfile::TempDir,
-        fs: Arc<CrashFs>,
-        clock: Arc<ManualClock>,
+    pub(super) struct Fixture {
+        pub(super) dir: tempfile::TempDir,
+        pub(super) fs: Arc<CrashFs>,
+        pub(super) clock: Arc<ManualClock>,
         master: Master,
-        tenants: Tenants,
+        pub(super) tenants: Tenants,
     }
 
     impl Fixture {
@@ -662,7 +684,7 @@ mod tests {
             drop(std::mem::replace(&mut self.tenants, tenants));
         }
 
-        fn conn(&self) -> MutexGuard<'_, Connection> {
+        pub(super) fn conn(&self) -> MutexGuard<'_, Connection> {
             self.tenants.conn()
         }
 
@@ -733,7 +755,7 @@ mod tests {
         }
     }
 
-    fn fixture() -> Fixture {
+    pub(super) fn fixture() -> Fixture {
         let dir = tempfile::tempdir().expect("temp dir");
         let fs = Arc::new(CrashFs::new(dir.path()));
         let clock = Arc::new(ManualClock::at(datetime!(2026-10-23 12:00 UTC)));
@@ -762,7 +784,13 @@ mod tests {
             .expect("names");
         assert_eq!(
             tables,
-            ["audit", "master_key_use", "sqlite_sequence", "tenant"]
+            [
+                "api_key",
+                "audit",
+                "master_key_use",
+                "sqlite_sequence",
+                "tenant"
+            ]
         );
     }
 
@@ -794,11 +822,26 @@ mod tests {
             ("key_since", "1"),
         ];
         let key_use = [("master_key_id", "x'55'"), ("wraps", "1"), ("since", "1")];
+        let api_key = [
+            ("id", "x'66'"),
+            ("tenant", "x'11'"),
+            ("token_hash", "x'77'"),
+            ("scopes", "'read'"),
+            ("label", "'a'"),
+            ("created_at", "1"),
+            ("revoked_at", "2"),
+        ];
         let mut may_be_empty = columns_taking_null(&conn, "tenant", &tenant);
         may_be_empty.extend(columns_taking_null(&conn, "master_key_use", &key_use));
+        may_be_empty.extend(columns_taking_null(&conn, "api_key", &api_key));
         assert_eq!(
             may_be_empty,
-            ["tenant.retention", "tenant.pending_wrapped_tenant_key"]
+            [
+                "tenant.retention",
+                "tenant.pending_wrapped_tenant_key",
+                "api_key.tenant",
+                "api_key.revoked_at"
+            ]
         );
     }
 
@@ -1297,7 +1340,7 @@ mod tests {
         }
 
         /// The records with this action in the admin log.
-        fn admin_records(&self, action: &str) -> Vec<Value> {
+        pub(super) fn admin_records(&self, action: &str) -> Vec<Value> {
             self.admin_log()
                 .into_iter()
                 .filter(|r| r["action"] == action)

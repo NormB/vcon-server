@@ -13,6 +13,12 @@ pub(crate) fn nanos(at: OffsetDateTime) -> i64 {
     i64::try_from(at.unix_timestamp_nanos()).expect("a time before 2262")
 }
 
+/// A time the catalogs kept as `nanos` wrote it, or None if it is out of
+/// range.
+pub(crate) fn from_nanos(at: i64) -> Option<OffsetDateTime> {
+    OffsetDateTime::from_unix_timestamp_nanos(i128::from(at)).ok()
+}
+
 /// The system's clock.
 pub struct SystemClock;
 
