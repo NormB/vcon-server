@@ -1708,4 +1708,175 @@ mod tests {
         drop(read);
         assert!(f.open().is_ok(), "opens once the reader is done");
     }
+
+    /// The filesystem changes a create or replace makes when nothing
+    /// fails: write, sync, rename, sync the directory.
+    const WRITE_STEPS: usize = 4;
+
+    /// After a restart, no row lacks its file and every file has a row.
+    fn assert_whole(f: &Fixture, step: usize) {
+        assert_eq!(
+            f.store.check(),
+            Ok(vec![]),
+            "a row without its file at step {step}"
+        );
+        for name in f.fs.list(&f.store.objects).expect("list") {
+            let name = name.to_string_lossy().into_owned();
+            let version = VersionId::parse(&name)
+                .unwrap_or_else(|| panic!("{name} left over at step {step}"));
+            let rows = count(
+                &f.store,
+                &format!("SELECT count(*) FROM version WHERE hex(version) = upper('{version}')"),
+            );
+            assert_eq!(rows, 1, "{name} has no row at step {step}");
+        }
+    }
+
+    /// Makes the next audit insert fail for every connection, as if the
+    /// process died before its commit; `unblock` removes it again.
+    fn block_commits(f: &Fixture) -> Connection {
+        let ctx = Context::Tenant { tenant: TENANT };
+        let tenant_key = envelope::unwrap(&f.master, &ctx, &f.wrapped).expect("unwraps");
+        let catalog_key = envelope::catalog_key(&tenant_key).expect("catalog key");
+        catalog::open(&f.dir.path().join("catalog.sqlite"), &catalog_key, "")
+            .expect("second connection")
+    }
+
+    fn die_before_commit(f: &Fixture) {
+        let other = block_commits(f);
+        let fs = f.fs.clone();
+        *f.store.hooks.between.lock().expect("hook") = Some(Box::new(move || {
+            fs.fail_from(0);
+            other
+                .execute_batch(
+                    "CREATE TRIGGER dead BEFORE INSERT ON audit
+                     BEGIN SELECT RAISE(ABORT, 'the process has died'); END;",
+                )
+                .expect("trigger");
+        }));
+    }
+
+    fn restart(f: &mut Fixture) {
+        f.fs.crash();
+        f.store
+            .conn()
+            .execute_batch("DROP TRIGGER IF EXISTS dead")
+            .expect("drop trigger");
+        f.reopen();
+    }
+
+    #[test]
+    fn a_create_cut_off_at_any_step_leaves_no_vcon_or_the_whole_vcon() {
+        let (found, body) = vcon(UUID, "first");
+        for step in 0..=WRITE_STEPS {
+            let mut f = fixture();
+            f.fs.fail_from(f.fs.log().len() + step);
+            let result = f.store.create(&f.caller, &found, &body);
+            assert_eq!(
+                result.is_ok(),
+                step == WRITE_STEPS,
+                "step {step}: {result:?}"
+            );
+            restart(&mut f);
+            match f.store.get(&f.caller, found.uuid) {
+                Ok(stored) => assert_eq!(stored.body, body, "step {step}"),
+                Err(StoreError::NotFound) => {
+                    assert!(result.is_err(), "acknowledged, then lost, at step {step}")
+                }
+                other => panic!("half a vCon at step {step}: {other:?}"),
+            }
+            assert_whole(&f, step);
+        }
+    }
+
+    #[test]
+    fn a_create_cut_off_between_its_file_and_its_commit_leaves_nothing() {
+        let mut f = fixture();
+        let (found, body) = vcon(UUID, "first");
+        die_before_commit(&f);
+        assert!(f.store.create(&f.caller, &found, &body).is_err());
+        restart(&mut f);
+        assert_eq!(
+            f.store.get(&f.caller, found.uuid),
+            Err(StoreError::NotFound)
+        );
+        assert_whole(&f, WRITE_STEPS);
+    }
+
+    #[test]
+    fn a_replace_cut_off_at_any_step_leaves_the_old_version_or_the_new() {
+        let (found, old_body) = vcon(UUID, "first");
+        let (_, new_body) = vcon(UUID, "second");
+        for step in 0..=WRITE_STEPS {
+            let mut f = fixture();
+            let Ok(Created::New(old)) = f.store.create(&f.caller, &found, &old_body) else {
+                panic!("stored")
+            };
+            f.fs.fail_from(f.fs.log().len() + step);
+            let result = f.store.replace(&f.caller, old, &found, &new_body);
+            assert_eq!(
+                result.is_ok(),
+                step == WRITE_STEPS,
+                "step {step}: {result:?}"
+            );
+            restart(&mut f);
+            let stored = f
+                .store
+                .get(&f.caller, found.uuid)
+                .unwrap_or_else(|e| panic!("step {step}: {e:?}"));
+            match result {
+                Ok(new) => assert_eq!(
+                    (stored.version, stored.body),
+                    (new, new_body.clone()),
+                    "step {step}"
+                ),
+                Err(_) => assert_eq!(
+                    (stored.version, stored.body),
+                    (old, old_body.clone()),
+                    "step {step}"
+                ),
+            }
+            assert_whole(&f, step);
+        }
+    }
+
+    #[test]
+    fn a_replace_cut_off_between_its_file_and_its_commit_keeps_the_old_version() {
+        let mut f = fixture();
+        let (found, old) = stored(&f, "first");
+        let (_, newer) = vcon(UUID, "second");
+        die_before_commit(&f);
+        assert!(f.store.replace(&f.caller, old, &found, &newer).is_err());
+        restart(&mut f);
+        assert_eq!(
+            f.store.get(&f.caller, found.uuid).expect("reads").version,
+            old
+        );
+        assert_eq!(hidden_versions(&f), 0);
+        assert_whole(&f, WRITE_STEPS);
+    }
+
+    #[test]
+    fn a_delete_cut_off_before_its_commit_leaves_the_vcon_live() {
+        let mut f = fixture();
+        let (found, version) = stored(&f, "first");
+        let other = block_commits(&f);
+        other
+            .execute_batch(
+                "CREATE TRIGGER dead BEFORE INSERT ON audit
+                 BEGIN SELECT RAISE(ABORT, 'the process has died'); END;",
+            )
+            .expect("trigger");
+        assert!(f.store.delete(&f.caller, found.uuid).is_err());
+        drop(other);
+        restart(&mut f);
+        assert_eq!(
+            f.store
+                .get(&f.caller, found.uuid)
+                .expect("still live")
+                .version,
+            version
+        );
+        assert_eq!(hidden_versions(&f), 0);
+    }
 }

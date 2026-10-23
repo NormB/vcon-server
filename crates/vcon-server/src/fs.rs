@@ -114,6 +114,8 @@ mod crash {
         dirs: BTreeMap<PathBuf, Dir>,
         files: Vec<File>,
         log: Vec<Op>,
+        /// From this many changes on, every change fails.
+        fail_from: Option<usize>,
     }
 
     /// A directory's entries, each naming an index into `State::files`.
@@ -141,6 +143,14 @@ mod crash {
     }
 
     impl State {
+        /// Fails once the fail point is reached, as a dead process would.
+        fn alive(&self) -> io::Result<()> {
+            match self.fail_from {
+                Some(n) if self.log.len() >= n => Err(io::Error::other("the process has died")),
+                _ => Ok(()),
+            }
+        }
+
         fn dir(&mut self, dir: &Path) -> io::Result<&mut Dir> {
             self.dirs.get_mut(dir).ok_or_else(not_found)
         }
@@ -169,12 +179,20 @@ mod crash {
         /// Loses everything not yet synced.
         pub(crate) fn crash(&self) {
             let mut state = self.state();
+            state.fail_from = None;
             for dir in state.dirs.values_mut() {
                 dir.now = dir.synced.clone();
             }
             for file in &mut state.files {
                 file.now = file.synced.clone();
             }
+        }
+
+        /// From the `n`th change on (counting from 0 over the whole log),
+        /// every write, sync, rename and remove fails and changes nothing,
+        /// as for a process that has died. `crash` clears it.
+        pub(crate) fn fail_from(&self, n: usize) {
+            self.state().fail_from = Some(n);
         }
 
         /// Every write, sync, rename and remove so far, in order.
@@ -187,6 +205,7 @@ mod crash {
         fn write_new(&self, path: &Path, data: &[u8]) -> io::Result<()> {
             let (dir, name) = split(path)?;
             let mut state = self.state();
+            state.alive()?;
             let index = state.files.len();
             let entries = &mut state.dir(&dir)?.now;
             if entries.contains_key(&name) {
@@ -203,6 +222,7 @@ mod crash {
 
         fn sync_file(&self, path: &Path) -> io::Result<()> {
             let mut state = self.state();
+            state.alive()?;
             let index = state.file(path)?;
             let file = &mut state.files[index];
             file.synced = file.now.clone();
@@ -213,6 +233,7 @@ mod crash {
         fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
             let ((from_dir, from_name), (to_dir, to_name)) = (split(from)?, split(to)?);
             let mut state = self.state();
+            state.alive()?;
             let index = state.file(from)?;
             state.dir(&to_dir)?;
             state.dir(&from_dir)?.now.remove(&from_name);
@@ -223,6 +244,7 @@ mod crash {
 
         fn sync_dir(&self, dir: &Path) -> io::Result<()> {
             let mut state = self.state();
+            state.alive()?;
             let entries = state.dir(dir)?;
             entries.synced = entries.now.clone();
             state.log.push(Op::SyncDir(dir.to_owned()));
@@ -238,6 +260,7 @@ mod crash {
         fn remove(&self, path: &Path) -> io::Result<()> {
             let (dir, name) = split(path)?;
             let mut state = self.state();
+            state.alive()?;
             state.dir(&dir)?.now.remove(&name).ok_or_else(not_found)?;
             state.log.push(Op::Remove(path.to_owned()));
             Ok(())
@@ -420,5 +443,24 @@ mod tests {
                 Op::Remove(g),
             ]
         );
+    }
+
+    #[test]
+    fn from_the_fail_point_on_no_change_happens_until_a_crash() {
+        let fs = after(|fs, f| fs.write_new(f, b"data").expect("write"));
+        fs.fail_from(1);
+        let g = dir().join("g");
+        assert!(fs.sync_file(&dir().join("f")).is_err(), "sync");
+        assert!(fs.write_new(&g, b"x").is_err(), "write");
+        assert!(fs.rename(&dir().join("f"), &g).is_err(), "rename");
+        assert!(fs.sync_dir(&dir()).is_err(), "sync dir");
+        assert!(fs.remove(&dir().join("f")).is_err(), "remove");
+        assert_eq!(fs.log(), [Op::Write(dir().join("f"))], "nothing changed");
+        assert_eq!(
+            fs.read(&dir().join("f")).expect("reads still work"),
+            b"data"
+        );
+        fs.crash();
+        fs.write_new(&g, b"x").expect("works again after the crash");
     }
 }
