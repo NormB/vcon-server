@@ -22,7 +22,13 @@ AI_ATTRIBUTION = [
 OWNER = [("owner's name", re.compile(r"\b(b)randinger\b", re.I))]
 
 PRIVATE_DOC_IDS = [
-    ("design rule id", re.compile(r"\b(?:FMT|ENV|STO|ACC|AUD|API|OPS|TEN)-[0-9]{1,2}\b")),
+    # Any case, joined by - or _, so an id inside a snake_case name is
+    # caught too; \b would not split _ from a letter, so the edges are
+    # spelled out.
+    (
+        "design rule id",
+        re.compile(r"(?<![A-Za-z0-9])(?:FMT|ENV|STO|ACC|AUD|API|OPS|TEN)[-_][0-9]{1,2}(?![0-9])", re.I),
+    ),
     ("design decision id", re.compile(r"\bCD[0-9]{1,2}\b")),
     ("scope decision id", re.compile(r"\bD(?:[1-9]|[1-9][0-9])\b")),
     ("plan task id", re.compile(r"\bP(?:10|[0-9])\.[0-9]{1,2}\b")),
