@@ -11,6 +11,8 @@ mod gzip;
 mod identity;
 #[allow(dead_code)]
 mod json;
+#[allow(dead_code)]
+mod signed;
 
 /// The name of this crate.
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
@@ -47,6 +49,11 @@ pub enum Rejection {
     BadUuid,
     /// The vCon has no created_at.
     MissingCreatedAt,
+    /// A signed vCon's payload or signatures cannot be read as a JWS
+    /// carrying a vCon.
+    BadPayload,
+    /// A `uuid` in a JWS header differs from the uuid of the signed vCon.
+    UuidMismatch,
     /// `critical` or `must_support` is not an array of strings.
     BadCritical,
     /// `critical` or `must_support` names extensions this server does not
