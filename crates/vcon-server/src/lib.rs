@@ -2,3 +2,4 @@
 //! everything it runs lives here so tests can drive it.
 
 pub mod envelope;
+pub mod ids;
