@@ -286,6 +286,111 @@ impl Store {
         }
     }
 
+    /// Replaces the current version of `found.uuid`, if it is `if_match`
+    /// and neither signed nor encrypted. The caller has checked that the
+    /// body's uuid is the one asked for. The old version is hidden, and
+    /// kept for legal reads until it is purged. As in `create`, the state
+    /// is checked before sealing and again at the commit, so of two racing
+    /// replaces one wins and the other's file is removed.
+    pub fn replace(
+        &self,
+        who: &Caller,
+        if_match: VersionId,
+        found: &Inspection,
+        body: &[u8],
+    ) -> Result<VersionId, StoreError> {
+        let uuid = found.uuid;
+        let entry = |status, version| Entry {
+            actor: Actor::Key(who.key),
+            action: Action::Replace,
+            target: Some(uuid.to_string()),
+            version,
+            status,
+        };
+        let key_id = self.tenant_key.id();
+        // Why the state does not allow this replace, if it does not.
+        let refusal = |tx: &Transaction| -> Result<Option<(u16, StoreError)>, StoreError> {
+            Ok(match state(tx, uuid)? {
+                State::Absent => Some((404, StoreError::NotFound)),
+                State::Gone => Some((410, StoreError::Gone)),
+                State::Live(current)
+                    if version_row(tx, current)?.form != vcon_form::Form::Unsigned =>
+                {
+                    Some((409, StoreError::Immutable))
+                }
+                State::Live(current) if current != if_match => {
+                    Some((412, StoreError::PreconditionFailed))
+                }
+                State::Live(_) => None,
+            })
+        };
+        {
+            let mut conn = self.conn();
+            let tx = immediate(&mut conn)?;
+            let refused = match refusal(&tx)? {
+                None if envelope::wrap_limit(wraps(&tx, key_id)?) == WrapLimit::Refuse => {
+                    Some((503, StoreError::LimitReached))
+                }
+                other => other,
+            };
+            if let Some((status, error)) = refused {
+                self.record(&tx, &entry(status, None))?;
+                commit(tx)?;
+                return Err(error);
+            }
+            add_wrap(&tx, key_id)?;
+            commit(tx)?;
+        }
+
+        let (version, wrapped, file) = self.write_version(uuid, body)?;
+        self.pause();
+
+        let committed = (|| {
+            let mut conn = self.conn();
+            let tx = immediate(&mut conn)?;
+            if let Some((status, error)) = refusal(&tx)? {
+                self.record(&tx, &entry(status, None))?;
+                commit(tx)?;
+                return Err(error);
+            }
+            let now = nanos(self.clock.now());
+            tx.execute(
+                "INSERT INTO version
+                     (version, uuid, form, gzip, size, stored_at, hidden_at, tenant_key_id, wrapped_key)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8)",
+                params![
+                    version.0,
+                    uuid.as_bytes(),
+                    form_name(found.form),
+                    found.gzip,
+                    i64::try_from(body.len()).map_err(io)?,
+                    now,
+                    key_id.bytes(),
+                    wrapped,
+                ],
+            )
+            .map_err(io)?;
+            tx.execute(
+                "UPDATE version SET hidden_at = ?1 WHERE version = ?2",
+                params![now, if_match.0],
+            )
+            .map_err(io)?;
+            tx.execute(
+                "UPDATE vcon SET current = ?1 WHERE uuid = ?2",
+                params![version.0, uuid.as_bytes()],
+            )
+            .map_err(io)?;
+            self.record(&tx, &entry(200, Some(version)))?;
+            commit(tx)?;
+            Ok(version)
+        })();
+        if committed.is_err() {
+            // Best effort: start-up recovery removes any file left over.
+            let _ = self.fs.remove(&file);
+        }
+        committed
+    }
+
     /// Seals `body` as a new version of `uuid` under a new data key, wraps
     /// that key under the tenant key, and writes the object file. Returns
     /// the version id, the wrapped key and the file's path.
@@ -1004,5 +1109,247 @@ mod tests {
             let stored = f.store.get(&f.caller, found.uuid).expect("reads");
             assert_eq!((stored.form, stored.gzip, stored.body), (form, gzip, body));
         }
+    }
+
+    /// Stores `subject` under UUID and returns its version.
+    fn stored(f: &Fixture, subject: &str) -> (Inspection, VersionId) {
+        let (found, body) = vcon(UUID, subject);
+        let Ok(Created::New(version)) = f.store.create(&f.caller, &found, &body) else {
+            panic!("a new vCon")
+        };
+        (found, version)
+    }
+
+    #[test]
+    fn a_replace_makes_a_new_current_version_and_hides_the_old_one() {
+        let f = fixture();
+        let (found, old) = stored(&f, "first");
+        let (_, newer) = vcon(UUID, "second");
+        let version = f
+            .store
+            .replace(&f.caller, old, &found, &newer)
+            .expect("replaced");
+        assert_ne!(version, old);
+        let stored = f.store.get(&f.caller, found.uuid).expect("reads");
+        assert_eq!((stored.version, stored.body), (version, newer));
+        let hidden: Option<i64> = f
+            .store
+            .conn()
+            .query_row(
+                "SELECT hidden_at FROM version WHERE version = ?1",
+                [old.0],
+                |r| r.get(0),
+            )
+            .expect("the old row is kept");
+        assert!(hidden.is_some(), "the old version is hidden");
+        assert!(
+            f.fs.read(&f.store.objects.join(old.to_string())).is_ok(),
+            "its file is kept"
+        );
+        let record = audit_log(&f.store)
+            .into_iter()
+            .find(|r| r["action"] == "replace")
+            .expect("a replace record");
+        assert_eq!(
+            (record["status"].clone(), record["version"].clone()),
+            (200.into(), version.to_string().into())
+        );
+    }
+
+    #[test]
+    fn a_replace_of_a_missing_or_gone_uuid_is_refused() {
+        let f = fixture();
+        let (found, body) = vcon(UUID, "first");
+        let any = VersionId([7; 16]);
+        assert_eq!(
+            f.store.replace(&f.caller, any, &found, &body),
+            Err(StoreError::NotFound)
+        );
+        assert_eq!(get_entry_status(&f), 404);
+        let (found, old) = stored(&f, "first");
+        f.store
+            .conn()
+            .execute(
+                "UPDATE vcon SET current = NULL, deleted_at = 1 WHERE uuid = ?1",
+                [found.uuid.as_bytes()],
+            )
+            .expect("delete");
+        assert_eq!(
+            f.store.replace(&f.caller, old, &found, &body),
+            Err(StoreError::Gone)
+        );
+        assert_eq!(get_entry_status(&f), 410);
+    }
+
+    #[test]
+    fn a_stale_if_match_is_refused_and_writes_nothing() {
+        let f = fixture();
+        let (found, _) = stored(&f, "first");
+        let ops = f.fs.log().len();
+        let (_, newer) = vcon(UUID, "second");
+        assert_eq!(
+            f.store
+                .replace(&f.caller, VersionId([7; 16]), &found, &newer),
+            Err(StoreError::PreconditionFailed)
+        );
+        assert_eq!(f.fs.log().len(), ops, "no file written");
+        assert_eq!(wraps(&f.store), 1, "nothing wrapped");
+        assert_eq!(get_entry_status(&f), 412);
+    }
+
+    #[test]
+    fn a_signed_or_encrypted_current_version_is_immutable() {
+        use base64::Engine;
+        let f = fixture();
+        let (found, old) = stored(&f, "first");
+        let (_, inner) = vcon(UUID, "signed");
+        let signed = format!(
+            r#"{{"payload": "{}", "signatures": [{{"header": {{}}}}]}}"#,
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(inner)
+        )
+        .into_bytes();
+        let signed_found = inspect(
+            &signed,
+            None,
+            &Limits { inflated: 1 << 20 },
+            &BTreeSet::new(),
+        )
+        .expect("a signed vCon");
+        let version = f
+            .store
+            .replace(&f.caller, old, &signed_found, &signed)
+            .expect("an unsigned vCon may be replaced by a signed one");
+        let (_, newer) = vcon(UUID, "second");
+        let ops = f.fs.log().len();
+        assert_eq!(
+            f.store.replace(&f.caller, version, &found, &newer),
+            Err(StoreError::Immutable)
+        );
+        assert_eq!(f.fs.log().len(), ops, "no file written");
+        assert_eq!(get_entry_status(&f), 409);
+
+        let g = fixture();
+        let encrypted = format!(
+            r#"{{"unprotected": {{"uuid": "{UUID}"}}, "ciphertext": "x", "recipients": []}}"#
+        )
+        .into_bytes();
+        let enc_found = inspect(
+            &encrypted,
+            None,
+            &Limits { inflated: 1 << 20 },
+            &BTreeSet::new(),
+        )
+        .expect("an encrypted vCon");
+        let Ok(Created::New(enc_version)) = g.store.create(&g.caller, &enc_found, &encrypted)
+        else {
+            panic!("stored")
+        };
+        assert_eq!(
+            g.store.replace(&g.caller, enc_version, &found, &newer),
+            Err(StoreError::Immutable)
+        );
+    }
+
+    #[test]
+    fn a_replace_at_the_wrap_limit_is_refused() {
+        let f = fixture();
+        let (found, old) = stored(&f, "first");
+        f.store
+            .conn()
+            .execute("UPDATE key_use SET wraps = ?1", [1_i64 << 32])
+            .expect("at the limit");
+        let (_, newer) = vcon(UUID, "second");
+        assert_eq!(
+            f.store.replace(&f.caller, old, &found, &newer),
+            Err(StoreError::LimitReached)
+        );
+        assert_eq!(get_entry_status(&f), 503);
+    }
+
+    #[test]
+    fn of_two_replaces_racing_on_one_version_the_second_to_commit_loses() {
+        let f = Arc::new(fixture());
+        let (found, old) = stored(&f, "first");
+        let winner = f.clone();
+        let racer = found;
+        *f.store.hooks.between.lock().expect("hook") = Some(Box::new(move || {
+            let (_, body) = vcon(UUID, "winner");
+            winner
+                .store
+                .replace(&winner.caller, old, &racer, &body)
+                .expect("wins");
+        }));
+        let (_, body) = vcon(UUID, "loser");
+        assert_eq!(
+            f.store.replace(&f.caller, old, &found, &body),
+            Err(StoreError::PreconditionFailed)
+        );
+        assert_eq!(
+            f.fs.list(&f.store.objects).expect("list").len(),
+            2,
+            "first and winner only"
+        );
+        assert_eq!(wraps(&f.store), 3, "every wrap counted");
+        assert_eq!(get_entry_status(&f), 412);
+    }
+
+    #[test]
+    fn two_threads_replacing_with_the_same_if_match_one_wins() {
+        let f = Arc::new(fixture());
+        let (_, old) = stored(&f, "first");
+        let threads: Vec<_> = ["one", "two"]
+            .into_iter()
+            .map(|subject| {
+                let f = f.clone();
+                std::thread::spawn(move || {
+                    let (found, body) = vcon(UUID, subject);
+                    f.store.replace(&f.caller, old, &found, &body)
+                })
+            })
+            .collect();
+        let results: Vec<_> = threads
+            .into_iter()
+            .map(|t| t.join().expect("thread"))
+            .collect();
+        assert_eq!(
+            results.iter().filter(|r| r.is_ok()).count(),
+            1,
+            "{results:?}"
+        );
+        assert!(
+            results.contains(&Err(StoreError::PreconditionFailed)),
+            "{results:?}"
+        );
+    }
+
+    #[test]
+    fn a_replace_whose_audit_record_fails_changes_nothing() {
+        let f = fixture();
+        let (found, old) = stored(&f, "first");
+        f.store
+            .conn()
+            .execute_batch(
+                "CREATE TEMP TRIGGER no_audit BEFORE INSERT ON audit
+                 BEGIN SELECT RAISE(ABORT, 'audit fails'); END;",
+            )
+            .expect("trigger");
+        let (_, newer) = vcon(UUID, "second");
+        assert_eq!(
+            f.store.replace(&f.caller, old, &found, &newer),
+            Err(StoreError::AuditFailed)
+        );
+        f.store
+            .conn()
+            .execute_batch("DROP TRIGGER no_audit")
+            .expect("drop trigger");
+        assert_eq!(
+            f.store.get(&f.caller, found.uuid).expect("reads").version,
+            old
+        );
+        assert_eq!(
+            f.fs.list(&f.store.objects).expect("list").len(),
+            1,
+            "only the first file"
+        );
     }
 }
