@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use time::OffsetDateTime;
 
 use crate::audit::{self, Action, Actor, Entry};
 use crate::catalog::{self, CatalogError};
@@ -56,6 +57,24 @@ pub enum TenantError {
     /// server.sqlite was made under another master key.
     WrongKey,
     Io,
+}
+
+/// A tenant as `list` shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TenantInfo {
+    pub id: TenantId,
+    pub name: String,
+    /// The tenant's own retention period, if it set one.
+    pub retention: Option<Retention>,
+    pub created_at: OffsetDateTime,
+}
+
+impl TenantInfo {
+    /// How long the tenant's vCons are kept: its own period, else the
+    /// server's `default`.
+    pub fn kept_for(&self, default: Retention) -> Retention {
+        self.retention.unwrap_or(default)
+    }
 }
 
 /// A tenant's Store as the registry holds it.
@@ -239,6 +258,97 @@ impl Tenants {
                 Err(error)
             }
         }
+    }
+
+    /// Every tenant, by name.
+    pub fn list(&self, who: Actor) -> Result<Vec<TenantInfo>, TenantError> {
+        let mut conn = self.conn();
+        let tx = immediate(&mut conn)?;
+        let tenants = tx
+            .prepare("SELECT id, name, retention, created_at FROM tenant ORDER BY name")
+            .map_err(io)?
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, [u8; 16]>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, i64>(3)?,
+                ))
+            })
+            .map_err(io)?
+            .map(|row| {
+                let (id, name, retention, created_at) = row.map_err(io)?;
+                Ok(TenantInfo {
+                    id: TenantId(id),
+                    name,
+                    // A period that does not read back is damage, not the
+                    // server default.
+                    retention: retention
+                        .map(|text| Retention::parse(&text).ok_or(TenantError::Io))
+                        .transpose()?,
+                    created_at: OffsetDateTime::from_unix_timestamp_nanos(i128::from(created_at))
+                        .map_err(io)?,
+                })
+            })
+            .collect::<Result<Vec<_>, TenantError>>()?;
+        let entry = Entry {
+            actor: who,
+            action: Action::TenantList,
+            target: None,
+            version: None,
+            status: 200,
+        };
+        self.record(&tx, &entry)?;
+        tx.commit().map_err(io)?;
+        Ok(tenants)
+    }
+
+    /// Sets the tenant's retention period, or with None returns it to the
+    /// server default.
+    pub fn set_retention(
+        &self,
+        who: Actor,
+        id: TenantId,
+        retention: Option<Retention>,
+    ) -> Result<(), TenantError> {
+        let entry = |action, status| Entry {
+            actor: who,
+            action,
+            target: Some(id.to_string()),
+            version: None,
+            status,
+        };
+        let closing = matches!(self.stores().get(&id), Some(Slot::Closing));
+        {
+            let mut conn = self.conn();
+            let tx = immediate(&mut conn)?;
+            let refused = if closing {
+                Some((503, TenantError::Closing))
+            } else if tx
+                .execute(
+                    "UPDATE tenant SET retention = ?2 WHERE id = ?1",
+                    params![id.0, retention.map(|r| r.to_string())],
+                )
+                .map_err(io)?
+                == 0
+            {
+                Some((404, TenantError::NotFound))
+            } else {
+                None
+            };
+            let status = refused.map_or(200, |(status, _)| status);
+            self.record(&tx, &entry(Action::TenantRetention, status))?;
+            tx.commit().map_err(io)?;
+            if let Some((_, error)) = refused {
+                return Err(error);
+            }
+        }
+        // The change stands with its admin record. The tenant's copy
+        // follows; a crash or failure here can lose only the copy.
+        let store = self.store(id).map_err(|_| TenantError::AuditFailed)?;
+        store
+            .log(&entry(Action::Retention, 200))
+            .map_err(|_| TenantError::AuditFailed)
     }
 
     /// The tenant's Store, shared by every request to it.
@@ -1046,5 +1156,226 @@ mod tests {
         let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
         f.tenants.drain(id);
         assert_eq!(f.tenants.store(id).err(), Some(TenantError::Closing));
+    }
+
+    impl Fixture {
+        /// The tenant's own retention period, as its row holds it.
+        fn own_retention(&self, id: TenantId) -> Option<String> {
+            self.conn()
+                .query_row("SELECT retention FROM tenant WHERE id = ?1", [id.0], |r| {
+                    r.get(0)
+                })
+                .expect("a row")
+        }
+
+        /// A second connection to the tenant's catalog.
+        fn tenant_catalog(&self, id: TenantId) -> Connection {
+            let catalog_key = envelope::catalog_key(&self.tenant_key(id)).expect("catalog key");
+            catalog::open(
+                &self
+                    .tenants_dir()
+                    .join(id.to_string())
+                    .join("catalog.sqlite"),
+                &catalog_key,
+                "",
+            )
+            .expect("the tenant's catalog")
+        }
+
+        /// The records with this action in the admin log.
+        fn admin_records(&self, action: &str) -> Vec<Value> {
+            self.admin_log()
+                .into_iter()
+                .filter(|r| r["action"] == action)
+                .collect()
+        }
+    }
+
+    #[test]
+    fn retention_falls_back_to_the_server_default_when_unset() {
+        let info = |retention| TenantInfo {
+            id: TenantId([1; 16]),
+            name: "acme".to_owned(),
+            retention,
+            created_at: datetime!(2026-10-23 12:00 UTC),
+        };
+        assert_eq!(
+            info(None).kept_for(Retention::Years(7)),
+            Retention::Years(7)
+        );
+        assert_eq!(
+            info(Some(Retention::Days(90))).kept_for(Retention::Years(7)),
+            Retention::Days(90)
+        );
+    }
+
+    #[test]
+    fn list_shows_every_tenant_by_name_and_is_recorded() {
+        let f = fixture();
+        assert_eq!(f.tenants.list(Actor::Cli), Ok(Vec::new()));
+        let lab = f
+            .tenants
+            .create(Actor::Cli, "lab", Some(Retention::Days(90)))
+            .expect("made");
+        f.clock.set(datetime!(2026-10-23 13:00 UTC));
+        let acme = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        assert_eq!(
+            f.tenants.list(Actor::Cli),
+            Ok(vec![
+                TenantInfo {
+                    id: acme,
+                    name: "acme".to_owned(),
+                    retention: None,
+                    created_at: datetime!(2026-10-23 13:00 UTC),
+                },
+                TenantInfo {
+                    id: lab,
+                    name: "lab".to_owned(),
+                    retention: Some(Retention::Days(90)),
+                    created_at: datetime!(2026-10-23 12:00 UTC),
+                },
+            ])
+        );
+        let lists = f.admin_records("tenant_list");
+        assert_eq!(lists.len(), 2, "one record per list");
+        for record in lists {
+            assert_eq!(record["actor"], "cli");
+            assert_eq!(record["status"], 200);
+            assert_eq!(record["target"], Value::Null);
+        }
+    }
+
+    #[test]
+    fn a_stored_period_that_does_not_read_back_is_damage() {
+        let f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        f.conn()
+            .execute("UPDATE tenant SET retention = '7w' WHERE id = ?1", [id.0])
+            .expect("damage the period");
+        assert_eq!(f.tenants.list(Actor::Cli), Err(TenantError::Io));
+    }
+
+    #[test]
+    fn a_list_whose_record_fails_shows_nothing() {
+        let f = fixture();
+        f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        f.conn()
+            .execute_batch(
+                "CREATE TEMP TRIGGER no_audit BEFORE INSERT ON audit
+                 BEGIN SELECT RAISE(ABORT, 'no audit'); END;",
+            )
+            .expect("trigger");
+        assert_eq!(f.tenants.list(Actor::Cli), Err(TenantError::AuditFailed));
+    }
+
+    #[test]
+    fn a_retention_change_is_kept_and_recorded_in_both_logs() {
+        let f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        f.clock.set(datetime!(2026-10-23 13:00 UTC));
+        f.tenants
+            .set_retention(Actor::Cli, id, Some(Retention::Months(18)))
+            .expect("set");
+        assert_eq!(f.own_retention(id).as_deref(), Some("18m"));
+        f.tenants
+            .set_retention(Actor::Cli, id, None)
+            .expect("back to the default");
+        assert_eq!(f.own_retention(id), None);
+
+        let admin = f.admin_records("tenant_retention");
+        assert_eq!(admin.len(), 2);
+        for record in &admin {
+            assert_eq!(record["actor"], "cli");
+            assert_eq!(record["target"], id.to_string());
+            assert_eq!(record["status"], 200);
+            assert_eq!(record["at"], "2026-10-23T13:00:00Z");
+        }
+        let copies: Vec<Value> = exported(&f.tenant_catalog(id), None)
+            .into_iter()
+            .filter(|r| r["action"] == "retention")
+            .collect();
+        assert_eq!(copies.len(), 2, "a copy in the tenant's log for each");
+        for record in &copies {
+            assert_eq!(record["actor"], "cli");
+            assert_eq!(record["target"], id.to_string());
+            assert_eq!(record["status"], 200);
+        }
+    }
+
+    #[test]
+    fn a_retention_change_for_an_unknown_tenant_is_not_found() {
+        let f = fixture();
+        let id = TenantId::generate();
+        assert_eq!(
+            f.tenants
+                .set_retention(Actor::Cli, id, Some(Retention::Years(1))),
+            Err(TenantError::NotFound)
+        );
+        let admin = f.admin_records("tenant_retention");
+        assert_eq!(admin.len(), 1);
+        assert_eq!(admin[0]["status"], 404);
+        assert_eq!(admin[0]["target"], id.to_string());
+    }
+
+    #[test]
+    fn a_retention_change_for_a_closing_tenant_is_refused() {
+        let f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        f.tenants.drain(id);
+        assert_eq!(
+            f.tenants
+                .set_retention(Actor::Cli, id, Some(Retention::Years(1))),
+            Err(TenantError::Closing)
+        );
+        assert_eq!(f.own_retention(id), None, "unchanged");
+        assert_eq!(f.admin_records("tenant_retention")[0]["status"], 503);
+    }
+
+    #[test]
+    fn a_retention_change_whose_admin_record_fails_changes_nothing() {
+        let f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        f.conn()
+            .execute_batch(
+                "CREATE TEMP TRIGGER no_audit BEFORE INSERT ON audit
+                 BEGIN SELECT RAISE(ABORT, 'no audit'); END;",
+            )
+            .expect("trigger");
+        assert_eq!(
+            f.tenants
+                .set_retention(Actor::Cli, id, Some(Retention::Years(1))),
+            Err(TenantError::AuditFailed)
+        );
+        assert_eq!(f.own_retention(id), None, "unchanged");
+        let copies = exported(&f.tenant_catalog(id), None)
+            .into_iter()
+            .filter(|r| r["action"] == "retention")
+            .count();
+        assert_eq!(copies, 0, "no copy of a change that was not made");
+    }
+
+    /// The change commits with its admin record; a failed copy in the
+    /// tenant's log leaves the change standing and answers AuditFailed.
+    #[test]
+    fn a_retention_change_whose_tenant_copy_fails_stands() {
+        let f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        f.tenant_catalog(id)
+            .execute_batch(
+                "CREATE TRIGGER dead BEFORE INSERT ON audit
+                 BEGIN SELECT RAISE(ABORT, 'no audit'); END;",
+            )
+            .expect("trigger");
+        assert_eq!(
+            f.tenants
+                .set_retention(Actor::Cli, id, Some(Retention::Years(10))),
+            Err(TenantError::AuditFailed)
+        );
+        assert_eq!(
+            f.own_retention(id).as_deref(),
+            Some("10y"),
+            "the change stands"
+        );
+        assert_eq!(f.admin_records("tenant_retention")[0]["status"], 200);
     }
 }

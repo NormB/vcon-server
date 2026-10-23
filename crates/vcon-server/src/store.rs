@@ -593,6 +593,15 @@ impl Store {
     }
 
     /// Writes an audit record in `tx`; if it cannot, nothing is done.
+    /// Records, in a transaction of its own, an action on the tenant taken
+    /// elsewhere, such as a change to its retention period.
+    pub fn log(&self, entry: &Entry) -> Result<(), StoreError> {
+        let mut conn = self.conn();
+        let tx = immediate(&mut conn)?;
+        self.record(&tx, entry)?;
+        commit(tx)
+    }
+
     fn record(&self, tx: &Transaction, entry: &Entry) -> Result<(), StoreError> {
         audit::record(tx, entry, self.clock.now()).map_err(|_| StoreError::AuditFailed)
     }
