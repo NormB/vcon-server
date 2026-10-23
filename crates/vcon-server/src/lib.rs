@@ -2,6 +2,7 @@
 //! everything it runs lives here so tests can drive it.
 
 pub mod access;
+pub mod api;
 pub mod audit;
 pub mod catalog;
 pub mod clock;
