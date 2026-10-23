@@ -61,6 +61,17 @@ pub enum Created {
     Same(VersionId),
 }
 
+/// A version as `get` returns it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stored {
+    pub version: VersionId,
+    pub form: vcon_form::Form,
+    /// Whether the body is gzipped, as it arrived.
+    pub gzip: bool,
+    /// The body exactly as it arrived.
+    pub body: Vec<u8>,
+}
+
 /// Why a Store call was refused or failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreError {
@@ -170,23 +181,8 @@ impl Store {
             commit(tx)?;
         }
 
-        let version = VersionId::generate();
-        let ctx = Context::Version {
-            tenant: self.tenant,
-            uuid,
-            version,
-        };
-        let data_key = Key::generate().map_err(|_| StoreError::Io)?;
-        let blob = envelope::seal(&data_key, &ctx, body);
-        let wrapped = envelope::wrap(&self.tenant_key, &ctx, &data_key);
-        let file = self.write_object(version, &blob)?;
-        #[cfg(test)]
-        {
-            let hook = self.hooks.before_commit.lock().expect("hook").take();
-            if let Some(hook) = hook {
-                hook();
-            }
-        }
+        let (version, wrapped, file) = self.write_version(uuid, body)?;
+        self.pause();
 
         let committed = (|| {
             let mut conn = self.conn();
@@ -235,6 +231,94 @@ impl Store {
         committed
     }
 
+    /// Reads the current version of `uuid`. The body is decrypted whole,
+    /// then one transaction checks that the version is still current and
+    /// commits the audit record; only then is the body returned. If the
+    /// version changed meanwhile, the read starts again.
+    pub fn get(&self, who: &Caller, uuid: Uuid) -> Result<Stored, StoreError> {
+        let entry = |status, version| Entry {
+            actor: Actor::Key(who.key),
+            action: Action::Read,
+            target: Some(uuid.to_string()),
+            version,
+            status,
+        };
+        let refuse = |tx: Transaction, state: State| {
+            let (status, error) = match state {
+                State::Gone => (410, StoreError::Gone),
+                _ => (404, StoreError::NotFound),
+            };
+            self.record(&tx, &entry(status, None))?;
+            commit(tx)?;
+            Err(error)
+        };
+        loop {
+            let (version, row) = {
+                let mut conn = self.conn();
+                let tx = immediate(&mut conn)?;
+                match state(&tx, uuid)? {
+                    State::Live(version) => (version, version_row(&tx, version)),
+                    other => return refuse(tx, other),
+                }
+            };
+            let opened = row.and_then(|row| {
+                let body = self.open_version(uuid, version, &row.wrapped)?;
+                Ok(Stored {
+                    version,
+                    form: row.form,
+                    gzip: row.gzip,
+                    body,
+                })
+            });
+            self.pause();
+            let mut conn = self.conn();
+            let tx = immediate(&mut conn)?;
+            match state(&tx, uuid)? {
+                State::Live(now) if now == version => {
+                    let status = if opened.is_ok() { 200 } else { 500 };
+                    self.record(&tx, &entry(status, Some(version)))?;
+                    commit(tx)?;
+                    return opened;
+                }
+                State::Live(_) => continue,
+                other => return refuse(tx, other),
+            }
+        }
+    }
+
+    /// Seals `body` as a new version of `uuid` under a new data key, wraps
+    /// that key under the tenant key, and writes the object file. Returns
+    /// the version id, the wrapped key and the file's path.
+    fn write_version(
+        &self,
+        uuid: Uuid,
+        body: &[u8],
+    ) -> Result<(VersionId, Vec<u8>, PathBuf), StoreError> {
+        let version = VersionId::generate();
+        let ctx = Context::Version {
+            tenant: self.tenant,
+            uuid,
+            version,
+        };
+        let data_key = Key::generate().map_err(|_| StoreError::Io)?;
+        let blob = envelope::seal(&data_key, &ctx, body);
+        let wrapped = envelope::wrap(&self.tenant_key, &ctx, &data_key);
+        let file = self.write_object(version, &blob)?;
+        Ok((version, wrapped, file))
+    }
+
+    /// In tests, runs the hook set for the gap between work done outside
+    /// the catalog lock and the transaction that confirms it.
+    fn pause(&self) {
+        #[cfg(test)]
+        {
+            let hook = self.hooks.between.lock().expect("hook").take();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
+    }
+
     /// Writes a sealed body in order: a temporary file, synced,
     /// renamed to its version id, and the directory synced. Returns the
     /// file's path.
@@ -264,22 +348,24 @@ impl Store {
         uuid: Uuid,
         version: VersionId,
     ) -> Result<Vec<u8>, StoreError> {
-        let wrapped: Vec<u8> = tx
-            .query_row(
-                "SELECT wrapped_key FROM version WHERE version = ?1",
-                [version.0],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(io)?
-            .ok_or(StoreError::Damaged)?;
+        let row = version_row(tx, version)?;
+        self.open_version(uuid, version, &row.wrapped)
+    }
+
+    /// Opens a version's object file with its wrapped data key.
+    fn open_version(
+        &self,
+        uuid: Uuid,
+        version: VersionId,
+        wrapped: &[u8],
+    ) -> Result<Vec<u8>, StoreError> {
         let ctx = Context::Version {
             tenant: self.tenant,
             uuid,
             version,
         };
         let data_key =
-            envelope::unwrap(&self.tenant_key, &ctx, &wrapped).map_err(|_| StoreError::Damaged)?;
+            envelope::unwrap(&self.tenant_key, &ctx, wrapped).map_err(|_| StoreError::Damaged)?;
         let blob = self
             .fs
             .read(&self.objects.join(version.to_string()))
@@ -336,6 +422,37 @@ fn state(tx: &Transaction, uuid: Uuid) -> Result<State, StoreError> {
         // A live row always names its current version.
         Some((None, None)) => Err(StoreError::Damaged),
     }
+}
+
+/// What a version row holds that a read needs.
+struct VersionRow {
+    form: vcon_form::Form,
+    gzip: bool,
+    wrapped: Vec<u8>,
+}
+
+/// A version's row. One that is missing or unreadable is damage.
+fn version_row(tx: &Transaction, version: VersionId) -> Result<VersionRow, StoreError> {
+    let row: Option<(String, bool, Vec<u8>)> = tx
+        .query_row(
+            "SELECT form, gzip, wrapped_key FROM version WHERE version = ?1",
+            [version.0],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()
+        .map_err(io)?;
+    let (form, gzip, wrapped) = row.ok_or(StoreError::Damaged)?;
+    let form = match form.as_str() {
+        "unsigned" => vcon_form::Form::Unsigned,
+        "signed" => vcon_form::Form::Signed,
+        "encrypted" => vcon_form::Form::Encrypted,
+        _ => return Err(StoreError::Damaged),
+    };
+    Ok(VersionRow {
+        form,
+        gzip,
+        wrapped,
+    })
 }
 
 /// Data keys wrapped so far under the tenant key `key`.
@@ -404,9 +521,10 @@ mod tests {
     /// Test-only points where a test can step in.
     #[derive(Default)]
     pub(super) struct Hooks {
-        /// Runs once, after a write's files are synced and before its
-        /// catalog transaction.
-        pub(super) before_commit: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+        /// Runs once, between work done outside the catalog lock (a
+        /// write's files, a read's decryption) and the transaction that
+        /// confirms it.
+        pub(super) between: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     }
 
     struct Fixture {
@@ -647,7 +765,7 @@ mod tests {
         let f = Arc::new(fixture());
         let (found, body) = vcon(UUID, "first");
         let winner = f.clone();
-        *f.store.hooks.before_commit.lock().expect("hook") = Some(Box::new(move || {
+        *f.store.hooks.between.lock().expect("hook") = Some(Box::new(move || {
             let (found, other) = vcon(UUID, "second");
             assert!(matches!(
                 winner.store.create(&winner.caller, &found, &other),
@@ -698,5 +816,193 @@ mod tests {
             f.fs.list(&f.store.objects).expect("list"),
             Vec::<std::ffi::OsString>::new()
         );
+    }
+
+    fn get_entry_status(f: &Fixture) -> Value {
+        audit_log(&f.store).last().expect("a record")["status"].clone()
+    }
+
+    #[test]
+    fn a_stored_vcon_reads_back_byte_for_byte_and_is_recorded() {
+        let f = fixture();
+        let (found, body) = vcon(UUID, "first");
+        let Ok(Created::New(version)) = f.store.create(&f.caller, &found, &body) else {
+            panic!("a new vCon")
+        };
+        let stored = f.store.get(&f.caller, found.uuid).expect("reads");
+        assert_eq!(
+            stored,
+            Stored {
+                version,
+                form: vcon_form::Form::Unsigned,
+                gzip: false,
+                body
+            }
+        );
+        let log = audit_log(&f.store);
+        let read = log.last().expect("a record");
+        assert_eq!(read["action"], "read");
+        assert_eq!(read["status"], 200);
+        assert_eq!(read["version"], version.to_string());
+        assert_eq!(read["target"], UUID);
+    }
+
+    #[test]
+    fn a_uuid_never_stored_is_not_found() {
+        let f = fixture();
+        let (found, _) = vcon(UUID, "first");
+        assert_eq!(
+            f.store.get(&f.caller, found.uuid),
+            Err(StoreError::NotFound)
+        );
+        assert_eq!(get_entry_status(&f), 404);
+    }
+
+    #[test]
+    fn a_deleted_or_purged_uuid_is_gone() {
+        for sql in [
+            "UPDATE vcon SET current = NULL, deleted_at = 1 WHERE uuid = ?1",
+            "DELETE FROM vcon WHERE uuid = ?1; INSERT INTO tombstone (uuid, purged_at) VALUES (?1, 1)",
+        ] {
+            let f = fixture();
+            let (found, body) = vcon(UUID, "first");
+            f.store.create(&f.caller, &found, &body).expect("stored");
+            for statement in sql.split("; ") {
+                f.store
+                    .conn()
+                    .execute(statement, [found.uuid.as_bytes()])
+                    .expect(statement);
+            }
+            assert_eq!(
+                f.store.get(&f.caller, found.uuid),
+                Err(StoreError::Gone),
+                "{sql}"
+            );
+            assert_eq!(get_entry_status(&f), 410);
+        }
+    }
+
+    #[test]
+    fn a_missing_or_damaged_file_is_a_500_never_an_empty_body() {
+        let f = fixture();
+        let (found, body) = vcon(UUID, "first");
+        let Ok(Created::New(version)) = f.store.create(&f.caller, &found, &body) else {
+            panic!("a new vCon")
+        };
+        let file = f.store.objects.join(version.to_string());
+        let blob = f.fs.read(&file).expect("file");
+        f.fs.remove(&file).expect("remove");
+        assert_eq!(
+            f.store.get(&f.caller, found.uuid),
+            Err(StoreError::Damaged),
+            "missing"
+        );
+        assert_eq!(get_entry_status(&f), 500);
+        let mut bad = blob.clone();
+        let last = bad.len() - 1;
+        bad[last] ^= 1;
+        f.fs.write_new(&file, &bad).expect("write");
+        assert_eq!(
+            f.store.get(&f.caller, found.uuid),
+            Err(StoreError::Damaged),
+            "tampered"
+        );
+    }
+
+    #[test]
+    fn a_read_racing_a_delete_never_returns_the_body() {
+        let f = Arc::new(fixture());
+        let (found, body) = vcon(UUID, "first");
+        f.store.create(&f.caller, &found, &body).expect("stored");
+        let deleter = f.clone();
+        *f.store.hooks.between.lock().expect("hook") = Some(Box::new(move || {
+            deleter
+                .store
+                .conn()
+                .execute(
+                    "UPDATE vcon SET current = NULL, deleted_at = 1 WHERE uuid = ?1",
+                    [found.uuid.as_bytes()],
+                )
+                .expect("delete");
+        }));
+        assert_eq!(f.store.get(&f.caller, found.uuid), Err(StoreError::Gone));
+        assert_eq!(get_entry_status(&f), 410);
+    }
+
+    #[test]
+    fn a_read_racing_a_new_version_starts_again_and_returns_the_new_one() {
+        let f = Arc::new(fixture());
+        let (found, body) = vcon(UUID, "first");
+        f.store.create(&f.caller, &found, &body).expect("stored");
+        let (_, newer) = vcon(UUID, "newer");
+        let (version, wrapped, _) = f.store.write_version(found.uuid, &newer).expect("written");
+        let writer = f.clone();
+        *f.store.hooks.between.lock().expect("hook") = Some(Box::new(move || {
+            let conn = writer.store.conn();
+            conn.execute(
+                "INSERT INTO version
+                     (version, uuid, form, gzip, size, stored_at, tenant_key_id, wrapped_key)
+                 VALUES (?1, ?2, 'unsigned', 0, 0, 0, ?3, ?4)",
+                params![
+                    version.0,
+                    found.uuid.as_bytes(),
+                    writer.store.tenant_key.id().bytes(),
+                    wrapped
+                ],
+            )
+            .expect("new version");
+            conn.execute(
+                "UPDATE vcon SET current = ?1 WHERE uuid = ?2",
+                params![version.0, found.uuid.as_bytes()],
+            )
+            .expect("made current");
+        }));
+        let stored = f.store.get(&f.caller, found.uuid).expect("reads");
+        assert_eq!((stored.version, stored.body), (version, newer));
+        let reads = audit_log(&f.store)
+            .iter()
+            .filter(|r| r["action"] == "read")
+            .count();
+        assert_eq!(reads, 1, "one record for the one request");
+    }
+
+    #[test]
+    fn every_form_and_the_gzip_flag_read_back_as_stored() {
+        use base64::Engine;
+        use std::io::Write;
+        let f = fixture();
+        let uuids = [
+            "01a07da8-c2bb-83e5-b9a2-279e0d16bc01",
+            "01a07da8-c2bb-83e5-b9a2-279e0d16bc02",
+            "01a07da8-c2bb-83e5-b9a2-279e0d16bc03",
+        ];
+        let (_, unsigned) = vcon(uuids[0], "plain");
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&unsigned).expect("gzip");
+        let gzipped = gz.finish().expect("gzip");
+        let (_, inner) = vcon(uuids[1], "signed");
+        let signed = format!(
+            r#"{{"payload": "{}", "signatures": [{{"header": {{}}}}]}}"#,
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(inner)
+        )
+        .into_bytes();
+        let encrypted = format!(
+            r#"{{"unprotected": {{"uuid": "{}"}}, "ciphertext": "x", "recipients": []}}"#,
+            uuids[2]
+        )
+        .into_bytes();
+        let cases = [
+            (gzipped, vcon_form::Form::Unsigned, true),
+            (signed, vcon_form::Form::Signed, false),
+            (encrypted, vcon_form::Form::Encrypted, false),
+        ];
+        for (body, form, gzip) in cases {
+            let found = inspect(&body, None, &Limits { inflated: 1 << 20 }, &BTreeSet::new())
+                .expect("a valid vCon");
+            assert_eq!((found.form, found.gzip), (form, gzip));
+            f.store.create(&f.caller, &found, &body).expect("stored");
+            let stored = f.store.get(&f.caller, found.uuid).expect("reads");
+            assert_eq!((stored.form, stored.gzip, stored.body), (form, gzip, body));
+        }
     }
 }

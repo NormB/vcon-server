@@ -18,5 +18,7 @@ vcon-form = { path = "../vcon-form" }
 zeroize = "1.9.1"
 
 [dev-dependencies]
+base64 = "0.23.1"
+flate2 = "1.1.10"
 tempfile = "3.27.0"
 time = { version = "0.3.55", features = ["macros"] }
