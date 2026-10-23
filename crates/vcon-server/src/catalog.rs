@@ -79,6 +79,43 @@ fn set_key(conn: &Connection, key: &Key) -> Result<(), CatalogError> {
     Ok(())
 }
 
+/// Checks on a catalog's schema, for tests.
+#[cfg(test)]
+pub(crate) mod testing {
+    use rusqlite::Connection;
+
+    /// The columns of `table` that take NULL. `row` gives a value for each
+    /// column; each column is tried as NULL in that row, and nothing is
+    /// kept. The whole row must insert, so a refusal is the column's.
+    pub(crate) fn columns_taking_null(
+        conn: &Connection,
+        table: &str,
+        row: &[(&str, &str)],
+    ) -> Vec<String> {
+        let insert = |empty: Option<&str>| {
+            let columns: Vec<&str> = row.iter().map(|(c, _)| *c).collect();
+            let values: Vec<&str> = row
+                .iter()
+                .map(|(c, v)| if Some(*c) == empty { "NULL" } else { *v })
+                .collect();
+            let sql = format!(
+                "INSERT INTO {table} ({}) VALUES ({})",
+                columns.join(", "),
+                values.join(", ")
+            );
+            let tx = conn.unchecked_transaction().expect("begin");
+            let taken = tx.execute(&sql, []).is_ok();
+            drop(tx);
+            taken
+        };
+        assert!(insert(None), "a whole {table} row inserts");
+        row.iter()
+            .filter(|(column, _)| insert(Some(column)))
+            .map(|(column, _)| format!("{table}.{column}"))
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,6 +189,17 @@ mod tests {
             open(&path(&dir), &key, SCHEMA).is_ok(),
             "the right key still opens it"
         );
+    }
+
+    /// A row that cannot insert at all would make every column look as if
+    /// it refused NULL.
+    #[test]
+    #[should_panic(expected = "a whole note row inserts")]
+    fn the_null_check_needs_a_row_that_inserts() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let key = Key::generate().expect("key");
+        let conn = open(&path(&dir), &key, SCHEMA).expect("opens");
+        testing::columns_taking_null(&conn, "note", &[("misspelt", "'a'")]);
     }
 
     /// Run while the connection is open, so the commit is still in the WAL.

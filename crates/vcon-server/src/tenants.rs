@@ -71,6 +71,7 @@ mod tests {
     use rusqlite::params;
 
     use super::*;
+    use crate::catalog::testing::columns_taking_null;
     use crate::envelope::Context;
     use crate::ids::TenantId;
 
@@ -131,22 +132,6 @@ mod tests {
         );
     }
 
-    /// Inserts a row into `table` with each column's value from `row`,
-    /// except that `empty` is NULL.
-    fn insert(conn: &Connection, table: &str, row: &[(&str, &str)], empty: &str) -> bool {
-        let columns: Vec<&str> = row.iter().map(|(c, _)| *c).collect();
-        let values: Vec<&str> = row
-            .iter()
-            .map(|(c, v)| if *c == empty { "NULL" } else { *v })
-            .collect();
-        let sql = format!(
-            "INSERT INTO {table} ({}) VALUES ({})",
-            columns.join(", "),
-            values.join(", ")
-        );
-        conn.execute(&sql, []).is_ok()
-    }
-
     #[test]
     fn only_retention_and_a_pending_key_may_be_empty() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -163,17 +148,8 @@ mod tests {
             ("key_since", "1"),
         ];
         let key_use = [("master_key_id", "x'55'"), ("wraps", "1"), ("since", "1")];
-        let mut may_be_empty = Vec::new();
-        for (table, row) in [("tenant", &tenant[..]), ("master_key_use", &key_use[..])] {
-            for (column, _) in row {
-                let tx = conn.unchecked_transaction().expect("begin");
-                if insert(&tx, table, row, column) {
-                    may_be_empty.push(format!("{table}.{column}"));
-                }
-                drop(tx);
-            }
-            assert!(insert(&conn, table, row, ""), "a whole {table} row inserts");
-        }
+        let mut may_be_empty = columns_taking_null(&conn, "tenant", &tenant);
+        may_be_empty.extend(columns_taking_null(&conn, "master_key_use", &key_use));
         assert_eq!(
             may_be_empty,
             ["tenant.retention", "tenant.pending_wrapped_tenant_key"]

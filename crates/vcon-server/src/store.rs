@@ -16,16 +16,18 @@ use crate::envelope::{self, Context, Key, KeyId, WrapLimit};
 use crate::fs::Fs;
 use crate::ids::{TenantId, VersionId};
 
-/// The tables of a tenant's catalog, besides its audit log.
+/// The tables of a tenant's catalog, besides its audit log. A key column
+/// says NOT NULL because SQLite lets a PRIMARY KEY other than an INTEGER
+/// one hold NULL.
 const TABLES: &str = "
 CREATE TABLE vcon (
-    uuid BLOB PRIMARY KEY,
+    uuid BLOB PRIMARY KEY NOT NULL,
     current BLOB,
     deleted_at INTEGER,
     hold INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE version (
-    version BLOB PRIMARY KEY,
+    version BLOB PRIMARY KEY NOT NULL,
     uuid BLOB NOT NULL,
     form TEXT NOT NULL,
     gzip INTEGER NOT NULL,
@@ -37,11 +39,11 @@ CREATE TABLE version (
 );
 CREATE INDEX version_uuid ON version (uuid);
 CREATE TABLE tombstone (
-    uuid BLOB PRIMARY KEY,
+    uuid BLOB PRIMARY KEY NOT NULL,
     purged_at INTEGER NOT NULL
 );
 CREATE TABLE key_use (
-    tenant_key_id BLOB PRIMARY KEY,
+    tenant_key_id BLOB PRIMARY KEY NOT NULL,
     wraps INTEGER NOT NULL
 );
 ";
@@ -726,6 +728,7 @@ mod tests {
     use vcon_form::{Form, Limits, inspect};
 
     use super::*;
+    use crate::catalog::testing::columns_taking_null;
     use crate::clock::ManualClock;
     use crate::fs::{CrashFs, Op};
 
@@ -1630,6 +1633,65 @@ mod tests {
             version
         );
         assert_eq!(hidden_versions(&f), 0);
+    }
+
+    #[test]
+    fn only_the_optional_catalog_columns_may_be_empty() {
+        let f = fixture();
+        let conn = f.store.conn();
+        let tables: [(&str, &[(&str, &str)]); 5] = [
+            (
+                "vcon",
+                &[
+                    ("uuid", "x'01'"),
+                    ("current", "x'02'"),
+                    ("deleted_at", "1"),
+                    ("hold", "0"),
+                ],
+            ),
+            (
+                "version",
+                &[
+                    ("version", "x'02'"),
+                    ("uuid", "x'01'"),
+                    ("form", "'unsigned'"),
+                    ("gzip", "0"),
+                    ("size", "1"),
+                    ("stored_at", "1"),
+                    ("hidden_at", "1"),
+                    ("tenant_key_id", "x'03'"),
+                    ("wrapped_key", "x'04'"),
+                ],
+            ),
+            ("tombstone", &[("uuid", "x'01'"), ("purged_at", "1")]),
+            ("key_use", &[("tenant_key_id", "x'03'"), ("wraps", "1")]),
+            (
+                "audit",
+                &[
+                    ("at", "'2026-10-23T12:00Z'"),
+                    ("actor", "'cli'"),
+                    ("action", "'create'"),
+                    ("target", "'x'"),
+                    ("version", "'y'"),
+                    ("status", "201"),
+                    ("count", "1"),
+                ],
+            ),
+        ];
+        let may_be_empty: Vec<String> = tables
+            .iter()
+            .flat_map(|(table, row)| columns_taking_null(&conn, table, row))
+            .collect();
+        assert_eq!(
+            may_be_empty,
+            [
+                "vcon.current",
+                "vcon.deleted_at",
+                "version.hidden_at",
+                "audit.target",
+                "audit.version"
+            ]
+        );
     }
 
     #[test]
