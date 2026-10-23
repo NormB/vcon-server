@@ -593,8 +593,8 @@ mod tests {
     use crate::catalog::testing::columns_taking_null;
     use crate::clock::ManualClock;
     use crate::fs::{CrashFs, Op};
-    use crate::store::Caller;
     use crate::store::testing::vcon;
+    use crate::store::{Caller, Created, StoreError};
 
     const MARKER: &str = "plain-record-marker-8d21e4";
     const UUID: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bc46";
@@ -1739,5 +1739,125 @@ mod tests {
             .remove(Actor::Cli, id, Removal::Empty)
             .expect("removed");
         assert!(!tenant_dir.exists());
+    }
+
+    #[test]
+    fn two_tenants_keep_the_same_uuid_apart() {
+        let f = fixture();
+        let a = f.tenants.create(Actor::Cli, "a", None).expect("made");
+        let b = f.tenants.create(Actor::Cli, "b", None).expect("made");
+        let (found, kept_by_a) = vcon(UUID, "kept by a");
+        let (_, kept_by_b) = vcon(UUID, "kept by b");
+        let (store_a, store_b) = (
+            f.tenants.store(a).expect("a's store"),
+            f.tenants.store(b).expect("b's store"),
+        );
+        assert!(matches!(
+            store_a.create(&caller(), &found, &kept_by_a),
+            Ok(Created::New(_))
+        ));
+        assert!(matches!(
+            store_b.create(&caller(), &found, &kept_by_b),
+            Ok(Created::New(_))
+        ));
+        let read = |store: &Store| store.get(&caller(), found.uuid).map(|s| s.body);
+        assert_eq!(read(&store_a), Ok(kept_by_a));
+        assert_eq!(read(&store_b), Ok(kept_by_b.clone()));
+        store_a
+            .delete(&caller(), found.uuid)
+            .expect("a deletes its own");
+        assert_eq!(read(&store_a), Err(StoreError::Gone));
+        assert_eq!(read(&store_b), Ok(kept_by_b), "b's is untouched");
+    }
+
+    /// A version's data key is wrapped for its tenant by id, so the
+    /// tenant's Store must be opened under that id.
+    #[test]
+    fn a_tenants_data_keys_are_bound_to_its_own_id() {
+        let f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        let (found, body) = vcon(UUID, "first");
+        let Ok(Created::New(version)) =
+            f.tenants
+                .store(id)
+                .expect("its store")
+                .create(&caller(), &found, &body)
+        else {
+            panic!("a new vCon")
+        };
+        let wrapped: Vec<u8> = f
+            .tenant_catalog(id)
+            .query_row(
+                "SELECT wrapped_key FROM version WHERE version = ?1",
+                [version.0],
+                |r| r.get(0),
+            )
+            .expect("its row");
+        let ctx = Context::Version {
+            tenant: id,
+            uuid: found.uuid,
+            version,
+        };
+        assert!(envelope::unwrap(&f.tenant_key(id), &ctx, &wrapped).is_ok());
+    }
+
+    /// The answers one tenant gets for a uuid, whatever another holds.
+    fn answers(store: &Store) -> Vec<String> {
+        let (found, body) = vcon(UUID, "b's own");
+        let (_, newer) = vcon(UUID, "b's newer");
+        let kind = |r: Result<Created, StoreError>| match r {
+            Ok(Created::New(_)) => "new".to_owned(),
+            Ok(Created::Same(_)) => "same".to_owned(),
+            Err(e) => format!("{e:?}"),
+        };
+        let who = caller();
+        let mut answers = vec![
+            format!("{:?}", store.get(&who, found.uuid).map(|_| ())),
+            format!("{:?}", store.delete(&who, found.uuid)),
+            kind(store.create(&who, &found, &body)),
+            kind(store.create(&who, &found, &body)),
+        ];
+        let current = store.get(&who, found.uuid).expect("stored").version;
+        answers.push(format!(
+            "{:?}",
+            store.replace(&who, current, &found, &newer).map(|_| ())
+        ));
+        answers.push(format!("{:?}", store.delete(&who, found.uuid)));
+        answers.push(format!("{:?}", store.get(&who, found.uuid).map(|_| ())));
+        answers
+    }
+
+    #[test]
+    fn nothing_one_tenant_does_shows_whether_another_holds_a_uuid() {
+        let alone = fixture();
+        let b = alone.tenants.create(Actor::Cli, "b", None).expect("made");
+        let expected = answers(&alone.tenants.store(b).expect("b's store"));
+
+        let f = fixture();
+        let a = f.tenants.create(Actor::Cli, "a", None).expect("made");
+        let b = f.tenants.create(Actor::Cli, "b", None).expect("made");
+        let store_a = f.tenants.store(a).expect("a's store");
+        let (found, body) = vcon(UUID, "a's");
+        store_a
+            .create(&caller(), &found, &body)
+            .expect("a holds it");
+        let (other, body) = vcon("01a07da8-c2bb-83e5-b9a2-279e0d16bc47", "a's other");
+        store_a.create(&caller(), &other, &body).expect("stored");
+        store_a
+            .delete(&caller(), other.uuid)
+            .expect("and has deleted another");
+        assert_eq!(answers(&f.tenants.store(b).expect("b's store")), expected);
+        assert_eq!(
+            expected,
+            [
+                "Err(NotFound)",
+                "Err(NotFound)",
+                "new",
+                "same",
+                "Ok(())",
+                "Ok(())",
+                "Err(Gone)"
+            ]
+        );
     }
 }
