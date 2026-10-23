@@ -39,6 +39,31 @@ pub(crate) struct StoredKey {
 }
 
 impl Tenants {
+    /// Counts a failed check of a token. A known key's failures are
+    /// counted under its id in its tenant's log, or the admin log for an
+    /// operator key or a tenant whose log cannot be opened. Any other
+    /// failure is counted with no actor in the admin log, so tokens made up
+    /// one after another share a record. A failure to count leaves the
+    /// request refused all the same.
+    pub(crate) fn count_auth_failure(&self, known: Option<(KeyId, Option<TenantId>)>) {
+        let entry = |actor| Entry {
+            actor,
+            action: Action::AuthFailed,
+            target: None,
+            version: None,
+            status: 401,
+        };
+        if let Some((id, Some(tenant))) = known
+            && self
+                .store(tenant)
+                .is_ok_and(|store| store.count(&entry(Actor::Key(id))).is_ok())
+        {
+            return;
+        }
+        let actor = known.map_or(Actor::Unparsed, |(id, _)| Actor::Key(id));
+        let _ = self.count_alone(&entry(actor));
+    }
+
     /// The key with this id, read afresh on every call, so a revocation
     /// counts from the next request. Nothing is recorded here; `access`
     /// records the outcome.
@@ -125,8 +150,14 @@ impl Tenants {
             ],
         )
         .map_err(io)?;
-        self.record(&tx, &entry(201, Some(id.to_string())))?;
+        let made = entry(201, Some(id.to_string()));
+        self.record(&tx, &made)?;
         tx.commit().map_err(io)?;
+        // The copy opens the tenant's Store, which reads server.sqlite.
+        drop(conn);
+        if let Some(t) = tenant {
+            self.copy_to_tenant(t, &made)?;
+        }
         Ok(NewKey { id, token })
     }
 
@@ -192,35 +223,38 @@ impl Tenants {
     pub fn revoke_key(&self, who: Actor, id: KeyId) -> Result<(), TenantError> {
         let mut conn = self.conn();
         let tx = immediate(&mut conn)?;
-        let revoked = tx
-            .execute(
+        // The key's tenant, if the key is known: None for an operator key.
+        let found: Option<Option<[u8; 16]>> = tx
+            .query_row(
+                "SELECT tenant FROM api_key WHERE id = ?1",
+                [id.bytes()],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(io)?;
+        if found.is_some() {
+            tx.execute(
                 "UPDATE api_key SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL",
                 params![id.bytes(), nanos(self.clock.now())],
             )
             .map_err(io)?;
-        let known = revoked > 0
-            || tx
-                .query_row("SELECT 1 FROM api_key WHERE id = ?1", [id.bytes()], |_| {
-                    Ok(())
-                })
-                .optional()
-                .map_err(io)?
-                .is_some();
-        let (status, result) = if known {
-            (204, Ok(()))
-        } else {
-            (404, Err(TenantError::NotFound))
-        };
+        }
         let entry = Entry {
             actor: who,
             action: Action::KeyRevoke,
             target: Some(id.to_string()),
             version: None,
-            status,
+            status: if found.is_some() { 204 } else { 404 },
         };
         self.record(&tx, &entry)?;
         tx.commit().map_err(io)?;
-        result
+        // The copy opens the tenant's Store, which reads server.sqlite.
+        drop(conn);
+        match found {
+            None => Err(TenantError::NotFound),
+            Some(Some(t)) => self.copy_to_tenant(TenantId(t), &entry),
+            Some(None) => Ok(()),
+        }
     }
 }
 
@@ -536,6 +570,82 @@ mod tests {
         assert_eq!(statuses, [204, 204, 404]);
         assert_eq!(records[0]["target"], key.id.to_string());
         assert_eq!(records[2]["target"], unknown.to_string());
+    }
+
+    fn tenant_records(f: &Fixture, t: TenantId, action: &str) -> Vec<serde_json::Value> {
+        crate::audit::testing::exported(&f.tenant_catalog(t), None)
+            .into_iter()
+            .filter(|r| r["action"] == action)
+            .collect()
+    }
+
+    #[test]
+    fn a_tenant_key_made_or_revoked_is_recorded_in_its_tenants_log_too() {
+        let f = fixture();
+        let t = tenant(&f, "acme");
+        let key = f
+            .tenants
+            .create_key(Actor::Cli, Some(t), vcon_scopes(), "x")
+            .expect("made");
+        f.tenants.revoke_key(Actor::Cli, key.id).expect("revoked");
+        let made = tenant_records(&f, t, "key_create");
+        assert_eq!(made.len(), 1);
+        assert_eq!(made[0]["actor"], "cli");
+        assert_eq!(made[0]["target"], key.id.to_string());
+        assert_eq!(made[0]["status"], 201);
+        let revoked = tenant_records(&f, t, "key_revoke");
+        assert_eq!(revoked.len(), 1);
+        assert_eq!(revoked[0]["target"], key.id.to_string());
+        assert_eq!(revoked[0]["status"], 204);
+
+        let operator = f
+            .tenants
+            .create_key(Actor::Cli, None, admin(), "op")
+            .expect("made");
+        f.tenants
+            .revoke_key(Actor::Cli, operator.id)
+            .expect("revoked");
+        assert_eq!(tenant_records(&f, t, "key_create").len(), 1, "only its own");
+        let refused = f
+            .tenants
+            .create_key(Actor::Cli, Some(t), admin(), "x")
+            .err();
+        assert_eq!(refused, Some(TenantError::BadScopes));
+        assert_eq!(
+            tenant_records(&f, t, "key_create").len(),
+            1,
+            "a refusal stays in the admin log"
+        );
+    }
+
+    /// The change commits with its admin record; a failed copy in the
+    /// tenant's log leaves it standing and answers AuditFailed.
+    #[test]
+    fn a_key_change_whose_tenant_copy_fails_stands() {
+        let f = fixture();
+        let t = tenant(&f, "acme");
+        f.tenant_catalog(t)
+            .execute_batch(
+                "CREATE TRIGGER dead BEFORE INSERT ON audit
+                 BEGIN SELECT RAISE(ABORT, 'no audit'); END;",
+            )
+            .expect("trigger");
+        assert_eq!(
+            f.tenants
+                .create_key(Actor::Cli, Some(t), vcon_scopes(), "x")
+                .err(),
+            Some(TenantError::AuditFailed)
+        );
+        let keys = f.tenants.list_keys(Actor::Cli, Some(t)).expect("listed");
+        assert_eq!(keys.len(), 1, "the key stands");
+        assert_eq!(
+            f.tenants.revoke_key(Actor::Cli, keys[0].id),
+            Err(TenantError::AuditFailed)
+        );
+        assert!(
+            revoked_at(&f, keys[0].id).is_some(),
+            "the revocation stands"
+        );
     }
 
     #[test]

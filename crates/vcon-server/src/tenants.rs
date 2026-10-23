@@ -378,12 +378,17 @@ impl Tenants {
                 return Err(error);
             }
         }
-        // The change stands with its admin record. The tenant's copy
-        // follows; a crash or failure here can lose only the copy.
-        let store = self.store(id).map_err(|_| TenantError::AuditFailed)?;
-        store
-            .log(&entry(Action::Retention, 200))
-            .map_err(|_| TenantError::AuditFailed)
+        self.copy_to_tenant(id, &entry(Action::Retention, 200))
+    }
+
+    /// Writes the copy of an admin record that a tenant's own log keeps
+    /// too. The change it records has already committed with its admin
+    /// record, so a crash or failure here can lose only the copy; the
+    /// caller then answers that the audit failed, though the change
+    /// stands.
+    fn copy_to_tenant(&self, tenant: TenantId, entry: &Entry) -> Result<(), TenantError> {
+        let store = self.store(tenant).map_err(|_| TenantError::AuditFailed)?;
+        store.log(entry).map_err(|_| TenantError::AuditFailed)
     }
 
     /// Removes the tenant: its row and wrapped key, then its directory.
@@ -552,6 +557,14 @@ impl Tenants {
         let mut conn = self.conn();
         let tx = immediate(&mut conn)?;
         self.record(&tx, entry)?;
+        tx.commit().map_err(io)
+    }
+
+    /// Counts an event in the admin log, in a transaction of its own.
+    fn count_alone(&self, entry: &Entry) -> Result<(), TenantError> {
+        let mut conn = self.conn();
+        let tx = immediate(&mut conn)?;
+        audit::count(&tx, entry, self.clock.now()).map_err(|_| TenantError::AuditFailed)?;
         tx.commit().map_err(io)
     }
 
@@ -1328,7 +1341,7 @@ mod tests {
         }
 
         /// A second connection to the tenant's catalog.
-        fn tenant_catalog(&self, id: TenantId) -> Connection {
+        pub(crate) fn tenant_catalog(&self, id: TenantId) -> Connection {
             let catalog_key = envelope::catalog_key(&self.tenant_key(id)).expect("catalog key");
             catalog::open(
                 &self
@@ -1342,7 +1355,7 @@ mod tests {
         }
 
         /// The records with this action in the admin log.
-        pub(super) fn admin_records(&self, action: &str) -> Vec<Value> {
+        pub(crate) fn admin_records(&self, action: &str) -> Vec<Value> {
             self.admin_log()
                 .into_iter()
                 .filter(|r| r["action"] == action)

@@ -139,20 +139,40 @@ pub enum AuthError {
 /// The caller a request's Authorization header names. The key is looked up
 /// on every call, with no cache, so a revoked key fails on its next
 /// request.
+///
+/// A failed check is counted in the audit (`Tenants::count_auth_failure`),
+/// except when the key table could not be read.
 pub fn authenticate(keys: &Tenants, authorization: Option<&str>) -> Result<Caller, AuthError> {
-    let header = authorization.ok_or(AuthError::Missing)?;
-    let token = bearer(header).ok_or(AuthError::Malformed)?;
-    let id = parse(token)?;
+    match check(keys, authorization) {
+        Ok(caller) => Ok(caller),
+        Err((error, known)) => {
+            if error != AuthError::Io {
+                keys.count_auth_failure(known);
+            }
+            Err(error)
+        }
+    }
+}
+
+/// A failed check, with the key it named if that key is known.
+type Failure = (AuthError, Option<(KeyId, Option<TenantId>)>);
+
+fn check(keys: &Tenants, authorization: Option<&str>) -> Result<Caller, Failure> {
+    let unknown = |error| (error, None);
+    let header = authorization.ok_or(unknown(AuthError::Missing))?;
+    let token = bearer(header).ok_or(unknown(AuthError::Malformed))?;
+    let id = parse(token).map_err(unknown)?;
     let key = keys
         .stored_key(id)
-        .map_err(|_| AuthError::Io)?
-        .ok_or(AuthError::Unknown)?;
+        .map_err(|_| unknown(AuthError::Io))?
+        .ok_or(unknown(AuthError::Unknown))?;
+    let known = |error| (error, Some((id, key.tenant)));
     // The secret is checked before revocation, so a wrong secret learns
     // nothing about the key.
     constant_time::verify_slices_are_equal(&token_hash(token), &key.hash)
-        .map_err(|_| AuthError::Unknown)?;
+        .map_err(|_| known(AuthError::Unknown))?;
     if key.revoked {
-        return Err(AuthError::Revoked);
+        return Err(known(AuthError::Revoked));
     }
     Ok(Caller {
         key: id,
@@ -438,6 +458,122 @@ mod tests {
             assert_eq!(auth(&f, &header), Err(AuthError::Revoked));
         }
 
+        fn admin_failures(f: &Fixture) -> Vec<serde_json::Value> {
+            f.admin_records("auth_failed")
+        }
+
+        fn tenant_failures(f: &Fixture, t: TenantId) -> Vec<serde_json::Value> {
+            crate::audit::testing::exported(&f.tenant_catalog(t), None)
+                .into_iter()
+                .filter(|r| r["action"] == "auth_failed")
+                .collect()
+        }
+
+        fn forged(key: &NewKey) -> String {
+            let (_, other) = new_token();
+            format!("Bearer {}{}", &key.token[..21], &other[21..])
+        }
+
+        #[test]
+        fn a_burst_of_bad_tokens_leaves_one_counted_record() {
+            let f = fixture();
+            let (t, _) = key(&f);
+            for _ in 0..20 {
+                assert!(auth(&f, "Bearer not-a-token").is_err());
+            }
+            for _ in 0..5 {
+                assert!(authenticate(&f.tenants, None).is_err());
+                let (_, made_up) = new_token();
+                assert!(auth(&f, &format!("Bearer {made_up}")).is_err());
+            }
+            let records = admin_failures(&f);
+            assert_eq!(records.len(), 1, "{records:?}");
+            assert_eq!(records[0]["actor"], "");
+            assert_eq!(records[0]["status"], 401);
+            assert_eq!(records[0]["count"], 30);
+            assert_eq!(records[0]["at"], "2026-10-23T12:00:00Z");
+            assert_eq!(tenant_failures(&f, t), Vec::<serde_json::Value>::new());
+
+            f.clock
+                .set(time::macros::datetime!(2026-10-23 12:01:30 UTC));
+            assert!(auth(&f, "Bearer not-a-token").is_err());
+            let records = admin_failures(&f);
+            assert_eq!(records.len(), 2, "a new minute, a new record");
+            assert_eq!(records[1]["count"], 1);
+        }
+
+        #[test]
+        fn a_known_key_that_fails_is_counted_in_its_tenants_log() {
+            let f = fixture();
+            let (t, key) = key(&f);
+            for _ in 0..3 {
+                assert_eq!(auth(&f, &forged(&key)), Err(AuthError::Unknown));
+            }
+            f.tenants.revoke_key(Actor::Cli, key.id).expect("revoked");
+            for _ in 0..2 {
+                assert_eq!(
+                    auth(&f, &format!("Bearer {}", key.token)),
+                    Err(AuthError::Revoked)
+                );
+            }
+            let records = tenant_failures(&f, t);
+            assert_eq!(records.len(), 1, "{records:?}");
+            assert_eq!(records[0]["actor"], key.id.to_string());
+            assert_eq!(records[0]["status"], 401);
+            assert_eq!(records[0]["count"], 5);
+            assert_eq!(admin_failures(&f), Vec::<serde_json::Value>::new());
+        }
+
+        #[test]
+        fn an_operator_key_that_fails_is_counted_in_the_admin_log() {
+            let f = fixture();
+            let operator = f
+                .tenants
+                .create_key(Actor::Cli, None, Scopes::of(&[Scope::Admin]), "op")
+                .expect("made");
+            assert!(auth(&f, &forged(&operator)).is_err());
+            let records = admin_failures(&f);
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0]["actor"], operator.id.to_string());
+        }
+
+        #[test]
+        fn a_known_key_whose_tenant_log_is_gone_is_counted_in_the_admin_log() {
+            let f = fixture();
+            let (t, key) = key(&f);
+            f.tenants
+                .remove(Actor::Cli, t, crate::tenants::Removal::Force)
+                .expect("removed");
+            assert_eq!(
+                auth(&f, &format!("Bearer {}", key.token)),
+                Err(AuthError::Revoked)
+            );
+            let records = admin_failures(&f);
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0]["actor"], key.id.to_string());
+        }
+
+        #[test]
+        fn a_failure_that_cannot_be_counted_is_refused_all_the_same() {
+            let f = fixture();
+            f.conn()
+                .execute_batch(
+                    "CREATE TEMP TRIGGER no_audit BEFORE INSERT ON audit
+                     BEGIN SELECT RAISE(ABORT, 'no audit'); END;",
+                )
+                .expect("trigger");
+            assert_eq!(auth(&f, "Bearer not-a-token"), Err(AuthError::Malformed));
+        }
+
+        #[test]
+        fn a_successful_check_counts_nothing() {
+            let f = fixture();
+            let (t, key) = key(&f);
+            assert!(auth(&f, &format!("Bearer {}", key.token)).is_ok());
+            assert_eq!(admin_failures(&f), Vec::<serde_json::Value>::new());
+            assert_eq!(tenant_failures(&f, t), Vec::<serde_json::Value>::new());
+        }
+
         #[test]
         fn a_key_table_that_cannot_be_read_lets_nothing_through() {
             let f = fixture();
@@ -454,6 +590,11 @@ mod tests {
                 .execute_batch("ALTER TABLE api_key RENAME TO gone")
                 .expect("lose the table");
             assert_eq!(auth(&f, &header), Err(AuthError::Io), "no table");
+            assert_eq!(
+                admin_failures(&f),
+                Vec::<serde_json::Value>::new(),
+                "an unreadable table is not a failed check"
+            );
         }
     }
 

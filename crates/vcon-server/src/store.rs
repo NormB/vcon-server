@@ -624,6 +624,16 @@ impl Store {
         commit(tx)
     }
 
+    /// Counts, in a transaction of its own, an event the tenant's log
+    /// keeps one record per minute for, such as a failed check of one of
+    /// its keys.
+    pub fn count(&self, entry: &Entry) -> Result<(), StoreError> {
+        let mut conn = self.conn();
+        let tx = immediate(&mut conn)?;
+        audit::count(&tx, entry, self.clock.now()).map_err(|_| StoreError::AuditFailed)?;
+        commit(tx)
+    }
+
     fn record(&self, tx: &Transaction, entry: &Entry) -> Result<(), StoreError> {
         audit::record(tx, entry, self.clock.now()).map_err(|_| StoreError::AuditFailed)
     }
