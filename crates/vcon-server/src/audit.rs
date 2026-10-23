@@ -9,8 +9,7 @@ use serde_json::json;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use crate::envelope::KeyId;
-use crate::ids::VersionId;
+use crate::ids::{KeyId, VersionId};
 
 /// The audit table, part of every catalog that holds a log.
 pub const SCHEMA: &str = "

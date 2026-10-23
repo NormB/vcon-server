@@ -1,7 +1,30 @@
-//! Identifiers the server makes for its own records: 128 random bits each,
-//! written as 32 lowercase hex digits.
+//! Identifiers, written in lowercase hex: a tenant or a version is 128
+//! random bits, a key 64 bits.
 
 use std::fmt;
+
+/// Names a key without revealing it: an encryption key by the start of
+/// its SHA-256 (`Key::id`), an access key by 64 random bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KeyId(pub [u8; 8]);
+
+impl KeyId {
+    /// A new random key id.
+    pub fn generate() -> KeyId {
+        KeyId(random())
+    }
+
+    /// Reads a key id written by `Display`: exactly 16 lowercase hex
+    /// digits.
+    pub fn parse(text: &str) -> Option<KeyId> {
+        unhex(text).map(KeyId)
+    }
+
+    /// The id's 8 bytes, as catalogs store them.
+    pub(crate) fn bytes(self) -> [u8; 8] {
+        self.0
+    }
+}
 
 /// A tenant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -39,18 +62,18 @@ impl VersionId {
     }
 }
 
-fn random() -> [u8; 16] {
-    let mut bytes = [0; 16];
+fn random<const N: usize>() -> [u8; N] {
+    let mut bytes = [0; N];
     // AWS-LC's RAND_bytes aborts the process when it cannot get enough
     // randomness, so `fill` never returns its error.
     aws_lc_rs::rand::fill(&mut bytes).expect("AWS-LC aborts instead of failing");
     bytes
 }
 
-/// Reads exactly 32 lowercase hex digits.
-fn unhex(text: &str) -> Option<[u8; 16]> {
+/// Reads exactly 2N lowercase hex digits.
+fn unhex<const N: usize>(text: &str) -> Option<[u8; N]> {
     let digits = text.as_bytes();
-    if digits.len() != 32 {
+    if digits.len() != 2 * N {
         return None;
     }
     let digit = |d: u8| match d {
@@ -58,7 +81,7 @@ fn unhex(text: &str) -> Option<[u8; 16]> {
         b'a'..=b'f' => Some(d - b'a' + 10),
         _ => None,
     };
-    let mut bytes = [0; 16];
+    let mut bytes = [0; N];
     let (pairs, _) = digits.as_chunks::<2>();
     for (byte, [high, low]) in bytes.iter_mut().zip(pairs) {
         *byte = digit(*high)? << 4 | digit(*low)?;
@@ -66,8 +89,14 @@ fn unhex(text: &str) -> Option<[u8; 16]> {
     Some(bytes)
 }
 
-fn hex(bytes: &[u8; 16], f: &mut fmt::Formatter<'_>) -> fmt::Result {
+fn hex(bytes: &[u8], f: &mut fmt::Formatter<'_>) -> fmt::Result {
     bytes.iter().try_for_each(|b| write!(f, "{b:02x}"))
+}
+
+impl fmt::Display for KeyId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        hex(&self.0, f)
+    }
 }
 
 impl fmt::Display for TenantId {
@@ -103,6 +132,28 @@ mod tests {
                 ids.iter().any(|id| id[i] != ids[0][i]),
                 "byte {i} never varies"
             );
+        }
+    }
+
+    #[test]
+    fn a_key_id_is_64_random_bits_written_as_16_hex_digits() {
+        let ids: Vec<[u8; 8]> = (0..8).map(|_| KeyId::generate().0).collect();
+        for i in 0..8 {
+            assert!(
+                ids.iter().any(|id| id[i] != ids[0][i]),
+                "byte {i} never varies"
+            );
+        }
+        let id = KeyId([0x0a, 0, 0, 0, 0, 0, 0, 0xff]);
+        assert_eq!(id.to_string(), "0a000000000000ff");
+        assert_eq!(KeyId::parse("0a000000000000ff"), Some(id));
+        for bad in [
+            "0A000000000000FF",
+            "0a000000000000f",
+            "0a000000000000ff0",
+            "",
+        ] {
+            assert_eq!(KeyId::parse(bad), None, "{bad:?}");
         }
     }
 

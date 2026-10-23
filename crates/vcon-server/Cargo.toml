@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 aws-lc-rs = "1.18.2"
+base64 = "0.23.1"
 libc = "0.2.191"
 rusqlite = { version = "0.40.2", features = ["bundled-sqlcipher-vendored-openssl"] }
 serde_json = "1.0.154"
@@ -18,7 +19,6 @@ vcon-form = { path = "../vcon-form" }
 zeroize = "1.9.1"
 
 [dev-dependencies]
-base64 = "0.23.1"
 flate2 = "1.1.10"
 tempfile = "3.27.0"
 time = { version = "0.3.55", features = ["macros"] }

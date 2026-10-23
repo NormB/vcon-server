@@ -12,9 +12,9 @@ use vcon_form::Inspection;
 use crate::audit::{self, Action, Actor, Entry};
 use crate::catalog;
 use crate::clock::{Clock, nanos};
-use crate::envelope::{self, Context, Key, KeyId, WrapLimit};
+use crate::envelope::{self, Context, Key, WrapLimit};
 use crate::fs::Fs;
-use crate::ids::{TenantId, VersionId};
+use crate::ids::{KeyId, TenantId, VersionId};
 
 /// The tables of a tenant's catalog, besides its audit log. A key column
 /// says NOT NULL because SQLite lets a PRIMARY KEY other than an INTEGER

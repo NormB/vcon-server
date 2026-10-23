@@ -1,6 +1,5 @@
 //! Keys and the encryption that protects every stored body.
 
-use std::fmt;
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
@@ -11,7 +10,7 @@ use aws_lc_rs::hkdf::{HKDF_SHA256, KeyType, Salt};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-use crate::ids::{TenantId, VersionId};
+use crate::ids::{KeyId, TenantId, VersionId};
 
 mod locked;
 
@@ -94,23 +93,6 @@ impl Key {
         }
         literal.push('\'');
         literal
-    }
-}
-
-/// Names a key without revealing it. It is written as 16 hex digits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct KeyId([u8; 8]);
-
-impl KeyId {
-    /// The id's 8 bytes, as catalogs store them.
-    pub(crate) fn bytes(self) -> [u8; 8] {
-        self.0
-    }
-}
-
-impl fmt::Display for KeyId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.iter().try_for_each(|b| write!(f, "{b:02x}"))
     }
 }
 

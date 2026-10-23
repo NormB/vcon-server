@@ -13,9 +13,9 @@ use time::OffsetDateTime;
 use crate::audit::{self, Action, Actor, Entry};
 use crate::catalog::{self, CatalogError};
 use crate::clock::{Clock, nanos};
-use crate::envelope::{self, Context, Key, KeyId, WrapLimit};
+use crate::envelope::{self, Context, Key, WrapLimit};
 use crate::fs::Fs;
-use crate::ids::TenantId;
+use crate::ids::{KeyId, TenantId};
 use crate::retention::Retention;
 use crate::store::Store;
 
