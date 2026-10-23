@@ -1,23 +1,72 @@
-//! Reads a vCon without changing it.
+//! Reads a vCon without changing it: which form it is in, whether it is
+//! gzipped, and its uuid. Otherwise it says why the vCon cannot be stored.
+//! It does no I/O and returns no bytes, so the caller always stores the
+//! body exactly as received.
 
-// Used by `inspect`, which a later change adds; until then only tests call them.
-#[allow(dead_code)]
+use std::collections::BTreeSet;
+
+use uuid::Uuid;
+
 mod critical;
-#[allow(dead_code)]
 mod form;
-#[allow(dead_code)]
 mod gzip;
-#[allow(dead_code)]
 mod identity;
 #[cfg(test)]
 mod ietf_examples;
-#[allow(dead_code)]
 mod json;
-#[allow(dead_code)]
 mod signed;
 
 /// The name of this crate.
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
+
+/// Bounds on the work one inspection may do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    /// The most bytes all gzip inflation in one body may produce, counting
+    /// the body itself and every gzipped payload layer inside it.
+    pub inflated: u64,
+}
+
+/// What a received vCon is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Inspection {
+    /// Its form.
+    pub form: Form,
+    /// Whether the body as received is gzipped.
+    pub gzip: bool,
+    /// Its uuid: from the vCon itself, from the innermost signed payload, or
+    /// from the unprotected header of an encrypted vCon.
+    pub uuid: Uuid,
+}
+
+/// Reads `body` without changing it. `content_type` is the media type it
+/// arrived with, if any, and `supported` the extension names this server
+/// accepts in `critical`. An encrypted vCon's `critical` cannot be read and
+/// is not checked.
+pub fn inspect(
+    body: &[u8],
+    content_type: Option<&str>,
+    limits: &Limits,
+    supported: &BTreeSet<String>,
+) -> Result<Inspection, Rejection> {
+    let (inflated, gzip) = gzip::inflate(body, content_type, limits.inflated)?;
+    let mut budget = limits.inflated;
+    if gzip {
+        budget -= inflated.len() as u64;
+    }
+    let object = json::parse_object(&inflated)?;
+    let form = form::form_of(&object)?;
+    let uuid = match form {
+        Form::Unsigned => {
+            let uuid = identity::unsigned_identity(&object)?;
+            critical::check_critical(&object, supported)?;
+            uuid
+        }
+        Form::Signed => signed::signed_identity(&object, &mut budget, supported)?,
+        Form::Encrypted => identity::encrypted_identity(&object)?,
+    };
+    Ok(Inspection { form, gzip, uuid })
+}
 
 /// The three forms a vCon can take.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
