@@ -28,6 +28,9 @@ pub trait Fs: Send + Sync {
     /// Creates a directory and its parents, without syncing. A new
     /// directory survives a crash once the directory holding it is synced.
     fn create_dir_all(&self, dir: &Path) -> io::Result<()>;
+    /// Removes a directory and everything in it, without syncing. The
+    /// removal survives a crash once the directory that held it is synced.
+    fn remove_dir_all(&self, dir: &Path) -> io::Result<()>;
 }
 
 /// The operating system's filesystem. No test can see whether a sync
@@ -75,6 +78,10 @@ impl Fs for OsFs {
     fn create_dir_all(&self, dir: &Path) -> io::Result<()> {
         std::fs::create_dir_all(dir)
     }
+
+    fn remove_dir_all(&self, dir: &Path) -> io::Result<()> {
+        std::fs::remove_dir_all(dir)
+    }
 }
 
 #[cfg(test)]
@@ -99,6 +106,7 @@ mod crash {
         SyncDir(PathBuf),
         Remove(PathBuf),
         CreateDir(PathBuf),
+        RemoveDir(PathBuf),
     }
 
     /// An in-memory filesystem that keeps what was synced apart from what
@@ -111,6 +119,8 @@ mod crash {
     /// The model is rooted at a directory that exists on disk and is
     /// durable. A directory made in the model is made on disk too, because
     /// SQLite opens its catalogs there; a crash drops it only from the model.
+    /// A directory is removed only from the model, since a crash may bring
+    /// it back and SQLite's files in it must then still be there.
     pub(crate) struct CrashFs {
         state: Mutex<State>,
     }
@@ -349,6 +359,18 @@ mod crash {
             state.log.push(Op::CreateDir(dir.to_owned()));
             Ok(())
         }
+
+        fn remove_dir_all(&self, dir: &Path) -> io::Result<()> {
+            let (parent, name) = split(dir)?;
+            let mut state = self.state();
+            state.alive()?;
+            if !state.exists(dir) {
+                return Err(not_found());
+            }
+            state.dir(&parent)?.now.remove(&name);
+            state.log.push(Op::RemoveDir(dir.to_owned()));
+            Ok(())
+        }
     }
 }
 
@@ -409,6 +431,22 @@ mod tests {
             fs.remove(&dir.join("c")).is_err(),
             "remove takes only a file"
         );
+        assert!(
+            fs.remove_dir_all(&a).is_err(),
+            "remove_dir_all takes only a directory"
+        );
+        fs.create_dir_all(&dir.join("c/d"))
+            .expect("a directory inside c");
+        fs.write_new(&dir.join("c/f"), b"x")
+            .expect("a file inside c");
+        fs.remove_dir_all(&dir.join("c"))
+            .expect("remove c and all in it");
+        assert_eq!(fs.list(&dir.join("c")).map_err(|e| e.kind()), Err(NotFound));
+        assert_eq!(
+            fs.remove_dir_all(&dir.join("c")).map_err(|e| e.kind()),
+            Err(NotFound)
+        );
+        fs.create_dir_all(&dir.join("c")).expect("c again");
         fs.remove(&a).expect("remove");
         fs.remove(&b).expect("remove");
         assert_eq!(fs.list(&dir).expect("list"), [OsString::from("c")]);
@@ -601,6 +639,38 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_directory_removal_survives_a_crash_only_once_its_parent_is_synced() {
+        for sync in [false, true] {
+            let m = Model::new();
+            let a = m.root().join("a");
+            m.fs.create_dir_all(&a).expect("create a");
+            synced(&m.fs, &a.join("f"));
+            m.fs.sync_dir(m.root()).expect("sync the root");
+            m.fs.remove_dir_all(&a).expect("remove a");
+            if sync {
+                m.fs.sync_dir(m.root()).expect("sync the root");
+            }
+            m.fs.crash();
+            if sync {
+                assert_eq!(m.fs.list(&a).map_err(|e| e.kind()), Err(NotFound));
+            } else {
+                assert_eq!(m.fs.read(&a.join("f")).expect("back"), b"data");
+            }
+        }
+    }
+
+    /// A crash may bring a removed directory back, and SQLite's files in
+    /// it must then still be there, so removal touches only the model.
+    #[test]
+    fn a_directory_is_removed_only_from_the_model() {
+        let m = Model::new();
+        let a = m.root().join("a");
+        m.fs.create_dir_all(&a).expect("create a");
+        m.fs.remove_dir_all(&a).expect("remove a");
+        assert!(a.is_dir());
+    }
+
     /// SQLite opens its files on disk, so a directory made in the model is
     /// made on disk too.
     #[test]
@@ -628,15 +698,17 @@ mod tests {
         synced(&m.fs, &f);
         m.fs.rename(&f, &g).expect("rename");
         m.fs.remove(&g).expect("remove");
+        m.fs.remove_dir_all(&dir).expect("remove the dir");
         assert_eq!(
             m.fs.log(),
             [
                 Op::CreateDir(dir.clone()),
                 Op::Write(f.clone()),
                 Op::SyncFile(f.clone()),
-                Op::SyncDir(dir),
+                Op::SyncDir(dir.clone()),
                 Op::Rename(f, g.clone()),
                 Op::Remove(g),
+                Op::RemoveDir(dir),
             ]
         );
     }
@@ -656,6 +728,7 @@ mod tests {
             m.fs.create_dir_all(&m.dir().join("d")).is_err(),
             "create dir"
         );
+        assert!(m.fs.remove_dir_all(&m.dir()).is_err(), "remove dir");
         assert!(!m.dir().join("d").exists(), "not made on disk either");
         assert_eq!(m.fs.log().len(), ops, "nothing changed");
         assert_eq!(m.fs.read(&f).expect("reads still work"), b"data");

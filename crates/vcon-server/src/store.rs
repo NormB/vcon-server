@@ -11,7 +11,7 @@ use vcon_form::Inspection;
 
 use crate::audit::{self, Action, Actor, Entry};
 use crate::catalog;
-use crate::clock::Clock;
+use crate::clock::{Clock, nanos};
 use crate::envelope::{self, Context, Key, KeyId, WrapLimit};
 use crate::fs::Fs;
 use crate::ids::{TenantId, VersionId};
@@ -718,11 +718,6 @@ fn form_name(form: vcon_form::Form) -> &'static str {
     }
 }
 
-/// A time as nanoseconds since 1970, as catalogs store it.
-fn nanos(at: time::OffsetDateTime) -> i64 {
-    i64::try_from(at.unix_timestamp_nanos()).expect("a time before 2262")
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -973,6 +968,25 @@ mod tests {
             assert_eq!(wraps(&f.store), 0, "nothing wrapped");
             assert_eq!(audit_log(&f.store)[0]["status"], 410);
         }
+    }
+
+    #[test]
+    fn a_negative_wrap_count_is_damage_and_stores_nothing() {
+        let f = fixture();
+        f.store
+            .conn()
+            .execute(
+                "INSERT INTO key_use (tenant_key_id, wraps) VALUES (?1, -1)",
+                [f.store.tenant_key.id().bytes()],
+            )
+            .expect("a damaged count");
+        let (found, body) = vcon(UUID, "first");
+        let ops = f.fs.log().len();
+        assert_eq!(
+            f.store.create(&f.caller, &found, &body),
+            Err(StoreError::Io)
+        );
+        assert_eq!(f.fs.log().len(), ops, "no file written");
     }
 
     #[test]

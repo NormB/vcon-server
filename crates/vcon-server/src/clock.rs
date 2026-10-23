@@ -8,6 +8,11 @@ pub trait Clock: Send + Sync {
     fn now(&self) -> OffsetDateTime;
 }
 
+/// A time as the catalogs keep it: nanoseconds since the Unix epoch.
+pub(crate) fn nanos(at: OffsetDateTime) -> i64 {
+    i64::try_from(at.unix_timestamp_nanos()).expect("a time before 2262")
+}
+
 /// The system's clock.
 pub struct SystemClock;
 
