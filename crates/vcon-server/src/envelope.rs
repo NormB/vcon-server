@@ -7,6 +7,7 @@ use std::path::Path;
 
 use aws_lc_rs::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
 use aws_lc_rs::digest::{SHA256, digest};
+use aws_lc_rs::hkdf::{HKDF_SHA256, KeyType, Salt};
 use uuid::Uuid;
 
 use crate::ids::{TenantId, VersionId};
@@ -26,6 +27,9 @@ const TAG_LEN: usize = 16;
 
 /// The start of every associated data.
 const LABEL: &[u8] = b"vcon-server/v1";
+
+/// The HKDF info that makes a catalog key.
+const CATALOG_LABEL: &[u8] = b"vcon-server/v1 catalog";
 
 /// A 256-bit key. Its bytes live only in a page of their own that is locked
 /// in memory, so they never reach swap, and that core dumps leave out; they
@@ -216,6 +220,38 @@ fn open_into(key: &[u8], ctx: &Context, blob: &[u8], out: &mut [u8]) -> Result<u
     let text = out.get_mut(..sealed.len()).ok_or(OpenError)?;
     text.copy_from_slice(sealed);
     gcm_open(key, *nonce, &ctx.associated_data(format), text)
+}
+
+/// The key of the catalog that `parent` protects: the master key's for
+/// server.sqlite, a tenant key's for that tenant's catalog. It is HKDF-SHA256
+/// of the parent with no salt and the info `vcon-server/v1 catalog`, made in
+/// a locked page of its own and never stored.
+pub fn catalog_key(parent: &Key) -> Result<Key, KeyError> {
+    let mut page = LockedPage::new().map_err(KeyError::Memory)?;
+    hkdf_sha256(
+        &[],
+        parent.bytes(),
+        CATALOG_LABEL,
+        &mut page.bytes_mut()[..KEY_LEN],
+    );
+    Ok(Key { page })
+}
+
+/// HKDF (RFC 5869) with SHA-256, filling `out`.
+fn hkdf_sha256(salt: &[u8], ikm: &[u8], info: &[u8], out: &mut [u8]) {
+    struct Len(usize);
+    impl KeyType for Len {
+        fn len(&self) -> usize {
+            self.0
+        }
+    }
+    // HKDF refuses only outputs over 255 hashes (8160 bytes); every caller
+    // asks for far less.
+    Salt::new(HKDF_SHA256, salt)
+        .extract(ikm)
+        .expand(&[info], Len(out.len()))
+        .and_then(|okm| okm.fill(out))
+        .expect("within HKDF's output limit");
 }
 
 fn seal_with_nonce(key: &[u8], nonce: [u8; NONCE_LEN], ctx: &Context, plaintext: &[u8]) -> Vec<u8> {
@@ -512,5 +548,94 @@ mod tests {
         let sealed = seal(&wrapping, &TENANT_CTX, &[7; KEY_LEN]);
         let key = unwrap(&wrapping, &TENANT_CTX, &sealed).expect("32 bytes unwrap");
         assert_eq!(key.bytes(), [7; KEY_LEN]);
+    }
+
+    /// A key with the given bytes, for tests that need a known key.
+    fn key_of(bytes: [u8; KEY_LEN]) -> Key {
+        let mut page = LockedPage::new().expect("page");
+        page.bytes_mut()[..KEY_LEN].copy_from_slice(&bytes);
+        Key { page }
+    }
+
+    /// RFC 5869, appendix A, test cases 1 to 3 (SHA-256).
+    #[test]
+    fn hkdf_sha256_matches_rfc_5869() {
+        let cases = [
+            (
+                "000102030405060708090a0b0c",
+                "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+                "f0f1f2f3f4f5f6f7f8f9",
+                concat!(
+                    "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf",
+                    "34007208d5b887185865"
+                ),
+            ),
+            (
+                concat!(
+                    "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+                    "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+                    "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf"
+                ),
+                concat!(
+                    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+                    "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+                    "404142434445464748494a4b4c4d4e4f"
+                ),
+                concat!(
+                    "b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecf",
+                    "d0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeef",
+                    "f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"
+                ),
+                concat!(
+                    "b11e398dc80327a1c8e7f78c596a49344f012eda2d4efad8a050cc4c19afa97c",
+                    "59045a99cac7827271cb41c65e590e09da3275600c2f09b8367793a9aca3db71",
+                    "cc30c58179ec3e87c14c01d5c1f3434f1d87"
+                ),
+            ),
+            (
+                "",
+                "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+                "",
+                concat!(
+                    "8da4e775a563c18f715f802a063c5a31b8a11f5c5ee1879ec3454e5f3c738d2d",
+                    "9d201395faa4b61a96c8"
+                ),
+            ),
+        ];
+        for (n, (salt, ikm, info, okm)) in cases.into_iter().enumerate() {
+            let expected = hex(okm);
+            let mut out = vec![0; expected.len()];
+            hkdf_sha256(&hex(salt), &hex(ikm), &hex(info), &mut out);
+            assert_eq!(out, expected, "test case {}", n + 1);
+        }
+    }
+
+    /// The expected key was computed with Python's hmac and hashlib: HKDF
+    /// with no salt and the info "vcon-server/v1 catalog". Changing the
+    /// label or the salt would lock every catalog out, so this pins both.
+    #[test]
+    fn a_catalog_key_is_hkdf_of_its_parent_with_the_catalog_label() {
+        let catalog = catalog_key(&key_of([0x44; KEY_LEN])).expect("derives");
+        assert_eq!(
+            catalog.bytes(),
+            hex("c0df4ea4f63e64687ca93c494fff4ca00b3ae13112766d8ea24cca35c6b1031b")
+        );
+    }
+
+    #[test]
+    fn distinct_parents_or_labels_give_distinct_keys() {
+        let parent = Key::generate().expect("key");
+        let again = catalog_key(&parent).expect("derives");
+        assert_eq!(
+            catalog_key(&parent).expect("derives").bytes(),
+            again.bytes()
+        );
+        let other = catalog_key(&Key::generate().expect("key")).expect("derives");
+        assert_ne!(other.bytes(), again.bytes());
+        let mut a = [0; KEY_LEN];
+        let mut b = [0; KEY_LEN];
+        hkdf_sha256(&[], parent.bytes(), b"label a", &mut a);
+        hkdf_sha256(&[], parent.bytes(), b"label b", &mut b);
+        assert_ne!(a, b);
     }
 }
