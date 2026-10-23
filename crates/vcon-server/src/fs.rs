@@ -25,7 +25,8 @@ pub trait Fs: Send + Sync {
     fn remove(&self, path: &Path) -> io::Result<()>;
     /// The names in a directory, sorted.
     fn list(&self, dir: &Path) -> io::Result<Vec<OsString>>;
-    /// Creates a directory and its parents.
+    /// Creates a directory and its parents, without syncing. A new
+    /// directory survives a crash once the directory holding it is synced.
     fn create_dir_all(&self, dir: &Path) -> io::Result<()>;
 }
 
@@ -97,20 +98,25 @@ mod crash {
         Rename(PathBuf, PathBuf),
         SyncDir(PathBuf),
         Remove(PathBuf),
+        CreateDir(PathBuf),
     }
 
     /// An in-memory filesystem that keeps what was synced apart from what
     /// was not, so a simulated crash can drop the latter. A file's data
-    /// survives a crash once the file is synced; a file's creation, rename
-    /// or removal once its directory is synced. Directories themselves are
-    /// durable as soon as they are made, and hold only files.
-    #[derive(Default)]
+    /// survives a crash once the file is synced; an entry in a directory, a
+    /// file or a directory made, renamed or removed there, once that
+    /// directory is synced. A directory lost in a crash takes everything
+    /// in it.
+    ///
+    /// The model is rooted at a directory that exists on disk and is
+    /// durable. A directory made in the model is made on disk too, because
+    /// SQLite opens its catalogs there; a crash drops it only from the model.
     pub(crate) struct CrashFs {
         state: Mutex<State>,
     }
 
-    #[derive(Default)]
     struct State {
+        root: PathBuf,
         dirs: BTreeMap<PathBuf, Dir>,
         files: Vec<File>,
         log: Vec<Op>,
@@ -118,11 +124,18 @@ mod crash {
         fail_from: Option<usize>,
     }
 
-    /// A directory's entries, each naming an index into `State::files`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Entry {
+        /// An index into `State::files`.
+        File(usize),
+        Dir,
+    }
+
+    /// A directory's entries, as they are and as a crash would leave them.
     #[derive(Default)]
     struct Dir {
-        now: BTreeMap<OsString, usize>,
-        synced: BTreeMap<OsString, usize>,
+        now: BTreeMap<OsString, Entry>,
+        synced: BTreeMap<OsString, Entry>,
     }
 
     struct File {
@@ -151,23 +164,50 @@ mod crash {
             }
         }
 
+        /// Whether `dir` is the root or is reached from it through
+        /// entries as they are now.
+        fn exists(&self, dir: &Path) -> bool {
+            if dir == self.root {
+                return true;
+            }
+            let Ok((parent, name)) = split(dir) else {
+                return false;
+            };
+            self.exists(&parent)
+                && self
+                    .dirs
+                    .get(&parent)
+                    .is_some_and(|p| p.now.get(&name) == Some(&Entry::Dir))
+        }
+
         fn dir(&mut self, dir: &Path) -> io::Result<&mut Dir> {
+            if !self.exists(dir) {
+                return Err(not_found());
+            }
             self.dirs.get_mut(dir).ok_or_else(not_found)
         }
 
         fn file(&mut self, path: &Path) -> io::Result<usize> {
             let (dir, name) = split(path)?;
-            self.dir(&dir)?
-                .now
-                .get(&name)
-                .copied()
-                .ok_or_else(not_found)
+            match self.dir(&dir)?.now.get(&name) {
+                Some(Entry::File(index)) => Ok(*index),
+                _ => Err(not_found()),
+            }
         }
     }
 
     impl CrashFs {
-        pub(crate) fn new() -> CrashFs {
-            CrashFs::default()
+        /// A model rooted at `root`, an existing directory.
+        pub(crate) fn new(root: &Path) -> CrashFs {
+            CrashFs {
+                state: Mutex::new(State {
+                    root: root.to_owned(),
+                    dirs: BTreeMap::from([(root.to_owned(), Dir::default())]),
+                    files: Vec::new(),
+                    log: Vec::new(),
+                    fail_from: None,
+                }),
+            }
         }
 
         fn state(&self) -> std::sync::MutexGuard<'_, State> {
@@ -189,13 +229,13 @@ mod crash {
         }
 
         /// From the `n`th change on (counting from 0 over the whole log),
-        /// every write, sync, rename and remove fails and changes nothing,
-        /// as for a process that has died. `crash` clears it.
+        /// every change fails and changes nothing, as for a process that
+        /// has died. `crash` clears it.
         pub(crate) fn fail_from(&self, n: usize) {
             self.state().fail_from = Some(n);
         }
 
-        /// Every write, sync, rename and remove so far, in order.
+        /// Every change so far, in order.
         pub(crate) fn log(&self) -> Vec<Op> {
             self.state().log.clone()
         }
@@ -211,7 +251,7 @@ mod crash {
             if entries.contains_key(&name) {
                 return Err(io::Error::from(io::ErrorKind::AlreadyExists));
             }
-            entries.insert(name, index);
+            entries.insert(name, Entry::File(index));
             state.files.push(File {
                 now: data.to_vec(),
                 synced: Vec::new(),
@@ -237,7 +277,7 @@ mod crash {
             let index = state.file(from)?;
             state.dir(&to_dir)?;
             state.dir(&from_dir)?.now.remove(&from_name);
-            state.dir(&to_dir)?.now.insert(to_name, index);
+            state.dir(&to_dir)?.now.insert(to_name, Entry::File(index));
             state.log.push(Op::Rename(from.to_owned(), to.to_owned()));
             Ok(())
         }
@@ -261,7 +301,8 @@ mod crash {
             let (dir, name) = split(path)?;
             let mut state = self.state();
             state.alive()?;
-            state.dir(&dir)?.now.remove(&name).ok_or_else(not_found)?;
+            state.file(path)?;
+            state.dir(&dir)?.now.remove(&name);
             state.log.push(Op::Remove(path.to_owned()));
             Ok(())
         }
@@ -271,7 +312,41 @@ mod crash {
         }
 
         fn create_dir_all(&self, dir: &Path) -> io::Result<()> {
-            self.state().dirs.entry(dir.to_owned()).or_default();
+            let mut state = self.state();
+            state.alive()?;
+            let below = dir
+                .strip_prefix(&state.root)
+                .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?
+                .to_owned();
+            // Find what is missing before touching the disk, so a refusal
+            // makes nothing there either.
+            let mut path = state.root.clone();
+            let mut missing = Vec::new();
+            for part in &below {
+                let next = path.join(part);
+                let parent = std::mem::replace(&mut path, next);
+                if !missing.is_empty() {
+                    missing.push(path.clone());
+                    continue;
+                }
+                match state.dir(&parent)?.now.get(part) {
+                    Some(Entry::Dir) => {}
+                    Some(Entry::File(_)) => {
+                        return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+                    }
+                    None => missing.push(path.clone()),
+                }
+            }
+            if missing.is_empty() {
+                return Ok(());
+            }
+            std::fs::create_dir_all(dir)?;
+            for path in missing {
+                let (parent, name) = split(&path)?;
+                state.dir(&parent)?.now.insert(name, Entry::Dir);
+                state.dirs.insert(path, Dir::default());
+            }
+            state.log.push(Op::CreateDir(dir.to_owned()));
             Ok(())
         }
     }
@@ -294,11 +369,18 @@ mod tests {
             "no dir yet"
         );
         fs.create_dir_all(&dir).expect("create the dir");
+        fs.create_dir_all(&dir).expect("create it again");
         fs.write_new(&a, b"one").expect("write");
         assert_eq!(
             fs.write_new(&a, b"two").map_err(|e| e.kind()),
             Err(AlreadyExists)
         );
+        assert!(fs.create_dir_all(&a).is_err(), "a file has the name");
+        assert!(
+            fs.create_dir_all(&a.join("d")).is_err(),
+            "a file stands in the way"
+        );
+        assert!(!a.join("d").exists(), "and nothing is made on disk");
         assert_eq!(fs.read(&a).expect("read"), b"one");
         fs.sync_file(&a).expect("sync the file");
         fs.sync_dir(&dir).expect("sync the dir");
@@ -311,13 +393,25 @@ mod tests {
         fs.rename(&a, &b).expect("rename over");
         assert_eq!(fs.read(&b).expect("read"), b"three");
         fs.write_new(&a, b"four").expect("write");
+        fs.create_dir_all(&dir.join("c"))
+            .expect("a directory inside");
         assert_eq!(
             fs.list(&dir).expect("list"),
-            [OsString::from("a"), OsString::from("b")]
+            ["a", "b", "c"].map(OsString::from),
+            "files and directories, sorted"
+        );
+        assert_eq!(
+            fs.write_new(&dir.join("c"), b"x").map_err(|e| e.kind()),
+            Err(AlreadyExists),
+            "a directory's name is taken"
+        );
+        assert!(
+            fs.remove(&dir.join("c")).is_err(),
+            "remove takes only a file"
         );
         fs.remove(&a).expect("remove");
         fs.remove(&b).expect("remove");
-        assert_eq!(fs.list(&dir).expect("list"), Vec::<OsString>::new());
+        assert_eq!(fs.list(&dir).expect("list"), [OsString::from("c")]);
         assert_eq!(fs.remove(&b).map_err(|e| e.kind()), Err(NotFound));
         assert_eq!(fs.sync_file(&b).map_err(|e| e.kind()), Err(NotFound));
         assert_eq!(
@@ -338,59 +432,83 @@ mod tests {
 
     #[test]
     fn the_crash_filesystem_behaves_like_a_filesystem() {
-        behaves_like_a_filesystem(&CrashFs::new(), Path::new("/data"));
+        let root = tempfile::tempdir().expect("temp dir");
+        behaves_like_a_filesystem(&CrashFs::new(root.path()), root.path());
     }
 
-    fn dir() -> PathBuf {
-        PathBuf::from("/data/objects")
+    /// A crash filesystem rooted at a temporary directory.
+    struct Model {
+        root: tempfile::TempDir,
+        fs: CrashFs,
     }
 
-    /// A crash filesystem with one file `f` in `dir()`, after `steps`.
-    fn after(steps: impl FnOnce(&CrashFs, &Path)) -> CrashFs {
-        let fs = CrashFs::new();
-        fs.create_dir_all(&dir()).expect("create the dir");
-        steps(&fs, &dir().join("f"));
-        fs
+    impl Model {
+        fn new() -> Model {
+            let root = tempfile::tempdir().expect("temp dir");
+            let fs = CrashFs::new(root.path());
+            Model { root, fs }
+        }
+
+        fn root(&self) -> &Path {
+            self.root.path()
+        }
+
+        /// The directory the file tests use, made and synced.
+        fn dir(&self) -> PathBuf {
+            self.root().join("objects")
+        }
+
+        fn f(&self) -> PathBuf {
+            self.dir().join("f")
+        }
+    }
+
+    /// A model with a durable `dir()`, after `steps` on its file `f()`.
+    fn after(steps: impl FnOnce(&CrashFs, &Path)) -> Model {
+        let m = Model::new();
+        m.fs.create_dir_all(&m.dir()).expect("create the dir");
+        m.fs.sync_dir(m.root()).expect("sync the root");
+        steps(&m.fs, &m.f());
+        m
     }
 
     fn synced(fs: &CrashFs, f: &Path) {
         fs.write_new(f, b"data").expect("write");
         fs.sync_file(f).expect("sync the file");
-        fs.sync_dir(&dir()).expect("sync the dir");
+        fs.sync_dir(f.parent().expect("a dir"))
+            .expect("sync the dir");
     }
 
     #[test]
     fn a_crash_drops_a_file_whose_entry_was_not_synced() {
         for sync_data in [false, true] {
-            let fs = after(|fs, f| {
+            let m = after(|fs, f| {
                 fs.write_new(f, b"data").expect("write");
                 if sync_data {
                     fs.sync_file(f).expect("sync the file");
                 }
             });
-            fs.crash();
-            assert_eq!(
-                fs.read(&dir().join("f")).map_err(|e| e.kind()),
-                Err(NotFound)
-            );
+            m.fs.crash();
+            assert_eq!(m.fs.read(&m.f()).map_err(|e| e.kind()), Err(NotFound));
         }
     }
 
     #[test]
     fn a_crash_empties_a_file_whose_data_was_not_synced() {
-        let fs = after(|fs, f| {
+        let m = after(|fs, f| {
             fs.write_new(f, b"data").expect("write");
-            fs.sync_dir(&dir()).expect("sync the dir");
+            fs.sync_dir(f.parent().expect("a dir"))
+                .expect("sync the dir");
         });
-        fs.crash();
-        assert_eq!(fs.read(&dir().join("f")).expect("the entry survives"), b"");
+        m.fs.crash();
+        assert_eq!(m.fs.read(&m.f()).expect("the entry survives"), b"");
     }
 
     #[test]
     fn a_crash_keeps_a_file_synced_in_both_ways() {
-        let fs = after(synced);
-        fs.crash();
-        assert_eq!(fs.read(&dir().join("f")).expect("survives"), b"data");
+        let m = after(synced);
+        m.fs.crash();
+        assert_eq!(m.fs.read(&m.f()).expect("survives"), b"data");
     }
 
     #[test]
@@ -398,47 +516,125 @@ mod tests {
         for sync in [false, true] {
             let renamed = after(|fs, f| {
                 synced(fs, f);
-                fs.rename(f, &dir().join("g")).expect("rename");
+                fs.rename(f, &f.with_file_name("g")).expect("rename");
                 if sync {
-                    fs.sync_dir(&dir()).expect("sync the dir");
+                    fs.sync_dir(f.parent().expect("a dir"))
+                        .expect("sync the dir");
                 }
             });
-            renamed.crash();
+            renamed.fs.crash();
             let names = if sync { ["g"] } else { ["f"] };
             assert_eq!(
-                renamed.list(&dir()).expect("list"),
+                renamed.fs.list(&renamed.dir()).expect("list"),
                 names.map(OsString::from),
                 "rename, sync {sync}"
             );
-            assert_eq!(renamed.read(&dir().join(names[0])).expect("read"), b"data");
+            assert_eq!(
+                renamed
+                    .fs
+                    .read(&renamed.dir().join(names[0]))
+                    .expect("read"),
+                b"data"
+            );
 
             let removed = after(|fs, f| {
                 synced(fs, f);
                 fs.remove(f).expect("remove");
                 if sync {
-                    fs.sync_dir(&dir()).expect("sync the dir");
+                    fs.sync_dir(f.parent().expect("a dir"))
+                        .expect("sync the dir");
                 }
             });
-            removed.crash();
-            let left = removed.list(&dir()).expect("list").len();
+            removed.fs.crash();
+            let left = removed.fs.list(&removed.dir()).expect("list").len();
             assert_eq!(left, usize::from(!sync), "remove, sync {sync}");
         }
     }
 
     #[test]
-    fn every_call_that_changes_state_is_logged_in_order() {
-        let fs = after(|fs, f| {
-            synced(fs, f);
-            fs.rename(f, &dir().join("g")).expect("rename");
-            fs.remove(&dir().join("g")).expect("remove");
-        });
-        let (f, g) = (dir().join("f"), dir().join("g"));
+    fn a_new_directory_survives_a_crash_only_once_its_parent_is_synced() {
+        let m = Model::new();
+        let (a, b) = (m.root().join("a"), m.root().join("a/b"));
+        m.fs.create_dir_all(&b).expect("create a/b");
+        m.fs.crash();
+        assert_eq!(m.fs.list(m.root()).expect("list"), Vec::<OsString>::new());
+        assert_eq!(m.fs.list(&a).map_err(|e| e.kind()), Err(NotFound));
+
+        m.fs.create_dir_all(&b).expect("create a/b");
+        m.fs.sync_dir(&a).expect("sync a, not the root");
+        m.fs.crash();
         assert_eq!(
-            fs.log(),
+            m.fs.list(&b).map_err(|e| e.kind()),
+            Err(NotFound),
+            "b is lost with a"
+        );
+
+        m.fs.create_dir_all(&b).expect("create a/b");
+        m.fs.sync_dir(m.root()).expect("sync the root");
+        m.fs.crash();
+        assert_eq!(m.fs.list(m.root()).expect("list"), [OsString::from("a")]);
+        assert_eq!(
+            m.fs.list(&a).expect("a survives"),
+            Vec::<OsString>::new(),
+            "b's entry in a was never synced"
+        );
+
+        m.fs.create_dir_all(&b).expect("create b");
+        m.fs.sync_dir(&a).expect("sync a");
+        m.fs.crash();
+        assert_eq!(m.fs.list(&b).expect("b survives"), Vec::<OsString>::new());
+    }
+
+    #[test]
+    fn a_lost_directory_takes_its_synced_files_with_it() {
+        let m = Model::new();
+        let a = m.root().join("a");
+        m.fs.create_dir_all(&a).expect("create a");
+        synced(&m.fs, &a.join("f"));
+        m.fs.crash();
+        assert_eq!(m.fs.list(m.root()).expect("list"), Vec::<OsString>::new());
+        m.fs.create_dir_all(&a).expect("create a again");
+        assert_eq!(
+            m.fs.list(&a).expect("list"),
+            Vec::<OsString>::new(),
+            "a new directory starts empty"
+        );
+    }
+
+    /// SQLite opens its files on disk, so a directory made in the model is
+    /// made on disk too.
+    #[test]
+    fn a_directory_is_also_made_on_disk() {
+        let m = Model::new();
+        let b = m.root().join("a/b");
+        m.fs.create_dir_all(&b).expect("create a/b");
+        assert!(b.is_dir());
+    }
+
+    #[test]
+    fn nothing_outside_the_root_can_be_made() {
+        let m = Model::new();
+        let outside = m.root().with_file_name("elsewhere-5c1e");
+        assert!(m.fs.create_dir_all(&outside).is_err());
+        assert!(!outside.exists());
+    }
+
+    #[test]
+    fn every_call_that_changes_state_is_logged_in_order() {
+        let m = Model::new();
+        let (dir, f, g) = (m.dir(), m.f(), m.dir().join("g"));
+        m.fs.create_dir_all(&dir).expect("create the dir");
+        m.fs.create_dir_all(&dir).expect("already there: no change");
+        synced(&m.fs, &f);
+        m.fs.rename(&f, &g).expect("rename");
+        m.fs.remove(&g).expect("remove");
+        assert_eq!(
+            m.fs.log(),
             [
+                Op::CreateDir(dir.clone()),
                 Op::Write(f.clone()),
                 Op::SyncFile(f.clone()),
-                Op::SyncDir(dir()),
+                Op::SyncDir(dir),
                 Op::Rename(f, g.clone()),
                 Op::Remove(g),
             ]
@@ -447,20 +643,24 @@ mod tests {
 
     #[test]
     fn from_the_fail_point_on_no_change_happens_until_a_crash() {
-        let fs = after(|fs, f| fs.write_new(f, b"data").expect("write"));
-        fs.fail_from(1);
-        let g = dir().join("g");
-        assert!(fs.sync_file(&dir().join("f")).is_err(), "sync");
-        assert!(fs.write_new(&g, b"x").is_err(), "write");
-        assert!(fs.rename(&dir().join("f"), &g).is_err(), "rename");
-        assert!(fs.sync_dir(&dir()).is_err(), "sync dir");
-        assert!(fs.remove(&dir().join("f")).is_err(), "remove");
-        assert_eq!(fs.log(), [Op::Write(dir().join("f"))], "nothing changed");
-        assert_eq!(
-            fs.read(&dir().join("f")).expect("reads still work"),
-            b"data"
+        let m = after(|fs, f| fs.write_new(f, b"data").expect("write"));
+        let ops = m.fs.log().len();
+        m.fs.fail_from(ops);
+        let (f, g) = (m.f(), m.dir().join("g"));
+        assert!(m.fs.sync_file(&f).is_err(), "sync");
+        assert!(m.fs.write_new(&g, b"x").is_err(), "write");
+        assert!(m.fs.rename(&f, &g).is_err(), "rename");
+        assert!(m.fs.sync_dir(&m.dir()).is_err(), "sync dir");
+        assert!(m.fs.remove(&f).is_err(), "remove");
+        assert!(
+            m.fs.create_dir_all(&m.dir().join("d")).is_err(),
+            "create dir"
         );
-        fs.crash();
-        fs.write_new(&g, b"x").expect("works again after the crash");
+        assert!(!m.dir().join("d").exists(), "not made on disk either");
+        assert_eq!(m.fs.log().len(), ops, "nothing changed");
+        assert_eq!(m.fs.read(&f).expect("reads still work"), b"data");
+        m.fs.crash();
+        m.fs.write_new(&g, b"x")
+            .expect("works again after the crash");
     }
 }

@@ -119,6 +119,10 @@ impl Store {
             .map_err(|_| StoreError::Io)?;
         let objects = dir.join("objects");
         fs.create_dir_all(&objects).map_err(|_| StoreError::Io)?;
+        // A new directory survives a crash only once the directory that
+        // holds it is synced; without this a crash could take the objects
+        // directory, synced files and all, while the catalog keeps its rows.
+        fs.sync_dir(dir).map_err(|_| StoreError::Io)?;
         let store = Store {
             tenant,
             tenant_key,
@@ -780,7 +784,7 @@ mod tests {
 
     fn fixture() -> Fixture {
         let dir = tempfile::tempdir().expect("temp dir");
-        let fs = Arc::new(CrashFs::new());
+        let fs = Arc::new(CrashFs::new(dir.path()));
         let clock = Arc::new(ManualClock::at(datetime!(2026-10-23 12:00 UTC)));
         let master = Key::generate().expect("master key");
         let tenant_key = Key::generate().expect("tenant key");
@@ -863,6 +867,7 @@ mod tests {
     fn a_new_vcon_is_written_in_order_and_recorded() {
         let f = fixture();
         let (found, body) = vcon(UUID, "first");
+        let ops = f.fs.log().len();
         let Ok(Created::New(version)) = f.store.create(&f.caller, &found, &body) else {
             panic!("a new vCon")
         };
@@ -871,7 +876,7 @@ mod tests {
             f.store.objects.join(version.to_string()),
         );
         assert_eq!(
-            f.fs.log(),
+            f.fs.log()[ops..],
             [
                 Op::Write(tmp.clone()),
                 Op::SyncFile(tmp.clone()),
@@ -958,12 +963,13 @@ mod tests {
                 .conn()
                 .execute(sql, [found.uuid.as_bytes()])
                 .expect(sql);
+            let ops = f.fs.log().len();
             assert_eq!(
                 f.store.create(&f.caller, &found, &body),
                 Err(StoreError::Gone),
                 "{sql}"
             );
-            assert_eq!(f.fs.log(), [], "no file written");
+            assert_eq!(f.fs.log().len(), ops, "no file written");
             assert_eq!(wraps(&f.store), 0, "nothing wrapped");
             assert_eq!(audit_log(&f.store)[0]["status"], 410);
         }
@@ -980,11 +986,12 @@ mod tests {
             )
             .expect("at the limit");
         let (found, body) = vcon(UUID, "first");
+        let ops = f.fs.log().len();
         assert_eq!(
             f.store.create(&f.caller, &found, &body),
             Err(StoreError::LimitReached)
         );
-        assert_eq!(f.fs.log(), [], "no file written");
+        assert_eq!(f.fs.log().len(), ops, "no file written");
         assert_eq!(audit_log(&f.store)[0]["status"], 503);
     }
 
@@ -1695,6 +1702,16 @@ mod tests {
     }
 
     #[test]
+    fn a_new_stores_objects_directory_survives_a_crash() {
+        let f = fixture();
+        f.fs.crash();
+        assert_eq!(
+            f.fs.list(f.dir.path()).expect("list"),
+            [std::ffi::OsString::from("objects")]
+        );
+    }
+
+    #[test]
     fn opening_removes_temporary_and_orphaned_files_and_nothing_else() {
         let mut f = fixture();
         let (found, version) = stored(&f, "first");
@@ -1723,9 +1740,13 @@ mod tests {
                 .version,
             version
         );
-        assert_eq!(
-            f.fs.log().last(),
-            Some(&Op::SyncDir(objects)),
+        let log = f.fs.log();
+        let last_removal = log
+            .iter()
+            .rposition(|op| matches!(op, Op::Remove(_)))
+            .expect("files were removed");
+        assert!(
+            log[last_removal..].contains(&Op::SyncDir(objects)),
             "the removals are synced"
         );
     }
