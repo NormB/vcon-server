@@ -391,6 +391,45 @@ impl Store {
         committed
     }
 
+    /// Deletes `uuid`: one transaction marks it deleted, empties its
+    /// current version and hides every kept version, with the audit
+    /// record. Its versions stay for legal reads until they are purged.
+    /// Deleting a deleted or purged uuid succeeds again. A legal hold does
+    /// not stop a delete, only a purge.
+    pub fn delete(&self, who: &Caller, uuid: Uuid) -> Result<(), StoreError> {
+        let entry = |status| Entry {
+            actor: Actor::Key(who.key),
+            action: Action::Delete,
+            target: Some(uuid.to_string()),
+            version: None,
+            status,
+        };
+        let mut conn = self.conn();
+        let tx = immediate(&mut conn)?;
+        let outcome = match state(&tx, uuid)? {
+            State::Absent => Err(StoreError::NotFound),
+            State::Gone => Ok(()),
+            State::Live(_) => {
+                let now = nanos(self.clock.now());
+                tx.execute(
+                    "UPDATE vcon SET current = NULL, deleted_at = ?1 WHERE uuid = ?2",
+                    params![now, uuid.as_bytes()],
+                )
+                .map_err(io)?;
+                tx.execute(
+                    "UPDATE version SET hidden_at = ?1 WHERE uuid = ?2 AND hidden_at IS NULL",
+                    params![now, uuid.as_bytes()],
+                )
+                .map_err(io)?;
+                Ok(())
+            }
+        };
+        let status = if outcome.is_ok() { 204 } else { 404 };
+        self.record(&tx, &entry(status))?;
+        commit(tx)?;
+        outcome
+    }
+
     /// Seals `body` as a new version of `uuid` under a new data key, wraps
     /// that key under the tenant key, and writes the object file. Returns
     /// the version id, the wrapped key and the file's path.
@@ -635,6 +674,7 @@ mod tests {
     struct Fixture {
         _dir: tempfile::TempDir,
         fs: Arc<CrashFs>,
+        clock: Arc<ManualClock>,
         store: Store,
         caller: Caller,
     }
@@ -648,7 +688,7 @@ mod tests {
             TenantId([0x11; 16]),
             Key::generate().expect("tenant key"),
             fs.clone(),
-            clock,
+            clock.clone(),
         )
         .expect("opens");
         let caller = Caller {
@@ -657,6 +697,7 @@ mod tests {
         Fixture {
             _dir: dir,
             fs,
+            clock,
             store,
             caller,
         }
@@ -1351,5 +1392,148 @@ mod tests {
             1,
             "only the first file"
         );
+    }
+
+    fn hidden_versions(f: &Fixture) -> i64 {
+        count(
+            &f.store,
+            "SELECT count(*) FROM version WHERE hidden_at IS NOT NULL",
+        )
+    }
+
+    #[test]
+    fn a_deleted_uuid_answers_gone_and_keeps_its_versions_hidden() {
+        let f = fixture();
+        let (found, old) = stored(&f, "first");
+        let (_, newer) = vcon(UUID, "second");
+        f.clock.set(datetime!(2026-10-23 13:00 UTC));
+        let current = f
+            .store
+            .replace(&f.caller, old, &found, &newer)
+            .expect("replaced");
+        f.clock.set(datetime!(2026-10-23 14:00 UTC));
+        assert_eq!(f.store.delete(&f.caller, found.uuid), Ok(()));
+        let record = audit_log(&f.store).pop().expect("a record");
+        assert_eq!(
+            (record["action"].clone(), record["status"].clone()),
+            ("delete".into(), 204.into())
+        );
+        let hidden_at = |version: VersionId| -> i64 {
+            f.store
+                .conn()
+                .query_row(
+                    "SELECT hidden_at FROM version WHERE version = ?1",
+                    [version.0],
+                    |r| r.get(0),
+                )
+                .expect("hidden")
+        };
+        assert_eq!(
+            hidden_at(old),
+            nanos(datetime!(2026-10-23 13:00 UTC)),
+            "hidden by the replace"
+        );
+        assert_eq!(
+            hidden_at(current),
+            nanos(datetime!(2026-10-23 14:00 UTC)),
+            "hidden by the delete"
+        );
+        assert_eq!(f.store.get(&f.caller, found.uuid), Err(StoreError::Gone));
+        let (_, body) = vcon(UUID, "third");
+        assert_eq!(
+            f.store.create(&f.caller, &found, &body),
+            Err(StoreError::Gone)
+        );
+        assert_eq!(hidden_versions(&f), 2, "both versions hidden");
+        assert_eq!(
+            f.fs.list(&f.store.objects).expect("list").len(),
+            2,
+            "files kept for legal reads"
+        );
+        let (current, deleted_at): (Option<Vec<u8>>, Option<i64>) = f
+            .store
+            .conn()
+            .query_row(
+                "SELECT current, deleted_at FROM vcon WHERE uuid = ?1",
+                [found.uuid.as_bytes()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("row");
+        assert_eq!(current, None);
+        assert_eq!(deleted_at, Some(nanos(datetime!(2026-10-23 14:00 UTC))));
+    }
+
+    #[test]
+    fn deleting_a_deleted_or_purged_uuid_succeeds_again() {
+        let f = fixture();
+        let (found, _) = stored(&f, "first");
+        f.store.delete(&f.caller, found.uuid).expect("deleted");
+        assert_eq!(f.store.delete(&f.caller, found.uuid), Ok(()));
+        assert_eq!(get_entry_status(&f), 204);
+        let g = fixture();
+        g.store
+            .conn()
+            .execute(
+                "INSERT INTO tombstone (uuid, purged_at) VALUES (?1, 1)",
+                [found.uuid.as_bytes()],
+            )
+            .expect("purged");
+        assert_eq!(g.store.delete(&g.caller, found.uuid), Ok(()));
+        assert_eq!(get_entry_status(&g), 204);
+    }
+
+    #[test]
+    fn deleting_a_uuid_never_stored_is_not_found() {
+        let f = fixture();
+        let (found, _) = vcon(UUID, "first");
+        assert_eq!(
+            f.store.delete(&f.caller, found.uuid),
+            Err(StoreError::NotFound)
+        );
+        assert_eq!(get_entry_status(&f), 404);
+    }
+
+    #[test]
+    fn a_hold_does_not_stop_a_delete() {
+        let f = fixture();
+        let (found, _) = stored(&f, "first");
+        f.store
+            .conn()
+            .execute(
+                "UPDATE vcon SET hold = 1 WHERE uuid = ?1",
+                [found.uuid.as_bytes()],
+            )
+            .expect("hold");
+        assert_eq!(f.store.delete(&f.caller, found.uuid), Ok(()));
+        assert_eq!(f.store.get(&f.caller, found.uuid), Err(StoreError::Gone));
+    }
+
+    #[test]
+    fn a_delete_whose_audit_record_fails_changes_nothing() {
+        let f = fixture();
+        let (found, version) = stored(&f, "first");
+        f.store
+            .conn()
+            .execute_batch(
+                "CREATE TEMP TRIGGER no_audit BEFORE INSERT ON audit
+                 BEGIN SELECT RAISE(ABORT, 'audit fails'); END;",
+            )
+            .expect("trigger");
+        assert_eq!(
+            f.store.delete(&f.caller, found.uuid),
+            Err(StoreError::AuditFailed)
+        );
+        f.store
+            .conn()
+            .execute_batch("DROP TRIGGER no_audit")
+            .expect("drop trigger");
+        assert_eq!(
+            f.store
+                .get(&f.caller, found.uuid)
+                .expect("still live")
+                .version,
+            version
+        );
+        assert_eq!(hidden_versions(&f), 0);
     }
 }
