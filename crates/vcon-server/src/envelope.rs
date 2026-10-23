@@ -1,8 +1,12 @@
 //! Keys and the encryption that protects every stored body.
 
-use std::io;
+use std::fmt;
+use std::fs::File;
+use std::io::{self, Read};
+use std::path::Path;
 
 use aws_lc_rs::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
+use aws_lc_rs::digest::{SHA256, digest};
 use uuid::Uuid;
 
 use crate::ids::{TenantId, VersionId};
@@ -41,8 +45,45 @@ impl Key {
         Ok(Key { page })
     }
 
+    /// Loads the master key: the file must hold exactly 32 bytes. They are
+    /// read straight into the key's own locked page.
+    pub fn load_master(path: &Path) -> Result<Key, KeyError> {
+        let mut page = LockedPage::new().map_err(KeyError::Memory)?;
+        let mut file = File::open(path).map_err(KeyError::Read)?;
+        let buf = page.bytes_mut();
+        file.read_exact(&mut buf[..KEY_LEN])
+            .map_err(|e| match e.kind() {
+                io::ErrorKind::UnexpectedEof => KeyError::WrongSize,
+                _ => KeyError::Read(e),
+            })?;
+        if file
+            .read(&mut buf[KEY_LEN..=KEY_LEN])
+            .map_err(KeyError::Read)?
+            != 0
+        {
+            return Err(KeyError::WrongSize);
+        }
+        Ok(Key { page })
+    }
+
+    /// The key's id: the first 8 bytes of its SHA-256 hash.
+    pub fn id(&self) -> KeyId {
+        let hash = digest(&SHA256, self.bytes());
+        KeyId(hash.as_ref()[..8].try_into().expect("SHA-256 is 32 bytes"))
+    }
+
     fn bytes(&self) -> &[u8] {
         &self.page.bytes()[..KEY_LEN]
+    }
+}
+
+/// Names a key without revealing it. It is written as 16 hex digits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KeyId([u8; 8]);
+
+impl fmt::Display for KeyId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.iter().try_for_each(|b| write!(f, "{b:02x}"))
     }
 }
 
@@ -51,6 +92,10 @@ impl Key {
 pub enum KeyError {
     /// The key's memory could not be locked or kept out of core dumps.
     Memory(io::Error),
+    /// The master key file could not be opened or read.
+    Read(io::Error),
+    /// The master key file does not hold exactly 32 bytes.
+    WrongSize,
     /// A wrapped key did not open. Like [`OpenError`], it does not say which
     /// part was wrong.
     Damaged,
