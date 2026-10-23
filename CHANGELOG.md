@@ -13,3 +13,5 @@ All notable changes to this project are recorded here. The format follows
 - Licence files (MIT OR Apache-2.0), README and this changelog.
 - Git hooks: fmt, clippy and tests on the staged tree, and refusal of personal
   data and AI-tool attribution in changes and commit messages.
+- Pre-push hook: every outgoing commit must be signed by an allowed signer and
+  carry the pusher's configured identity.

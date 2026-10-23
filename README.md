@@ -25,9 +25,12 @@ git config core.hooksPath .githooks
 
 Before each commit they run `cargo fmt --check`, `cargo clippy -D warnings`
 and `cargo test` on exactly what is staged. They refuse personal data and
-AI-tool attribution in staged changes and commit messages. Test data uses
+AI-tool attribution in staged changes and commit messages. Before each push,
+every outgoing commit must carry a good signature from an allowed signer and
+the pusher's own configured name and email. Test data uses
 reserved values only: `example.com` addresses, 555-01xx numbers, and RFC 5737
-and RFC 3849 IP addresses. `scripts/test-hooks.sh` tests the hooks themselves.
+and RFC 3849 IP addresses. `scripts/test-hooks.sh` and `scripts/test-pre-push.sh` test the hooks
+themselves.
 
 ## License
 
