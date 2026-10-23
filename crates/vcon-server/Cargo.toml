@@ -11,8 +11,11 @@ publish.workspace = true
 aws-lc-rs = "1.18.2"
 libc = "0.2.191"
 rusqlite = { version = "0.40.2", features = ["bundled-sqlcipher-vendored-openssl"] }
+serde_json = "1.0.154"
+time = { version = "0.3.55", features = ["formatting"] }
 uuid = "1.29.0"
 zeroize = "1.9.1"
 
 [dev-dependencies]
 tempfile = "3.27.0"
+time = { version = "0.3.55", features = ["macros"] }
