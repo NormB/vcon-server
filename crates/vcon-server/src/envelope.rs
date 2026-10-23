@@ -212,6 +212,14 @@ pub fn unwrap(wrapping: &Key, ctx: &Context, wrapped: &[u8]) -> Result<Key, KeyE
     }
 }
 
+/// Moves a wrapped key from `old` to `new`, keeping its context: the
+/// rotation step. The plain key exists only in its own locked page in
+/// between, and what it protects is never re-encrypted.
+pub fn rewrap(old: &Key, new: &Key, ctx: &Context, wrapped: &[u8]) -> Result<Vec<u8>, KeyError> {
+    let key = unwrap(old, ctx, wrapped)?;
+    Ok(wrap(new, ctx, &key))
+}
+
 /// Decrypts `blob` into the start of `out` and returns the plaintext's
 /// length. `out` must hold the blob's ciphertext and tag.
 fn open_into(key: &[u8], ctx: &Context, blob: &[u8], out: &mut [u8]) -> Result<usize, OpenError> {
@@ -637,5 +645,36 @@ mod tests {
         hkdf_sha256(&[], parent.bytes(), b"label a", &mut a);
         hkdf_sha256(&[], parent.bytes(), b"label b", &mut b);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn a_rewrapped_key_opens_under_the_new_key_only() {
+        let old = Key::generate().expect("key");
+        let new = Key::generate().expect("key");
+        let key = Key::generate().expect("key");
+        let wrapped = wrap(&old, &version_ctx(), &key);
+        let rewrapped = rewrap(&old, &new, &version_ctx(), &wrapped).expect("rewraps");
+        let opened = unwrap(&new, &version_ctx(), &rewrapped).expect("opens under new");
+        assert_eq!(opened.bytes(), key.bytes());
+        assert!(unwrap(&old, &version_ctx(), &rewrapped).is_err(), "old key");
+        assert!(
+            unwrap(&new, &TENANT_CTX, &rewrapped).is_err(),
+            "context kept"
+        );
+    }
+
+    #[test]
+    fn rewrapping_needs_the_right_old_key_and_context() {
+        let old = Key::generate().expect("key");
+        let new = Key::generate().expect("key");
+        let wrapped = wrap(&old, &TENANT_CTX, &Key::generate().expect("key"));
+        assert!(matches!(
+            rewrap(&new, &new, &TENANT_CTX, &wrapped),
+            Err(KeyError::Damaged)
+        ));
+        assert!(matches!(
+            rewrap(&old, &new, &version_ctx(), &wrapped),
+            Err(KeyError::Damaged)
+        ));
     }
 }
