@@ -6,6 +6,8 @@ mod form;
 #[allow(dead_code)]
 mod gzip;
 #[allow(dead_code)]
+mod identity;
+#[allow(dead_code)]
 mod json;
 
 /// The name of this crate.
@@ -37,4 +39,10 @@ pub enum Rejection {
     AmbiguousForm,
     /// The body has the members of no form.
     NoForm,
+    /// The vCon has no uuid.
+    MissingUuid,
+    /// The uuid is not a string in RFC 9562 text form.
+    BadUuid,
+    /// The vCon has no created_at.
+    MissingCreatedAt,
 }
