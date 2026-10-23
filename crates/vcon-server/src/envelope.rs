@@ -9,6 +9,7 @@ use aws_lc_rs::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
 use aws_lc_rs::digest::{SHA256, digest};
 use aws_lc_rs::hkdf::{HKDF_SHA256, KeyType, Salt};
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 use crate::ids::{TenantId, VersionId};
 
@@ -78,6 +79,21 @@ impl Key {
 
     fn bytes(&self) -> &[u8] {
         &self.page.bytes()[..KEY_LEN]
+    }
+
+    /// The key as SQLCipher's raw key literal, `x'` and 64 hex digits and
+    /// `'`, in a buffer that is zeroed when dropped. It is built at its
+    /// final size, so no shorter copy is left behind by a reallocation.
+    pub(crate) fn sqlcipher_raw(&self) -> Zeroizing<String> {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut literal = Zeroizing::new(String::with_capacity(3 + 2 * KEY_LEN));
+        literal.push_str("x'");
+        for byte in self.bytes() {
+            literal.push(char::from(HEX[usize::from(byte >> 4)]));
+            literal.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+        literal.push('\'');
+        literal
     }
 }
 
@@ -731,5 +747,16 @@ mod tests {
         for (wraps, expected) in cases {
             assert_eq!(wrap_limit(wraps), expected, "{wraps} wraps");
         }
+    }
+
+    #[test]
+    fn the_sqlcipher_literal_spells_the_key_in_hex() {
+        let mut bytes = [0; KEY_LEN];
+        bytes[0] = 0x0a;
+        bytes[31] = 0xff;
+        let literal = key_of(bytes).sqlcipher_raw();
+        let expected = format!("x'0a{}ff'", "00".repeat(30));
+        assert_eq!(*literal, expected);
+        assert_eq!(literal.capacity(), literal.len(), "built at its final size");
     }
 }

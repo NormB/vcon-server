@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 aws-lc-rs = "1.18.2"
 libc = "0.2.191"
+rusqlite = { version = "0.40.2", features = ["bundled-sqlcipher-vendored-openssl"] }
 uuid = "1.29.0"
 zeroize = "1.9.1"
 
