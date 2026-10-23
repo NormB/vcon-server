@@ -27,6 +27,12 @@ pub struct Limits {
     pub inflated: u64,
 }
 
+/// Reads a uuid written in RFC 9562 text form, 8-4-4-4-12 hex digits in
+/// either case, as a vCon's uuid must be; no other spelling is taken.
+pub fn parse_uuid(text: &str) -> Option<Uuid> {
+    identity::parse_uuid_text(text).ok()
+}
+
 /// What a received vCon is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Inspection {

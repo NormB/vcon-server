@@ -10,13 +10,13 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::Body;
 use axum::body::Bytes;
-use axum::extract::State;
+use axum::extract::{Path as UriPath, State};
 use axum::http::header::{
     AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, ETAG, LOCATION, WWW_AUTHENTICATE,
 };
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use http_body_util::LengthLimitError;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
@@ -30,7 +30,7 @@ use tokio_rustls::TlsAcceptor;
 use crate::access::{self, AuthError, Caller, Scope};
 use crate::audit::{Action, Actor, Entry};
 use crate::ids::TenantId;
-use crate::ids::VersionId;
+use crate::ids::{KeyId, VersionId};
 use crate::store::{Caller as StoreCaller, Created, Store, StoreError};
 use crate::tenants::Tenants;
 use vcon_form::Rejection;
@@ -56,7 +56,10 @@ pub struct App {
 
 /// The routes, served from `app`.
 pub fn router(app: Arc<App>) -> Router {
-    Router::new().route("/vcons", post(create)).with_state(app)
+    Router::new()
+        .route("/vcons", post(create))
+        .route("/vcons/{uuid}", get(read))
+        .with_state(app)
 }
 
 /// `POST /vcons`: stores a new vCon, or answers 200 when the same bytes
@@ -69,13 +72,7 @@ async fn create(State(app): State<Arc<App>>, headers: HeaderMap, body: Body) -> 
         Ok(admitted) => admitted,
         Err(refused) => return refused.into_response(),
     };
-    let entry = |refused: Problem| Entry {
-        actor: Actor::Key(admitted.caller.key),
-        action: Action::Create,
-        target: None,
-        version: None,
-        status: refused.status().as_u16(),
-    };
+    let entry = |refused| refusal(admitted.caller.key, Action::Create, refused);
     if !content_type.as_deref().is_none_or(is_vcon_media_type) {
         let refused = Problem::UnsupportedMediaType;
         let tenant = Some(admitted.tenant);
@@ -120,6 +117,59 @@ async fn create(State(app): State<Arc<App>>, headers: HeaderMap, body: Body) -> 
             .refuse(Some(admitted.tenant), entry(refused), refused)
             .await
             .into_response(),
+    }
+}
+
+/// `GET /vcons/{uuid}`: the current version, as stored.
+async fn read(
+    State(app): State<Arc<App>>,
+    UriPath(uuid): UriPath<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let admitted = match admit(&app, &headers, body, Scope::Read, Action::Read).await {
+        Ok(admitted) => admitted,
+        Err(refused) => return refused.into_response(),
+    };
+    let Some(uuid) = vcon_form::parse_uuid(&uuid) else {
+        let refused = Problem::BadPathUuid;
+        let entry = refusal(admitted.caller.key, Action::Read, refused);
+        return app
+            .refuse(Some(admitted.tenant), entry, refused)
+            .await
+            .into_response();
+    };
+    let (store, key) = (admitted.store.clone(), admitted.caller.key);
+    match blocking(move || store.get(&StoreCaller { key }, uuid)).await {
+        Ok(stored) => {
+            let content_type = if stored.gzip {
+                "application/vcon+gzip"
+            } else {
+                "application/vcon"
+            };
+            (
+                StatusCode::OK,
+                [
+                    (CONTENT_TYPE, content_type.to_owned()),
+                    (ETAG, entity_tag(stored.version)),
+                ],
+                stored.body,
+            )
+                .into_response()
+        }
+        // Store records its own outcomes.
+        Err(error) => failed(error).into_response(),
+    }
+}
+
+/// The audit record of a request refused before Store saw it.
+fn refusal(key: KeyId, action: Action, refused: Problem) -> Entry {
+    Entry {
+        actor: Actor::Key(key),
+        action,
+        target: None,
+        version: None,
+        status: refused.status().as_u16(),
     }
 }
 
@@ -171,13 +221,7 @@ async fn admit(
             AuthError::Io => Problem::Unavailable,
             _ => Problem::Unauthorized,
         })?;
-    let entry = |status: Problem| Entry {
-        actor: Actor::Key(caller.key),
-        action,
-        target: None,
-        version: None,
-        status: status.status().as_u16(),
-    };
+    let entry = |refused| refusal(caller.key, action, refused);
     let Ok(tenant) = access::tenant_for(&caller, scope) else {
         let refused = Problem::Forbidden;
         return Err(app.refuse(caller.tenant, entry(refused), refused).await);
@@ -256,6 +300,8 @@ enum Problem {
     Unavailable,
     AuditFailed,
     UnsupportedMediaType,
+    /// A uuid in the path is not in RFC 9562 text form.
+    BadPathUuid,
     /// Format refused the body.
     Invalid(Invalid),
     /// Store refused or failed the request.
@@ -312,7 +358,7 @@ impl Problem {
             Problem::Forbidden => StatusCode::FORBIDDEN,
             Problem::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Problem::Timeout => StatusCode::REQUEST_TIMEOUT,
-            Problem::BadBody => StatusCode::BAD_REQUEST,
+            Problem::BadBody | Problem::BadPathUuid => StatusCode::BAD_REQUEST,
             Problem::Unavailable | Problem::AuditFailed => StatusCode::SERVICE_UNAVAILABLE,
             Problem::UnsupportedMediaType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             Problem::Invalid(_) => StatusCode::UNPROCESSABLE_ENTITY,
@@ -339,6 +385,10 @@ impl Problem {
             Problem::TooLarge => ("too-large", "The body is over the size limit"),
             Problem::Timeout => ("timeout", "The body did not arrive in time"),
             Problem::BadBody => ("bad-body", "The body could not be read"),
+            Problem::BadPathUuid => (
+                "bad-path-uuid",
+                "The path's uuid is not in RFC 9562 text form",
+            ),
             Problem::Unavailable => ("unavailable", "The service cannot answer now"),
             Problem::AuditFailed => ("audit-failed", "The audit record could not be written"),
             Problem::UnsupportedMediaType => {
@@ -653,6 +703,10 @@ mod tests {
         }
 
         impl Server {
+            pub(super) fn dir(&self) -> &std::path::Path {
+                self._dir.path()
+            }
+
             pub(super) fn url(&self, path: &str) -> String {
                 format!("https://localhost:{}{path}", self.addr.port())
             }
@@ -1160,6 +1214,209 @@ mod tests {
             let answer = post(&s, &writer, None, body).await;
             assert_eq!(answer.status(), 503);
             assert_eq!(problem(answer).await, "audit-failed");
+        }
+    }
+
+    mod reads {
+        use super::pipeline::{Server, problem, server};
+        use crate::access::{Scope, Scopes};
+        use crate::audit::Actor;
+        use crate::ids::TenantId;
+
+        const UUID: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bc46";
+
+        fn fixture(name: &str) -> Vec<u8> {
+            let path = format!(
+                "{}/../vcon-form/tests/fixtures/ietf/{name}",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
+        }
+
+        fn gzip(body: &[u8]) -> Vec<u8> {
+            use std::io::Write;
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            encoder.write_all(body).expect("gzip");
+            encoder.finish().expect("gzip")
+        }
+
+        /// A key of this tenant's with these scopes.
+        fn key_in(s: &Server, tenant: TenantId, scopes: &[Scope]) -> String {
+            s.tenants
+                .create_key(Actor::Cli, Some(tenant), Scopes::of(scopes), "test")
+                .expect("a key")
+                .token
+        }
+
+        async fn get(s: &Server, token: &str, uuid: &str) -> reqwest::Response {
+            s.client()
+                .get(s.url(&format!("/vcons/{uuid}")))
+                .bearer_auth(token)
+                .send()
+                .await
+                .expect("an answer")
+        }
+
+        async fn post(s: &Server, token: &str, content_type: &str, body: Vec<u8>) -> String {
+            let answer = s
+                .client()
+                .post(s.url("/vcons"))
+                .bearer_auth(token)
+                .header("content-type", content_type)
+                .body(body)
+                .send()
+                .await
+                .expect("an answer");
+            assert_eq!(answer.status(), 201);
+            answer.headers()["etag"].to_str().expect("ascii").to_owned()
+        }
+
+        /// A.4, A.6 and A.7 share one uuid, so each runs in its own tenant.
+        #[tokio::test]
+        async fn the_core_examples_come_back_byte_for_byte_plain_and_gzipped() {
+            let s = server().await;
+            let files = [
+                "ab_call_ext_rec.vcon",
+                "ab_call_ext_rec_signed.vcon",
+                "ab_call_ext_rec_encrypted.vcon",
+            ];
+            for (n, file) in files.into_iter().enumerate() {
+                for gzipped in [false, true] {
+                    let tenant = s
+                        .tenants
+                        .create(Actor::Cli, &format!("t{n}{gzipped}"), None)
+                        .expect("a tenant");
+                    let token = key_in(&s, tenant, &[Scope::Write, Scope::Read]);
+                    let plain = fixture(file);
+                    let (sent, content_type) = if gzipped {
+                        (gzip(&plain), "application/vcon+gzip")
+                    } else {
+                        (plain, "application/vcon")
+                    };
+                    let tag = post(&s, &token, content_type, sent.clone()).await;
+                    let answer = get(&s, &token, UUID).await;
+                    assert_eq!(answer.status(), 200, "{file} {gzipped}");
+                    assert_eq!(answer.headers()["content-type"], content_type);
+                    assert_eq!(answer.headers()["etag"], tag.as_str());
+                    assert!(answer.headers().get("content-encoding").is_none());
+                    let got = answer.bytes().await.expect("body");
+                    assert_eq!(got.as_ref(), sent.as_slice(), "{file} {gzipped}");
+                }
+            }
+        }
+
+        #[tokio::test]
+        async fn a_uuid_is_found_in_either_case() {
+            let s = server().await;
+            let token = key_in(&s, s.tenant, &[Scope::Write, Scope::Read]);
+            post(
+                &s,
+                &token,
+                "application/vcon",
+                fixture("ab_call_ext_rec.vcon"),
+            )
+            .await;
+            let answer = get(&s, &token, &UUID.to_uppercase()).await;
+            assert_eq!(answer.status(), 200);
+        }
+
+        #[tokio::test]
+        async fn a_uuid_never_stored_is_not_found_and_a_deleted_one_is_gone() {
+            let s = server().await;
+            let token = key_in(&s, s.tenant, &[Scope::Write, Scope::Read]);
+            let answer = get(&s, &token, UUID).await;
+            assert_eq!(answer.status(), 404);
+            assert_eq!(problem(answer).await, "not-found");
+            post(
+                &s,
+                &token,
+                "application/vcon",
+                fixture("ab_call_ext_rec.vcon"),
+            )
+            .await;
+            s.tenants
+                .store(s.tenant)
+                .expect("its store")
+                .delete(
+                    &crate::store::Caller {
+                        key: crate::ids::KeyId([9; 8]),
+                    },
+                    UUID.parse().expect("uuid"),
+                )
+                .expect("deleted");
+            let answer = get(&s, &token, UUID).await;
+            assert_eq!(answer.status(), 410);
+            assert_eq!(problem(answer).await, "gone");
+        }
+
+        #[tokio::test]
+        async fn a_path_uuid_not_in_text_form_is_a_bad_request_and_recorded() {
+            let s = server().await;
+            let token = key_in(&s, s.tenant, &[Scope::Read]);
+            let simple = UUID.replace('-', "");
+            for bad in [
+                "not-a-uuid".to_owned(),
+                simple.clone(),
+                format!("%7B{UUID}%7D"),
+                format!("urn:uuid:{UUID}"),
+                format!("{UUID}0"),
+            ] {
+                let answer = get(&s, &token, &bad).await;
+                assert_eq!(answer.status(), 400, "{bad}");
+                assert_eq!(problem(answer).await, "bad-path-uuid");
+            }
+            let refused = s.tenant_log("read");
+            assert_eq!(refused.len(), 5);
+            assert_eq!(refused[0]["status"], 400);
+        }
+
+        #[tokio::test]
+        async fn a_key_without_read_is_forbidden() {
+            let s = server().await;
+            let token = key_in(&s, s.tenant, &[Scope::Write]);
+            let answer = get(&s, &token, UUID).await;
+            assert_eq!(answer.status(), 403);
+        }
+
+        #[tokio::test]
+        async fn a_read_whose_record_fails_sends_nothing() {
+            let s = server().await;
+            let token = key_in(&s, s.tenant, &[Scope::Write, Scope::Read]);
+            post(
+                &s,
+                &token,
+                "application/vcon",
+                fixture("ab_call_ext_rec.vcon"),
+            )
+            .await;
+            s.tenants.store(s.tenant).expect("its store").break_audit();
+            let answer = get(&s, &token, UUID).await;
+            assert_eq!(answer.status(), 503);
+            assert_eq!(problem(answer).await, "audit-failed");
+        }
+
+        #[tokio::test]
+        async fn a_version_whose_file_is_missing_is_damaged() {
+            let s = server().await;
+            let token = key_in(&s, s.tenant, &[Scope::Write, Scope::Read]);
+            let tag = post(
+                &s,
+                &token,
+                "application/vcon",
+                fixture("ab_call_ext_rec.vcon"),
+            )
+            .await;
+            let object = s
+                .dir()
+                .join("tenants")
+                .join(s.tenant.to_string())
+                .join("objects")
+                .join(tag.trim_matches('"'));
+            std::fs::remove_file(&object).expect("remove the object file");
+            let answer = get(&s, &token, UUID).await;
+            assert_eq!(answer.status(), 500);
+            assert_eq!(problem(answer).await, "damaged");
         }
     }
 }
