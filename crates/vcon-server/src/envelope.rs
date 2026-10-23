@@ -105,6 +105,19 @@ pub enum KeyError {
     Damaged,
 }
 
+/// Locks every page of this process in memory, now and as it grows, so
+/// nothing it holds can reach swap: not AWS-LC's expanded keys, which live
+/// in its own allocations for the length of one call, and not plaintext
+/// bodies. It fails if the lock limit is too low; the operator then raises
+/// it (for example LimitMEMLOCK=infinity under systemd).
+pub fn lock_all_memory() -> io::Result<()> {
+    // SAFETY: mlockall takes only flags.
+    if unsafe { libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 /// Stops this process from writing core dumps: the core size limit is set
 /// to zero and the process is marked not dumpable, which also stops other
 /// processes of the same user from reading its memory. Neither is enough on
