@@ -22,6 +22,8 @@ use crate::store::Store;
 mod keys;
 
 pub use keys::{KeyInfo, NewKey};
+#[cfg(test)]
+pub(crate) use tests::{Fixture, fixture};
 
 /// The tables of server.sqlite, besides the admin audit log. A key column
 /// says NOT NULL because SQLite lets a PRIMARY KEY other than an INTEGER
@@ -658,12 +660,12 @@ mod tests {
         }
     }
 
-    pub(super) struct Fixture {
-        pub(super) dir: tempfile::TempDir,
-        pub(super) fs: Arc<CrashFs>,
-        pub(super) clock: Arc<ManualClock>,
+    pub(crate) struct Fixture {
+        pub(crate) dir: tempfile::TempDir,
+        pub(crate) fs: Arc<CrashFs>,
+        pub(crate) clock: Arc<ManualClock>,
         master: Master,
-        pub(super) tenants: Tenants,
+        pub(crate) tenants: Tenants,
     }
 
     impl Fixture {
@@ -684,7 +686,7 @@ mod tests {
             drop(std::mem::replace(&mut self.tenants, tenants));
         }
 
-        pub(super) fn conn(&self) -> MutexGuard<'_, Connection> {
+        pub(crate) fn conn(&self) -> MutexGuard<'_, Connection> {
             self.tenants.conn()
         }
 
@@ -755,7 +757,7 @@ mod tests {
         }
     }
 
-    pub(super) fn fixture() -> Fixture {
+    pub(crate) fn fixture() -> Fixture {
         let dir = tempfile::tempdir().expect("temp dir");
         let fs = Arc::new(CrashFs::new(dir.path()));
         let clock = Arc::new(ManualClock::at(datetime!(2026-10-23 12:00 UTC)));

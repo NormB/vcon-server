@@ -29,7 +29,49 @@ pub struct NewKey {
     pub token: String,
 }
 
+/// A key as `access` checks it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StoredKey {
+    pub(crate) hash: Vec<u8>,
+    pub(crate) tenant: Option<TenantId>,
+    pub(crate) scopes: Scopes,
+    pub(crate) revoked: bool,
+}
+
 impl Tenants {
+    /// The key with this id, read afresh on every call, so a revocation
+    /// counts from the next request. Nothing is recorded here; `access`
+    /// records the outcome.
+    pub(crate) fn stored_key(&self, id: KeyId) -> Result<Option<StoredKey>, TenantError> {
+        let row = self
+            .conn()
+            .query_row(
+                "SELECT token_hash, tenant, scopes, revoked_at IS NOT NULL
+                 FROM api_key WHERE id = ?1",
+                [id.bytes()],
+                |r| {
+                    Ok((
+                        r.get::<_, Vec<u8>>(0)?,
+                        r.get::<_, Option<[u8; 16]>>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, bool>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(io)?;
+        row.map(|(hash, tenant, scopes, revoked)| {
+            Ok(StoredKey {
+                hash,
+                tenant: tenant.map(TenantId),
+                // Scopes that do not read back are damage, not none.
+                scopes: Scopes::parse(&scopes).ok_or(TenantError::Io)?,
+                revoked,
+            })
+        })
+        .transpose()
+    }
+
     /// Makes a key. A tenant key holds any of write, read, delete and
     /// legal; a key with no tenant is an operator key, holds only admin,
     /// and only the command line may make one.

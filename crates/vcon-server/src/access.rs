@@ -1,10 +1,12 @@
 //! Turns the bearer token on a request into a caller, or refuses it.
 
+use aws_lc_rs::constant_time;
 use aws_lc_rs::digest::{SHA256, digest};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
-use crate::ids::KeyId;
+use crate::ids::{KeyId, TenantId};
+use crate::tenants::Tenants;
 
 /// The fixed start of every token, so secret scanners can spot a leaked
 /// one.
@@ -108,11 +110,62 @@ pub(crate) fn token_hash(token: &str) -> [u8; 32] {
         .expect("SHA-256 is 32 bytes")
 }
 
+/// Who a request comes from: a tenant's key, or with no tenant the
+/// operator's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Caller {
+    pub key: KeyId,
+    pub tenant: Option<TenantId>,
+    pub scopes: Scopes,
+}
+
 /// Why a request's token was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthError {
-    /// Not a token as `Token` writes one.
+    /// No Authorization header.
+    Missing,
+    /// Not `Bearer` and a token as `new_token` writes one.
     Malformed,
+    /// No key has this id, or the secret is not its own.
+    Unknown,
+    /// The key was revoked.
+    Revoked,
+    /// The key table could not be read, so nothing is let through.
+    Io,
+}
+
+/// The caller a request's Authorization header names. The key is looked up
+/// on every call, with no cache, so a revoked key fails on its next
+/// request.
+pub fn authenticate(keys: &Tenants, authorization: Option<&str>) -> Result<Caller, AuthError> {
+    let header = authorization.ok_or(AuthError::Missing)?;
+    let token = bearer(header).ok_or(AuthError::Malformed)?;
+    let id = parse(token)?;
+    let key = keys
+        .stored_key(id)
+        .map_err(|_| AuthError::Io)?
+        .ok_or(AuthError::Unknown)?;
+    // The secret is checked before revocation, so a wrong secret learns
+    // nothing about the key.
+    constant_time::verify_slices_are_equal(&token_hash(token), &key.hash)
+        .map_err(|_| AuthError::Unknown)?;
+    if key.revoked {
+        return Err(AuthError::Revoked);
+    }
+    Ok(Caller {
+        key: id,
+        tenant: key.tenant,
+        scopes: key.scopes,
+    })
+}
+
+/// The token in `Bearer <token>`. The scheme's case does not matter, and
+/// one or more spaces may follow it (RFC 7235).
+fn bearer(header: &str) -> Option<&str> {
+    let (scheme, rest) = header.split_once(' ')?;
+    scheme
+        .eq_ignore_ascii_case("Bearer")
+        .then(|| rest.trim_start_matches(' '))
 }
 
 /// Reads a token written as `vcs_<key id>_<secret>`: the key id is 16
@@ -257,5 +310,129 @@ mod tests {
                 .collect::<String>(),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    mod authenticate {
+        use super::*;
+        use crate::audit::Actor;
+        use crate::tenants::{Fixture, NewKey, fixture};
+
+        fn vcon_scopes() -> Scopes {
+            Scopes::of(&[Scope::Write, Scope::Read])
+        }
+
+        fn key(f: &Fixture) -> (TenantId, NewKey) {
+            let t = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+            let key = f
+                .tenants
+                .create_key(Actor::Cli, Some(t), vcon_scopes(), "x")
+                .expect("made");
+            (t, key)
+        }
+
+        fn auth(f: &Fixture, header: &str) -> Result<Caller, AuthError> {
+            authenticate(&f.tenants, Some(header))
+        }
+
+        #[test]
+        fn a_valid_token_names_its_caller() {
+            let f = fixture();
+            let (t, key) = key(&f);
+            let caller = Caller {
+                key: key.id,
+                tenant: Some(t),
+                scopes: vcon_scopes(),
+            };
+            for header in [
+                format!("Bearer {}", key.token),
+                format!("bearer {}", key.token),
+                format!("BEARER   {}", key.token),
+            ] {
+                assert_eq!(auth(&f, &header), Ok(caller), "{header}");
+            }
+            let operator = f
+                .tenants
+                .create_key(Actor::Cli, None, Scopes::of(&[Scope::Admin]), "op")
+                .expect("made");
+            assert_eq!(
+                auth(&f, &format!("Bearer {}", operator.token)),
+                Ok(Caller {
+                    key: operator.id,
+                    tenant: None,
+                    scopes: Scopes::of(&[Scope::Admin]),
+                })
+            );
+        }
+
+        #[test]
+        fn a_missing_or_malformed_header_is_refused() {
+            let f = fixture();
+            let (_, key) = key(&f);
+            assert_eq!(authenticate(&f.tenants, None), Err(AuthError::Missing));
+            for header in [
+                String::new(),
+                "Bearer".to_owned(),
+                "Bearer ".to_owned(),
+                format!("Bearer{}", key.token),
+                format!("Basic {}", key.token),
+                format!("Bearers {}", key.token),
+                format!("Bearer {} ", key.token),
+                format!("Bearer\t{}", key.token),
+                "Bearer vcs_0123456789abcdef_short".to_owned(),
+            ] {
+                assert_eq!(auth(&f, &header), Err(AuthError::Malformed), "{header:?}");
+            }
+        }
+
+        #[test]
+        fn an_unknown_key_or_a_wrong_secret_is_unknown() {
+            let f = fixture();
+            let (_, key) = key(&f);
+            let (_, stranger) = new_token();
+            assert_eq!(
+                auth(&f, &format!("Bearer {stranger}")),
+                Err(AuthError::Unknown)
+            );
+            let (_, other) = new_token();
+            let forged = format!("{}{}", &key.token[..21], &other[21..]);
+            assert_eq!(
+                auth(&f, &format!("Bearer {forged}")),
+                Err(AuthError::Unknown)
+            );
+            f.tenants.revoke_key(Actor::Cli, key.id).expect("revoked");
+            assert_eq!(
+                auth(&f, &format!("Bearer {forged}")),
+                Err(AuthError::Unknown),
+                "a wrong secret learns nothing about revocation"
+            );
+        }
+
+        #[test]
+        fn a_revoked_key_is_refused_on_its_next_call() {
+            let f = fixture();
+            let (_, key) = key(&f);
+            let header = format!("Bearer {}", key.token);
+            assert!(auth(&f, &header).is_ok());
+            f.tenants.revoke_key(Actor::Cli, key.id).expect("revoked");
+            assert_eq!(auth(&f, &header), Err(AuthError::Revoked));
+        }
+
+        #[test]
+        fn a_key_table_that_cannot_be_read_lets_nothing_through() {
+            let f = fixture();
+            let (_, key) = key(&f);
+            let header = format!("Bearer {}", key.token);
+            f.conn()
+                .execute(
+                    "UPDATE api_key SET scopes = 'owner' WHERE id = ?1",
+                    [key.id.bytes()],
+                )
+                .expect("damage");
+            assert_eq!(auth(&f, &header), Err(AuthError::Io), "damaged scopes");
+            f.conn()
+                .execute_batch("ALTER TABLE api_key RENAME TO gone")
+                .expect("lose the table");
+            assert_eq!(auth(&f, &header), Err(AuthError::Io), "no table");
+        }
     }
 }
