@@ -7,5 +7,6 @@ pub mod clock;
 pub mod envelope;
 pub mod fs;
 pub mod ids;
+pub mod retention;
 pub mod store;
 pub mod tenants;
