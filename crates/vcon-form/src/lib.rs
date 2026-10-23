@@ -2,6 +2,8 @@
 
 // Used by `inspect`, which a later change adds; until then only tests call them.
 #[allow(dead_code)]
+mod critical;
+#[allow(dead_code)]
 mod form;
 #[allow(dead_code)]
 mod gzip;
@@ -45,4 +47,9 @@ pub enum Rejection {
     BadUuid,
     /// The vCon has no created_at.
     MissingCreatedAt,
+    /// `critical` or `must_support` is not an array of strings.
+    BadCritical,
+    /// `critical` or `must_support` names extensions this server does not
+    /// support; they are listed in order of first appearance.
+    UnsupportedCritical(Vec<String>),
 }
