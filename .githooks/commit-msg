@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Refuses a commit message that names an AI tool, holds personal data or
+# carries private design-document ids. Comment lines are ignored, as git
+# drops them.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+if ! grep -v '^#' "$1" | sed 's/^/<commit message>\t/' | python3 -I "$root/scripts/scan_forbidden.py"; then
+  echo "commit-msg: refused (see the findings above)" >&2
+  exit 1
+fi

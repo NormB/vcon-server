@@ -15,6 +15,20 @@ cargo build --release
 cargo test --workspace
 ```
 
+## Contributing
+
+Enable the repository's git hooks once per clone:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+Before each commit they run `cargo fmt --check`, `cargo clippy -D warnings`
+and `cargo test` on exactly what is staged. They refuse personal data and
+AI-tool attribution in staged changes and commit messages. Test data uses
+reserved values only: `example.com` addresses, 555-01xx numbers, and RFC 5737
+and RFC 3849 IP addresses. `scripts/test-hooks.sh` tests the hooks themselves.
+
 ## License
 
 Licensed under either of

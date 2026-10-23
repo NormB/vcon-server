@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Refuses a commit whose staged changes name an AI tool, hold personal data,
+# carry private design-document ids or exports, or fail fmt, clippy or tests.
+# The cargo checks run on a copy of exactly what is staged.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+# Staged paths and added lines, as "<path>\t<text>".
+scan_input() {
+  git diff --cached --name-only -z --diff-filter=ACMR | while IFS= read -r -d '' p; do
+    printf '%s\t%s\n' "$p" "$p"
+  done
+  git diff --cached --no-color --no-ext-diff -U0 --diff-filter=ACMR | awk '
+    /^\+\+\+ b\// { path = substr($0, 7); next }
+    /^\+\+\+ / { path = ""; next }
+    /^\+/ && path != "" { printf "%s\t%s\n", path, substr($0, 2) }'
+}
+if ! scan_input | python3 -I scripts/scan_forbidden.py; then
+  echo "pre-commit: refused (see the findings above)" >&2
+  exit 1
+fi
+
+# No export of the private design documents, even if added with --force.
+while IFS= read -r -d '' p; do
+  case "$(basename -- "$p")" in
+    "vcon-server — "* | "ARCHIVED — "*)
+      echo "pre-commit: refused: private document export staged: $p" >&2
+      exit 1 ;;
+  esac
+done < <(git diff --cached --name-only -z --diff-filter=ACMR)
+
+scripts/check-ignored-exports.sh >/dev/null
+
+# fmt, clippy and tests on exactly what is staged.
+staged="$(mktemp -d)"
+trap 'rm -rf "$staged"' EXIT
+git checkout-index -a -f --prefix="$staged/"
+cd "$staged"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$root/target/pre-commit}"
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked --quiet -- -D warnings
+cargo test --workspace --locked --quiet

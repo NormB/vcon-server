@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# Tests the git hooks in a throwaway repository: each forbidden item, staged
+# or written in the commit message, must be refused; clean changes and the
+# reserved test values (RFC 2606 domains, 555-01xx numbers, RFC 5737 and
+# RFC 3849 addresses) must pass. Forbidden samples are assembled at run time
+# so that this file never contains them itself.
+set -euo pipefail
+src="$(git rev-parse --show-toplevel)"
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+export CARGO_TARGET_DIR="$work/target"
+
+repo="$work/repo"
+mkdir -p "$repo/src"
+cd "$repo"
+git init -q -b main
+git config user.name "Test User"
+git config user.email "test@example.com"
+git config commit.gpgsign false
+git config core.hooksPath .githooks
+cp -R "$src/.githooks" "$src/scripts" "$src/.gitignore" "$src/rust-toolchain.toml" .
+cat > Cargo.toml <<'TOML'
+[package]
+name = "hook-fixture"
+version = "0.1.0"
+edition = "2024"
+publish = false
+TOML
+cat > src/lib.rs <<'RS'
+/// Adds one.
+pub fn add_one(x: u32) -> u32 {
+    x + 1
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn adds_one() {
+        assert_eq!(super::add_one(1), 2);
+    }
+}
+RS
+cargo generate-lockfile -q
+git add -A
+git commit -q -m "Start the fixture" >"$work/first" 2>&1 || { echo "FAIL: the clean first commit was refused"; sed "s/^/    /" "$work/first"; exit 1; }
+
+pass=0
+fail=0
+n=0
+# expect <accept|refuse> <description> <file> <content> [message]
+expect() {
+  local want="$1" what="$2" file="$3" content="$4" msg="${5:-Change a file}"
+  n=$((n + 1))
+  mkdir -p "$(dirname "$file")"
+  printf '%s\n' "$content" > "$file"
+  git add -f -- "$file"
+  if git commit -q -m "$msg" >"$work/out" 2>&1; then got=accept; else got=refuse; fi
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1))
+  else
+    fail=$((fail + 1))
+    echo "FAIL ($want expected, got $got): $what"
+    sed 's/^/    /' "$work/out" | head -5
+  fi
+  git reset -q --hard HEAD
+  git clean -qfdx -e target
+}
+
+c=cl; a=an
+ai_word="${c}aude"; ai_co="${a}thropic"
+sur="br""andinger"
+robot="$(printf '\xf0\x9f\xa4\x96')"
+
+expect accept "clean change" notes.txt "plain words"
+expect refuse "AI tool named" notes.txt "written by ${ai_word^}"
+expect refuse "AI company named" notes.txt "see ${ai_co}.com"
+expect refuse "robot emoji" notes.txt "done $robot"
+expect refuse "real-looking email" notes.txt "mail someone@gm""ail.com"
+expect accept "reserved email" notes.txt "mail someone@example.com"
+expect accept "reserved .invalid email" notes.txt "mail a@host.invalid"
+expect refuse "phone number" notes.txt "call 212-867-""5309"
+expect refuse "E.164 phone" notes.txt "call +44207""9460000"
+expect accept "reserved 555-01xx" notes.txt "call 212-555-0100"
+expect refuse "public IPv4" notes.txt "host 8.8.""4.4"
+expect refuse "private IPv4" notes.txt "host 172.31.""78.11"
+expect accept "RFC 5737 IPv4" notes.txt "host 192.0.2.10"
+expect accept "loopback IPv4" notes.txt "bind 127.0.0.1"
+expect refuse "public IPv6" notes.txt "host 2606:47""00:4700:"":1111"
+expect accept "RFC 3849 IPv6" notes.txt "host 2001:db8::5"
+expect refuse "owner surname" notes.txt "by Norm ${sur^}"
+expect refuse "design rule id" notes.txt "see FMT""-3"
+expect refuse "design decision id" notes.txt "see CD""8"
+expect refuse "scope decision id" notes.txt "see D""40"
+expect refuse "plan task id" notes.txt "done P""0.3"
+expect refuse "draft number" notes.txt "from draft ""6.8"
+expect accept "ids allowed in fixtures" crates/x/tests/fixtures/a.json '{"k": "D''40 FMT''-3"}'
+expect refuse "export staged by force" "vcon-server — Notes.md" "words"
+expect refuse "AI trailer in message" notes.txt "message case one" "Fix it
+
+Co-Authored-By: ${ai_word^} <noreply@${ai_co}.com>"
+expect refuse "plan task id in message" notes.txt "message case two" "Finish P""0.3"
+expect refuse "email in message" notes.txt "message case three" "Ask someone@gm""ail.com"
+expect accept "clean message" notes.txt "message case four" "Explain the change"
+expect refuse "unformatted code" src/lib.rs "pub fn add_one(x:u32)->u32{x+1}"
+expect refuse "clippy warning" src/lib.rs '/// Adds one.
+pub fn add_one(x: u32) -> u32 {
+    let y = x;
+    return y + 1;
+}'
+expect refuse "failing test" src/lib.rs '/// Adds one.
+pub fn add_one(x: u32) -> u32 {
+    x + 2
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn adds_one() {
+        assert_eq!(super::add_one(1), 2);
+    }
+}'
+
+echo "test-hooks: $pass of $n passed"
+[ "$fail" -eq 0 ]
