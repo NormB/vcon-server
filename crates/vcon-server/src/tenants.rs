@@ -3,6 +3,7 @@
 //! from the master key, with the admin audit log beside them. Each tenant's
 //! vCons live in `tenants/<id>/`, in a Store of their own.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -42,15 +43,26 @@ CREATE TABLE master_key_use (
 /// Why a Tenants call was refused or failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TenantError {
+    /// No tenant has the id.
+    NotFound,
     /// Another tenant has the name.
     NameTaken,
     /// The master key is at its wrap limit and must be rotated.
     LimitReached,
     /// The audit record could not be written, so nothing was done.
     AuditFailed,
+    /// The tenant is being removed.
+    Closing,
     /// server.sqlite was made under another master key.
     WrongKey,
     Io,
+}
+
+/// A tenant's Store as the registry holds it.
+enum Slot {
+    Open(Arc<Store>),
+    /// Being removed: no new handle is handed out.
+    Closing,
 }
 
 /// The registry of tenants.
@@ -59,6 +71,8 @@ pub struct Tenants {
     tenants: PathBuf,
     master: Key,
     conn: Mutex<Connection>,
+    /// Each tenant's Store, once a request has opened it.
+    stores: Mutex<HashMap<TenantId, Slot>>,
     fs: Arc<dyn Fs>,
     clock: Arc<dyn Clock>,
     #[cfg(test)]
@@ -90,6 +104,7 @@ impl Tenants {
             tenants,
             master,
             conn: Mutex::new(conn),
+            stores: Mutex::new(HashMap::new()),
             fs,
             clock,
             #[cfg(test)]
@@ -226,6 +241,72 @@ impl Tenants {
         }
     }
 
+    /// The tenant's Store, shared by every request to it.
+    pub fn store(&self, id: TenantId) -> Result<Arc<Store>, TenantError> {
+        // The Store is opened under this lock, so it is opened once: a
+        // second open's recovery could remove a write's temporary file.
+        let mut stores = self.stores();
+        match stores.get(&id) {
+            Some(Slot::Open(store)) => return Ok(store.clone()),
+            Some(Slot::Closing) => return Err(TenantError::Closing),
+            None => {}
+        }
+        let wrapped: Vec<u8> = self
+            .conn()
+            .query_row(
+                "SELECT wrapped_tenant_key FROM tenant WHERE id = ?1",
+                [id.0],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(io)?
+            .ok_or(TenantError::NotFound)?;
+        let tenant_key = envelope::unwrap(&self.master, &Context::Tenant { tenant: id }, &wrapped)
+            .map_err(io)?;
+        #[cfg(test)]
+        {
+            let hook = self.hooks.opening.lock().expect("hook").take();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
+        let store = Arc::new(
+            Store::open(
+                &self.tenants.join(id.to_string()),
+                id,
+                tenant_key,
+                self.fs.clone(),
+                self.clock.clone(),
+            )
+            .map_err(io)?,
+        );
+        stores.insert(id, Slot::Open(store.clone()));
+        Ok(store)
+    }
+
+    /// Marks the tenant closing, so no new handle is handed out, and waits
+    /// until every handle given out before is dropped. Handles are plain
+    /// `Arc`s, so the wait watches the count; requests are short and
+    /// removal is rare.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "tenant removal, which drains, comes next")
+    )]
+    pub(crate) fn drain(&self, id: TenantId) {
+        let slot = self.stores().insert(id, Slot::Closing);
+        if let Some(Slot::Open(store)) = slot {
+            while Arc::strong_count(&store) > 1 {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+    }
+
+    fn stores(&self) -> MutexGuard<'_, HashMap<TenantId, Slot>> {
+        self.stores
+            .lock()
+            .expect("no thread panicked holding the stores")
+    }
+
     fn record(&self, tx: &Transaction, entry: &Entry) -> Result<(), TenantError> {
         audit::record(tx, entry, self.clock.now()).map_err(|_| TenantError::AuditFailed)
     }
@@ -284,17 +365,29 @@ mod tests {
     use time::macros::datetime;
 
     use super::*;
+    use crate::audit::testing::exported;
     use crate::catalog::testing::columns_taking_null;
     use crate::clock::ManualClock;
     use crate::fs::{CrashFs, Op};
+    use crate::store::Caller;
+    use crate::store::testing::vcon;
 
     const MARKER: &str = "plain-record-marker-8d21e4";
+    const UUID: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bc46";
+
+    fn caller() -> Caller {
+        Caller {
+            key: Key::generate().expect("key").id(),
+        }
+    }
 
     #[derive(Default)]
     pub(super) struct Hooks {
         /// Runs once, between a create's directory and catalog and the
         /// transaction that commits its row.
         pub(super) between: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+        /// Runs once, as `store` opens a tenant's Store.
+        pub(super) opening: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     }
 
     /// A master key kept wrapped, so a test can have it more than once.
@@ -367,13 +460,7 @@ mod tests {
         }
 
         fn admin_log(&self) -> Vec<Value> {
-            let mut out = Vec::new();
-            audit::export(&self.conn(), None, &mut out).expect("export");
-            String::from_utf8(out)
-                .expect("UTF-8")
-                .lines()
-                .map(|l| serde_json::from_str(l).expect("JSON"))
-                .collect()
+            exported(&self.conn(), None)
         }
 
         /// The tenant's key, unwrapped from its row.
@@ -843,5 +930,121 @@ mod tests {
             [OsString::from(kept.to_string()), OsString::from("notes")]
         );
         drop(f.store(kept));
+    }
+
+    #[test]
+    fn an_unknown_tenant_has_no_store() {
+        let f = fixture();
+        assert_eq!(
+            f.tenants.store(TenantId::generate()).err(),
+            Some(TenantError::NotFound)
+        );
+    }
+
+    #[test]
+    fn every_request_to_a_tenant_shares_one_store() {
+        let f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        let a = f.tenants.store(id).expect("a store");
+        let b = f.tenants.store(id).expect("the same store");
+        assert!(Arc::ptr_eq(&a, &b));
+        let (found, body) = vcon(UUID, "first");
+        a.create(&caller(), &found, &body).expect("stored");
+        assert_eq!(b.get(&caller(), found.uuid).expect("read").body, body);
+    }
+
+    /// The first request opens the Store; one arriving meanwhile waits for
+    /// it rather than opening a second.
+    #[test]
+    fn a_store_is_opened_once_even_by_requests_at_the_same_time() {
+        let f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        let (opening, is_opening) = std::sync::mpsc::channel();
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        *f.tenants.hooks.opening.lock().expect("hook") = Some(Box::new(move || {
+            opening.send(()).expect("send");
+            wait.recv().expect("go");
+        }));
+        // Everything the threads wait on is moved into the scope, so a
+        // failed assertion drops it and the threads end instead of hanging.
+        let tenants = &f.tenants;
+        std::thread::scope(move |s| {
+            let first = s.spawn(move || tenants.store(id).expect("the first"));
+            is_opening
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the first is opening");
+            let (second_done, second) = std::sync::mpsc::channel();
+            s.spawn(move || {
+                second_done
+                    .send(tenants.store(id).expect("the second"))
+                    .expect("send");
+            });
+            assert!(
+                second
+                    .recv_timeout(std::time::Duration::from_millis(100))
+                    .is_err(),
+                "the second waits while the first opens"
+            );
+            go.send(()).expect("go");
+            let first = first.join().expect("the first returns");
+            let second = second.recv().expect("the second returns");
+            assert!(Arc::ptr_eq(&first, &second));
+        });
+    }
+
+    #[test]
+    fn a_tenant_key_that_does_not_unwrap_opens_no_store() {
+        let f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        f.conn()
+            .execute(
+                "UPDATE tenant SET wrapped_tenant_key = x'00' WHERE id = ?1",
+                [id.0],
+            )
+            .expect("damage the wrapped key");
+        assert_eq!(f.tenants.store(id).err(), Some(TenantError::Io));
+    }
+
+    #[test]
+    fn draining_refuses_new_requests_and_waits_for_those_in_flight() {
+        let f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        let (found, body) = vcon(UUID, "first");
+        let held = f.tenants.store(id).expect("a request in flight");
+        std::thread::scope(|s| {
+            let (done, drained) = std::sync::mpsc::channel();
+            let tenants = &f.tenants;
+            s.spawn(move || {
+                tenants.drain(id);
+                done.send(()).expect("send");
+            });
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while f.tenants.store(id).is_ok() {
+                assert!(std::time::Instant::now() < deadline, "never closing");
+                std::thread::yield_now();
+            }
+            assert_eq!(f.tenants.store(id).err(), Some(TenantError::Closing));
+            assert!(
+                drained
+                    .recv_timeout(std::time::Duration::from_millis(100))
+                    .is_err(),
+                "the drain waits for the request in flight"
+            );
+            held.create(&caller(), &found, &body)
+                .expect("the request in flight finishes");
+            drop(held);
+            drained
+                .recv()
+                .expect("the drain ends once the last handle is dropped");
+        });
+        assert_eq!(f.tenants.store(id).err(), Some(TenantError::Closing));
+    }
+
+    #[test]
+    fn a_tenant_no_request_opened_drains_at_once() {
+        let f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        f.tenants.drain(id);
+        assert_eq!(f.tenants.store(id).err(), Some(TenantError::Closing));
     }
 }

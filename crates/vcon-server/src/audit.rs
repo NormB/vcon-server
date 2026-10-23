@@ -211,11 +211,30 @@ pub fn export(log: &Connection, since: Option<i64>, out: &mut dyn Write) -> Resu
     Ok(())
 }
 
+/// Reading a log back, for tests.
+#[cfg(test)]
+pub(crate) mod testing {
+    use rusqlite::Connection;
+    use serde_json::Value;
+
+    /// The records `export` writes after `since`, parsed.
+    pub(crate) fn exported(log: &Connection, since: Option<i64>) -> Vec<Value> {
+        let mut out = Vec::new();
+        super::export(log, since, &mut out).expect("export");
+        String::from_utf8(out)
+            .expect("UTF-8")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("one JSON object per line"))
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};
     use time::macros::datetime;
 
+    use super::testing::exported;
     use super::*;
     use crate::catalog;
     use crate::envelope::Key;
@@ -230,16 +249,6 @@ mod tests {
         let key = Key::generate().expect("key");
         let conn = catalog::open(&dir.path().join("catalog.sqlite"), &key, SCHEMA).expect("opens");
         Log { _dir: dir, conn }
-    }
-
-    fn exported(conn: &Connection, since: Option<i64>) -> Vec<Value> {
-        let mut out = Vec::new();
-        export(conn, since, &mut out).expect("export");
-        String::from_utf8(out)
-            .expect("UTF-8")
-            .lines()
-            .map(|line| serde_json::from_str(line).expect("one JSON object per line"))
-            .collect()
     }
 
     fn read_by(key: KeyId, status: u16) -> Entry {

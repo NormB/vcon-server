@@ -718,15 +718,37 @@ fn form_name(form: vcon_form::Form) -> &'static str {
     }
 }
 
+/// Stored vCons, for tests.
+#[cfg(test)]
+pub(crate) mod testing {
+    use std::collections::BTreeSet;
+
+    use vcon_form::{Form, Inspection, Limits, inspect};
+
+    /// An unsigned vCon with this uuid, and what `inspect` makes of it.
+    pub(crate) fn vcon(uuid: &str, subject: &str) -> (Inspection, Vec<u8>) {
+        let body = format!(
+            r#"{{"uuid": "{uuid}", "created_at": "2026-10-23T12:00:00Z", "subject": "{subject}", "parties": []}}"#
+        )
+        .into_bytes();
+        let found = inspect(&body, None, &Limits { inflated: 1 << 20 }, &BTreeSet::new())
+            .expect("a valid vCon");
+        assert_eq!(found.form, Form::Unsigned);
+        (found, body)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
 
     use serde_json::Value;
     use time::macros::datetime;
-    use vcon_form::{Form, Limits, inspect};
+    use vcon_form::{Limits, inspect};
 
+    use super::testing::vcon;
     use super::*;
+    use crate::audit::testing::exported;
     use crate::catalog::testing::columns_taking_null;
     use crate::clock::ManualClock;
     use crate::fs::{CrashFs, Op};
@@ -800,26 +822,8 @@ mod tests {
         }
     }
 
-    /// An unsigned vCon with this uuid, and what `inspect` makes of it.
-    fn vcon(uuid: &str, subject: &str) -> (Inspection, Vec<u8>) {
-        let body = format!(
-            r#"{{"uuid": "{uuid}", "created_at": "2026-10-23T12:00:00Z", "subject": "{subject}", "parties": []}}"#
-        )
-        .into_bytes();
-        let found = inspect(&body, None, &Limits { inflated: 1 << 20 }, &BTreeSet::new())
-            .expect("a valid vCon");
-        assert_eq!(found.form, Form::Unsigned);
-        (found, body)
-    }
-
     fn audit_log(store: &Store) -> Vec<Value> {
-        let mut out = Vec::new();
-        audit::export(&store.conn(), None, &mut out).expect("export");
-        String::from_utf8(out)
-            .expect("UTF-8")
-            .lines()
-            .map(|l| serde_json::from_str(l).expect("JSON"))
-            .collect()
+        exported(&store.conn(), None)
     }
 
     fn count(store: &Store, sql: &str) -> i64 {
