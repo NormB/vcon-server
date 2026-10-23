@@ -117,7 +117,7 @@ impl Store {
             .map_err(|_| StoreError::Io)?;
         let objects = dir.join("objects");
         fs.create_dir_all(&objects).map_err(|_| StoreError::Io)?;
-        Ok(Store {
+        let store = Store {
             tenant,
             tenant_key,
             objects,
@@ -126,7 +126,51 @@ impl Store {
             clock,
             #[cfg(test)]
             hooks: tests::Hooks::default(),
-        })
+        };
+        store.recover()?;
+        Ok(store)
+    }
+
+    /// Start-up recovery: the WAL is checkpointed with truncation, and
+    /// temporary files and object files with no row are removed. A name
+    /// that is not a version id, with or without `.tmp`, is not ours and
+    /// is left alone.
+    fn recover(&self) -> Result<(), StoreError> {
+        let conn = self.conn();
+        let busy: i64 = conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))
+            .map_err(io)?;
+        if busy != 0 {
+            return Err(StoreError::Io);
+        }
+        let mut removed = false;
+        for name in self.fs.list(&self.objects).map_err(io)? {
+            let Some(name) = name.to_str() else { continue };
+            let (id, temporary) = match name.strip_suffix(".tmp") {
+                Some(id) => (id, true),
+                None => (name, false),
+            };
+            let Some(version) = VersionId::parse(id) else {
+                continue;
+            };
+            let has_row = conn
+                .query_row(
+                    "SELECT 1 FROM version WHERE version = ?1",
+                    [version.0],
+                    |_| Ok(()),
+                )
+                .optional()
+                .map_err(io)?
+                .is_some();
+            if temporary || !has_row {
+                self.fs.remove(&self.objects.join(name)).map_err(io)?;
+                removed = true;
+            }
+        }
+        if removed {
+            self.fs.sync_dir(&self.objects).map_err(io)?;
+        }
+        Ok(())
     }
 
     /// Stores a new vCon. The uuid's state is checked before anything is
@@ -430,6 +474,31 @@ impl Store {
         outcome
     }
 
+    /// Every version whose object file is missing. Such a version answers
+    /// 500 when read; it is reported, never dropped.
+    pub fn check(&self) -> Result<Vec<VersionId>, StoreError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .prepare("SELECT version FROM version ORDER BY version")
+            .map_err(io)?;
+        let versions = rows
+            .query_map([], |r| r.get::<_, [u8; 16]>(0))
+            .map_err(io)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(io)?;
+        let present: std::collections::BTreeSet<_> = self
+            .fs
+            .list(&self.objects)
+            .map_err(io)?
+            .into_iter()
+            .collect();
+        Ok(versions
+            .into_iter()
+            .map(VersionId)
+            .filter(|v| !present.contains(std::ffi::OsStr::new(&v.to_string())))
+            .collect())
+    }
+
     /// Seals `body` as a new version of `uuid` under a new data key, wraps
     /// that key under the tenant key, and writes the object file. Returns
     /// the version id, the wrapped key and the file's path.
@@ -672,32 +741,58 @@ mod tests {
     }
 
     struct Fixture {
-        _dir: tempfile::TempDir,
+        dir: tempfile::TempDir,
         fs: Arc<CrashFs>,
         clock: Arc<ManualClock>,
+        /// The tenant key, wrapped under `master`, so a test can open the
+        /// store again with the same key.
+        master: Key,
+        wrapped: Vec<u8>,
         store: Store,
         caller: Caller,
+    }
+
+    const TENANT: TenantId = TenantId([0x11; 16]);
+
+    impl Fixture {
+        fn open(&self) -> Result<Store, StoreError> {
+            let ctx = Context::Tenant { tenant: TENANT };
+            let tenant_key = envelope::unwrap(&self.master, &ctx, &self.wrapped).expect("unwraps");
+            Store::open(
+                self.dir.path(),
+                TENANT,
+                tenant_key,
+                self.fs.clone(),
+                self.clock.clone(),
+            )
+        }
+
+        /// Closes the store and opens it again, as a restart would.
+        fn reopen(&mut self) {
+            let placeholder = self.open().expect("opens");
+            drop(std::mem::replace(&mut self.store, placeholder));
+            self.store = self.open().expect("reopens");
+        }
     }
 
     fn fixture() -> Fixture {
         let dir = tempfile::tempdir().expect("temp dir");
         let fs = Arc::new(CrashFs::new());
         let clock = Arc::new(ManualClock::at(datetime!(2026-10-23 12:00 UTC)));
-        let store = Store::open(
-            dir.path(),
-            TenantId([0x11; 16]),
-            Key::generate().expect("tenant key"),
-            fs.clone(),
-            clock.clone(),
-        )
-        .expect("opens");
+        let master = Key::generate().expect("master key");
+        let tenant_key = Key::generate().expect("tenant key");
+        let wrapped = envelope::wrap(&master, &Context::Tenant { tenant: TENANT }, &tenant_key);
+        let store =
+            Store::open(dir.path(), TENANT, tenant_key, fs.clone(), clock.clone()).expect("opens");
         let caller = Caller {
             key: Key::generate().expect("caller key").id(),
         };
         Fixture {
-            _dir: dir,
+            dir,
             fs,
             clock,
+            master,
+            wrapped,
             store,
             caller,
         }
@@ -1535,5 +1630,82 @@ mod tests {
             version
         );
         assert_eq!(hidden_versions(&f), 0);
+    }
+
+    #[test]
+    fn opening_removes_temporary_and_orphaned_files_and_nothing_else() {
+        let mut f = fixture();
+        let (found, version) = stored(&f, "first");
+        let orphan = VersionId([0x0e; 16]);
+        let objects = f.store.objects.clone();
+        for name in [
+            format!("{orphan}"),
+            format!("{orphan}.tmp"),
+            format!("{version}.tmp"),
+            "notes.txt".to_owned(),
+        ] {
+            f.fs.write_new(&objects.join(name), b"x").expect("write");
+        }
+        f.reopen();
+        let names: Vec<String> =
+            f.fs.list(&objects)
+                .expect("list")
+                .into_iter()
+                .map(|n| n.to_string_lossy().into_owned())
+                .collect();
+        assert_eq!(names, [version.to_string(), "notes.txt".to_owned()]);
+        assert_eq!(
+            f.store
+                .get(&f.caller, found.uuid)
+                .expect("still reads")
+                .version,
+            version
+        );
+        assert_eq!(
+            f.fs.log().last(),
+            Some(&Op::SyncDir(objects)),
+            "the removals are synced"
+        );
+    }
+
+    #[test]
+    fn opening_checkpoints_the_wal_with_truncation() {
+        let mut f = fixture();
+        stored(&f, "first");
+        let wal = f.dir.path().join("catalog.sqlite-wal");
+        assert!(
+            std::fs::metadata(&wal).expect("a WAL").len() > 0,
+            "the WAL holds the write"
+        );
+        f.reopen();
+        assert_eq!(std::fs::metadata(&wal).expect("a WAL").len(), 0);
+    }
+
+    #[test]
+    fn check_reports_a_version_whose_file_is_missing() {
+        let f = fixture();
+        let (_, version) = stored(&f, "first");
+        assert_eq!(f.store.check(), Ok(vec![]));
+        f.fs.remove(&f.store.objects.join(version.to_string()))
+            .expect("remove");
+        assert_eq!(f.store.check(), Ok(vec![version]));
+    }
+
+    #[test]
+    fn opening_refuses_while_a_reader_stops_the_wal_from_being_truncated() {
+        let f = fixture();
+        stored(&f, "first");
+        let ctx = Context::Tenant { tenant: TENANT };
+        let tenant_key = envelope::unwrap(&f.master, &ctx, &f.wrapped).expect("unwraps");
+        let catalog_key = envelope::catalog_key(&tenant_key).expect("catalog key");
+        let mut reader = catalog::open(&f.dir.path().join("catalog.sqlite"), &catalog_key, "")
+            .expect("a second connection");
+        let read = reader.transaction().expect("read transaction");
+        let _: i64 = read
+            .query_row("SELECT count(*) FROM vcon", [], |r| r.get(0))
+            .expect("a read holds a snapshot");
+        assert!(matches!(f.open(), Err(StoreError::Io)));
+        drop(read);
+        assert!(f.open().is_ok(), "opens once the reader is done");
     }
 }

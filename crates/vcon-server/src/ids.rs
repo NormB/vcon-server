@@ -22,6 +22,28 @@ impl VersionId {
     }
 }
 
+impl VersionId {
+    /// Reads a version id written by `Display`: exactly 32 lowercase hex
+    /// digits.
+    pub fn parse(text: &str) -> Option<VersionId> {
+        let digits = text.as_bytes();
+        if digits.len() != 32 {
+            return None;
+        }
+        let digit = |d: u8| match d {
+            b'0'..=b'9' => Some(d - b'0'),
+            b'a'..=b'f' => Some(d - b'a' + 10),
+            _ => None,
+        };
+        let mut bytes = [0; 16];
+        let (pairs, _) = digits.as_chunks::<2>();
+        for (byte, [high, low]) in bytes.iter_mut().zip(pairs) {
+            *byte = digit(*high)? << 4 | digit(*low)?;
+        }
+        Some(VersionId(bytes))
+    }
+}
+
 fn hex(bytes: &[u8; 16], f: &mut fmt::Formatter<'_>) -> fmt::Result {
     bytes.iter().try_for_each(|b| write!(f, "{b:02x}"))
 }
@@ -60,6 +82,27 @@ mod tests {
                 ids.iter().any(|id| id.0[i] != ids[0].0[i]),
                 "byte {i} never varies"
             );
+        }
+    }
+
+    #[test]
+    fn a_version_id_parses_only_from_its_own_spelling() {
+        let id = VersionId::generate();
+        assert_eq!(VersionId::parse(&id.to_string()), Some(id));
+        let text = id.to_string();
+        let bad = [
+            String::new(),
+            text[..31].to_owned(),
+            format!("{text}0"),
+            text.to_uppercase(),
+            format!("g{}", &text[1..]),
+            format!("{}.tmp", text),
+            format!("+{}", &text[1..]),
+        ];
+        for bad in bad {
+            if bad != text {
+                assert_eq!(VersionId::parse(&bad), None, "{bad:?}");
+            }
         }
     }
 }
