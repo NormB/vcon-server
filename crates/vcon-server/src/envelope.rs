@@ -51,6 +51,9 @@ impl Key {
 pub enum KeyError {
     /// The key's memory could not be locked or kept out of core dumps.
     Memory(io::Error),
+    /// A wrapped key did not open. Like [`OpenError`], it does not say which
+    /// part was wrong.
+    Damaged,
 }
 
 /// Stops this process from writing core dumps: the core size limit is set
@@ -136,17 +139,38 @@ pub fn seal(data_key: &Key, ctx: &Context, plaintext: &[u8]) -> Vec<u8> {
 /// change to the blob, the context or the key is an error, never partial
 /// plaintext.
 pub fn open(data_key: &Key, ctx: &Context, blob: &[u8]) -> Result<Vec<u8>, OpenError> {
-    let (&format, rest) = blob.split_first().ok_or(OpenError)?;
-    let (nonce, sealed) = rest.split_first_chunk::<NONCE_LEN>().ok_or(OpenError)?;
-    let mut text = sealed.to_vec();
-    let len = gcm_open(
-        data_key.bytes(),
-        *nonce,
-        &ctx.associated_data(format),
-        &mut text,
-    )?;
+    let mut text = vec![0; blob.len().saturating_sub(1 + NONCE_LEN)];
+    let len = open_into(data_key.bytes(), ctx, blob, &mut text)?;
     text.truncate(len);
     Ok(text)
+}
+
+/// Wraps `key` under `wrapping`, bound to `ctx`: a blob like [`seal`]'s,
+/// whose plaintext is the key.
+pub fn wrap(wrapping: &Key, ctx: &Context, key: &Key) -> Vec<u8> {
+    seal(wrapping, ctx, key.bytes())
+}
+
+/// Unwraps a key made by [`wrap`] with the same wrapping key and context.
+/// It is opened straight into the new key's own locked page, so the plain
+/// key is never anywhere else; on any error that page is dropped, and so
+/// zeroed.
+pub fn unwrap(wrapping: &Key, ctx: &Context, wrapped: &[u8]) -> Result<Key, KeyError> {
+    let mut page = LockedPage::new().map_err(KeyError::Memory)?;
+    match open_into(wrapping.bytes(), ctx, wrapped, page.bytes_mut()) {
+        Ok(KEY_LEN) => Ok(Key { page }),
+        _ => Err(KeyError::Damaged),
+    }
+}
+
+/// Decrypts `blob` into the start of `out` and returns the plaintext's
+/// length. `out` must hold the blob's ciphertext and tag.
+fn open_into(key: &[u8], ctx: &Context, blob: &[u8], out: &mut [u8]) -> Result<usize, OpenError> {
+    let (&format, rest) = blob.split_first().ok_or(OpenError)?;
+    let (nonce, sealed) = rest.split_first_chunk::<NONCE_LEN>().ok_or(OpenError)?;
+    let text = out.get_mut(..sealed.len()).ok_or(OpenError)?;
+    text.copy_from_slice(sealed);
+    gcm_open(key, *nonce, &ctx.associated_data(format), text)
 }
 
 fn seal_with_nonce(key: &[u8], nonce: [u8; NONCE_LEN], ctx: &Context, plaintext: &[u8]) -> Vec<u8> {
@@ -365,5 +389,83 @@ mod tests {
         }
         let other_key = Key::generate().expect("key");
         assert_eq!(open(&other_key, &version_ctx(), &blob), Err(OpenError));
+    }
+
+    const TENANT_CTX: Context = Context::Tenant { tenant: TENANT };
+
+    #[test]
+    fn a_wrapped_key_unwraps_to_the_same_key() {
+        let wrapping = Key::generate().expect("key");
+        let key = Key::generate().expect("key");
+        for ctx in [TENANT_CTX, version_ctx()] {
+            let wrapped = wrap(&wrapping, &ctx, &key);
+            assert_eq!(wrapped.len(), 1 + 12 + KEY_LEN + 16);
+            let unwrapped = unwrap(&wrapping, &ctx, &wrapped).expect("unwraps");
+            assert_eq!(unwrapped.bytes(), key.bytes());
+        }
+    }
+
+    #[test]
+    fn changing_any_byte_of_a_wrapped_key_fails() {
+        let wrapping = Key::generate().expect("key");
+        let key = Key::generate().expect("key");
+        let wrapped = wrap(&wrapping, &TENANT_CTX, &key);
+        assert!(
+            unwrap(&wrapping, &TENANT_CTX, &wrapped).is_ok(),
+            "unchanged"
+        );
+        for i in 0..wrapped.len() {
+            let mut bad = wrapped.clone();
+            bad[i] ^= 0x01;
+            assert!(unwrap(&wrapping, &TENANT_CTX, &bad).is_err(), "byte {i}");
+        }
+        for len in 0..wrapped.len() {
+            assert!(
+                unwrap(&wrapping, &TENANT_CTX, &wrapped[..len]).is_err(),
+                "first {len} bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn another_context_or_wrapping_key_fails() {
+        let wrapping = Key::generate().expect("key");
+        let key = Key::generate().expect("key");
+        let wrapped = wrap(&wrapping, &TENANT_CTX, &key);
+        assert!(
+            unwrap(&wrapping, &TENANT_CTX, &wrapped).is_ok(),
+            "unchanged"
+        );
+        let other_tenant = Context::Tenant {
+            tenant: TenantId([0x12; 16]),
+        };
+        assert!(
+            unwrap(&wrapping, &other_tenant, &wrapped).is_err(),
+            "other tenant"
+        );
+        assert!(
+            unwrap(&wrapping, &version_ctx(), &wrapped).is_err(),
+            "other kind"
+        );
+        let other = Key::generate().expect("key");
+        assert!(
+            unwrap(&other, &TENANT_CTX, &wrapped).is_err(),
+            "other wrapping key"
+        );
+    }
+
+    #[test]
+    fn only_a_32_byte_key_unwraps() {
+        let wrapping = Key::generate().expect("key");
+        for len in [0, 31, 33, 64] {
+            let sealed = seal(&wrapping, &TENANT_CTX, &vec![7; len]);
+            assert!(
+                unwrap(&wrapping, &TENANT_CTX, &sealed).is_err(),
+                "{len} bytes"
+            );
+        }
+        let sealed = seal(&wrapping, &TENANT_CTX, &[7; KEY_LEN]);
+        let key = unwrap(&wrapping, &TENANT_CTX, &sealed).expect("32 bytes unwrap");
+        assert_eq!(key.bytes(), [7; KEY_LEN]);
     }
 }
