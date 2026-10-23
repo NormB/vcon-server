@@ -9,6 +9,8 @@ mod form;
 mod gzip;
 #[allow(dead_code)]
 mod identity;
+#[cfg(test)]
+mod ietf_examples;
 #[allow(dead_code)]
 mod json;
 #[allow(dead_code)]

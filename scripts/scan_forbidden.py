@@ -47,11 +47,20 @@ def reserved_domain(domain):
     return d in RESERVED_DOMAINS or d.endswith(RESERVED_TLDS) or any(d.endswith("." + r) for r in RESERVED_DOMAINS)
 
 
+# The two illustrative numbers in the IETF vCon core draft's examples, which
+# are kept byte for byte as test fixtures. Allowed only in those fixtures.
+IETF_EXAMPLE_PHONES = {"+1234567" "8901", "+1987654" "3210"}
+
+
+def is_ietf_fixture(path):
+    return "/tests/fixtures/ietf/" in "/" + path
+
+
 def reserved_phone(exchange, line):
     return exchange == "555" and line.startswith("01")
 
 
-def personal_data(text):
+def personal_data(text, path=""):
     for m in EMAIL.finditer(text):
         if not reserved_domain(m.group(1)):
             yield "email address", m.group(0)
@@ -60,6 +69,8 @@ def personal_data(text):
             yield "phone number", m.group(0)
     for m in PHONE_E164.finditer(text):
         digits = m.group(1)
+        if is_ietf_fixture(path) and m.group(0) in IETF_EXAMPLE_PHONES:
+            continue
         if not (len(digits) == 11 and digits[0] == "1" and digits[4:7] == "555" and digits[7:9] == "01"):
             yield "phone number", m.group(0)
     for m in IPV4.finditer(text):
@@ -91,7 +102,7 @@ def scan(path, text):
     for reason, pattern in AI_ATTRIBUTION + OWNER:
         if pattern.search(text):
             yield reason, pattern.search(text).group(0)
-    yield from personal_data(text)
+    yield from personal_data(text, path)
     if not is_fixture(path):
         for reason, pattern in PRIVATE_DOC_IDS:
             m = pattern.search(text)

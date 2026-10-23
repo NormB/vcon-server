@@ -93,6 +93,12 @@ expect refuse "design decision id" notes.txt "see CD""8"
 expect refuse "scope decision id" notes.txt "see D""40"
 expect refuse "plan task id" notes.txt "done P""0.3"
 expect refuse "draft number" notes.txt "from draft ""6.8"
+ietf_tel="+1234567""8901"
+expect accept "IETF example number in IETF fixtures" crates/x/tests/fixtures/ietf/a.vcon "{\"tel\": \"$ietf_tel\"}"
+expect refuse "IETF example number elsewhere" notes.txt "tel $ietf_tel"
+expect refuse "other number in IETF fixtures" crates/x/tests/fixtures/ietf/b.vcon "call 212-867-""5309"
+expect refuse "other E.164 number in IETF fixtures" crates/x/tests/fixtures/ietf/d.vcon "tel +44207""9460000"
+expect refuse "IETF example number in other fixtures" crates/x/tests/fixtures/c.json "tel $ietf_tel"
 expect accept "ids allowed in fixtures" crates/x/tests/fixtures/a.json '{"k": "D''40 FMT''-3"}'
 expect refuse "export staged by force" "vcon-server — Notes.md" "words"
 expect refuse "AI trailer in message" notes.txt "message case one" "Fix it
