@@ -1,1 +1,6 @@
 /target
+
+# Exports of the private design documents are never committed. Every one of
+# them is named "vcon-server — <tab>" or, for archived ones, "ARCHIVED — <tab>".
+vcon-server — *
+ARCHIVED — *
