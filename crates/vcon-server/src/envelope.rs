@@ -220,6 +220,33 @@ pub fn rewrap(old: &Key, new: &Key, ctx: &Context, wrapped: &[u8]) -> Result<Vec
     Ok(wrap(new, ctx, &key))
 }
 
+/// Whether a key that has already wrapped `wraps` keys may wrap another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WrapLimit {
+    /// Wrap.
+    Allow,
+    /// Wrap, and warn that the key needs rotating.
+    Warn,
+    /// Refuse the write until the key is rotated.
+    Refuse,
+}
+
+/// The wrap-count limit for one wrapping key. Each wrap uses a random
+/// nonce, and NIST SP 800-38D 8.3 allows at most 2^32 such encryptions
+/// under one key, so a key that has made 2^32 wraps makes no more. The
+/// warning starts at half that.
+pub fn wrap_limit(wraps: u64) -> WrapLimit {
+    const REFUSE_AT: u64 = 1 << 32;
+    const WARN_AT: u64 = 1 << 31;
+    if wraps >= REFUSE_AT {
+        WrapLimit::Refuse
+    } else if wraps >= WARN_AT {
+        WrapLimit::Warn
+    } else {
+        WrapLimit::Allow
+    }
+}
+
 /// Decrypts `blob` into the start of `out` and returns the plaintext's
 /// length. `out` must hold the blob's ciphertext and tag.
 fn open_into(key: &[u8], ctx: &Context, blob: &[u8], out: &mut [u8]) -> Result<usize, OpenError> {
@@ -676,5 +703,20 @@ mod tests {
             rewrap(&old, &new, &version_ctx(), &wrapped),
             Err(KeyError::Damaged)
         ));
+    }
+
+    #[test]
+    fn wrapping_warns_from_2_to_the_31_and_stops_at_2_to_the_32() {
+        let cases = [
+            (0, WrapLimit::Allow),
+            ((1 << 31) - 1, WrapLimit::Allow),
+            (1 << 31, WrapLimit::Warn),
+            ((1 << 32) - 1, WrapLimit::Warn),
+            (1 << 32, WrapLimit::Refuse),
+            (u64::MAX, WrapLimit::Refuse),
+        ];
+        for (wraps, expected) in cases {
+            assert_eq!(wrap_limit(wraps), expected, "{wraps} wraps");
+        }
     }
 }
