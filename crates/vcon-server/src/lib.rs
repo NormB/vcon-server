@@ -8,3 +8,4 @@ pub mod envelope;
 pub mod fs;
 pub mod ids;
 pub mod store;
+pub mod tenants;
