@@ -11,6 +11,7 @@ publish.workspace = true
 aws-lc-rs = "1.18.2"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "http2"] }
 base64 = "0.23.1"
+http-body-util = "0.1.5"
 hyper-util = { version = "0.1.21", features = ["server-auto", "tokio", "service", "http1", "http2"] }
 libc = "0.2.191"
 rusqlite = { version = "0.40.2", features = ["bundled-sqlcipher-vendored-openssl"] }

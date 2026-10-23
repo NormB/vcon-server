@@ -2012,6 +2012,7 @@ dependencies = [
  "axum",
  "base64",
  "flate2",
+ "http-body-util",
  "hyper-util",
  "libc",
  "rcgen",

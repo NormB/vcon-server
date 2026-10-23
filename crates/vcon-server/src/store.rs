@@ -624,6 +624,23 @@ impl Store {
         commit(tx)
     }
 
+    /// Makes every audit insert on this Store's connection fail, for tests.
+    #[cfg(test)]
+    pub(crate) fn break_audit(&self) {
+        self.conn()
+            .execute_batch(
+                "CREATE TEMP TRIGGER no_audit BEFORE INSERT ON audit
+                 BEGIN SELECT RAISE(ABORT, 'no audit'); END;",
+            )
+            .expect("trigger");
+    }
+
+    /// The tenant's log as `export` writes it, for tests.
+    #[cfg(test)]
+    pub(crate) fn records(&self) -> Vec<serde_json::Value> {
+        crate::audit::testing::exported(&self.conn(), None)
+    }
+
     /// Counts, in a transaction of its own, an event the tenant's log
     /// keeps one record per minute for, such as a failed check of one of
     /// its keys.

@@ -552,8 +552,38 @@ impl Tenants {
             .expect("no thread panicked holding the stores")
     }
 
-    /// Records a refusal, in a transaction of its own.
-    fn record_alone(&self, entry: &Entry) -> Result<(), TenantError> {
+    /// Makes every audit insert on server.sqlite fail, for tests.
+    #[cfg(test)]
+    pub(crate) fn break_audit(&self) {
+        self.conn()
+            .execute_batch(
+                "CREATE TEMP TRIGGER no_audit BEFORE INSERT ON audit
+                 BEGIN SELECT RAISE(ABORT, 'no audit'); END;",
+            )
+            .expect("trigger");
+    }
+
+    /// server.sqlite's connection, for tests that damage it.
+    #[cfg(test)]
+    pub(crate) fn conn_for_test(&self) -> MutexGuard<'_, Connection> {
+        self.conn()
+    }
+
+    /// The admin log as `export` writes it, for tests.
+    #[cfg(test)]
+    pub(crate) fn admin_records(&self) -> Vec<serde_json::Value> {
+        crate::audit::testing::exported(&self.conn(), None)
+    }
+
+    /// Marks the tenant closing, as a removal does, for tests that need a
+    /// closing tenant without removing it.
+    #[cfg(test)]
+    pub(crate) fn close(&self, id: TenantId) {
+        self.drain(id).expect("not closing yet");
+    }
+
+    /// Records an event in the admin log, in a transaction of its own.
+    pub(crate) fn record_alone(&self, entry: &Entry) -> Result<(), TenantError> {
         let mut conn = self.conn();
         let tx = immediate(&mut conn)?;
         self.record(&tx, entry)?;
