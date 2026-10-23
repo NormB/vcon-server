@@ -48,6 +48,11 @@ pub enum TenantError {
     NotFound,
     /// Another tenant has the name.
     NameTaken,
+    /// `Removal::Empty` was asked of a tenant that keeps versions.
+    HoldsVcons,
+    /// `Removal::Force` was asked of a tenant with a uuid under a legal
+    /// hold.
+    UnderHold,
     /// The master key is at its wrap limit and must be rotated.
     LimitReached,
     /// The audit record could not be written, so nothing was done.
@@ -75,6 +80,17 @@ impl TenantInfo {
     pub fn kept_for(&self, default: Retention) -> Retention {
         self.retention.unwrap_or(default)
     }
+}
+
+/// How far `remove` may go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Removal {
+    /// Only a tenant that keeps no version.
+    Empty,
+    /// Its vCons too, unless a uuid is under a legal hold.
+    Force,
+    /// Even held vCons; only from the command line, with the server stopped.
+    ForceOverridingHolds,
 }
 
 /// A tenant's Store as the registry holds it.
@@ -351,6 +367,78 @@ impl Tenants {
             .map_err(|_| TenantError::AuditFailed)
     }
 
+    /// Removes the tenant: its row and wrapped key, then its directory.
+    ///
+    /// The tenant is drained before it is looked at, so a write that lands
+    /// meanwhile counts: an `Empty` removal is then refused rather than
+    /// losing it. A refused or failed removal leaves the tenant served
+    /// again.
+    pub fn remove(&self, who: Actor, id: TenantId, removal: Removal) -> Result<(), TenantError> {
+        let entry = |status| Entry {
+            actor: who,
+            action: Action::TenantRemove,
+            target: Some(id.to_string()),
+            version: None,
+            status,
+        };
+        let drained = match self.drain(id) {
+            Ok(drained) => drained,
+            Err(error) => {
+                self.record_alone(&entry(503))?;
+                return Err(error);
+            }
+        };
+        let result = self.remove_drained(id, removal, drained, entry);
+        if result.is_err() {
+            self.stores().remove(&id);
+        }
+        result
+    }
+
+    fn remove_drained(
+        &self,
+        id: TenantId,
+        removal: Removal,
+        drained: Option<Store>,
+        entry: impl Fn(u16) -> Entry,
+    ) -> Result<(), TenantError> {
+        let store = match drained {
+            Some(store) => store,
+            None => match self.open_store(id) {
+                Err(TenantError::NotFound) => {
+                    self.record_alone(&entry(404))?;
+                    return Err(TenantError::NotFound);
+                }
+                other => other?,
+            },
+        };
+        let counts = store.counts().map_err(io)?;
+        let refused = match removal {
+            Removal::Empty if counts.versions > 0 => Some(TenantError::HoldsVcons),
+            Removal::Force if counts.held > 0 => Some(TenantError::UnderHold),
+            _ => None,
+        };
+        if let Some(error) = refused {
+            self.record_alone(&entry(409))?;
+            return Err(error);
+        }
+        {
+            let mut conn = self.conn();
+            let tx = immediate(&mut conn)?;
+            tx.execute("DELETE FROM tenant WHERE id = ?1", [id.0])
+                .map_err(io)?;
+            self.record(&tx, &entry(204))?;
+            tx.commit().map_err(io)?;
+        }
+        // The removal stands with its commit. The Store is closed before
+        // its directory goes; a directory left here, by a crash or a
+        // failed removal, goes at the next start.
+        drop(store);
+        let _ = self.fs.remove_dir_all(&self.tenants.join(id.to_string()));
+        self.stores().remove(&id);
+        Ok(())
+    }
+
     /// The tenant's Store, shared by every request to it.
     pub fn store(&self, id: TenantId) -> Result<Arc<Store>, TenantError> {
         // The Store is opened under this lock, so it is opened once: a
@@ -361,6 +449,15 @@ impl Tenants {
             Some(Slot::Closing) => return Err(TenantError::Closing),
             None => {}
         }
+        let store = Arc::new(self.open_store(id)?);
+        stores.insert(id, Slot::Open(store.clone()));
+        Ok(store)
+    }
+
+    /// Opens the tenant's Store under the key its row holds. Its callers
+    /// make sure no other Store of the tenant is open: `store` holds the
+    /// lock, and `remove` has drained the tenant.
+    fn open_store(&self, id: TenantId) -> Result<Store, TenantError> {
         let wrapped: Vec<u8> = self
             .conn()
             .query_row(
@@ -380,33 +477,42 @@ impl Tenants {
                 hook();
             }
         }
-        let store = Arc::new(
-            Store::open(
-                &self.tenants.join(id.to_string()),
-                id,
-                tenant_key,
-                self.fs.clone(),
-                self.clock.clone(),
-            )
-            .map_err(io)?,
-        );
-        stores.insert(id, Slot::Open(store.clone()));
-        Ok(store)
+        Store::open(
+            &self.tenants.join(id.to_string()),
+            id,
+            tenant_key,
+            self.fs.clone(),
+            self.clock.clone(),
+        )
+        .map_err(io)
     }
 
     /// Marks the tenant closing, so no new handle is handed out, and waits
     /// until every handle given out before is dropped. Handles are plain
     /// `Arc`s, so the wait watches the count; requests are short and
-    /// removal is rare.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "tenant removal, which drains, comes next")
-    )]
-    pub(crate) fn drain(&self, id: TenantId) {
-        let slot = self.stores().insert(id, Slot::Closing);
-        if let Some(Slot::Open(store)) = slot {
-            while Arc::strong_count(&store) > 1 {
-                std::thread::sleep(std::time::Duration::from_millis(1));
+    /// removal is rare. A tenant already closing is refused, so two
+    /// removals never both hold its Store.
+    ///
+    /// Returns the tenant's Store if a request had opened it, now held
+    /// only here.
+    fn drain(&self, id: TenantId) -> Result<Option<Store>, TenantError> {
+        let slot = {
+            let mut stores = self.stores();
+            if matches!(stores.get(&id), Some(Slot::Closing)) {
+                return Err(TenantError::Closing);
+            }
+            stores.insert(id, Slot::Closing)
+        };
+        let Some(Slot::Open(mut store)) = slot else {
+            return Ok(None);
+        };
+        loop {
+            match Arc::try_unwrap(store) {
+                Ok(store) => return Ok(Some(store)),
+                Err(shared) => {
+                    store = shared;
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
             }
         }
     }
@@ -415,6 +521,14 @@ impl Tenants {
         self.stores
             .lock()
             .expect("no thread panicked holding the stores")
+    }
+
+    /// Records a refusal, in a transaction of its own.
+    fn record_alone(&self, entry: &Entry) -> Result<(), TenantError> {
+        let mut conn = self.conn();
+        let tx = immediate(&mut conn)?;
+        self.record(&tx, entry)?;
+        tx.commit().map_err(io)
     }
 
     fn record(&self, tx: &Transaction, entry: &Entry) -> Result<(), TenantError> {
@@ -1125,7 +1239,7 @@ mod tests {
             let (done, drained) = std::sync::mpsc::channel();
             let tenants = &f.tenants;
             s.spawn(move || {
-                tenants.drain(id);
+                tenants.drain(id).expect("drains");
                 done.send(()).expect("send");
             });
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -1154,7 +1268,7 @@ mod tests {
     fn a_tenant_no_request_opened_drains_at_once() {
         let f = fixture();
         let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
-        f.tenants.drain(id);
+        f.tenants.drain(id).expect("drains");
         assert_eq!(f.tenants.store(id).err(), Some(TenantError::Closing));
     }
 
@@ -1321,7 +1435,7 @@ mod tests {
     fn a_retention_change_for_a_closing_tenant_is_refused() {
         let f = fixture();
         let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
-        f.tenants.drain(id);
+        f.tenants.drain(id).expect("drains");
         assert_eq!(
             f.tenants
                 .set_retention(Actor::Cli, id, Some(Retention::Years(1))),
@@ -1377,5 +1491,253 @@ mod tests {
             "the change stands"
         );
         assert_eq!(f.admin_records("tenant_retention")[0]["status"], 200);
+    }
+
+    /// A tenant with one vCon stored.
+    fn with_vcon(f: &Fixture) -> TenantId {
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        let (found, body) = vcon(UUID, "first");
+        f.tenants
+            .store(id)
+            .expect("its store")
+            .create(&caller(), &found, &body)
+            .expect("stored");
+        id
+    }
+
+    fn hold(f: &Fixture, id: TenantId) {
+        f.tenant_catalog(id)
+            .execute("UPDATE vcon SET hold = 1", [])
+            .expect("a hold");
+    }
+
+    /// Waits until the tenant refuses new requests.
+    fn until_closing(f: &Fixture, id: TenantId) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while f.tenants.store(id).is_ok() {
+            assert!(std::time::Instant::now() < deadline, "never closing");
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn a_tenant_already_closing_cannot_be_drained_again() {
+        let f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        f.tenants.drain(id).expect("drains");
+        assert_eq!(f.tenants.drain(id).err(), Some(TenantError::Closing));
+    }
+
+    #[test]
+    fn removing_an_unknown_tenant_is_not_found() {
+        let f = fixture();
+        let id = TenantId::generate();
+        assert_eq!(
+            f.tenants.remove(Actor::Cli, id, Removal::Empty),
+            Err(TenantError::NotFound)
+        );
+        assert_eq!(f.tenants.store(id).err(), Some(TenantError::NotFound));
+        let records = f.admin_records("tenant_remove");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["status"], 404);
+        assert_eq!(records[0]["target"], id.to_string());
+    }
+
+    #[test]
+    fn an_empty_tenant_is_removed_with_its_key_directory_and_row() {
+        let f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        drop(f.tenants.store(id).expect("opened by a request"));
+        f.clock.set(datetime!(2026-10-23 13:00 UTC));
+        f.tenants
+            .remove(Actor::Cli, id, Removal::Empty)
+            .expect("removed");
+        assert!(!f.has_row(id), "its row and wrapped key are gone");
+        assert_eq!(f.tenants.store(id).err(), Some(TenantError::NotFound));
+        assert_eq!(f.dirs(), Vec::<OsString>::new(), "its directory is gone");
+        assert_eq!(f.tenants.list(Actor::Cli), Ok(Vec::new()));
+        let records = f.admin_records("tenant_remove");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["actor"], "cli");
+        assert_eq!(records[0]["target"], id.to_string());
+        assert_eq!(records[0]["status"], 204);
+        assert_eq!(records[0]["at"], "2026-10-23T13:00:00Z");
+    }
+
+    #[test]
+    fn an_empty_removal_is_refused_while_any_version_is_kept() {
+        let f = fixture();
+        let id = with_vcon(&f);
+        let uuid = vcon(UUID, "first").0.uuid;
+        f.tenants
+            .store(id)
+            .expect("its store")
+            .delete(&caller(), uuid)
+            .expect("deleted, so only a hidden version is kept");
+        assert_eq!(
+            f.tenants.remove(Actor::Cli, id, Removal::Empty),
+            Err(TenantError::HoldsVcons)
+        );
+        assert!(f.has_row(id));
+        let store = f.tenants.store(id).expect("still served");
+        assert_eq!(store.counts().map(|c| c.versions), Ok(1));
+        assert_eq!(f.admin_records("tenant_remove")[0]["status"], 409);
+    }
+
+    #[test]
+    fn a_forced_removal_takes_the_vcons_too() {
+        let f = fixture();
+        let id = with_vcon(&f);
+        f.tenants
+            .remove(Actor::Cli, id, Removal::Force)
+            .expect("removed");
+        assert!(!f.has_row(id));
+        assert_eq!(f.dirs(), Vec::<OsString>::new());
+    }
+
+    #[test]
+    fn a_forced_removal_is_refused_while_a_uuid_is_held() {
+        let f = fixture();
+        let id = with_vcon(&f);
+        hold(&f, id);
+        assert_eq!(
+            f.tenants.remove(Actor::Cli, id, Removal::Force),
+            Err(TenantError::UnderHold)
+        );
+        assert!(f.has_row(id));
+        assert!(f.tenants.store(id).is_ok(), "still served");
+        assert_eq!(f.admin_records("tenant_remove")[0]["status"], 409);
+    }
+
+    #[test]
+    fn overriding_holds_removes_a_held_tenant() {
+        let f = fixture();
+        let id = with_vcon(&f);
+        hold(&f, id);
+        f.tenants
+            .remove(Actor::Cli, id, Removal::ForceOverridingHolds)
+            .expect("removed");
+        assert!(!f.has_row(id));
+        assert_eq!(f.dirs(), Vec::<OsString>::new());
+    }
+
+    /// The removal drains before it looks, so a write that lands meanwhile
+    /// makes the tenant non-empty and the removal is refused: the write
+    /// is never acknowledged and then lost.
+    #[test]
+    fn a_write_in_flight_during_an_empty_removal_is_kept() {
+        let f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        let (found, body) = vcon(UUID, "first");
+        let held = f.tenants.store(id).expect("a request in flight");
+        let tenants = &f.tenants;
+        let fx = &f;
+        let (found_ref, body_ref) = (&found, &body);
+        let result = std::thread::scope(move |s| {
+            let (done, removed) = std::sync::mpsc::channel();
+            s.spawn(move || {
+                done.send(tenants.remove(Actor::Cli, id, Removal::Empty))
+                    .expect("send");
+            });
+            until_closing(fx, id);
+            assert!(
+                removed
+                    .recv_timeout(std::time::Duration::from_millis(100))
+                    .is_err(),
+                "the removal waits for the write"
+            );
+            held.create(&caller(), found_ref, body_ref)
+                .expect("the write is acknowledged");
+            drop(held);
+            removed.recv().expect("the removal ends")
+        });
+        assert_eq!(result, Err(TenantError::HoldsVcons));
+        assert_eq!(
+            f.tenants
+                .store(id)
+                .expect("still served")
+                .get(&caller(), found.uuid)
+                .expect("the write is kept")
+                .body,
+            body
+        );
+    }
+
+    #[test]
+    fn a_second_removal_while_one_drains_is_refused() {
+        let f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        let held = f.tenants.store(id).expect("a request in flight");
+        let tenants = &f.tenants;
+        let fx = &f;
+        std::thread::scope(move |s| {
+            let first = s.spawn(move || tenants.remove(Actor::Cli, id, Removal::Force));
+            until_closing(fx, id);
+            assert_eq!(
+                fx.tenants.remove(Actor::Cli, id, Removal::Empty),
+                Err(TenantError::Closing)
+            );
+            drop(held);
+            assert_eq!(first.join().expect("the first returns"), Ok(()));
+        });
+        let statuses: Vec<Value> = f
+            .admin_records("tenant_remove")
+            .into_iter()
+            .map(|r| r["status"].clone())
+            .collect();
+        assert_eq!(statuses, [503, 204]);
+    }
+
+    #[test]
+    fn a_removal_whose_record_fails_removes_nothing() {
+        let f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        f.conn()
+            .execute_batch(
+                "CREATE TEMP TRIGGER no_audit BEFORE INSERT ON audit
+                 BEGIN SELECT RAISE(ABORT, 'no audit'); END;",
+            )
+            .expect("trigger");
+        assert_eq!(
+            f.tenants.remove(Actor::Cli, id, Removal::Empty),
+            Err(TenantError::AuditFailed)
+        );
+        assert!(f.has_row(id));
+        assert_eq!(f.dirs().len(), 1);
+        assert!(f.tenants.store(id).is_ok(), "served again");
+    }
+
+    /// The row's commit is the removal; a directory a crash leaves after
+    /// it goes at the next start.
+    #[test]
+    fn a_removal_cut_off_after_its_commit_finishes_at_the_next_start() {
+        let mut f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        drop(f.tenants.store(id).expect("opened by a request"));
+        f.fs.fail_from(f.fs.log().len());
+        assert_eq!(f.tenants.remove(Actor::Cli, id, Removal::Empty), Ok(()));
+        assert_eq!(f.dirs().len(), 1, "the dead process removed nothing");
+        f.restart();
+        assert!(!f.has_row(id));
+        assert_eq!(f.dirs(), Vec::<OsString>::new());
+    }
+
+    #[test]
+    fn removal_deletes_the_directory_on_disk() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let tenants = Tenants::open(
+            dir.path(),
+            Master::new().key(),
+            Arc::new(crate::fs::OsFs),
+            Arc::new(ManualClock::at(datetime!(2026-10-23 12:00 UTC))),
+        )
+        .expect("opens");
+        let id = tenants.create(Actor::Cli, "acme", None).expect("made");
+        let tenant_dir = dir.path().join("tenants").join(id.to_string());
+        assert!(tenant_dir.join("catalog.sqlite").is_file());
+        tenants
+            .remove(Actor::Cli, id, Removal::Empty)
+            .expect("removed");
+        assert!(!tenant_dir.exists());
     }
 }

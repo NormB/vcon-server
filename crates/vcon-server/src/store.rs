@@ -74,6 +74,15 @@ pub struct Stored {
     pub body: Vec<u8>,
 }
 
+/// What a tenant's Store keeps, as removal checks it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Counts {
+    /// Versions kept, hidden ones included.
+    pub versions: u64,
+    /// Uuids under a legal hold.
+    pub held: u64,
+}
+
 /// Why a Store call was refused or failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreError {
@@ -593,6 +602,19 @@ impl Store {
     }
 
     /// Writes an audit record in `tx`; if it cannot, nothing is done.
+    /// How many versions the Store keeps and how many uuids are held.
+    pub fn counts(&self) -> Result<Counts, StoreError> {
+        let conn = self.conn();
+        let count = |sql| -> Result<u64, StoreError> {
+            let n: i64 = conn.query_row(sql, [], |r| r.get(0)).map_err(io)?;
+            u64::try_from(n).map_err(io)
+        };
+        Ok(Counts {
+            versions: count("SELECT count(*) FROM version")?,
+            held: count("SELECT count(*) FROM vcon WHERE hold != 0")?,
+        })
+    }
+
     /// Records, in a transaction of its own, an action on the tenant taken
     /// elsewhere, such as a change to its retention period.
     pub fn log(&self, entry: &Entry) -> Result<(), StoreError> {
@@ -981,6 +1003,40 @@ mod tests {
             assert_eq!(wraps(&f.store), 0, "nothing wrapped");
             assert_eq!(audit_log(&f.store)[0]["status"], 410);
         }
+    }
+
+    #[test]
+    fn counts_include_hidden_versions_and_held_uuids() {
+        let f = fixture();
+        let none = Counts {
+            versions: 0,
+            held: 0,
+        };
+        assert_eq!(f.store.counts(), Ok(none));
+        let (found, old) = stored(&f, "first");
+        let (_, newer) = vcon(UUID, "second");
+        f.store
+            .replace(&f.caller, old, &found, &newer)
+            .expect("replaced");
+        f.store.delete(&f.caller, found.uuid).expect("deleted");
+        let (other, body) = vcon("01a07da8-c2bb-83e5-b9a2-279e0d16bc47", "other");
+        f.store.create(&f.caller, &other, &body).expect("stored");
+        assert_eq!(
+            f.store.counts(),
+            Ok(Counts {
+                versions: 3,
+                held: 0
+            }),
+            "two hidden versions and a live one"
+        );
+        f.store
+            .conn()
+            .execute(
+                "UPDATE vcon SET hold = 1 WHERE uuid = ?1",
+                [found.uuid.as_bytes()],
+            )
+            .expect("a hold");
+        assert_eq!(f.store.counts().map(|c| c.held), Ok(1));
     }
 
     #[test]
