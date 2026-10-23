@@ -3,6 +3,8 @@
 
 pub mod audit;
 pub mod catalog;
+pub mod clock;
 pub mod envelope;
 pub mod fs;
 pub mod ids;
+pub mod store;

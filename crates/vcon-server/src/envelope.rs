@@ -101,6 +101,13 @@ impl Key {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct KeyId([u8; 8]);
 
+impl KeyId {
+    /// The id's 8 bytes, as catalogs store them.
+    pub(crate) fn bytes(self) -> [u8; 8] {
+        self.0
+    }
+}
+
 impl fmt::Display for KeyId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.iter().try_for_each(|b| write!(f, "{b:02x}"))
@@ -758,5 +765,11 @@ mod tests {
         let expected = format!("x'0a{}ff'", "00".repeat(30));
         assert_eq!(*literal, expected);
         assert_eq!(literal.capacity(), literal.len(), "built at its final size");
+    }
+
+    #[test]
+    fn keys_can_be_shared_between_threads() {
+        fn shared<T: Send + Sync>() {}
+        shared::<Key>();
     }
 }

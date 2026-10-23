@@ -15,6 +15,14 @@ pub(crate) struct LockedPage {
     release: unsafe fn(NonNull<u8>, usize),
 }
 
+// SAFETY: a LockedPage owns its mapping and nothing else points into it,
+// so moving it to another thread moves sole ownership.
+unsafe impl Send for LockedPage {}
+
+// SAFETY: through a shared reference a LockedPage only gives out `&[u8]`;
+// writing needs `&mut self`.
+unsafe impl Sync for LockedPage {}
+
 impl LockedPage {
     /// Maps one page, leaves it out of core dumps and locks it.
     pub(crate) fn new() -> io::Result<LockedPage> {
