@@ -124,6 +124,8 @@ pub struct Caller {
 pub enum AuthError {
     /// No Authorization header.
     Missing,
+    /// The key does not hold the scope the request needs.
+    Forbidden(Scope),
     /// Not `Bearer` and a token as `new_token` writes one.
     Malformed,
     /// No key has this id, or the secret is not its own.
@@ -157,6 +159,25 @@ pub fn authenticate(keys: &Tenants, authorization: Option<&str>) -> Result<Calle
         tenant: key.tenant,
         scopes: key.scopes,
     })
+}
+
+/// Refuses a caller whose key does not hold `scope`. Admin belongs only to
+/// an operator key, and the vCon and legal scopes only to a tenant key, so
+/// a key holding a scope of the other kind is still refused it.
+pub fn require(caller: &Caller, scope: Scope) -> Result<(), AuthError> {
+    let of_its_kind = (scope == Scope::Admin) == caller.tenant.is_none();
+    if of_its_kind && caller.scopes.contains(scope) {
+        Ok(())
+    } else {
+        Err(AuthError::Forbidden(scope))
+    }
+}
+
+/// The tenant a vCon or legal request acts on: the caller's own, from its
+/// key, never from the request.
+pub fn tenant_for(caller: &Caller, scope: Scope) -> Result<TenantId, AuthError> {
+    require(caller, scope)?;
+    caller.tenant.ok_or(AuthError::Forbidden(scope))
 }
 
 /// The token in `Bearer <token>`. The scheme's case does not matter, and
@@ -433,6 +454,78 @@ mod tests {
                 .execute_batch("ALTER TABLE api_key RENAME TO gone")
                 .expect("lose the table");
             assert_eq!(auth(&f, &header), Err(AuthError::Io), "no table");
+        }
+    }
+
+    mod scopes {
+        use super::*;
+
+        const TENANT: TenantId = TenantId([1; 16]);
+
+        fn caller(tenant: Option<TenantId>, scopes: &[Scope]) -> Caller {
+            Caller {
+                key: KeyId([2; 8]),
+                tenant,
+                scopes: Scopes::of(scopes),
+            }
+        }
+
+        /// Which scopes each key may use: (key, scopes it allows).
+        #[test]
+        fn each_key_may_use_only_the_scopes_it_holds_of_its_kind() {
+            let vcon = [Scope::Write, Scope::Read, Scope::Delete, Scope::Legal];
+            let matrix = [
+                (caller(Some(TENANT), &[Scope::Write]), vec![Scope::Write]),
+                (
+                    caller(Some(TENANT), &[Scope::Read, Scope::Delete]),
+                    vec![Scope::Read, Scope::Delete],
+                ),
+                (caller(Some(TENANT), &[Scope::Legal]), vec![Scope::Legal]),
+                (caller(Some(TENANT), &vcon), vcon.to_vec()),
+                (caller(None, &[Scope::Admin]), vec![Scope::Admin]),
+                // A key of one kind holding a scope of the other, as only a
+                // damaged table could, is refused it.
+                (
+                    caller(Some(TENANT), &[Scope::Admin, Scope::Read]),
+                    vec![Scope::Read],
+                ),
+                (
+                    caller(None, &[Scope::Admin, Scope::Write]),
+                    vec![Scope::Admin],
+                ),
+            ];
+            for (who, allowed) in matrix {
+                for scope in Scope::ALL {
+                    let expected = if allowed.contains(&scope) {
+                        Ok(())
+                    } else {
+                        Err(AuthError::Forbidden(scope))
+                    };
+                    assert_eq!(require(&who, scope), expected, "{who:?} {scope:?}");
+                }
+            }
+        }
+
+        #[test]
+        fn a_request_acts_on_the_tenant_of_its_key() {
+            let tenant_key = caller(Some(TENANT), &[Scope::Write]);
+            assert_eq!(tenant_for(&tenant_key, Scope::Write), Ok(TENANT));
+            assert_eq!(
+                tenant_for(&tenant_key, Scope::Read),
+                Err(AuthError::Forbidden(Scope::Read))
+            );
+        }
+
+        #[test]
+        fn an_operator_key_acts_on_no_tenant() {
+            let operator = caller(None, &[Scope::Admin, Scope::Write]);
+            for scope in Scope::ALL {
+                assert_eq!(
+                    tenant_for(&operator, scope),
+                    Err(AuthError::Forbidden(scope)),
+                    "{scope:?}"
+                );
+            }
         }
     }
 }
