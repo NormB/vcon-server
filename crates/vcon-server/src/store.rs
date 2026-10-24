@@ -18,7 +18,7 @@ use crate::ids::{KeyId, TenantId, VersionId};
 
 mod purge;
 
-pub use purge::{Kept, due};
+pub use purge::{Kept, PurgeReport, due};
 
 /// The tables of a tenant's catalog, besides its audit log. A key column
 /// says NOT NULL because SQLite lets a PRIMARY KEY other than an INTEGER
@@ -826,16 +826,16 @@ mod tests {
         pub(super) between: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     }
 
-    struct Fixture {
-        dir: tempfile::TempDir,
-        fs: Arc<CrashFs>,
-        clock: Arc<ManualClock>,
+    pub(super) struct Fixture {
+        pub(super) dir: tempfile::TempDir,
+        pub(super) fs: Arc<CrashFs>,
+        pub(super) clock: Arc<ManualClock>,
         /// The tenant key, wrapped under `master`, so a test can open the
         /// store again with the same key.
         master: Key,
         wrapped: Vec<u8>,
-        store: Store,
-        caller: Caller,
+        pub(super) store: Store,
+        pub(super) caller: Caller,
     }
 
     const TENANT: TenantId = TenantId([0x11; 16]);
@@ -861,7 +861,7 @@ mod tests {
         }
     }
 
-    fn fixture() -> Fixture {
+    pub(super) fn fixture() -> Fixture {
         let dir = tempfile::tempdir().expect("temp dir");
         let fs = Arc::new(CrashFs::new(dir.path()));
         let clock = Arc::new(ManualClock::at(datetime!(2026-10-23 12:00 UTC)));

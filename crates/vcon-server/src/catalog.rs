@@ -1,8 +1,8 @@
 //! An SQLite catalog, encrypted with SQLCipher under its catalog key.
 
-use std::path::Path;
-
 use std::ffi::c_int;
+use std::path::Path;
+use std::time::Duration;
 
 use rusqlite::{Connection, ErrorCode};
 
@@ -10,6 +10,12 @@ use crate::envelope::Key;
 
 /// The schema version this build makes and reads.
 pub const SCHEMA_VERSION: i64 = 1;
+
+/// How long a statement waits for another connection's lock before it
+/// fails busy. It is rusqlite's own default, stated so it is chosen, not
+/// inherited; a caller that must not wait inside SQLite sets zero for the
+/// call and restores this.
+pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Why a catalog did not open.
 #[derive(Debug)]
@@ -32,6 +38,7 @@ impl From<rusqlite::Error> for CatalogError {
 /// is new.
 pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogError> {
     let conn = Connection::open(path)?;
+    conn.busy_timeout(BUSY_TIMEOUT)?;
     set_key(&conn, key)?;
     // SQLCipher reads nothing until the first query, so a wrong key shows
     // here, as a file that is not a database.
@@ -138,6 +145,7 @@ mod tests {
         assert_eq!(number("synchronous"), 2, "FULL");
         assert_eq!(number("secure_delete"), 1);
         assert_eq!(number("temp_store"), 2, "MEMORY");
+        assert_eq!(number("busy_timeout"), 5000, "milliseconds");
         assert_eq!(text("cipher_provider"), "openssl");
     }
 
