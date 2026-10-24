@@ -57,6 +57,13 @@ CREATE TABLE api_key (
 CREATE INDEX api_key_tenant ON api_key (tenant);
 ";
 
+/// A tenant's retention column as read: None is the server default. A
+/// period that does not read back is damage, not the server default.
+fn stored_retention(text: Option<String>) -> Result<Option<Retention>, TenantError> {
+    text.map(|text| Retention::parse(&text).ok_or(TenantError::Io))
+        .transpose()
+}
+
 /// Why a Tenants call was refused or failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TenantError {
@@ -317,11 +324,7 @@ impl Tenants {
                 Ok(TenantInfo {
                     id: TenantId(id),
                     name,
-                    // A period that does not read back is damage, not the
-                    // server default.
-                    retention: retention
-                        .map(|text| Retention::parse(&text).ok_or(TenantError::Io))
-                        .transpose()?,
+                    retention: stored_retention(retention)?,
                     created_at: from_nanos(created_at).ok_or(TenantError::Io)?,
                 })
             })
@@ -580,6 +583,21 @@ impl Tenants {
     #[cfg(test)]
     pub(crate) fn close(&self, id: TenantId) {
         self.drain(id).expect("not closing yet");
+    }
+
+    /// A tenant's own retention period, None when it uses the server
+    /// default, read afresh so a change counts from the next call. It is
+    /// read for the server's own use, such as a delete's purge, so nothing
+    /// is recorded.
+    pub fn retention(&self, id: TenantId) -> Result<Option<Retention>, TenantError> {
+        let row: Option<Option<String>> = self
+            .conn()
+            .query_row("SELECT retention FROM tenant WHERE id = ?1", [id.0], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map_err(io)?;
+        stored_retention(row.ok_or(TenantError::NotFound)?)
     }
 
     /// Whether server.sqlite answers a query, for the health route.
@@ -1419,6 +1437,42 @@ mod tests {
     }
 
     #[test]
+    fn a_tenant_retention_is_read_afresh_and_not_recorded() {
+        let f = fixture();
+        let lab = f
+            .tenants
+            .create(Actor::Cli, "lab", Some(Retention::Months(18)))
+            .expect("made");
+        let acme = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        let records = f.tenants.admin_records().len();
+
+        assert_eq!(f.tenants.retention(lab), Ok(Some(Retention::Months(18))));
+        assert_eq!(f.tenants.retention(acme), Ok(None));
+        f.tenants
+            .set_retention(Actor::Cli, acme, Some(Retention::Days(0)))
+            .expect("changed");
+        assert_eq!(f.tenants.retention(acme), Ok(Some(Retention::Days(0))));
+        assert_eq!(
+            f.tenants.retention(TenantId([0xee; 16])),
+            Err(TenantError::NotFound)
+        );
+        assert_eq!(
+            f.tenants.admin_records().len(),
+            records + 1,
+            "only the retention change is recorded"
+        );
+        f.tenants
+            .conn_for_test()
+            .execute("UPDATE tenant SET retention = '7w' WHERE id = ?1", [lab.0])
+            .expect("damaged");
+        assert_eq!(
+            f.tenants.retention(lab),
+            Err(TenantError::Io),
+            "a period that does not read back is damage"
+        );
+    }
+
+    #[test]
     fn list_shows_every_tenant_by_name_and_is_recorded() {
         let f = fixture();
         assert_eq!(f.tenants.list(Actor::Cli), Ok(Vec::new()));
@@ -1667,7 +1721,7 @@ mod tests {
         f.tenants
             .store(id)
             .expect("its store")
-            .delete(&caller(), uuid)
+            .delete(&caller(), uuid, Retention::Years(7))
             .expect("deleted, so only a hidden version is kept");
         assert_eq!(
             f.tenants.remove(Actor::Cli, id, Removal::Empty),
@@ -1859,7 +1913,7 @@ mod tests {
         assert_eq!(read(&store_a), Ok(kept_by_a));
         assert_eq!(read(&store_b), Ok(kept_by_b.clone()));
         store_a
-            .delete(&caller(), found.uuid)
+            .delete(&caller(), found.uuid, Retention::Years(7))
             .expect("a deletes its own");
         assert_eq!(read(&store_a), Err(StoreError::Gone));
         assert_eq!(read(&store_b), Ok(kept_by_b), "b's is untouched");
@@ -1908,7 +1962,7 @@ mod tests {
         let who = caller();
         let mut answers = vec![
             format!("{:?}", store.get(&who, found.uuid).map(|_| ())),
-            format!("{:?}", store.delete(&who, found.uuid)),
+            format!("{:?}", store.delete(&who, found.uuid, Retention::Years(7))),
             kind(store.create(&who, &found, &body)),
             kind(store.create(&who, &found, &body)),
         ];
@@ -1917,7 +1971,10 @@ mod tests {
             "{:?}",
             store.replace(&who, current, &found, &newer).map(|_| ())
         ));
-        answers.push(format!("{:?}", store.delete(&who, found.uuid)));
+        answers.push(format!(
+            "{:?}",
+            store.delete(&who, found.uuid, Retention::Years(7))
+        ));
         answers.push(format!("{:?}", store.get(&who, found.uuid).map(|_| ())));
         answers
     }
@@ -1939,7 +1996,7 @@ mod tests {
         let (other, body) = vcon("01a07da8-c2bb-83e5-b9a2-279e0d16bc47", "a's other");
         store_a.create(&caller(), &other, &body).expect("stored");
         store_a
-            .delete(&caller(), other.uuid)
+            .delete(&caller(), other.uuid, Retention::Years(7))
             .expect("and has deleted another");
         assert_eq!(answers(&f.tenants.store(b).expect("b's store")), expected);
         assert_eq!(

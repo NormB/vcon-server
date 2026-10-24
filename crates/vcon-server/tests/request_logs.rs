@@ -14,6 +14,7 @@ use vcon_server::audit::Actor;
 use vcon_server::clock::SystemClock;
 use vcon_server::envelope::Key;
 use vcon_server::fs::OsFs;
+use vcon_server::retention::Retention;
 use vcon_server::tenants::Tenants;
 
 const UUID: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bc46";
@@ -78,6 +79,7 @@ async fn each_request_is_logged_by_its_route_template_and_no_id() {
             body_timeout: Duration::from_secs(5),
         },
         supported: BTreeSet::new(),
+        retention_default: Retention::Years(7),
     });
 
     let made =

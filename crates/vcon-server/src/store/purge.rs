@@ -59,19 +59,33 @@ impl Store {
     /// while readers finish, so no page that held a purged key is left in
     /// it.
     pub fn purge_due(&self, retention: Retention) -> Result<PurgeReport, StoreError> {
+        self.purge_hidden(Actor::Sweep, retention, None)
+    }
+
+    /// Purges, as `purge_due` does, the hidden versions that are due, with
+    /// `who` as the actor of each record; with `uuid`, only that uuid's.
+    pub(super) fn purge_hidden(
+        &self,
+        who: Actor,
+        retention: Retention,
+        uuid: Option<Uuid>,
+    ) -> Result<PurgeReport, StoreError> {
         let hidden: Vec<[u8; 16]> = {
             let conn = self.conn();
             let mut rows = conn
-                .prepare("SELECT version FROM version WHERE hidden_at IS NOT NULL")
+                .prepare(
+                    "SELECT version FROM version
+                     WHERE hidden_at IS NOT NULL AND (?1 IS NULL OR uuid = ?1)",
+                )
                 .map_err(io)?;
-            rows.query_map([], |r| r.get(0))
+            rows.query_map([uuid.map(|u| *u.as_bytes())], |r| r.get(0))
                 .map_err(io)?
                 .collect::<Result<_, _>>()
                 .map_err(io)?
         };
         let mut report = PurgeReport::default();
         for version in hidden {
-            if self.purge(VersionId(version), retention)? {
+            if self.purge(who, VersionId(version), retention)? {
                 report.purged += 1;
             }
         }
@@ -82,7 +96,12 @@ impl Store {
     }
 
     /// Purges `version` if it is due; false if it is not, or is gone.
-    fn purge(&self, version: VersionId, retention: Retention) -> Result<bool, StoreError> {
+    fn purge(
+        &self,
+        who: Actor,
+        version: VersionId,
+        retention: Retention,
+    ) -> Result<bool, StoreError> {
         let mut conn = self.conn();
         let tx = immediate(&mut conn)?;
         let row: Option<([u8; 16], i64, bool, bool)> = tx
@@ -126,7 +145,7 @@ impl Store {
             .map_err(io)?;
         }
         let entry = Entry {
-            actor: Actor::Sweep,
+            actor: who,
             action: Action::Purge,
             target: Some(Uuid::from_bytes(uuid).to_string()),
             version: Some(version),
@@ -324,7 +343,9 @@ mod purge_tests {
     fn a_purge_erases_a_deleted_vcon_and_leaves_a_tombstone() {
         let f = fixture();
         let (uuid, version) = stored(&f, "first");
-        f.store.delete(&f.caller, uuid).expect("deletes");
+        f.store
+            .delete(&f.caller, uuid, Retention::Years(7))
+            .expect("deletes");
         later(&f, Duration::days(2));
 
         assert_eq!(f.store.purge_due(DAY), Ok(PurgeReport { purged: 1 }));
@@ -404,7 +425,9 @@ mod purge_tests {
         // Deleted, but held.
         let (found, body) = vcon("0199e5c6-0d7a-7c11-8000-000000000001", "held");
         f.store.create(&f.caller, &found, &body).expect("stores");
-        f.store.delete(&f.caller, found.uuid).expect("deletes");
+        f.store
+            .delete(&f.caller, found.uuid, Retention::Years(7))
+            .expect("deletes");
         f.store
             .conn()
             .execute(
@@ -416,7 +439,9 @@ mod purge_tests {
         // Deleted, but stored too recently.
         let (young, body) = vcon("0199e5c6-0d7a-7c11-8000-000000000002", "young");
         f.store.create(&f.caller, &young, &body).expect("stores");
-        f.store.delete(&f.caller, young.uuid).expect("deletes");
+        f.store
+            .delete(&f.caller, young.uuid, Retention::Years(7))
+            .expect("deletes");
 
         assert_eq!(f.store.purge_due(DAY), Ok(PurgeReport { purged: 0 }));
 
@@ -427,6 +452,132 @@ mod purge_tests {
             );
         }
         assert!(purges(&f).is_empty());
+    }
+
+    #[test]
+    fn deleting_an_old_vcon_erases_it_at_once() {
+        let f = fixture();
+        let (uuid, version) = stored(&f, "first");
+        later(&f, Duration::days(2));
+
+        assert_eq!(f.store.delete(&f.caller, uuid, DAY), Ok(()));
+
+        assert_eq!(
+            count(&f, "SELECT count(*) FROM version WHERE uuid = ?1", uuid),
+            0
+        );
+        assert_eq!(
+            count(&f, "SELECT count(*) FROM tombstone WHERE uuid = ?1", uuid),
+            1
+        );
+        assert!(!object_exists(&f, version));
+        let records = purges(&f);
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0]["actor"],
+            f.caller.key.to_string(),
+            "the delete that caused the purge is its actor"
+        );
+    }
+
+    #[test]
+    fn deleting_a_young_vcon_keeps_it_hidden() {
+        let f = fixture();
+        let (uuid, version) = stored(&f, "first");
+        later(&f, Duration::hours(23));
+
+        assert_eq!(f.store.delete(&f.caller, uuid, DAY), Ok(()));
+
+        assert_eq!(
+            count(
+                &f,
+                "SELECT count(*) FROM version WHERE uuid = ?1 AND hidden_at IS NOT NULL",
+                uuid
+            ),
+            1
+        );
+        assert!(object_exists(&f, version));
+        assert!(purges(&f).is_empty());
+    }
+
+    #[test]
+    fn a_zero_period_erases_inside_the_delete() {
+        let f = fixture();
+        let (uuid, version) = stored(&f, "first");
+
+        assert_eq!(f.store.delete(&f.caller, uuid, Retention::Days(0)), Ok(()));
+
+        assert_eq!(
+            count(&f, "SELECT count(*) FROM tombstone WHERE uuid = ?1", uuid),
+            1
+        );
+        assert!(!object_exists(&f, version));
+    }
+
+    #[test]
+    fn a_delete_purges_only_its_own_uuid() {
+        let f = fixture();
+        let (uuid, _) = stored(&f, "first");
+        let (other, body) = vcon("0199e5c6-0d7a-7c11-8000-000000000003", "other");
+        f.store.create(&f.caller, &other, &body).expect("stores");
+        f.store
+            .delete(&f.caller, other.uuid, Retention::Years(7))
+            .expect("deletes");
+        later(&f, Duration::days(2));
+
+        f.store.delete(&f.caller, uuid, DAY).expect("deletes");
+
+        assert_eq!(
+            count(
+                &f,
+                "SELECT count(*) FROM version WHERE uuid = ?1",
+                other.uuid
+            ),
+            1,
+            "the other uuid waits for the sweep"
+        );
+    }
+
+    #[test]
+    fn a_delete_whose_purge_fails_stands_and_answers_the_failure() {
+        let f = fixture();
+        let (uuid, version) = stored(&f, "first");
+        later(&f, Duration::days(2));
+        f.store
+            .conn()
+            .execute_batch(
+                "CREATE TEMP TRIGGER no_purge BEFORE DELETE ON version
+                 BEGIN SELECT RAISE(ABORT, 'the disk has failed'); END;",
+            )
+            .expect("trigger");
+
+        assert!(f.store.delete(&f.caller, uuid, DAY).is_err());
+
+        assert_eq!(f.store.get(&f.caller, uuid), Err(StoreError::Gone));
+        assert_eq!(
+            count(
+                &f,
+                "SELECT count(*) FROM version WHERE uuid = ?1 AND hidden_at IS NOT NULL",
+                uuid
+            ),
+            1,
+            "kept hidden for the sweep to purge"
+        );
+        assert!(object_exists(&f, version));
+    }
+
+    #[test]
+    fn deleting_again_erases_what_has_since_come_due() {
+        let f = fixture();
+        let (uuid, version) = stored(&f, "first");
+        f.store
+            .delete(&f.caller, uuid, Retention::Years(7))
+            .expect("deletes");
+        later(&f, Duration::days(2));
+
+        assert_eq!(f.store.delete(&f.caller, uuid, DAY), Ok(()));
+
+        assert!(!object_exists(&f, version));
     }
 
     /// The plain contents of every page of the catalog at `path` and of
@@ -483,7 +634,9 @@ mod purge_tests {
         let f = fixture();
         let (uuid, version) = stored(&f, "first");
         let wrapped = wrapped_key(&f, version);
-        f.store.delete(&f.caller, uuid).expect("deletes");
+        f.store
+            .delete(&f.caller, uuid, Retention::Years(7))
+            .expect("deletes");
         let path = f.dir.path().join("catalog.sqlite");
         let key = envelope::catalog_key(&f.store.tenant_key).expect("catalog key");
         let page_size: String = f
@@ -513,7 +666,9 @@ mod purge_tests {
     fn the_checkpoint_waits_for_a_reader_without_holding_the_catalog() {
         let f = fixture();
         let (uuid, _) = stored(&f, "first");
-        f.store.delete(&f.caller, uuid).expect("deletes");
+        f.store
+            .delete(&f.caller, uuid, Retention::Years(7))
+            .expect("deletes");
         later(&f, Duration::days(2));
         let path = f.dir.path().join("catalog.sqlite");
         let key = envelope::catalog_key(&f.store.tenant_key).expect("catalog key");

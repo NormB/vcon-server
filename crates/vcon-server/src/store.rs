@@ -15,6 +15,7 @@ use crate::clock::{Clock, nanos};
 use crate::envelope::{self, Context, Key, WrapLimit};
 use crate::fs::Fs;
 use crate::ids::{KeyId, TenantId, VersionId};
+use crate::retention::Retention;
 
 mod purge;
 
@@ -456,10 +457,12 @@ impl Store {
 
     /// Deletes `uuid`: one transaction marks it deleted, empties its
     /// current version and hides every kept version, with the audit
-    /// record. Its versions stay for legal reads until they are purged.
+    /// record. Its versions stay for legal reads until they are purged;
+    /// any already as old as `retention` is purged at once, so a zero
+    /// period erases the vCon inside the request.
     /// Deleting a deleted or purged uuid succeeds again. A legal hold does
     /// not stop a delete, only a purge.
-    pub fn delete(&self, who: &Caller, uuid: Uuid) -> Result<(), StoreError> {
+    pub fn delete(&self, who: &Caller, uuid: Uuid, retention: Retention) -> Result<(), StoreError> {
         let entry = |status| Entry {
             actor: Actor::Key(who.key),
             action: Action::Delete,
@@ -490,7 +493,12 @@ impl Store {
         let status = if outcome.is_ok() { 204 } else { 404 };
         self.record(&tx, &entry(status))?;
         commit(tx)?;
-        outcome
+        outcome?;
+        drop(conn);
+        // A version already as old as `retention` is erased now, not at
+        // the next sweep.
+        self.purge_hidden(Actor::Key(who.key), retention, Some(uuid))?;
+        Ok(())
     }
 
     /// Every version whose object file is missing. Such a version answers
@@ -1049,7 +1057,9 @@ mod tests {
         f.store
             .replace(&f.caller, old, &found, &newer)
             .expect("replaced");
-        f.store.delete(&f.caller, found.uuid).expect("deleted");
+        f.store
+            .delete(&f.caller, found.uuid, Retention::Years(7))
+            .expect("deleted");
         let (other, body) = vcon("01a07da8-c2bb-83e5-b9a2-279e0d16bc47", "other");
         f.store.create(&f.caller, &other, &body).expect("stored");
         assert_eq!(
@@ -1631,7 +1641,10 @@ mod tests {
             .replace(&f.caller, old, &found, &newer)
             .expect("replaced");
         f.clock.set(datetime!(2026-10-23 14:00 UTC));
-        assert_eq!(f.store.delete(&f.caller, found.uuid), Ok(()));
+        assert_eq!(
+            f.store.delete(&f.caller, found.uuid, Retention::Years(7)),
+            Ok(())
+        );
         let record = audit_log(&f.store).pop().expect("a record");
         assert_eq!(
             (record["action"].clone(), record["status"].clone()),
@@ -1686,8 +1699,13 @@ mod tests {
     fn deleting_a_deleted_or_purged_uuid_succeeds_again() {
         let f = fixture();
         let (found, _) = stored(&f, "first");
-        f.store.delete(&f.caller, found.uuid).expect("deleted");
-        assert_eq!(f.store.delete(&f.caller, found.uuid), Ok(()));
+        f.store
+            .delete(&f.caller, found.uuid, Retention::Years(7))
+            .expect("deleted");
+        assert_eq!(
+            f.store.delete(&f.caller, found.uuid, Retention::Years(7)),
+            Ok(())
+        );
         assert_eq!(get_entry_status(&f), 204);
         let g = fixture();
         g.store
@@ -1697,7 +1715,10 @@ mod tests {
                 [found.uuid.as_bytes()],
             )
             .expect("purged");
-        assert_eq!(g.store.delete(&g.caller, found.uuid), Ok(()));
+        assert_eq!(
+            g.store.delete(&g.caller, found.uuid, Retention::Years(7)),
+            Ok(())
+        );
         assert_eq!(get_entry_status(&g), 204);
     }
 
@@ -1706,7 +1727,7 @@ mod tests {
         let f = fixture();
         let (found, _) = vcon(UUID, "first");
         assert_eq!(
-            f.store.delete(&f.caller, found.uuid),
+            f.store.delete(&f.caller, found.uuid, Retention::Years(7)),
             Err(StoreError::NotFound)
         );
         assert_eq!(get_entry_status(&f), 404);
@@ -1723,7 +1744,10 @@ mod tests {
                 [found.uuid.as_bytes()],
             )
             .expect("hold");
-        assert_eq!(f.store.delete(&f.caller, found.uuid), Ok(()));
+        assert_eq!(
+            f.store.delete(&f.caller, found.uuid, Retention::Years(7)),
+            Ok(())
+        );
         assert_eq!(f.store.get(&f.caller, found.uuid), Err(StoreError::Gone));
     }
 
@@ -1739,7 +1763,7 @@ mod tests {
             )
             .expect("trigger");
         assert_eq!(
-            f.store.delete(&f.caller, found.uuid),
+            f.store.delete(&f.caller, found.uuid, Retention::Years(7)),
             Err(StoreError::AuditFailed)
         );
         f.store
@@ -2064,7 +2088,11 @@ mod tests {
                  BEGIN SELECT RAISE(ABORT, 'the process has died'); END;",
             )
             .expect("trigger");
-        assert!(f.store.delete(&f.caller, found.uuid).is_err());
+        assert!(
+            f.store
+                .delete(&f.caller, found.uuid, Retention::Years(7))
+                .is_err()
+        );
         drop(other);
         restart(&mut f);
         assert_eq!(

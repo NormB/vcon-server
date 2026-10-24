@@ -124,6 +124,7 @@ fn app_from(config: &Config, tenants: Arc<Tenants>) -> App {
             body_timeout: config.read_timeout,
         },
         supported: config.supported_critical.clone(),
+        retention_default: config.retention_default,
     }
 }
 
@@ -152,7 +153,7 @@ mod tests {
             tls_key: "key.pem".into(),
             data_dir: dir.path().to_owned(),
             master_key: "master.key".into(),
-            retention_default: Retention::Years(7),
+            retention_default: Retention::Months(18),
             purge_interval: Duration::from_secs(3600),
             rotation_warn: Duration::from_secs(86400),
             body_limit: 12_345,
@@ -166,6 +167,7 @@ mod tests {
         assert_eq!(app.limits.inflated, 67_890);
         assert_eq!(app.limits.body_timeout, Duration::from_secs(17));
         assert_eq!(app.supported, config.supported_critical);
+        assert_eq!(app.retention_default, config.retention_default);
     }
 
     #[test]

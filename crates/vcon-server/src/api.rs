@@ -32,6 +32,7 @@ use crate::access::{self, AuthError, Caller, Scope};
 use crate::audit::{Action, Actor, Entry};
 use crate::ids::TenantId;
 use crate::ids::{KeyId, VersionId};
+use crate::retention::Retention;
 use crate::store::{Caller as StoreCaller, Created, Store, StoreError};
 use crate::tenants::Tenants;
 use vcon_form::{Inspection, Rejection};
@@ -53,6 +54,8 @@ pub struct App {
     pub limits: Limits,
     /// The must_support extensions this server supports.
     pub supported: BTreeSet<String>,
+    /// The retention period of a tenant that sets none.
+    pub retention_default: Retention,
 }
 
 /// The routes, served from `app`.
@@ -282,9 +285,23 @@ async fn delete(
             .await
             .into_response();
     };
+    // The tenant's own period, else the server's, read now so a change
+    // counts from the next delete. Unread, nothing is deleted.
+    let (tenants, tenant) = (app.tenants.clone(), admitted.tenant);
+    let retention = match blocking(move || tenants.retention(tenant)).await {
+        Ok(own) => own.unwrap_or(app.retention_default),
+        Err(_) => {
+            let refused = Problem::Unavailable;
+            let entry = refusal(admitted.caller.key, Action::Delete, refused);
+            return app
+                .refuse(Some(tenant), entry, refused)
+                .await
+                .into_response();
+        }
+    };
     let (store, key) = (admitted.store.clone(), admitted.caller.key);
     // Store records its own outcomes.
-    match blocking(move || store.delete(&StoreCaller { key }, uuid)).await {
+    match blocking(move || store.delete(&StoreCaller { key }, uuid, retention)).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => failed(error).into_response(),
     }
@@ -851,6 +868,16 @@ mod tests {
 
         /// A server that supports the must_support extensions named.
         pub(super) async fn server_with(supported: &[&str]) -> Server {
+            server_from(supported, Retention::Years(7)).await
+        }
+
+        /// A server whose tenants that set no retention period keep
+        /// vCons for `default`.
+        pub(super) async fn server_keeping(default: Retention) -> Server {
+            server_from(&[], default).await
+        }
+
+        async fn server_from(supported: &[&str], retention_default: Retention) -> Server {
             let dir = tempfile::tempdir().expect("temp dir");
             let tenants = Arc::new(
                 Tenants::open(
@@ -870,6 +897,7 @@ mod tests {
                     body_timeout: Duration::from_millis(300),
                 },
                 supported: supported.iter().map(|s| (*s).to_owned()).collect(),
+                retention_default,
             });
             let certificate = certificate();
             let tls = tls_config(&certificate.cert, &certificate.key).expect("tls");
@@ -1325,7 +1353,11 @@ mod tests {
             s.tenants
                 .store(s.tenant)
                 .expect("its store")
-                .delete(&store_caller(), found.uuid)
+                .delete(
+                    &store_caller(),
+                    found.uuid,
+                    crate::retention::Retention::Years(7),
+                )
                 .expect("deleted");
             let answer = post(&s, &writer, None, body).await;
             assert_eq!(answer.status(), 410);
@@ -1405,10 +1437,11 @@ mod tests {
     }
 
     mod by_uuid {
-        use super::pipeline::{Server, problem, server};
+        use super::pipeline::{Server, problem, server, server_keeping};
         use crate::access::{Scope, Scopes};
         use crate::audit::Actor;
         use crate::ids::TenantId;
+        use crate::retention::Retention;
 
         const UUID: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bc46";
 
@@ -1530,6 +1563,7 @@ mod tests {
                         key: crate::ids::KeyId([9; 8]),
                     },
                     UUID.parse().expect("uuid"),
+                    crate::retention::Retention::Years(7),
                 )
                 .expect("deleted");
             let answer = get(&s, &token, UUID).await;
@@ -1728,6 +1762,7 @@ mod tests {
                         key: crate::ids::KeyId([9; 8]),
                     },
                     UUID.parse().expect("uuid"),
+                    crate::retention::Retention::Years(7),
                 )
                 .expect("deleted");
             let answer = put(&s, &token, UUID, Some(&a4_tag), a4).await;
@@ -1814,6 +1849,66 @@ mod tests {
             let answer = delete(&s, &deleter, UUID).await;
             assert_eq!(answer.status(), 503);
             assert_eq!(problem(answer).await, "audit-failed");
+        }
+
+        /// The purge records of `s`'s tenant whose actor is `token`'s key.
+        fn purged_by(s: &Server, token: &str) -> usize {
+            s.tenant_log("purge")
+                .iter()
+                .filter(|r| r["actor"] == token[4..20])
+                .count()
+        }
+
+        #[tokio::test]
+        async fn a_delete_erases_at_once_under_the_tenants_zero_period() {
+            let s = server().await;
+            s.tenants
+                .set_retention(Actor::Cli, s.tenant, Some(Retention::Days(0)))
+                .expect("set");
+            let (_, _) = stored_a4(&s).await;
+            let deleter = key_in(&s, s.tenant, &[Scope::Delete]);
+            assert_eq!(delete(&s, &deleter, UUID).await.status(), 204);
+            assert_eq!(purged_by(&s, &deleter), 1);
+        }
+
+        #[tokio::test]
+        async fn a_delete_uses_the_server_default_when_the_tenant_sets_none() {
+            let s = server_keeping(Retention::Days(0)).await;
+            let (_, _) = stored_a4(&s).await;
+            let deleter = key_in(&s, s.tenant, &[Scope::Delete]);
+            assert_eq!(delete(&s, &deleter, UUID).await.status(), 204);
+            assert_eq!(purged_by(&s, &deleter), 1);
+        }
+
+        #[tokio::test]
+        async fn a_delete_keeps_a_young_vcon_for_legal_reads() {
+            let s = server().await;
+            let (_, _) = stored_a4(&s).await;
+            let deleter = key_in(&s, s.tenant, &[Scope::Delete]);
+            assert_eq!(delete(&s, &deleter, UUID).await.status(), 204);
+            assert_eq!(purged_by(&s, &deleter), 0);
+        }
+
+        #[tokio::test]
+        async fn a_delete_whose_period_cannot_be_read_deletes_nothing() {
+            let s = server().await;
+            let (_, _) = stored_a4(&s).await;
+            s.tenants
+                .conn_for_test()
+                .execute(
+                    "UPDATE tenant SET retention = '7w' WHERE id = ?1",
+                    [s.tenant.0],
+                )
+                .expect("damaged");
+            let token = key_in(&s, s.tenant, &[Scope::Delete, Scope::Read]);
+            let answer = delete(&s, &token, UUID).await;
+            assert_eq!(answer.status(), 503);
+            assert_eq!(problem(answer).await, "unavailable");
+            assert_eq!(get(&s, &token, UUID).await.status(), 200);
+            assert_eq!(
+                s.tenant_log("delete").last().expect("recorded")["status"],
+                503
+            );
         }
 
         async fn health(s: &Server, token: Option<&str>) -> reqwest::Response {
