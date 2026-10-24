@@ -15,6 +15,9 @@ use vcon_server::audit::Actor;
 use vcon_server::clock::SystemClock;
 use vcon_server::envelope::Key;
 use vcon_server::fs::OsFs;
+use vcon_server::ids::{KeyId, TenantId};
+use vcon_server::retention::Retention;
+use vcon_server::store::Caller;
 use vcon_server::tenants::Tenants;
 
 const UUID: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bc46";
@@ -28,6 +31,8 @@ struct Setup {
     pem: String,
     token: String,
     addr: SocketAddr,
+    data: PathBuf,
+    tenant: TenantId,
 }
 
 fn random_key_file(path: &std::path::Path) {
@@ -110,6 +115,8 @@ read = 30
         pem,
         token,
         addr,
+        data,
+        tenant,
     }
 }
 
@@ -316,4 +323,127 @@ fn memory_that_cannot_be_locked_stops_the_start() {
     let output = refused(command);
     assert!(stderr(&output).contains("lock"), "{}", stderr(&output));
     let _ = &s.dir;
+}
+
+/// The "purge sweep" lines `running` writes to its stderr, as they come.
+fn sweep_lines(running: &mut Running) -> std::sync::mpsc::Receiver<String> {
+    let stderr = running.0.stderr.take().expect("piped");
+    let (line_tx, line_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(stderr)
+            .lines()
+            .map_while(Result::ok)
+        {
+            if line.contains("purge sweep") && line_tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    line_rx
+}
+
+/// The registry of `s`'s data directory, opened as `serve` opens it.
+fn registry(s: &Setup) -> Tenants {
+    Tenants::open(
+        &s.data,
+        Key::load_master(&s.master_key).expect("the master key"),
+        Arc::new(OsFs),
+        Arc::new(SystemClock),
+    )
+    .expect("opens")
+}
+
+#[test]
+fn serve_purges_what_is_due_when_it_starts() {
+    let s = setup();
+    // A vCon deleted while seven years applied, then the tenant's period set
+    // to zero: due, and waiting for a sweep.
+    let tenants = registry(&s);
+    let store = tenants.store(s.tenant).expect("its store");
+    let body = std::fs::read(format!(
+        "{}/../vcon-form/tests/fixtures/ietf/ab_call_ext_rec.vcon",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .expect("A.4");
+    let found = vcon_form::inspect(
+        &body,
+        Some("application/vcon"),
+        &vcon_form::Limits { inflated: 1 << 20 },
+        &Default::default(),
+    )
+    .expect("a valid vCon");
+    let caller = Caller { key: KeyId([7; 8]) };
+    store.create(&caller, &found, &body).expect("stored");
+    store
+        .delete(&caller, found.uuid, Retention::Years(7))
+        .expect("deleted");
+    tenants
+        .set_retention(Actor::Cli, s.tenant, Some(Retention::Days(0)))
+        .expect("set");
+    drop(store);
+    drop(tenants);
+
+    let mut running = Running(
+        serve(&s)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("starts"),
+    );
+    let sweeps = sweep_lines(&mut running);
+    let swept = sweeps
+        .recv_timeout(Duration::from_secs(20))
+        .expect("serve logged no purge sweep");
+    assert!(swept.contains("purged=1"), "{swept}");
+    assert!(swept.contains("failed=0"), "{swept}");
+    assert!(
+        !swept.contains(&s.tenant.to_string()),
+        "a sweep logs counts, never a tenant: {swept}"
+    );
+    assert!(
+        sweeps.recv_timeout(Duration::from_secs(3)).is_err(),
+        "no second sweep long before purge_interval (an hour here)"
+    );
+    drop(running);
+
+    let tenants = registry(&s);
+    let counts = tenants
+        .store(s.tenant)
+        .expect("its store")
+        .counts()
+        .expect("counts");
+    assert_eq!(counts.versions, 0, "the due version is gone");
+}
+
+#[test]
+fn serve_sweeps_again_once_purge_interval_has_passed() {
+    let s = setup();
+    let text = std::fs::read_to_string(&s.config).expect("read");
+    assert_eq!(text.matches("purge_interval = 3600").count(), 1);
+    std::fs::write(
+        &s.config,
+        text.replace("purge_interval = 3600", "purge_interval = 1"),
+    )
+    .expect("write");
+    let mut running = Running(
+        serve(&s)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("starts"),
+    );
+    let sweeps = sweep_lines(&mut running);
+    sweeps
+        .recv_timeout(Duration::from_secs(20))
+        .expect("a sweep at start");
+    let first = Instant::now();
+    sweeps
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a second sweep after purge_interval");
+    assert!(
+        first.elapsed() >= Duration::from_millis(800),
+        "not before purge_interval: {:?}",
+        first.elapsed()
+    );
 }

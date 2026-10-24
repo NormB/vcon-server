@@ -34,4 +34,5 @@ flate2 = "1.1.10"
 rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "aws_lc_rs"] }
 reqwest = "0.13.5"
 tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["test-util"] }
 time = { version = "0.3.55", features = ["macros"] }

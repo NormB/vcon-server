@@ -600,6 +600,17 @@ impl Tenants {
         stored_retention(row.ok_or(TenantError::NotFound)?)
     }
 
+    /// Every tenant's id, read for the server's own use, such as the purge
+    /// sweep, so nothing is recorded.
+    pub fn ids(&self) -> Result<Vec<TenantId>, TenantError> {
+        let conn = self.conn();
+        let mut rows = conn.prepare("SELECT id FROM tenant").map_err(io)?;
+        rows.query_map([], |r| r.get::<_, [u8; 16]>(0))
+            .map_err(io)?
+            .map(|row| row.map(TenantId).map_err(io))
+            .collect()
+    }
+
     /// Whether server.sqlite answers a query, for the health route.
     pub fn check(&self) -> Result<(), TenantError> {
         self.conn()
@@ -1470,6 +1481,22 @@ mod tests {
             Err(TenantError::Io),
             "a period that does not read back is damage"
         );
+    }
+
+    #[test]
+    fn ids_names_every_tenant_and_records_nothing() {
+        let f = fixture();
+        let a = f.tenants.create(Actor::Cli, "a", None).expect("made");
+        let b = f.tenants.create(Actor::Cli, "b", None).expect("made");
+        let records = f.tenants.admin_records().len();
+
+        let mut ids = f.tenants.ids().expect("ids");
+        ids.sort_by_key(|id| id.0);
+        let mut made = vec![a, b];
+        made.sort_by_key(|id| id.0);
+
+        assert_eq!(ids, made);
+        assert_eq!(f.tenants.admin_records().len(), records, "nothing recorded");
     }
 
     #[test]

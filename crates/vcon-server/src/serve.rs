@@ -7,6 +7,7 @@ use std::io;
 use std::os::fd::AsRawFd;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::net::TcpListener;
 
@@ -15,6 +16,7 @@ use crate::clock::SystemClock;
 use crate::config::Config;
 use crate::envelope::{Key, KeyError};
 use crate::fs::OsFs;
+use crate::retention::Retention;
 use crate::tenants::{TenantError, Tenants};
 
 /// Why the server did not start, or stopped.
@@ -105,13 +107,91 @@ pub async fn run(config: &Config, shutdown: impl Future<Output = ()>) -> Result<
     let listener = TcpListener::bind(config.listen)
         .await
         .map_err(ServeError::Listen)?;
-    let app = app_from(config, Arc::new(tenants));
+    let tenants = Arc::new(tenants);
+    // The purge sweep: at start, then purge_interval after each sweep ends,
+    // until the server stops.
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let (swept, default) = (tenants.clone(), config.retention_default);
+    let sweeper = tokio::spawn(every(
+        config.purge_interval,
+        async {
+            let _ = stopped.await;
+        },
+        move || {
+            let tenants = swept.clone();
+            async move {
+                let _ = tokio::task::spawn_blocking(move || sweep(&tenants, default)).await;
+            }
+        },
+    ));
+    let app = app_from(config, tenants);
     tracing::info!(listen = %config.listen, "serving");
-    api::serve(listener, tls, api::router(Arc::new(app)), shutdown)
-        .await
-        .map_err(ServeError::Serve)?;
+    let served = api::serve(listener, tls, api::router(Arc::new(app)), shutdown).await;
+    let _ = stop.send(());
+    let _ = sweeper.await;
+    served.map_err(ServeError::Serve)?;
     tracing::info!("stopped");
     Ok(())
+}
+
+/// What one purge sweep did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct SweepReport {
+    /// Versions purged, over every tenant.
+    pub purged: u64,
+    /// Tenants that could not be swept; they wait for the next sweep.
+    pub failed: u64,
+}
+
+/// One purge sweep: each tenant purges what is due under its own retention
+/// period, else `default`. A tenant that cannot be swept, such as one whose
+/// period does not read back or that is being removed, is counted and left
+/// for the next sweep. The sweep is logged with counts only, never a tenant.
+pub fn sweep(tenants: &Tenants, default: Retention) -> SweepReport {
+    let mut report = SweepReport::default();
+    match tenants.ids() {
+        Ok(ids) => {
+            for id in ids {
+                let purged = tenants.retention(id).and_then(|own| {
+                    let store = tenants.store(id)?;
+                    Ok(store.purge_due(own.unwrap_or(default)))
+                });
+                match purged {
+                    Ok(Ok(done)) => report.purged += done.purged,
+                    _ => report.failed += 1,
+                }
+            }
+        }
+        Err(_) => report.failed += 1,
+    }
+    tracing::info!(
+        purged = report.purged,
+        failed = report.failed,
+        "purge sweep"
+    );
+    report
+}
+
+/// Runs `job` at once, then again `interval` after each run ends, until
+/// `shutdown` completes; a run still going when it does is not awaited.
+pub async fn every<F, Fut>(interval: Duration, shutdown: impl Future<Output = ()>, mut job: F)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = ()>,
+{
+    tokio::pin!(shutdown);
+    loop {
+        tokio::select! {
+            biased;
+            () = &mut shutdown => return,
+            () = job() => {}
+        }
+        tokio::select! {
+            biased;
+            () = &mut shutdown => return,
+            () = tokio::time::sleep(interval) => {}
+        }
+    }
 }
 
 /// What the API serves from, as the configuration sets it.
@@ -168,6 +248,142 @@ mod tests {
         assert_eq!(app.limits.body_timeout, Duration::from_secs(17));
         assert_eq!(app.supported, config.supported_critical);
         assert_eq!(app.retention_default, config.retention_default);
+    }
+
+    mod sweeps {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+
+        use time::macros::datetime;
+        use uuid::Uuid;
+
+        use super::super::*;
+        use crate::audit::Actor;
+        use crate::ids::{KeyId, TenantId};
+        use crate::retention::Retention;
+        use crate::store::Caller;
+        use crate::store::testing::vcon;
+        use crate::tenants::fixture;
+
+        const CALLER: Caller = Caller { key: KeyId([7; 8]) };
+
+        /// A vCon stored and deleted in `id` while seven years apply, so
+        /// it waits hidden for a sweep.
+        fn deleted(tenants: &Tenants, id: TenantId, uuid: &str) -> Uuid {
+            let store = tenants.store(id).expect("its store");
+            let (found, body) = vcon(uuid, "kept");
+            store.create(&CALLER, &found, &body).expect("stored");
+            store
+                .delete(&CALLER, found.uuid, Retention::Years(7))
+                .expect("deleted");
+            found.uuid
+        }
+
+        /// How many versions `id` still keeps.
+        fn kept(tenants: &Tenants, id: TenantId) -> u64 {
+            tenants
+                .store(id)
+                .expect("its store")
+                .counts()
+                .expect("counts")
+                .versions
+        }
+
+        #[test]
+        fn a_sweep_purges_what_is_due_in_each_tenant_under_its_own_period() {
+            let f = fixture();
+            let own = f
+                .tenants
+                .create(Actor::Cli, "own", Some(Retention::Days(1)))
+                .expect("made");
+            let default = f.tenants.create(Actor::Cli, "default", None).expect("made");
+            let long = f
+                .tenants
+                .create(Actor::Cli, "long", Some(Retention::Years(7)))
+                .expect("made");
+            deleted(&f.tenants, own, "0199e5c6-0d7a-7c11-8000-000000000001");
+            deleted(&f.tenants, default, "0199e5c6-0d7a-7c11-8000-000000000002");
+            deleted(&f.tenants, long, "0199e5c6-0d7a-7c11-8000-000000000003");
+            f.clock.set(datetime!(2026-10-25 13:00 UTC));
+
+            let report = sweep(&f.tenants, Retention::Days(1));
+
+            assert_eq!(
+                report,
+                SweepReport {
+                    purged: 2,
+                    failed: 0
+                }
+            );
+            assert_eq!(kept(&f.tenants, own), 0);
+            assert_eq!(kept(&f.tenants, default), 0);
+            assert_eq!(kept(&f.tenants, long), 1, "seven years have not passed");
+        }
+
+        #[test]
+        fn a_sweep_goes_on_past_a_tenant_it_cannot_sweep() {
+            let f = fixture();
+            let damaged = f.tenants.create(Actor::Cli, "damaged", None).expect("made");
+            let fine = f.tenants.create(Actor::Cli, "fine", None).expect("made");
+            deleted(&f.tenants, damaged, "0199e5c6-0d7a-7c11-8000-000000000001");
+            deleted(&f.tenants, fine, "0199e5c6-0d7a-7c11-8000-000000000002");
+            f.tenants
+                .conn_for_test()
+                .execute(
+                    "UPDATE tenant SET retention = '7w' WHERE id = ?1",
+                    [damaged.0],
+                )
+                .expect("damaged");
+            f.clock.set(datetime!(2026-10-25 13:00 UTC));
+
+            let report = sweep(&f.tenants, Retention::Days(1));
+
+            assert_eq!(
+                report,
+                SweepReport {
+                    purged: 1,
+                    failed: 1
+                }
+            );
+            assert_eq!(kept(&f.tenants, fine), 0);
+            assert_eq!(kept(&f.tenants, damaged), 1, "left for a later sweep");
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn every_runs_at_start_then_after_each_interval_until_shutdown() {
+            let runs = Arc::new(AtomicUsize::new(0));
+            let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+            let counted = runs.clone();
+            let task = tokio::spawn(every(
+                Duration::from_secs(60),
+                async move {
+                    let _ = stopped.await;
+                },
+                move || {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    async {}
+                },
+            ));
+            let settle = || async {
+                for _ in 0..10 {
+                    tokio::task::yield_now().await;
+                }
+            };
+
+            settle().await;
+            assert_eq!(runs.load(Ordering::SeqCst), 1, "at start");
+            tokio::time::advance(Duration::from_secs(59)).await;
+            settle().await;
+            assert_eq!(runs.load(Ordering::SeqCst), 1, "not before the interval");
+            tokio::time::advance(Duration::from_secs(1)).await;
+            settle().await;
+            assert_eq!(runs.load(Ordering::SeqCst), 2, "after the interval");
+
+            stop.send(()).expect("still running");
+            task.await.expect("ends on shutdown");
+            tokio::time::advance(Duration::from_secs(600)).await;
+            assert_eq!(runs.load(Ordering::SeqCst), 2, "none after shutdown");
+        }
     }
 
     #[test]
