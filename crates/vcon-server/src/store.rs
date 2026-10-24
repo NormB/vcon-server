@@ -17,8 +17,10 @@ use crate::fs::Fs;
 use crate::ids::{KeyId, TenantId, VersionId};
 use crate::retention::Retention;
 
+mod legal;
 mod purge;
 
+pub use legal::{Legal, VersionInfo};
 pub use purge::{Kept, PurgeReport, due};
 
 /// The tables of a tenant's catalog, besides its audit log. A key column
