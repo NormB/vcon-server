@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ config.title }}{% endblock %}</title>
+  <meta name="description" content="{{ config.description }}">
+  <link rel="stylesheet" href="{{ get_url(path='style.css') }}">
+</head>
+<body>
+  <header class="top">
+    <a class="name" href="{{ get_url(path='/') }}">vcon-server</a>
+    <nav><a href="https://github.com/NormB/vcon-server">GitHub</a></nav>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  <footer>
+    <p>vcon-server is open source under MIT OR Apache-2.0.</p>
+  </footer>
+</body>
+</html>

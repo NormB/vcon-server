@@ -4,3 +4,6 @@
 # them is named "vcon-server — <tab>" or, for archived ones, "ARCHIVED — <tab>".
 vcon-server — *
 ARCHIVED — *
+
+# Zola build output
+/website/public/

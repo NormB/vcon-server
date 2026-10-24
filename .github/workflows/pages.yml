@@ -1,0 +1,74 @@
+name: Deploy website to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'website/**'
+      - 'scripts/check-site.sh'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+# Read-only by default; the deploy job declares the writes it needs.
+permissions:
+  contents: read
+
+# One deploy at a time, and a running one finishes, so nothing is half published.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    env:
+      ZOLA_VERSION: '0.19.2'
+      # A tag names a release, not its bytes; the download is pinned by hash too.
+      ZOLA_SHA256: '0798e69b86c628ddcb264ebd86c8cc8dce7670b9049060bf94faa73f6857cd9c'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install Zola
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o zola.tar.gz \
+            "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${ZOLA_SHA256}  zola.tar.gz" | sha256sum -c -
+          tar xzf zola.tar.gz
+          sudo install -m 0755 zola /usr/local/bin/zola
+          rm -f zola zola.tar.gz
+          zola --version
+      - name: Check the site
+        run: scripts/check-site.sh
+      - name: Build site
+        working-directory: website
+        run: zola build
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
+        with:
+          path: website/public
+
+  deploy:
+    timeout-minutes: 25
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url || steps.deployment_retry.outputs.page_url }}
+    steps:
+      # A Pages promotion can stall in its queue and time out a healthy build;
+      # the action caps its own timeout, so the remedy is one retry.
+      - name: Deploy to GitHub Pages
+        id: deployment
+        continue-on-error: true
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5
+      - name: Deploy to GitHub Pages (retry after a stalled promotion)
+        id: deployment_retry
+        if: steps.deployment.outcome == 'failure'
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5

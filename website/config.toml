@@ -1,0 +1,14 @@
+base_url = "https://vcon-server.com"
+title = "vcon-server"
+description = "A server that stores vCons, the IETF conversation-record format, encrypted at rest."
+compile_sass = true
+build_search_index = false
+generate_feeds = false
+
+[markdown]
+highlight_code = false
+
+[link_checker]
+# Internal links must resolve; an external site being down must not block a deploy.
+internal_level = "error"
+external_level = "warn"
