@@ -648,6 +648,12 @@ impl Store {
             .expect("trigger");
     }
 
+    /// The catalog connection, for tests that damage or inspect it.
+    #[cfg(test)]
+    pub(crate) fn conn_for_test(&self) -> MutexGuard<'_, Connection> {
+        self.conn()
+    }
+
     /// The tenant's log as `export` writes it, for tests.
     #[cfg(test)]
     pub(crate) fn records(&self) -> Vec<serde_json::Value> {

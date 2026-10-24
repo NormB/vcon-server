@@ -14,10 +14,10 @@ use axum::extract::{MatchedPath, Path as UriPath, Request, State};
 use axum::http::header::{
     AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, ETAG, IF_MATCH, LOCATION, WWW_AUTHENTICATE,
 };
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use http_body_util::LengthLimitError;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
@@ -35,6 +35,8 @@ use crate::ids::{KeyId, VersionId};
 use crate::retention::Retention;
 use crate::store::{Caller as StoreCaller, Created, Store, StoreError};
 use crate::tenants::Tenants;
+use time::format_description::well_known::Rfc3339;
+use uuid::Uuid;
 use vcon_form::{Inspection, Rejection};
 
 /// The limits from configuration that the API applies to every request.
@@ -64,6 +66,11 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/vcons", post(create))
         .route("/vcons/{uuid}", get(read).put(replace).delete(delete))
         .route("/health", get(health))
+        .route("/legal/vcons/{uuid}", get(legal_read))
+        .route("/legal/vcons/{uuid}/versions", get(legal_versions))
+        .route("/legal/vcons/{uuid}/versions/{version}", get(legal_version))
+        .route("/legal/vcons/{uuid}/restore", post(legal_restore))
+        .route("/legal/vcons/{uuid}/hold", put(hold_on).delete(hold_off))
         .layer(axum::middleware::from_fn(log_request))
         .with_state(app)
 }
@@ -307,6 +314,189 @@ async fn delete(
     }
 }
 
+/// Whether a legal read is of a live or a deleted uuid.
+const VCON_STATE: HeaderName = HeaderName::from_static("vcon-state");
+
+/// The legal routes' shared start: a key with the legal scope, then the
+/// path's uuid, each refusal recorded as `action`.
+async fn legal_admit(
+    app: &Arc<App>,
+    headers: &HeaderMap,
+    body: Body,
+    action: Action,
+    uuid: &str,
+) -> Result<(Admitted, Uuid), Problem> {
+    let admitted = admit(app, headers, body, Scope::Legal, action).await?;
+    let Some(uuid) = vcon_form::parse_uuid(uuid) else {
+        let refused = Problem::BadPathUuid;
+        let entry = refusal(admitted.caller.key, action, refused);
+        return Err(app.refuse(Some(admitted.tenant), entry, refused).await);
+    };
+    Ok((admitted, uuid))
+}
+
+/// `GET /legal/vcons/{uuid}`: the current version, or the latest kept one
+/// of a deleted uuid, as stored, with `Vcon-State`.
+async fn legal_read(
+    State(app): State<Arc<App>>,
+    UriPath(uuid): UriPath<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    match legal_admit(&app, &headers, body, Action::LegalRead, &uuid).await {
+        Ok((admitted, uuid)) => legal_body(&admitted, uuid, None).await,
+        Err(refused) => refused.into_response(),
+    }
+}
+
+/// `GET /legal/vcons/{uuid}/versions/{version}`: that kept version, as
+/// stored.
+async fn legal_version(
+    State(app): State<Arc<App>>,
+    UriPath((uuid, version)): UriPath<(String, String)>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let (admitted, uuid) = match legal_admit(&app, &headers, body, Action::LegalRead, &uuid).await {
+        Ok(admitted) => admitted,
+        Err(refused) => return refused.into_response(),
+    };
+    let Some(version) = VersionId::parse(&version) else {
+        let refused = Problem::BadPathVersion;
+        let entry = refusal(admitted.caller.key, Action::LegalRead, refused);
+        return app
+            .refuse(Some(admitted.tenant), entry, refused)
+            .await
+            .into_response();
+    };
+    legal_body(&admitted, uuid, Some(version)).await
+}
+
+/// A legal read's answer: the body as stored, its tag and the uuid's state.
+async fn legal_body(admitted: &Admitted, uuid: Uuid, version: Option<VersionId>) -> Response {
+    let (store, key) = (admitted.store.clone(), admitted.caller.key);
+    // Store records its own outcomes.
+    match blocking(move || store.legal_get(&StoreCaller { key }, uuid, version)).await {
+        Ok(read) => {
+            let content_type = if read.stored.gzip {
+                "application/vcon+gzip"
+            } else {
+                "application/vcon"
+            };
+            let state = if read.deleted { "deleted" } else { "live" };
+            (
+                StatusCode::OK,
+                [
+                    (CONTENT_TYPE, content_type.to_owned()),
+                    (ETAG, entity_tag(read.stored.version)),
+                    (VCON_STATE, state.to_owned()),
+                ],
+                read.stored.body,
+            )
+                .into_response()
+        }
+        Err(error) => failed(error).into_response(),
+    }
+}
+
+/// `GET /legal/vcons/{uuid}/versions`: every kept version, oldest first,
+/// as JSON: its id, when it was stored and hidden (RFC 3339, UTC), and
+/// whether it is current.
+async fn legal_versions(
+    State(app): State<Arc<App>>,
+    UriPath(uuid): UriPath<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let (admitted, uuid) =
+        match legal_admit(&app, &headers, body, Action::LegalVersions, &uuid).await {
+            Ok(admitted) => admitted,
+            Err(refused) => return refused.into_response(),
+        };
+    let (store, key) = (admitted.store.clone(), admitted.caller.key);
+    match blocking(move || store.legal_versions(&StoreCaller { key }, uuid)).await {
+        Ok(versions) => {
+            let time = |at: time::OffsetDateTime| at.format(&Rfc3339).ok();
+            let listed: Option<Vec<serde_json::Value>> = versions
+                .iter()
+                .map(|v| {
+                    let hidden_at = match v.hidden_at {
+                        Some(at) => Some(time(at)?),
+                        None => None,
+                    };
+                    Some(serde_json::json!({
+                        "version": v.version.to_string(),
+                        "stored_at": time(v.stored_at)?,
+                        "hidden_at": hidden_at,
+                        "current": v.current,
+                    }))
+                })
+                .collect();
+            match listed {
+                Some(listed) => (
+                    StatusCode::OK,
+                    [(CONTENT_TYPE, "application/json")],
+                    serde_json::Value::Array(listed).to_string(),
+                )
+                    .into_response(),
+                None => failed(StoreError::Damaged).into_response(),
+            }
+        }
+        Err(error) => failed(error).into_response(),
+    }
+}
+
+/// `POST /legal/vcons/{uuid}/restore`: makes a deleted vCon live again and
+/// answers 200 with the restored version's tag.
+async fn legal_restore(
+    State(app): State<Arc<App>>,
+    UriPath(uuid): UriPath<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let (admitted, uuid) = match legal_admit(&app, &headers, body, Action::Restore, &uuid).await {
+        Ok(admitted) => admitted,
+        Err(refused) => return refused.into_response(),
+    };
+    let (store, key) = (admitted.store.clone(), admitted.caller.key);
+    match blocking(move || store.restore(&StoreCaller { key }, uuid)).await {
+        Ok(version) => (StatusCode::OK, [(ETAG, entity_tag(version))]).into_response(),
+        Err(error) => failed(error).into_response(),
+    }
+}
+
+/// `PUT /legal/vcons/{uuid}/hold`: puts the uuid under a legal hold.
+async fn hold_on(
+    State(app): State<Arc<App>>,
+    UriPath(uuid): UriPath<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    hold(app, uuid, headers, body, true).await
+}
+
+/// `DELETE /legal/vcons/{uuid}/hold`: releases the uuid's legal hold.
+async fn hold_off(
+    State(app): State<Arc<App>>,
+    UriPath(uuid): UriPath<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    hold(app, uuid, headers, body, false).await
+}
+
+async fn hold(app: Arc<App>, uuid: String, headers: HeaderMap, body: Body, on: bool) -> Response {
+    let (admitted, uuid) = match legal_admit(&app, &headers, body, Action::Hold, &uuid).await {
+        Ok(admitted) => admitted,
+        Err(refused) => return refused.into_response(),
+    };
+    let (store, key) = (admitted.store.clone(), admitted.caller.key);
+    match blocking(move || store.set_hold(&StoreCaller { key }, uuid, on)).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => failed(error).into_response(),
+    }
+}
+
 /// `GET /health`: any valid key may ask; 200 when server.sqlite answers.
 ///
 /// Health requests are counted, one record per key, status and minute, in
@@ -492,6 +682,8 @@ enum Problem {
     UnsupportedMediaType,
     /// A uuid in the path is not in RFC 9562 text form.
     BadPathUuid,
+    /// A version in the path is not a version id.
+    BadPathVersion,
     /// A replacement came without `If-Match`.
     PreconditionRequired,
     /// The body's uuid is not the one in the path.
@@ -552,7 +744,9 @@ impl Problem {
             Problem::Forbidden => StatusCode::FORBIDDEN,
             Problem::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Problem::Timeout => StatusCode::REQUEST_TIMEOUT,
-            Problem::BadBody | Problem::BadPathUuid => StatusCode::BAD_REQUEST,
+            Problem::BadBody | Problem::BadPathUuid | Problem::BadPathVersion => {
+                StatusCode::BAD_REQUEST
+            }
             Problem::PreconditionRequired => StatusCode::PRECONDITION_REQUIRED,
             Problem::PathUuidMismatch => StatusCode::UNPROCESSABLE_ENTITY,
             Problem::Unavailable | Problem::AuditFailed => StatusCode::SERVICE_UNAVAILABLE,
@@ -585,6 +779,9 @@ impl Problem {
                 "bad-path-uuid",
                 "The path's uuid is not in RFC 9562 text form",
             ),
+            Problem::BadPathVersion => {
+                ("bad-path-version", "The path's version is not a version id")
+            }
             Problem::PreconditionRequired => (
                 "precondition-required",
                 "If-Match must name the current version",
@@ -1433,6 +1630,354 @@ mod tests {
             let answer = post(&s, &writer, None, body).await;
             assert_eq!(answer.status(), 503);
             assert_eq!(problem(answer).await, "audit-failed");
+        }
+    }
+
+    mod legal {
+        use reqwest::Method;
+        use serde_json::Value;
+
+        use super::pipeline::{Server, problem, server};
+        use crate::access::{Scope, Scopes};
+        use crate::audit::Actor;
+        use crate::ids::VersionId;
+        use crate::retention::Retention;
+
+        const UUID: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bc46";
+        const NEVER: &str = "0199e5c6-0d7a-7c11-8000-000000000001";
+
+        fn key(s: &Server, scopes: &[Scope]) -> String {
+            s.tenants
+                .create_key(Actor::Cli, Some(s.tenant), Scopes::of(scopes), "test")
+                .expect("a key")
+                .token
+        }
+
+        fn a4() -> Vec<u8> {
+            std::fs::read(format!(
+                "{}/../vcon-form/tests/fixtures/ietf/ab_call_ext_rec.vcon",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .expect("A.4")
+        }
+
+        async fn call(s: &Server, method: Method, path: &str, token: &str) -> reqwest::Response {
+            s.client()
+                .request(method, s.url(path))
+                .bearer_auth(token)
+                .send()
+                .await
+                .expect("an answer")
+        }
+
+        /// Stores A.4 and returns its entity tag.
+        async fn stored(s: &Server) -> String {
+            let writer = key(s, &[Scope::Write]);
+            let answer = s
+                .client()
+                .post(s.url("/vcons"))
+                .bearer_auth(&writer)
+                .header("content-type", "application/vcon")
+                .body(a4())
+                .send()
+                .await
+                .expect("an answer");
+            assert_eq!(answer.status(), 201);
+            answer.headers()["etag"].to_str().expect("tag").to_owned()
+        }
+
+        async fn deleted(s: &Server) {
+            let deleter = key(s, &[Scope::Delete]);
+            let path = format!("/vcons/{UUID}");
+            assert_eq!(call(s, Method::DELETE, &path, &deleter).await.status(), 204);
+        }
+
+        /// Every legal route for `uuid`, with `version` for the one that
+        /// names a version.
+        fn routes(uuid: &str, version: &str) -> Vec<(Method, String)> {
+            vec![
+                (Method::GET, format!("/legal/vcons/{uuid}")),
+                (Method::GET, format!("/legal/vcons/{uuid}/versions")),
+                (
+                    Method::GET,
+                    format!("/legal/vcons/{uuid}/versions/{version}"),
+                ),
+                (Method::POST, format!("/legal/vcons/{uuid}/restore")),
+                (Method::PUT, format!("/legal/vcons/{uuid}/hold")),
+                (Method::DELETE, format!("/legal/vcons/{uuid}/hold")),
+            ]
+        }
+
+        fn bare(tag: &str) -> String {
+            tag.trim_matches('"').to_owned()
+        }
+
+        #[tokio::test]
+        async fn every_legal_route_needs_the_legal_scope() {
+            let s = server().await;
+            let tag = stored(&s).await;
+            let others = key(&s, &[Scope::Write, Scope::Read, Scope::Delete]);
+            for (method, path) in routes(UUID, &bare(&tag)) {
+                let answer = call(&s, method.clone(), &path, &others).await;
+                assert_eq!(answer.status(), 403, "{method} {path}");
+            }
+        }
+
+        #[tokio::test]
+        async fn a_deleted_vcon_reads_back_byte_for_byte_with_a_legal_key() {
+            let s = server().await;
+            let tag = stored(&s).await;
+            let legal = key(&s, &[Scope::Legal]);
+            let path = format!("/legal/vcons/{UUID}");
+
+            let live = call(&s, Method::GET, &path, &legal).await;
+            assert_eq!(live.status(), 200);
+            assert_eq!(live.headers()["vcon-state"], "live");
+
+            deleted(&s).await;
+            let answer = call(&s, Method::GET, &path, &legal).await;
+            assert_eq!(answer.status(), 200);
+            assert_eq!(answer.headers()["vcon-state"], "deleted");
+            assert_eq!(answer.headers()["etag"], tag.as_str());
+            assert_eq!(answer.headers()["content-type"], "application/vcon");
+            assert_eq!(
+                answer.bytes().await.expect("body").as_ref(),
+                a4().as_slice()
+            );
+            assert_eq!(
+                s.tenant_log("legal_read").last().expect("recorded")["status"],
+                200
+            );
+        }
+
+        #[tokio::test]
+        async fn the_version_list_and_a_named_version() {
+            let s = server().await;
+            let tag = stored(&s).await;
+            let legal = key(&s, &[Scope::Legal]);
+            let live = call(
+                &s,
+                Method::GET,
+                &format!("/legal/vcons/{UUID}/versions"),
+                &legal,
+            )
+            .await;
+            let live: Value =
+                serde_json::from_slice(&live.bytes().await.expect("body")).expect("json");
+            assert_eq!(live[0]["current"], true, "live, so current");
+            assert!(live[0]["hidden_at"].is_null(), "not hidden while live");
+            deleted(&s).await;
+
+            let list = call(
+                &s,
+                Method::GET,
+                &format!("/legal/vcons/{UUID}/versions"),
+                &legal,
+            )
+            .await;
+            assert_eq!(list.status(), 200);
+            assert_eq!(list.headers()["content-type"], "application/json");
+            let list: Value =
+                serde_json::from_slice(&list.bytes().await.expect("body")).expect("json");
+            let versions = list.as_array().expect("a list");
+            assert_eq!(versions.len(), 1);
+            assert_eq!(versions[0]["version"], bare(&tag));
+            assert_eq!(versions[0]["current"], false);
+            assert!(
+                versions[0]["stored_at"]
+                    .as_str()
+                    .expect("a time")
+                    .ends_with('Z')
+            );
+            assert!(versions[0]["hidden_at"].is_string(), "hidden by the delete");
+
+            let one = format!("/legal/vcons/{UUID}/versions/{}", bare(&tag));
+            let answer = call(&s, Method::GET, &one, &legal).await;
+            assert_eq!(answer.status(), 200);
+            assert_eq!(answer.headers()["etag"], tag.as_str());
+            assert_eq!(
+                answer.bytes().await.expect("body").as_ref(),
+                a4().as_slice()
+            );
+
+            let unknown = format!("/legal/vcons/{UUID}/versions/{}", VersionId::generate());
+            let answer = call(&s, Method::GET, &unknown, &legal).await;
+            assert_eq!(answer.status(), 404);
+            assert_eq!(problem(answer).await, "not-found");
+
+            let bad = format!("/legal/vcons/{UUID}/versions/not-a-version");
+            let answer = call(&s, Method::GET, &bad, &legal).await;
+            assert_eq!(answer.status(), 400);
+            assert_eq!(problem(answer).await, "bad-path-version");
+            assert_eq!(
+                s.tenant_log("legal_read").last().expect("recorded")["status"],
+                400
+            );
+        }
+
+        #[tokio::test]
+        async fn restore_answers_its_tag_then_409_once_live() {
+            let s = server().await;
+            let tag = stored(&s).await;
+            deleted(&s).await;
+            let token = key(&s, &[Scope::Legal, Scope::Read]);
+            let path = format!("/legal/vcons/{UUID}/restore");
+
+            let answer = call(&s, Method::POST, &path, &token).await;
+            assert_eq!(answer.status(), 200);
+            assert_eq!(answer.headers()["etag"], tag.as_str());
+            let read = call(&s, Method::GET, &format!("/vcons/{UUID}"), &token).await;
+            assert_eq!(read.status(), 200, "live again");
+
+            let again = call(&s, Method::POST, &path, &token).await;
+            assert_eq!(again.status(), 409);
+            assert_eq!(problem(again).await, "not-deleted");
+        }
+
+        #[tokio::test]
+        async fn a_hold_is_set_and_released_with_204() {
+            let s = server().await;
+            stored(&s).await;
+            let legal = key(&s, &[Scope::Legal]);
+            let path = format!("/legal/vcons/{UUID}/hold");
+            for method in [Method::PUT, Method::DELETE] {
+                let answer = call(&s, method, &path, &legal).await;
+                assert_eq!(answer.status(), 204);
+                assert!(answer.bytes().await.expect("body").is_empty());
+            }
+            let holds = s.tenant_log("hold");
+            assert_eq!(holds.len(), 2);
+        }
+
+        #[tokio::test]
+        async fn a_held_vcon_survives_a_zero_period_delete_until_released() {
+            let s = server().await;
+            stored(&s).await;
+            let legal = key(&s, &[Scope::Legal]);
+            let hold = format!("/legal/vcons/{UUID}/hold");
+            let read = format!("/legal/vcons/{UUID}");
+            assert_eq!(call(&s, Method::PUT, &hold, &legal).await.status(), 204);
+            s.tenants
+                .set_retention(Actor::Cli, s.tenant, Some(Retention::Days(0)))
+                .expect("set");
+            deleted(&s).await;
+            assert_eq!(
+                call(&s, Method::GET, &read, &legal).await.status(),
+                200,
+                "held"
+            );
+
+            assert_eq!(call(&s, Method::DELETE, &hold, &legal).await.status(), 204);
+            s.tenants
+                .store(s.tenant)
+                .expect("its store")
+                .purge_due(Retention::Days(0))
+                .expect("swept");
+            assert_eq!(
+                call(&s, Method::GET, &read, &legal).await.status(),
+                410,
+                "released"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_gzipped_vcon_reads_back_gzipped() {
+            use std::io::Write;
+            let s = server().await;
+            let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            gz.write_all(&a4()).expect("gzip");
+            let gzipped = gz.finish().expect("gzip");
+            let writer = key(&s, &[Scope::Write]);
+            let answer = s
+                .client()
+                .post(s.url("/vcons"))
+                .bearer_auth(&writer)
+                .header("content-type", "application/vcon+gzip")
+                .body(gzipped.clone())
+                .send()
+                .await
+                .expect("an answer");
+            assert_eq!(answer.status(), 201);
+            deleted(&s).await;
+            let legal = key(&s, &[Scope::Legal]);
+            let answer = call(&s, Method::GET, &format!("/legal/vcons/{UUID}"), &legal).await;
+            assert_eq!(answer.status(), 200);
+            assert_eq!(answer.headers()["content-type"], "application/vcon+gzip");
+            assert_eq!(
+                answer.bytes().await.expect("body").as_ref(),
+                gzipped.as_slice()
+            );
+        }
+
+        #[tokio::test]
+        async fn a_purged_uuid_is_410_on_every_legal_route() {
+            let s = server().await;
+            let tag = stored(&s).await;
+            s.tenants
+                .set_retention(Actor::Cli, s.tenant, Some(Retention::Days(0)))
+                .expect("set");
+            deleted(&s).await;
+            let legal = key(&s, &[Scope::Legal]);
+            for (method, path) in routes(UUID, &bare(&tag)) {
+                let answer = call(&s, method.clone(), &path, &legal).await;
+                assert_eq!(answer.status(), 410, "{method} {path}");
+                assert_eq!(problem(answer).await, "gone");
+            }
+        }
+
+        #[tokio::test]
+        async fn a_uuid_never_stored_is_404_and_a_bad_one_400_on_every_legal_route() {
+            let s = server().await;
+            let legal = key(&s, &[Scope::Legal]);
+            let version = VersionId::generate().to_string();
+            for (method, path) in routes(NEVER, &version) {
+                let answer = call(&s, method.clone(), &path, &legal).await;
+                assert_eq!(answer.status(), 404, "{method} {path}");
+                assert_eq!(problem(answer).await, "not-found");
+            }
+            for (method, path) in routes("not-a-uuid", &version) {
+                let answer = call(&s, method.clone(), &path, &legal).await;
+                assert_eq!(answer.status(), 400, "{method} {path}");
+                assert_eq!(problem(answer).await, "bad-path-uuid");
+            }
+            for action in ["legal_read", "legal_versions", "restore", "hold"] {
+                let last = s.tenant_log(action).last().expect("recorded").clone();
+                assert_eq!(last["status"], 400, "{action}'s refusal is recorded");
+            }
+        }
+
+        #[tokio::test]
+        async fn damage_is_500_on_every_legal_route() {
+            let s = server().await;
+            let tag = stored(&s).await;
+            deleted(&s).await;
+            let legal = key(&s, &[Scope::Legal]);
+            let store = s.tenants.store(s.tenant).expect("its store");
+            store
+                .conn_for_test()
+                .execute_batch(
+                    "UPDATE version SET wrapped_key = x'00', stored_at = 'x';
+                     CREATE TEMP TRIGGER broken BEFORE UPDATE ON vcon
+                     BEGIN SELECT RAISE(ABORT, 'the disk has failed'); END;",
+                )
+                .expect("damaged");
+            for (method, path) in routes(UUID, &bare(&tag)) {
+                let answer = call(&s, method.clone(), &path, &legal).await;
+                assert_eq!(answer.status(), 500, "{method} {path}");
+            }
+        }
+
+        #[tokio::test]
+        async fn an_answer_that_cannot_be_recorded_is_503_on_every_legal_route() {
+            let s = server().await;
+            let tag = stored(&s).await;
+            let legal = key(&s, &[Scope::Legal]);
+            s.tenants.store(s.tenant).expect("its store").break_audit();
+            for (method, path) in routes(UUID, &bare(&tag)) {
+                let answer = call(&s, method.clone(), &path, &legal).await;
+                assert_eq!(answer.status(), 503, "{method} {path}");
+                assert_eq!(problem(answer).await, "audit-failed");
+            }
         }
     }
 
