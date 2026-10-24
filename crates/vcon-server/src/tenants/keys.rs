@@ -61,7 +61,7 @@ impl Tenants {
             return;
         }
         let actor = known.map_or(Actor::Unparsed, |(id, _)| Actor::Key(id));
-        let _ = self.count_alone(&entry(actor));
+        let _ = self.count_admin(&entry(actor));
     }
 
     /// The key with this id, read afresh on every call, so a revocation

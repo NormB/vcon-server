@@ -58,7 +58,8 @@ pub struct App {
 pub fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/vcons", post(create))
-        .route("/vcons/{uuid}", get(read).put(replace))
+        .route("/vcons/{uuid}", get(read).put(replace).delete(delete))
+        .route("/health", get(health))
         .with_state(app)
 }
 
@@ -232,6 +233,73 @@ fn if_match(headers: &HeaderMap) -> Option<Option<VersionId>> {
     )
 }
 
+/// `DELETE /vcons/{uuid}`: hides the vCon; also 204 when it is already
+/// deleted or purged.
+async fn delete(
+    State(app): State<Arc<App>>,
+    UriPath(uuid): UriPath<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let admitted = match admit(&app, &headers, body, Scope::Delete, Action::Delete).await {
+        Ok(admitted) => admitted,
+        Err(refused) => return refused.into_response(),
+    };
+    let Some(uuid) = vcon_form::parse_uuid(&uuid) else {
+        let refused = Problem::BadPathUuid;
+        let entry = refusal(admitted.caller.key, Action::Delete, refused);
+        return app
+            .refuse(Some(admitted.tenant), entry, refused)
+            .await
+            .into_response();
+    };
+    let (store, key) = (admitted.store.clone(), admitted.caller.key);
+    // Store records its own outcomes.
+    match blocking(move || store.delete(&StoreCaller { key }, uuid)).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => failed(error).into_response(),
+    }
+}
+
+/// `GET /health`: any valid key may ask; 200 when server.sqlite answers.
+///
+/// Health requests are counted, one record per key, status and minute, in
+/// the key's tenant log, or the admin log for an operator key; a health
+/// request that cannot be counted is not healthy.
+async fn health(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    let caller = match authenticated(&app, &headers).await {
+        Ok(caller) => caller,
+        Err(refused) => return refused.into_response(),
+    };
+    let tenants = app.tenants.clone();
+    let (healthy, counted) = blocking(move || {
+        let healthy = tenants.check().is_ok();
+        let entry = Entry {
+            actor: Actor::Key(caller.key),
+            action: Action::Health,
+            target: None,
+            version: None,
+            status: if healthy { 200 } else { 503 },
+        };
+        let counted = match caller.tenant.and_then(|t| tenants.store(t).ok()) {
+            Some(store) => store.count(&entry).is_ok(),
+            None => tenants.count_admin(&entry).is_ok(),
+        };
+        (healthy, counted)
+    })
+    .await;
+    match (healthy, counted) {
+        (_, false) => Problem::AuditFailed.into_response(),
+        (false, true) => Problem::Unavailable.into_response(),
+        (true, true) => (
+            StatusCode::OK,
+            [(CONTENT_TYPE, "application/json")],
+            r#"{"status":"ok"}"#,
+        )
+            .into_response(),
+    }
+}
+
 /// The audit record of a request refused before Store saw it.
 fn refusal(key: KeyId, action: Action, refused: Problem) -> Entry {
     Entry {
@@ -281,16 +349,7 @@ async fn admit(
     scope: Scope,
     action: Action,
 ) -> Result<Admitted, Problem> {
-    let authorization = headers
-        .get(AUTHORIZATION)
-        .map(|v| v.to_str().unwrap_or_default().to_owned());
-    let tenants = app.tenants.clone();
-    let caller = blocking(move || access::authenticate(&tenants, authorization.as_deref()))
-        .await
-        .map_err(|e| match e {
-            AuthError::Io => Problem::Unavailable,
-            _ => Problem::Unauthorized,
-        })?;
+    let caller = authenticated(app, headers).await?;
     let entry = |refused| refusal(caller.key, action, refused);
     let Ok(tenant) = access::tenant_for(&caller, scope) else {
         let refused = Problem::Forbidden;
@@ -310,6 +369,21 @@ async fn admit(
         }),
         Err(refused) => Err(app.refuse(Some(tenant), entry(refused), refused).await),
     }
+}
+
+/// The caller a request's bearer key names: 401 for a missing or bad
+/// key, and 503 when the key table cannot be read.
+async fn authenticated(app: &Arc<App>, headers: &HeaderMap) -> Result<Caller, Problem> {
+    let authorization = headers
+        .get(AUTHORIZATION)
+        .map(|v| v.to_str().unwrap_or_default().to_owned());
+    let tenants = app.tenants.clone();
+    blocking(move || access::authenticate(&tenants, authorization.as_deref()))
+        .await
+        .map_err(|e| match e {
+            AuthError::Io => Problem::Unavailable,
+            _ => Problem::Unauthorized,
+        })
 }
 
 impl App {
@@ -1652,6 +1726,131 @@ mod tests {
                 .await
                 .expect("an answer");
             assert_eq!(answer.status(), 415);
+        }
+
+        async fn delete(s: &Server, token: &str, uuid: &str) -> reqwest::Response {
+            s.client()
+                .delete(s.url(&format!("/vcons/{uuid}")))
+                .bearer_auth(token)
+                .send()
+                .await
+                .expect("an answer")
+        }
+
+        #[tokio::test]
+        async fn a_delete_answers_204_again_and_again() {
+            let s = server().await;
+            let token = key_in(&s, s.tenant, &[Scope::Write, Scope::Read, Scope::Delete]);
+            post(
+                &s,
+                &token,
+                "application/vcon",
+                fixture("ab_call_ext_rec.vcon"),
+            )
+            .await;
+            for _ in 0..2 {
+                let answer = delete(&s, &token, UUID).await;
+                assert_eq!(answer.status(), 204);
+                assert!(answer.bytes().await.expect("body").is_empty());
+            }
+            assert_eq!(get(&s, &token, UUID).await.status(), 410);
+            let deletes = s.tenant_log("delete");
+            assert_eq!(deletes.len(), 2, "Store records each");
+        }
+
+        #[tokio::test]
+        async fn a_delete_of_a_uuid_never_stored_or_badly_written() {
+            let s = server().await;
+            let token = key_in(&s, s.tenant, &[Scope::Delete]);
+            let answer = delete(&s, &token, UUID).await;
+            assert_eq!(answer.status(), 404);
+            assert_eq!(problem(answer).await, "not-found");
+            let answer = delete(&s, &token, "not-a-uuid").await;
+            assert_eq!(answer.status(), 400);
+            assert_eq!(problem(answer).await, "bad-path-uuid");
+            assert_eq!(
+                s.tenant_log("delete").last().expect("recorded")["status"],
+                400
+            );
+        }
+
+        #[tokio::test]
+        async fn a_delete_needs_the_delete_scope_and_its_record() {
+            let s = server().await;
+            let (writer, _) = stored_a4(&s).await;
+            let answer = delete(&s, &writer, UUID).await;
+            assert_eq!(answer.status(), 403);
+            let deleter = key_in(&s, s.tenant, &[Scope::Delete]);
+            s.tenants.store(s.tenant).expect("its store").break_audit();
+            let answer = delete(&s, &deleter, UUID).await;
+            assert_eq!(answer.status(), 503);
+            assert_eq!(problem(answer).await, "audit-failed");
+        }
+
+        async fn health(s: &Server, token: Option<&str>) -> reqwest::Response {
+            let mut request = s.client().get(s.url("/health"));
+            if let Some(token) = token {
+                request = request.bearer_auth(token);
+            }
+            request.send().await.expect("an answer")
+        }
+
+        #[tokio::test]
+        async fn health_needs_a_key_of_any_scope_and_is_counted() {
+            let s = server().await;
+            assert_eq!(health(&s, None).await.status(), 401);
+            let reader = key_in(&s, s.tenant, &[Scope::Read]);
+            for _ in 0..2 {
+                let answer = health(&s, Some(&reader)).await;
+                assert_eq!(answer.status(), 200);
+                assert_eq!(answer.headers()["content-type"], "application/json");
+            }
+            let counted = s.tenant_log("health");
+            assert_eq!(counted.len(), 1, "one record a minute");
+            assert_eq!(counted[0]["count"], 2);
+            assert_eq!(counted[0]["status"], 200);
+
+            let operator = s
+                .tenants
+                .create_key(Actor::Cli, None, Scopes::of(&[Scope::Admin]), "op")
+                .expect("made")
+                .token;
+            assert_eq!(health(&s, Some(&operator)).await.status(), 200);
+            let admin: Vec<_> = s
+                .tenants
+                .admin_records()
+                .into_iter()
+                .filter(|r| r["action"] == "health")
+                .collect();
+            assert_eq!(admin.len(), 1);
+            assert_eq!(admin[0]["actor"], operator[4..20]);
+        }
+
+        #[tokio::test]
+        async fn health_is_unavailable_when_the_catalog_does_not_answer() {
+            let s = server().await;
+            let reader = key_in(&s, s.tenant, &[Scope::Read]);
+            s.tenants
+                .conn_for_test()
+                .execute_batch("ALTER TABLE tenant RENAME TO gone")
+                .expect("lose the table");
+            let answer = health(&s, Some(&reader)).await;
+            assert_eq!(answer.status(), 503);
+            assert_eq!(problem(answer).await, "unavailable");
+        }
+
+        #[tokio::test]
+        async fn health_whose_count_fails_is_unavailable() {
+            let s = server().await;
+            let operator = s
+                .tenants
+                .create_key(Actor::Cli, None, Scopes::of(&[Scope::Admin]), "op")
+                .expect("made")
+                .token;
+            s.tenants.break_audit();
+            let answer = health(&s, Some(&operator)).await;
+            assert_eq!(answer.status(), 503);
+            assert_eq!(problem(answer).await, "audit-failed");
         }
     }
 }

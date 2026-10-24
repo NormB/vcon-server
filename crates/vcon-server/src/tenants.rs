@@ -582,6 +582,13 @@ impl Tenants {
         self.drain(id).expect("not closing yet");
     }
 
+    /// Whether server.sqlite answers a query, for the health route.
+    pub fn check(&self) -> Result<(), TenantError> {
+        self.conn()
+            .query_row("SELECT count(*) FROM tenant", [], |_| Ok(()))
+            .map_err(io)
+    }
+
     /// Records an event in the admin log, in a transaction of its own.
     pub(crate) fn record_alone(&self, entry: &Entry) -> Result<(), TenantError> {
         let mut conn = self.conn();
@@ -591,7 +598,7 @@ impl Tenants {
     }
 
     /// Counts an event in the admin log, in a transaction of its own.
-    fn count_alone(&self, entry: &Entry) -> Result<(), TenantError> {
+    pub(crate) fn count_admin(&self, entry: &Entry) -> Result<(), TenantError> {
         let mut conn = self.conn();
         let tx = immediate(&mut conn)?;
         audit::count(&tx, entry, self.clock.now()).map_err(|_| TenantError::AuditFailed)?;
