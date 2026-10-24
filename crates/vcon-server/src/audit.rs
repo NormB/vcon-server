@@ -35,7 +35,8 @@ pub enum Actor {
     Sweep,
     /// A command run on the host.
     Cli,
-    /// A caller whose token did not parse.
+    /// A caller with no known key: its token did not parse, or names a key
+    /// id the key table does not hold.
     Unparsed,
 }
 
