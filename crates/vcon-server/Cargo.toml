@@ -9,7 +9,7 @@ publish.workspace = true
 
 [dependencies]
 aws-lc-rs = "1.18.2"
-axum = { version = "0.8.9", default-features = false, features = ["http1", "http2"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "http2", "matched-path"] }
 base64 = "0.23.1"
 http-body-util = "0.1.5"
 hyper-util = { version = "0.1.21", features = ["server-auto", "tokio", "service", "http1", "http2"] }
@@ -20,6 +20,7 @@ serde_json = "1.0.154"
 time = { version = "0.3.55", features = ["formatting"] }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "macros", "sync", "time"] }
 tokio-rustls = "0.26.6"
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 uuid = "1.29.0"
 vcon-form = { path = "../vcon-form" }
 zeroize = "1.9.1"
@@ -30,3 +31,4 @@ rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "
 reqwest = "0.13.5"
 tempfile = "3.27.0"
 time = { version = "0.3.55", features = ["macros"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }

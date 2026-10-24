@@ -5,16 +5,17 @@ use std::future::Future;
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::Router;
 use axum::body::Body;
 use axum::body::Bytes;
-use axum::extract::{Path as UriPath, State};
+use axum::extract::{MatchedPath, Path as UriPath, Request, State};
 use axum::http::header::{
     AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, ETAG, IF_MATCH, LOCATION, WWW_AUTHENTICATE,
 };
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use http_body_util::LengthLimitError;
@@ -60,7 +61,35 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/vcons", post(create))
         .route("/vcons/{uuid}", get(read).put(replace).delete(delete))
         .route("/health", get(health))
+        .layer(axum::middleware::from_fn(log_request))
         .with_state(app)
+}
+
+/// Logs each request once it is answered: a request id, the method, the
+/// route template, never the path, which holds ids, the status and how
+/// long it took. Bodies, tokens, uuids and tenant ids are in the audit
+/// only.
+async fn log_request(matched: Option<MatchedPath>, request: Request, next: Next) -> Response {
+    let started = Instant::now();
+    let method = request.method().clone();
+    let route = matched
+        .as_ref()
+        .map_or("unmatched", MatchedPath::as_str)
+        .to_owned();
+    let answer = next.run(request).await;
+    let mut id = [0; 8];
+    // AWS-LC's RAND_bytes aborts the process when it cannot get enough
+    // randomness, so `fill` never returns its error.
+    aws_lc_rs::rand::fill(&mut id).expect("AWS-LC aborts instead of failing");
+    tracing::info!(
+        request_id = %u64::from_be_bytes(id),
+        %method,
+        %route,
+        status = answer.status().as_u16(),
+        duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        "request"
+    );
+    answer
 }
 
 /// `POST /vcons`: stores a new vCon, or answers 200 when the same bytes
