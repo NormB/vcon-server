@@ -83,6 +83,9 @@ impl Store {
                 .collect::<Result<_, _>>()
                 .map_err(io)?
         };
+        // A restore, hold or read may commit here, between the listing and
+        // each version's own transaction, which checks the rule again.
+        self.pause();
         let mut report = PurgeReport::default();
         for version in hidden {
             if self.purge(who, VersionId(version), retention)? {
@@ -578,6 +581,138 @@ mod purge_tests {
         assert_eq!(f.store.delete(&f.caller, uuid, DAY), Ok(()));
 
         assert!(!object_exists(&f, version));
+    }
+
+    /// Stores a vCon, deletes it while seven years apply, and moves the
+    /// clock two days on, so under one day it is due for purge.
+    fn due_for_purge(f: &Fixture) -> (Uuid, VersionId, Vec<u8>) {
+        let (found, body) = vcon(UUID, "first");
+        let Ok(Created::New(version)) = f.store.create(&f.caller, &found, &body) else {
+            panic!("a new vCon")
+        };
+        f.store
+            .delete(&f.caller, found.uuid, Retention::Years(7))
+            .expect("deleted");
+        later(f, Duration::days(2));
+        (found.uuid, version, body)
+    }
+
+    #[test]
+    fn a_purge_cut_off_before_its_commit_leaves_the_version_whole() {
+        let mut f = fixture();
+        let (uuid, version, body) = due_for_purge(&f);
+        let other = super::super::tests::block_commits(&f);
+        other
+            .execute_batch(
+                "CREATE TRIGGER dead BEFORE INSERT ON audit
+                 BEGIN SELECT RAISE(ABORT, 'the process has died'); END;",
+            )
+            .expect("trigger");
+
+        assert!(f.store.purge_due(DAY).is_err());
+        drop(other);
+        super::super::tests::restart(&mut f);
+
+        let read = f.store.legal_get(&f.caller, uuid, None).expect("whole");
+        assert_eq!((read.stored.version, read.stored.body), (version, body));
+        assert!(object_exists(&f, version));
+        assert_eq!(f.store.purge_due(DAY), Ok(PurgeReport { purged: 1 }));
+        assert!(!object_exists(&f, version));
+    }
+
+    #[test]
+    fn a_purge_cut_off_at_its_file_step_is_finished_by_recovery() {
+        // Step 0 fails the removal itself; step 1 removes it unsynced, so a
+        // crash brings the file back.
+        for step in 0..=1 {
+            let mut f = fixture();
+            let (uuid, version, _) = due_for_purge(&f);
+            f.fs.fail_from(f.fs.log().len() + step);
+            let _ = f.store.purge_due(DAY);
+            super::super::tests::restart(&mut f);
+
+            assert_eq!(
+                count(&f, "SELECT count(*) FROM version WHERE uuid = ?1", uuid),
+                0,
+                "step {step}: the commit stands"
+            );
+            assert_eq!(
+                count(&f, "SELECT count(*) FROM tombstone WHERE uuid = ?1", uuid),
+                1,
+                "step {step}"
+            );
+            assert!(
+                !object_exists(&f, version),
+                "step {step}: recovery removes the file"
+            );
+            assert_eq!(
+                f.store.legal_get(&f.caller, uuid, None),
+                Err(StoreError::Gone),
+                "step {step}"
+            );
+        }
+    }
+
+    /// Runs `legal` on the store between the purge's listing of hidden
+    /// versions and its transaction for each, as a racing request would.
+    fn between_listing_and_purge(f: &Arc<Fixture>, legal: impl FnOnce(&Fixture) + Send + 'static) {
+        let racer = f.clone();
+        *f.store.hooks.between.lock().expect("hook") = Some(Box::new(move || legal(&racer)));
+    }
+
+    #[test]
+    fn a_restore_that_commits_before_the_purge_keeps_the_vcon_live() {
+        let f = Arc::new(fixture());
+        let (uuid, version, body) = due_for_purge(&f);
+        between_listing_and_purge(&f, move |racer| {
+            racer.store.restore(&racer.caller, uuid).expect("restored");
+        });
+
+        assert_eq!(f.store.purge_due(DAY), Ok(PurgeReport { purged: 0 }));
+
+        let read = f.store.get(&f.caller, uuid).expect("live");
+        assert_eq!((read.version, read.body), (version, body));
+    }
+
+    #[test]
+    fn a_hold_that_commits_before_the_purge_keeps_the_version() {
+        let f = Arc::new(fixture());
+        let (uuid, version, body) = due_for_purge(&f);
+        between_listing_and_purge(&f, move |racer| {
+            racer
+                .store
+                .set_hold(&racer.caller, uuid, true)
+                .expect("held");
+        });
+
+        assert_eq!(f.store.purge_due(DAY), Ok(PurgeReport { purged: 0 }));
+
+        let read = f.store.legal_get(&f.caller, uuid, None).expect("kept");
+        assert_eq!((read.stored.version, read.stored.body), (version, body));
+    }
+
+    #[test]
+    fn a_legal_read_racing_a_purge_gets_the_whole_body_or_gone() {
+        let f = Arc::new(fixture());
+        let (uuid, _, body) = due_for_purge(&f);
+        let (seen_tx, seen) = mpsc::channel();
+        between_listing_and_purge(&f, move |racer| {
+            seen_tx
+                .send(racer.store.legal_get(&racer.caller, uuid, None))
+                .expect("send");
+        });
+
+        assert_eq!(f.store.purge_due(DAY), Ok(PurgeReport { purged: 1 }));
+
+        let before = seen
+            .recv_timeout(Wait::from_secs(5))
+            .expect("the racing read ran");
+        assert_eq!(before.expect("before the purge").stored.body, body);
+        assert_eq!(
+            f.store.legal_get(&f.caller, uuid, None),
+            Err(StoreError::Gone),
+            "after it"
+        );
     }
 
     /// The plain contents of every page of the catalog at `path` and of

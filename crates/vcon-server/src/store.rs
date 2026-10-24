@@ -1963,7 +1963,7 @@ mod tests {
 
     /// Makes the next audit insert fail for every connection, as if the
     /// process died before its commit; `unblock` removes it again.
-    fn block_commits(f: &Fixture) -> Connection {
+    pub(super) fn block_commits(f: &Fixture) -> Connection {
         let ctx = Context::Tenant { tenant: TENANT };
         let tenant_key = envelope::unwrap(&f.master, &ctx, &f.wrapped).expect("unwraps");
         let catalog_key = envelope::catalog_key(&tenant_key).expect("catalog key");
@@ -1985,7 +1985,7 @@ mod tests {
         }));
     }
 
-    fn restart(f: &mut Fixture) {
+    pub(super) fn restart(f: &mut Fixture) {
         f.fs.crash();
         f.store
             .conn()
