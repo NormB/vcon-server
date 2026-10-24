@@ -12,7 +12,7 @@ use axum::body::Body;
 use axum::body::Bytes;
 use axum::extract::{Path as UriPath, State};
 use axum::http::header::{
-    AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, ETAG, LOCATION, WWW_AUTHENTICATE,
+    AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, ETAG, IF_MATCH, LOCATION, WWW_AUTHENTICATE,
 };
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -33,7 +33,7 @@ use crate::ids::TenantId;
 use crate::ids::{KeyId, VersionId};
 use crate::store::{Caller as StoreCaller, Created, Store, StoreError};
 use crate::tenants::Tenants;
-use vcon_form::Rejection;
+use vcon_form::{Inspection, Rejection};
 
 /// The limits from configuration that the API applies to every request.
 #[derive(Debug, Clone, Copy)]
@@ -58,65 +58,74 @@ pub struct App {
 pub fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/vcons", post(create))
-        .route("/vcons/{uuid}", get(read))
+        .route("/vcons/{uuid}", get(read).put(replace))
         .with_state(app)
 }
 
 /// `POST /vcons`: stores a new vCon, or answers 200 when the same bytes
 /// are already current.
 async fn create(State(app): State<Arc<App>>, headers: HeaderMap, body: Body) -> Response {
-    let content_type = headers
-        .get(CONTENT_TYPE)
-        .map(|v| v.to_str().unwrap_or("\u{0}").to_owned());
     let admitted = match admit(&app, &headers, body, Scope::Write, Action::Create).await {
         Ok(admitted) => admitted,
         Err(refused) => return refused.into_response(),
     };
-    let entry = |refused| refusal(admitted.caller.key, Action::Create, refused);
-    if !content_type.as_deref().is_none_or(is_vcon_media_type) {
-        let refused = Problem::UnsupportedMediaType;
-        let tenant = Some(admitted.tenant);
-        return app
-            .refuse(tenant, entry(refused), refused)
-            .await
-            .into_response();
-    }
-    let worker = app.clone();
+    let found = match inspect(&app, &admitted, &headers, Action::Create).await {
+        Ok(found) => found,
+        Err(refused) => return refused.into_response(),
+    };
     let (store, body, key) = (
         admitted.store.clone(),
         admitted.body.clone(),
         admitted.caller.key,
     );
-    let outcome = blocking(move || {
-        let limits = vcon_form::Limits {
-            inflated: worker.limits.inflated,
-        };
-        let found = vcon_form::inspect(&body, content_type.as_deref(), &limits, &worker.supported)
-            .map_err(|r| Err(rejected(&r)))?;
-        store
-            .create(&StoreCaller { key }, &found, &body)
-            .map(|created| (found.uuid, created))
-            .map_err(|e| Ok(failed(e)))
-    })
-    .await;
-    match outcome {
-        Ok((uuid, Created::New(version))) => (
+    // Store records its own outcomes.
+    match blocking(move || store.create(&StoreCaller { key }, &found, &body)).await {
+        Ok(Created::New(version)) => (
             StatusCode::CREATED,
             [
-                (LOCATION, format!("/vcons/{uuid}")),
+                (LOCATION, format!("/vcons/{}", found.uuid)),
                 (ETAG, entity_tag(version)),
             ],
         )
             .into_response(),
-        Ok((_, Created::Same(version))) => {
+        Ok(Created::Same(version)) => {
             (StatusCode::OK, [(ETAG, entity_tag(version))]).into_response()
         }
-        // Store records its own refusals; Format's are recorded here.
-        Err(Ok(refused)) => refused.into_response(),
-        Err(Err(refused)) => app
-            .refuse(Some(admitted.tenant), entry(refused), refused)
-            .await
-            .into_response(),
+        Err(error) => failed(error).into_response(),
+    }
+}
+
+/// Reads an admitted body as a vCon: its media type must be one a vCon is
+/// sent as (415), and Format must take it (422, or 413 when it inflates
+/// too far). A refusal here is recorded here, since Store never sees it.
+async fn inspect(
+    app: &Arc<App>,
+    admitted: &Admitted,
+    headers: &HeaderMap,
+    action: Action,
+) -> Result<Inspection, Problem> {
+    let content_type = headers
+        .get(CONTENT_TYPE)
+        .map(|v| v.to_str().unwrap_or("\u{0}").to_owned());
+    let found = if content_type.as_deref().is_none_or(is_vcon_media_type) {
+        let (worker, body) = (app.clone(), admitted.body.clone());
+        blocking(move || {
+            let limits = vcon_form::Limits {
+                inflated: worker.limits.inflated,
+            };
+            vcon_form::inspect(&body, content_type.as_deref(), &limits, &worker.supported)
+                .map_err(|r| rejected(&r))
+        })
+        .await
+    } else {
+        Err(Problem::UnsupportedMediaType)
+    };
+    match found {
+        Ok(found) => Ok(found),
+        Err(refused) => {
+            let entry = refusal(admitted.caller.key, action, refused);
+            Err(app.refuse(Some(admitted.tenant), entry, refused).await)
+        }
     }
 }
 
@@ -160,6 +169,67 @@ async fn read(
         // Store records its own outcomes.
         Err(error) => failed(error).into_response(),
     }
+}
+
+/// `PUT /vcons/{uuid}`: replaces the current version named by `If-Match`.
+async fn replace(
+    State(app): State<Arc<App>>,
+    UriPath(uuid): UriPath<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let admitted = match admit(&app, &headers, body, Scope::Write, Action::Replace).await {
+        Ok(admitted) => admitted,
+        Err(refused) => return refused.into_response(),
+    };
+    let (shared, key, tenant) = (&app, admitted.caller.key, admitted.tenant);
+    let refuse = |refused| async move {
+        let entry = refusal(key, Action::Replace, refused);
+        shared
+            .refuse(Some(tenant), entry, refused)
+            .await
+            .into_response()
+    };
+    let Some(uuid) = vcon_form::parse_uuid(&uuid) else {
+        return refuse(Problem::BadPathUuid).await;
+    };
+    let current = match if_match(&headers) {
+        None => return refuse(Problem::PreconditionRequired).await,
+        Some(None) => return refuse(Problem::Store(StoreError::PreconditionFailed)).await,
+        Some(Some(current)) => current,
+    };
+    let found = match inspect(&app, &admitted, &headers, Action::Replace).await {
+        Ok(found) => found,
+        Err(refused) => return refused.into_response(),
+    };
+    if found.uuid != uuid {
+        return refuse(Problem::PathUuidMismatch).await;
+    }
+    let (store, body, key) = (
+        admitted.store.clone(),
+        admitted.body.clone(),
+        admitted.caller.key,
+    );
+    // Store records its own outcomes.
+    match blocking(move || store.replace(&StoreCaller { key }, current, &found, &body)).await {
+        Ok(version) => (StatusCode::OK, [(ETAG, entity_tag(version))]).into_response(),
+        Err(error) => failed(error).into_response(),
+    }
+}
+
+/// The version an `If-Match` header names: None without the header, and
+/// Some(None) when it is anything but one strong tag holding a version id,
+/// such as `*`, a weak tag or a list, since that names no version this
+/// server could replace.
+fn if_match(headers: &HeaderMap) -> Option<Option<VersionId>> {
+    let value = headers.get(IF_MATCH)?;
+    Some(
+        value
+            .to_str()
+            .ok()
+            .and_then(|tag| tag.trim().strip_prefix('"')?.strip_suffix('"'))
+            .and_then(VersionId::parse),
+    )
 }
 
 /// The audit record of a request refused before Store saw it.
@@ -302,6 +372,10 @@ enum Problem {
     UnsupportedMediaType,
     /// A uuid in the path is not in RFC 9562 text form.
     BadPathUuid,
+    /// A replacement came without `If-Match`.
+    PreconditionRequired,
+    /// The body's uuid is not the one in the path.
+    PathUuidMismatch,
     /// Format refused the body.
     Invalid(Invalid),
     /// Store refused or failed the request.
@@ -359,6 +433,8 @@ impl Problem {
             Problem::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Problem::Timeout => StatusCode::REQUEST_TIMEOUT,
             Problem::BadBody | Problem::BadPathUuid => StatusCode::BAD_REQUEST,
+            Problem::PreconditionRequired => StatusCode::PRECONDITION_REQUIRED,
+            Problem::PathUuidMismatch => StatusCode::UNPROCESSABLE_ENTITY,
             Problem::Unavailable | Problem::AuditFailed => StatusCode::SERVICE_UNAVAILABLE,
             Problem::UnsupportedMediaType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             Problem::Invalid(_) => StatusCode::UNPROCESSABLE_ENTITY,
@@ -388,6 +464,14 @@ impl Problem {
             Problem::BadPathUuid => (
                 "bad-path-uuid",
                 "The path's uuid is not in RFC 9562 text form",
+            ),
+            Problem::PreconditionRequired => (
+                "precondition-required",
+                "If-Match must name the current version",
+            ),
+            Problem::PathUuidMismatch => (
+                "path-uuid-mismatch",
+                "The body's uuid is not the one in the path",
             ),
             Problem::Unavailable => ("unavailable", "The service cannot answer now"),
             Problem::AuditFailed => ("audit-failed", "The audit record could not be written"),
@@ -1217,7 +1301,7 @@ mod tests {
         }
     }
 
-    mod reads {
+    mod by_uuid {
         use super::pipeline::{Server, problem, server};
         use crate::access::{Scope, Scopes};
         use crate::audit::Actor;
@@ -1417,6 +1501,157 @@ mod tests {
             let answer = get(&s, &token, UUID).await;
             assert_eq!(answer.status(), 500);
             assert_eq!(problem(answer).await, "damaged");
+        }
+
+        async fn put(
+            s: &Server,
+            token: &str,
+            uuid: &str,
+            if_match: Option<&str>,
+            body: Vec<u8>,
+        ) -> reqwest::Response {
+            let mut request = s
+                .client()
+                .put(s.url(&format!("/vcons/{uuid}")))
+                .bearer_auth(token)
+                .header("content-type", "application/vcon")
+                .body(body);
+            if let Some(tag) = if_match {
+                request = request.header("if-match", tag);
+            }
+            request.send().await.expect("an answer")
+        }
+
+        /// A writer and reader in the fixture's tenant, with A.4 stored.
+        async fn stored_a4(s: &Server) -> (String, String) {
+            let token = key_in(s, s.tenant, &[Scope::Write, Scope::Read]);
+            let tag = post(
+                s,
+                &token,
+                "application/vcon",
+                fixture("ab_call_ext_rec.vcon"),
+            )
+            .await;
+            (token, tag)
+        }
+
+        /// An unsigned vCon may be replaced by its signed form, and a signed
+        /// one is replaced by nothing.
+        #[tokio::test]
+        async fn a4_then_a6_by_put_and_a7_after_a6_conflicts() {
+            let s = server().await;
+            let (token, a4) = stored_a4(&s).await;
+            let a6 = fixture("ab_call_ext_rec_signed.vcon");
+            let answer = put(&s, &token, UUID, Some(&a4), a6.clone()).await;
+            assert_eq!(answer.status(), 200);
+            let new_tag = answer.headers()["etag"].to_str().expect("ascii").to_owned();
+            assert_ne!(new_tag, a4);
+            let read = get(&s, &token, UUID).await;
+            assert_eq!(read.headers()["etag"], new_tag.as_str());
+            assert_eq!(read.bytes().await.expect("body").as_ref(), a6.as_slice());
+
+            let a7 = fixture("ab_call_ext_rec_encrypted.vcon");
+            let answer = put(&s, &token, UUID, Some(&new_tag), a7).await;
+            assert_eq!(answer.status(), 409);
+            assert_eq!(problem(answer).await, "immutable");
+        }
+
+        #[tokio::test]
+        async fn a_put_without_if_match_is_refused_and_recorded() {
+            let s = server().await;
+            let (token, _) = stored_a4(&s).await;
+            let a6 = fixture("ab_call_ext_rec_signed.vcon");
+            let answer = put(&s, &token, UUID, None, a6).await;
+            assert_eq!(answer.status(), 428);
+            assert_eq!(problem(answer).await, "precondition-required");
+            assert_eq!(s.tenant_log("replace")[0]["status"], 428);
+        }
+
+        #[tokio::test]
+        async fn an_if_match_that_does_not_name_the_current_version_fails() {
+            let s = server().await;
+            let (token, a4) = stored_a4(&s).await;
+            let a6 = fixture("ab_call_ext_rec_signed.vcon");
+            let weak = format!("W/{a4}");
+            let listed = format!("{a4}, \"00000000000000000000000000000000\"");
+            let stale = format!("\"{}\"", crate::ids::VersionId([7; 16]));
+            for tag in [
+                "*",
+                weak.as_str(),
+                listed.as_str(),
+                "garbage",
+                stale.as_str(),
+            ] {
+                let answer = put(&s, &token, UUID, Some(tag), a6.clone()).await;
+                assert_eq!(answer.status(), 412, "{tag}");
+                assert_eq!(problem(answer).await, "precondition-failed");
+            }
+            let current = get(&s, &token, UUID).await;
+            assert_eq!(current.headers()["etag"], a4.as_str(), "nothing replaced");
+        }
+
+        #[tokio::test]
+        async fn a_body_naming_another_uuid_is_unprocessable() {
+            let s = server().await;
+            let (token, a4) = stored_a4(&s).await;
+            let (_, other) =
+                crate::store::testing::vcon("01a07da8-c2bb-83e5-b9a2-279e0d16bc47", "x");
+            let answer = put(&s, &token, UUID, Some(&a4), other).await;
+            assert_eq!(answer.status(), 422);
+            assert_eq!(problem(answer).await, "path-uuid-mismatch");
+            assert_eq!(s.tenant_log("replace")[0]["status"], 422);
+        }
+
+        #[tokio::test]
+        async fn a_put_to_a_uuid_never_stored_or_deleted_or_badly_written() {
+            let s = server().await;
+            let token = key_in(&s, s.tenant, &[Scope::Write, Scope::Read]);
+            let tag = format!("\"{}\"", crate::ids::VersionId([7; 16]));
+            let a4 = fixture("ab_call_ext_rec.vcon");
+            let answer = put(&s, &token, UUID, Some(&tag), a4.clone()).await;
+            assert_eq!(answer.status(), 404);
+            assert_eq!(problem(answer).await, "not-found");
+
+            let answer = put(&s, &token, "not-a-uuid", Some(&tag), a4.clone()).await;
+            assert_eq!(answer.status(), 400);
+            assert_eq!(problem(answer).await, "bad-path-uuid");
+
+            let a4_tag = post(&s, &token, "application/vcon", a4.clone()).await;
+            s.tenants
+                .store(s.tenant)
+                .expect("its store")
+                .delete(
+                    &crate::store::Caller {
+                        key: crate::ids::KeyId([9; 8]),
+                    },
+                    UUID.parse().expect("uuid"),
+                )
+                .expect("deleted");
+            let answer = put(&s, &token, UUID, Some(&a4_tag), a4).await;
+            assert_eq!(answer.status(), 410);
+            assert_eq!(problem(answer).await, "gone");
+        }
+
+        #[tokio::test]
+        async fn a_put_needs_write_and_a_vcon_media_type() {
+            let s = server().await;
+            let (_, a4) = stored_a4(&s).await;
+            let reader = key_in(&s, s.tenant, &[Scope::Read]);
+            let a6 = fixture("ab_call_ext_rec_signed.vcon");
+            let answer = put(&s, &reader, UUID, Some(&a4), a6.clone()).await;
+            assert_eq!(answer.status(), 403);
+            let writer = key_in(&s, s.tenant, &[Scope::Write]);
+            let answer = s
+                .client()
+                .put(s.url(&format!("/vcons/{UUID}")))
+                .bearer_auth(&writer)
+                .header("content-type", "text/plain")
+                .header("if-match", &a4)
+                .body(a6)
+                .send()
+                .await
+                .expect("an answer");
+            assert_eq!(answer.status(), 415);
         }
     }
 }
