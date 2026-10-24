@@ -615,7 +615,6 @@ impl Store {
         envelope::open(&data_key, &ctx, &blob).map_err(|_| StoreError::Damaged)
     }
 
-    /// Writes an audit record in `tx`; if it cannot, nothing is done.
     /// How many versions the Store keeps and how many uuids are held.
     pub fn counts(&self) -> Result<Counts, StoreError> {
         let conn = self.conn();
@@ -665,6 +664,7 @@ impl Store {
         commit(tx)
     }
 
+    /// Writes an audit record in `tx`; if it cannot, nothing is done.
     fn record(&self, tx: &Transaction, entry: &Entry) -> Result<(), StoreError> {
         audit::record(tx, entry, self.clock.now()).map_err(|_| StoreError::AuditFailed)
     }
