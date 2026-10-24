@@ -16,6 +16,10 @@ use crate::envelope::{self, Context, Key, WrapLimit};
 use crate::fs::Fs;
 use crate::ids::{KeyId, TenantId, VersionId};
 
+mod purge;
+
+pub use purge::{Kept, due};
+
 /// The tables of a tenant's catalog, besides its audit log. A key column
 /// says NOT NULL because SQLite lets a PRIMARY KEY other than an INTEGER
 /// one hold NULL.
