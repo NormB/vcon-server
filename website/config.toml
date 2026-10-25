@@ -15,7 +15,6 @@ index_format = "elasticlunr_javascript"
 
 [markdown]
 smart_punctuation = false
-highlight_code = false
 
 [link_checker]
 # Internal links must resolve; an external site being down must not block a deploy.

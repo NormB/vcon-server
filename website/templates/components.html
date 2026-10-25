@@ -1,4 +1,6 @@
-{% macro docs_nav(current) %}
+{# Tera v2 components (Zola 0.23 removed macros). Components are global, so
+   no template imports this file; they see only the arguments they are given. #}
+{% component docs_nav(current) %}
 {% set docs = get_section(path="docs/_index.md") %}
 <nav class="doc-nav" aria-label="Documentation">
   <p class="doc-nav-title"><a href="{{ docs.permalink }}">Documentation</a></p>
@@ -10,8 +12,8 @@
   <p class="doc-nav-title"><a href="{{ get_url(path='@/problems/_index.md') }}">Problem types</a></p>
   <p class="doc-nav-title"><a href="{{ get_url(path='@/standards.md') }}">Standards</a></p>
 </nav>
-{% endmacro docs_nav %}
+{% endcomponent docs_nav %}
 
-{% macro edit_link(path) %}
-<p class="doc-source">Source of this page: <a href="{{ config.extra.repo | safe }}/blob/main/website/content/{{ path | safe }}">website/content/{{ path | safe }}</a></p>
-{% endmacro edit_link %}
+{% component edit_link(repo, path) %}
+<p class="doc-source">Source of this page: <a href="{{ repo | safe }}/blob/main/website/content/{{ path | safe }}">website/content/{{ path | safe }}</a></p>
+{% endcomponent edit_link %}

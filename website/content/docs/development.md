@@ -84,7 +84,7 @@ draft's own examples, kept unchanged under
 
 ## This website
 
-The site is [Zola](https://www.getzola.org/) 0.19.2, in `website/`. Preview it
+The site is [Zola](https://www.getzola.org/) 0.23.6, in `website/`. Preview it
 with `zola serve` from that directory.
 
 ```sh

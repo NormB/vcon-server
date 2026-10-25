@@ -1,11 +1,10 @@
 {% extends "base.html" %}
-{% import "macros.html" as macros %}
 {% block title %}{{ page.slug }} ({{ page.extra.status }}) — {{ config.title }} problem type{% endblock title %}
 {% block description %}{{ page.extra.problem_title }}{% endblock description %}
 {% block og_type %}article{% endblock og_type %}
 {% block content %}
 <div class="doc-layout">
-  <aside class="doc-sidebar">{{ macros::docs_nav(current=page.permalink) }}</aside>
+  <aside class="doc-sidebar">{{ <docs_nav current={page.permalink} /> }}</aside>
   <article class="doc">
     <header>
       <p class="kicker"><a href="{{ get_url(path='@/problems/_index.md') }}">Problem types</a></p>
@@ -18,7 +17,7 @@
       <dt>Title</dt><dd>{{ page.extra.problem_title }}</dd>
     </dl>
     {{ page.content | safe }}
-    {{ macros::edit_link(path=page.relative_path) }}
+    {{ <edit_link repo={config.extra.repo} path={page.relative_path} /> }}
   </article>
 </div>
 {% endblock content %}

@@ -23,9 +23,9 @@ jobs:
     timeout-minutes: 15
     runs-on: ubuntu-latest
     env:
-      ZOLA_VERSION: '0.19.2'
+      ZOLA_VERSION: '0.23.6'
       # A tag names a release, not its bytes; the download is pinned by hash too.
-      ZOLA_SHA256: '0798e69b86c628ddcb264ebd86c8cc8dce7670b9049060bf94faa73f6857cd9c'
+      ZOLA_SHA256: '8f5132b3522412d04e395e0b25f6d68613ad272a873e54a2b3ebf664873024a4'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -36,7 +36,9 @@ jobs:
           curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o zola.tar.gz \
             "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
           echo "${ZOLA_SHA256}  zola.tar.gz" | sha256sum -c -
-          tar xzf zola.tar.gz
+          # The tarball also carries LICENSE, LICENSE-MIT and man pages; take only
+          # the binary, so the repository's own LICENSE-MIT is not overwritten.
+          tar xzf zola.tar.gz zola
           sudo install -m 0755 zola /usr/local/bin/zola
           rm -f zola zola.tar.gz
           zola --version
