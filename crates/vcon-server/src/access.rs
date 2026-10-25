@@ -35,6 +35,11 @@ impl Scope {
         Scope::Admin,
     ];
 
+    /// The scope with this exact name.
+    pub fn named(name: &str) -> Option<Scope> {
+        Scope::ALL.into_iter().find(|s| s.name() == name)
+    }
+
     fn bit(self) -> u8 {
         1 << self as u8
     }
@@ -70,10 +75,7 @@ impl Scopes {
     /// Reads scopes written by `Display`: names in the fixed order, comma
     /// separated, each once.
     pub fn parse(text: &str) -> Option<Scopes> {
-        let scopes: Vec<Scope> = text
-            .split(',')
-            .map(|name| Scope::ALL.into_iter().find(|s| s.name() == name))
-            .collect::<Option<_>>()?;
+        let scopes: Vec<Scope> = text.split(',').map(Scope::named).collect::<Option<_>>()?;
         let read = Scopes::of(&scopes);
         (read.to_string() == text).then_some(read)
     }
@@ -329,6 +331,16 @@ mod tests {
             "write,read,",
         ] {
             assert_eq!(Scopes::parse(text), None, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_scope_is_found_by_its_exact_name() {
+        for scope in Scope::ALL {
+            assert_eq!(Scope::named(scope.name()), Some(scope), "{scope:?}");
+        }
+        for name in ["", "Read", "READ", " read", "read,write", "superuser"] {
+            assert_eq!(Scope::named(name), None, "{name:?}");
         }
     }
 

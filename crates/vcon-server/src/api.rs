@@ -12,7 +12,8 @@ use axum::body::Body;
 use axum::body::Bytes;
 use axum::extract::{MatchedPath, Path as UriPath, Request, State};
 use axum::http::header::{
-    AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, ETAG, IF_MATCH, LOCATION, WWW_AUTHENTICATE,
+    AUTHORIZATION, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, ETAG, IF_MATCH, LOCATION,
+    WWW_AUTHENTICATE,
 };
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri};
 use axum::middleware::Next;
@@ -29,7 +30,7 @@ use serde::de::{Deserialize, DeserializeOwned, Deserializer, Error as _};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
-use crate::access::{self, AuthError, Caller, Scope};
+use crate::access::{self, AuthError, Caller, Scope, Scopes};
 use crate::audit::{Action, Actor, Entry};
 use crate::ids::TenantId;
 use crate::ids::{KeyId, VersionId};
@@ -77,6 +78,8 @@ pub fn router(app: Arc<App>) -> Router {
             "/admin/tenants/{id}",
             patch(tenant_retention).delete(tenant_remove),
         )
+        .route("/admin/tenants/{id}/keys", post(key_create).get(key_list))
+        .route("/admin/keys/{id}", axum::routing::delete(key_revoke))
         .layer(axum::middleware::from_fn(log_request))
         .with_state(app)
 }
@@ -706,6 +709,150 @@ fn removal(query: Option<&str>) -> Option<Removal> {
     }
 }
 
+/// The body of `POST /admin/tenants/{id}/keys`.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NewKeyBody {
+    scopes: Vec<String>,
+    label: String,
+}
+
+/// The scopes a body names, or None when one is unknown or named twice,
+/// so a body means one thing. Which scopes a tenant key may hold is
+/// Tenants' rule.
+fn named_scopes(names: &[String]) -> Option<Scopes> {
+    let mut held = Vec::new();
+    for name in names {
+        let scope = Scope::named(name)?;
+        if held.contains(&scope) {
+            return None;
+        }
+        held.push(scope);
+    }
+    Some(Scopes::of(&held))
+}
+
+/// `POST /admin/tenants/{id}/keys`: makes a key for the tenant and
+/// answers 201 with its id and token. The token is shown this once; only
+/// its hash is kept.
+async fn key_create(
+    State(app): State<Arc<App>>,
+    UriPath(id): UriPath<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let action = Action::KeyCreate;
+    let made = async {
+        let (key, body) = admin_admit(&app, &headers, body, action).await?;
+        let refuse = |refused| app.refuse(None, refusal(key, action, refused), refused);
+        let Some(id) = TenantId::parse(&id) else {
+            return Err(refuse(Problem::Tenant(TenantError::NotFound)).await);
+        };
+        let new: NewKeyBody = admin_body(&app, key, action, &body).await?;
+        let Some(scopes) = named_scopes(&new.scopes) else {
+            return Err(refuse(Problem::Tenant(TenantError::BadScopes)).await);
+        };
+        let tenants = app.tenants.clone();
+        // Tenants records its own outcomes.
+        blocking(move || tenants.create_key(Actor::Key(key), Some(id), scopes, &new.label))
+            .await
+            .map_err(Problem::Tenant)
+    };
+    match made.await {
+        Ok(made) => {
+            let body = serde_json::json!({ "id": made.id.to_string(), "token": made.token });
+            let mut answer = json_answer(StatusCode::CREATED, &body);
+            answer
+                .headers_mut()
+                .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            answer
+        }
+        Err(refused) => refused.into_response(),
+    }
+}
+
+/// `GET /admin/tenants/{id}/keys`: the tenant's keys, oldest first, with
+/// their ids, scopes, labels and times (RFC 3339, UTC), never a token.
+async fn key_list(
+    State(app): State<Arc<App>>,
+    UriPath(id): UriPath<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let action = Action::KeyList;
+    let listed = async {
+        let (key, _) = admin_admit(&app, &headers, body, action).await?;
+        let Some(id) = TenantId::parse(&id) else {
+            let refused = Problem::Tenant(TenantError::NotFound);
+            return Err(app
+                .refuse(None, refusal(key, action, refused), refused)
+                .await);
+        };
+        let tenants = app.tenants.clone();
+        blocking(move || tenants.list_keys(Actor::Key(key), Some(id)))
+            .await
+            .map_err(Problem::Tenant)
+    };
+    let keys = match listed.await {
+        Ok(keys) => keys,
+        Err(refused) => return refused.into_response(),
+    };
+    let time = |at: time::OffsetDateTime| at.format(&Rfc3339).ok();
+    let listed: Option<Vec<serde_json::Value>> = keys
+        .iter()
+        .map(|k| {
+            let revoked_at = match k.revoked_at {
+                Some(at) => Some(time(at)?),
+                None => None,
+            };
+            let scopes = k.scopes.to_string();
+            Some(serde_json::json!({
+                "id": k.id.to_string(),
+                "scopes": scopes.split(',').collect::<Vec<_>>(),
+                "label": k.label,
+                "created_at": time(k.created_at)?,
+                "revoked_at": revoked_at,
+            }))
+        })
+        .collect();
+    match listed {
+        Some(listed) => json_answer(StatusCode::OK, &serde_json::Value::Array(listed)),
+        None => Problem::Tenant(TenantError::Io).into_response(),
+    }
+}
+
+/// `DELETE /admin/keys/{id}`: revokes the key, so its next request is
+/// refused; 204 again for a key already revoked.
+async fn key_revoke(
+    State(app): State<Arc<App>>,
+    UriPath(id): UriPath<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let action = Action::KeyRevoke;
+    let revoked = async {
+        let (key, _) = admin_admit(&app, &headers, body, action).await?;
+        let Some(id) = KeyId::parse(&id) else {
+            let refused = Problem::UnknownKey;
+            return Err(app
+                .refuse(None, refusal(key, action, refused), refused)
+                .await);
+        };
+        let tenants = app.tenants.clone();
+        // Tenants records its own outcomes.
+        blocking(move || tenants.revoke_key(Actor::Key(key), id))
+            .await
+            .map_err(|error| match error {
+                TenantError::NotFound => Problem::UnknownKey,
+                error => Problem::Tenant(error),
+            })
+    };
+    match revoked.await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(refused) => refused.into_response(),
+    }
+}
+
 /// `GET /health`: any valid key may ask; 200 when server.sqlite answers.
 ///
 /// Health requests are counted, one record per key, status and minute, in
@@ -903,6 +1050,8 @@ enum Problem {
     InvalidBody,
     /// The query is not one the route takes.
     BadQuery,
+    /// No key has the id.
+    UnknownKey,
     /// Store refused or failed the request.
     Store(StoreError),
     /// Tenants refused or failed the request.
@@ -957,6 +1106,7 @@ impl Problem {
         match self {
             Problem::Unauthorized => StatusCode::UNAUTHORIZED,
             Problem::Forbidden => StatusCode::FORBIDDEN,
+            Problem::UnknownKey => StatusCode::NOT_FOUND,
             Problem::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Problem::Timeout => StatusCode::REQUEST_TIMEOUT,
             Problem::BadBody
@@ -985,14 +1135,12 @@ impl Problem {
                 TenantError::NameTaken | TenantError::HoldsVcons | TenantError::UnderHold => {
                     StatusCode::CONFLICT
                 }
-                TenantError::BadName => StatusCode::UNPROCESSABLE_ENTITY,
+                TenantError::BadName | TenantError::BadScopes => StatusCode::UNPROCESSABLE_ENTITY,
+                TenantError::CliOnly => StatusCode::FORBIDDEN,
                 TenantError::LimitReached | TenantError::AuditFailed | TenantError::Closing => {
                     StatusCode::SERVICE_UNAVAILABLE
                 }
-                TenantError::CliOnly
-                | TenantError::BadScopes
-                | TenantError::WrongKey
-                | TenantError::Io => StatusCode::INTERNAL_SERVER_ERROR,
+                TenantError::WrongKey | TenantError::Io => StatusCode::INTERNAL_SERVER_ERROR,
             },
         }
     }
@@ -1067,6 +1215,7 @@ impl Problem {
                 StoreError::Io => ("internal", "The server failed"),
             },
             Problem::BadQuery => ("bad-query", "The query is not one this route takes"),
+            Problem::UnknownKey => ("unknown-key", "No key has the id"),
             Problem::InvalidBody | Problem::Tenant(TenantError::BadName) => {
                 ("invalid-body", "The body is not one this route takes")
             }
@@ -1080,16 +1229,16 @@ impl Problem {
                 TenantError::UnderHold => {
                     ("under-hold", "A vCon of the tenant is under a legal hold")
                 }
+                TenantError::BadScopes => ("bad-scopes", "A tenant key cannot hold these scopes"),
+                TenantError::CliOnly => ("forbidden", "The key does not allow this"),
                 TenantError::LimitReached => ("master-key-limit", "The master key must be rotated"),
                 TenantError::AuditFailed => {
                     ("audit-failed", "The audit record could not be written")
                 }
                 TenantError::Closing => ("unavailable", "The service cannot answer now"),
-                TenantError::BadName
-                | TenantError::CliOnly
-                | TenantError::BadScopes
-                | TenantError::WrongKey
-                | TenantError::Io => ("internal", "The server failed"),
+                TenantError::BadName | TenantError::WrongKey | TenantError::Io => {
+                    ("internal", "The server failed")
+                }
             },
         }
     }
@@ -1687,6 +1836,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn every_tenants_outcome_has_its_problem() {
+        let cases = [
+            (TenantError::NotFound, 404, "unknown-tenant"),
+            (TenantError::NameTaken, 409, "name-taken"),
+            (TenantError::BadName, 422, "invalid-body"),
+            (TenantError::HoldsVcons, 409, "holds-vcons"),
+            (TenantError::UnderHold, 409, "under-hold"),
+            (TenantError::LimitReached, 503, "master-key-limit"),
+            (TenantError::AuditFailed, 503, "audit-failed"),
+            (TenantError::Closing, 503, "unavailable"),
+            (TenantError::CliOnly, 403, "forbidden"),
+            (TenantError::BadScopes, 422, "bad-scopes"),
+            (TenantError::WrongKey, 500, "internal"),
+            (TenantError::Io, 500, "internal"),
+        ];
+        for (error, status, name) in cases {
+            let problem = Problem::Tenant(error);
+            assert_eq!(
+                (problem.status().as_u16(), problem.name().0),
+                (status, name),
+                "{error:?}"
+            );
+        }
+    }
+
     mod vcons {
         use std::io::Write;
 
@@ -2260,7 +2435,10 @@ mod tests {
         use super::pipeline::{Server, problem, server};
         use crate::access::{Scope, Scopes};
         use crate::audit::Actor;
-        use crate::ids::TenantId;
+        use time::format_description::well_known::Rfc3339;
+
+        use crate::access;
+        use crate::ids::{KeyId, TenantId};
         use crate::retention::Retention;
 
         fn operator(s: &Server) -> String {
@@ -2294,16 +2472,25 @@ mod tests {
             serde_json::from_slice(&answer.bytes().await.expect("body")).expect("JSON")
         }
 
+        /// The admin log's records of `action` written for requests, not
+        /// for the tests' own setup from the command line.
         fn admin_log(s: &Server, action: &str) -> Vec<Value> {
             s.tenants
                 .admin_records()
                 .into_iter()
-                .filter(|r| r["action"] == action)
+                .filter(|r| r["action"] == action && r["actor"] != "cli")
                 .collect()
         }
 
-        /// Each tenant route, with a body it takes, and its audit action.
-        fn routes(id: TenantId) -> Vec<(Method, String, Option<&'static str>, &'static str)> {
+        fn key_id(token: &str) -> KeyId {
+            access::parse(token).expect("a token")
+        }
+
+        /// Each admin route, with a body it takes, and its audit action.
+        fn routes(
+            id: TenantId,
+            key: KeyId,
+        ) -> Vec<(Method, String, Option<&'static str>, &'static str)> {
             vec![
                 (
                     Method::POST,
@@ -2329,19 +2516,41 @@ mod tests {
                     None,
                     "tenant_remove",
                 ),
+                (
+                    Method::POST,
+                    format!("/admin/tenants/{id}/keys"),
+                    Some(r#"{"scopes":["read"],"label":"ingest"}"#),
+                    "key_create",
+                ),
+                (
+                    Method::GET,
+                    format!("/admin/tenants/{id}/keys"),
+                    None,
+                    "key_list",
+                ),
+                (
+                    Method::DELETE,
+                    format!("/admin/keys/{key}"),
+                    None,
+                    "key_revoke",
+                ),
             ]
         }
 
         #[tokio::test]
-        async fn a_tenant_key_is_forbidden_and_no_key_unauthorized_on_every_tenant_route() {
+        async fn a_tenant_key_is_forbidden_and_no_key_unauthorized_on_every_admin_route() {
             let s = server().await;
             let every = [Scope::Write, Scope::Read, Scope::Delete, Scope::Legal];
             let tenant_key = s.key(&every);
-            for (method, path, body, action) in routes(s.tenant) {
+            for (method, path, body, action) in routes(s.tenant, key_id(&tenant_key)) {
                 let answer = call(&s, method.clone(), &path, Some(&tenant_key), body).await;
                 assert_eq!(answer.status(), 403, "{method} {path}");
                 assert_eq!(problem(answer).await, "forbidden");
-                let refused = s.tenant_log(action);
+                let refused: Vec<Value> = s
+                    .tenant_log(action)
+                    .into_iter()
+                    .filter(|r| r["actor"] != "cli")
+                    .collect();
                 assert_eq!(refused.len(), 1, "{action} refusal in the tenant's log");
                 assert_eq!(refused[0]["status"], 403);
 
@@ -2350,6 +2559,10 @@ mod tests {
             }
             assert_eq!(s.tenants.list(Actor::Cli).expect("listed").len(), 1);
             assert_eq!(s.tenants.retention(s.tenant), Ok(None), "nothing changed");
+            let keys = s.tenants.list_keys(Actor::Cli, Some(s.tenant));
+            let keys = keys.expect("listed");
+            assert_eq!(keys.len(), 1, "no key made");
+            assert_eq!(keys[0].revoked_at, None, "nor revoked");
         }
 
         #[tokio::test]
@@ -2427,12 +2640,8 @@ mod tests {
                 assert_eq!(problem(answer).await, "invalid-body", "{body}");
             }
             let refused = admin_log(&s, "tenant_create");
-            assert_eq!(
-                refused.len(),
-                bodies.len() + 1,
-                "acme, then one per refusal"
-            );
-            assert!(refused[1..].iter().all(|r| r["status"] == 422));
+            assert_eq!(refused.len(), bodies.len(), "one per refusal");
+            assert!(refused.iter().all(|r| r["status"] == 422));
             assert_eq!(s.tenants.list(Actor::Cli).expect("listed").len(), 1);
         }
 
@@ -2535,13 +2744,19 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn damage_is_500_on_every_tenant_route() {
+        async fn damage_is_500_on_every_admin_route() {
             let s = server().await;
             let op = operator(&s);
+            let kept = key_id(&s.key(&[Scope::Read]));
             s.tenants
                 .conn_for_test()
                 .execute_batch(
                     "UPDATE tenant SET retention = 'x';
+                     UPDATE api_key SET created_at = 'x' WHERE tenant IS NOT NULL;
+                     CREATE TEMP TRIGGER no_key BEFORE INSERT ON api_key
+                     BEGIN SELECT RAISE(ABORT, 'the disk has failed'); END;
+                     CREATE TEMP TRIGGER no_revoke BEFORE UPDATE ON api_key
+                     BEGIN SELECT RAISE(ABORT, 'the disk has failed'); END;
                      CREATE TEMP TRIGGER broken BEFORE INSERT ON tenant
                      BEGIN SELECT RAISE(ABORT, 'the disk has failed'); END;
                      CREATE TEMP TRIGGER broken_too BEFORE UPDATE ON tenant
@@ -2550,7 +2765,7 @@ mod tests {
                      BEGIN SELECT RAISE(ABORT, 'the disk has failed'); END;",
                 )
                 .expect("damaged");
-            for (method, path, body, _) in routes(s.tenant) {
+            for (method, path, body, _) in routes(s.tenant, kept) {
                 let answer = call(&s, method.clone(), &path, Some(&op), body).await;
                 assert_eq!(answer.status(), 500, "{method} {path}");
                 assert_eq!(problem(answer).await, "internal");
@@ -2558,11 +2773,12 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn an_answer_that_cannot_be_recorded_is_503_on_every_tenant_route() {
+        async fn an_answer_that_cannot_be_recorded_is_503_on_every_admin_route() {
             let s = server().await;
             let op = operator(&s);
+            let kept = key_id(&s.key(&[Scope::Read]));
             s.tenants.break_audit();
-            for (method, path, body, _) in routes(s.tenant) {
+            for (method, path, body, _) in routes(s.tenant, kept) {
                 let answer = call(&s, method.clone(), &path, Some(&op), body).await;
                 assert_eq!(answer.status(), 503, "{method} {path}");
                 assert_eq!(problem(answer).await, "audit-failed");
@@ -2737,6 +2953,197 @@ mod tests {
             s.tenants.close(s.tenant);
             let path = format!("/admin/tenants/{}", s.tenant);
             let answer = call(&s, Method::DELETE, &path, Some(&op), None).await;
+            assert_eq!(answer.status(), 503);
+            assert_eq!(problem(answer).await, "unavailable");
+        }
+
+        async fn health(s: &Server, token: &str) -> u16 {
+            let answer = s.client().get(s.url("/health")).bearer_auth(token).send();
+            answer.await.expect("an answer").status().as_u16()
+        }
+
+        /// Issues a key over HTTP and returns its id and token.
+        async fn issued(s: &Server, op: &str, body: &str) -> (String, String) {
+            let path = format!("/admin/tenants/{}/keys", s.tenant);
+            let answer = call(s, Method::POST, &path, Some(op), Some(body)).await;
+            assert_eq!(answer.status(), 201, "{body}");
+            assert_eq!(answer.headers()["cache-control"], "no-store");
+            let made = json(answer).await;
+            let id = made["id"].as_str().expect("an id").to_owned();
+            let token = made["token"].as_str().expect("a token").to_owned();
+            assert_eq!(made, json!({ "id": id, "token": token }), "nothing else");
+            assert_eq!(key_id(&token).to_string(), id, "the token names its key");
+            (id, token)
+        }
+
+        async fn key_list(s: &Server, op: &str) -> (String, Value) {
+            let path = format!("/admin/tenants/{}/keys", s.tenant);
+            let answer = call(s, Method::GET, &path, Some(op), None).await;
+            assert_eq!(answer.status(), 200);
+            assert_eq!(answer.headers()["content-type"], "application/json");
+            let text = answer.text().await.expect("text");
+            let listed = serde_json::from_str(&text).expect("JSON");
+            (text, listed)
+        }
+
+        #[tokio::test]
+        async fn a_key_is_issued_with_201_and_its_token_shown_once() {
+            let s = server().await;
+            let op = operator(&s);
+            let body = r#"{"scopes":["read","write"],"label":"ingest"}"#;
+            let (id, token) = issued(&s, &op, body).await;
+            assert_eq!(health(&s, &token).await, 200, "the token works");
+            let (again, other) = issued(&s, &op, body).await;
+            assert_ne!((&again, &other), (&id, &token), "each key is new");
+
+            let (text, listed) = key_list(&s, &op).await;
+            for token in [&token, &other] {
+                let secret = token.rsplit_once('_').expect("a secret").1;
+                assert!(!text.contains(secret), "no token is listed");
+            }
+            let first = &listed[0];
+            assert_eq!(first["id"], id.as_str());
+            assert_eq!(
+                first["scopes"],
+                json!(["write", "read"]),
+                "in the fixed order"
+            );
+            assert_eq!(first["label"], "ingest");
+            assert_eq!(first["revoked_at"], Value::Null);
+            let stored = s.tenants.list_keys(Actor::Cli, Some(s.tenant));
+            let stored = stored.expect("listed")[0].created_at;
+            let stored = stored.format(&Rfc3339).expect("RFC 3339");
+            assert_eq!(first["created_at"], stored.as_str());
+            let fields: Vec<&String> = first.as_object().expect("an object").keys().collect();
+            assert_eq!(
+                fields,
+                ["created_at", "id", "label", "revoked_at", "scopes"]
+            );
+
+            let made = admin_log(&s, "key_create");
+            assert_eq!(made.len(), 2);
+            assert_eq!(made[0]["status"], 201);
+            assert_eq!(made[0]["target"], id.as_str());
+            let copied = s.tenant_log("key_create");
+            assert_eq!(copied.len(), 2, "the tenant's log shows it");
+            assert_eq!(copied[0]["target"], id.as_str());
+            assert_eq!(admin_log(&s, "key_list")[0]["status"], 200);
+        }
+
+        #[tokio::test]
+        async fn a_revoked_key_answers_401_and_the_tenants_log_shows_it() {
+            let s = server().await;
+            let op = operator(&s);
+            let (id, token) = issued(&s, &op, r#"{"scopes":["read"],"label":"a"}"#).await;
+            let (_, kept) = issued(&s, &op, r#"{"scopes":["read"],"label":"b"}"#).await;
+            let path = format!("/admin/keys/{id}");
+            for _ in 0..2 {
+                let answer = call(&s, Method::DELETE, &path, Some(&op), None).await;
+                assert_eq!(answer.status(), 204, "again too");
+            }
+            assert_eq!(health(&s, &token).await, 401);
+            assert_eq!(health(&s, &kept).await, 200, "only that key");
+            let (_, listed) = key_list(&s, &op).await;
+            assert!(listed[0]["revoked_at"].is_string(), "{listed}");
+            assert_eq!(listed[1]["revoked_at"], Value::Null);
+            let revoked = s.tenant_log("key_revoke");
+            assert_eq!(revoked.len(), 2);
+            assert!(
+                revoked
+                    .iter()
+                    .all(|r| r["status"] == 204 && r["target"] == id.as_str())
+            );
+            assert_eq!(admin_log(&s, "key_revoke").len(), 2);
+        }
+
+        #[tokio::test]
+        async fn scopes_a_tenant_key_cannot_hold_are_422_and_recorded() {
+            let s = server().await;
+            let op = operator(&s);
+            let path = format!("/admin/tenants/{}/keys", s.tenant);
+            let scopes = [
+                "[]",
+                r#"["admin"]"#,
+                r#"["read","admin"]"#,
+                r#"["superuser"]"#,
+                r#"["read","superuser"]"#,
+                r#"["Read"]"#,
+                r#"["read","read"]"#,
+            ];
+            for scopes in scopes {
+                let body = format!(r#"{{"scopes":{scopes},"label":"x"}}"#);
+                let answer = call(&s, Method::POST, &path, Some(&op), Some(&body)).await;
+                assert_eq!(answer.status(), 422, "{scopes}");
+                assert_eq!(problem(answer).await, "bad-scopes", "{scopes}");
+            }
+            let refused = admin_log(&s, "key_create");
+            assert_eq!(refused.len(), scopes.len(), "each recorded once");
+            assert!(refused.iter().all(|r| r["status"] == 422));
+            let keys = s.tenants.list_keys(Actor::Cli, Some(s.tenant));
+            assert_eq!(keys.expect("listed").len(), 0, "no key made");
+        }
+
+        #[tokio::test]
+        async fn a_key_body_it_does_not_take_is_422_and_recorded() {
+            let s = server().await;
+            let op = operator(&s);
+            let path = format!("/admin/tenants/{}/keys", s.tenant);
+            let bodies = [
+                "",
+                "{}",
+                r#"{"scopes":["read"]}"#,
+                r#"{"label":"x"}"#,
+                r#"{"scopes":"read","label":"x"}"#,
+                r#"{"scopes":["read"],"label":7}"#,
+                r#"{"scopes":["read"],"label":"x","tenant":"y"}"#,
+            ];
+            for body in bodies {
+                let answer = call(&s, Method::POST, &path, Some(&op), Some(body)).await;
+                assert_eq!(answer.status(), 422, "{body}");
+                assert_eq!(problem(answer).await, "invalid-body", "{body}");
+            }
+            let refused = admin_log(&s, "key_create");
+            assert_eq!(refused.len(), bodies.len());
+            assert!(refused.iter().all(|r| r["status"] == 422));
+        }
+
+        #[tokio::test]
+        async fn key_routes_for_no_tenant_or_no_key_are_404_and_recorded() {
+            let s = server().await;
+            let op = operator(&s);
+            let body = Some(r#"{"scopes":["read"],"label":"x"}"#);
+            let unknown = TenantId([7; 16]).to_string();
+            for id in [unknown.as_str(), "acme"] {
+                let path = format!("/admin/tenants/{id}/keys");
+                let answer = call(&s, Method::POST, &path, Some(&op), body).await;
+                assert_eq!(answer.status(), 404, "POST {id}");
+                assert_eq!(problem(answer).await, "unknown-tenant");
+                let answer = call(&s, Method::GET, &path, Some(&op), None).await;
+                assert_eq!(answer.status(), 404, "GET {id}");
+                assert_eq!(problem(answer).await, "unknown-tenant");
+            }
+            let unknown_key = KeyId([7; 8]).to_string();
+            for id in [unknown_key.as_str(), "acme", &unknown_key.to_uppercase()] {
+                let path = format!("/admin/keys/{id}");
+                let answer = call(&s, Method::DELETE, &path, Some(&op), None).await;
+                assert_eq!(answer.status(), 404, "DELETE {id}");
+                assert_eq!(problem(answer).await, "unknown-key");
+            }
+            for (action, count) in [("key_create", 2), ("key_list", 2), ("key_revoke", 3)] {
+                let refused = admin_log(&s, action);
+                assert_eq!(refused.len(), count, "{action}");
+                assert!(refused.iter().all(|r| r["status"] == 404), "{action}");
+            }
+        }
+
+        #[tokio::test]
+        async fn a_key_for_a_closing_tenant_is_503() {
+            let s = server().await;
+            let op = operator(&s);
+            s.tenants.close(s.tenant);
+            let path = format!("/admin/tenants/{}/keys", s.tenant);
+            let body = Some(r#"{"scopes":["read"],"label":"x"}"#);
+            let answer = call(&s, Method::POST, &path, Some(&op), body).await;
             assert_eq!(answer.status(), 503);
             assert_eq!(problem(answer).await, "unavailable");
         }
