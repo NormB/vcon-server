@@ -2,8 +2,8 @@
 title = "vcon-server"
 description = "vcon-server stores vCons, the IETF format for conversation records, and returns them only to the keys allowed to see them. Each vCon is encrypted at rest under its own key, kept for its tenant's retention period, erased after it, and held past it when a legal hold says so. Every request is recorded."
 [extra]
-tagline = "store vCons, encrypted, for as long as they must be kept"
-headline = "Store vCons, encrypted, for as long as they must be kept"
+tagline = "encrypted, multi-tenant, audited storage for vCons"
+headline = "Encrypted, multi-tenant, audited storage for vCons"
 +++
 
 > **Status: in development, not yet for production.** The store, the HTTP API,
@@ -21,8 +21,8 @@ and much of it must be kept for a fixed time and then destroyed, unless a
 court says otherwise.
 
 vcon-server is the place a producer sends vCons to and the place they are read
-back from. It does one job: keep them safe, for exactly as long as they must be
-kept.
+back from: an HTTP API over an encrypted store, with tenants kept apart, every
+request recorded, and retention periods and legal holds applied to each vCon.
 
 ## What it guarantees
 

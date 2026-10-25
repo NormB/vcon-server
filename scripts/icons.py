@@ -2,9 +2,10 @@
 """Draws the logo files from assets/brand/mark.svg.
 
 Writes the favicon (SVG and ICO), the Apple touch icon, the social preview
-image and the two README lockups. The wordmark is Inter (SIL Open Font
-License) turned to outlines, so no font is embedded and none is needed to
-show it.
+image and the two README lockups. The social images carry the home page's
+headline, read from website/content/_index.md, so the two never differ.
+The wordmark is Inter (SIL Open Font License) turned to outlines, so no
+font is embedded and none is needed to show it.
 
 Needs resvg on PATH and the fontTools Python package. The two Inter files
 are kept in assets/brand/fonts (Inter 4.0, unchanged), so every machine
@@ -18,6 +19,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 
 from fontTools.pens.svgPathPen import SVGPathPen
@@ -27,13 +29,16 @@ from fontTools.ttLib import TTFont
 ROOT = Path(__file__).resolve().parent.parent
 MARK = ROOT / "assets/brand/mark.svg"
 STATIC = ROOT / "website/static"
+HOME = ROOT / "website/content/_index.md"
 
 TILE = "#0f172a"
 PAGE_DARK = "#0b1120"
 TEXT_LIGHT = "#0f172a"
 TEXT_DARK = "#e2e8f0"
 MUTED_DARK = "#94a3b8"
-TAGLINE = ("Store vCons, encrypted,", "for as long as they must be kept")
+TAGLINE_SIZE = 38
+TAGLINE_WIDTH = 700
+TAGLINE_LINES = 2
 
 
 def font(style):
@@ -51,6 +56,26 @@ def outline(face, text, size, x, baseline):
         glyphs[name].draw(TransformPen(pen, (scale, 0, 0, -scale, x, baseline)))
         x += glyphs[name].width * scale
     return pen.getCommands(), x
+
+
+def headline():
+    """The home page's headline, from the TOML front matter of _index.md."""
+    front = HOME.read_text().split("+++")[1]
+    return tomllib.loads(front)["extra"]["headline"]
+
+
+def wrap(face, text, size, width):
+    """The words of text in lines no wider than width pixels at size."""
+    lines = []
+    for word in text.split():
+        joined = f"{lines[-1]} {word}" if lines else word
+        if lines and outline(face, joined, size, 0, 0)[1] <= width:
+            lines[-1] = joined
+        else:
+            lines.append(word)
+    if len(lines) > TAGLINE_LINES or any(outline(face, line, size, 0, 0)[1] > width for line in lines):
+        sys.exit(f"the headline does not fit {TAGLINE_LINES} lines of {width} pixels: {text!r}")
+    return lines
 
 
 def mark_body():
@@ -80,8 +105,9 @@ def social(semibold, regular, width, height):
     """The mark, the name and the tagline, centred on the height."""
     left = (width - 1000) // 2
     words, _ = outline(semibold, "vcon-server", 112, left + 280, height // 2 - 28)
+    lines = wrap(regular, headline(), TAGLINE_SIZE, TAGLINE_WIDTH)
     tagline = "".join(
-        outline(regular, line, 38, left + 284, height // 2 + 42 + 50 * i)[0] for i, line in enumerate(TAGLINE)
+        outline(regular, line, TAGLINE_SIZE, left + 284, height // 2 + 42 + 50 * i)[0] for i, line in enumerate(lines)
     )
     return svg(
         width, height,
