@@ -18,3 +18,7 @@ All notable changes to this project are recorded here. The format follows
   data and AI-tool attribution in changes and commit messages.
 - Pre-push hook: every outgoing commit must be signed by an allowed signer and
   carry the pusher's configured identity.
+- `GET /vcons`: a tenant's live vCons, newest first by when each was first
+  stored, a page at a time with a cursor, bounded by `since` and `until`.
+  A tenant catalog made by an earlier build gains the first-store time when
+  it is next opened.

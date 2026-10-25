@@ -8,8 +8,20 @@ use rusqlite::{Connection, ErrorCode};
 
 use crate::envelope::Key;
 
-/// The schema version this build makes and reads.
-pub const SCHEMA_VERSION: i64 = 1;
+/// The schema version this build makes and reads. Version 2 added the
+/// time each uuid was first stored to a tenant catalog's vcon table.
+pub const SCHEMA_VERSION: i64 = 2;
+
+/// Brings a version-1 tenant catalog to version 2: each uuid's first store
+/// time, taken from its earliest kept version (the closest record left of
+/// it), and the index the list reads it by. The column is declared as a
+/// new catalog declares it.
+const VCON_STORED_AT: &str = "
+ALTER TABLE vcon ADD COLUMN stored_at INTEGER NOT NULL DEFAULT 0;
+UPDATE vcon SET stored_at =
+    coalesce((SELECT min(stored_at) FROM version WHERE version.uuid = vcon.uuid), 0);
+CREATE INDEX vcon_listed ON vcon (stored_at, uuid);
+";
 
 /// How long a statement waits for another connection's lock before it
 /// fails busy. It is rusqlite's own default, stated so it is chosen, not
@@ -67,6 +79,20 @@ pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogE
         0 => {
             let tx = conn.unchecked_transaction()?;
             tx.execute_batch(schema)?;
+            tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            tx.commit()?;
+        }
+        1 => {
+            // One transaction, so a failed upgrade leaves version 1 whole.
+            let tx = conn.unchecked_transaction()?;
+            let tenant: bool = tx.query_row(
+                "SELECT count(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = 'vcon'",
+                [],
+                |r| r.get(0),
+            )?;
+            if tenant {
+                tx.execute_batch(VCON_STORED_AT)?;
+            }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
         }
@@ -265,7 +291,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_schema_is_made_once_at_version_1() {
+    fn the_schema_is_made_once_at_the_current_version() {
         let dir = tempfile::tempdir().expect("temp dir");
         let key = Key::generate().expect("key");
         let conn = open(&path(&dir), &key, SCHEMA).expect("opens");
@@ -289,13 +315,34 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let key = Key::generate().expect("key");
         let conn = open(&path(&dir), &key, SCHEMA).expect("opens");
-        conn.pragma_update(None, "user_version", 2)
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1)
             .expect("set version");
         drop(conn);
         assert!(matches!(
             open(&path(&dir), &key, SCHEMA),
-            Err(CatalogError::UnknownSchema(2))
+            Err(CatalogError::UnknownSchema(v)) if v == SCHEMA_VERSION + 1
         ));
+    }
+
+    /// A catalog made at version 1 opens at version 2, its rows kept. One
+    /// with no vCon table, as server.sqlite is, changes only its number;
+    /// the tenant catalog's upgrade is tested with the Store.
+    #[test]
+    fn a_version_1_catalog_is_upgraded_to_version_2() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let key = Key::generate().expect("key");
+        let conn = open(&path(&dir), &key, SCHEMA).expect("opens");
+        conn.execute("INSERT INTO note (text) VALUES ('kept')", [])
+            .expect("insert");
+        conn.pragma_update(None, "user_version", 1)
+            .expect("set version");
+        drop(conn);
+        let conn = open(&path(&dir), &key, "").expect("upgrades");
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .expect("version");
+        assert_eq!(version, 2);
+        assert_eq!(notes(&conn), vec!["kept"]);
     }
 
     /// The path a re-encryption writes before its rename.

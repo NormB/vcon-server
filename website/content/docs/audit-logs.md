@@ -30,7 +30,7 @@ No route reads or changes them.
 | `seq` | the record's number in its log, rising |
 | `at` | when, RFC 3339 in UTC |
 | `actor` | the key id; `sweep` for the purge sweep; `cli` for a command on the host; empty for a token that did not parse or names no known key |
-| `action` | what was asked, such as `create`, `read`, `legal_read`, `hold`, `purge`, `key_create` or `auth_failed` |
+| `action` | what was asked, such as `create`, `read`, `list`, `legal_read`, `hold`, `purge`, `key_create` or `auth_failed` |
 | `target` | the uuid, tenant id or key id acted on, if any |
 | `version` | the version id involved, if any |
 | `status` | the HTTP status answered |

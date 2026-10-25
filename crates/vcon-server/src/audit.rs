@@ -65,6 +65,7 @@ pub enum Action {
     TenantRemove,
     RekeyMaster,
     RekeyTenant,
+    List,
 }
 
 impl Action {
@@ -93,6 +94,7 @@ impl Action {
             Action::TenantRemove => "tenant_remove",
             Action::RekeyMaster => "rekey_master",
             Action::RekeyTenant => "rekey_tenant",
+            Action::List => "list",
         }
     }
 }

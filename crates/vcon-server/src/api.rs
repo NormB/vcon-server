@@ -35,7 +35,7 @@ use crate::audit::{Action, Actor, Entry};
 use crate::ids::TenantId;
 use crate::ids::{KeyId, VersionId};
 use crate::retention::Retention;
-use crate::store::{Caller as StoreCaller, Created, Store, StoreError};
+use crate::store::{Caller as StoreCaller, Created, ListQuery, Store, StoreError};
 use crate::tenants::{KeyInfo, Removal, TenantError, TenantInfo, Tenants};
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
@@ -65,7 +65,7 @@ pub struct App {
 /// The routes, served from `app`.
 pub fn router(app: Arc<App>) -> Router {
     Router::new()
-        .route("/vcons", post(create))
+        .route("/vcons", post(create).get(list))
         .route("/vcons/{uuid}", get(read).put(replace).delete(delete))
         .route("/health", get(health))
         .route("/legal/vcons/{uuid}", get(legal_read))
@@ -175,6 +175,29 @@ async fn inspect(
             let entry = refusal(admitted.caller.key, action, refused);
             Err(app.refuse(Some(admitted.tenant), entry, refused).await)
         }
+    }
+}
+
+/// `GET /vcons`: a page of the tenant's live vCons, newest stored first,
+/// as JSON, with the cursor of the next page.
+async fn list(State(app): State<Arc<App>>, uri: Uri, headers: HeaderMap, body: Body) -> Response {
+    let admitted = match admit(&app, &headers, body, Scope::Read, Action::List).await {
+        Ok(admitted) => admitted,
+        Err(refused) => return refused.into_response(),
+    };
+    let Ok(query) = ListQuery::from_query(uri.query()) else {
+        let refused = Problem::BadQuery;
+        let entry = refusal(admitted.caller.key, Action::List, refused);
+        return app
+            .refuse(Some(admitted.tenant), entry, refused)
+            .await
+            .into_response();
+    };
+    let (store, key) = (admitted.store.clone(), admitted.caller.key);
+    // Store records its own outcomes.
+    match blocking(move || store.list(&StoreCaller { key }, &query)).await {
+        Ok(listing) => json_answer(StatusCode::OK, &listing.to_json()),
+        Err(error) => failed(error).into_response(),
     }
 }
 
@@ -3737,6 +3760,254 @@ mod tests {
                 .token;
             s.tenants.break_audit();
             let answer = health(&s, Some(&operator)).await;
+            assert_eq!(answer.status(), 503);
+            assert_eq!(problem(answer).await, "audit-failed");
+        }
+    }
+
+    /// `GET /vcons`: a tenant's live vCons, a page at a time.
+    mod list {
+        use std::collections::BTreeSet;
+
+        use serde_json::Value;
+
+        use super::pipeline::{Server, problem, server};
+        use crate::access::{Scope, Scopes};
+        use crate::audit::Actor;
+        use crate::ids::TenantId;
+        use crate::store::testing::vcon;
+
+        fn uuid(n: u32) -> String {
+            format!("01a07da8-c2bb-83e5-b9a2-{n:012x}")
+        }
+
+        fn key_of(s: &Server, tenant: TenantId, scopes: &[Scope]) -> String {
+            s.tenants
+                .create_key(Actor::Cli, Some(tenant), Scopes::of(scopes), "test")
+                .expect("a key")
+                .token
+        }
+
+        /// Stores vCon `n` with `writer` and returns its tag, unquoted.
+        async fn stored(s: &Server, writer: &str, n: u32) -> String {
+            let answer = s
+                .client()
+                .post(s.url("/vcons"))
+                .bearer_auth(writer)
+                .header("content-type", "application/vcon")
+                .body(vcon(&uuid(n), "listed").1)
+                .send()
+                .await
+                .expect("an answer");
+            assert_eq!(answer.status(), 201);
+            answer.headers()["etag"]
+                .to_str()
+                .expect("text")
+                .trim_matches('"')
+                .to_owned()
+        }
+
+        async fn list(s: &Server, token: Option<&str>, query: &str) -> reqwest::Response {
+            let mut request = s.client().get(s.url(&format!("/vcons{query}")));
+            if let Some(token) = token {
+                request = request.bearer_auth(token);
+            }
+            request.send().await.expect("an answer")
+        }
+
+        async fn page(s: &Server, reader: &str, query: &str) -> Value {
+            let answer = list(s, Some(reader), query).await;
+            assert_eq!(answer.status(), 200, "{query}");
+            assert_eq!(answer.headers()["content-type"], "application/json");
+            serde_json::from_str(&answer.text().await.expect("text")).expect("JSON")
+        }
+
+        fn uuids(page: &Value) -> Vec<String> {
+            page["vcons"]
+                .as_array()
+                .expect("a list")
+                .iter()
+                .map(|v| v["uuid"].as_str().expect("a uuid").to_owned())
+                .collect()
+        }
+
+        /// Every vCon the reader's pages list, following `next`.
+        async fn every_page(s: &Server, reader: &str, limit: u32) -> Vec<String> {
+            let mut seen = Vec::new();
+            let mut query = format!("?limit={limit}");
+            for _ in 0..100 {
+                let page = page(s, reader, &query).await;
+                seen.extend(uuids(&page));
+                match page["next"].as_str() {
+                    Some(cursor) => query = format!("?limit={limit}&cursor={cursor}"),
+                    None => return seen,
+                }
+            }
+            panic!("the cursors end")
+        }
+
+        #[tokio::test]
+        async fn the_list_is_newest_first_with_each_tag_and_time() {
+            let s = server().await;
+            let writer = s.key(&[Scope::Write]);
+            let mut tags = Vec::new();
+            for n in 1..=3 {
+                tags.push(stored(&s, &writer, n).await);
+            }
+            let reader = s.key(&[Scope::Read]);
+            let page = page(&s, &reader, "").await;
+            assert_eq!(uuids(&page), [3, 2, 1].map(uuid));
+            assert_eq!(page["next"], Value::Null);
+            for (listed, tag) in page["vcons"]
+                .as_array()
+                .expect("a list")
+                .iter()
+                .zip(tags.iter().rev())
+            {
+                assert_eq!(listed["version"], tag.as_str());
+                assert_eq!(listed["stored_at"], listed["updated_at"]);
+                let at = listed["stored_at"].as_str().expect("a time");
+                assert!(at.ends_with('Z'), "{at}");
+            }
+            let recorded = s.tenant_log("list");
+            assert_eq!(recorded.len(), 1);
+            assert_eq!(recorded[0]["status"], 200);
+        }
+
+        #[tokio::test]
+        async fn paging_returns_each_vcon_once_and_a_deleted_one_never() {
+            let s = server().await;
+            let writer = s.key(&[Scope::Write]);
+            for n in 1..=7 {
+                stored(&s, &writer, n).await;
+            }
+            let deleted = s
+                .client()
+                .delete(s.url(&format!("/vcons/{}", uuid(4))))
+                .bearer_auth(s.key(&[Scope::Delete]))
+                .send()
+                .await
+                .expect("an answer");
+            assert_eq!(deleted.status(), 204);
+            let reader = s.key(&[Scope::Read]);
+            for limit in [1, 2, 3, 6, 7, 100] {
+                assert_eq!(
+                    every_page(&s, &reader, limit).await,
+                    [7, 6, 5, 3, 2, 1].map(uuid),
+                    "limit {limit}"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn a_tenant_lists_its_own_vcons_never_another_tenants() {
+            let s = server().await;
+            let beta = s.tenants.create(Actor::Cli, "beta", None).expect("made");
+            let acme_writer = s.key(&[Scope::Write]);
+            let beta_writer = key_of(&s, beta, &[Scope::Write]);
+            for n in [1, 3, 5] {
+                stored(&s, &acme_writer, n).await;
+            }
+            // vCon 3 is held by both tenants, each its own.
+            for n in [2, 3, 4] {
+                stored(&s, &beta_writer, n).await;
+            }
+            let acme = s.key(&[Scope::Read]);
+            let beta_reader = key_of(&s, beta, &[Scope::Read]);
+            assert_eq!(every_page(&s, &acme, 1).await, [5, 3, 1].map(uuid));
+            assert_eq!(every_page(&s, &beta_reader, 1).await, [4, 3, 2].map(uuid));
+            // A cursor from the other tenant's list only sets a place.
+            let beta_page = page(&s, &beta_reader, "?limit=1").await;
+            let cursor = beta_page["next"].as_str().expect("a cursor");
+            let mixed = page(&s, &acme, &format!("?cursor={cursor}")).await;
+            let acme_uuids: BTreeSet<String> = [5, 3, 1].map(uuid).into_iter().collect();
+            assert!(uuids(&mixed).iter().all(|u| acme_uuids.contains(u)));
+        }
+
+        #[tokio::test]
+        async fn since_and_until_bound_the_first_store_time() {
+            let s = server().await;
+            let writer = s.key(&[Scope::Write]);
+            stored(&s, &writer, 1).await;
+            let reader = s.key(&[Scope::Read]);
+            let first = page(&s, &reader, "").await;
+            let at = first["vcons"][0]["stored_at"]
+                .as_str()
+                .expect("a time")
+                .to_owned();
+            let at = at.replace(':', "%3A");
+            assert_eq!(
+                uuids(&page(&s, &reader, &format!("?since={at}")).await),
+                vec![uuid(1)]
+            );
+            assert_eq!(
+                uuids(&page(&s, &reader, &format!("?until={at}")).await),
+                Vec::<String>::new()
+            );
+        }
+
+        #[tokio::test]
+        async fn a_query_the_route_does_not_take_is_a_bad_query_and_recorded() {
+            let s = server().await;
+            let reader = s.key(&[Scope::Read]);
+            let bad = [
+                "?offset=2",
+                "?limit=0",
+                "?limit=1001",
+                "?limit=ten",
+                "?limit=1&limit=2",
+                "?cursor=nope",
+                "?since=yesterday",
+                "?until=2026-10-25",
+            ];
+            for query in bad {
+                let answer = list(&s, Some(&reader), query).await;
+                assert_eq!(answer.status(), 400, "{query}");
+                assert_eq!(problem(answer).await, "bad-query", "{query}");
+            }
+            let recorded = s.tenant_log("list");
+            assert_eq!(recorded.len(), bad.len());
+            assert!(recorded.iter().all(|r| r["status"] == 400));
+        }
+
+        #[tokio::test]
+        async fn the_list_needs_a_tenant_key_with_read() {
+            let s = server().await;
+            let answer = list(&s, None, "").await;
+            assert_eq!(answer.status(), 401);
+            for scopes in [&[Scope::Write][..], &[Scope::Delete], &[Scope::Legal]] {
+                let answer = list(&s, Some(&s.key(scopes)), "").await;
+                assert_eq!(answer.status(), 403, "{scopes:?}");
+                assert_eq!(problem(answer).await, "forbidden");
+            }
+            let operator = s
+                .tenants
+                .create_key(Actor::Cli, None, Scopes::of(&[Scope::Admin]), "op")
+                .expect("an operator key")
+                .token;
+            let answer = list(&s, Some(&operator), "").await;
+            assert_eq!(answer.status(), 403);
+            let recorded = s.tenant_log("list");
+            assert_eq!(recorded.len(), 3, "the tenant keys' refusals");
+            assert!(recorded.iter().all(|r| r["status"] == 403));
+        }
+
+        #[tokio::test]
+        async fn damage_is_500_and_a_list_that_cannot_be_recorded_503() {
+            let s = server().await;
+            let writer = s.key(&[Scope::Write]);
+            stored(&s, &writer, 1).await;
+            let reader = s.key(&[Scope::Read]);
+            let store = s.tenants.store(s.tenant).expect("its store");
+            store
+                .conn_for_test()
+                .execute("DELETE FROM version", [])
+                .expect("damaged");
+            let answer = list(&s, Some(&reader), "").await;
+            assert_eq!(answer.status(), 500);
+            assert_eq!(problem(answer).await, "damaged");
+            store.break_audit();
+            let answer = list(&s, Some(&reader), "").await;
             assert_eq!(answer.status(), 503);
             assert_eq!(problem(answer).await, "audit-failed");
         }

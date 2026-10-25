@@ -19,11 +19,13 @@ use crate::retention::Retention;
 
 mod examine;
 mod legal;
+mod list;
 mod purge;
 mod rekey;
 
 pub use examine::Examination;
 pub use legal::{Legal, VersionInfo};
+pub use list::{Cursor, ListQuery, Listed, Listing};
 pub use purge::{Kept, PurgeReport, due};
 
 /// The tables of a tenant's catalog, besides its audit log. A key column
@@ -34,8 +36,10 @@ CREATE TABLE vcon (
     uuid BLOB PRIMARY KEY NOT NULL,
     current BLOB,
     deleted_at INTEGER,
-    hold INTEGER NOT NULL DEFAULT 0
+    hold INTEGER NOT NULL DEFAULT 0,
+    stored_at INTEGER NOT NULL DEFAULT 0
 );
+CREATE INDEX vcon_listed ON vcon (stored_at, uuid);
 CREATE TABLE version (
     version BLOB PRIMARY KEY NOT NULL,
     uuid BLOB NOT NULL,
@@ -282,6 +286,9 @@ impl Store {
                     return Err(error);
                 }
             }
+            // The version's time, and the uuid's first: the list keeps
+            // its place by it through replace, delete and restore.
+            let stored_at = nanos(self.clock.now());
             tx.execute(
                 "INSERT INTO version
                      (version, uuid, form, gzip, size, stored_at, hidden_at, tenant_key_id, wrapped_key)
@@ -292,15 +299,15 @@ impl Store {
                     form_name(found.form),
                     found.gzip,
                     i64::try_from(body.len()).map_err(io)?,
-                    nanos(self.clock.now()),
+                    stored_at,
                     key_id.bytes(),
                     wrapped,
                 ],
             )
             .map_err(io)?;
             tx.execute(
-                "INSERT INTO vcon (uuid, current) VALUES (?1, ?2)",
-                params![uuid.as_bytes(), version.0],
+                "INSERT INTO vcon (uuid, current, stored_at) VALUES (?1, ?2, ?3)",
+                params![uuid.as_bytes(), version.0, stored_at],
             )
             .map_err(io)?;
             self.record(&tx, &entry(201, Some(version)))?;
@@ -884,7 +891,7 @@ mod tests {
     pub(super) const TENANT: TenantId = TenantId([0x11; 16]);
 
     impl Fixture {
-        fn open(&self) -> Result<Store, StoreError> {
+        pub(super) fn open(&self) -> Result<Store, StoreError> {
             let ctx = Context::Tenant { tenant: TENANT };
             let tenant_key = envelope::unwrap(&self.master, &ctx, &self.wrapped).expect("unwraps");
             Store::open(
@@ -920,7 +927,7 @@ mod tests {
         }
 
         /// Closes the store and opens it again, as a restart would.
-        fn reopen(&mut self) {
+        pub(super) fn reopen(&mut self) {
             let placeholder = self.open().expect("opens");
             drop(std::mem::replace(&mut self.store, placeholder));
             self.store = self.open().expect("reopens");

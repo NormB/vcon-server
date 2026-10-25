@@ -41,7 +41,7 @@ A **tenant key** belongs to one tenant and holds any of four scopes:
 | Scope | Allows |
 |---|---|
 | `write` | `POST /vcons` and `PUT /vcons/{uuid}` |
-| `read` | `GET /vcons/{uuid}` |
+| `read` | `GET /vcons` and `GET /vcons/{uuid}` |
 | `delete` | `DELETE /vcons/{uuid}` |
 | `legal` | the `/legal/` routes: reads of deleted vCons and old versions, restore, legal holds |
 

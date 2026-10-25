@@ -25,7 +25,8 @@ crates/
         ├── datadir.rs     who may use the data directory at once
         ├── serve.rs       the server and its purge sweep
         ├── fs.rs, clock.rs  the filesystem and the clock, behind interfaces for tests
-        └── ids.rs         tenant, version and key ids
+        ├── ids.rs         tenant, version and key ids
+        └── query.rs       query strings, read by one rule for every route
 ```
 
 The binary does almost nothing itself: everything it runs is in the library,

@@ -38,6 +38,7 @@ weight = 70
 | Route | Scope | Takes | Answers |
 |---|---|---|---|
 | `POST /vcons` | `write` | a vCon body | `201` with `Location: /vcons/{uuid}` and `ETag`; `200` with the same `ETag` when the same bytes are already current |
+| `GET /vcons` | `read` | optional `limit`, `cursor`, `since`, `until` | `200` with a page of the tenant's live vCons, newest first; see [listing](#listing) |
 | `GET /vcons/{uuid}` | `read` | | `200` with the body as stored, `ETag`, and `Content-Type` `application/vcon` or `application/vcon+gzip` |
 | `PUT /vcons/{uuid}` | `write` | `If-Match: "<current version>"` and a vCon body with that uuid | `200` with the new `ETag` |
 | `DELETE /vcons/{uuid}` | `delete` | | `204`, also when already deleted or purged |
@@ -61,6 +62,53 @@ etag=$(curl -s -o /dev/null -D - https://vcon.example.com/vcons/$UUID -H "Author
 curl -X PUT https://vcon.example.com/vcons/$UUID \
   -H "Authorization: Bearer $KEY" -H "If-Match: $etag" \
   -H "Content-Type: application/vcon" --data-binary @call-v2.vcon
+```
+
+### Listing
+
+`GET /vcons` answers a page of the key's tenant's vCons as JSON. Deleted
+vCons are left out. The order is newest first by when each uuid was first
+stored; a replace, a delete or a restore does not move a vCon.
+
+```json
+{
+  "next": "GOHD-NKkTRUBoH2owruD5bmiJ54NFrxG",
+  "vcons": [
+    {
+      "stored_at": "2026-10-25T12:00:00.123456789Z",
+      "updated_at": "2026-10-25T12:30:00Z",
+      "uuid": "01a07da8-c2bb-83e5-b9a2-279e0d16bc46",
+      "version": "4f0c4b0a1d2e3f405162738495a6b7c8"
+    }
+  ]
+}
+```
+
+- `stored_at` is when the uuid was first stored, `updated_at` when its
+  current version was, and `version` is the current version's `ETag`
+  without quotes. Times are RFC 3339 in UTC.
+- `next` is the cursor of the next page, `null` on the last. Send it back
+  unchanged as `cursor`.
+- `limit` is 1 to 1000 vCons a page (default 100).
+- `since` (inclusive) and `until` (exclusive) are RFC 3339 times that bound
+  `stored_at`. Send the same bounds with every page. Percent-encode `:` and
+  `+` in them.
+- A parameter the route does not take, one given twice, or a bad value is
+  [`bad-query`](@/problems/bad-query.md) (400).
+
+Paging with a cursor returns each vCon that stays live while you page
+exactly once, whatever is stored, replaced, deleted or restored meanwhile.
+
+```sh
+# Every vCon stored on 25 October 2026 (UTC), 500 a page
+query="limit=500&since=2026-10-25T00%3A00%3A00Z&until=2026-10-26T00%3A00%3A00Z"
+page=$(curl -s "https://vcon.example.com/vcons?$query" -H "Authorization: Bearer $KEY")
+while :; do
+  echo "$page" | jq -r '.vcons[].uuid'
+  next=$(echo "$page" | jq -r '.next // empty')
+  [ -n "$next" ] || break
+  page=$(curl -s "https://vcon.example.com/vcons?$query&cursor=$next" -H "Authorization: Bearer $KEY")
+done
 ```
 
 ## Legal
