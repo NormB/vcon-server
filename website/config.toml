@@ -24,3 +24,7 @@ external_level = "warn"
 
 [extra]
 repo = "https://github.com/NormB/vcon-server"
+author = "Norm Brandinger"
+linkedin_url = "https://www.linkedin.com/in/nbrandinger"
+patreon_url = "https://www.patreon.com/c/NormB975"
+github_sponsors_url = "https://github.com/sponsors/NormB"

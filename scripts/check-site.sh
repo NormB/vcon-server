@@ -29,6 +29,8 @@ home="$site/index.html"
 grep -qF '<title>vcon-server' "$home" || fail "the home page title does not name vcon-server"
 grep -qF 'https://github.com/NormB/vcon-server' "$home" || fail "the home page does not link to the repository"
 [ "$(cat "$site/CNAME" 2>/dev/null)" = "vcon-server.com" ] || fail "CNAME is not vcon-server.com"
+grep -qF 'https://www.linkedin.com/in/nbrandinger' "$home" || fail "the home page lacks the author's credit"
+grep -qF 'https://github.com/sponsors/NormB' "$home" || fail "the home page lacks the sponsor link"
 
 for f in 404.html llms.txt robots.txt search_index.en.js elasticlunr.min.js js/search.js; do
   [ -s "$site/$f" ] || fail "the build has no $f"

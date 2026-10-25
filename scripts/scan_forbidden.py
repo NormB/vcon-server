@@ -21,6 +21,10 @@ AI_ATTRIBUTION = [
 
 OWNER = [("owner's name", re.compile(r"\b(b)randinger\b", re.I))]
 
+# The owner asked to be credited, as on sipnab.com, in the README and in
+# the site's configuration, which the page footer reads. Nowhere else.
+OWNER_CREDIT_PATHS = {"README.md", "website/config.toml"}
+
 PRIVATE_DOC_IDS = [
     # Any case, joined by - or _, so an id inside a snake_case name is
     # caught too; \b would not split _ from a letter, so the edges are
@@ -105,7 +109,8 @@ def is_fixture(path):
 
 
 def scan(path, text):
-    for reason, pattern in AI_ATTRIBUTION + OWNER:
+    rules = AI_ATTRIBUTION if path in OWNER_CREDIT_PATHS else AI_ATTRIBUTION + OWNER
+    for reason, pattern in rules:
         if pattern.search(text):
             yield reason, pattern.search(text).group(0)
     yield from personal_data(text, path)

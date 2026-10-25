@@ -4,7 +4,9 @@ A server that stores [vCons](https://datatracker.ietf.org/wg/vcon/about/), the
 IETF conversation-record format, encrypted at rest, and returns them to
 authorised readers.
 
-**Status:** early development. It is not ready for production use.
+**Status:** in development. It is not ready for production use. The
+documentation, including what is built so far, is at
+[vcon-server.com](https://vcon-server.com/docs/).
 
 ## Building
 
@@ -33,6 +35,11 @@ and RFC 3849 IP addresses. The one exception is the IETF draft's own examples
 in `crates/vcon-form/tests/fixtures/ietf/`, kept unchanged. `scripts/test-hooks.sh` and `scripts/test-pre-push.sh` test the hooks
 themselves.
 
+## Support the project
+
+[![Patreon](https://img.shields.io/badge/Patreon-support-f96854?logo=patreon&logoColor=white)](https://www.patreon.com/c/NormB975)
+[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-db61a2?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/NormB)
+
 ## License
 
 Licensed under either of
@@ -41,3 +48,5 @@ Licensed under either of
 - [MIT License](LICENSE-MIT)
 
 at your option.
+
+Copyright 2026 [Norm Brandinger](https://www.linkedin.com/in/nbrandinger)

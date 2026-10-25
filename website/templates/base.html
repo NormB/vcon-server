@@ -50,6 +50,7 @@
   </main>
   <footer class="foot">
     <p>vcon-server is open source under MIT OR Apache-2.0. <a href="{{ config.extra.repo | safe }}">Source</a> · <a href="{{ config.extra.repo | safe }}/issues">Issues</a> · <a href="{{ get_url(path='llms.txt') }}">llms.txt</a></p>
+    <p><a href="{{ config.extra.linkedin_url | safe }}">&copy; {{ now() | date(format="%Y") }} {{ config.extra.author }}</a> · Support the project: <a href="{{ config.extra.patreon_url | safe }}">Patreon</a> · <a href="{{ config.extra.github_sponsors_url | safe }}">GitHub Sponsors</a></p>
   </footer>
 </body>
 </html>
