@@ -853,11 +853,13 @@ async fn key_revoke(
     }
 }
 
-/// `GET /health`: any valid key may ask; 200 when server.sqlite answers.
+/// `GET /health`: any valid key may ask; 200 when server.sqlite answers,
+/// and 503 for a key whose tenant is being removed.
 ///
 /// Health requests are counted, one record per key, status and minute, in
-/// the key's tenant log, or the admin log for an operator key; a health
-/// request that cannot be counted is not healthy.
+/// the key's tenant log, or the admin log for an operator key or a tenant
+/// whose log cannot be opened; a health request that cannot be counted is
+/// not healthy.
 async fn health(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     let caller = match authenticated(&app, &headers).await {
         Ok(caller) => caller,
@@ -865,7 +867,10 @@ async fn health(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     };
     let tenants = app.tenants.clone();
     let (healthy, counted) = blocking(move || {
-        let healthy = tenants.check().is_ok();
+        // A tenant being removed answers 503 here too, as on every route.
+        let store = caller.tenant.map(|t| tenants.store(t));
+        let closing = matches!(store, Some(Err(TenantError::Closing)));
+        let healthy = !closing && tenants.check().is_ok();
         let entry = Entry {
             actor: Actor::Key(caller.key),
             action: Action::Health,
@@ -873,9 +878,9 @@ async fn health(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
             version: None,
             status: if healthy { 200 } else { 503 },
         };
-        let counted = match caller.tenant.and_then(|t| tenants.store(t).ok()) {
-            Some(store) => store.count(&entry).is_ok(),
-            None => tenants.count_admin(&entry).is_ok(),
+        let counted = match store {
+            Some(Ok(store)) => store.count(&entry).is_ok(),
+            _ => tenants.count_admin(&entry).is_ok(),
         };
         (healthy, counted)
     })
@@ -3133,6 +3138,72 @@ mod tests {
                 let refused = admin_log(&s, action);
                 assert_eq!(refused.len(), count, "{action}");
                 assert!(refused.iter().all(|r| r["status"] == 404), "{action}");
+            }
+        }
+
+        #[tokio::test]
+        async fn requests_during_a_removal_get_503_then_401() {
+            let s = server().await;
+            let op = operator(&s);
+            stored(&s).await;
+            let uuid = "01a07da8-c2bb-83e5-b9a2-279e0d16bc46";
+            let writer = s.key(&[Scope::Write]);
+            let reader = s.key(&[Scope::Read]);
+            let legal = s.key(&[Scope::Legal]);
+            let a4 = std::fs::read(format!(
+                "{}/../vcon-form/tests/fixtures/ietf/ab_call_ext_rec.vcon",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .expect("A.4");
+            let requests = || {
+                let client = s.client();
+                [
+                    client
+                        .post(s.url("/vcons"))
+                        .bearer_auth(&writer)
+                        .header("content-type", "application/vcon")
+                        .body(a4.clone()),
+                    client
+                        .get(s.url(&format!("/vcons/{uuid}")))
+                        .bearer_auth(&reader),
+                    client
+                        .get(s.url(&format!("/legal/vcons/{uuid}")))
+                        .bearer_auth(&legal),
+                    client.get(s.url("/health")).bearer_auth(&reader),
+                ]
+            };
+
+            // A request still holding the tenant keeps the removal draining.
+            let in_flight = s.tenants.store(s.tenant).expect("its store");
+            let removal = {
+                let request = s
+                    .client()
+                    .delete(s.url(&format!("/admin/tenants/{}?force=true", s.tenant)))
+                    .bearer_auth(&op);
+                tokio::spawn(async move { request.send().await.expect("an answer").status() })
+            };
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+            while s.tenants.store(s.tenant).is_ok() {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "the removal never began"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            for request in requests() {
+                let answer = request.send().await.expect("an answer");
+                let url = answer.url().path().to_owned();
+                assert_eq!(answer.status(), 503, "{url} while removing");
+                assert_eq!(problem(answer).await, "unavailable", "{url}");
+            }
+            assert!(!removal.is_finished(), "still draining");
+
+            drop(in_flight);
+            assert_eq!(removal.await.expect("joined"), 204);
+            for request in requests() {
+                let answer = request.send().await.expect("an answer");
+                let url = answer.url().path().to_owned();
+                assert_eq!(answer.status(), 401, "{url} once removed");
             }
         }
 
