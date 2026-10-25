@@ -98,6 +98,10 @@ and when the [problem types](@/problems/_index.md) or the
 to `main` that touches the site deploys it to GitHub Pages; Cloudflare fronts
 it.
 
+The logo and the favicons are drawn from `assets/brand/mark.svg` by
+`scripts/icons.py`; see `assets/brand/README.md`. The check above also
+refuses an SVG that holds a script, a style, a link or an embedded object.
+
 ## Licence
 
 MIT OR Apache-2.0, at your option.

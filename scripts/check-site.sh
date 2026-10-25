@@ -2,7 +2,8 @@
 # Builds the website from website/ and checks what would be published:
 # the home page names the project and links to the repository, the custom
 # domain is vcon-server.com, every problem type has its built page, the
-# search, 404 and llms.txt files exist, and no page carries an inline
+# search, 404 and llms.txt files exist, the icons the pages name are built
+# and every SVG is a plain drawing, and no page carries an inline
 # script, an inline style or an event-handler attribute (the pages'
 # content-security policy refuses them, so they would not run anyway).
 # Then `zola check` fails on any broken internal link. The Pages workflow
@@ -34,6 +35,22 @@ grep -qF 'https://github.com/sponsors/NormB' "$home" || fail "the home page lack
 
 for f in 404.html llms.txt robots.txt search_index.en.js elasticlunr.min.js js/search.js; do
   [ -s "$site/$f" ] || fail "the build has no $f"
+done
+
+# The icons each page names are built, and every SVG on the site or in the
+# brand files is a plain drawing: no script, style, link or embedded object.
+for f in favicon.svg favicon.ico apple-touch-icon.png og-image.png; do
+  [ -s "$site/$f" ] || fail "the build has no $f"
+done
+grep -qF 'rel="icon" href="https://vcon-server.com/favicon.ico" sizes="32x32"' "$home" || fail "the home page does not name favicon.ico"
+grep -qF 'rel="icon" href="https://vcon-server.com/favicon.svg" type="image/svg+xml"' "$home" || fail "the home page does not name favicon.svg"
+grep -qF 'rel="apple-touch-icon" href="https://vcon-server.com/apple-touch-icon.png"' "$home" || fail "the home page does not name the touch icon"
+grep -qF 'property="og:image" content="https://vcon-server.com/og-image.png"' "$home" || fail "the home page does not name its preview image"
+for svg in "$site"/*.svg "$root"/assets/brand/*.svg; do
+  if grep -Pqi '<script|<style|<foreignObject|href\s*=|url\(' "$svg"; then
+    rel="${svg#"$site"/}"
+    fail "${rel#"$root"/} is not a plain drawing"
+  fi
 done
 
 # Search works only if the pages load its three scripts.

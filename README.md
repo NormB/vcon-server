@@ -1,5 +1,10 @@
 # vcon-server
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/brand/lockup-dark.svg">
+  <img src="assets/brand/lockup-light.svg" alt="vcon-server" height="48">
+</picture>
+
 A server that stores [vCons](https://datatracker.ietf.org/wg/vcon/about/), the
 IETF conversation-record format, encrypted at rest, and returns them to
 authorised readers.
