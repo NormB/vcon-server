@@ -17,7 +17,7 @@ use axum::http::header::{
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{get, patch, post, put};
 use http_body_util::LengthLimitError;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
@@ -25,6 +25,7 @@ use hyper_util::service::TowerToHyperService;
 use rustls::ServerConfig;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use serde::de::{Deserialize, DeserializeOwned, Deserializer, Error as _};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
@@ -34,7 +35,7 @@ use crate::ids::TenantId;
 use crate::ids::{KeyId, VersionId};
 use crate::retention::Retention;
 use crate::store::{Caller as StoreCaller, Created, Store, StoreError};
-use crate::tenants::Tenants;
+use crate::tenants::{TenantError, Tenants};
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 use vcon_form::{Inspection, Rejection};
@@ -71,6 +72,8 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/legal/vcons/{uuid}/versions/{version}", get(legal_version))
         .route("/legal/vcons/{uuid}/restore", post(legal_restore))
         .route("/legal/vcons/{uuid}/hold", put(hold_on).delete(hold_off))
+        .route("/admin/tenants", post(tenant_create).get(tenant_list))
+        .route("/admin/tenants/{id}", patch(tenant_retention))
         .layer(axum::middleware::from_fn(log_request))
         .with_state(app)
 }
@@ -497,6 +500,166 @@ async fn hold(app: Arc<App>, uuid: String, headers: HeaderMap, body: Body, on: b
     }
 }
 
+/// The admin routes' shared start: an operator key holding the admin
+/// scope, then the body within the limits, each refusal recorded as
+/// `action`.
+async fn admin_admit(
+    app: &Arc<App>,
+    headers: &HeaderMap,
+    body: Body,
+    action: Action,
+) -> Result<(KeyId, Bytes), Problem> {
+    let caller = authenticated(app, headers).await?;
+    let entry = |refused| refusal(caller.key, action, refused);
+    if access::require(&caller, Scope::Admin).is_err() {
+        let refused = Problem::Forbidden;
+        return Err(app.refuse(caller.tenant, entry(refused), refused).await);
+    }
+    match read_body(body, headers, &app.limits).await {
+        Ok(body) => Ok((caller.key, body)),
+        Err(refused) => Err(app.refuse(None, entry(refused), refused).await),
+    }
+}
+
+/// An admin body as JSON, or the refusal recorded as `action`.
+async fn admin_body<T: DeserializeOwned>(
+    app: &Arc<App>,
+    key: KeyId,
+    action: Action,
+    body: &Bytes,
+) -> Result<T, Problem> {
+    match serde_json::from_slice(body) {
+        Ok(read) => Ok(read),
+        Err(_) => {
+            let refused = Problem::InvalidBody;
+            Err(app
+                .refuse(None, refusal(key, action, refused), refused)
+                .await)
+        }
+    }
+}
+
+/// A retention period in a body: a string `Retention` reads, or null for
+/// the server default.
+fn period<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Retention>, D::Error> {
+    Option::<String>::deserialize(d)?
+        .map(|text| Retention::parse(&text).ok_or_else(|| D::Error::custom("a bad period")))
+        .transpose()
+}
+
+/// The body of `POST /admin/tenants`.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NewTenant {
+    name: String,
+    #[serde(default, deserialize_with = "period")]
+    retention: Option<Retention>,
+}
+
+/// The body of `PATCH /admin/tenants/{id}`. The period must be there,
+/// null included, so an empty body changes nothing by mistake.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NewRetention {
+    #[serde(deserialize_with = "period")]
+    retention: Option<Retention>,
+}
+
+/// A JSON answer.
+fn json_answer(status: StatusCode, body: &serde_json::Value) -> Response {
+    (
+        status,
+        [(CONTENT_TYPE, "application/json")],
+        body.to_string(),
+    )
+        .into_response()
+}
+
+/// `POST /admin/tenants`: makes a tenant and answers 201 with its id.
+async fn tenant_create(State(app): State<Arc<App>>, headers: HeaderMap, body: Body) -> Response {
+    let action = Action::TenantCreate;
+    let made = async {
+        let (key, body) = admin_admit(&app, &headers, body, action).await?;
+        let new: NewTenant = admin_body(&app, key, action, &body).await?;
+        let tenants = app.tenants.clone();
+        // Tenants records its own outcomes.
+        blocking(move || tenants.create(Actor::Key(key), &new.name, new.retention))
+            .await
+            .map_err(Problem::Tenant)
+    };
+    match made.await {
+        Ok(id) => json_answer(
+            StatusCode::CREATED,
+            &serde_json::json!({ "id": id.to_string() }),
+        ),
+        Err(refused) => refused.into_response(),
+    }
+}
+
+/// `GET /admin/tenants`: every tenant by name, with its id and its own
+/// retention period, null for the server default.
+async fn tenant_list(State(app): State<Arc<App>>, headers: HeaderMap, body: Body) -> Response {
+    let listed = async {
+        let (key, _) = admin_admit(&app, &headers, body, Action::TenantList).await?;
+        let tenants = app.tenants.clone();
+        blocking(move || tenants.list(Actor::Key(key)))
+            .await
+            .map_err(Problem::Tenant)
+    };
+    match listed.await {
+        Ok(listed) => {
+            let listed: Vec<serde_json::Value> = listed
+                .iter()
+                .map(|t| {
+                    serde_json::json!({
+                        "id": t.id.to_string(),
+                        "name": t.name,
+                        "retention": t.retention.map(|r| r.to_string()),
+                    })
+                })
+                .collect();
+            json_answer(StatusCode::OK, &serde_json::Value::Array(listed))
+        }
+        Err(refused) => refused.into_response(),
+    }
+}
+
+/// `PATCH /admin/tenants/{id}`: sets the tenant's retention period, or
+/// with null returns it to the server default, and answers 200 with it.
+async fn tenant_retention(
+    State(app): State<Arc<App>>,
+    UriPath(id): UriPath<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let action = Action::TenantRetention;
+    let changed = async {
+        let (key, body) = admin_admit(&app, &headers, body, action).await?;
+        let Some(id) = TenantId::parse(&id) else {
+            let refused = Problem::Tenant(TenantError::NotFound);
+            return Err(app
+                .refuse(None, refusal(key, action, refused), refused)
+                .await);
+        };
+        let new: NewRetention = admin_body(&app, key, action, &body).await?;
+        let tenants = app.tenants.clone();
+        blocking(move || tenants.set_retention(Actor::Key(key), id, new.retention))
+            .await
+            .map_err(Problem::Tenant)?;
+        Ok((id, new.retention))
+    };
+    match changed.await {
+        Ok((id, retention)) => json_answer(
+            StatusCode::OK,
+            &serde_json::json!({
+                "id": id.to_string(),
+                "retention": retention.map(|r| r.to_string()),
+            }),
+        ),
+        Err(refused) => refused.into_response(),
+    }
+}
+
 /// `GET /health`: any valid key may ask; 200 when server.sqlite answers.
 ///
 /// Health requests are counted, one record per key, status and minute, in
@@ -690,8 +853,12 @@ enum Problem {
     PathUuidMismatch,
     /// Format refused the body.
     Invalid(Invalid),
+    /// An admin body is not one the route takes.
+    InvalidBody,
     /// Store refused or failed the request.
     Store(StoreError),
+    /// Tenants refused or failed the request.
+    Tenant(TenantError),
 }
 
 /// Why Format refused a body, one problem type each.
@@ -751,7 +918,7 @@ impl Problem {
             Problem::PathUuidMismatch => StatusCode::UNPROCESSABLE_ENTITY,
             Problem::Unavailable | Problem::AuditFailed => StatusCode::SERVICE_UNAVAILABLE,
             Problem::UnsupportedMediaType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            Problem::Invalid(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            Problem::Invalid(_) | Problem::InvalidBody => StatusCode::UNPROCESSABLE_ENTITY,
             Problem::Store(error) => match error {
                 StoreError::Conflict | StoreError::NotDeleted | StoreError::Immutable => {
                     StatusCode::CONFLICT
@@ -763,6 +930,20 @@ impl Problem {
                     StatusCode::SERVICE_UNAVAILABLE
                 }
                 StoreError::Damaged | StoreError::Io => StatusCode::INTERNAL_SERVER_ERROR,
+            },
+            Problem::Tenant(error) => match error {
+                TenantError::NotFound => StatusCode::NOT_FOUND,
+                TenantError::NameTaken => StatusCode::CONFLICT,
+                TenantError::BadName => StatusCode::UNPROCESSABLE_ENTITY,
+                TenantError::LimitReached | TenantError::AuditFailed | TenantError::Closing => {
+                    StatusCode::SERVICE_UNAVAILABLE
+                }
+                TenantError::HoldsVcons
+                | TenantError::UnderHold
+                | TenantError::CliOnly
+                | TenantError::BadScopes
+                | TenantError::WrongKey
+                | TenantError::Io => StatusCode::INTERNAL_SERVER_ERROR,
             },
         }
     }
@@ -835,6 +1016,25 @@ impl Problem {
                     ("audit-failed", "The audit record could not be written")
                 }
                 StoreError::Io => ("internal", "The server failed"),
+            },
+            Problem::InvalidBody | Problem::Tenant(TenantError::BadName) => {
+                ("invalid-body", "The body is not one this route takes")
+            }
+            Problem::Tenant(error) => match error {
+                TenantError::NotFound => ("unknown-tenant", "No tenant has the id"),
+                TenantError::NameTaken => ("name-taken", "Another tenant has the name"),
+                TenantError::LimitReached => ("master-key-limit", "The master key must be rotated"),
+                TenantError::AuditFailed => {
+                    ("audit-failed", "The audit record could not be written")
+                }
+                TenantError::Closing => ("unavailable", "The service cannot answer now"),
+                TenantError::BadName
+                | TenantError::HoldsVcons
+                | TenantError::UnderHold
+                | TenantError::CliOnly
+                | TenantError::BadScopes
+                | TenantError::WrongKey
+                | TenantError::Io => ("internal", "The server failed"),
             },
         }
     }
@@ -1039,7 +1239,7 @@ mod tests {
         use crate::fs::OsFs;
         use crate::ids::TenantId;
 
-        const LIMIT: usize = 64 * 1024;
+        pub(super) const LIMIT: usize = 64 * 1024;
 
         /// A server with one tenant, on a free port.
         pub(super) struct Server {
@@ -1978,6 +2178,343 @@ mod tests {
                 assert_eq!(answer.status(), 503, "{method} {path}");
                 assert_eq!(problem(answer).await, "audit-failed");
             }
+        }
+    }
+
+    mod admin {
+        use reqwest::Method;
+        use serde_json::{Value, json};
+
+        use super::pipeline::{Server, problem, server};
+        use crate::access::{Scope, Scopes};
+        use crate::audit::Actor;
+        use crate::ids::TenantId;
+        use crate::retention::Retention;
+
+        fn operator(s: &Server) -> String {
+            s.tenants
+                .create_key(Actor::Cli, None, Scopes::of(&[Scope::Admin]), "op")
+                .expect("an operator key")
+                .token
+        }
+
+        async fn call(
+            s: &Server,
+            method: Method,
+            path: &str,
+            token: Option<&str>,
+            body: Option<&str>,
+        ) -> reqwest::Response {
+            let mut request = s.client().request(method, s.url(path));
+            if let Some(token) = token {
+                request = request.bearer_auth(token);
+            }
+            if let Some(body) = body {
+                request = request
+                    .header("content-type", "application/json")
+                    .body(body.to_owned());
+            }
+            request.send().await.expect("an answer")
+        }
+
+        async fn json(answer: reqwest::Response) -> Value {
+            assert_eq!(answer.headers()["content-type"], "application/json");
+            serde_json::from_slice(&answer.bytes().await.expect("body")).expect("JSON")
+        }
+
+        fn admin_log(s: &Server, action: &str) -> Vec<Value> {
+            s.tenants
+                .admin_records()
+                .into_iter()
+                .filter(|r| r["action"] == action)
+                .collect()
+        }
+
+        /// Each tenant route, with a body it takes, and its audit action.
+        fn routes(id: TenantId) -> Vec<(Method, String, Option<&'static str>, &'static str)> {
+            vec![
+                (
+                    Method::POST,
+                    "/admin/tenants".to_owned(),
+                    Some(r#"{"name":"beta"}"#),
+                    "tenant_create",
+                ),
+                (
+                    Method::GET,
+                    "/admin/tenants".to_owned(),
+                    None,
+                    "tenant_list",
+                ),
+                (
+                    Method::PATCH,
+                    format!("/admin/tenants/{id}"),
+                    Some(r#"{"retention":"5y"}"#),
+                    "tenant_retention",
+                ),
+            ]
+        }
+
+        #[tokio::test]
+        async fn a_tenant_key_is_forbidden_and_no_key_unauthorized_on_every_tenant_route() {
+            let s = server().await;
+            let every = [Scope::Write, Scope::Read, Scope::Delete, Scope::Legal];
+            let tenant_key = s.key(&every);
+            for (method, path, body, action) in routes(s.tenant) {
+                let answer = call(&s, method.clone(), &path, Some(&tenant_key), body).await;
+                assert_eq!(answer.status(), 403, "{method} {path}");
+                assert_eq!(problem(answer).await, "forbidden");
+                let refused = s.tenant_log(action);
+                assert_eq!(refused.len(), 1, "{action} refusal in the tenant's log");
+                assert_eq!(refused[0]["status"], 403);
+
+                let answer = call(&s, method.clone(), &path, None, body).await;
+                assert_eq!(answer.status(), 401, "{method} {path}");
+            }
+            assert_eq!(s.tenants.list(Actor::Cli).expect("listed").len(), 1);
+            assert_eq!(s.tenants.retention(s.tenant), Ok(None), "nothing changed");
+        }
+
+        #[tokio::test]
+        async fn a_tenant_is_created_with_201_and_its_id_and_listed() {
+            let s = server().await;
+            let op = operator(&s);
+            let body = r#"{"name":"beta","retention":"5y"}"#;
+            let answer = call(&s, Method::POST, "/admin/tenants", Some(&op), Some(body)).await;
+            assert_eq!(answer.status(), 201);
+            let made = json(answer).await;
+            let id = TenantId::parse(made["id"].as_str().expect("an id")).expect("a tenant id");
+            assert_eq!(made, json!({ "id": id.to_string() }));
+            assert_eq!(s.tenants.retention(id), Ok(Some(Retention::Years(5))));
+            let created = admin_log(&s, "tenant_create");
+            assert_eq!(created.last().expect("recorded")["status"], 201);
+
+            let body = r#"{"name":"gamma"}"#;
+            let answer = call(&s, Method::POST, "/admin/tenants", Some(&op), Some(body)).await;
+            assert_eq!(answer.status(), 201);
+
+            let answer = call(&s, Method::GET, "/admin/tenants", Some(&op), None).await;
+            assert_eq!(answer.status(), 200);
+            let listed = json(answer).await;
+            let gamma = s
+                .tenants
+                .list(Actor::Cli)
+                .expect("listed")
+                .into_iter()
+                .find(|t| t.name == "gamma")
+                .expect("gamma")
+                .id;
+            assert_eq!(
+                listed,
+                json!([
+                    { "id": s.tenant.to_string(), "name": "acme", "retention": null },
+                    { "id": id.to_string(), "name": "beta", "retention": "5y" },
+                    { "id": gamma.to_string(), "name": "gamma", "retention": null },
+                ])
+            );
+            assert_eq!(admin_log(&s, "tenant_list")[0]["status"], 200);
+        }
+
+        #[tokio::test]
+        async fn a_taken_name_is_409() {
+            let s = server().await;
+            let op = operator(&s);
+            let body = r#"{"name":"acme"}"#;
+            let answer = call(&s, Method::POST, "/admin/tenants", Some(&op), Some(body)).await;
+            assert_eq!(answer.status(), 409);
+            assert_eq!(problem(answer).await, "name-taken");
+            assert_eq!(s.tenants.list(Actor::Cli).expect("listed").len(), 1);
+        }
+
+        #[tokio::test]
+        async fn a_create_body_it_does_not_take_is_422_and_recorded_once() {
+            let s = server().await;
+            let op = operator(&s);
+            let bodies = [
+                "",
+                "not json",
+                "[]",
+                "{}",
+                r#"{"name":7}"#,
+                r#"{"name":null}"#,
+                r#"{"name":"beta","colour":"red"}"#,
+                r#"{"name":"beta","name":"gamma"}"#,
+                r#"{"name":"beta","retention":"7x"}"#,
+                r#"{"name":"beta","retention":7}"#,
+                r#"{"name":" beta"}"#,
+                r#"{"name":""}"#,
+            ];
+            for body in bodies {
+                let answer = call(&s, Method::POST, "/admin/tenants", Some(&op), Some(body)).await;
+                assert_eq!(answer.status(), 422, "{body}");
+                assert_eq!(problem(answer).await, "invalid-body", "{body}");
+            }
+            let refused = admin_log(&s, "tenant_create");
+            assert_eq!(
+                refused.len(),
+                bodies.len() + 1,
+                "acme, then one per refusal"
+            );
+            assert!(refused[1..].iter().all(|r| r["status"] == 422));
+            assert_eq!(s.tenants.list(Actor::Cli).expect("listed").len(), 1);
+        }
+
+        #[tokio::test]
+        async fn a_create_past_the_master_keys_wrap_limit_is_503() {
+            let s = server().await;
+            let op = operator(&s);
+            s.tenants
+                .conn_for_test()
+                .execute("UPDATE master_key_use SET wraps = ?1", [1_i64 << 32])
+                .expect("at the limit");
+            let body = r#"{"name":"beta"}"#;
+            let answer = call(&s, Method::POST, "/admin/tenants", Some(&op), Some(body)).await;
+            assert_eq!(answer.status(), 503);
+            assert_eq!(problem(answer).await, "master-key-limit");
+        }
+
+        #[tokio::test]
+        async fn a_retention_change_answers_200_with_the_period() {
+            let s = server().await;
+            let op = operator(&s);
+            let path = format!("/admin/tenants/{}", s.tenant);
+            let id = s.tenant.to_string();
+            for (body, period, kept) in [
+                (
+                    r#"{"retention":"30d"}"#,
+                    json!("30d"),
+                    Some(Retention::Days(30)),
+                ),
+                (r#"{"retention":null}"#, Value::Null, None),
+            ] {
+                let answer = call(&s, Method::PATCH, &path, Some(&op), Some(body)).await;
+                assert_eq!(answer.status(), 200, "{body}");
+                assert_eq!(json(answer).await, json!({ "id": id, "retention": period }));
+                assert_eq!(s.tenants.retention(s.tenant), Ok(kept), "{body}");
+            }
+            let changed = admin_log(&s, "tenant_retention");
+            assert_eq!(changed.len(), 2);
+            assert!(changed.iter().all(|r| r["status"] == 200));
+            assert_eq!(s.tenant_log("retention").len(), 2, "the tenant's log too");
+        }
+
+        #[tokio::test]
+        async fn a_retention_change_for_no_tenant_is_404_and_recorded() {
+            let s = server().await;
+            let op = operator(&s);
+            let body = Some(r#"{"retention":"5y"}"#);
+            let unknown = TenantId([7; 16]).to_string();
+            for id in [
+                unknown.as_str(),
+                "acme",
+                "0123",
+                &s.tenant.to_string().to_uppercase(),
+            ] {
+                let path = format!("/admin/tenants/{id}");
+                let answer = call(&s, Method::PATCH, &path, Some(&op), body).await;
+                assert_eq!(answer.status(), 404, "{id}");
+                assert_eq!(problem(answer).await, "unknown-tenant", "{id}");
+            }
+            let refused = admin_log(&s, "tenant_retention");
+            assert_eq!(refused.len(), 4);
+            assert!(refused.iter().all(|r| r["status"] == 404));
+            assert_eq!(s.tenants.retention(s.tenant), Ok(None));
+        }
+
+        #[tokio::test]
+        async fn a_retention_body_it_does_not_take_is_422_and_recorded() {
+            let s = server().await;
+            let op = operator(&s);
+            let path = format!("/admin/tenants/{}", s.tenant);
+            let bodies = [
+                "",
+                "{}",
+                r#"{"retention":"7"}"#,
+                r#"{"retention":"07y"}"#,
+                r#"{"retention":5}"#,
+                r#"{"retention":"5y","name":"beta"}"#,
+            ];
+            for body in bodies {
+                let answer = call(&s, Method::PATCH, &path, Some(&op), Some(body)).await;
+                assert_eq!(answer.status(), 422, "{body}");
+                assert_eq!(problem(answer).await, "invalid-body", "{body}");
+            }
+            let refused = admin_log(&s, "tenant_retention");
+            assert_eq!(refused.len(), bodies.len());
+            assert!(refused.iter().all(|r| r["status"] == 422));
+            assert_eq!(s.tenants.retention(s.tenant), Ok(None));
+        }
+
+        #[tokio::test]
+        async fn a_retention_change_for_a_closing_tenant_is_503() {
+            let s = server().await;
+            let op = operator(&s);
+            s.tenants.close(s.tenant);
+            let path = format!("/admin/tenants/{}", s.tenant);
+            let body = Some(r#"{"retention":"5y"}"#);
+            let answer = call(&s, Method::PATCH, &path, Some(&op), body).await;
+            assert_eq!(answer.status(), 503);
+            assert_eq!(problem(answer).await, "unavailable");
+        }
+
+        #[tokio::test]
+        async fn damage_is_500_on_every_tenant_route() {
+            let s = server().await;
+            let op = operator(&s);
+            s.tenants
+                .conn_for_test()
+                .execute_batch(
+                    "UPDATE tenant SET retention = 'x';
+                     CREATE TEMP TRIGGER broken BEFORE INSERT ON tenant
+                     BEGIN SELECT RAISE(ABORT, 'the disk has failed'); END;
+                     CREATE TEMP TRIGGER broken_too BEFORE UPDATE ON tenant
+                     BEGIN SELECT RAISE(ABORT, 'the disk has failed'); END;",
+                )
+                .expect("damaged");
+            for (method, path, body, _) in routes(s.tenant) {
+                let answer = call(&s, method.clone(), &path, Some(&op), body).await;
+                assert_eq!(answer.status(), 500, "{method} {path}");
+                assert_eq!(problem(answer).await, "internal");
+            }
+        }
+
+        #[tokio::test]
+        async fn an_answer_that_cannot_be_recorded_is_503_on_every_tenant_route() {
+            let s = server().await;
+            let op = operator(&s);
+            s.tenants.break_audit();
+            for (method, path, body, _) in routes(s.tenant) {
+                let answer = call(&s, method.clone(), &path, Some(&op), body).await;
+                assert_eq!(answer.status(), 503, "{method} {path}");
+                assert_eq!(problem(answer).await, "audit-failed");
+            }
+            for body in ["{}", r#"{"retention":"5y"}"#] {
+                let path = if body == "{}" {
+                    "/admin/tenants".to_owned()
+                } else {
+                    format!("/admin/tenants/{}", TenantId([7; 16]))
+                };
+                let method = if body == "{}" {
+                    Method::POST
+                } else {
+                    Method::PATCH
+                };
+                let answer = call(&s, method, &path, Some(&op), Some(body)).await;
+                assert_eq!(problem(answer).await, "audit-failed", "a refusal too");
+            }
+            assert_eq!(
+                s.tenants.list(Actor::Cli).err(),
+                Some(crate::tenants::TenantError::AuditFailed)
+            );
+        }
+
+        #[tokio::test]
+        async fn a_body_over_the_limit_is_413() {
+            let s = server().await;
+            let op = operator(&s);
+            let body = format!(r#"{{"name":"{}"}}"#, "x".repeat(super::pipeline::LIMIT));
+            let answer = call(&s, Method::POST, "/admin/tenants", Some(&op), Some(&body)).await;
+            assert_eq!(answer.status(), 413);
+            assert_eq!(problem(answer).await, "too-large");
         }
     }
 

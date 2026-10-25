@@ -71,6 +71,8 @@ pub enum TenantError {
     NotFound,
     /// Another tenant has the name.
     NameTaken,
+    /// The name breaks the naming rule (`good_name`).
+    BadName,
     /// `Removal::Empty` was asked of a tenant that keeps versions.
     HoldsVcons,
     /// `Removal::Force` was asked of a tenant with a uuid under a legal
@@ -223,7 +225,9 @@ impl Tenants {
         {
             let mut conn = self.conn();
             let tx = immediate(&mut conn)?;
-            let refused = if name_taken(&tx, name)? {
+            let refused = if !good_name(name) {
+                Some((422, TenantError::BadName))
+            } else if name_taken(&tx, name)? {
                 Some((409, TenantError::NameTaken))
             } else if envelope::wrap_limit(wraps(&tx, master_id)?) == WrapLimit::Refuse {
                 Some((503, TenantError::LimitReached))
@@ -245,29 +249,32 @@ impl Tenants {
         let key_id = tenant_key.id();
         let wrapped = envelope::wrap(&self.master, &Context::Tenant { tenant: id }, &tenant_key);
         // The directory and its catalog are made before the row, and made
-        // durable: the directory's entry in `tenants/` by syncing it.
+        // durable: the directory's entry in `tenants/` by syncing it. Any
+        // step that fails once the directory may exist removes it.
         let dir = self.tenants.join(id.to_string());
-        self.fs.create_dir_all(&dir).map_err(io)?;
-        drop(
-            Store::open(&dir, id, tenant_key, self.fs.clone(), self.clock.clone())
-                .map_err(|_| TenantError::Io)?,
-        );
-        self.fs.sync_dir(&self.tenants).map_err(io)?;
-        #[cfg(test)]
-        {
-            let hook = self.hooks.between.lock().expect("hook").take();
-            if let Some(hook) = hook {
-                hook();
+        let made = (|| {
+            self.fs.create_dir_all(&dir).map_err(io)?;
+            drop(
+                Store::open(&dir, id, tenant_key, self.fs.clone(), self.clock.clone())
+                    .map_err(|_| TenantError::Io)?,
+            );
+            self.fs.sync_dir(&self.tenants).map_err(io)?;
+            #[cfg(test)]
+            {
+                let hook = self.hooks.between.lock().expect("hook").take();
+                if let Some(hook) = hook {
+                    hook();
+                }
             }
-        }
 
-        let mut conn = self.conn();
-        let tx = immediate(&mut conn)?;
-        let now = self.clock.now();
-        let result = if name_taken(&tx, name)? {
-            self.record(&tx, &entry(409, None))
-                .and(Err(TenantError::NameTaken))
-        } else {
+            let mut conn = self.conn();
+            let tx = immediate(&mut conn)?;
+            if name_taken(&tx, name)? {
+                // A refusal's record commits.
+                self.record(&tx, &entry(409, None))?;
+                tx.commit().map_err(io)?;
+                return Err(TenantError::NameTaken);
+            }
             tx.execute(
                 "INSERT INTO tenant (id, name, retention, created_at, tenant_key_id,
                      wrapped_tenant_key, key_since)
@@ -276,31 +283,20 @@ impl Tenants {
                     id.0,
                     name,
                     retention.map(|r| r.to_string()),
-                    nanos(now),
+                    nanos(self.clock.now()),
                     key_id.bytes(),
                     wrapped
                 ],
             )
             .map_err(io)?;
-            self.record(&tx, &entry(201, Some(id))).map(|()| id)
-        };
-        match result {
-            Ok(id) => {
-                tx.commit().map_err(io)?;
-                Ok(id)
-            }
-            Err(error) => {
-                // A refusal's record commits; a failed record leaves nothing.
-                if error == TenantError::NameTaken {
-                    tx.commit().map_err(io)?;
-                } else {
-                    drop(tx);
-                }
-                drop(conn);
-                let _ = self.fs.remove_dir_all(&dir);
-                Err(error)
-            }
+            self.record(&tx, &entry(201, Some(id)))?;
+            tx.commit().map_err(io)?;
+            Ok(id)
+        })();
+        if made.is_err() {
+            let _ = self.fs.remove_dir_all(&dir);
         }
+        made
     }
 
     /// Every tenant, by name.
@@ -643,6 +639,15 @@ impl Tenants {
             .lock()
             .expect("no thread panicked holding server.sqlite")
     }
+}
+
+/// A tenant's name is a label for people: 1 to 128 characters, none of
+/// them a control character, and no white space at either end, so two
+/// names that look alike are alike.
+fn good_name(name: &str) -> bool {
+    (1..=128).contains(&name.chars().count())
+        && !name.chars().any(char::is_control)
+        && name.trim() == name
 }
 
 fn name_taken(tx: &Transaction, name: &str) -> Result<bool, TenantError> {
@@ -1093,6 +1098,45 @@ mod tests {
     }
 
     #[test]
+    fn a_name_is_1_to_128_characters_without_controls_or_outer_spaces() {
+        let long = "é".repeat(128);
+        for name in ["acme", "a", "Acme Corp", "Acme — Europe", long.as_str()] {
+            assert!(good_name(name), "{name:?}");
+        }
+        let longer = "é".repeat(129);
+        for name in [
+            "",
+            " acme",
+            "acme ",
+            "ac\nme",
+            "ac\tme",
+            "acme\u{7f}",
+            "\u{85}acme",
+            "acme\u{3000}",
+            longer.as_str(),
+        ] {
+            assert!(!good_name(name), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn a_bad_name_is_refused_and_recorded_before_anything_is_made() {
+        let f = fixture();
+        let ops = f.fs.log().len();
+        assert_eq!(
+            f.tenants.create(Actor::Cli, " acme", None),
+            Err(TenantError::BadName)
+        );
+        assert_eq!(f.fs.log().len(), ops, "nothing made");
+        assert_eq!(f.master_wraps(), 0, "nothing wrapped");
+        assert_eq!(f.count("SELECT count(*) FROM tenant"), 0);
+        let log = f.admin_records("tenant_create");
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0]["status"], 422);
+        assert_eq!(log[0]["target"], Value::Null, "no tenant was made");
+    }
+
+    #[test]
     fn a_master_key_at_its_wrap_limit_makes_no_tenant() {
         let f = fixture();
         f.conn()
@@ -1166,6 +1210,23 @@ mod tests {
         assert_eq!(
             f.tenants.create(Actor::Cli, "acme", None),
             Err(TenantError::AuditFailed)
+        );
+        assert_eq!(f.count("SELECT count(*) FROM tenant"), 0);
+        assert_eq!(f.dirs(), Vec::<OsString>::new(), "its directory is removed");
+    }
+
+    #[test]
+    fn a_create_whose_row_cannot_be_written_leaves_nothing() {
+        let f = fixture();
+        f.conn()
+            .execute_batch(
+                "CREATE TEMP TRIGGER no_row BEFORE INSERT ON tenant
+                 BEGIN SELECT RAISE(ABORT, 'the disk has failed'); END;",
+            )
+            .expect("trigger");
+        assert_eq!(
+            f.tenants.create(Actor::Cli, "acme", None),
+            Err(TenantError::Io)
         );
         assert_eq!(f.count("SELECT count(*) FROM tenant"), 0);
         assert_eq!(f.dirs(), Vec::<OsString>::new(), "its directory is removed");
