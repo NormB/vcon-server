@@ -12,7 +12,8 @@ use serde::Deserialize;
 use crate::retention::Retention;
 
 /// The configuration `serve` runs with. Durations are written in whole
-/// seconds and sizes in bytes; each must be more than zero.
+/// seconds and sizes in bytes; each must be more than zero, and each has a
+/// default.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub listen: SocketAddr,
@@ -33,6 +34,29 @@ pub struct Config {
     /// Extension names accepted in `critical` and `must_support`.
     pub supported_critical: BTreeSet<String>,
 }
+
+/// Time between purge sweeps unless configured: a version is purged
+/// within an hour of falling due.
+pub const PURGE_INTERVAL: Duration = Duration::from_secs(3600);
+
+/// Age of the oldest work waiting for key rotation before `serve` warns,
+/// unless configured: 30 days.
+pub const ROTATION_WARN: Duration = Duration::from_secs(30 * 86_400);
+
+/// The largest request body unless configured: 16 MiB. The largest of
+/// 34,885 vCon files measured (public datasets and recorded test calls) was
+/// 5,141,813 bytes, a two-minute recording held inline; nearly all of their
+/// recordings are referenced by URL instead.
+pub const BODY_LIMIT: usize = 16 << 20;
+
+/// The largest inflation unless configured: four times [`BODY_LIMIT`], so
+/// any vCon accepted plain is also accepted gzipped, with room left for
+/// gzipped payloads inside its signed layers.
+pub const INFLATED_LIMIT: u64 = 4 * BODY_LIMIT as u64;
+
+/// How long a request body may take to arrive unless configured: a body at
+/// [`BODY_LIMIT`] needs about 2.2 Mbit/s.
+pub const READ_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// A configuration that could not be read, naming the key at fault.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,12 +93,22 @@ pub fn parse(text: &str) -> Result<Config, ConfigError> {
         data_dir: raw.data_dir,
         master_key: raw.master_key,
         retention_default,
-        purge_interval: seconds("purge_interval", raw.purge_interval)?,
-        rotation_warn: seconds("rotation_warn", raw.rotation_warn)?,
-        body_limit: usize::try_from(positive("limits.body", raw.limits.body)?)
-            .map_err(|_| ConfigError("limits.body is too large".to_owned()))?,
-        inflated_limit: positive("limits.inflated", raw.limits.inflated)?,
-        read_timeout: seconds("limits.timeouts.read", raw.limits.timeouts.read)?,
+        purge_interval: seconds("purge_interval", raw.purge_interval, PURGE_INTERVAL)?,
+        rotation_warn: seconds("rotation_warn", raw.rotation_warn, ROTATION_WARN)?,
+        body_limit: match raw.limits.body {
+            None => BODY_LIMIT,
+            Some(body) => usize::try_from(positive("limits.body", body)?)
+                .map_err(|_| ConfigError("limits.body is too large".to_owned()))?,
+        },
+        inflated_limit: match raw.limits.inflated {
+            None => INFLATED_LIMIT,
+            Some(inflated) => positive("limits.inflated", inflated)?,
+        },
+        read_timeout: seconds(
+            "limits.timeouts.read",
+            raw.limits.timeouts.read,
+            READ_TIMEOUT,
+        )?,
         supported_critical: raw.supported_critical.into_iter().collect(),
     })
 }
@@ -86,8 +120,12 @@ fn positive(key: &str, value: u64) -> Result<u64, ConfigError> {
     Ok(value)
 }
 
-fn seconds(key: &str, value: u64) -> Result<Duration, ConfigError> {
-    positive(key, value).map(Duration::from_secs)
+/// `value` in whole seconds, or `default` when it is not written.
+fn seconds(key: &str, value: Option<u64>, default: Duration) -> Result<Duration, ConfigError> {
+    match value {
+        None => Ok(default),
+        Some(value) => positive(key, value).map(Duration::from_secs),
+    }
 }
 
 /// The file as written, before its values are checked.
@@ -99,8 +137,9 @@ struct Raw {
     data_dir: PathBuf,
     master_key: PathBuf,
     retention_default: Option<String>,
-    purge_interval: u64,
-    rotation_warn: u64,
+    purge_interval: Option<u64>,
+    rotation_warn: Option<u64>,
+    #[serde(default)]
     limits: RawLimits,
     #[serde(default)]
     supported_critical: Vec<String>,
@@ -113,18 +152,19 @@ struct RawTls {
     key: PathBuf,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawLimits {
-    body: u64,
-    inflated: u64,
+    body: Option<u64>,
+    inflated: Option<u64>,
+    #[serde(default)]
     timeouts: RawTimeouts,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawTimeouts {
-    read: u64,
+    read: Option<u64>,
 }
 
 #[cfg(test)]
@@ -136,8 +176,8 @@ listen = "127.0.0.1:8443"
 data_dir = "/var/lib/vcon-server"
 master_key = "/etc/vcon-server/master.key"
 retention_default = "18m"
-purge_interval = 3600
-rotation_warn = 2592000
+purge_interval = 1800
+rotation_warn = 604800
 supported_critical = ["known", "other"]
 
 [tls]
@@ -163,8 +203,8 @@ read = 30
                 data_dir: "/var/lib/vcon-server".into(),
                 master_key: "/etc/vcon-server/master.key".into(),
                 retention_default: Retention::Months(18),
-                purge_interval: Duration::from_secs(3600),
-                rotation_warn: Duration::from_secs(2_592_000),
+                purge_interval: Duration::from_secs(1800),
+                rotation_warn: Duration::from_secs(604_800),
                 body_limit: 10_485_760,
                 inflated_limit: 104_857_600,
                 read_timeout: Duration::from_secs(30),
@@ -183,6 +223,93 @@ read = 30
         assert_eq!(config.supported_critical, BTreeSet::new());
     }
 
+    /// The configuration with only the keys that have no default.
+    const LEAST: &str = r#"
+listen = "127.0.0.1:8443"
+data_dir = "/var/lib/vcon-server"
+master_key = "/etc/vcon-server/master.key"
+
+[tls]
+cert = "/etc/vcon-server/cert.pem"
+key = "/etc/vcon-server/key.pem"
+"#;
+
+    #[test]
+    fn periods_and_limits_have_defaults() {
+        let config = parse(LEAST).expect("parses");
+        assert_eq!(config.purge_interval, Duration::from_secs(3600));
+        assert_eq!(config.rotation_warn, Duration::from_secs(30 * 86_400));
+        assert_eq!(config.body_limit, 16 << 20);
+        assert_eq!(config.inflated_limit, 64 << 20);
+        assert_eq!(config.read_timeout, Duration::from_secs(60));
+    }
+
+    /// A key left out of a table that is present takes its default; the
+    /// others keep their written values.
+    #[test]
+    fn each_limit_defaults_alone() {
+        let base = parse(FULL).expect("parses");
+        for (line, default) in [
+            (
+                "body = 10485760\n",
+                Config {
+                    body_limit: 16 << 20,
+                    ..base.clone()
+                },
+            ),
+            (
+                "inflated = 104857600\n",
+                Config {
+                    inflated_limit: 64 << 20,
+                    ..base.clone()
+                },
+            ),
+            (
+                "read = 30\n",
+                Config {
+                    read_timeout: Duration::from_secs(60),
+                    ..base.clone()
+                },
+            ),
+            (
+                "purge_interval = 1800\n",
+                Config {
+                    purge_interval: Duration::from_secs(3600),
+                    ..base.clone()
+                },
+            ),
+            (
+                "rotation_warn = 604800\n",
+                Config {
+                    rotation_warn: Duration::from_secs(30 * 86_400),
+                    ..base.clone()
+                },
+            ),
+            (
+                "[limits.timeouts]\nread = 30\n",
+                Config {
+                    read_timeout: Duration::from_secs(60),
+                    ..base.clone()
+                },
+            ),
+        ] {
+            assert!(FULL.contains(line), "{line}");
+            assert_eq!(parse(&FULL.replace(line, "")), Ok(default), "{line}");
+        }
+    }
+
+    /// The defaults differ from the full file's values, so each test above
+    /// tells a default from a written value.
+    #[test]
+    fn the_full_file_sets_no_value_equal_to_its_default() {
+        let (full, least) = (parse(FULL).expect("full"), parse(LEAST).expect("least"));
+        assert_ne!(full.purge_interval, least.purge_interval);
+        assert_ne!(full.rotation_warn, least.rotation_warn);
+        assert_ne!(full.body_limit, least.body_limit);
+        assert_ne!(full.inflated_limit, least.inflated_limit);
+        assert_ne!(full.read_timeout, least.read_timeout);
+    }
+
     /// Each error names its key.
     #[test]
     fn every_missing_key_without_a_default_is_named() {
@@ -193,13 +320,8 @@ read = 30
                 "master_key = \"/etc/vcon-server/master.key\"\n",
                 "master_key",
             ),
-            ("purge_interval = 3600\n", "purge_interval"),
-            ("rotation_warn = 2592000\n", "rotation_warn"),
             ("cert = \"/etc/vcon-server/cert.pem\"\n", "cert"),
             ("key = \"/etc/vcon-server/key.pem\"\n", "key"),
-            ("body = 10485760\n", "body"),
-            ("inflated = 104857600\n", "inflated"),
-            ("read = 30\n", "read"),
         ] {
             assert!(FULL.contains(line), "{line}");
             let error = parse(&FULL.replace(line, "")).expect_err(key);
@@ -225,12 +347,12 @@ read = 30
             ("\"127.0.0.1:8443\"", "\"localhost\"", "listen"),
             ("\"18m\"", "\"7w\"", "retention_default"),
             (
-                "purge_interval = 3600",
+                "purge_interval = 1800",
                 "purge_interval = 0",
                 "purge_interval",
             ),
             (
-                "rotation_warn = 2592000",
+                "rotation_warn = 604800",
                 "rotation_warn = 0",
                 "rotation_warn",
             ),
