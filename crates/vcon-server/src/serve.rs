@@ -9,13 +9,14 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 
 use crate::api::{self, App, Limits, TlsError};
-use crate::clock::SystemClock;
+use crate::clock::{Clock, SystemClock};
 use crate::config::Config;
 use crate::datadir::{self, LockError, Work};
 use crate::envelope::{Key, KeyError};
 use crate::fs::OsFs;
 use crate::retention::Retention;
-use crate::tenants::{TenantError, Tenants};
+use crate::tenants::{KeyOrder, RotationBacklog, TenantError, Tenants};
+use time::OffsetDateTime;
 
 /// Why the server did not start, or stopped.
 #[derive(Debug)]
@@ -28,6 +29,8 @@ pub enum ServeError {
     WrongMasterKey,
     /// server.sqlite could not be opened.
     Registry(TenantError),
+    /// Some tenant's data is not under its current key.
+    KeysOutOfOrder(KeyOrder),
     /// The certificate or key could not be used.
     Tls(TlsError),
     /// The listening address could not be bound.
@@ -45,6 +48,32 @@ impl fmt::Display for ServeError {
                 f.write_str("the master key is not the one server.sqlite was made under")
             }
             ServeError::Registry(e) => write!(f, "server.sqlite cannot be opened: {e:?}"),
+            ServeError::KeysOutOfOrder(order) => {
+                let mut parts = Vec::new();
+                if order.wrapped_elsewhere > 0 {
+                    parts.push(format!(
+                        "{} tenant key(s) do not unwrap under the master key",
+                        order.wrapped_elsewhere
+                    ));
+                }
+                if order.rotations_stopped > 0 {
+                    parts.push(format!(
+                        "{} key rotation(s) stopped part way; run rekey tenant again",
+                        order.rotations_stopped
+                    ));
+                }
+                if order.data_under_other_keys > 0 {
+                    parts.push(format!(
+                        "{} tenant(s) with data under another key",
+                        order.data_under_other_keys
+                    ));
+                }
+                write!(
+                    f,
+                    "{}; vcon-server check names the tenants",
+                    parts.join("; ")
+                )
+            }
             ServeError::Tls(e) => write!(f, "the TLS certificate or key cannot be used: {e:?}"),
             ServeError::Listen(e) => write!(f, "the listening address cannot be bound: {e}"),
             ServeError::Serve(e) => write!(f, "serving failed: {e}"),
@@ -68,6 +97,10 @@ pub async fn run(config: &Config, shutdown: impl Future<Output = ()>) -> Result<
         TenantError::WrongKey => ServeError::WrongMasterKey,
         other => ServeError::Registry(other),
     })?;
+    let order = tenants.key_order().map_err(ServeError::Registry)?;
+    if !order.is_sound() {
+        return Err(ServeError::KeysOutOfOrder(order));
+    }
     let tls = api::tls_config(&config.tls_cert, &config.tls_key).map_err(ServeError::Tls)?;
     let listener = TcpListener::bind(config.listen)
         .await
@@ -89,11 +122,31 @@ pub async fn run(config: &Config, shutdown: impl Future<Output = ()>) -> Result<
             }
         },
     ));
+    // The rotation warning: at start, then each day.
+    let (stop_warning, warning_stopped) = tokio::sync::oneshot::channel::<()>();
+    let (watched, rotation_warn) = (tenants.clone(), config.rotation_warn);
+    let warner = tokio::spawn(every(
+        ROTATION_CHECK,
+        async {
+            let _ = warning_stopped.await;
+        },
+        move || {
+            let tenants = watched.clone();
+            async move {
+                let _ = tokio::task::spawn_blocking(move || {
+                    warn_if_rotation_overdue(&tenants, rotation_warn);
+                })
+                .await;
+            }
+        },
+    ));
     let app = app_from(config, tenants);
     tracing::info!(listen = %config.listen, "serving");
     let served = api::serve(listener, tls, api::router(Arc::new(app)), shutdown).await;
     let _ = stop.send(());
+    let _ = stop_warning.send(());
     let _ = sweeper.await;
+    let _ = warner.await;
     served.map_err(ServeError::Serve)?;
     tracing::info!("stopped");
     Ok(())
@@ -173,11 +226,93 @@ fn app_from(config: &Config, tenants: Arc<Tenants>) -> App {
     }
 }
 
+/// Whether key rotation is overdue: the oldest purge or removal waiting
+/// for it is older than `rotation_warn`.
+pub fn rotation_overdue(
+    backlog: &RotationBacklog,
+    rotation_warn: Duration,
+    now: OffsetDateTime,
+) -> bool {
+    [backlog.oldest_purge, backlog.oldest_removal]
+        .into_iter()
+        .flatten()
+        .any(|at| now - at > rotation_warn)
+}
+
+/// How often `serve` looks at the rotation backlog.
+const ROTATION_CHECK: Duration = Duration::from_secs(86_400);
+
+/// Logs a warning, with counts only, when key rotation is overdue.
+fn warn_if_rotation_overdue(tenants: &Tenants, rotation_warn: Duration) {
+    match tenants.rotation_backlog() {
+        Ok(backlog) if rotation_overdue(&backlog, rotation_warn, SystemClock.now()) => {
+            tracing::warn!(
+                tenants_with_purges = backlog.tenants_with_purges,
+                purges = backlog.purges,
+                removals = backlog.removals,
+                "key rotation overdue: purged vCons and removed tenants stay readable on old copies until it"
+            );
+        }
+        Ok(_) => {}
+        Err(_) => tracing::warn!("the key rotation backlog could not be read"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    mod startup {
+        use time::macros::datetime;
+
+        use super::*;
+
+        const NOW: OffsetDateTime = datetime!(2026-10-25 12:00 UTC);
+        const DAY: Duration = Duration::from_secs(86_400);
+
+        #[test]
+        fn rotation_is_overdue_once_the_oldest_waiting_work_passes_rotation_warn() {
+            let backlog =
+                |purge: Option<OffsetDateTime>, removal: Option<OffsetDateTime>| RotationBacklog {
+                    tenants_with_purges: u64::from(purge.is_some()),
+                    purges: u64::from(purge.is_some()),
+                    oldest_purge: purge,
+                    removals: u64::from(removal.is_some()),
+                    oldest_removal: removal,
+                };
+            let day_ago = Some(datetime!(2026-10-24 12:00 UTC));
+            let older = Some(datetime!(2026-10-24 11:59:59 UTC));
+            for (b, overdue) in [
+                (backlog(None, None), false),
+                (backlog(day_ago, None), false),
+                (backlog(older, None), true),
+                (backlog(None, older), true),
+                (backlog(day_ago, older), true),
+            ] {
+                assert_eq!(rotation_overdue(&b, DAY, NOW), overdue, "{b:?}");
+            }
+        }
+
+        #[test]
+        fn a_refusal_for_keys_out_of_order_counts_and_points_at_check() {
+            let order = KeyOrder {
+                wrapped_elsewhere: 1,
+                rotations_stopped: 2,
+                data_under_other_keys: 3,
+            };
+            let text = ServeError::KeysOutOfOrder(order).to_string();
+            for words in [
+                "1 tenant key",
+                "2 key rotation",
+                "3 tenant",
+                "vcon-server check",
+            ] {
+                assert!(text.contains(words), "{words}: {text}");
+            }
+        }
+    }
     use crate::retention::Retention;
 
     #[test]

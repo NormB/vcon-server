@@ -39,10 +39,12 @@ otherwise.
 - **`check`:** every stored version opened, leftover files listed, versions
   past due and work waiting for key rotation reported; exit 1 when anything
   needs the operator.
+- **Start-up refusals** for a tenant key wrapped under another key, a key
+  rotation stopped part way, or data under another key; and the daily
+  warning while key rotation is overdue.
 
 ## Being built
 
-- **The remaining start-up refusals** and the rotation warning.
 - **Release:** an operator guide, a review of the code against its design,
   and a full fault-injection run.
 

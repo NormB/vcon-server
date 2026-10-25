@@ -23,7 +23,7 @@ mod examine;
 mod keys;
 mod rekey;
 
-pub use examine::{RegistryExamination, TenantExamination};
+pub use examine::{KeyOrder, RegistryExamination, RotationBacklog, TenantExamination};
 pub use keys::{KeyInfo, NewKey};
 pub use rekey::rekey_master;
 #[cfg(test)]

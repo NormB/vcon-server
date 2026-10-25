@@ -27,8 +27,9 @@ Durations are whole seconds and sizes are bytes; each must be more than zero.
 | `limits.timeouts.read` | Seconds a request body may take to arrive | `60` |
 | `supported_critical` | Extension names accepted in a vCon's `critical` list, for all tenants | none |
 
-`rotation_warn` is read and checked now; the warning it sets is
-[being built](@/docs/status.md), with key rotation.
+At start and then each day, `serve` logs a warning while the oldest purge or
+tenant removal waiting for [key rotation](@/docs/operations.md#key-rotation)
+is older than `rotation_warn`.
 
 ## A full file
 

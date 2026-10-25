@@ -94,8 +94,10 @@ vcon-server serve --config /etc/vcon-server/vcon-server.toml
 It logs structured lines to standard error: `serving` once it listens, a line
 per request, and `stopped` after SIGTERM or SIGINT. It refuses to start, with
 the reason, when the configuration is wrong, the master key is not the data
-directory's, memory cannot be locked, core dumps cannot be turned off, or
-another server already holds the data directory.
+directory's, memory cannot be locked, core dumps cannot be turned off,
+another server already holds the data directory, or a tenant's data is not
+all under its current key (a key rotation stopped part way: run it again;
+`vcon-server check` names the tenants).
 
 ## Tenants and keys
 

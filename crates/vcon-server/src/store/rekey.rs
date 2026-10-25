@@ -53,6 +53,20 @@ impl Store {
         commit(tx)?;
         Ok(rows.len())
     }
+
+    /// How many version rows name a key other than this Store's tenant key:
+    /// a rotation stopped part way leaves some.
+    pub fn rows_under_other_keys(&self) -> Result<u64, StoreError> {
+        let n: i64 = self
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM version WHERE tenant_key_id != ?1",
+                [self.tenant_key.id().bytes()],
+                |r| r.get(0),
+            )
+            .map_err(io)?;
+        u64::try_from(n).map_err(io)
+    }
 }
 
 #[cfg(test)]

@@ -63,6 +63,8 @@ take them:
 - one `request` line per request: `request_id`, `method`, `route` (the route
   template, never the path), `status`, `duration_ms`;
 - `purge sweep` lines;
+- a `WARN` line, at start and then daily, while key rotation is overdue,
+  with counts only (`tenants_with_purges`, `purges`, `removals`);
 - `stopped` after SIGTERM or SIGINT.
 
 A server started, asked for its health with no key, and stopped:

@@ -343,6 +343,129 @@ fn sweep_lines(running: &mut Running) -> std::sync::mpsc::Receiver<String> {
     line_rx
 }
 
+/// The lines `running` writes to its stderr that contain `pattern`, as
+/// they come.
+fn lines_with(running: &mut Running, pattern: &'static str) -> std::sync::mpsc::Receiver<String> {
+    let stderr = running.0.stderr.take().expect("piped");
+    let (line_tx, line_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(stderr)
+            .lines()
+            .map_while(Result::ok)
+        {
+            if line.contains(pattern) && line_tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    line_rx
+}
+
+/// server.sqlite opened directly, to put the registry in a state no
+/// command would leave it in.
+fn server_sqlite(s: &Setup) -> rusqlite::Connection {
+    let master = Key::load_master(&s.master_key).expect("the master key");
+    vcon_server::catalog::open(
+        &s.data.join("server.sqlite"),
+        &vcon_server::envelope::catalog_key(&master).expect("catalog key"),
+        "",
+    )
+    .expect("opens")
+}
+
+#[test]
+fn serve_refuses_while_a_key_rotation_is_stopped_part_way() {
+    let s = setup();
+    server_sqlite(&s)
+        .execute(
+            "UPDATE tenant SET pending_wrapped_tenant_key = wrapped_tenant_key",
+            [],
+        )
+        .expect("a pending key");
+    let output = refused(serve(&s));
+    assert!(
+        stderr(&output).contains("key rotation"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(
+        stderr(&output).contains("vcon-server check"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(
+        !stderr(&output).contains(&s.tenant.to_string()),
+        "no tenant id in the log"
+    );
+}
+
+#[test]
+fn serve_refuses_a_tenant_key_wrapped_under_another_key() {
+    let s = setup();
+    server_sqlite(&s)
+        .execute("UPDATE tenant SET wrapped_tenant_key = randomblob(61)", [])
+        .expect("a foreign wrap");
+    let output = refused(serve(&s));
+    assert!(
+        stderr(&output).contains("tenant key"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn serve_warns_when_key_rotation_is_overdue() {
+    let s = setup();
+    let tenants = registry(&s);
+    let store = tenants.store(s.tenant).expect("its store");
+    let body = std::fs::read(format!(
+        "{}/../vcon-form/tests/fixtures/ietf/ab_call_ext_rec.vcon",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .expect("A.4");
+    let found = vcon_form::inspect(
+        &body,
+        Some("application/vcon"),
+        &vcon_form::Limits { inflated: 1 << 20 },
+        &Default::default(),
+    )
+    .expect("a valid vCon");
+    let caller = Caller { key: KeyId([7; 8]) };
+    store.create(&caller, &found, &body).expect("stored");
+    store
+        .delete(&caller, found.uuid, Retention::Days(0))
+        .expect("deleted and purged");
+    drop(store);
+    drop(tenants);
+    let text = std::fs::read_to_string(&s.config).expect("configuration");
+    std::fs::write(
+        &s.config,
+        text.replace("rotation_warn = 2592000", "rotation_warn = 1"),
+    )
+    .expect("written");
+    std::thread::sleep(Duration::from_millis(1100));
+    let mut running = Running(
+        serve(&s)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("starts"),
+    );
+    let warned = lines_with(&mut running, "key rotation overdue")
+        .recv_timeout(Duration::from_secs(20))
+        .expect("serve warned of no overdue rotation");
+    assert!(warned.contains("WARN"), "{warned}");
+    let fields: Vec<&str> = warned.split_whitespace().collect();
+    for field in ["tenants_with_purges=1", "purges=1", "removals=0"] {
+        assert!(fields.contains(&field), "{field}: {warned}");
+    }
+    assert!(
+        !warned.contains(&s.tenant.to_string()),
+        "no tenant id: {warned}"
+    );
+}
+
 /// The registry of `s`'s data directory, opened as `serve` opens it.
 fn registry(s: &Setup) -> Tenants {
     Tenants::open(

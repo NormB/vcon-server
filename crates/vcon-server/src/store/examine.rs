@@ -109,22 +109,35 @@ impl Store {
             }
         }
         found.leftovers.sort();
-        let purged: Vec<String> = tx
+        drop(tx);
+        drop(conn);
+        (found.purges_since_key, found.oldest_purge_since_key) = self.purges_since(key_since)?;
+        Ok(found)
+    }
+
+    /// How many purges were recorded since `since`, and when the oldest of
+    /// them was made: work only the tenant key's next rotation finishes.
+    pub fn purges_since(
+        &self,
+        since: OffsetDateTime,
+    ) -> Result<(u64, Option<OffsetDateTime>), StoreError> {
+        let purged: Vec<String> = self
+            .conn()
             .prepare("SELECT at FROM audit WHERE action = ?1 AND status = 200")
             .map_err(io)?
             .query_map([Action::Purge.as_str()], |r| r.get(0))
             .map_err(io)?
             .collect::<Result<_, _>>()
             .map_err(io)?;
+        let (mut count, mut oldest) = (0, None::<OffsetDateTime>);
         for at in purged {
             let at = OffsetDateTime::parse(&at, &Rfc3339).map_err(|_| StoreError::Damaged)?;
-            if at >= key_since {
-                found.purges_since_key += 1;
-                found.oldest_purge_since_key =
-                    Some(found.oldest_purge_since_key.map_or(at, |o| o.min(at)));
+            if at >= since {
+                count += 1;
+                oldest = Some(oldest.map_or(at, |o| o.min(at)));
             }
         }
-        Ok(found)
+        Ok((count, oldest))
     }
 }
 
