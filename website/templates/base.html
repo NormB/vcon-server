@@ -3,20 +3,49 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}{{ config.title }}{% endblock %}</title>
-  <meta name="description" content="{{ config.description }}">
-  <link rel="stylesheet" href="{{ get_url(path='style.css') }}">
+  {# No inline script or style anywhere on the site, so the policy can refuse
+     both outright. scripts/check-site.sh fails the build on any inline
+     script, inline style attribute or event-handler attribute. #}
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <meta name="color-scheme" content="light dark">
+  <title>{% block title %}{{ config.title }}{% endblock title %}</title>
+  <meta name="description" content="{% block description %}{{ config.description }}{% endblock description %}">
+  <meta property="og:title" content="{% block og_title %}{{ config.title }}{% endblock og_title %}">
+  <meta property="og:description" content="{{ config.description }}">
+  <meta property="og:type" content="{% block og_type %}website{% endblock og_type %}">
+  <meta property="og:site_name" content="vcon-server">
+  <link rel="canonical" href="{{ config.base_url }}{% if current_path is defined %}{{ current_path }}{% endif %}">
+  <link rel="icon" href="{{ get_url(path='favicon.svg') }}" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ get_url(path='style.css', cachebust=true) }}">
+  <script src="{{ get_url(path='elasticlunr.min.js') }}" defer></script>
+  <script src="{{ get_url(path='search_index.en.js') }}" defer></script>
+  <script src="{{ get_url(path='js/search.js', cachebust=true) }}" defer></script>
 </head>
 <body>
+  <a class="skip" href="#main">Skip to content</a>
   <header class="top">
-    <a class="name" href="{{ get_url(path='/') }}">vcon-server</a>
-    <nav><a href="https://github.com/NormB/vcon-server">GitHub</a></nav>
+    <div class="top-inner">
+      <a class="name" href="{{ get_url(path='/') }}"><img src="{{ get_url(path='favicon.svg') }}" alt="" width="24" height="24"> vcon-server</a>
+      <nav class="top-nav" aria-label="Site">
+        <a href="{{ get_url(path='@/docs/_index.md') }}">Docs</a>
+        <a href="{{ get_url(path='@/docs/http-api.md') }}">API</a>
+        <a href="{{ get_url(path='@/problems/_index.md') }}">Problems</a>
+        <a href="{{ get_url(path='@/standards.md') }}">Standards</a>
+        <a href="{{ config.extra.repo | safe }}">GitHub</a>
+      </nav>
+      <div class="search" id="search" hidden>
+        <label for="search-input" class="visually-hidden">Search the docs</label>
+        <input id="search-input" type="search" placeholder="Search docs" autocomplete="off">
+        <ul id="search-results" class="search-results" hidden></ul>
+      </div>
+    </div>
   </header>
-  <main>
-    {% block content %}{% endblock %}
+  <main id="main">
+    {% block content %}{% endblock content %}
   </main>
-  <footer>
-    <p>vcon-server is open source under MIT OR Apache-2.0.</p>
+  <footer class="foot">
+    <p>vcon-server is open source under MIT OR Apache-2.0. <a href="{{ config.extra.repo | safe }}">Source</a> · <a href="{{ config.extra.repo | safe }}/issues">Issues</a> · <a href="{{ get_url(path='llms.txt') }}">llms.txt</a></p>
   </footer>
 </body>
 </html>

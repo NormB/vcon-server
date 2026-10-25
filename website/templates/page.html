@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% import "macros.html" as macros %}
+{% block title %}{{ page.title }} — {{ config.title }}{% endblock title %}
+{% block description %}{{ page.description | default(value=config.description) }}{% endblock description %}
+{% block og_title %}{{ page.title }} — {{ config.title }}{% endblock og_title %}
+{% block og_type %}article{% endblock og_type %}
+{% block content %}
+<div class="doc-layout">
+  <aside class="doc-sidebar">{{ macros::docs_nav(current=page.permalink) }}</aside>
+  <article class="doc">
+    <header>
+      <h1>{{ page.title }}</h1>
+      {% if page.description %}<p class="lead">{{ page.description }}</p>{% endif %}
+    </header>
+    {% if page.toc | length > 1 %}
+    <nav class="toc" aria-label="On this page">
+      <p>On this page</p>
+      <ul>{% for h in page.toc %}<li><a href="{{ h.permalink }}">{{ h.title }}</a></li>{% endfor %}</ul>
+    </nav>
+    {% endif %}
+    {{ page.content | safe }}
+    {{ macros::edit_link(path=page.relative_path) }}
+  </article>
+</div>
+{% endblock content %}

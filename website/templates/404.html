@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}Not found — {{ config.title }}{% endblock title %}
+{% block content %}
+<div class="narrow">
+  <h1>Not found</h1>
+  <p>There is no page here. Try the <a href="{{ get_url(path='@/docs/_index.md') }}">documentation</a>, the <a href="{{ get_url(path='@/problems/_index.md') }}">problem types</a> or the <a href="{{ get_url(path='/') }}">home page</a>.</p>
+</div>
+{% endblock content %}

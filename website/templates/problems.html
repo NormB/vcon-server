@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% import "macros.html" as macros %}
+{% block title %}{{ section.title }} — {{ config.title }}{% endblock title %}
+{% block content %}
+<div class="doc-layout">
+  <aside class="doc-sidebar">{{ macros::docs_nav(current=section.permalink) }}</aside>
+  <article class="doc">
+    <header>
+      <h1>{{ section.title }}</h1>
+      {% if section.description %}<p class="lead">{{ section.description }}</p>{% endif %}
+    </header>
+    {{ section.content | safe }}
+    <table class="problems">
+      <thead><tr><th>Status</th><th>Type</th><th>Title</th></tr></thead>
+      <tbody>
+      {% for p in section.pages %}
+        <tr><td>{{ p.extra.status }}</td><td><a href="{{ p.permalink }}"><code>{{ p.slug }}</code></a></td><td>{{ p.extra.problem_title }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </article>
+</div>
+{% endblock content %}

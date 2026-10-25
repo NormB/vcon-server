@@ -1,14 +1,26 @@
 base_url = "https://vcon-server.com"
 title = "vcon-server"
-description = "A server that stores vCons, the IETF conversation-record format, encrypted at rest."
+description = "A server that stores vCons, the IETF conversation-record format, encrypted at rest under per-tenant keys, with retention, legal holds and audit logs."
+default_language = "en"
 compile_sass = true
-build_search_index = false
+build_search_index = true
 generate_feeds = false
 
+[search]
+include_title = true
+include_description = true
+include_path = true
+include_content = true
+index_format = "elasticlunr_javascript"
+
 [markdown]
+smart_punctuation = false
 highlight_code = false
 
 [link_checker]
 # Internal links must resolve; an external site being down must not block a deploy.
 internal_level = "error"
 external_level = "warn"
+
+[extra]
+repo = "https://github.com/NormB/vcon-server"

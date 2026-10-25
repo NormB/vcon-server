@@ -1,0 +1,24 @@
+# vcon-server
+
+> vcon-server stores vCons (the IETF conversation-record format, draft-ietf-vcon-vcon-core) encrypted at rest under per-tenant keys, keeps each for its tenant's retention period, erases it after, honours legal holds, and records every request in an audit log. It is written in Rust, licensed MIT OR Apache-2.0, and in development (not yet for production).
+
+## Docs
+
+- [What is built](https://vcon-server.com/docs/status/): what works today and what is being built
+- [Getting started](https://vcon-server.com/docs/getting-started/): build, master key, certificate, configuration, systemd
+- [Configuration](https://vcon-server.com/docs/configuration/): every key and default
+- [Tenants and keys](https://vcon-server.com/docs/tenants-and-keys/): scopes write, read, delete, legal (tenant keys) and admin (operator keys)
+- [Storing vCons](https://vcon-server.com/docs/storing-vcons/): accepted forms, checks, versions, ETag and If-Match
+- [Retention and legal holds](https://vcon-server.com/docs/retention-and-holds/): the purge rule and the legal routes
+- [Audit logs](https://vcon-server.com/docs/audit-logs/): what is recorded and what never is
+- [Security](https://vcon-server.com/docs/security/): key hierarchy and memory protection
+- [HTTP API](https://vcon-server.com/docs/http-api/): every route with its scope and answers
+- [Producers](https://vcon-server.com/docs/producers/): sending vCons and handling each answer
+- [Operations](https://vcon-server.com/docs/operations/): data directory, locks, sweep, logs, backups
+- [Development](https://vcon-server.com/docs/development/): layout, tests and gates
+
+## Reference
+
+- [Problem types](https://vcon-server.com/problems/): every RFC 9457 type the API answers with
+- [Standards](https://vcon-server.com/standards/)
+- [Source](https://github.com/NormB/vcon-server)

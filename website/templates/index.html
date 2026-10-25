@@ -1,5 +1,16 @@
 {% extends "base.html" %}
-{% block title %}{{ config.title }} — {{ section.extra.tagline }}{% endblock %}
+{% block title %}{{ config.title }} — {{ section.extra.tagline }}{% endblock title %}
 {% block content %}
+<section class="hero">
+  <h1>{{ section.extra.headline }}</h1>
+  <p class="lead">{{ section.description }}</p>
+  <p class="cta">
+    <a class="button" href="{{ get_url(path='@/docs/getting-started.md') }}">Get started</a>
+    <a class="button ghost" href="{{ get_url(path='@/docs/http-api.md') }}">HTTP API</a>
+    <a class="button ghost" href="{{ config.extra.repo | safe }}">Source</a>
+  </p>
+</section>
+<div class="home-body">
 {{ section.content | safe }}
-{% endblock %}
+</div>
+{% endblock content %}

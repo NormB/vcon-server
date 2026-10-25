@@ -3772,3 +3772,188 @@ mod tests {
         }
     }
 }
+
+/// The website documents every problem type at the URL the type names, so
+/// a client following a `type` finds what it means. These tests hold the
+/// pages to the code.
+#[cfg(test)]
+mod site_pages {
+    use std::collections::BTreeSet;
+    use std::path::PathBuf;
+
+    use super::*;
+
+    /// One of every problem the API can answer. Each list sits behind an
+    /// exhaustive match, so a new kind of problem fails to compile here
+    /// until it is listed, and then fails the test until it has its page.
+    fn every_problem() -> Vec<Problem> {
+        let mut all = vec![
+            Problem::Unauthorized,
+            Problem::Forbidden,
+            Problem::TooLarge,
+            Problem::Timeout,
+            Problem::BadBody,
+            Problem::Unavailable,
+            Problem::AuditFailed,
+            Problem::UnsupportedMediaType,
+            Problem::BadPathUuid,
+            Problem::BadPathVersion,
+            Problem::PreconditionRequired,
+            Problem::PathUuidMismatch,
+            Problem::InvalidBody,
+            Problem::BadQuery,
+            Problem::UnknownKey,
+        ];
+        for problem in &all {
+            match problem {
+                Problem::Unauthorized
+                | Problem::Forbidden
+                | Problem::TooLarge
+                | Problem::Timeout
+                | Problem::BadBody
+                | Problem::Unavailable
+                | Problem::AuditFailed
+                | Problem::UnsupportedMediaType
+                | Problem::BadPathUuid
+                | Problem::BadPathVersion
+                | Problem::PreconditionRequired
+                | Problem::PathUuidMismatch
+                | Problem::InvalidBody
+                | Problem::BadQuery
+                | Problem::UnknownKey
+                | Problem::Invalid(_)
+                | Problem::Store(_)
+                | Problem::Tenant(_) => {}
+            }
+        }
+        let invalid = [
+            Invalid::BadGzip,
+            Invalid::NotJson,
+            Invalid::DuplicateMember,
+            Invalid::AmbiguousForm,
+            Invalid::NoForm,
+            Invalid::MissingUuid,
+            Invalid::BadUuid,
+            Invalid::MissingCreatedAt,
+            Invalid::BadPayload,
+            Invalid::UuidMismatch,
+            Invalid::BadCritical,
+            Invalid::UnsupportedExtension,
+        ];
+        for kind in invalid {
+            match kind {
+                Invalid::BadGzip
+                | Invalid::NotJson
+                | Invalid::DuplicateMember
+                | Invalid::AmbiguousForm
+                | Invalid::NoForm
+                | Invalid::MissingUuid
+                | Invalid::BadUuid
+                | Invalid::MissingCreatedAt
+                | Invalid::BadPayload
+                | Invalid::UuidMismatch
+                | Invalid::BadCritical
+                | Invalid::UnsupportedExtension => all.push(Problem::Invalid(kind)),
+            }
+        }
+        let store = [
+            StoreError::Conflict,
+            StoreError::Gone,
+            StoreError::NotFound,
+            StoreError::NotDeleted,
+            StoreError::PreconditionFailed,
+            StoreError::Immutable,
+            StoreError::LimitReached,
+            StoreError::Damaged,
+            StoreError::AuditFailed,
+            StoreError::Io,
+        ];
+        for error in store {
+            match error {
+                StoreError::Conflict
+                | StoreError::Gone
+                | StoreError::NotFound
+                | StoreError::NotDeleted
+                | StoreError::PreconditionFailed
+                | StoreError::Immutable
+                | StoreError::LimitReached
+                | StoreError::Damaged
+                | StoreError::AuditFailed
+                | StoreError::Io => all.push(Problem::Store(error)),
+            }
+        }
+        let tenant = [
+            TenantError::NotFound,
+            TenantError::NameTaken,
+            TenantError::BadName,
+            TenantError::HoldsVcons,
+            TenantError::UnderHold,
+            TenantError::LimitReached,
+            TenantError::AuditFailed,
+            TenantError::Closing,
+            TenantError::CliOnly,
+            TenantError::BadScopes,
+            TenantError::WrongKey,
+            TenantError::Io,
+        ];
+        for error in tenant {
+            match error {
+                TenantError::NotFound
+                | TenantError::NameTaken
+                | TenantError::BadName
+                | TenantError::HoldsVcons
+                | TenantError::UnderHold
+                | TenantError::LimitReached
+                | TenantError::AuditFailed
+                | TenantError::Closing
+                | TenantError::CliOnly
+                | TenantError::BadScopes
+                | TenantError::WrongKey
+                | TenantError::Io => all.push(Problem::Tenant(error)),
+            }
+        }
+        all
+    }
+
+    fn pages() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../website/content/problems")
+    }
+
+    #[test]
+    fn every_problem_type_has_its_page_with_its_status_and_title() {
+        for problem in every_problem() {
+            let (name, title) = problem.name();
+            let page = pages().join(format!("{name}.md"));
+            let text = std::fs::read_to_string(&page)
+                .unwrap_or_else(|e| panic!("{problem:?}: {}: {e}", page.display()));
+            let status = problem.status().as_u16();
+            for line in [
+                format!("title = \"{name}\""),
+                format!("status = {status}"),
+                format!("problem_title = \"{title}\""),
+            ] {
+                assert!(
+                    text.lines().any(|l| l == line),
+                    "{}: no line `{line}`",
+                    page.display()
+                );
+            }
+        }
+    }
+
+    /// No page outlives its problem type.
+    #[test]
+    fn every_problem_page_is_a_problem_type() {
+        let names: BTreeSet<String> = every_problem()
+            .into_iter()
+            .map(|p| p.name().0.to_owned())
+            .collect();
+        let pages: BTreeSet<String> = std::fs::read_dir(pages())
+            .expect("the problem pages")
+            .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+            .filter(|f| f != "_index.md")
+            .map(|f| f.strip_suffix(".md").unwrap_or(&f).to_owned())
+            .collect();
+        assert_eq!(pages, names);
+    }
+}

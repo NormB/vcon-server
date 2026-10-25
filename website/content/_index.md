@@ -1,40 +1,74 @@
 +++
 title = "vcon-server"
+description = "vcon-server stores vCons, the IETF format for conversation records, and returns them only to the keys allowed to see them. Each vCon is encrypted at rest under its own key, kept for its tenant's retention period, erased after it, and held past it when a legal hold says so. Every request is recorded."
 [extra]
 tagline = "store vCons, encrypted, for as long as they must be kept"
+headline = "Store vCons, encrypted, for as long as they must be kept"
 +++
 
-# Store vCons, encrypted, for as long as they must be kept
+> **Status: in development, not yet for production.** The store, the HTTP API,
+> tenants and their keys, retention and the purge sweep, legal holds and the
+> audit logs are built and tested. The command-line tools for tenants and keys,
+> key rotation and the `check` command are being built now. See
+> [what is built](@/docs/status.md).
 
-vcon-server stores [vCons](https://datatracker.ietf.org/wg/vcon/about/), the IETF
-format for conversation records, and returns them only to readers allowed to see
-them. Every vCon is encrypted at rest under its tenant's keys.
+## What it is for
 
-**Status:** early development. It is not ready for production use.
+A vCon holds a conversation: who took part, the dialog itself (text, or a
+recording inline or by URL), and what was learned from it (transcripts,
+summaries, analysis). That is some of the most sensitive data a business keeps,
+and much of it must be kept for a fixed time and then destroyed, unless a
+court says otherwise.
 
-## What it does today
+vcon-server is the place a producer sends vCons to and the place they are read
+back from. It does one job: keep them safe, for exactly as long as they must be
+kept.
 
-- Accepts vCons in the three forms the IETF drafts define: unsigned JSON, signed
-  (JWS) and encrypted (JWE), plain or gzipped.
-- Serves an HTTP API over TLS only: `POST /vcons`, `GET`, `PUT` and `DELETE
-  /vcons/{uuid}`, and `GET /health`.
-- Keeps tenants apart: each has its own keys, data and retention period.
-- Records each request in its tenant's audit log.
-- Erases a deleted vCon once its tenant's retention period has passed since it
-  was stored.
+## What it guarantees
 
-More is being built; the [repository](https://github.com/NormB/vcon-server) has
-the details.
+- **Encrypted at rest, key by key.** Each stored version is sealed with
+  AES-256-GCM under its own data key, wrapped by its tenant's key, which is
+  wrapped by the master key. The catalogs are SQLCipher databases. See
+  [security](@/docs/security.md).
+- **Stored exactly as received.** Unsigned, signed (JWS) and encrypted (JWE)
+  vCons, plain or gzipped, are checked and stored byte for byte. Nothing is
+  rewritten, so a signature stays valid. See [storing vCons](@/docs/storing-vcons.md).
+- **Tenants kept apart.** Each tenant has its own key, catalog, files, retention
+  period and audit log. A key belongs to one tenant and reaches nothing else.
+  See [tenants and keys](@/docs/tenants-and-keys.md).
+- **Kept as long as required, then erased.** A deleted vCon is hidden at once
+  and purged once its tenant's retention period has passed since it was stored.
+  A legal hold stops the purge. See [retention and legal holds](@/docs/retention-and-holds.md).
+- **Every request recorded.** Each tenant has an append-only audit log, and the
+  server keeps one for its own administration. No log holds vCon content or a
+  token. See [audit logs](@/docs/audit-logs.md).
+- **Errors you can act on.** Every refusal is an RFC 9457 problem document
+  whose `type` is a page on this site: [problem types](@/problems/_index.md).
 
-## Build it
+## A first look
 
-The Rust toolchain is pinned in `rust-toolchain.toml`.
+Send a vCon with a key that holds the `write` scope, then read it back:
 
 ```sh
-cargo build --release
-cargo test --workspace
+curl --fail-with-body https://vcon.example.com/vcons \
+  -H "Authorization: Bearer $VCON_KEY" \
+  -H "Content-Type: application/vcon" \
+  --data-binary @call.vcon
+# 201 Created
+# Location: /vcons/01a07da8-c2bb-83e5-b9a2-279e0d16bc46
+# ETag: "…version id…"
+
+curl --fail-with-body https://vcon.example.com/vcons/01a07da8-c2bb-83e5-b9a2-279e0d16bc46 \
+  -H "Authorization: Bearer $VCON_KEY"
 ```
 
-## Licence
+Sending the same bytes again answers `200` with the same version, so a producer
+can retry safely. The [HTTP API](@/docs/http-api.md) lists every route.
 
-MIT OR Apache-2.0, at your option.
+## Where to start
+
+- **Running a server:** [getting started](@/docs/getting-started.md), then
+  [configuration](@/docs/configuration.md) and [operations](@/docs/operations.md).
+- **Sending vCons from a producer:** [producers](@/docs/producers.md) and the
+  [HTTP API](@/docs/http-api.md).
+- **Working on the code:** [development](@/docs/development.md).

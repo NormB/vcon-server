@@ -366,6 +366,92 @@ key = "/etc/vcon-server/key.pem"
         }
     }
 
+    /// The website's configuration page lists every key the full file
+    /// sets, each with the default the code gives it, and every example
+    /// file on the site reads.
+    mod site_page {
+        use super::*;
+
+        fn page(name: &str) -> String {
+            let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../website/content/docs")
+                .join(name);
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+        }
+
+        /// Every key in a TOML table, dotted.
+        fn keys(table: &toml::Table, prefix: &str, out: &mut Vec<String>) {
+            for (key, value) in table {
+                let name = format!("{prefix}{key}");
+                match value {
+                    toml::Value::Table(inner) => keys(inner, &format!("{name}."), out),
+                    _ => out.push(name),
+                }
+            }
+        }
+
+        /// The table row for `key`, by its first cell.
+        fn row<'a>(text: &'a str, key: &str) -> &'a str {
+            let start = format!("| `{key}` |");
+            let mut rows = text.lines().filter(|l| l.starts_with(&start));
+            let row = rows.next().unwrap_or_else(|| panic!("no row for {key}"));
+            assert!(rows.next().is_none(), "two rows for {key}");
+            row
+        }
+
+        #[test]
+        fn every_key_is_listed_with_its_default() {
+            let text = page("configuration.md");
+            let defaults = parse(LEAST).expect("least");
+            let mut all = Vec::new();
+            keys(&FULL.parse::<toml::Table>().expect("toml"), "", &mut all);
+            assert_eq!(all.len(), 12, "{all:?}");
+            for key in all {
+                let default = match key.as_str() {
+                    "listen" | "data_dir" | "master_key" | "tls.cert" | "tls.key" => {
+                        "required".to_owned()
+                    }
+                    "retention_default" => format!("`{}`", defaults.retention_default),
+                    "purge_interval" => format!("`{}`", defaults.purge_interval.as_secs()),
+                    "rotation_warn" => format!("`{}`", defaults.rotation_warn.as_secs()),
+                    "limits.body" => format!("`{}`", defaults.body_limit),
+                    "limits.inflated" => format!("`{}`", defaults.inflated_limit),
+                    "limits.timeouts.read" => format!("`{}`", defaults.read_timeout.as_secs()),
+                    "supported_critical" => {
+                        assert!(defaults.supported_critical.is_empty());
+                        "none".to_owned()
+                    }
+                    other => panic!("a key this test does not know: {other}"),
+                };
+                let row = row(&text, &key);
+                let last = row
+                    .trim_end_matches('|')
+                    .rsplit('|')
+                    .next()
+                    .expect("a last cell")
+                    .trim();
+                assert!(
+                    last.starts_with(&default),
+                    "{key}: `{last}` is not {default}"
+                );
+            }
+        }
+
+        #[test]
+        fn every_example_file_on_the_site_reads() {
+            let mut examples = 0;
+            for name in ["configuration.md", "getting-started.md"] {
+                let text = page(name);
+                for block in text.split("```toml\n").skip(1) {
+                    let toml = block.split("```").next().expect("a block");
+                    parse(toml).unwrap_or_else(|e| panic!("{name}: {e}\n{toml}"));
+                    examples += 1;
+                }
+            }
+            assert_eq!(examples, 2);
+        }
+    }
+
     #[test]
     fn a_missing_file_is_named() {
         let error = load(Path::new("/nonexistent/vcon-server.toml")).expect_err("missing");

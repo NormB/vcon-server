@@ -1,0 +1,17 @@
+{% macro docs_nav(current) %}
+{% set docs = get_section(path="docs/_index.md") %}
+<nav class="doc-nav" aria-label="Documentation">
+  <p class="doc-nav-title"><a href="{{ docs.permalink }}">Documentation</a></p>
+  <ul>
+  {% for p in docs.pages %}
+    <li><a href="{{ p.permalink }}"{% if p.permalink == current %} aria-current="page"{% endif %}>{{ p.title }}</a></li>
+  {% endfor %}
+  </ul>
+  <p class="doc-nav-title"><a href="{{ get_url(path='@/problems/_index.md') }}">Problem types</a></p>
+  <p class="doc-nav-title"><a href="{{ get_url(path='@/standards.md') }}">Standards</a></p>
+</nav>
+{% endmacro docs_nav %}
+
+{% macro edit_link(path) %}
+<p class="doc-source">Source of this page: <a href="{{ config.extra.repo | safe }}/blob/main/website/content/{{ path | safe }}">website/content/{{ path | safe }}</a></p>
+{% endmacro edit_link %}
