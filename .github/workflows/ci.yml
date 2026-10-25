@@ -42,7 +42,8 @@ jobs:
         run: |
           set -euo pipefail
           sudo prlimit --pid $$ --memlock=unlimited:unlimited
-          cargo test --workspace --locked
+          # Every failing test binary reported, not only the first.
+          cargo test --workspace --locked --no-fail-fast
 
   scan:
     name: no AI attribution or personal data
