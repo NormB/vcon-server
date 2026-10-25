@@ -91,6 +91,28 @@ SIGTERM or SIGINT stops the server, which logs `stopped` and exits.
 Every write is crash-safe, so a kill or a power cut loses at most the requests
 not yet answered; start-up recovery removes what they left.
 
+## Checking the data
+
+`vcon-server check`, with the server stopped, opens every stored version and
+prints one JSON line per tenant and a summary line. A tenant's line gives:
+
+- `versions` kept, and `damaged`: the versions whose sealed file is missing or
+  does not open;
+- `leftovers`: files a crash left that no row names (the next start removes
+  them; `check` only reports them);
+- `past_due` and `oldest_past_due`: versions due for purge, and since when;
+- `purges_awaiting_rotation` and `oldest_purge_awaiting_rotation`: purges
+  since the tenant's key was last rotated;
+- `rotation_stopped`: a `rekey tenant` that stopped part way;
+- `problems`: what needs the operator.
+
+The summary gives `removed_tenants_awaiting_master_rotation` and the total
+`problems`. A problem is damage, a catalog that does not open, a stopped
+rotation, or a version that has waited longer than `purge_interval` (a sweep
+that is not keeping up). Leftovers and work waiting for rotation are reported
+but are not problems. `check` exits 1, after printing its report, when it
+found a problem.
+
 ## Key rotation
 
 A purge erases a version from the live system, but a copy made earlier (an
@@ -99,9 +121,9 @@ key. Rotation makes those copies unreadable, by destroying the keys that
 open them:
 
 1. Stop the server.
-2. Run `vcon-server rekey tenant <id>` for each tenant whose purged vCons must
-   become unreadable on old copies (until `check` can report which ones,
-   that means each tenant that has purged anything since its last rotation).
+2. Run `vcon-server check`: each tenant's line gives
+   `purges_awaiting_rotation`. Run `vcon-server rekey tenant <id>` for each
+   tenant where it is above zero.
 3. Make a new master key file and run
    `vcon-server rekey master --new-master <file>`.
 4. Point `master_key` in the configuration at the new file and start the

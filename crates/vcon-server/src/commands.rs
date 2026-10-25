@@ -19,7 +19,9 @@ use crate::envelope::{Key, KeyError};
 use crate::fs::OsFs;
 use crate::ids::{KeyId, TenantId};
 use crate::retention::Retention;
-use crate::tenants::{self, Removal, TenantError, Tenants};
+use crate::tenants::{self, Removal, TenantError, TenantExamination, Tenants};
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
 /// A command, as written on the command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +63,8 @@ pub enum Command {
     RekeyMaster {
         new_master: std::path::PathBuf,
     },
+    /// Examines every tenant and reports what needs attention.
+    Check,
 }
 
 /// Whose key `key create` makes.
@@ -91,6 +95,7 @@ impl Command {
             Command::AuditExport { .. } => Work::AuditExport,
             Command::RekeyTenant { .. } => Work::RekeyTenant,
             Command::RekeyMaster { .. } => Work::RekeyMaster,
+            Command::Check => Work::Check,
         }
     }
 }
@@ -112,6 +117,8 @@ pub enum CommandError {
     Output(io::Error),
     /// The new master key is the one already in use.
     SameMasterKey,
+    /// `check` found this many problems; its report says which.
+    CheckFound(usize),
 }
 
 impl fmt::Display for CommandError {
@@ -131,6 +138,7 @@ impl fmt::Display for CommandError {
             CommandError::SameMasterKey => {
                 f.write_str("the new master key is the one already in use")
             }
+            CommandError::CheckFound(n) => write!(f, "check found {n} problem(s); see its report"),
             CommandError::Tenant(e) => f.write_str(match e {
                 TenantError::NotFound => "no tenant has this id",
                 TenantError::NameTaken => "another tenant has this name",
@@ -169,8 +177,9 @@ pub fn run(config: &Config, command: &Command, out: &mut dyn Write) -> Result<()
         return rekey_master(config, &master, new_master, out);
     }
     // A command beside a running server must not run start-up recovery: it
-    // would take the server's work in progress for a crash's leftovers.
-    let open = if sharing == Sharing::Beside {
+    // would take the server's work in progress for a crash's leftovers. Nor
+    // does `check`, which reports what recovery would remove.
+    let open = if sharing == Sharing::Beside || matches!(command, Command::Check) {
         Tenants::open_beside
     } else {
         Tenants::open
@@ -256,6 +265,7 @@ pub fn run(config: &Config, command: &Command, out: &mut dyn Write) -> Result<()
         }
         Command::RekeyTenant { id } => Ok(tenants.rekey_tenant(who, tenant_id(id)?)?),
         Command::RekeyMaster { .. } => unreachable!("rotated before the registry is opened"),
+        Command::Check => check(config, &tenants, out),
         Command::AuditExport { log, since } => {
             let exported = match log {
                 Log::Admin => tenants.export_admin(*since, out),
@@ -299,6 +309,81 @@ fn rekey_master(
             "next": "point master_key in the configuration at the new key file, start the server, then destroy every copy of the old master key",
         }),
     )
+}
+
+/// Examines every tenant, prints a line for each and a summary, and fails
+/// when anything needs the operator.
+fn check(config: &Config, tenants: &Tenants, out: &mut dyn Write) -> Result<(), CommandError> {
+    let now = SystemClock.now();
+    let found = tenants.examine(config.retention_default, now)?;
+    let time = |at: Option<OffsetDateTime>| at.and_then(|at| at.format(&Rfc3339).ok());
+    let mut total = 0;
+    for tenant in &found.tenants {
+        let named = problems(tenant, config.purge_interval, now);
+        total += named.len();
+        let store = tenant.store.as_ref().ok();
+        line(
+            out,
+            &serde_json::json!({
+                "tenant": tenant.id.to_string(),
+                "name": tenant.name,
+                "versions": store.map(|s| s.versions),
+                "damaged": store.map(|s| s.damaged.iter().map(ToString::to_string).collect::<Vec<_>>()),
+                "leftovers": store.map(|s| &s.leftovers),
+                "past_due": store.map(|s| s.due),
+                "oldest_past_due": time(store.and_then(|s| s.oldest_due_since)),
+                "purges_awaiting_rotation": store.map(|s| s.purges_since_key),
+                "oldest_purge_awaiting_rotation": time(store.and_then(|s| s.oldest_purge_since_key)),
+                "rotation_stopped": tenant.rotation_stopped,
+                "problems": named,
+            }),
+        )?;
+    }
+    line(
+        out,
+        &serde_json::json!({
+            "tenants": found.tenants.len(),
+            "removed_tenants_awaiting_master_rotation": found.removed_since_master,
+            "oldest_removal_awaiting_master_rotation": time(found.oldest_removed_since_master),
+            "problems": total,
+        }),
+    )?;
+    match total {
+        0 => Ok(()),
+        n => Err(CommandError::CheckFound(n)),
+    }
+}
+
+/// What in one tenant's examination needs the operator. A stalled sweep is
+/// one whose oldest due version has waited longer than `purge_interval`;
+/// a shorter wait is the next sweep's work. Leftover files and work waiting
+/// for rotation are reported but are not problems.
+pub fn problems(
+    tenant: &TenantExamination,
+    purge_interval: std::time::Duration,
+    now: OffsetDateTime,
+) -> Vec<String> {
+    let mut found = Vec::new();
+    if tenant.rotation_stopped {
+        found.push("a key rotation was stopped part way; run rekey tenant again".to_owned());
+    }
+    match &tenant.store {
+        Err(_) => found.push("its catalog does not open under its tenant key".to_owned()),
+        Ok(store) => {
+            for version in &store.damaged {
+                found.push(format!("version {version} is missing or does not open"));
+            }
+            if let Some(since) = store.oldest_due_since
+                && now - since > purge_interval
+            {
+                found.push(format!(
+                    "{} version(s) due for purge, the oldest longer than purge_interval: the sweep is not keeping up",
+                    store.due
+                ));
+            }
+        }
+    }
+    found
 }
 
 /// A period as a command line writes it.
@@ -440,6 +525,7 @@ mod tests {
                 Work::AuditExport,
             ),
             (Command::RekeyTenant { id: id() }, Work::RekeyTenant),
+            (Command::Check, Work::Check),
             (
                 Command::RekeyMaster {
                     new_master: id().into(),
@@ -830,6 +916,131 @@ mod tests {
         ));
         s.config.master_key = new_file;
         assert_eq!(s.run(Command::TenantList).expect("listed").len(), 1);
+    }
+
+    mod check {
+        use time::macros::datetime;
+
+        use super::*;
+        use crate::ids::VersionId;
+        use crate::store::Examination;
+
+        const NOW: OffsetDateTime = datetime!(2026-10-25 12:00 UTC);
+        const HOUR: std::time::Duration = std::time::Duration::from_secs(3600);
+
+        fn sound() -> Examination {
+            Examination {
+                versions: 3,
+                damaged: vec![],
+                leftovers: vec!["a.tmp".to_owned()],
+                due: 0,
+                oldest_due_since: None,
+                purges_since_key: 4,
+                oldest_purge_since_key: Some(datetime!(2026-10-01 00:00 UTC)),
+            }
+        }
+
+        fn tenant(store: Result<Examination, TenantError>, stopped: bool) -> TenantExamination {
+            TenantExamination {
+                id: TenantId([1; 16]),
+                name: "acme".to_owned(),
+                rotation_stopped: stopped,
+                store,
+            }
+        }
+
+        #[test]
+        fn leftovers_and_work_waiting_for_rotation_are_not_problems() {
+            assert_eq!(
+                problems(&tenant(Ok(sound()), false), HOUR, NOW),
+                Vec::<String>::new()
+            );
+        }
+
+        #[test]
+        fn each_problem_is_named() {
+            let damaged = Examination {
+                damaged: vec![VersionId([2; 16]), VersionId([3; 16])],
+                ..sound()
+            };
+            assert_eq!(problems(&tenant(Ok(damaged), false), HOUR, NOW).len(), 2);
+            let stopped = problems(&tenant(Ok(sound()), true), HOUR, NOW);
+            assert_eq!(stopped.len(), 1);
+            assert!(stopped[0].contains("rekey tenant"), "{stopped:?}");
+            let closed = problems(&tenant(Err(TenantError::Io), false), HOUR, NOW);
+            assert_eq!(closed.len(), 1);
+            assert!(closed[0].contains("catalog"), "{closed:?}");
+        }
+
+        #[test]
+        fn a_sweep_is_stalled_only_once_a_version_waited_longer_than_the_interval() {
+            let waited = |since| Examination {
+                due: 1,
+                oldest_due_since: Some(since),
+                ..sound()
+            };
+            let ok = waited(datetime!(2026-10-25 11:00 UTC));
+            assert_eq!(
+                problems(&tenant(Ok(ok), false), HOUR, NOW),
+                Vec::<String>::new()
+            );
+            let stalled = waited(datetime!(2026-10-25 10:59:59 UTC));
+            let found = problems(&tenant(Ok(stalled), false), HOUR, NOW);
+            assert_eq!(found.len(), 1);
+            assert!(found[0].contains("sweep"), "{found:?}");
+        }
+
+        #[test]
+        fn check_reports_each_tenant_and_a_summary_and_exits_1_on_a_problem() {
+            let s = setup();
+            let id = s.create("acme");
+            let out = s.run(Command::Check).expect("nothing wrong");
+            assert_eq!(out.len(), 2);
+            assert_eq!(out[0]["tenant"], id.as_str());
+            assert_eq!(out[0]["problems"], json!([]));
+            assert_eq!(out[1]["tenants"], 1);
+            assert_eq!(out[1]["problems"], 0);
+
+            let tenant = TenantId::parse(&id).expect("id");
+            let version = {
+                let tenants = s.tenants();
+                let store = tenants.store(tenant).expect("store");
+                let (found, body) = vcon(UUID, "kept");
+                let Ok(crate::store::Created::New(v)) =
+                    store.create(&Caller { key: KeyId([1; 8]) }, &found, &body)
+                else {
+                    panic!("stored")
+                };
+                v
+            };
+            let objects = s.config.data_dir.join("tenants").join(&id).join("objects");
+            std::fs::remove_file(objects.join(version.to_string())).expect("remove");
+            std::fs::write(objects.join(format!("{version}.tmp")), b"x").expect("leftover");
+            let mut printed = Vec::new();
+            let found = run(&s.config, &Command::Check, &mut printed);
+            assert!(
+                matches!(found, Err(CommandError::CheckFound(1))),
+                "{found:?}"
+            );
+            let lines: Vec<Value> = String::from_utf8(printed)
+                .expect("text")
+                .lines()
+                .map(|l| serde_json::from_str(l).expect("json"))
+                .collect();
+            assert_eq!(lines[0]["damaged"], json!([version.to_string()]));
+            assert_eq!(lines[0]["leftovers"], json!([format!("{version}.tmp")]));
+            assert_eq!(lines[1]["problems"], 1);
+            assert!(
+                objects.join(format!("{version}.tmp")).exists(),
+                "check reports leftovers; it does not remove them"
+            );
+            let server = datadir::lock(&s.config.data_dir, Sharing::Serve).expect("a server");
+            assert!(matches!(
+                s.run(Command::Check),
+                Err(CommandError::DataDir(LockError::InUse(Sharing::Alone)))
+            ));
+            drop(server);
+        }
     }
 
     /// The commands that run alone are refused while a server holds the

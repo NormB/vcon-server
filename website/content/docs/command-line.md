@@ -15,8 +15,9 @@ allowance (see [getting started](@/docs/getting-started.md#allow-it-to-lock-its-
   answers: one JSON object per line, so the output can be piped to `jq` or
   read line by line. A command with nothing to report prints nothing.
 - **0:** done.
-- **1:** refused or failed. Nothing is printed on standard output; standard
-  error says why, as `vcon-server: <reason>`.
+- **1:** refused or failed. Nothing is printed on standard output (except by
+  `check`, which prints its report first); standard error says why, as
+  `vcon-server: <reason>`.
 - **2:** the command line does not parse, such as a missing `--config` or
   `--override-holds` without `--force`.
 
@@ -80,6 +81,16 @@ run stopped before the rename starts again; one stopped after it has nothing
 left to do. Afterwards, point `master_key` in the configuration at the new
 file; the old key no longer opens anything. The full procedure is in
 [operations](@/docs/operations.md#key-rotation).
+
+## Checking
+
+| Command | Prints | Runs beside `serve` |
+|---|---|---|
+| `check` | one line per tenant, then a summary | no |
+
+`check` is the one command that prints its report and still exits 1, when it
+found a problem: the report says what. See
+[checking the data](@/docs/operations.md#checking-the-data) for each field.
 
 ## Running beside the server
 

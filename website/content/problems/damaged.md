@@ -12,4 +12,4 @@ A stored version's file is missing or does not decrypt and authenticate.
 
 ## What to do
 
-Tell the operator. The audit log records the request; `vcon-server check` (being built) reports damage.
+Tell the operator. The audit log records the request; `vcon-server check` lists every damaged version (see [checking the data](@/docs/operations.md#checking-the-data)).

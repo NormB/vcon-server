@@ -17,10 +17,12 @@ use crate::fs::Fs;
 use crate::ids::{KeyId, TenantId, VersionId};
 use crate::retention::Retention;
 
+mod examine;
 mod legal;
 mod purge;
 mod rekey;
 
+pub use examine::Examination;
 pub use legal::{Legal, VersionInfo};
 pub use purge::{Kept, PurgeReport, due};
 

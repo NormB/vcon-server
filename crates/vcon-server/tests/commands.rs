@@ -275,6 +275,80 @@ fn rekey_master_rotates_and_says_what_comes_next() {
     usage_error(&["rekey", "master", "--config", "c"]);
 }
 
+/// `check` is the one command that prints its report and still exits 1:
+/// the report is how it says what is wrong.
+#[test]
+fn check_exits_0_when_sound_and_1_with_its_report_when_not() {
+    let s = setup();
+    let tenant = s.ok(&["tenant", "create", "acme"])[0]["id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let report = s.ok(&["check"]);
+    assert_eq!(report.last().expect("summary")["problems"], 0);
+    // A version's sealed file goes missing.
+    let objects = s.data.join("tenants").join(&tenant).join("objects");
+    let catalog_only = objects.join("00000000000000000000000000000000.tmp");
+    std::fs::write(&catalog_only, b"x").expect("a leftover is not a problem");
+    assert_eq!(s.ok(&["check"]).last().expect("summary")["problems"], 0);
+    // A stored version's sealed file goes missing.
+    let version = {
+        let tenants = vcon_server::tenants::Tenants::open(
+            &s.data,
+            vcon_server::envelope::Key::load_master(&s.data.with_file_name("master.key"))
+                .expect("master"),
+            std::sync::Arc::new(vcon_server::fs::OsFs),
+            std::sync::Arc::new(vcon_server::clock::SystemClock),
+        )
+        .expect("opens");
+        let id = vcon_server::ids::TenantId::parse(&tenant).expect("id");
+        let body = br#"{"uuid": "01a07da8-c2bb-83e5-b9a2-279e0d16bc46", "created_at": "2026-10-25T12:00:00Z", "parties": []}"#;
+        let found = vcon_form::inspect(
+            body,
+            None,
+            &vcon_form::Limits { inflated: 1 << 20 },
+            &Default::default(),
+        )
+        .expect("a vCon");
+        let caller = vcon_server::store::Caller {
+            key: vcon_server::ids::KeyId([1; 8]),
+        };
+        match tenants
+            .store(id)
+            .expect("store")
+            .create(&caller, &found, body)
+        {
+            Ok(vcon_server::store::Created::New(v)) => v,
+            other => panic!("{other:?}"),
+        }
+    };
+    std::fs::remove_file(objects.join(version.to_string())).expect("remove");
+    let out = s.run(&["check"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("check found 1 problem"),
+        "{}",
+        stderr(&out)
+    );
+    let report: Vec<Value> = String::from_utf8(out.stdout)
+        .expect("text")
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("json"))
+        .collect();
+    assert_eq!(
+        report[0]["damaged"],
+        serde_json::json!([version.to_string()])
+    );
+
+    let out = s.run(&["tenant", "remove", &tenant, "--force"]);
+    assert_eq!(out.status.code(), Some(0));
+    let gone = s.ok(&["check"]);
+    assert_eq!(
+        gone.last().expect("summary")["removed_tenants_awaiting_master_rotation"],
+        1
+    );
+}
+
 #[test]
 fn a_wrong_or_missing_configuration_exits_1() {
     let s = setup();

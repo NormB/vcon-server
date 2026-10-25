@@ -19,7 +19,7 @@ rusqlite = { version = "0.40.2", features = ["bundled-sqlcipher-vendored-openssl
 rustls = "0.23.46"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-time = { version = "0.3.55", features = ["formatting"] }
+time = { version = "0.3.55", features = ["formatting", "parsing"] }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "macros", "sync", "time", "signal"] }
 tokio-rustls = "0.26.6"
 toml = "1.1.8"

@@ -19,9 +19,11 @@ use crate::ids::{KeyId, TenantId};
 use crate::retention::Retention;
 use crate::store::Store;
 
+mod examine;
 mod keys;
 mod rekey;
 
+pub use examine::{RegistryExamination, TenantExamination};
 pub use keys::{KeyInfo, NewKey};
 pub use rekey::rekey_master;
 #[cfg(test)]

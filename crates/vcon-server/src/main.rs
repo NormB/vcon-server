@@ -33,6 +33,13 @@ enum Command {
     /// Rotates keys. Runs only while no server does.
     #[command(subcommand)]
     Rekey(RekeyCommand),
+    /// Opens every stored version and reports damage, leftover files,
+    /// versions past due and work waiting for key rotation; exits 1 when
+    /// anything needs attention. Runs only while no server does.
+    Check {
+        #[command(flatten)]
+        config: ConfigArg,
+    },
 }
 
 #[derive(Subcommand)]
@@ -189,6 +196,7 @@ fn main() -> ExitCode {
         Command::Rekey(RekeyCommand::Master { config, new_master }) => {
             (config, commands::Command::RekeyMaster { new_master })
         }
+        Command::Check { config } => (config, commands::Command::Check),
         Command::Audit(AuditCommand::Export {
             config,
             tenant,

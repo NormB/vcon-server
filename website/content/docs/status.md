@@ -36,11 +36,12 @@ otherwise.
   tenant key rewrapped under a new master key, in a copy of `server.sqlite`
   that replaces it only once complete). A stopped run of either finishes when
   run again.
+- **`check`:** every stored version opened, leftover files listed, versions
+  past due and work waiting for key rotation reported; exit 1 when anything
+  needs the operator.
 
 ## Being built
 
-- **`check`**, which reports damaged or missing objects, versions past due,
-  and work waiting for rotation.
 - **The remaining start-up refusals** and the rotation warning.
 - **Release:** an operator guide, a review of the code against its design,
   and a full fault-injection run.

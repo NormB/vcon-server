@@ -8,8 +8,9 @@ headline = "Store vCons, encrypted, for as long as they must be kept"
 
 > **Status: in development, not yet for production.** The store, the HTTP API,
 > tenants and their keys, retention and the purge sweep, legal holds, the audit
-> logs and the command line are built and tested. Key rotation and the `check`
-> command are being built now. See [what is built](@/docs/status.md).
+> logs, the command line, key rotation and `check` are built and tested. The
+> last start-up checks and the release work are next. See
+> [what is built](@/docs/status.md).
 
 ## What it is for
 
