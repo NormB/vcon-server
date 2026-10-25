@@ -5,8 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   {# No inline script or style anywhere on the site, so the policy can refuse
      both outright. scripts/check-site.sh fails the build on any inline
-     script, inline style attribute or event-handler attribute. #}
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
+     script, inline style attribute or event-handler attribute. The one
+     outside source is Cloudflare Web Analytics: Cloudflare adds its beacon
+     script to each page it serves, and the beacon reports to
+     cloudflareinsights.com. The same policy, plus frame-ancestors, is sent
+     as a header by a Cloudflare response-header rule; keep the two equal. #}
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://static.cloudflareinsights.com; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://cloudflareinsights.com; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
   <meta name="referrer" content="strict-origin-when-cross-origin">
   <meta name="color-scheme" content="light dark">
   <title>{% block title %}{{ config.title }}{% endblock title %}</title>
