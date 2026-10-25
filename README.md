@@ -24,6 +24,10 @@ cargo test --workspace
 
 ## Contributing
 
+Read [CONTRIBUTING.md](CONTRIBUTING.md) first. Every contributor signs the
+[Contributor License Agreement](CLA.md) once, before a first pull request
+merges.
+
 Enable the repository's git hooks once per clone:
 
 ```sh

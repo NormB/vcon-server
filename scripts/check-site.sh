@@ -53,6 +53,15 @@ for svg in "$site"/*.svg "$root"/assets/brand/*.svg; do
   fi
 done
 
+# The contributor agreement on the site is CLA.md, word for word, after the
+# page's front matter.
+[ -s "$root/CLA.md" ] || fail "no CLA.md"
+cla_page="$root/website/content/cla.md"
+[ -s "$cla_page" ] || fail "no website/content/cla.md"
+awk 'n >= 2 { print } /^\+\+\+$/ { n++ }' "$cla_page" | tail -n +2 | cmp -s - "$root/CLA.md" \
+  || fail "website/content/cla.md does not reproduce CLA.md"
+[ -s "$site/cla/index.html" ] || fail "the build has no CLA page"
+
 # Search works only if the pages load its three scripts.
 for script in elasticlunr.min.js search_index.en.js js/search.js; do
   grep -qF "$script" "$home" || fail "the home page does not load $script"
