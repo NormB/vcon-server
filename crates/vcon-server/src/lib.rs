@@ -13,6 +13,7 @@ pub mod datadir;
 pub mod envelope;
 pub mod fs;
 pub mod ids;
+pub mod mcp;
 pub mod query;
 pub mod retention;
 pub mod serve;

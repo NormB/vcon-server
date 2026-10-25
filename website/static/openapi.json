@@ -815,6 +815,100 @@
         }
       }
     },
+    "/mcp": {
+      "post": {
+        "operationId": "mcp",
+        "summary": "The MCP server (Model Context Protocol, streamable HTTP)",
+        "description": "Takes one JSON-RPC message per request and answers it in one JSON body, with no session and no event stream; GET and DELETE answer 405. Needs any valid key; each tool needs the scope its area and hints give it. Every request is counted in the key's log as mcp. A request with an Origin header is refused.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "One JSON-RPC 2.0 message"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The JSON-RPC answer; a refused tool call is a JSON-RPC error whose data is the problem document",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "One JSON-RPC 2.0 answer"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "A notification, taken"
+          },
+          "400": {
+            "description": "Not one JSON-RPC message, or protocol headers that do not match it"
+          },
+          "401": {
+            "description": "No valid bearer key: unauthorized",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request carries an Origin header"
+          },
+          "406": {
+            "description": "The Accept header does not take application/json and text/event-stream"
+          },
+          "408": {
+            "description": "The body did not arrive in time: timeout",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is over the size limit: too-large",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not application/json"
+          },
+          "500": {
+            "description": "The MCP server failed"
+          },
+          "503": {
+            "description": "The service cannot answer now: unavailable or audit-failed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/key": {
       "get": {
         "operationId": "keyInfo",

@@ -4,8 +4,8 @@ description = "Every vcon-server command: what it does, what it prints, its exit
 weight = 85
 +++
 
-Every command takes `--config <file>`, the same file `serve` reads, and acts
-on the data directory it names. Like `serve`, each turns core dumps off and
+Every command but `mcp` takes `--config <file>`, the same file `serve` reads,
+and acts on the data directory it names. Like `serve`, each turns core dumps off and
 locks its memory before it reads a key, so it needs the same memory-lock
 allowance (see [getting started](@/docs/getting-started.md#allow-it-to-lock-its-memory)).
 Run each as the service account that owns the data directory, never as root.
@@ -103,6 +103,38 @@ found a problem: the report says what. See
 must not exist yet, while the server runs. See
 [back up and restore](@/docs/operations.md#back-up-and-restore) for what it
 copies, how to restore the copy, and what to keep apart from it.
+
+## MCP for an AI agent
+
+| Command | Prints | Runs beside `serve` |
+|---|---|---|
+| `mcp --config <client file>` | MCP messages on standard output | yes |
+
+`mcp` is for an AI agent that starts its MCP servers as commands. It reads MCP
+messages on standard input, sends each to a running server's `/mcp` with one
+API key, and writes the server's answers to standard output, so the agent
+reaches the same tools, scopes and audit log as over HTTPS. It reads a client
+file instead of the server's configuration, and it opens no data directory
+and no master key, so it can run on another machine. It stops with exit code
+0 when standard input ends.
+
+```toml
+url = "https://vcon.example.com:8443/mcp"
+key_file = "/home/agent/.config/vcon-server/agent.token"
+ca = "/home/agent/.config/vcon-server/ca.pem"
+```
+
+- `url`: the server's MCP address. It must start with `https://`.
+- `key_file`: a file holding one API token and nothing else. The token is
+  never on the command line or in the environment.
+- `ca`: optional. PEM certificates to trust for the server, such as a private
+  CA's; without it, the system's trusted roots are used.
+
+The command connects directly, through no proxy. It exits with code 1 when the
+client file or the key file cannot be read, when the server cannot be reached,
+or when the server refuses the key: `vcon-server: the server refused the key
+(401)`. Like the other commands it locks its memory, so the account that runs
+it needs the same memory-lock allowance.
 
 ## Running beside the server
 

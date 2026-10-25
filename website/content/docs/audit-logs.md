@@ -46,6 +46,11 @@ counted instead: one record per actor, action, status and minute, whose
 as unhealthy. Failures by tokens that name no known key are counted with an
 empty actor, so made-up tokens cannot grow the log without bound.
 
+Requests to the MCP server at `/mcp` are counted the same way, as action `mcp`
+with the status each was answered, in the key's tenant log or, for an
+operator key, the admin log. A request whose count cannot be written is
+answered 503 audit-failed.
+
 ## Reading the logs
 
 `vcon-server audit export (--tenant <id> | --admin) [--since <seq>]` writes a

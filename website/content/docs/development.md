@@ -17,6 +17,7 @@ crates/
         ├── main.rs        the command line, a thin front end
         ├── api.rs         HTTP routes, the request pipeline, problem documents
         ├── console.rs     serves the console's files with their headers
+        ├── mcp.rs         the MCP server at /mcp; mcp/stdio.rs, the stdio command
         ├── access.rs      tokens, scopes, authentication
         ├── store.rs       one tenant's vCons: versions, deletes, purges, legal reads
         ├── tenants.rs     the registry: tenants, their keys, API keys, the admin log

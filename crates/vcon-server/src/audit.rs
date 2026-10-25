@@ -71,6 +71,8 @@ pub enum Action {
     AuditRead,
     Openapi,
     Backup,
+    /// A request to the MCP server, counted (`count`), not recorded.
+    Mcp,
 }
 
 impl Action {
@@ -104,6 +106,7 @@ impl Action {
             Action::AuditRead => "audit_read",
             Action::Openapi => "openapi",
             Action::Backup => "backup",
+            Action::Mcp => "mcp",
         }
     }
 }

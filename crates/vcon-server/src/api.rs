@@ -85,8 +85,9 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/admin/tenants/{id}/keys", post(key_create).get(key_list))
         .route("/admin/keys/{id}", axum::routing::delete(key_revoke))
         .merge(crate::console::router())
+        .with_state(app.clone())
+        .merge(crate::mcp::router(app))
         .layer(axum::middleware::from_fn(log_request))
-        .with_state(app)
 }
 
 /// Logs each request once it is answered: a request id, the method, the
@@ -1135,7 +1136,7 @@ async fn admit(
 
 /// The caller a request's bearer key names: 401 for a missing or bad
 /// key, and 503 when the key table cannot be read.
-async fn authenticated(app: &Arc<App>, headers: &HeaderMap) -> Result<Caller, Problem> {
+pub(crate) async fn authenticated(app: &Arc<App>, headers: &HeaderMap) -> Result<Caller, Problem> {
     let authorization = headers
         .get(AUTHORIZATION)
         .map(|v| v.to_str().unwrap_or_default().to_owned());
@@ -1170,7 +1171,11 @@ impl App {
 /// Reads a body within the size limit and the time limit. A declared
 /// length over the limit is refused before anything is read, and a body
 /// that passes it is refused as soon as it does.
-async fn read_body(body: Body, headers: &HeaderMap, limits: &Limits) -> Result<Bytes, Problem> {
+pub(crate) async fn read_body(
+    body: Body,
+    headers: &HeaderMap,
+    limits: &Limits,
+) -> Result<Bytes, Problem> {
     let declared = headers
         .get(CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
@@ -1189,7 +1194,7 @@ async fn read_body(body: Body, headers: &HeaderMap, limits: &Limits) -> Result<B
 }
 
 /// Runs blocking work, SQLite and files, off the async workers.
-async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+pub(crate) async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
     tokio::task::spawn_blocking(work)
         .await
         .expect("blocking work does not panic")
@@ -1197,7 +1202,7 @@ async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) 
 
 /// An error answer: an RFC 9457 problem document with one type per error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Problem {
+pub(crate) enum Problem {
     Unauthorized,
     Forbidden,
     TooLarge,
@@ -1230,7 +1235,7 @@ enum Problem {
 
 /// Why Format refused a body, one problem type each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Invalid {
+pub(crate) enum Invalid {
     BadGzip,
     NotJson,
     DuplicateMember,

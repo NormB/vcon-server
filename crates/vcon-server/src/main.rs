@@ -33,6 +33,13 @@ enum Command {
     /// Rotates keys. Runs only while no server does.
     #[command(subcommand)]
     Rekey(RekeyCommand),
+    /// Speaks MCP on stdin and stdout for an AI agent, forwarding each
+    /// request to a running server with the one key its client file names.
+    Mcp {
+        /// The client file: the server's URL, the key file and the CA.
+        #[arg(long)]
+        config: PathBuf,
+    },
     /// Opens every stored version and reports damage, leftover files,
     /// versions past due and work waiting for key rotation; exits 1 when
     /// anything needs attention. Runs only while no server does.
@@ -198,6 +205,7 @@ fn main() -> ExitCode {
     }
     let (config, command) = match cli.command {
         Command::Serve { config } => return serve(&config),
+        Command::Mcp { config } => return mcp(&config),
         Command::Tenant(c) => tenant(c),
         Command::Key(c) => key(c),
         Command::Rekey(RekeyCommand::Tenant { config, id }) => {
@@ -289,24 +297,46 @@ fn fail(message: impl std::fmt::Display) -> ExitCode {
 }
 
 fn serve(config: &Path) -> ExitCode {
+    match run_serve(config) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(failed) => failed,
+    }
+}
+
+/// `vcon-server serve` until it stops, or the exit for why it stopped.
+fn run_serve(config: &Path) -> Result<(), ExitCode> {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .init();
-    let config = match config::load(config) {
-        Ok(config) => config,
-        Err(e) => return fail(format!("configuration: {e}")),
-    };
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
+    let config = config::load(config).map_err(|e| fail(format!("configuration: {e}")))?;
+    runtime()?
+        .block_on(serve::run(&config, stop_signal()))
+        .map_err(fail)
+}
+
+/// The async runtime `serve` and `mcp` run on, or the exit for a runtime
+/// that cannot start.
+fn runtime() -> Result<tokio::runtime::Runtime, ExitCode> {
+    tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-    {
-        Ok(runtime) => runtime,
-        Err(e) => return fail(format!("the runtime cannot start: {e}")),
-    };
-    match runtime.block_on(serve::run(&config, stop_signal())) {
+        .map_err(|e| fail(format!("the runtime cannot start: {e}")))
+}
+
+fn mcp(config: &Path) -> ExitCode {
+    match run_mcp(config) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(e) => fail(e),
+        Err(failed) => failed,
     }
+}
+
+/// `vcon-server mcp` until stdin ends, or the exit for why it stopped.
+fn run_mcp(config: &Path) -> Result<(), ExitCode> {
+    let config = vcon_server::mcp::stdio::client_config(config)
+        .map_err(|e| fail(format!("client file: {e}")))?;
+    runtime()?
+        .block_on(vcon_server::mcp::stdio::stdio(&config))
+        .map_err(fail)
 }
 
 /// Completes on SIGINT or SIGTERM.
