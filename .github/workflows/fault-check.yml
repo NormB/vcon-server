@@ -1,0 +1,11 @@
+name: Fault check (do not merge)
+on:
+  issue_comment:
+    types: [created]
+permissions:
+  contents: read
+jobs:
+  echo:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "${{ github.event.comment.body }}"
