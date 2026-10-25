@@ -5,6 +5,9 @@
   <img src="assets/brand/lockup-light.svg" alt="vcon-server" height="48">
 </picture>
 
+[![CI](https://github.com/NormB/vcon-server/actions/workflows/ci.yml/badge.svg)](https://github.com/NormB/vcon-server/actions/workflows/ci.yml)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/NormB/vcon-server/badge)](https://scorecard.dev/viewer/?uri=github.com/NormB/vcon-server)
+
 A server that stores [vCons](https://datatracker.ietf.org/wg/vcon/about/), the
 IETF conversation-record format, encrypted at rest, and returns them to
 authorised readers.
