@@ -774,11 +774,7 @@ mod purge_tests {
             .expect("deletes");
         let path = f.dir.path().join("catalog.sqlite");
         let key = envelope::catalog_key(&f.store.tenant_key).expect("catalog key");
-        let page_size: String = f
-            .store
-            .conn()
-            .pragma_query_value(None, "cipher_page_size", |r| r.get(0))
-            .expect("page size");
+        let page_size = crate::catalog::tests::cipher_setting(&f.store.conn(), "cipher_page_size");
         let page_size: usize = page_size.parse().expect("a page size");
         // The scan must see the key before the purge, or finding nothing
         // afterwards would prove nothing.

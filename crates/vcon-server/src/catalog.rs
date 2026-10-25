@@ -43,7 +43,9 @@ pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogE
     conn.busy_timeout(BUSY_TIMEOUT)?;
     // SQLCipher otherwise writes its own error lines to standard error, a
     // wrong key among them; this program says what went wrong itself.
-    conn.pragma_update(None, "cipher_log_level", "NONE")?;
+    // SQLCipher's settings are not in SQLite's pragma list, which rusqlite's
+    // pragma helpers check names against, so they go as plain SQL.
+    conn.execute_batch("PRAGMA cipher_log_level = NONE")?;
     set_key(&conn, key)?;
     // SQLCipher reads nothing until the first query, so a wrong key shows
     // here, as a file that is not a database.
@@ -225,7 +227,7 @@ pub(crate) mod testing {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     const SCHEMA: &str = "CREATE TABLE note (text TEXT NOT NULL);";
@@ -233,6 +235,13 @@ mod tests {
 
     fn path(dir: &tempfile::TempDir) -> std::path::PathBuf {
         dir.path().join("catalog.sqlite")
+    }
+
+    /// Reads one of SQLCipher's own settings, which rusqlite's pragma
+    /// helpers refuse by name.
+    pub(crate) fn cipher_setting(conn: &Connection, name: &str) -> String {
+        conn.query_row(&format!("PRAGMA {name}"), [], |r| r.get(0))
+            .expect(name)
     }
 
     #[test]
@@ -247,9 +256,9 @@ mod tests {
         assert_eq!(number("secure_delete"), 1);
         assert_eq!(number("temp_store"), 2, "MEMORY");
         assert_eq!(number("busy_timeout"), 5000, "milliseconds");
-        assert_eq!(text("cipher_provider"), "openssl");
+        assert_eq!(cipher_setting(&conn, "cipher_provider"), "openssl");
         assert_eq!(
-            text("cipher_log_level"),
+            cipher_setting(&conn, "cipher_log_level"),
             "NONE",
             "SQLCipher writes no log of its own"
         );
