@@ -1,0 +1,33 @@
+# Dependabot proposes dependency updates as pull requests, once a week.
+# Each pull request runs CI like any other.
+version: 2
+updates:
+  # The Cargo workspace at the repository root (both crates, one Cargo.lock).
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      # Minor and patch bumps in one pull request; a major bump gets its own.
+      cargo-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    commit-message:
+      prefix: "deps"
+
+  # The actions the workflows in .github/workflows use, pinned by commit.
+  # Dependabot updates the commit and the version comment beside it.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      # Every action bump in one pull request.
+      github-actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "ci"
