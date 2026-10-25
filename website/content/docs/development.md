@@ -107,8 +107,9 @@ refuses an SVG that holds a script, a style, a link or an embedded object.
 Every push to `main` and every pull request runs `.github/workflows/ci.yml`:
 format, clippy and the tests as the commit hook runs them; the scan for AI
 attribution and personal data over every tracked file; `scripts/check-site.sh`;
-and `scripts/icons.py --check`. Each action and each downloaded tool is pinned
-by commit or by sha256.
+and `scripts/icons.py --check`. A coverage job runs the same tests under
+`cargo llvm-cov` and sends the result to Codecov. Each action and each
+downloaded tool is pinned by commit or by sha256.
 
 ## Licence
 

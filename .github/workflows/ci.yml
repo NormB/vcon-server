@@ -45,6 +45,46 @@ jobs:
           # Every failing test binary reported, not only the first.
           cargo test --workspace --locked --no-fail-fast
 
+  coverage:
+    name: coverage
+    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    env:
+      LLVM_COV_VERSION: '0.9.1'
+      LLVM_COV_SHA256: 'b3f68e625481fed9b16444174f3fa5ebcdbde4a1878803a35eabe2dcefcdc41a'
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain and cargo-llvm-cov
+        run: |
+          set -euo pipefail
+          rustup toolchain install
+          rustup component add llvm-tools
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o llvm-cov.tar.gz \
+            "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v${LLVM_COV_VERSION}/cargo-llvm-cov-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${LLVM_COV_SHA256}  llvm-cov.tar.gz" | sha256sum -c -
+          tar xzf llvm-cov.tar.gz -C "$HOME/.cargo/bin" cargo-llvm-cov
+          rm -f llvm-cov.tar.gz
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Measure
+        # The same tests as above, so the same memory-lock limit.
+        run: |
+          set -euo pipefail
+          sudo prlimit --pid $$ --memlock=unlimited:unlimited
+          cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
+          cargo llvm-cov report --summary-only
+      # Sent only where the repository's Codecov token is set; a pull request
+      # from a fork has none, and the measure above still runs.
+      - name: Send to Codecov
+        if: ${{ env.CODECOV_TOKEN != '' }}
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
+        with:
+          files: lcov.info
+          token: ${{ env.CODECOV_TOKEN }}
+          fail_ci_if_error: true
+
   scan:
     name: no AI attribution or personal data
     timeout-minutes: 10
