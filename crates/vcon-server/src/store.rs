@@ -19,6 +19,7 @@ use crate::retention::Retention;
 
 mod legal;
 mod purge;
+mod rekey;
 
 pub use legal::{Legal, VersionInfo};
 pub use purge::{Kept, PurgeReport, due};
@@ -878,7 +879,7 @@ mod tests {
         pub(super) caller: Caller,
     }
 
-    const TENANT: TenantId = TenantId([0x11; 16]);
+    pub(super) const TENANT: TenantId = TenantId([0x11; 16]);
 
     impl Fixture {
         fn open(&self) -> Result<Store, StoreError> {
@@ -891,6 +892,16 @@ mod tests {
                 self.fs.clone(),
                 self.clock.clone(),
             )
+        }
+
+        /// The tenant key the Store was made under.
+        pub(super) fn tenant_key(&self) -> Key {
+            let ctx = Context::Tenant { tenant: TENANT };
+            envelope::unwrap(&self.master, &ctx, &self.wrapped).expect("unwraps")
+        }
+
+        pub(super) fn tenant(&self) -> TenantId {
+            TENANT
         }
 
         /// Opens the store again as a command beside a server would.

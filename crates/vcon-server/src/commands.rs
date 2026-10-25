@@ -52,6 +52,10 @@ pub enum Command {
         log: Log,
         since: Option<i64>,
     },
+    /// Rotates a tenant's key.
+    RekeyTenant {
+        id: String,
+    },
 }
 
 /// Whose key `key create` makes.
@@ -80,6 +84,7 @@ impl Command {
             Command::KeyList { .. } => Work::KeyList,
             Command::KeyRevoke { .. } => Work::KeyRevoke,
             Command::AuditExport { .. } => Work::AuditExport,
+            Command::RekeyTenant { .. } => Work::RekeyTenant,
         }
     }
 }
@@ -233,6 +238,7 @@ pub fn run(config: &Config, command: &Command, out: &mut dyn Write) -> Result<()
                 other => CommandError::Tenant(other),
             })
         }
+        Command::RekeyTenant { id } => Ok(tenants.rekey_tenant(who, tenant_id(id)?)?),
         Command::AuditExport { log, since } => {
             let exported = match log {
                 Log::Admin => tenants.export_admin(*since, out),
@@ -390,6 +396,7 @@ mod tests {
                 },
                 Work::AuditExport,
             ),
+            (Command::RekeyTenant { id: id() }, Work::RekeyTenant),
         ] {
             assert_eq!(command.work(), work, "{command:?}");
         }
@@ -707,6 +714,32 @@ mod tests {
             .map(|r| r["action"].as_str().expect("action"))
             .collect();
         assert_eq!(actions, ["key_create"]);
+    }
+
+    #[test]
+    fn rekey_tenant_rotates_the_key_and_prints_nothing() {
+        let s = setup();
+        let id = s.create("acme");
+        let tenant = TenantId::parse(&id).expect("id");
+        let before = s.tenants().tenant_key_id_for_test(tenant);
+        assert_eq!(
+            s.run(Command::RekeyTenant { id: id.clone() })
+                .expect("rekeyed"),
+            Vec::<Value>::new()
+        );
+        assert_ne!(s.tenants().tenant_key_id_for_test(tenant), before);
+        assert_eq!(
+            tenant_error(s.run(Command::RekeyTenant {
+                id: TenantId::generate().to_string()
+            })),
+            TenantError::NotFound
+        );
+        let server = datadir::lock(&s.config.data_dir, Sharing::Serve).expect("a server");
+        assert!(matches!(
+            s.run(Command::RekeyTenant { id }),
+            Err(CommandError::DataDir(LockError::InUse(Sharing::Alone)))
+        ));
+        drop(server);
     }
 
     /// The commands that run alone are refused while a server holds the

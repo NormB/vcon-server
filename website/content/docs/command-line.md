@@ -59,6 +59,19 @@ Records are written oldest first, after `--since` if given; keep the last
 `seq` you read and pass it next time. See [audit logs](@/docs/audit-logs.md)
 for the fields.
 
+## Key rotation
+
+| Command | Prints | Runs beside `serve` |
+|---|---|---|
+| `rekey tenant <id>` | nothing | no |
+
+`rekey tenant` gives the tenant a new key: every stored version's data key is
+rewrapped under it, in batches, and the tenant's catalog is re-encrypted under
+it, so the old key opens nothing the tenant keeps. Bodies are not
+re-encrypted. A run that stops, for any reason, is finished by running it
+again. `rekey master`, which rotates the master key, is
+[being built](@/docs/status.md).
+
 ## Running beside the server
 
 Commands marked "no" refuse while `serve`, or any other command, holds the

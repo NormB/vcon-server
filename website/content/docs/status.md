@@ -31,11 +31,14 @@ otherwise.
   from real vCons.
 - **The command line** for tenants, keys (including operator keys) and
   audit export, with the rules on which commands may run beside the server.
+- **Tenant key rotation** (`rekey tenant`): data keys rewrapped and the
+  tenant's catalog re-encrypted under a new tenant key; a stopped run
+  finishes when run again.
 
 ## Being built
 
-- **Key rotation** (`rekey tenant`, `rekey master`), which makes purged vCons
-  unreadable on old disks and backups too.
+- **Master key rotation** (`rekey master`). With it, the rotation that makes
+  purged vCons unreadable on old disks and backups too is complete.
 - **`check`**, which reports damaged or missing objects, versions past due,
   and work waiting for rotation.
 - **The remaining start-up refusals** and the rotation warning.

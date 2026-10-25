@@ -30,6 +30,22 @@ enum Command {
     /// Reads the audit logs.
     #[command(subcommand)]
     Audit(AuditCommand),
+    /// Rotates keys. Runs only while no server does.
+    #[command(subcommand)]
+    Rekey(RekeyCommand),
+}
+
+#[derive(Subcommand)]
+enum RekeyCommand {
+    /// Rotates a tenant's key: every data key is rewrapped and the tenant's
+    /// catalog re-encrypted under a new tenant key. A run that stops is
+    /// finished by running it again.
+    Tenant {
+        #[command(flatten)]
+        config: ConfigArg,
+        /// The tenant's id.
+        id: String,
+    },
 }
 
 /// The configuration file every command reads.
@@ -158,6 +174,9 @@ fn main() -> ExitCode {
         Command::Serve { config } => return serve(&config),
         Command::Tenant(c) => tenant(c),
         Command::Key(c) => key(c),
+        Command::Rekey(RekeyCommand::Tenant { config, id }) => {
+            (config, commands::Command::RekeyTenant { id })
+        }
         Command::Audit(AuditCommand::Export {
             config,
             tenant,

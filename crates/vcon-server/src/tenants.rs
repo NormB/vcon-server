@@ -20,6 +20,7 @@ use crate::retention::Retention;
 use crate::store::Store;
 
 mod keys;
+mod rekey;
 
 pub use keys::{KeyInfo, NewKey};
 #[cfg(test)]
@@ -609,6 +610,18 @@ impl Tenants {
         self.conn()
     }
 
+    /// The id of the tenant's current key, for tests.
+    #[cfg(test)]
+    pub(crate) fn tenant_key_id_for_test(&self, id: TenantId) -> Vec<u8> {
+        self.conn()
+            .query_row(
+                "SELECT tenant_key_id FROM tenant WHERE id = ?1",
+                [id.0],
+                |r| r.get(0),
+            )
+            .expect("the tenant's row")
+    }
+
     /// The admin log as `export` writes it, for tests.
     #[cfg(test)]
     pub(crate) fn admin_records(&self) -> Vec<serde_json::Value> {
@@ -772,6 +785,8 @@ mod tests {
         pub(super) between: Mutex<Option<Box<dyn FnOnce() + Send>>>,
         /// Runs once, as `store` opens a tenant's Store.
         pub(super) opening: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+        /// Stops a key rotation, as a failure, after this step.
+        pub(crate) rekey_stop: Mutex<Option<super::rekey::RekeyStep>>,
     }
 
     /// A master key kept wrapped, so a test can have it more than once.
@@ -826,7 +841,7 @@ mod tests {
             self.tenants.conn()
         }
 
-        fn tenants_dir(&self) -> PathBuf {
+        pub(crate) fn tenants_dir(&self) -> PathBuf {
             self.dir.path().join("tenants")
         }
 
@@ -839,7 +854,7 @@ mod tests {
             self.conn().query_row(sql, [], |r| r.get(0)).expect(sql)
         }
 
-        fn master_wraps(&self) -> i64 {
+        pub(crate) fn master_wraps(&self) -> i64 {
             self.count("SELECT coalesce(sum(wraps), 0) FROM master_key_use")
         }
 
@@ -848,7 +863,7 @@ mod tests {
         }
 
         /// The tenant's key, unwrapped from its row.
-        fn tenant_key(&self, id: TenantId) -> Key {
+        pub(crate) fn tenant_key(&self, id: TenantId) -> Key {
             let wrapped: Vec<u8> = self
                 .conn()
                 .query_row(
@@ -866,7 +881,7 @@ mod tests {
         }
 
         /// The tenant's Store, opened as the registry would open it.
-        fn store(&self, id: TenantId) -> Store {
+        pub(crate) fn store(&self, id: TenantId) -> Store {
             Store::open(
                 &self.tenants_dir().join(id.to_string()),
                 id,

@@ -239,6 +239,29 @@ fn beside_a_server_only_the_beside_commands_run() {
 }
 
 #[test]
+fn rekey_tenant_rotates_a_key_and_exits_0() {
+    let s = setup();
+    let tenant = s.ok(&["tenant", "create", "acme"])[0]["id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    assert_eq!(s.ok(&["rekey", "tenant", &tenant]), Vec::<Value>::new());
+    let admin = s.ok(&["audit", "export", "--admin"]);
+    assert!(
+        admin
+            .iter()
+            .any(|r| r["action"] == "rekey_tenant" && r["status"] == 200)
+    );
+    assert!(
+        s.refused(&["rekey", "tenant", "nope"])
+            .contains("no tenant")
+    );
+    let server = datadir::lock(&s.data, Sharing::Serve).expect("a server");
+    assert!(s.refused(&["rekey", "tenant", &tenant]).contains("in use"));
+    drop(server);
+}
+
+#[test]
 fn a_wrong_or_missing_configuration_exits_1() {
     let s = setup();
     std::fs::write(&s.config, "colour = \"blue\"\n").expect("bad configuration");

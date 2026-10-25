@@ -12,4 +12,4 @@ The tenant key has wrapped 2^32 data keys, the most AES-GCM with random nonces a
 
 ## What to do
 
-The operator must rotate the tenant key (`vcon-server rekey tenant`, being built).
+The operator rotates the tenant key with `vcon-server rekey tenant <id>`, with the server stopped. See the [command line](@/docs/command-line.md#key-rotation).
