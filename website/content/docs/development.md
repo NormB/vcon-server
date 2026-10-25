@@ -102,6 +102,14 @@ The logo and the favicons are drawn from `assets/brand/mark.svg` by
 `scripts/icons.py`; see `assets/brand/README.md`. The check above also
 refuses an SVG that holds a script, a style, a link or an embedded object.
 
+## Continuous integration
+
+Every push to `main` and every pull request runs `.github/workflows/ci.yml`:
+format, clippy and the tests as the commit hook runs them; the scan for AI
+attribution and personal data over every tracked file; `scripts/check-site.sh`;
+and `scripts/icons.py --check`. Each action and each downloaded tool is pinned
+by commit or by sha256.
+
 ## Licence
 
 MIT OR Apache-2.0, at your option.

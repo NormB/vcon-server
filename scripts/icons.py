@@ -6,8 +6,9 @@ image and the two README lockups. The wordmark is Inter (SIL Open Font
 License) turned to outlines, so no font is embedded and none is needed to
 show it.
 
-Needs resvg on PATH and the fontTools Python package; the Inter files are
-found with fc-match. Run from the repository root:
+Needs resvg on PATH and the fontTools Python package. The two Inter files
+are kept in assets/brand/fonts (Inter 4.0, unchanged), so every machine
+draws the same outlines. Run from the repository root:
 
     python3 scripts/icons.py          # write every file
     python3 scripts/icons.py --check  # exit 1 if any file differs
@@ -36,14 +37,7 @@ TAGLINE = ("Store vCons, encrypted,", "for as long as they must be kept")
 
 
 def font(style):
-    path = subprocess.run(
-        ["fc-match", "-f", "%{file}", f"Inter:style={style}"],
-        check=True, capture_output=True, text=True,
-    ).stdout
-    face = TTFont(path)
-    if face["name"].getDebugName(1).split()[0] != "Inter":
-        sys.exit(f"fc-match gave {path}, not Inter")
-    return face
+    return TTFont(ROOT / f"assets/brand/fonts/Inter-{style}.ttf")
 
 
 def outline(face, text, size, x, baseline):

@@ -1,0 +1,111 @@
+name: CI
+
+# The checks the commit hook runs, run again on GitHub for every push to main
+# and every pull request, so a change that skipped the hook is still caught.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch makes an older run moot.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  rust:
+    name: fmt, clippy, tests
+    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        # rust-toolchain.toml names the version and its components.
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Tests
+        # Every command locks all of its memory before it reads a key, and the
+        # tests run the binary; the runner's default lock limit is too small.
+        run: |
+          set -euo pipefail
+          sudo prlimit --pid $$ --memlock=unlimited:unlimited
+          cargo test --workspace --locked
+
+  scan:
+    name: no AI attribution or personal data
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Scan every tracked file
+        # The same rules the commit hook applies to staged lines, applied to
+        # the whole tree: each path, then each line of each text file.
+        run: |
+          set -euo pipefail
+          { git ls-files | awk '{ printf "%s\t%s\n", $0, $0 }'
+            git grep -I --full-name -e '' | sed 's/:/\t/'
+          } | python3 -I scripts/scan_forbidden.py
+
+  site:
+    name: website
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    env:
+      ZOLA_VERSION: '0.23.6'
+      ZOLA_SHA256: '8f5132b3522412d04e395e0b25f6d68613ad272a873e54a2b3ebf664873024a4'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install Zola
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o zola.tar.gz \
+            "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${ZOLA_SHA256}  zola.tar.gz" | sha256sum -c -
+          tar xzf zola.tar.gz zola
+          sudo install -m 0755 zola /usr/local/bin/zola
+          rm -f zola zola.tar.gz
+      - name: Check the site
+        run: scripts/check-site.sh
+
+  brand:
+    name: logo files match their source
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    env:
+      RESVG_VERSION: '0.49.0'
+      RESVG_SHA256: '216637e75e909e53e3098b0875cd5f7da2fdc8b4359771b4a29b539afff9d3f5'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install resvg and fontTools
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o resvg.tar.gz \
+            "https://github.com/linebender/resvg/releases/download/v${RESVG_VERSION}/resvg-linux-x86_64.tar.gz"
+          echo "${RESVG_SHA256}  resvg.tar.gz" | sha256sum -c -
+          tar xzf resvg.tar.gz resvg
+          sudo install -m 0755 resvg /usr/local/bin/resvg
+          rm -f resvg resvg.tar.gz
+          python3 -m venv "$RUNNER_TEMP/icons"
+          "$RUNNER_TEMP/icons/bin/pip" install --require-hashes --no-deps --only-binary :all: \
+            -r scripts/icons-requirements.txt
+      - name: Check the logo files
+        run: '"$RUNNER_TEMP/icons/bin/python" scripts/icons.py --check'

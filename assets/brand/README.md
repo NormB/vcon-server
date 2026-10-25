@@ -14,7 +14,10 @@ so no font is embedded.
 The site's `favicon.svg`, `favicon.ico`, `apple-touch-icon.png` and
 `og-image.png` in `website/static/` are drawn by the same script. After
 changing `mark.svg`, run `python3 scripts/icons.py`; `--check` says whether
-any file is out of date. It needs `resvg` and the Python `fontTools` package.
+any file is out of date. It needs `resvg` and the Python `fontTools` package
+pinned in `scripts/icons-requirements.txt`; CI runs the check on every push.
+`fonts/` holds the two Inter 4.0 files the wordmark is drawn from, unchanged
+from the Inter release, under the SIL Open Font License (`fonts/OFL.txt`).
 
 ## Use of the name and logo
 
