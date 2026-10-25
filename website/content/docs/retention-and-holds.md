@@ -75,6 +75,6 @@ other request.
 
 A purge erases the version from the live system. Copies made before it
 (old disks, freed blocks, backups) still hold the sealed file and the wrapped
-key, readable with the tenant key and master key of that time. Key rotation,
-[being built](@/docs/status.md), closes that: after a rotation, the keys that
+key, readable with the tenant key and master key of that time.
+[Key rotation](@/docs/operations.md#key-rotation) closes that: after a rotation, the keys that
 could open those copies are destroyed.

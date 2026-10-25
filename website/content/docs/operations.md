@@ -91,6 +91,27 @@ SIGTERM or SIGINT stops the server, which logs `stopped` and exits.
 Every write is crash-safe, so a kill or a power cut loses at most the requests
 not yet answered; start-up recovery removes what they left.
 
+## Key rotation
+
+A purge erases a version from the live system, but a copy made earlier (an
+old disk, freed blocks, a backup) still holds its sealed file and wrapped
+key. Rotation makes those copies unreadable, by destroying the keys that
+open them:
+
+1. Stop the server.
+2. Run `vcon-server rekey tenant <id>` for each tenant whose purged vCons must
+   become unreadable on old copies (until `check` can report which ones,
+   that means each tenant that has purged anything since its last rotation).
+3. Make a new master key file and run
+   `vcon-server rekey master --new-master <file>`.
+4. Point `master_key` in the configuration at the new file and start the
+   server.
+5. Destroy every copy of the old master key, backups included.
+
+From step 5 on, the data purged before the rotation cannot be read from any
+copy taken before it. A step that stops part way is finished by running it
+again.
+
 ## Backups
 
 - **Back up the master key separately** from the data, and keep it as
@@ -103,6 +124,5 @@ not yet answered; start-up recovery removes what they left.
 - **A restored copy needs the master key it was made under**; the server
   refuses any other.
 - **A backup keeps what was purged after it was taken**, readable with that
-  master key. Key rotation ([being built](@/docs/status.md)) is what makes
-  such copies unreadable: after a rotation, destroy every copy of the old
-  master key.
+  master key. [Key rotation](#key-rotation) is what makes such copies
+  unreadable: after a rotation, destroy every copy of the old master key.

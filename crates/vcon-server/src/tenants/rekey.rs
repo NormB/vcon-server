@@ -3,10 +3,13 @@
 //! under its catalog key, so the old key opens nothing that is kept. A run
 //! stopped at any step is finished by running it again.
 
+use std::path::Path;
+
 use rusqlite::{OptionalExtension, params};
+use time::OffsetDateTime;
 
 use super::{TenantError, Tenants, add_wrap, immediate, io, wraps};
-use crate::audit::{Action, Actor, Entry};
+use crate::audit::{self, Action, Actor, Entry};
 use crate::catalog::{self, CatalogError};
 use crate::clock::nanos;
 use crate::envelope::{self, Context, Key, WrapLimit};
@@ -27,6 +30,106 @@ pub(crate) enum RekeyStep {
     Rewrapped,
     /// The catalog is re-encrypted.
     Reencrypted,
+}
+
+/// The steps a master rotation may be stopped after, for tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MasterStep {
+    /// server.sqlite is copied under the new master key's catalog key.
+    Copied,
+    /// Every tenant key in the copy is rewrapped.
+    Rewrapped,
+    /// The copy has replaced server.sqlite.
+    Renamed,
+}
+
+/// Rotates the master key of the data directory `dir`: server.sqlite is
+/// copied under `new`'s catalog key, every tenant key in the copy, pending
+/// ones too, is rewrapped from `old` to `new`, and the copy is synced and
+/// renamed over server.sqlite, so until the rename the old file is
+/// untouched. A run stopped before the rename starts again; one stopped
+/// after it finds server.sqlite under `new` and has nothing left to do.
+/// Only the command line does this, with the server stopped.
+pub fn rekey_master(
+    dir: &Path,
+    old: &Key,
+    new: &Key,
+    now: OffsetDateTime,
+) -> Result<(), TenantError> {
+    rekey_master_stopping(dir, old, new, now, None)
+}
+
+pub(crate) fn rekey_master_stopping(
+    dir: &Path,
+    old: &Key,
+    new: &Key,
+    now: OffsetDateTime,
+    stop: Option<MasterStep>,
+) -> Result<(), TenantError> {
+    let stop_after = |step| match stop == Some(step) {
+        true => Err(TenantError::Io),
+        false => Ok(()),
+    };
+    let path = dir.join("server.sqlite");
+    let old_catalog = envelope::catalog_key(old).map_err(io)?;
+    let new_catalog = envelope::catalog_key(new).map_err(io)?;
+    match catalog::open(&path, &old_catalog, "") {
+        Ok(conn) => drop(conn),
+        // A run stopped after its rename left server.sqlite under the new
+        // key: nothing is left to do.
+        Err(CatalogError::WrongKey) => {
+            return match catalog::open(&path, &new_catalog, "") {
+                Ok(_) => Ok(()),
+                Err(CatalogError::WrongKey) => Err(TenantError::WrongKey),
+                Err(e) => Err(io(e)),
+            };
+        }
+        Err(e) => return Err(io(e)),
+    }
+    let copy = catalog::copy_under(&path, &old_catalog, &new_catalog).map_err(io)?;
+    stop_after(MasterStep::Copied)?;
+    {
+        let mut conn = catalog::open(&copy, &new_catalog, "").map_err(io)?;
+        let tx = immediate(&mut conn)?;
+        let rows: Vec<(TenantId, Vec<u8>, Option<Vec<u8>>)> = tx
+            .prepare("SELECT id, wrapped_tenant_key, pending_wrapped_tenant_key FROM tenant")
+            .map_err(io)?
+            .query_map([], |r| Ok((TenantId(r.get(0)?), r.get(1)?, r.get(2)?)))
+            .map_err(io)?
+            .collect::<Result<_, _>>()
+            .map_err(io)?;
+        let mut wraps = 0_i64;
+        for (id, wrapped, pending) in rows {
+            let ctx = Context::Tenant { tenant: id };
+            let rewrap = |w: &[u8]| envelope::rewrap(old, new, &ctx, w).map_err(io);
+            let pending = pending.as_deref().map(rewrap).transpose()?;
+            wraps += 1 + i64::from(pending.is_some());
+            tx.execute(
+                "UPDATE tenant SET wrapped_tenant_key = ?1, pending_wrapped_tenant_key = ?2
+                 WHERE id = ?3",
+                params![rewrap(&wrapped)?, pending, id.0],
+            )
+            .map_err(io)?;
+        }
+        tx.execute("DELETE FROM master_key_use", []).map_err(io)?;
+        tx.execute(
+            "INSERT INTO master_key_use (master_key_id, wraps, since) VALUES (?1, ?2, ?3)",
+            params![new.id().bytes(), wraps, nanos(now)],
+        )
+        .map_err(io)?;
+        let entry = Entry {
+            actor: Actor::Cli,
+            action: Action::RekeyMaster,
+            target: None,
+            version: None,
+            status: 200,
+        };
+        audit::record(&tx, &entry, now).map_err(|_| TenantError::AuditFailed)?;
+        tx.commit().map_err(io)?;
+    }
+    stop_after(MasterStep::Rewrapped)?;
+    catalog::replace(&path, &copy).map_err(io)?;
+    stop_after(MasterStep::Renamed)
 }
 
 impl Tenants {
@@ -322,6 +425,171 @@ mod rekey_tests {
                 .unwrap_or_else(|e| panic!("{step:?}: {e:?}"));
             all_under_the_new_key_only(&f, id, &uuids, &old);
             assert_eq!(f.master_wraps(), 2, "{step:?}: one new key, made once");
+        }
+    }
+
+    mod master {
+        use std::path::{Path, PathBuf};
+        use std::sync::Arc;
+
+        use super::*;
+        use crate::clock::ManualClock;
+        use crate::fs::OsFs;
+
+        const NOW: OffsetDateTime = time::macros::datetime!(2026-10-25 12:00 UTC);
+
+        struct Dir {
+            dir: tempfile::TempDir,
+        }
+
+        impl Dir {
+            fn data(&self) -> &Path {
+                self.dir.path()
+            }
+            fn key_file(&self, name: &str) -> PathBuf {
+                self.dir.path().join(name)
+            }
+            /// A master key, loaded afresh from its file each time.
+            fn key(&self, name: &str) -> Key {
+                Key::load_master(&self.key_file(name)).expect("a key file")
+            }
+            fn open(&self, name: &str) -> Result<Tenants, TenantError> {
+                Tenants::open(
+                    self.data(),
+                    self.key(name),
+                    Arc::new(OsFs),
+                    Arc::new(ManualClock::at(NOW)),
+                )
+            }
+            fn server_file(&self) -> Vec<u8> {
+                std::fs::read(self.data().join("server.sqlite")).expect("server.sqlite")
+            }
+        }
+
+        /// Two tenants with a vCon each, one of them with a tenant rotation
+        /// stopped after its catalog was re-encrypted under the pending
+        /// key, under master key "old". That tenant is readable only through
+        /// its pending key, so a master rotation must carry it.
+        fn setup() -> (Dir, Vec<(TenantId, Uuid)>, TenantId) {
+            let d = Dir {
+                dir: tempfile::tempdir().expect("temp dir"),
+            };
+            std::fs::write(d.key_file("old"), [0x31; 32]).expect("old key");
+            std::fs::write(d.key_file("new"), [0x32; 32]).expect("new key");
+            let tenants = d.open("old").expect("opens");
+            let mut made = Vec::new();
+            for (n, name) in ["acme", "beta"].into_iter().enumerate() {
+                let id = tenants.create(Actor::Cli, name, None).expect("made");
+                let (found, body) = vcon(&format!("01a07da8-c2bb-83e5-b9a2-279e0d16bc4{n}"), name);
+                tenants
+                    .store(id)
+                    .expect("store")
+                    .create(&CALLER, &found, &body)
+                    .expect("stored");
+                made.push((id, found.uuid));
+            }
+            let pending = made[1].0;
+            *tenants.hooks.rekey_stop.lock().expect("hook") = Some(RekeyStep::Reencrypted);
+            assert_eq!(
+                tenants.rekey_tenant(Actor::Cli, pending),
+                Err(TenantError::Io)
+            );
+            drop(tenants);
+            (d, made, pending)
+        }
+
+        /// Everything opens under "new", and "old" opens nothing.
+        fn rotated(d: &Dir, made: &[(TenantId, Uuid)], pending: TenantId) {
+            assert!(matches!(d.open("old"), Err(TenantError::WrongKey)));
+            let tenants = d.open("new").expect("opens under the new master key");
+            // The stopped tenant rotation finishes under the new master key.
+            tenants
+                .rekey_tenant(Actor::Cli, pending)
+                .expect("the pending tenant key unwraps under the new master");
+            for (id, uuid) in made {
+                let store = tenants.store(*id).expect("store");
+                assert!(store.get(&CALLER, *uuid).is_ok(), "{id} reads");
+            }
+            let records = tenants.admin_records();
+            let rotations: Vec<_> = records
+                .iter()
+                .filter(|r| r["action"] == "rekey_master")
+                .collect();
+            assert_eq!(rotations.len(), 1);
+            assert_eq!(rotations[0]["status"], 200);
+            assert_eq!(rotations[0]["actor"], "cli");
+            let uses: Vec<(Vec<u8>, i64)> = tenants
+                .conn_for_test()
+                .prepare("SELECT master_key_id, wraps FROM master_key_use")
+                .expect("prepare")
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .expect("query")
+                .collect::<Result<_, _>>()
+                .expect("rows");
+            assert_eq!(
+                uses,
+                [(d.key("new").id().bytes().to_vec(), 3)],
+                "two tenant keys and one pending one, wrapped under the new key only"
+            );
+        }
+
+        #[test]
+        fn a_master_rotation_moves_every_tenant_key_to_the_new_master() {
+            let (d, made, pending) = setup();
+            rekey_master(d.data(), &d.key("old"), &d.key("new"), NOW).expect("rotated");
+            rotated(&d, &made, pending);
+        }
+
+        #[test]
+        fn stopped_before_the_rename_the_old_file_is_untouched_and_a_rerun_finishes() {
+            for step in [MasterStep::Copied, MasterStep::Rewrapped] {
+                let (d, made, pending) = setup();
+                let before = d.server_file();
+                assert_eq!(
+                    rekey_master_stopping(d.data(), &d.key("old"), &d.key("new"), NOW, Some(step)),
+                    Err(TenantError::Io),
+                    "{step:?}"
+                );
+                assert_eq!(
+                    d.server_file(),
+                    before,
+                    "{step:?}: the old file is untouched"
+                );
+                assert!(d.open("old").is_ok(), "{step:?}: still under the old key");
+                rekey_master(d.data(), &d.key("old"), &d.key("new"), NOW).expect("rotated");
+                rotated(&d, &made, pending);
+            }
+        }
+
+        #[test]
+        fn stopped_after_the_rename_a_rerun_has_nothing_left_to_do() {
+            let (d, made, pending) = setup();
+            assert_eq!(
+                rekey_master_stopping(
+                    d.data(),
+                    &d.key("old"),
+                    &d.key("new"),
+                    NOW,
+                    Some(MasterStep::Renamed)
+                ),
+                Err(TenantError::Io)
+            );
+            let after = d.server_file();
+            rekey_master(d.data(), &d.key("old"), &d.key("new"), NOW).expect("done already");
+            assert_eq!(d.server_file(), after, "nothing is rewritten");
+            rotated(&d, &made, pending);
+        }
+
+        #[test]
+        fn a_key_that_opens_neither_way_is_refused() {
+            let (d, _, _) = setup();
+            std::fs::write(d.key_file("other"), [0x33; 32]).expect("other key");
+            let before = d.server_file();
+            assert_eq!(
+                rekey_master(d.data(), &d.key("other"), &d.key("new"), NOW),
+                Err(TenantError::WrongKey)
+            );
+            assert_eq!(d.server_file(), before);
         }
     }
 

@@ -262,6 +262,20 @@ fn rekey_tenant_rotates_a_key_and_exits_0() {
 }
 
 #[test]
+fn rekey_master_rotates_and_says_what_comes_next() {
+    let s = setup();
+    s.ok(&["tenant", "create", "acme"]);
+    let new_key = s.data.with_file_name("new.key");
+    std::fs::write(&new_key, [0x43; 32]).expect("new key");
+    let new_key = new_key.to_str().expect("path");
+    let out = s.ok(&["rekey", "master", "--new-master", new_key]);
+    assert!(out[0]["master_key_id"].is_string());
+    assert!(out[0]["next"].is_string());
+    assert!(s.refused(&["tenant", "list"]).contains("master key"));
+    usage_error(&["rekey", "master", "--config", "c"]);
+}
+
+#[test]
 fn a_wrong_or_missing_configuration_exits_1() {
     let s = setup();
     std::fs::write(&s.config, "colour = \"blue\"\n").expect("bad configuration");

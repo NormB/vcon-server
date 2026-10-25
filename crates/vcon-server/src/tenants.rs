@@ -23,6 +23,7 @@ mod keys;
 mod rekey;
 
 pub use keys::{KeyInfo, NewKey};
+pub use rekey::rekey_master;
 #[cfg(test)]
 pub(crate) use tests::{Fixture, fixture};
 

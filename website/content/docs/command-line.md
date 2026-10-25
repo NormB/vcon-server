@@ -64,13 +64,22 @@ for the fields.
 | Command | Prints | Runs beside `serve` |
 |---|---|---|
 | `rekey tenant <id>` | nothing | no |
+| `rekey master --new-master <file>` | `{"master_key_id", "next"}` | no |
 
 `rekey tenant` gives the tenant a new key: every stored version's data key is
 rewrapped under it, in batches, and the tenant's catalog is re-encrypted under
 it, so the old key opens nothing the tenant keeps. Bodies are not
 re-encrypted. A run that stops, for any reason, is finished by running it
-again. `rekey master`, which rotates the master key, is
-[being built](@/docs/status.md).
+again.
+
+`rekey master` rewraps every tenant key, and every key a stopped
+`rekey tenant` left pending, under the master key in `--new-master`. It works
+on a copy of `server.sqlite` under the new key and renames the copy over the
+original only once it is complete, so until then the original is untouched. A
+run stopped before the rename starts again; one stopped after it has nothing
+left to do. Afterwards, point `master_key` in the configuration at the new
+file; the old key no longer opens anything. The full procedure is in
+[operations](@/docs/operations.md#key-rotation).
 
 ## Running beside the server
 

@@ -11,6 +11,7 @@ use std::sync::Arc;
 use crate::access::{Scope, Scopes};
 use crate::audit::Actor;
 use crate::audit::AuditError;
+use crate::clock::Clock;
 use crate::clock::SystemClock;
 use crate::config::Config;
 use crate::datadir::{self, LockError, Sharing, Work};
@@ -18,7 +19,7 @@ use crate::envelope::{Key, KeyError};
 use crate::fs::OsFs;
 use crate::ids::{KeyId, TenantId};
 use crate::retention::Retention;
-use crate::tenants::{Removal, TenantError, Tenants};
+use crate::tenants::{self, Removal, TenantError, Tenants};
 
 /// A command, as written on the command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +57,10 @@ pub enum Command {
     RekeyTenant {
         id: String,
     },
+    /// Rotates the master key to the one in `new_master`.
+    RekeyMaster {
+        new_master: std::path::PathBuf,
+    },
 }
 
 /// Whose key `key create` makes.
@@ -85,6 +90,7 @@ impl Command {
             Command::KeyRevoke { .. } => Work::KeyRevoke,
             Command::AuditExport { .. } => Work::AuditExport,
             Command::RekeyTenant { .. } => Work::RekeyTenant,
+            Command::RekeyMaster { .. } => Work::RekeyMaster,
         }
     }
 }
@@ -104,6 +110,8 @@ pub enum CommandError {
     UnknownKey,
     /// The output could not be written.
     Output(io::Error),
+    /// The new master key is the one already in use.
+    SameMasterKey,
 }
 
 impl fmt::Display for CommandError {
@@ -120,6 +128,9 @@ impl fmt::Display for CommandError {
             ),
             CommandError::UnknownKey => f.write_str("no key has this id"),
             CommandError::Output(e) => write!(f, "the output could not be written: {e}"),
+            CommandError::SameMasterKey => {
+                f.write_str("the new master key is the one already in use")
+            }
             CommandError::Tenant(e) => f.write_str(match e {
                 TenantError::NotFound => "no tenant has this id",
                 TenantError::NameTaken => "another tenant has this name",
@@ -152,6 +163,11 @@ pub fn run(config: &Config, command: &Command, out: &mut dyn Write) -> Result<()
     let sharing = command.work().sharing();
     let _lock = datadir::lock(&config.data_dir, sharing).map_err(CommandError::DataDir)?;
     let master = Key::load_master(&config.master_key).map_err(CommandError::MasterKey)?;
+    // A master rotation renames over server.sqlite, so nothing may hold it
+    // open: it runs before the registry is opened.
+    if let Command::RekeyMaster { new_master } = command {
+        return rekey_master(config, &master, new_master, out);
+    }
     // A command beside a running server must not run start-up recovery: it
     // would take the server's work in progress for a crash's leftovers.
     let open = if sharing == Sharing::Beside {
@@ -239,6 +255,7 @@ pub fn run(config: &Config, command: &Command, out: &mut dyn Write) -> Result<()
             })
         }
         Command::RekeyTenant { id } => Ok(tenants.rekey_tenant(who, tenant_id(id)?)?),
+        Command::RekeyMaster { .. } => unreachable!("rotated before the registry is opened"),
         Command::AuditExport { log, since } => {
             let exported = match log {
                 Log::Admin => tenants.export_admin(*since, out),
@@ -256,6 +273,32 @@ impl From<TenantError> for CommandError {
     fn from(e: TenantError) -> CommandError {
         CommandError::Tenant(e)
     }
+}
+
+/// Rotates the master key and says what the operator does next.
+fn rekey_master(
+    config: &Config,
+    master: &Key,
+    new_master: &std::path::Path,
+    out: &mut dyn Write,
+) -> Result<(), CommandError> {
+    let new = Key::load_master(new_master).map_err(CommandError::MasterKey)?;
+    if new.id() == master.id() {
+        return Err(CommandError::SameMasterKey);
+    }
+    tenants::rekey_master(&config.data_dir, master, &new, SystemClock.now()).map_err(
+        |e| match e {
+            TenantError::WrongKey => CommandError::WrongMasterKey,
+            other => CommandError::Tenant(other),
+        },
+    )?;
+    line(
+        out,
+        &serde_json::json!({
+            "master_key_id": new.id().to_string(),
+            "next": "point master_key in the configuration at the new key file, start the server, then destroy every copy of the old master key",
+        }),
+    )
 }
 
 /// A period as a command line writes it.
@@ -397,6 +440,12 @@ mod tests {
                 Work::AuditExport,
             ),
             (Command::RekeyTenant { id: id() }, Work::RekeyTenant),
+            (
+                Command::RekeyMaster {
+                    new_master: id().into(),
+                },
+                Work::RekeyMaster,
+            ),
         ] {
             assert_eq!(command.work(), work, "{command:?}");
         }
@@ -740,6 +789,47 @@ mod tests {
             Err(CommandError::DataDir(LockError::InUse(Sharing::Alone)))
         ));
         drop(server);
+    }
+
+    #[test]
+    fn rekey_master_moves_the_data_to_the_new_master_key() {
+        let mut s = setup();
+        s.create("acme");
+        let new_file = s.config.master_key.with_file_name("new.key");
+        std::fs::write(&new_file, [0x5c; 32]).expect("new key");
+        assert!(matches!(
+            s.run(Command::RekeyMaster {
+                new_master: s.config.master_key.clone()
+            }),
+            Err(CommandError::SameMasterKey)
+        ));
+        let server = datadir::lock(&s.config.data_dir, Sharing::Serve).expect("a server");
+        assert!(matches!(
+            s.run(Command::RekeyMaster {
+                new_master: new_file.clone()
+            }),
+            Err(CommandError::DataDir(LockError::InUse(Sharing::Alone)))
+        ));
+        drop(server);
+        let out = s
+            .run(Command::RekeyMaster {
+                new_master: new_file.clone(),
+            })
+            .expect("rotated");
+        let new_id = Key::load_master(&new_file).expect("key").id().to_string();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["master_key_id"], new_id.as_str());
+        assert!(
+            out[0]["next"]
+                .as_str()
+                .is_some_and(|n| n.contains("destroy"))
+        );
+        assert!(matches!(
+            s.run(Command::TenantList),
+            Err(CommandError::WrongMasterKey)
+        ));
+        s.config.master_key = new_file;
+        assert_eq!(s.run(Command::TenantList).expect("listed").len(), 1);
     }
 
     /// The commands that run alone are refused while a server holds the

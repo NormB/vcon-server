@@ -46,6 +46,15 @@ enum RekeyCommand {
         /// The tenant's id.
         id: String,
     },
+    /// Rotates the master key: every tenant key is rewrapped under the new
+    /// one, in a copy of server.sqlite that replaces it only once complete.
+    Master {
+        #[command(flatten)]
+        config: ConfigArg,
+        /// The file holding the new 32-byte master key.
+        #[arg(long)]
+        new_master: PathBuf,
+    },
 }
 
 /// The configuration file every command reads.
@@ -176,6 +185,9 @@ fn main() -> ExitCode {
         Command::Key(c) => key(c),
         Command::Rekey(RekeyCommand::Tenant { config, id }) => {
             (config, commands::Command::RekeyTenant { id })
+        }
+        Command::Rekey(RekeyCommand::Master { config, new_master }) => {
+            (config, commands::Command::RekeyMaster { new_master })
         }
         Command::Audit(AuditCommand::Export {
             config,

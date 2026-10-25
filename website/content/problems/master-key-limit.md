@@ -12,4 +12,4 @@ The master key has wrapped 2^32 tenant keys, so no tenant can be made.
 
 ## What to do
 
-The operator must rotate the master key (`vcon-server rekey master`, being built).
+The operator rotates the master key with `vcon-server rekey master --new-master <file>`, with the server stopped. See [key rotation](@/docs/operations.md#key-rotation).

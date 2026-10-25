@@ -55,7 +55,7 @@ never stores a token.
 | An operator key | tenant and key management over HTTP; never any vCon, and never a new operator key |
 | The request log | method, route template, status and timing only |
 
-Key rotation, [being built](@/docs/status.md), shortens "as of when they
+[Key rotation](@/docs/operations.md#key-rotation) shortens "as of when they
 were taken": after it, old copies of the data cannot be opened with the new
 keys, and the old ones are destroyed.
 

@@ -41,6 +41,9 @@ impl From<rusqlite::Error> for CatalogError {
 pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogError> {
     let conn = Connection::open(path)?;
     conn.busy_timeout(BUSY_TIMEOUT)?;
+    // SQLCipher otherwise writes its own error lines to standard error, a
+    // wrong key among them; this program says what went wrong itself.
+    conn.pragma_update(None, "cipher_log_level", "NONE")?;
     set_key(&conn, key)?;
     // SQLCipher reads nothing until the first query, so a wrong key shows
     // here, as a file that is not a database.
@@ -78,52 +81,70 @@ pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogE
 /// the old file's pages is carried into the new one. A file left by an
 /// interrupted run is replaced.
 pub fn reencrypt(path: &Path, old: &Key, new: &Key) -> Result<(), CatalogError> {
+    let copy = copy_under(path, old, new)?;
+    replace(path, &copy)
+}
+
+/// Writes every row, the schema and its version of the catalog at `path`,
+/// kept under `old`, to a new file beside it kept under `new`, and returns
+/// that file's path. The old file is only read. A file left there by an
+/// interrupted run is replaced.
+pub fn copy_under(path: &Path, old: &Key, new: &Key) -> Result<PathBuf, CatalogError> {
     let target = sibling(path, ".rekey");
-    match std::fs::remove_file(&target) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(CatalogError::Io(e)),
-        _ => {}
+    for stale in [
+        target.clone(),
+        sibling(&target, "-wal"),
+        sibling(&target, "-shm"),
+    ] {
+        remove_if_there(&stale)?;
     }
-    {
-        let conn = open(path, old, "")?;
-        let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        let target_text = target.to_str().ok_or_else(|| {
-            CatalogError::Io(std::io::Error::other("the catalog path is not UTF-8"))
-        })?;
-        conn.execute("ATTACH DATABASE ?1 AS rekeyed", [target_text])?;
-        set_key_of(&conn, c"rekeyed", new)?;
-        conn.query_row("SELECT sqlcipher_export('rekeyed')", [], |_| Ok(()))?;
-        // A pragma takes no bound parameter; the version is a number read
-        // from the catalog itself.
-        conn.execute_batch(&format!("PRAGMA rekeyed.user_version = {version}"))?;
-        conn.execute("DETACH DATABASE rekeyed", [])?;
-    }
-    // The last connection's close checkpoints the WAL into the old file and
-    // removes it. A WAL still holding frames belongs to the old file, and
-    // must never sit beside the new one.
-    let wal = sibling(path, "-wal");
-    if std::fs::metadata(&wal).is_ok_and(|m| m.len() > 0) {
-        return Err(CatalogError::Io(std::io::Error::other(
-            "the old catalog's WAL was not emptied",
-        )));
-    }
-    for leftover in [wal, sibling(path, "-shm")] {
-        match std::fs::remove_file(&leftover) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-                return Err(CatalogError::Io(e));
-            }
-            _ => {}
+    let conn = open(path, old, "")?;
+    let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    let target_text = target
+        .to_str()
+        .ok_or_else(|| CatalogError::Io(std::io::Error::other("the catalog path is not UTF-8")))?;
+    conn.execute("ATTACH DATABASE ?1 AS rekeyed", [target_text])?;
+    set_key_of(&conn, c"rekeyed", new)?;
+    conn.query_row("SELECT sqlcipher_export('rekeyed')", [], |_| Ok(()))?;
+    // A pragma takes no bound parameter; the version is a number read
+    // from the catalog itself.
+    conn.execute_batch(&format!("PRAGMA rekeyed.user_version = {version}"))?;
+    conn.execute("DETACH DATABASE rekeyed", [])?;
+    Ok(target)
+}
+
+/// Makes `copy` the catalog at `path`: it is synced, renamed over `path`,
+/// and the directory synced. Every connection to either file must be
+/// closed. Their WAL files must be empty, as a last close leaves them; one
+/// still holding frames would sit beside the wrong file, so it is refused.
+pub fn replace(path: &Path, copy: &Path) -> Result<(), CatalogError> {
+    for file in [path, copy] {
+        let wal = sibling(file, "-wal");
+        if std::fs::metadata(&wal).is_ok_and(|m| m.len() > 0) {
+            return Err(CatalogError::Io(std::io::Error::other(
+                "a catalog's WAL was not emptied",
+            )));
         }
+        remove_if_there(&wal)?;
+        remove_if_there(&sibling(file, "-shm"))?;
     }
     let io = CatalogError::Io;
-    std::fs::File::open(&target)
+    std::fs::File::open(copy)
         .and_then(|f| f.sync_all())
         .map_err(io)?;
-    std::fs::rename(&target, path).map_err(io)?;
+    std::fs::rename(copy, path).map_err(io)?;
     let dir = path.parent().unwrap_or(Path::new("."));
     std::fs::File::open(dir)
         .and_then(|f| f.sync_all())
         .map_err(io)?;
     Ok(())
+}
+
+fn remove_if_there(file: &Path) -> Result<(), CatalogError> {
+    match std::fs::remove_file(file) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(CatalogError::Io(e)),
+        _ => Ok(()),
+    }
 }
 
 /// `path` with `suffix` added to its file name.
@@ -227,6 +248,11 @@ mod tests {
         assert_eq!(number("temp_store"), 2, "MEMORY");
         assert_eq!(number("busy_timeout"), 5000, "milliseconds");
         assert_eq!(text("cipher_provider"), "openssl");
+        assert_eq!(
+            text("cipher_log_level"),
+            "NONE",
+            "SQLCipher writes no log of its own"
+        );
     }
 
     #[test]
@@ -331,6 +357,40 @@ mod tests {
         let conn = open(&path(&dir), &new, SCHEMA).expect("opens");
         assert_eq!(notes(&conn), ["kept"]);
         assert!(!rekeyed(&dir).exists());
+    }
+
+    /// A WAL holding frames belongs to its own file: renaming that file
+    /// without them would lose committed rows, and leaving the old one's
+    /// beside the new file would corrupt it. Either refuses the rename.
+    #[test]
+    fn a_replace_refuses_while_either_wal_holds_frames() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let key = Key::generate().expect("key");
+        let copy = dir.path().join("catalog.sqlite.rekey");
+        for busy in [path(&dir), copy.clone()] {
+            for file in [path(&dir), copy.clone()] {
+                for leftover in ["", "-wal", "-shm"] {
+                    let _ = std::fs::remove_file(sibling(&file, leftover));
+                }
+                drop(open(&file, &key, SCHEMA).expect("made"));
+            }
+            let held = open(&busy, &key, SCHEMA).expect("opens");
+            held.pragma_update(None, "wal_autocheckpoint", 0)
+                .expect("no checkpoint");
+            held.execute("INSERT INTO note (text) VALUES ('in the wal')", [])
+                .expect("insert");
+            assert!(
+                std::fs::metadata(sibling(&busy, "-wal")).is_ok_and(|m| m.len() > 0),
+                "the WAL holds the row"
+            );
+            assert!(
+                matches!(replace(&path(&dir), &copy), Err(CatalogError::Io(_))),
+                "{}",
+                busy.display()
+            );
+            assert!(copy.exists(), "nothing was renamed");
+            drop(held);
+        }
     }
 
     #[test]
