@@ -134,7 +134,10 @@ open them:
 
 From step 5 on, the data purged before the rotation cannot be read from any
 copy taken before it. A step that stops part way is finished by running it
-again.
+again. The test suite plays this procedure end to end with the binary
+(`crates/vcon-server/tests/rotation.rs`): it copies the data directory, purges
+a vCon, rotates, destroys the old master key, and then tries every key that
+still exists on the copy.
 
 ## Backups
 
