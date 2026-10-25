@@ -36,7 +36,7 @@ use crate::ids::TenantId;
 use crate::ids::{KeyId, VersionId};
 use crate::retention::Retention;
 use crate::store::{Caller as StoreCaller, Created, Store, StoreError};
-use crate::tenants::{Removal, TenantError, Tenants};
+use crate::tenants::{KeyInfo, Removal, TenantError, TenantInfo, Tenants};
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 use vcon_form::{Inspection, Rejection};
@@ -614,16 +614,7 @@ async fn tenant_list(State(app): State<Arc<App>>, headers: HeaderMap, body: Body
     };
     match listed.await {
         Ok(listed) => {
-            let listed: Vec<serde_json::Value> = listed
-                .iter()
-                .map(|t| {
-                    serde_json::json!({
-                        "id": t.id.to_string(),
-                        "name": t.name,
-                        "retention": t.retention.map(|r| r.to_string()),
-                    })
-                })
-                .collect();
+            let listed: Vec<serde_json::Value> = listed.iter().map(TenantInfo::to_json).collect();
             json_answer(StatusCode::OK, &serde_json::Value::Array(listed))
         }
         Err(refused) => refused.into_response(),
@@ -717,21 +708,6 @@ struct NewKeyBody {
     label: String,
 }
 
-/// The scopes a body names, or None when one is unknown or named twice,
-/// so a body means one thing. Which scopes a tenant key may hold is
-/// Tenants' rule.
-fn named_scopes(names: &[String]) -> Option<Scopes> {
-    let mut held = Vec::new();
-    for name in names {
-        let scope = Scope::named(name)?;
-        if held.contains(&scope) {
-            return None;
-        }
-        held.push(scope);
-    }
-    Some(Scopes::of(&held))
-}
-
 /// `POST /admin/tenants/{id}/keys`: makes a key for the tenant and
 /// answers 201 with its id and token. The token is shown this once; only
 /// its hash is kept.
@@ -749,7 +725,7 @@ async fn key_create(
             return Err(refuse(Problem::Tenant(TenantError::NotFound)).await);
         };
         let new: NewKeyBody = admin_body(&app, key, action, &body).await?;
-        let Some(scopes) = named_scopes(&new.scopes) else {
+        let Some(scopes) = Scopes::named(&new.scopes) else {
             return Err(refuse(Problem::Tenant(TenantError::BadScopes)).await);
         };
         let tenants = app.tenants.clone();
@@ -797,24 +773,7 @@ async fn key_list(
         Ok(keys) => keys,
         Err(refused) => return refused.into_response(),
     };
-    let time = |at: time::OffsetDateTime| at.format(&Rfc3339).ok();
-    let listed: Option<Vec<serde_json::Value>> = keys
-        .iter()
-        .map(|k| {
-            let revoked_at = match k.revoked_at {
-                Some(at) => Some(time(at)?),
-                None => None,
-            };
-            let scopes = k.scopes.to_string();
-            Some(serde_json::json!({
-                "id": k.id.to_string(),
-                "scopes": scopes.split(',').collect::<Vec<_>>(),
-                "label": k.label,
-                "created_at": time(k.created_at)?,
-                "revoked_at": revoked_at,
-            }))
-        })
-        .collect();
+    let listed: Option<Vec<serde_json::Value>> = keys.iter().map(KeyInfo::to_json).collect();
     match listed {
         Some(listed) => json_answer(StatusCode::OK, &serde_json::Value::Array(listed)),
         None => Problem::Tenant(TenantError::Io).into_response(),
@@ -3022,8 +2981,16 @@ mod tests {
             let fields: Vec<&String> = first.as_object().expect("an object").keys().collect();
             assert_eq!(
                 fields,
-                ["created_at", "id", "label", "revoked_at", "scopes"]
+                [
+                    "created_at",
+                    "id",
+                    "label",
+                    "revoked_at",
+                    "scopes",
+                    "tenant"
+                ]
             );
+            assert_eq!(first["tenant"], s.tenant.to_string().as_str());
 
             let made = admin_log(&s, "key_create");
             assert_eq!(made.len(), 2);

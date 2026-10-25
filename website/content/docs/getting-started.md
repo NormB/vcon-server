@@ -99,8 +99,17 @@ another server already holds the data directory.
 
 ## Tenants and keys
 
-Every request carries a bearer key, and every vCon belongs to a tenant. An
-operator key (scope `admin`) manages tenants and their keys over the
-[admin routes](@/docs/http-api.md#admin). Operator keys are made only on the
-server's own host, by the `vcon-server key create --operator` command, which
-is [being built](@/docs/status.md). See [tenants and keys](@/docs/tenants-and-keys.md).
+Every request carries a bearer key, and every vCon belongs to a tenant. Make
+the first tenant and its keys on the server's host:
+
+```sh
+vcon-server tenant create acme --config /etc/vcon-server/vcon-server.toml
+vcon-server key create --operator --label ops --config /etc/vcon-server/vcon-server.toml
+vcon-server key create --tenant <tenant id> --scope write --label recorder-1 \
+  --config /etc/vcon-server/vcon-server.toml
+```
+
+Each prints a JSON line; a key's token is shown this once. The operator key
+(scope `admin`) manages tenants and keys over the
+[admin routes](@/docs/http-api.md#admin) from then on. See the
+[command line](@/docs/command-line.md) and [tenants and keys](@/docs/tenants-and-keys.md).

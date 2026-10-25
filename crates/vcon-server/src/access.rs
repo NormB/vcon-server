@@ -72,6 +72,21 @@ impl Scopes {
         self.0 == 0
     }
 
+    /// The scopes a list names, or None when one is unknown or named twice,
+    /// so a list means one thing. Which scopes a key may hold is Tenants'
+    /// rule.
+    pub fn named(names: &[String]) -> Option<Scopes> {
+        let mut held = Vec::new();
+        for name in names {
+            let scope = Scope::named(name)?;
+            if held.contains(&scope) {
+                return None;
+            }
+            held.push(scope);
+        }
+        Some(Scopes::of(&held))
+    }
+
     /// Reads scopes written by `Display`: names in the fixed order, comma
     /// separated, each once.
     pub fn parse(text: &str) -> Option<Scopes> {

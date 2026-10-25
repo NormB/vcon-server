@@ -59,7 +59,7 @@ is refused with [`forbidden`](@/problems/forbidden.md) and recorded.
 
 - **Operator keys** are made only on the server's host, with
   `vcon-server key create --operator`, never over HTTP. A leaked operator key
-  cannot be used to make another. The command is [being built](@/docs/status.md).
+  cannot be used to make another. See the [command line](@/docs/command-line.md).
 - **Tenant keys** are made with `POST /admin/tenants/{id}/keys` (or
   `vcon-server key create --tenant`). The answer carries the token once, with
   `Cache-Control: no-store`.
@@ -74,7 +74,7 @@ is refused with [`forbidden`](@/problems/forbidden.md) and recorded.
 the tenant is under a legal hold: then it is refused with
 [`under-hold`](@/problems/under-hold.md), whatever the query. Over HTTP nothing
 passes a legal hold; only `vcon-server tenant remove --force --override-holds`,
-run with the server stopped, can (that command is [being built](@/docs/status.md)).
+run with the server stopped, can.
 
 While a tenant is being removed, its keys get [`unavailable`](@/problems/unavailable.md)
 (503); once it is gone they get [`unauthorized`](@/problems/unauthorized.md) (401).

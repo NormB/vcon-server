@@ -37,9 +37,8 @@ server or any other command runs. The rest (`tenant list`,
 server, but never beside a command that runs alone, so nothing they write can
 be lost to a rewrite. Commands that run beside the server open the data
 without start-up recovery, so they never mistake the server's work in progress
-for a crash's leftovers. The lock rules are built; the commands are
-[being built](@/docs/status.md). While the server runs, the admin API does the
-tenant work instead.
+for a crash's leftovers. See the [command line](@/docs/command-line.md). While
+the server runs, the admin API does the tenant work instead.
 
 ## The purge sweep
 

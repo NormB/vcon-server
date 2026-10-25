@@ -29,12 +29,11 @@ otherwise.
   data directory.
 - **Configuration.** One TOML file; unknown keys refused; defaults measured
   from real vCons.
+- **The command line** for tenants, keys (including operator keys) and
+  audit export, with the rules on which commands may run beside the server.
 
 ## Being built
 
-- **Command-line tools** for tenants, keys (including the first operator key)
-  and audit export. Until they land, an operator key can be made only from the
-  library, which is how the test suite does it.
 - **Key rotation** (`rekey tenant`, `rekey master`), which makes purged vCons
   unreadable on old disks and backups too.
 - **`check`**, which reports damaged or missing objects, versions past due,

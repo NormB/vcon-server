@@ -642,6 +642,16 @@ impl Store {
         })
     }
 
+    /// Writes the tenant's log after `since` as JSON lines, oldest first.
+    /// Not recorded: reading the log changes nothing.
+    pub fn export(
+        &self,
+        since: Option<i64>,
+        out: &mut dyn std::io::Write,
+    ) -> Result<(), audit::AuditError> {
+        audit::export(&self.conn(), since, out)
+    }
+
     /// Records, in a transaction of its own, an action on the tenant taken
     /// elsewhere, such as a change to its retention period.
     pub fn log(&self, entry: &Entry) -> Result<(), StoreError> {

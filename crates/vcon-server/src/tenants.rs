@@ -104,6 +104,16 @@ pub struct TenantInfo {
 }
 
 impl TenantInfo {
+    /// The tenant as the admin API and the command line show it: id, name
+    /// and its own retention period, null for the server default.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "id": self.id.to_string(),
+            "name": self.name,
+            "retention": self.retention.map(|r| r.to_string()),
+        })
+    }
+
     /// How long the tenant's vCons are kept: its own period, else the
     /// server's `default`.
     pub fn kept_for(&self, default: Retention) -> Retention {
@@ -636,6 +646,16 @@ impl Tenants {
             .map_err(io)?
             .map(|row| row.map(TenantId).map_err(io))
             .collect()
+    }
+
+    /// Writes the admin log after `since` as JSON lines, oldest first.
+    /// Not recorded: reading the log changes nothing.
+    pub fn export_admin(
+        &self,
+        since: Option<i64>,
+        out: &mut dyn std::io::Write,
+    ) -> Result<(), audit::AuditError> {
+        audit::export(&self.conn(), since, out)
     }
 
     /// Whether server.sqlite answers a query, for the health route.

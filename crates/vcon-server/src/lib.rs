@@ -6,6 +6,7 @@ pub mod api;
 pub mod audit;
 pub mod catalog;
 pub mod clock;
+pub mod commands;
 pub mod config;
 pub mod datadir;
 pub mod envelope;

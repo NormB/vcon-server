@@ -50,7 +50,7 @@ empty actor, so made-up tokens cannot grow the log without bound.
 
 `vcon-server audit export (--tenant <id> | --admin) [--since <seq>]` writes a
 log as JSON lines, oldest first, from after `seq`. It runs beside a serving
-server. The command is [being built](@/docs/status.md).
+server. Reading a log is not itself recorded.
 
 ## The request log is not the audit log
 

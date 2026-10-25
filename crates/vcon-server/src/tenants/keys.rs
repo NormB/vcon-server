@@ -3,6 +3,7 @@
 
 use rusqlite::{OptionalExtension, Transaction, params};
 use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
 use super::{Slot, TenantError, Tenants, immediate, io};
 use crate::access::{self, Scope, Scopes};
@@ -20,6 +21,28 @@ pub struct KeyInfo {
     pub label: String,
     pub created_at: OffsetDateTime,
     pub revoked_at: Option<OffsetDateTime>,
+}
+
+impl KeyInfo {
+    /// The key as the admin API and the command line show it, never its
+    /// token: id, tenant (null for an operator key), scopes, label and
+    /// times in RFC 3339. None when a time cannot be written so.
+    pub fn to_json(&self) -> Option<serde_json::Value> {
+        let time = |at: OffsetDateTime| at.format(&Rfc3339).ok();
+        let revoked_at = match self.revoked_at {
+            Some(at) => Some(time(at)?),
+            None => None,
+        };
+        let scopes = self.scopes.to_string();
+        Some(serde_json::json!({
+            "id": self.id.to_string(),
+            "tenant": self.tenant.map(|t| t.to_string()),
+            "scopes": scopes.split(',').collect::<Vec<_>>(),
+            "label": self.label,
+            "created_at": time(self.created_at)?,
+            "revoked_at": revoked_at,
+        }))
+    }
 }
 
 /// A key just made. Its token is shown this once and never stored.
