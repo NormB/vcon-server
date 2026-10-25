@@ -21,6 +21,26 @@ cargo build --release
 The binary is `target/release/vcon-server`. Run the tests with
 `cargo test --workspace`.
 
+## Or download a release
+
+Each release on GitHub holds the server for Linux on x86_64 and aarch64, a
+CycloneDX SBOM listing every crate built into it, and `SHA256SUMS.txt`. Every
+file carries a signed build provenance attestation, and each archive carries
+its SBOM as one too, so a download can be traced to the workflow run and the
+commit that built it. There is no release yet; until there is, build from
+source as above.
+
+To check a download, with the [GitHub CLI](https://cli.github.com/):
+
+```sh
+gh attestation verify vcon-server-VERSION-x86_64-unknown-linux-gnu.tar.gz \
+  --repo NormB/vcon-server
+sha256sum -c SHA256SUMS.txt --ignore-missing
+```
+
+The first command fails on any file that was not built by this repository's
+release workflow, or that changed after it was built.
+
 ## Make the master key
 
 The master key is a file of exactly 32 random bytes. It wraps every tenant key
