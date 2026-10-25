@@ -1,0 +1,48 @@
+name: CodeQL
+
+# CodeQL analyses the Rust code and the workflows themselves (the `actions`
+# language: untrusted input in run steps, token permissions, unpinned
+# actions) and sends its findings to code scanning in the Security tab.
+# Neither language needs a build: both are read from source.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Tuesdays 02:34 UTC: newer CodeQL queries also run on code no push changed.
+    - cron: '34 2 * * 2'
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    permissions:
+      # Upload the findings to code scanning.
+      security-events: write
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, rust]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+      - name: Analyze
+        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          category: "/language:${{ matrix.language }}"
+          # The findings go up as SARIF; the database is not needed.
+          upload-database: false
