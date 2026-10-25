@@ -7,3 +7,6 @@ ARCHIVED — *
 
 # Zola build output
 /website/public/
+
+# Local secrets (Cloudflare token and ids); never committed
+.env
