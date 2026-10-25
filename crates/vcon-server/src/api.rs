@@ -2962,7 +2962,10 @@ mod tests {
 
             let (text, listed) = key_list(&s, &op).await;
             for token in [&token, &other] {
-                let secret = token.rsplit_once('_').expect("a secret").1;
+                // vcs_<key id>_<secret>: the secret is base64url, whose
+                // alphabet includes `_`, so it is all after the second `_`.
+                let secret = token.splitn(3, '_').nth(2).expect("a secret");
+                assert_eq!(secret.len(), 43, "the whole 32-byte secret");
                 assert!(!text.contains(secret), "no token is listed");
             }
             let first = &listed[0];
