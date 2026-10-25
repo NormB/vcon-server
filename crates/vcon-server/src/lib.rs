@@ -7,6 +7,7 @@ pub mod audit;
 pub mod catalog;
 pub mod clock;
 pub mod config;
+pub mod datadir;
 pub mod envelope;
 pub mod fs;
 pub mod ids;

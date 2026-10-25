@@ -1,11 +1,8 @@
 //! `vcon-server serve`: the server, run from its configuration.
 
 use std::fmt;
-use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io;
-use std::os::fd::AsRawFd;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,6 +11,7 @@ use tokio::net::TcpListener;
 use crate::api::{self, App, Limits, TlsError};
 use crate::clock::SystemClock;
 use crate::config::Config;
+use crate::datadir::{self, LockError, Work};
 use crate::envelope::{Key, KeyError};
 use crate::fs::OsFs;
 use crate::retention::Retention;
@@ -22,10 +20,8 @@ use crate::tenants::{TenantError, Tenants};
 /// Why the server did not start, or stopped.
 #[derive(Debug)]
 pub enum ServeError {
-    /// Another server holds the data directory.
-    DataDirInUse,
-    /// The data directory's lock could not be taken.
-    DataDir(io::Error),
+    /// The data directory could not be taken.
+    DataDir(LockError),
     /// The master key file could not be read.
     MasterKey(KeyError),
     /// server.sqlite was made under another master key.
@@ -43,10 +39,7 @@ pub enum ServeError {
 impl fmt::Display for ServeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ServeError::DataDirInUse => {
-                f.write_str("the data directory is in use by another vcon-server")
-            }
-            ServeError::DataDir(e) => write!(f, "the data directory cannot be locked: {e}"),
+            ServeError::DataDir(e) => write!(f, "{e}"),
             ServeError::MasterKey(e) => write!(f, "the master key cannot be read: {e:?}"),
             ServeError::WrongMasterKey => {
                 f.write_str("the master key is not the one server.sqlite was made under")
@@ -59,39 +52,11 @@ impl fmt::Display for ServeError {
     }
 }
 
-/// The data directory's lock, held while this value lives: the open file
-/// is kept only for its lock.
-#[derive(Debug)]
-pub struct DataDirLock {
-    _held: File,
-}
-
-/// Takes the data directory's exclusive lock, so that no second server
-/// opens the same tenants: a second open's recovery could remove a write's
-/// temporary file.
-pub fn lock_data_dir(dir: &Path) -> Result<DataDirLock, ServeError> {
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(dir.join("lock"))
-        .map_err(ServeError::DataDir)?;
-    // SAFETY: the descriptor is this open file's, and flock takes only it
-    // and flags.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        let error = io::Error::last_os_error();
-        return Err(match error.kind() {
-            io::ErrorKind::WouldBlock => ServeError::DataDirInUse,
-            _ => ServeError::DataDir(error),
-        });
-    }
-    Ok(DataDirLock { _held: file })
-}
-
 /// Runs the server until `shutdown` completes: locks the data directory,
 /// opens the registry under the master key, and serves the API over TLS.
 pub async fn run(config: &Config, shutdown: impl Future<Output = ()>) -> Result<(), ServeError> {
-    let _lock = lock_data_dir(&config.data_dir)?;
+    let _lock =
+        datadir::lock(&config.data_dir, Work::Serve.sharing()).map_err(ServeError::DataDir)?;
     let master = Key::load_master(&config.master_key).map_err(ServeError::MasterKey)?;
     let tenants = Tenants::open(
         &config.data_dir,
@@ -384,17 +349,5 @@ mod tests {
             tokio::time::advance(Duration::from_secs(600)).await;
             assert_eq!(runs.load(Ordering::SeqCst), 2, "none after shutdown");
         }
-    }
-
-    #[test]
-    fn a_data_directory_is_held_by_one_server_at_a_time() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let first = lock_data_dir(dir.path()).expect("the first lock");
-        assert!(matches!(
-            lock_data_dir(dir.path()),
-            Err(ServeError::DataDirInUse)
-        ));
-        drop(first);
-        assert!(lock_data_dir(dir.path()).is_ok(), "free once released");
     }
 }
