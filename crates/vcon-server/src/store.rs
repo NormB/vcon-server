@@ -121,8 +121,24 @@ pub struct Store {
 }
 
 impl Store {
-    /// Opens the tenant's catalog under its catalog key, making it if new.
+    /// Opens the tenant's catalog under its catalog key, making it if new,
+    /// then runs start-up recovery.
     pub fn open(
+        dir: &Path,
+        tenant: TenantId,
+        tenant_key: Key,
+        fs: Arc<dyn Fs>,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Store, StoreError> {
+        let store = Store::open_beside(dir, tenant, tenant_key, fs, clock)?;
+        store.recover()?;
+        Ok(store)
+    }
+
+    /// Opens the store as a command running beside a server does: without
+    /// start-up recovery, which would take the server's writes in progress
+    /// for a crash's leftovers.
+    pub fn open_beside(
         dir: &Path,
         tenant: TenantId,
         tenant_key: Key,
@@ -139,7 +155,7 @@ impl Store {
         // holds it is synced; without this a crash could take the objects
         // directory, synced files and all, while the catalog keeps its rows.
         fs.sync_dir(dir).map_err(|_| StoreError::Io)?;
-        let store = Store {
+        Ok(Store {
             tenant,
             tenant_key,
             objects,
@@ -148,9 +164,7 @@ impl Store {
             clock,
             #[cfg(test)]
             hooks: tests::Hooks::default(),
-        };
-        store.recover()?;
-        Ok(store)
+        })
     }
 
     /// Start-up recovery: the WAL is checkpointed with truncation, and
@@ -861,6 +875,19 @@ mod tests {
             let ctx = Context::Tenant { tenant: TENANT };
             let tenant_key = envelope::unwrap(&self.master, &ctx, &self.wrapped).expect("unwraps");
             Store::open(
+                self.dir.path(),
+                TENANT,
+                tenant_key,
+                self.fs.clone(),
+                self.clock.clone(),
+            )
+        }
+
+        /// Opens the store again as a command beside a server would.
+        fn open_beside(&self) -> Result<Store, StoreError> {
+            let ctx = Context::Tenant { tenant: TENANT };
+            let tenant_key = envelope::unwrap(&self.master, &ctx, &self.wrapped).expect("unwraps");
+            Store::open_beside(
                 self.dir.path(),
                 TENANT,
                 tenant_key,
@@ -1894,6 +1921,46 @@ mod tests {
         assert!(
             log[last_removal..].contains(&Op::SyncDir(objects)),
             "the removals are synced"
+        );
+    }
+
+    /// A command beside a running server must not take the server's
+    /// writes in progress for a crash's leftovers.
+    #[test]
+    fn opening_beside_a_server_removes_nothing() {
+        let f = fixture();
+        let (found, version) = stored(&f, "first");
+        let orphan = VersionId([0x0e; 16]);
+        let objects = f.store.objects.clone();
+        let mut written = vec![version.to_string()];
+        for name in [
+            format!("{orphan}"),
+            format!("{orphan}.tmp"),
+            format!("{version}.tmp"),
+        ] {
+            f.fs.write_new(&objects.join(&name), b"x").expect("write");
+            written.push(name);
+        }
+        written.sort();
+        let ops = f.fs.log().len();
+        let beside = f.open_beside().expect("opens beside");
+        let mut names: Vec<String> =
+            f.fs.list(&objects)
+                .expect("list")
+                .into_iter()
+                .map(|n| n.to_string_lossy().into_owned())
+                .collect();
+        names.sort();
+        assert_eq!(names, written);
+        assert!(
+            !f.fs.log()[ops..]
+                .iter()
+                .any(|op| matches!(op, Op::Remove(_))),
+            "nothing removed"
+        );
+        assert_eq!(
+            beside.get(&f.caller, found.uuid).expect("reads").version,
+            version
         );
     }
 

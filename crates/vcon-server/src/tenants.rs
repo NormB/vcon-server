@@ -137,6 +137,8 @@ pub struct Tenants {
     conn: Mutex<Connection>,
     /// Each tenant's Store, once a request has opened it.
     stores: Mutex<HashMap<TenantId, Slot>>,
+    /// Opened beside a server: its Stores are opened without recovery.
+    beside: bool,
     fs: Arc<dyn Fs>,
     clock: Arc<dyn Clock>,
     #[cfg(test)]
@@ -153,6 +155,31 @@ impl Tenants {
         fs: Arc<dyn Fs>,
         clock: Arc<dyn Clock>,
     ) -> Result<Tenants, TenantError> {
+        let registry = Tenants::opened(dir, master, fs, clock, false)?;
+        registry.recover()?;
+        Ok(registry)
+    }
+
+    /// Opens the registry as a command running beside a server does:
+    /// without start-up recovery, here or in any Store it opens, which
+    /// would take the server's creates and writes in progress for a
+    /// crash's leftovers.
+    pub fn open_beside(
+        dir: &Path,
+        master: Key,
+        fs: Arc<dyn Fs>,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Tenants, TenantError> {
+        Tenants::opened(dir, master, fs, clock, true)
+    }
+
+    fn opened(
+        dir: &Path,
+        master: Key,
+        fs: Arc<dyn Fs>,
+        clock: Arc<dyn Clock>,
+        beside: bool,
+    ) -> Result<Tenants, TenantError> {
         let catalog_key = envelope::catalog_key(&master).map_err(|_| TenantError::Io)?;
         let schema = format!("{TABLES}{}", audit::SCHEMA);
         let conn = catalog::open(&dir.join("server.sqlite"), &catalog_key, &schema).map_err(
@@ -164,18 +191,17 @@ impl Tenants {
         let tenants = dir.join("tenants");
         fs.create_dir_all(&tenants).map_err(io)?;
         fs.sync_dir(dir).map_err(io)?;
-        let registry = Tenants {
+        Ok(Tenants {
             tenants,
             master,
             conn: Mutex::new(conn),
             stores: Mutex::new(HashMap::new()),
+            beside,
             fs,
             clock,
             #[cfg(test)]
             hooks: tests::Hooks::default(),
-        };
-        registry.recover()?;
-        Ok(registry)
+        })
     }
 
     /// Removes each tenant directory with no row: a create cut off before
@@ -505,7 +531,12 @@ impl Tenants {
                 hook();
             }
         }
-        Store::open(
+        let open = if self.beside {
+            Store::open_beside
+        } else {
+            Store::open
+        };
+        open(
             &self.tenants.join(id.to_string()),
             id,
             tenant_key,
@@ -701,6 +732,7 @@ mod tests {
     use crate::catalog::testing::columns_taking_null;
     use crate::clock::ManualClock;
     use crate::fs::{CrashFs, Op};
+    use crate::ids::VersionId;
     use crate::store::testing::vcon;
     use crate::store::{Caller, Created, StoreError};
 
@@ -1339,6 +1371,62 @@ mod tests {
             [OsString::from(kept.to_string()), OsString::from("notes")]
         );
         drop(f.store(kept));
+    }
+
+    /// The server's registry opens each tenant's Store with recovery, so a
+    /// crash's leftovers in it go once the tenant is next used.
+    #[test]
+    fn a_servers_registry_opens_each_store_with_recovery() {
+        let f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        let objects = f.tenants_dir().join(id.to_string()).join("objects");
+        let leftover = format!("{}.tmp", VersionId([0x0e; 16]));
+        f.fs.write_new(&objects.join(&leftover), b"x")
+            .expect("write");
+        let tenants = f.open().expect("opens again");
+        drop(tenants.store(id).expect("its store"));
+        assert!(
+            !f.fs
+                .list(&objects)
+                .expect("list")
+                .contains(&OsString::from(leftover)),
+            "the leftover is removed"
+        );
+    }
+
+    /// A command beside a running server must not take a create or a
+    /// write the server has in progress for a crash's leftovers, in the
+    /// registry or in a tenant's store.
+    #[test]
+    fn opening_beside_a_server_removes_nothing() {
+        let f = fixture();
+        let kept = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        let orphan = TenantId::generate();
+        let tenants = f.tenants_dir();
+        f.fs.create_dir_all(&tenants.join(orphan.to_string()))
+            .expect("a directory");
+        f.fs.sync_dir(&tenants).expect("sync");
+        let in_progress = tenants
+            .join(kept.to_string())
+            .join("objects")
+            .join(format!("{}.tmp", VersionId([0x0e; 16])));
+        f.fs.write_new(&in_progress, b"x").expect("write");
+        let beside =
+            Tenants::open_beside(f.dir.path(), f.master.key(), f.fs.clone(), f.clock.clone())
+                .expect("opens beside");
+        let mut expected = [
+            OsString::from(kept.to_string()),
+            OsString::from(orphan.to_string()),
+        ];
+        expected.sort();
+        assert_eq!(f.dirs(), expected);
+        drop(beside.store(kept).expect("its store"));
+        assert!(
+            f.fs.list(in_progress.parent().expect("objects"))
+                .expect("list")
+                .contains(&OsString::from(in_progress.file_name().expect("name"))),
+            "the write in progress stays"
+        );
     }
 
     #[test]
