@@ -14,7 +14,7 @@ use axum::extract::{MatchedPath, Path as UriPath, Request, State};
 use axum::http::header::{
     AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, ETAG, IF_MATCH, LOCATION, WWW_AUTHENTICATE,
 };
-use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post, put};
@@ -35,7 +35,7 @@ use crate::ids::TenantId;
 use crate::ids::{KeyId, VersionId};
 use crate::retention::Retention;
 use crate::store::{Caller as StoreCaller, Created, Store, StoreError};
-use crate::tenants::{TenantError, Tenants};
+use crate::tenants::{Removal, TenantError, Tenants};
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 use vcon_form::{Inspection, Rejection};
@@ -73,7 +73,10 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/legal/vcons/{uuid}/restore", post(legal_restore))
         .route("/legal/vcons/{uuid}/hold", put(hold_on).delete(hold_off))
         .route("/admin/tenants", post(tenant_create).get(tenant_list))
-        .route("/admin/tenants/{id}", patch(tenant_retention))
+        .route(
+            "/admin/tenants/{id}",
+            patch(tenant_retention).delete(tenant_remove),
+        )
         .layer(axum::middleware::from_fn(log_request))
         .with_state(app)
 }
@@ -660,6 +663,49 @@ async fn tenant_retention(
     }
 }
 
+/// `DELETE /admin/tenants/{id}`: removes a tenant that keeps no version,
+/// or with `?force=true` one that does, unless a uuid of it is under a
+/// legal hold; answers 204.
+async fn tenant_remove(
+    State(app): State<Arc<App>>,
+    UriPath(id): UriPath<String>,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let action = Action::TenantRemove;
+    let removed = async {
+        let (key, _) = admin_admit(&app, &headers, body, action).await?;
+        let refuse = |refused| app.refuse(None, refusal(key, action, refused), refused);
+        let Some(id) = TenantId::parse(&id) else {
+            return Err(refuse(Problem::Tenant(TenantError::NotFound)).await);
+        };
+        let Some(removal) = removal(uri.query()) else {
+            return Err(refuse(Problem::BadQuery).await);
+        };
+        let tenants = app.tenants.clone();
+        // Tenants records its own outcomes.
+        blocking(move || tenants.remove(Actor::Key(key), id, removal))
+            .await
+            .map_err(Problem::Tenant)
+    };
+    match removed.await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(refused) => refused.into_response(),
+    }
+}
+
+/// How far a removal asked over HTTP may go: with no query or
+/// `force=false` only an empty tenant, with `force=true` its vCons too.
+/// No query overrides a legal hold; that is the command line's alone.
+fn removal(query: Option<&str>) -> Option<Removal> {
+    match query {
+        None | Some("force=false") => Some(Removal::Empty),
+        Some("force=true") => Some(Removal::Force),
+        Some(_) => None,
+    }
+}
+
 /// `GET /health`: any valid key may ask; 200 when server.sqlite answers.
 ///
 /// Health requests are counted, one record per key, status and minute, in
@@ -855,6 +901,8 @@ enum Problem {
     Invalid(Invalid),
     /// An admin body is not one the route takes.
     InvalidBody,
+    /// The query is not one the route takes.
+    BadQuery,
     /// Store refused or failed the request.
     Store(StoreError),
     /// Tenants refused or failed the request.
@@ -911,9 +959,10 @@ impl Problem {
             Problem::Forbidden => StatusCode::FORBIDDEN,
             Problem::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Problem::Timeout => StatusCode::REQUEST_TIMEOUT,
-            Problem::BadBody | Problem::BadPathUuid | Problem::BadPathVersion => {
-                StatusCode::BAD_REQUEST
-            }
+            Problem::BadBody
+            | Problem::BadPathUuid
+            | Problem::BadPathVersion
+            | Problem::BadQuery => StatusCode::BAD_REQUEST,
             Problem::PreconditionRequired => StatusCode::PRECONDITION_REQUIRED,
             Problem::PathUuidMismatch => StatusCode::UNPROCESSABLE_ENTITY,
             Problem::Unavailable | Problem::AuditFailed => StatusCode::SERVICE_UNAVAILABLE,
@@ -933,14 +982,14 @@ impl Problem {
             },
             Problem::Tenant(error) => match error {
                 TenantError::NotFound => StatusCode::NOT_FOUND,
-                TenantError::NameTaken => StatusCode::CONFLICT,
+                TenantError::NameTaken | TenantError::HoldsVcons | TenantError::UnderHold => {
+                    StatusCode::CONFLICT
+                }
                 TenantError::BadName => StatusCode::UNPROCESSABLE_ENTITY,
                 TenantError::LimitReached | TenantError::AuditFailed | TenantError::Closing => {
                     StatusCode::SERVICE_UNAVAILABLE
                 }
-                TenantError::HoldsVcons
-                | TenantError::UnderHold
-                | TenantError::CliOnly
+                TenantError::CliOnly
                 | TenantError::BadScopes
                 | TenantError::WrongKey
                 | TenantError::Io => StatusCode::INTERNAL_SERVER_ERROR,
@@ -1017,20 +1066,26 @@ impl Problem {
                 }
                 StoreError::Io => ("internal", "The server failed"),
             },
+            Problem::BadQuery => ("bad-query", "The query is not one this route takes"),
             Problem::InvalidBody | Problem::Tenant(TenantError::BadName) => {
                 ("invalid-body", "The body is not one this route takes")
             }
             Problem::Tenant(error) => match error {
                 TenantError::NotFound => ("unknown-tenant", "No tenant has the id"),
                 TenantError::NameTaken => ("name-taken", "Another tenant has the name"),
+                TenantError::HoldsVcons => (
+                    "holds-vcons",
+                    "The tenant holds vCons; removing them needs force",
+                ),
+                TenantError::UnderHold => {
+                    ("under-hold", "A vCon of the tenant is under a legal hold")
+                }
                 TenantError::LimitReached => ("master-key-limit", "The master key must be rotated"),
                 TenantError::AuditFailed => {
                     ("audit-failed", "The audit record could not be written")
                 }
                 TenantError::Closing => ("unavailable", "The service cannot answer now"),
                 TenantError::BadName
-                | TenantError::HoldsVcons
-                | TenantError::UnderHold
                 | TenantError::CliOnly
                 | TenantError::BadScopes
                 | TenantError::WrongKey
@@ -1555,6 +1610,23 @@ mod tests {
             let answer = post(&s, Some(&writer), b"{}".to_vec()).await;
             assert_eq!(answer.status(), 422);
             assert_eq!(problem(answer).await, "no-form");
+        }
+    }
+
+    #[test]
+    fn a_removal_query_is_none_or_force_true_or_false_and_nothing_else() {
+        assert_eq!(removal(None), Some(Removal::Empty));
+        assert_eq!(removal(Some("force=false")), Some(Removal::Empty));
+        assert_eq!(removal(Some("force=true")), Some(Removal::Force));
+        for query in [
+            "",
+            "force",
+            "force=",
+            "force=1",
+            "Force=true",
+            "force=true&",
+        ] {
+            assert_eq!(removal(Some(query)), None, "{query:?}");
         }
     }
 
@@ -2251,6 +2323,12 @@ mod tests {
                     Some(r#"{"retention":"5y"}"#),
                     "tenant_retention",
                 ),
+                (
+                    Method::DELETE,
+                    format!("/admin/tenants/{id}"),
+                    None,
+                    "tenant_remove",
+                ),
             ]
         }
 
@@ -2467,6 +2545,8 @@ mod tests {
                      CREATE TEMP TRIGGER broken BEFORE INSERT ON tenant
                      BEGIN SELECT RAISE(ABORT, 'the disk has failed'); END;
                      CREATE TEMP TRIGGER broken_too BEFORE UPDATE ON tenant
+                     BEGIN SELECT RAISE(ABORT, 'the disk has failed'); END;
+                     CREATE TEMP TRIGGER broken_three BEFORE DELETE ON tenant
                      BEGIN SELECT RAISE(ABORT, 'the disk has failed'); END;",
                 )
                 .expect("damaged");
@@ -2505,6 +2585,160 @@ mod tests {
                 s.tenants.list(Actor::Cli).err(),
                 Some(crate::tenants::TenantError::AuditFailed)
             );
+        }
+
+        /// Stores A.4 in the server's tenant with a key of its own.
+        async fn stored(s: &Server) {
+            let body = std::fs::read(format!(
+                "{}/../vcon-form/tests/fixtures/ietf/ab_call_ext_rec.vcon",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .expect("A.4");
+            let answer = s
+                .client()
+                .post(s.url("/vcons"))
+                .bearer_auth(s.key(&[Scope::Write]))
+                .header("content-type", "application/vcon")
+                .body(body)
+                .send()
+                .await
+                .expect("an answer");
+            assert_eq!(answer.status(), 201);
+        }
+
+        fn listed(s: &Server) -> Vec<TenantId> {
+            let tenants = s.tenants.list(Actor::Cli).expect("listed");
+            tenants.into_iter().map(|t| t.id).collect()
+        }
+
+        #[tokio::test]
+        async fn an_empty_tenant_is_removed_with_204_then_unknown() {
+            let s = server().await;
+            let op = operator(&s);
+            let beta = s.tenants.create(Actor::Cli, "beta", None).expect("made");
+            let path = format!("/admin/tenants/{beta}");
+            let answer = call(&s, Method::DELETE, &path, Some(&op), None).await;
+            assert_eq!(answer.status(), 204);
+            assert_eq!(listed(&s), vec![s.tenant]);
+            let answer = call(&s, Method::DELETE, &path, Some(&op), None).await;
+            assert_eq!(answer.status(), 404);
+            assert_eq!(problem(answer).await, "unknown-tenant");
+            let removed = admin_log(&s, "tenant_remove");
+            let statuses: Vec<&Value> = removed.iter().map(|r| &r["status"]).collect();
+            assert_eq!(statuses, [204, 404]);
+        }
+
+        #[tokio::test]
+        async fn a_tenant_holding_vcons_is_409_without_force_and_removed_with_it() {
+            let s = server().await;
+            let op = operator(&s);
+            stored(&s).await;
+            let reader = s.key(&[Scope::Read]);
+            let path = format!("/admin/tenants/{}", s.tenant);
+            for query in ["", "?force=false"] {
+                let path = format!("{path}{query}");
+                let answer = call(&s, Method::DELETE, &path, Some(&op), None).await;
+                assert_eq!(answer.status(), 409, "{query}");
+                assert_eq!(problem(answer).await, "holds-vcons", "{query}");
+            }
+            assert_eq!(listed(&s), vec![s.tenant], "still there");
+
+            let forced = format!("{path}?force=true");
+            let answer = call(&s, Method::DELETE, &forced, Some(&op), None).await;
+            assert_eq!(answer.status(), 204);
+            assert_eq!(listed(&s), Vec::<TenantId>::new());
+            let health = s
+                .client()
+                .get(s.url("/health"))
+                .bearer_auth(&reader)
+                .send()
+                .await
+                .expect("an answer");
+            assert_eq!(health.status(), 401, "its keys went with it");
+        }
+
+        #[tokio::test]
+        async fn a_legal_hold_is_409_even_with_force() {
+            let s = server().await;
+            let op = operator(&s);
+            stored(&s).await;
+            let legal = s.key(&[Scope::Legal]);
+            let hold = s
+                .client()
+                .put(s.url("/legal/vcons/01a07da8-c2bb-83e5-b9a2-279e0d16bc46/hold"))
+                .bearer_auth(&legal)
+                .send()
+                .await
+                .expect("an answer");
+            assert_eq!(hold.status(), 204);
+            let path = format!("/admin/tenants/{}?force=true", s.tenant);
+            let answer = call(&s, Method::DELETE, &path, Some(&op), None).await;
+            assert_eq!(answer.status(), 409);
+            assert_eq!(problem(answer).await, "under-hold");
+            assert_eq!(listed(&s), vec![s.tenant], "still there");
+            let removed = admin_log(&s, "tenant_remove");
+            assert_eq!(removed.len(), 1);
+            assert_eq!(removed[0]["status"], 409);
+            let read = s
+                .client()
+                .get(s.url("/legal/vcons/01a07da8-c2bb-83e5-b9a2-279e0d16bc46"))
+                .bearer_auth(&legal)
+                .send()
+                .await
+                .expect("an answer");
+            assert_eq!(read.status(), 200, "the tenant is served again");
+        }
+
+        #[tokio::test]
+        async fn a_query_it_does_not_take_is_400_and_recorded() {
+            let s = server().await;
+            let op = operator(&s);
+            let queries = [
+                "force=yes",
+                "force=TRUE",
+                "force",
+                "force=",
+                "force=true&force=true",
+                "force=true&other=1",
+                "other=1",
+            ];
+            for query in queries {
+                let path = format!("/admin/tenants/{}?{query}", s.tenant);
+                let answer = call(&s, Method::DELETE, &path, Some(&op), None).await;
+                assert_eq!(answer.status(), 400, "{query}");
+                assert_eq!(problem(answer).await, "bad-query", "{query}");
+            }
+            let refused = admin_log(&s, "tenant_remove");
+            assert_eq!(refused.len(), queries.len());
+            assert!(refused.iter().all(|r| r["status"] == 400));
+            assert_eq!(listed(&s), vec![s.tenant]);
+        }
+
+        #[tokio::test]
+        async fn a_removal_of_no_tenant_is_404_and_recorded() {
+            let s = server().await;
+            let op = operator(&s);
+            let unknown = TenantId([7; 16]).to_string();
+            for id in [unknown.as_str(), "acme"] {
+                let path = format!("/admin/tenants/{id}?force=true");
+                let answer = call(&s, Method::DELETE, &path, Some(&op), None).await;
+                assert_eq!(answer.status(), 404, "{id}");
+                assert_eq!(problem(answer).await, "unknown-tenant", "{id}");
+            }
+            let refused = admin_log(&s, "tenant_remove");
+            assert_eq!(refused.len(), 2);
+            assert!(refused.iter().all(|r| r["status"] == 404));
+        }
+
+        #[tokio::test]
+        async fn a_removal_of_a_closing_tenant_is_503() {
+            let s = server().await;
+            let op = operator(&s);
+            s.tenants.close(s.tenant);
+            let path = format!("/admin/tenants/{}", s.tenant);
+            let answer = call(&s, Method::DELETE, &path, Some(&op), None).await;
+            assert_eq!(answer.status(), 503);
+            assert_eq!(problem(answer).await, "unavailable");
         }
 
         #[tokio::test]
