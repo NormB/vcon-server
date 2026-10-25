@@ -45,7 +45,7 @@ pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogE
     // wrong key among them; this program says what went wrong itself.
     // SQLCipher's settings are not in SQLite's pragma list, which rusqlite's
     // pragma helpers check names against, so they go as plain SQL.
-    conn.execute_batch("PRAGMA cipher_log_level = NONE")?;
+    conn.execute_batch("PRAGMA cipher_log_level = WARN")?;
     set_key(&conn, key)?;
     // SQLCipher reads nothing until the first query, so a wrong key shows
     // here, as a file that is not a database.
