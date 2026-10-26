@@ -141,6 +141,17 @@ See [the docs](https://docs.rs/hook-fixture)."
 expect refuse "crate README with a relative link" crates/fixture/README.md "# hook-fixture
 
 See [the guide](docs/guide.md)."
+# Ids of any length: phases and tasks past the first ten, and decisions and
+# rules past 99, are as private as the first ones.
+expect refuse "plan task id in phase 11" notes.txt "done P""11.4"
+expect refuse "plan task id in phase 13" notes.txt "done P""13.7"
+expect refuse "plan task id with a two-digit task" notes.txt "done P""14.10"
+expect refuse "plan task id in phase 100" notes.txt "done P""100.1"
+expect refuse "plan task id with a three-digit task" notes.txt "done P""2.100"
+expect refuse "design decision id past 99" notes.txt "see CD""100"
+expect refuse "scope decision id past 99" notes.txt "see D""100"
+expect refuse "design rule id past 99" notes.txt "see FMT""-100"
+expect accept "names like plan ids" notes.txt "RFC 9457, P-256, P256, XP11.4, HTTP/1.1, 0.1.0, AES-256-GCM, D-Bus"
 expect refuse "draft number" notes.txt "from draft ""6.8"
 ietf_tel="+1234567""8901"
 expect accept "IETF example number in IETF fixtures" crates/x/tests/fixtures/ietf/a.vcon "{\"tel\": \"$ietf_tel\"}"
@@ -154,6 +165,7 @@ expect refuse "AI trailer in message" notes.txt "message case one" "Fix it
 
 Co-Authored-By: ${ai_word^} <noreply@${ai_co}.com>"
 expect refuse "plan task id in message" notes.txt "message case two" "Finish P""0.3"
+expect refuse "later plan task id in message" notes.txt "message case five" "Finish P""14.10"
 expect refuse "email in message" notes.txt "message case three" "Ask someone@gm""ail.com"
 expect accept "clean message" notes.txt "message case four" "Explain the change"
 expect refuse "unformatted code" crates/fixture/src/lib.rs "pub fn add_one(x:u32)->u32{x+1}"

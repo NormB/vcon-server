@@ -25,17 +25,19 @@ OWNER = [("owner's name", re.compile(r"\b(b)randinger\b", re.I))]
 # the site's configuration, which the page footer reads. Nowhere else.
 OWNER_CREDIT_PATHS = {"README.md", "website/config.toml"}
 
+# Every id takes any number of digits: the documents keep growing, and an id
+# past the first phases or past 99 is as private as the first ones.
 PRIVATE_DOC_IDS = [
     # Any case, joined by - or _, so an id inside a snake_case name is
     # caught too; \b would not split _ from a letter, so the edges are
     # spelled out.
     (
         "design rule id",
-        re.compile(r"(?<![A-Za-z0-9])(?:FMT|ENV|STO|ACC|AUD|API|OPS|TEN)[-_][0-9]{1,2}(?![0-9])", re.I),
+        re.compile(r"(?<![A-Za-z0-9])(?:FMT|ENV|STO|ACC|AUD|API|OPS|TEN)[-_][0-9]+(?![0-9])", re.I),
     ),
-    ("design decision id", re.compile(r"\bCD[0-9]{1,2}\b")),
-    ("scope decision id", re.compile(r"\bD(?:[1-9]|[1-9][0-9])\b")),
-    ("plan task id", re.compile(r"\bP[0-9]{1,2}\.[0-9]{1,2}\b")),
+    ("design decision id", re.compile(r"\bCD[0-9]+\b")),
+    ("scope decision id", re.compile(r"\bD[1-9][0-9]*\b")),
+    ("plan task id", re.compile(r"\bP[0-9]+\.[0-9]+\b")),
     ("private draft number", re.compile(r"\bdraft\s+[0-9]+\.[0-9]+\b", re.I)),
 ]
 
