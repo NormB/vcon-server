@@ -95,3 +95,35 @@ export async function store(request, token, body, contentType = "application/vco
 export async function openView(page, name) {
   await page.click(`#views button[data-view="${name}"]`);
 }
+
+/** The operator key the run was given. */
+export const operatorKey = operator;
+
+/** Every record of a log, read through the API a page at a time. */
+export async function auditLog(request, token, path) {
+  const records = [];
+  let after = 0;
+  for (;;) {
+    const answer = await request.get(`${path}?after=${after}&limit=1000`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(answer.status(), `${path}: ${answer.status()}`).toBe(200);
+    const lines = (await answer.text()).split("\n").filter((l) => l !== "");
+    records.push(...lines.map((l) => JSON.parse(l)));
+    if (lines.length < 1000) {
+      return records;
+    }
+    after = records[records.length - 1].seq;
+  }
+}
+
+/** What a record says was done, without where it sits in its log or when. */
+export function done(record) {
+  return {
+    actor: record.actor,
+    action: record.action,
+    status: record.status,
+    version: record.version === null ? null : "a version",
+    count: record.count,
+  };
+}

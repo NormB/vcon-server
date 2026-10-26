@@ -50,3 +50,6 @@ All notable changes to this project are recorded here. The format follows
 - Client examples in `clients/` (curl, Python, TypeScript, Go and Rust), each
   storing, listing, reading and deleting a vCon; CI runs every one against a
   live server (`scripts/run-clients.sh`).
+- The console's legal actions (hold, release, restore), audit log view
+  (tenant log or admin log, a page at a time), and tenants and keys views
+  for an operator key, each leaving the same audit record as the API.

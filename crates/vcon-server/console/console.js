@@ -272,7 +272,32 @@ function legalView(view) {
   const versions = table("versions", ["version", "stored", "hidden", "current", ""]);
   const versionBody = el("pre", "", { id: "version-body" });
   const found = el("section", "", { id: "legal-vcon", hidden: "" });
+  const hold = el("button", "Hold", { id: "hold", type: "button" });
+  const release = el("button", "Release hold", { id: "release", type: "button" });
+  const restore = el("button", "Restore", { id: "restore", type: "button" });
+  let current = null;
+
+  /** One legal action on the vCon found; `done` says what it did. */
+  async function act(method, rest, expected, done) {
+    const answer = await request(method, vconPath("/legal/vcons", current, rest));
+    if (answer.status !== expected) {
+      message.textContent = await refusal(answer);
+      return;
+    }
+    const said = done(answer);
+    await find(current);
+    message.textContent = said;
+  }
+
+  hold.addEventListener("click", () => act("PUT", "/hold", 204, () => `Held ${current}`));
+  release.addEventListener("click", () => act("DELETE", "/hold", 204, () => `Released ${current}`));
+  restore.addEventListener("click", () =>
+    act("POST", "/restore", 200, (a) => `Restored ${current}, version ${a.headers.get("ETag")}`),
+  );
   found.append(
+    hold,
+    release,
+    restore,
     el("h3", "Current or last kept version"),
     state,
     etag,
@@ -283,6 +308,7 @@ function legalView(view) {
   );
 
   async function find(uuid) {
+    current = uuid;
     message.textContent = "";
     found.hidden = true;
     clear(versions.tBodies[0]);
@@ -323,10 +349,188 @@ function legalView(view) {
   );
 }
 
+/** How many audit records a page of the audit view asks for. */
+const AUDIT_PAGE = 50;
+
+/** The scope names a tenant key may hold, in their fixed order. */
+const TENANT_SCOPES = ["write", "read", "delete", "legal", "audit"];
+
+/** Asks the user, through the browser's own dialog, before a change. */
+function confirmed(question) {
+  return window.confirm(question);
+}
+
+/** The audit view: the key's tenant log, or the admin log for an operator key. */
+function auditView(view) {
+  const admin = holds("admin");
+  const path = admin ? "/admin/audit" : "/audit";
+  const log = table("audit-log", ["seq", "at", "actor", "action", "target", "version", "status", "count"]);
+  const more = el("button", "More", { id: "audit-more", type: "button", hidden: "" });
+  const message = el("p", "", { id: "audit-message", role: "alert" });
+  let after = 0;
+
+  async function page() {
+    const query = new URLSearchParams({ after: String(after), limit: String(AUDIT_PAGE) });
+    const answer = await request("GET", `${path}?${query}`);
+    if (answer.status !== 200) {
+      message.textContent = await refusal(answer);
+      return;
+    }
+    const lines = (await answer.text()).split("\n").filter((line) => line !== "");
+    for (const line of lines) {
+      const r = JSON.parse(line);
+      log.tBodies[0].append(row([r.seq, r.at, r.actor, r.action, r.target, r.version, r.status, r.count]));
+      after = r.seq;
+    }
+    more.hidden = lines.length < AUDIT_PAGE;
+  }
+
+  more.addEventListener("click", () => page());
+  view.append(el("h2", admin ? "Admin log" : "Audit log", { id: "audit-title" }), log, more, message);
+  page();
+}
+
+/** The tenants view for an operator key: tenants, and each one's keys. */
+function tenantsView(view) {
+  const message = el("p", "", { id: "tenant-message", role: "alert" });
+  const tenants = table("tenants", ["id", "name", "retention", ""]);
+  const keys = el("section", "", { id: "keys", hidden: "" });
+
+  async function reload() {
+    clear(tenants.tBodies[0]);
+    const answer = await request("GET", "/admin/tenants");
+    if (answer.status !== 200) {
+      message.textContent = await refusal(answer);
+      return;
+    }
+    for (const t of await answer.json()) {
+      const showKeys = el("button", "Keys", { class: "keys", type: "button" });
+      showKeys.addEventListener("click", () => keysOf(keys, t));
+      const setRetention = el("button", "Retention", { class: "set-retention", type: "button" });
+      setRetention.addEventListener("click", () => retention(t));
+      const remove = el("button", "Remove", { class: "remove", type: "button" });
+      remove.addEventListener("click", () => removeTenant(t));
+      tenants.tBodies[0].append(
+        row([t.id, t.name, t.retention === null ? "server default" : t.retention], [showKeys, setRetention, remove]),
+      );
+    }
+  }
+
+  async function retention(t) {
+    const period = window.prompt(`Retention period for ${t.name}, such as 7y, 18m or 90d; empty for the server default`, t.retention ?? "");
+    if (period === null) {
+      return;
+    }
+    const body = JSON.stringify({ retention: period.trim() === "" ? null : period.trim() });
+    const answer = await request("PATCH", `/admin/tenants/${encodeURIComponent(t.id)}`, body, {
+      "Content-Type": "application/json",
+    });
+    message.textContent = answer.status === 200 ? `Retention of ${t.name} set` : await refusal(answer);
+    await reload();
+  }
+
+  async function removeTenant(t) {
+    if (!confirmed(`Remove tenant ${t.name}?`)) {
+      return;
+    }
+    const path = `/admin/tenants/${encodeURIComponent(t.id)}`;
+    let answer = await request("DELETE", path);
+    if (answer.status === 409) {
+      const problem = await answer.json();
+      if (problem.type.endsWith("/holds-vcons") && confirmed(`${t.name} still holds vCons. Remove them too?`)) {
+        answer = await request("DELETE", `${path}?force=true`);
+      } else {
+        message.textContent = `${problem.title} (${problem.status})`;
+        return;
+      }
+    }
+    message.textContent = answer.status === 204 ? `Removed ${t.name}` : await refusal(answer);
+    keys.hidden = true;
+    clear(keys);
+    await reload();
+  }
+
+  const name = field("tenant-name", "Name");
+  const period = el("input", "", { id: "tenant-retention", autocomplete: "off", spellcheck: "false" });
+  const create = form(
+    "tenant-create",
+    [...name, el("label", "Retention (empty for the server default)", { for: "tenant-retention" }), period, el("button", "Create tenant", { type: "submit" })],
+    async () => {
+      const retention = period.value.trim();
+      const body = JSON.stringify({ name: name[1].value, retention: retention === "" ? null : retention });
+      const answer = await request("POST", "/admin/tenants", body, { "Content-Type": "application/json" });
+      message.textContent = answer.status === 201 ? `Created ${name[1].value}` : await refusal(answer);
+      await reload();
+    },
+  );
+  view.append(el("h2", "Tenants"), create, message, tenants, keys);
+  reload();
+}
+
+/** One tenant's keys: listed, issued (the token shown once) and revoked. */
+async function keysOf(section, t) {
+  clear(section);
+  section.hidden = false;
+  const message = el("p", "", { id: "key-message", role: "alert" });
+  const token = el("p", "", { id: "new-token" });
+  const listed = table("key-list", ["id", "scopes", "label", "created", "revoked", ""]);
+  const path = `/admin/tenants/${encodeURIComponent(t.id)}/keys`;
+
+  async function reload() {
+    clear(listed.tBodies[0]);
+    const answer = await request("GET", path);
+    if (answer.status !== 200) {
+      message.textContent = await refusal(answer);
+      return;
+    }
+    for (const k of await answer.json()) {
+      const controls = [];
+      if (k.revoked_at === null) {
+        const revoke = el("button", "Revoke", { class: "revoke", type: "button" });
+        revoke.addEventListener("click", async () => {
+          if (!confirmed(`Revoke key ${k.id}?`)) {
+            return;
+          }
+          const gone = await request("DELETE", `/admin/keys/${encodeURIComponent(k.id)}`);
+          message.textContent = gone.status === 204 ? `Revoked ${k.id}` : await refusal(gone);
+          await reload();
+        });
+        controls.push(revoke);
+      }
+      listed.tBodies[0].append(row([k.id, k.scopes.join(", "), k.label, k.created_at, k.revoked_at], controls));
+    }
+  }
+
+  const choices = [];
+  for (const scope of TENANT_SCOPES) {
+    const box = el("input", "", { type: "checkbox", name: "scope", value: scope, id: `scope-${scope}` });
+    choices.push(box, el("label", scope, { for: `scope-${scope}` }));
+  }
+  const label = field("key-label", "Label");
+  const create = form("key-create", [...choices, ...label, el("button", "Issue key", { type: "submit" })], async () => {
+    const scopes = TENANT_SCOPES.filter((s) => document.getElementById(`scope-${s}`).checked);
+    const body = JSON.stringify({ scopes, label: label[1].value });
+    const answer = await request("POST", path, body, { "Content-Type": "application/json" });
+    if (answer.status === 201) {
+      const made = await answer.json();
+      token.textContent = made.token;
+      message.textContent = `Issued ${made.id}. Copy the token now; it is not shown again.`;
+    } else {
+      token.textContent = "";
+      message.textContent = await refusal(answer);
+    }
+    await reload();
+  });
+  section.append(el("h3", `Keys of ${t.name}`), create, message, token, listed);
+  await reload();
+}
+
 /** The views, each shown only to a key whose scopes allow it. */
 const VIEWS = [
   { name: "vcons", title: "vCons", allowed: () => holds("read") || holds("write") || holds("delete"), render: vconsView },
   { name: "legal", title: "Legal", allowed: () => holds("legal"), render: legalView },
+  { name: "audit", title: "Audit log", allowed: () => holds("audit") || holds("admin"), render: auditView },
+  { name: "tenants", title: "Tenants", allowed: () => holds("admin"), render: tenantsView },
 ];
 
 function showViews() {

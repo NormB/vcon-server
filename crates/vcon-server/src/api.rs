@@ -645,7 +645,9 @@ async fn hold_off(
 }
 
 async fn hold(app: Arc<App>, uuid: String, headers: HeaderMap, body: Body, on: bool) -> Response {
-    let (admitted, uuid) = match legal_admit(&app, &headers, body, Action::Hold, &uuid).await {
+    // A release is its own action, so the log tells it from a hold.
+    let action = if on { Action::Hold } else { Action::Release };
+    let (admitted, uuid) = match legal_admit(&app, &headers, body, action, &uuid).await {
         Ok(admitted) => admitted,
         Err(refused) => return refused.into_response(),
     };
@@ -2474,8 +2476,8 @@ mod tests {
                 assert_eq!(answer.status(), 204);
                 assert!(answer.bytes().await.expect("body").is_empty());
             }
-            let holds = s.tenant_log("hold");
-            assert_eq!(holds.len(), 2);
+            assert_eq!(s.tenant_log("hold").len(), 1, "the hold");
+            assert_eq!(s.tenant_log("release").len(), 1, "the release, as itself");
         }
 
         #[tokio::test]
@@ -2569,7 +2571,7 @@ mod tests {
                 assert_eq!(answer.status(), 400, "{method} {path}");
                 assert_eq!(problem(answer).await, "bad-path-uuid");
             }
-            for action in ["legal_read", "legal_versions", "restore", "hold"] {
+            for action in ["legal_read", "legal_versions", "restore", "hold", "release"] {
                 let last = s.tenant_log(action).last().expect("recorded").clone();
                 assert_eq!(last["status"], 400, "{action}'s refusal is recorded");
             }

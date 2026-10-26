@@ -222,7 +222,7 @@ impl Store {
         };
         let entry = Entry {
             actor: Actor::Key(who.key),
-            action: Action::Hold,
+            action: if on { Action::Hold } else { Action::Release },
             target: Some(uuid.to_string()),
             version: None,
             status: status(&answer, 204),
@@ -616,6 +616,30 @@ mod legal_tests {
             Err(StoreError::Gone),
             "released, so purged"
         );
+    }
+
+    /// A release is recorded as a release, so the log tells it from a hold.
+    #[test]
+    fn a_release_is_recorded_as_release_not_as_hold() {
+        let f = fixture();
+        stored(&f, UUID, "first");
+        assert_eq!(f.store.set_hold(&f.caller, uuid(), true), Ok(()));
+        assert_eq!(f.store.set_hold(&f.caller, uuid(), false), Ok(()));
+        let actions: Vec<_> = f
+            .store
+            .records()
+            .into_iter()
+            .filter(|r| r["target"] == UUID)
+            .map(|r| r["action"].as_str().expect("an action").to_owned())
+            .collect();
+        assert_eq!(actions, ["create", "hold", "release"]);
+        assert_eq!(last(&f, "release")["status"], 204);
+        let never: Uuid = OTHER.parse().expect("uuid");
+        assert_eq!(
+            f.store.set_hold(&f.caller, never, false),
+            Err(StoreError::NotFound)
+        );
+        assert_eq!(last(&f, "release")["status"], 404, "a refused release too");
     }
 
     #[test]

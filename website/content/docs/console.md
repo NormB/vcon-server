@@ -41,7 +41,9 @@ not shown; the API would refuse its request anyway.
 | View | Shown for | What it does |
 |---|---|---|
 | **vCons** | `read`, `write` or `delete` | lists, reads, stores and deletes vCons, as below |
-| **Legal** | `legal` | reads a vCon as a legal key sees it, and its versions |
+| **Legal** | `legal` | reads a vCon as a legal key sees it and its versions; holds, releases and restores it |
+| **Audit log** | `audit`, or an operator key | the tenant's audit log, or for an operator key the admin log |
+| **Tenants** | an operator key | tenants and their keys |
 
 ## Work with vCons
 
@@ -71,6 +73,47 @@ deleted, the last kept one) as text, and every kept version with when it was
 stored and hidden. Choose **Open** beside a version to read it. These use
 `GET /legal/vcons/{uuid}`, `GET /legal/vcons/{uuid}/versions` and
 `GET /legal/vcons/{uuid}/versions/{version}`.
+
+Under the vCon found:
+
+- **Hold** puts a legal hold on it (`PUT /legal/vcons/{uuid}/hold`).
+- **Release hold** takes the hold off (`DELETE /legal/vcons/{uuid}/hold`).
+- **Restore** makes a deleted vCon live again with its last kept version
+  (`POST /legal/vcons/{uuid}/restore`). A live vCon is refused with
+  `not-deleted` (409).
+
+## Read the audit log
+
+Choose **Audit log**. A tenant key with the `audit` scope sees its tenant's
+log (`GET /audit`); an operator key sees the admin log (`GET /admin/audit`).
+Records are listed oldest first, 50 at a time, with their `seq`, time,
+actor, action, target, version, status and count; choose **More** for the
+next 50. Each page read is itself recorded, as `audit_read`. See
+[audit logs](@/docs/audit-logs.md#a-record) for the fields.
+
+## Manage tenants and keys
+
+Sign in with an operator key and choose **Tenants**.
+
+- **Create a tenant:** type its **Name** and, if it should not use the
+  server default, a **Retention** period such as `7y`, `18m` or `90d`, then
+  choose **Create tenant** (`POST /admin/tenants`).
+- **Change its retention:** choose **Retention** in its row and type the new
+  period, or leave it empty for the server default
+  (`PATCH /admin/tenants/{id}`).
+- **Remove it:** choose **Remove** and confirm (`DELETE /admin/tenants/{id}`).
+  If it still holds vCons, the console asks again before it removes them
+  too (`?force=true`). A tenant with any vCon under a legal hold is never
+  removed over the API.
+- **Its keys:** choose **Keys** to list them. To issue one, tick its scopes,
+  type a **Label** and choose **Issue key**
+  (`POST /admin/tenants/{id}/keys`). The token is shown once, under the
+  form: copy it then. It is gone once you leave the view, and the server
+  cannot show it again. **Revoke** a key and confirm to end it
+  (`DELETE /admin/keys/{id}`).
+
+Each of these leaves the same audit record as the same request made with
+`curl` or any other client.
 
 ## What the console keeps
 
