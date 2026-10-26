@@ -99,7 +99,7 @@ to one thing the server reads from outside:
 | `ids` | any text as a key, tenant or version id |
 | `retention` | any text as a retention period, added to any time |
 | `config` | any text as the configuration file |
-| `list_query` | any text as the query string of `GET /vcons`: names, percent decoding, limit, cursor, time bounds |
+| `query` | any text as a query string, as `GET /vcons` reads it (names, percent decoding, limit, cursor, time bounds) and as the audit routes read it |
 | `sealed` | any bytes as a sealed vCon or a wrapped key read from disk; none may open |
 | `http_request` | any request to the API, served in-process: token, path, media type, `Content-Length`, `If-Match`, the body and inflation limits, every handler; no answer is 500 or more, and a body over a limit is answered 413 |
 

@@ -104,8 +104,8 @@ doc = false
 bench = false
 
 [[bin]]
-name = "list_query"
-path = "fuzz_targets/list_query.rs"
+name = "query"
+path = "fuzz_targets/query.rs"
 test = false
 doc = false
 bench = false

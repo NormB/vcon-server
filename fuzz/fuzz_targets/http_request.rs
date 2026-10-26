@@ -35,7 +35,7 @@ const BODY_LIMIT: usize = 2048;
 const INFLATED_LIMIT: u64 = 8192;
 const UUID: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bc46";
 
-const ROUTES: [(&str, &str); 20] = [
+const ROUTES: [(&str, &str); 22] = [
     ("POST", "/vcons"),
     ("GET", "/vcons/{}"),
     ("PUT", "/vcons/{}"),
@@ -56,6 +56,8 @@ const ROUTES: [(&str, &str); 20] = [
     ("DELETE", "/admin/keys/{}"),
     ("GET", "/{}"),
     ("GET", "/vcons{}"),
+    ("GET", "/audit{}"),
+    ("GET", "/admin/audit{}"),
 ];
 const CREATE: usize = 0;
 const TENANT_CREATE: usize = 11;

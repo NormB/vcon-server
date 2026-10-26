@@ -12,4 +12,4 @@ retention	crates/vcon-server/src/retention.rs	let day = at.day().min(month.lengt
 config	crates/vcon-server/src/config.rs	let retention_default = match raw.retention_default {
 sealed	crates/vcon-server/src/envelope.rs	gcm_open(key, *nonce, &ctx.associated_data(format), text)
 http_request	crates/vcon-server/src/api.rs	Err(Problem::TooLarge)
-list_query	crates/vcon-server/src/query.rs	if read.insert(name.into_owned(), value.into_owned()).is_some() {
+query	crates/vcon-server/src/query.rs	if read.insert(name.into_owned(), value.into_owned()).is_some() {
