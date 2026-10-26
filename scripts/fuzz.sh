@@ -64,8 +64,14 @@ run() {
   # built for, which for the musl release binary CI uses has no sanitizer.
   local host
   host="$(cd "$fuzz" && rustc -vV | sed -n 's/^host: //p')"
-  (cd "$fuzz" && cargo fuzz run --fuzz-dir "$fuzz" --target "$host" "$target" "${corpora[@]}" -- \
-    -max_total_time="$seconds" -print_final_stats=1 -artifact_prefix="$artifacts")
+  # A target that writes files (http_request's data directory) writes them
+  # under TMPDIR; a crash skips its own cleanup, so the run removes them.
+  local tmp status=0
+  tmp="$(mktemp -d)"
+  (cd "$fuzz" && TMPDIR="$tmp" cargo fuzz run --fuzz-dir "$fuzz" --target "$host" "$target" "${corpora[@]}" -- \
+    -max_total_time="$seconds" -print_final_stats=1 -artifact_prefix="$artifacts") || status=$?
+  rm -rf "$tmp"
+  return "$status"
 }
 
 plant() {
