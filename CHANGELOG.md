@@ -14,6 +14,8 @@ All notable changes to this project are recorded here. The format follows
   its form (unsigned, signed or encrypted), whether it is gzipped, and its
   uuid, or why it cannot be stored.
 - Licence files (MIT OR Apache-2.0), README and this changelog.
+- `LICENSES/`: the two licence texts again, named by SPDX identifier
+  (`Apache-2.0.txt`, `MIT.txt`), kept identical to the root files by a test.
 - Git hooks: fmt, clippy and tests on the staged tree, and refusal of personal
   data and AI-tool attribution in changes and commit messages.
 - Pre-push hook: every outgoing commit must be signed by an allowed signer and

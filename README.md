@@ -61,6 +61,7 @@ Licensed under either of
 - [Apache License, Version 2.0](LICENSE-APACHE)
 - [MIT License](LICENSE-MIT)
 
-at your option.
+at your option. The same two texts are in [`LICENSES/`](LICENSES), named by
+their SPDX identifiers.
 
 Copyright 2026 [Norm Brandinger](https://www.linkedin.com/in/nbrandinger)
