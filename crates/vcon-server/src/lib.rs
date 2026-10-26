@@ -8,6 +8,7 @@ pub mod catalog;
 pub mod clock;
 pub mod commands;
 pub mod config;
+pub mod console;
 pub mod datadir;
 pub mod envelope;
 pub mod fs;

@@ -100,14 +100,21 @@ impl Scopes {
     }
 }
 
-impl std::fmt::Display for Scopes {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let names: Vec<&str> = Scope::ALL
+impl Scopes {
+    /// The names of the scopes held, in the fixed order of `Scope::ALL`,
+    /// as the API and the command line list them.
+    pub fn names(self) -> Vec<&'static str> {
+        Scope::ALL
             .into_iter()
             .filter(|s| self.contains(*s))
             .map(Scope::name)
-            .collect();
-        f.write_str(&names.join(","))
+            .collect()
+    }
+}
+
+impl std::fmt::Display for Scopes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.names().join(","))
     }
 }
 
@@ -251,6 +258,13 @@ pub fn parse(token: &str) -> Result<KeyId, AuthError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scopes_are_named_in_their_fixed_order() {
+        let scopes = Scopes::of(&[Scope::Legal, Scope::Write, Scope::Read]);
+        assert_eq!(scopes.names(), ["write", "read", "legal"]);
+        assert_eq!(Scopes::of(&[Scope::Admin]).names(), ["admin"]);
+    }
 
     const ID: &str = "0123456789abcdef";
 

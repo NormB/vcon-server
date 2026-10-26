@@ -43,6 +43,13 @@ TLS only, via rustls with its safe default protocol versions (TLS 1.2 and
 1.3), HTTP/2 and HTTP/1.1. Tokens are compared by their SHA-256; the server
 never stores a token.
 
+## In the browser
+
+The [console](@/docs/console.md) holds the key it signs in with in page
+memory only, shows everything the server sends as text, and is served with a
+content-security policy that allows only its own script, no inline code and
+no framing.
+
 ## What each theft gives
 
 | Stolen | Gives |

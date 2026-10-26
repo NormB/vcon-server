@@ -68,6 +68,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/vcons", post(create).get(list))
         .route("/vcons/{uuid}", get(read).put(replace).delete(delete))
         .route("/health", get(health))
+        .route("/key", get(key_info))
         .route("/audit", get(audit_read))
         .route("/admin/audit", get(admin_audit_read))
         .route("/legal/vcons/{uuid}", get(legal_read))
@@ -82,6 +83,7 @@ pub fn router(app: Arc<App>) -> Router {
         )
         .route("/admin/tenants/{id}/keys", post(key_create).get(key_list))
         .route("/admin/keys/{id}", axum::routing::delete(key_revoke))
+        .merge(crate::console::router())
         .layer(axum::middleware::from_fn(log_request))
         .with_state(app)
 }
@@ -941,6 +943,62 @@ async fn health(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     }
 }
 
+/// `GET /key`: any valid key reads what it may do: its own id, its tenant
+/// (null for an operator key) and its scopes, so a client can tell which
+/// requests it may make.
+///
+/// The read is recorded before the answer, in the key's tenant log, or the
+/// admin log for an operator key. A key whose tenant is being removed, or
+/// whose tenant's log cannot be opened, is refused with 503, recorded in
+/// the admin log.
+async fn key_info(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    let caller = match authenticated(&app, &headers).await {
+        Ok(caller) => caller,
+        Err(refused) => return refused.into_response(),
+    };
+    let entry = |status| Entry {
+        actor: Actor::Key(caller.key),
+        action: Action::KeyInfo,
+        target: Some(caller.key.to_string()),
+        version: None,
+        status,
+    };
+    let store = match caller.tenant {
+        Some(t) => {
+            let tenants = app.tenants.clone();
+            match blocking(move || tenants.store(t)).await {
+                Ok(store) => Some(store),
+                Err(_) => {
+                    let refused = Problem::Unavailable;
+                    let entry = entry(refused.status().as_u16());
+                    return app.refuse(None, entry, refused).await.into_response();
+                }
+            }
+        }
+        None => None,
+    };
+    let tenants = app.tenants.clone();
+    let record = entry(200);
+    let recorded = blocking(move || match store {
+        Some(store) => store.log(&record).is_ok(),
+        None => tenants.record_alone(&record).is_ok(),
+    })
+    .await;
+    if !recorded {
+        return Problem::AuditFailed.into_response();
+    }
+    let body = serde_json::json!({
+        "id": caller.key.to_string(),
+        "tenant": caller.tenant.map(|t| t.to_string()),
+        "scopes": caller.scopes.names(),
+    });
+    let mut answer = json_answer(StatusCode::OK, &body);
+    answer
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    answer
+}
+
 /// The audit record of a request refused before Store saw it.
 fn refusal(key: KeyId, action: Action, refused: Problem) -> Entry {
     Entry {
@@ -1578,6 +1636,18 @@ mod tests {
 
             pub(super) fn client(&self) -> reqwest::Client {
                 client(&self.certificate, self.addr)
+            }
+
+            /// A client that shows a redirect instead of following it.
+            pub(super) fn client_not_following(&self) -> reqwest::Client {
+                let pem = self.certificate.pem.as_bytes();
+                reqwest::Client::builder()
+                    .tls_certs_only([reqwest::Certificate::from_pem(pem).expect("pem")])
+                    .resolve("localhost", self.addr)
+                    .no_proxy()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .build()
+                    .expect("a client")
             }
 
             pub(super) fn key(&self, scopes: &[Scope]) -> String {
@@ -4262,6 +4332,206 @@ mod tests {
             let answer = list(&s, Some(&reader), "").await;
             assert_eq!(answer.status(), 503);
             assert_eq!(problem(answer).await, "audit-failed");
+        }
+    }
+
+    /// `GET /key`: a key learns its own id, tenant and scopes, and the
+    /// request is recorded before the answer goes out.
+    mod key_info {
+        use serde_json::Value;
+
+        use super::pipeline::{Server, problem, server};
+        use crate::access::{self, Scope, Scopes};
+        use crate::audit::Actor;
+
+        async fn key(s: &Server, token: Option<&str>) -> reqwest::Response {
+            let mut request = s.client().get(s.url("/key"));
+            if let Some(token) = token {
+                request = request.bearer_auth(token);
+            }
+            request.send().await.expect("an answer")
+        }
+
+        /// What the key may do, and nothing else: its id, tenant and scopes.
+        fn own(token: &str, tenant: Option<String>, scopes: &[&str]) -> Value {
+            let id = access::parse(token).expect("a token").to_string();
+            serde_json::json!({ "id": id, "tenant": tenant, "scopes": scopes })
+        }
+
+        #[tokio::test]
+        async fn a_tenant_key_reads_its_own_record_and_the_read_is_recorded() {
+            let s = server().await;
+            let token = s.key(&[Scope::Read, Scope::Delete]);
+            let answer = key(&s, Some(&token)).await;
+            assert_eq!(answer.status(), 200);
+            assert_eq!(answer.headers()["content-type"], "application/json");
+            assert_eq!(answer.headers()["cache-control"], "no-store");
+            let body: Value =
+                serde_json::from_slice(&answer.bytes().await.expect("body")).expect("JSON");
+            let tenant = Some(s.tenant.to_string());
+            assert_eq!(body, own(&token, tenant, &["read", "delete"]));
+            let records = s.tenant_log("key_info");
+            assert_eq!(records.len(), 1, "one record per request");
+            assert_eq!(records[0]["status"], 200);
+            assert_eq!(records[0]["actor"], token[4..20]);
+            assert_eq!(records[0]["target"], token[4..20], "the key read");
+        }
+
+        #[tokio::test]
+        async fn an_operator_key_reads_its_record_in_the_admin_log() {
+            let s = server().await;
+            let token = s
+                .tenants
+                .create_key(Actor::Cli, None, Scopes::of(&[Scope::Admin]), "op")
+                .expect("made")
+                .token;
+            let answer = key(&s, Some(&token)).await;
+            assert_eq!(answer.status(), 200);
+            let body: Value =
+                serde_json::from_slice(&answer.bytes().await.expect("body")).expect("JSON");
+            assert_eq!(body, own(&token, None, &["admin"]));
+            let records: Vec<_> = s
+                .tenants
+                .admin_records()
+                .into_iter()
+                .filter(|r| r["action"] == "key_info")
+                .collect();
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0]["status"], 200);
+            assert_eq!(records[0]["target"], token[4..20]);
+            assert!(s.tenant_log("key_info").is_empty(), "no tenant's log");
+        }
+
+        #[tokio::test]
+        async fn no_key_or_a_bad_one_is_401() {
+            let s = server().await;
+            for token in [None, Some("vcs_nonsense")] {
+                let answer = key(&s, token).await;
+                assert_eq!(answer.status(), 401, "{token:?}");
+                assert_eq!(problem(answer).await, "unauthorized");
+            }
+        }
+
+        #[tokio::test]
+        async fn a_read_that_cannot_be_recorded_shows_nothing() {
+            let s = server().await;
+            let token = s.key(&[Scope::Read]);
+            s.tenants.store(s.tenant).expect("its store").break_audit();
+            let answer = key(&s, Some(&token)).await;
+            assert_eq!(answer.status(), 503);
+            assert_eq!(problem(answer).await, "audit-failed");
+        }
+
+        #[tokio::test]
+        async fn a_key_whose_tenant_is_closing_is_503() {
+            let s = server().await;
+            let token = s.key(&[Scope::Read]);
+            s.tenants.close(s.tenant);
+            let answer = key(&s, Some(&token)).await;
+            assert_eq!(answer.status(), 503);
+            assert_eq!(problem(answer).await, "unavailable");
+            let refused: Vec<_> = s
+                .tenants
+                .admin_records()
+                .into_iter()
+                .filter(|r| r["action"] == "key_info")
+                .collect();
+            assert_eq!(refused.len(), 1, "the refusal is recorded");
+            assert_eq!(refused[0]["status"], 503);
+        }
+    }
+
+    /// The console's files are served through the API's own router, with
+    /// its headers, and the API itself never asks a browser to keep or
+    /// share anything.
+    mod console {
+        use super::pipeline::server;
+        use crate::access::Scope;
+
+        #[tokio::test]
+        async fn the_router_serves_the_console_without_a_key() {
+            let s = server().await;
+            let files = [
+                ("/console/", "index.html", "text/html; charset=utf-8"),
+                (
+                    "/console/console.js",
+                    "console.js",
+                    "text/javascript; charset=utf-8",
+                ),
+                (
+                    "/console/console.css",
+                    "console.css",
+                    "text/css; charset=utf-8",
+                ),
+            ];
+            for (path, file, media_type) in files {
+                let answer = s.client().get(s.url(path)).send().await.expect("an answer");
+                assert_eq!(answer.status(), 200, "{path}");
+                assert_eq!(answer.headers()["content-type"], media_type, "{path}");
+                for (name, value) in crate::console::HEADERS {
+                    assert_eq!(answer.headers()[name], value, "{path} {name}");
+                }
+                let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("console")
+                    .join(file);
+                let source = std::fs::read(source).expect("the source file");
+                assert_eq!(answer.bytes().await.expect("body"), source, "{path}");
+            }
+        }
+
+        /// Every answer under /console carries the headers, a refusal too.
+        #[tokio::test]
+        async fn every_other_console_answer_carries_the_headers() {
+            let s = server().await;
+            let client = s.client_not_following();
+            let answers = [
+                (client.get(s.url("/console/other.js")), 404),
+                (client.get(s.url("/console/a/b")), 404),
+                (client.post(s.url("/console/")), 405),
+                (client.get(s.url("/console")), 308),
+            ];
+            for (request, status) in answers {
+                let answer = request.send().await.expect("an answer");
+                assert_eq!(answer.status(), status, "{answer:?}");
+                for (name, value) in crate::console::HEADERS {
+                    assert_eq!(answer.headers()[name], value, "{status} {name}");
+                }
+                if status == 308 {
+                    assert_eq!(answer.headers()["location"], "/console/");
+                }
+            }
+            let elsewhere = client
+                .get(s.url("/consoles"))
+                .send()
+                .await
+                .expect("an answer");
+            assert_eq!(elsewhere.status(), 404);
+            assert!(
+                !elsewhere.headers().contains_key("content-security-policy"),
+                "only console answers carry its headers"
+            );
+        }
+
+        #[tokio::test]
+        async fn no_answer_sets_a_cookie_or_allows_another_origin() {
+            let s = server().await;
+            let token = s.key(&[Scope::Read]);
+            for path in ["/console/", "/health", "/key", "/vcons/nonsense"] {
+                let answer = s
+                    .client()
+                    .get(s.url(path))
+                    .bearer_auth(&token)
+                    .header("origin", "https://elsewhere.example.com")
+                    .send()
+                    .await
+                    .expect("an answer");
+                let headers = answer.headers();
+                assert!(!headers.contains_key("set-cookie"), "{path}");
+                assert!(
+                    !headers.contains_key("access-control-allow-origin"),
+                    "{path}"
+                );
+            }
         }
     }
 }

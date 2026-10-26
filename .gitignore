@@ -10,3 +10,7 @@ ARCHIVED — *
 
 # Local secrets (Cloudflare token and ids); never committed
 .env
+
+# The console's browser tests: their packages and any run's output
+/console-tests/node_modules/
+/console-tests/test-results/

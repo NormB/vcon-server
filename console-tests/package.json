@@ -1,0 +1,13 @@
+{
+  "name": "vcon-server-console-tests",
+  "private": true,
+  "description": "Browser tests of the vcon-server console, run by scripts/test-console.sh against the real server.",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1"
+  }
+}

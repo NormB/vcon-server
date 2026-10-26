@@ -1,0 +1,110 @@
+:root {
+  color-scheme: light dark;
+  --fg: #1d2330;
+  --bg: #ffffff;
+  --muted: #5b6475;
+  --line: #d4d8e0;
+  --accent: #1f5fbf;
+  --bad: #b3261e;
+  font-family: system-ui, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #e4e7ee;
+    --bg: #14171d;
+    --muted: #a0a8b8;
+    --line: #333a46;
+    --accent: #7aa7ff;
+    --bad: #ff8a80;
+  }
+}
+
+/* An element the script hides stays hidden whatever its display rule. */
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--line);
+}
+
+h1 {
+  font-size: 1.15rem;
+  margin: 0;
+}
+
+h2 {
+  font-size: 1rem;
+}
+
+main {
+  max-width: 64rem;
+  padding: 1rem;
+}
+
+form {
+  display: grid;
+  gap: 0.5rem;
+  max-width: 32rem;
+}
+
+input, button, select {
+  font: inherit;
+  padding: 0.35rem 0.5rem;
+}
+
+button {
+  cursor: pointer;
+}
+
+[role="alert"] {
+  color: var(--bad);
+  margin: 0;
+}
+
+dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+}
+
+dt {
+  color: var(--muted);
+}
+
+dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--line);
+  padding: 0.75rem;
+}
+
+nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 1rem 0;
+}
+
+#who {
+  color: var(--muted);
+  margin-right: 0.75rem;
+}

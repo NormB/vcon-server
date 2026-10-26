@@ -187,6 +187,22 @@ while :; do
 done
 ```
 
+## Your key
+
+| Route | Scope | Answers |
+|---|---|---|
+| `GET /key` | any valid key | `200` `{"id", "tenant", "scopes"}` of the key that sent the request, with `Cache-Control: no-store`; `tenant` is `null` for an operator key |
+
+A client, such as the [console](@/docs/console.md), uses it to learn what its
+key may do. Each request is recorded as `key_info`, in the key's tenant log,
+or the admin log for an operator key. A key whose tenant is being removed,
+or whose tenant's log cannot be opened, gets
+[`unavailable`](@/problems/unavailable.md) (503).
+
+```sh
+curl https://vcon.example.com/key -H "Authorization: Bearer $KEY"
+```
+
 ## Health
 
 | Route | Scope | Answers |

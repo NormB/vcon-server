@@ -11,9 +11,11 @@ crates/
 ├── vcon-form/      reads a vCon without changing it: form, gzip, uuid, critical
 │                   (no I/O; returns no bytes; the IETF examples are its fixtures)
 └── vcon-server/
+    ├── console/           the console's page, script and styles, built into the binary
     └── src/
         ├── main.rs        the command line, a thin front end
         ├── api.rs         HTTP routes, the request pipeline, problem documents
+        ├── console.rs     serves the console's files with their headers
         ├── access.rs      tokens, scopes, authentication
         ├── store.rs       one tenant's vCons: versions, deletes, purges, legal reads
         ├── tenants.rs     the registry: tenants, their keys, API keys, the admin log
@@ -43,6 +45,21 @@ The tests that run the real binary (`crates/vcon-server/tests/`) start a
 server on a free port, with a temporary data directory and certificate, and
 check what a client and an operator see: stores and reads, memory locked,
 no core dumps, a second server refused, SIGTERM.
+
+The console's browser tests, in `console-tests/`, drive headless Chromium
+with [Playwright](https://playwright.dev/) against the real server.
+`scripts/test-console.sh` builds the binary, starts it with a temporary data
+directory, certificate and operator key, runs the tests and removes
+everything it made. Install the pinned Playwright and its browser once:
+
+```sh
+npm ci --prefix console-tests
+(cd console-tests && npx playwright install --only-shell chromium)
+scripts/test-console.sh
+```
+
+Each test makes its own tenant and keys through the admin API, and fails on
+any content-security violation in the page.
 
 ## How the code is tested
 
@@ -106,7 +123,8 @@ refuses an SVG that holds a script, a style, a link or an embedded object.
 ## Continuous integration
 
 Every push to `main` and every pull request runs `.github/workflows/ci.yml`:
-format, clippy and the tests as the commit hook runs them; the scan for AI
+format, clippy and the tests as the commit hook runs them; the console's
+browser tests; the scan for AI
 attribution and personal data over every tracked file; `scripts/check-site.sh`;
 and `scripts/icons.py --check`. A coverage job runs the same tests under
 `cargo llvm-cov` and sends the result to Codecov. Each action and each

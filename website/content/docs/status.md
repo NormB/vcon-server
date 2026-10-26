@@ -20,6 +20,9 @@ otherwise.
 - **The HTTP API over TLS.** Create, read, replace and delete; the legal
   routes (reads of deleted vCons, version history, restore, legal holds); the
   admin routes (tenants and their keys); health.
+- **The console:** a web page at `/console/`, signed in with an API key
+  held in page memory only; it shows the key's own id, tenant and scopes
+  (`GET /key`).
 - **Tenants and keys.** Scoped bearer keys, revocation, tenant removal that
   never passes a legal hold.
 - **Retention.** Calendar periods per tenant or server-wide, the purge sweep
@@ -45,6 +48,8 @@ otherwise.
 
 ## Being built
 
+- **The console's views:** listing and reading vCons, the legal and admin
+  views, and the audit logs.
 - **Release:** an operator guide, a review of the code against its design,
   and a full fault-injection run.
 

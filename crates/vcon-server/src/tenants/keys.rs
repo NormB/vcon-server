@@ -33,11 +33,10 @@ impl KeyInfo {
             Some(at) => Some(time(at)?),
             None => None,
         };
-        let scopes = self.scopes.to_string();
         Some(serde_json::json!({
             "id": self.id.to_string(),
             "tenant": self.tenant.map(|t| t.to_string()),
-            "scopes": scopes.split(',').collect::<Vec<_>>(),
+            "scopes": self.scopes.names(),
             "label": self.label,
             "created_at": time(self.created_at)?,
             "revoked_at": revoked_at,

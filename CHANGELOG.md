@@ -26,3 +26,8 @@ All notable changes to this project are recorded here. The format follows
   with the new `audit` scope, and the admin log, for an operator key, a page
   at a time, as the same lines `audit export` writes. Each read is recorded
   as `audit_read`.
+- The console: a web page at `/console/` that signs in with an API key held
+  in page memory only, served with a strict content-security policy and no
+  framing; browser tests run it against the real server.
+- `GET /key`: the calling key's own id, tenant and scopes, recorded as
+  `key_info`.
