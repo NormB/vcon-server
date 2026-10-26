@@ -32,7 +32,8 @@ let body = br#"{
   "created_at": "2026-10-23T00:00:00Z",
   "parties": []
 }"#;
-let found = inspect(body, Some("application/vcon+json"), &limits, &supported)?;
+let found = inspect(body, Some("application/vcon+json"), &limits, &supported)
+    .expect("the body is a vCon");
 assert_eq!(found.form, Form::Unsigned);
 assert!(!found.gzip);
 assert_eq!(found.uuid.to_string(), "01a07da8-c2bb-83e5-b9a2-279e0d16bc46");
@@ -51,7 +52,6 @@ assert_eq!(
 
 // A body that is not a vCon is refused too.
 assert_eq!(inspect(b"[]", None, &limits, &supported), Err(Rejection::NotJson));
-# Ok::<(), Rejection>(())
 ```
 
 ## What it checks
