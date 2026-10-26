@@ -7,7 +7,13 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT OR Apache-2.0"
-publish = false
+repository = "https://github.com/NormB/vcon-server"
+homepage = "https://vcon-server.com"
+
+# The crates published on crates.io; scripts/check_package.py checks what
+# each would publish and refuses if one is missing or says publish = false.
+[workspace.metadata]
+published = ["vcon", "vcon-server"]
 
 # The rusqlite fork, a test-only dependency of vcon-server, would bring its
 # own copy of libsqlite3-sys, and only one package may link SQLite. This

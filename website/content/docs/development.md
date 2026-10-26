@@ -171,7 +171,14 @@ git config core.hooksPath .githooks
 - **pre-commit** runs `cargo fmt --check`, `cargo clippy -D warnings` and the
   tests on exactly what is staged, then the same for the fuzz package (its
   format, clippy and its own tests), and refuses personal data and AI-tool
-  attribution in staged changes.
+  attribution in staged changes. It also checks that every path
+  `.bestpractices.json` links to exists (`scripts/check_repo_links.py`), and
+  what each crate would publish to crates.io (`scripts/check_package.py`):
+  it packages and builds each crate, then refuses any file in a `.crate`
+  other than the sources, the files they include, the README and the two
+  licences; a missing README or licence; a dependency taken by git or by
+  path, in the manifest or the lock file; a relative link in the README; and
+  anything the scan above refuses.
 - **commit-msg** refuses the same in the message.
 - **pre-push** refuses any outgoing commit that is not signed by an allowed
   signer, or whose author and committer are not the pusher's configured
@@ -209,8 +216,8 @@ refuses an SVG that holds a script, a style, a link or an embedded object.
 
 Every push to `main` and every pull request runs `.github/workflows/ci.yml`:
 format, clippy and the tests as the commit hook runs them; the console's
-browser tests; the scan for AI
-attribution and personal data over every tracked file; `scripts/check-site.sh`;
+browser tests; the package check; the scan for AI attribution and personal
+data over every tracked file; the `.bestpractices.json` link check; `scripts/check-site.sh`;
 and `scripts/icons.py --check`. A coverage job runs the same tests under
 `cargo llvm-cov` and sends the result to Codecov. One fuzz job per target
 runs it for 60 seconds, then `scripts/fuzz.sh plant` for it; the targets are

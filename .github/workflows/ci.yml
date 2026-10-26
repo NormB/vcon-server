@@ -50,6 +50,13 @@ jobs:
           # Every failing test binary reported, not only the first.
           cargo test --workspace --locked --no-fail-fast
           cargo test --manifest-path fuzz/Cargo.toml --lib --locked
+      - name: Packages
+        # What each crate would publish to crates.io, checked from the
+        # .crate files themselves; the commit hook runs the same.
+        run: |
+          set -euo pipefail
+          python3 -I scripts/test_check_package.py
+          python3 -I scripts/check_package.py
 
   coverage:
     name: coverage

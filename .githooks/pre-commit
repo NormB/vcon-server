@@ -53,3 +53,8 @@ if [ -f fuzz/Cargo.toml ]; then
   cargo clippy --manifest-path fuzz/Cargo.toml --all-targets --locked --quiet -- -D warnings
   cargo test --manifest-path fuzz/Cargo.toml --lib --locked --quiet
 fi
+
+# What each crate would publish: its files, manifest, README links, and the
+# same scan as above over every packaged file.
+python3 -I scripts/test_check_package.py
+python3 -I scripts/check_package.py

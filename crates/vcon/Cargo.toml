@@ -5,7 +5,16 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/vcon"
+readme = "README.md"
+keywords = ["vcon", "ietf", "conversation", "jws", "validation"]
+categories = ["parser-implementations", "encoding"]
+# Only what a build and the crates.io page need: no tests, fixtures,
+# website or brand files. Each pattern starts with / so it matches only at
+# the crate root, not in every directory.
+include = ["/src/**/*.rs", "/README.md", "/LICENSE-MIT", "/LICENSE-APACHE"]
 
 [dependencies]
 base64 = "0.23.1"

@@ -11,7 +11,7 @@ trap 'rm -rf "$work"' EXIT
 export CARGO_TARGET_DIR="$work/target"
 
 repo="$work/repo"
-mkdir -p "$repo/src"
+mkdir -p "$repo/crates/fixture/src"
 cd "$repo"
 git init -q -b main
 git config user.name "Test User"
@@ -19,14 +19,36 @@ git config user.email "test@example.com"
 git config commit.gpgsign false
 git config core.hooksPath .githooks
 cp -R "$src/.githooks" "$src/scripts" "$src/.gitignore" "$src/rust-toolchain.toml" .
+# A workspace shaped like the real one: one crate under crates/, ready to
+# publish, so the hook's package check has a package to read.
 cat > Cargo.toml <<'TOML'
+[workspace]
+resolver = "3"
+members = ["crates/fixture"]
+
+[workspace.metadata]
+published = ["hook-fixture"]
+TOML
+cat > crates/fixture/Cargo.toml <<'TOML'
 [package]
 name = "hook-fixture"
 version = "0.1.0"
 edition = "2024"
-publish = false
+rust-version = "1.99"
+description = "A crate the hook tests commit."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/NormB/vcon-server"
+homepage = "https://vcon-server.com"
+documentation = "https://docs.rs/hook-fixture"
+readme = "README.md"
+keywords = ["fixture"]
+categories = ["development-tools::testing"]
+include = ["/src/**/*.rs", "/README.md", "/LICENSE-MIT", "/LICENSE-APACHE"]
 TOML
-cat > src/lib.rs <<'RS'
+printf '# hook-fixture\n\nSee [the site](https://vcon-server.com/).\n' > crates/fixture/README.md
+cp "$src/LICENSE-MIT" "$src/LICENSE-APACHE" .
+cp "$src/LICENSE-MIT" "$src/LICENSE-APACHE" crates/fixture/
+cat > crates/fixture/src/lib.rs <<'RS'
 /// Adds one.
 pub fn add_one(x: u32) -> u32 {
     x + 1
@@ -100,7 +122,7 @@ expect accept "RFC 3849 IPv6" notes.txt "host 2001:db8::5"
 expect refuse "owner surname" notes.txt "by Norm ${sur^}"
 expect accept "owner's credit in the README" README.md "Copyright 2026 Norm ${sur^}"
 expect accept "owner's credit in the site config" website/config.toml "author = \"Norm ${sur^}\""
-expect accept "Best Practices answer linking to a file in the tree" .bestpractices.json "{\"a\": \"$links/src/lib.rs\"}"
+expect accept "Best Practices answer linking to a file in the tree" .bestpractices.json "{\"a\": \"$links/crates/fixture/src/lib.rs\"}"
 expect refuse "Best Practices answer linking to a file that moved" .bestpractices.json "{\"a\": \"$links/src/gone.rs\"}"
 expect refuse "owner surname in a site page" website/content/a.md "by Norm ${sur^}"
 expect refuse "owner surname in a nested README" crates/x/README.md "by Norm ${sur^}"
@@ -113,6 +135,12 @@ expect refuse "scope decision id" notes.txt "see D""40"
 expect refuse "plan task id" notes.txt "done P""0.3"
 expect refuse "plan task id past phase ten" notes.txt "done P""11.7"
 expect refuse "plan task id in phase fourteen" notes.txt "see P""14.12"
+expect accept "crate README with absolute links" crates/fixture/README.md "# hook-fixture
+
+See [the docs](https://docs.rs/hook-fixture)."
+expect refuse "crate README with a relative link" crates/fixture/README.md "# hook-fixture
+
+See [the guide](docs/guide.md)."
 expect refuse "draft number" notes.txt "from draft ""6.8"
 ietf_tel="+1234567""8901"
 expect accept "IETF example number in IETF fixtures" crates/x/tests/fixtures/ietf/a.vcon "{\"tel\": \"$ietf_tel\"}"
@@ -128,13 +156,13 @@ Co-Authored-By: ${ai_word^} <noreply@${ai_co}.com>"
 expect refuse "plan task id in message" notes.txt "message case two" "Finish P""0.3"
 expect refuse "email in message" notes.txt "message case three" "Ask someone@gm""ail.com"
 expect accept "clean message" notes.txt "message case four" "Explain the change"
-expect refuse "unformatted code" src/lib.rs "pub fn add_one(x:u32)->u32{x+1}"
-expect refuse "clippy warning" src/lib.rs '/// Adds one.
+expect refuse "unformatted code" crates/fixture/src/lib.rs "pub fn add_one(x:u32)->u32{x+1}"
+expect refuse "clippy warning" crates/fixture/src/lib.rs '/// Adds one.
 pub fn add_one(x: u32) -> u32 {
     let y = x;
     return y + 1;
 }'
-expect refuse "failing test" src/lib.rs '/// Adds one.
+expect refuse "failing test" crates/fixture/src/lib.rs '/// Adds one.
 pub fn add_one(x: u32) -> u32 {
     x + 2
 }

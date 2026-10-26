@@ -1,8 +1,6 @@
-//! A library for vCons. Its current scope is reading and checking a vCon:
-//! which form it is in, whether it is gzipped, its uuid, and whether it
-//! needs extensions the caller does not support. Otherwise it says why the
-//! vCon is refused. [`inspect`] does no I/O and returns no bytes, so the
-//! caller can store the body exactly as received.
+// The crate's page on docs.rs is its README, so the example there runs as
+// a doc test.
+#![doc = include_str!("../README.md")]
 
 use std::collections::BTreeSet;
 

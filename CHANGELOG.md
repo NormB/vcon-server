@@ -38,6 +38,13 @@ All notable changes to this project are recorded here. The format follows
 - The console's vCons and legal views: list, read (as text, gzip inflated),
   store from a file and delete, and a vCon's versions for a legal key, each
   shown only to a key whose scopes allow it.
+- Both crates are ready for crates.io: each has its crates.io README, its
+  page metadata and the two licence texts, and packages only its sources.
+  `scripts/check_package.py`, run by the commit hook and CI, packages and
+  builds each crate, then refuses any file in a `.crate` other than the
+  sources, the files they include, the README and the licences; a missing
+  README or licence; a git or path dependency; a relative README link; and
+  anything the commit scan refuses.
 
 ### Changed
 
