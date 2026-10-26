@@ -63,5 +63,15 @@ All notable changes to this project are recorded here. The format follows
   (tenant log or admin log, a page at a time), and tenants and keys views
   for an operator key, each leaving the same audit record as the API.
 
+### Security
+
+- A signed vCon's nested JWS layers are read in a loop, not by recursion, and
+  at most 64 are read; JSON is read at most 64 arrays and objects deep. A body
+  past either limit is refused with the `too-deep` problem (422). Before,
+  each layer took a stack frame, so a crafted body under a high
+  `limits.inflated`, or any such body in a debug build, could overflow the
+  stack and abort the server. `vcon::MAX_SIGNED_LAYERS`,
+  `vcon::MAX_JSON_DEPTH` and `vcon::Rejection::TooDeep` name the limits.
+
 [Unreleased]: https://github.com/NormB/vcon-server/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/NormB/vcon-server/releases/tag/v0.1.0

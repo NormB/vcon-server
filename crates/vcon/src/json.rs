@@ -1,38 +1,70 @@
 //! The first step of reading a vCon: the body must be one JSON object.
 
+use std::cell::Cell;
 use std::fmt;
 
-use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
+use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Number, Value};
 
-use crate::Rejection;
+use crate::{MAX_JSON_DEPTH, Rejection};
 
 /// Parses `body` as exactly one JSON object in which no object, at any
-/// depth, repeats a member name.
+/// depth, repeats a member name, and no more than [`MAX_JSON_DEPTH`] arrays
+/// and objects are open at once.
 pub(crate) fn parse_object(body: &[u8]) -> Result<Map<String, Value>, Rejection> {
-    match serde_json::from_slice::<Strict>(body) {
-        Ok(Strict(Value::Object(map))) => Ok(map),
+    let too_deep = Cell::new(false);
+    let mut deserializer = serde_json::Deserializer::from_slice(body);
+    let parsed = Strict {
+        open: 0,
+        too_deep: &too_deep,
+    }
+    .deserialize(&mut deserializer)
+    .and_then(|value| deserializer.end().map(|()| value));
+    match parsed {
+        _ if too_deep.get() => Err(Rejection::TooDeep),
+        Ok(Value::Object(map)) => Ok(map),
         Ok(_) => Err(Rejection::NotJson),
         // Syntax and end-of-input errors come from the parser; the only data
-        // error is the duplicate name raised below.
+        // error left is the duplicate name raised below.
         Err(e) if e.is_data() => Err(Rejection::DuplicateKey),
         Err(_) => Err(Rejection::NotJson),
     }
 }
 
-/// A JSON value read like `serde_json::Value`, except that a repeated
-/// member name is an error instead of the last value silently winning.
-struct Strict(Value);
+/// Reads one JSON value like `serde_json::Value`, except that a repeated
+/// member name is an error instead of the last value silently winning, and
+/// an array or object past [`MAX_JSON_DEPTH`] is an error that sets
+/// `too_deep`. `open` is how many arrays and objects enclose the value.
+#[derive(Clone, Copy)]
+struct Strict<'a> {
+    open: usize,
+    too_deep: &'a Cell<bool>,
+}
 
-impl<'de> Deserialize<'de> for Strict {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        deserializer.deserialize_any(StrictVisitor).map(Strict)
+impl Strict<'_> {
+    /// The reader for a value inside the array or object being entered, or
+    /// an error if entering it would pass the limit.
+    fn enter<E: de::Error>(self) -> Result<Self, E> {
+        if self.open >= MAX_JSON_DEPTH {
+            self.too_deep.set(true);
+            return Err(E::custom("nested too deep"));
+        }
+        Ok(Strict {
+            open: self.open + 1,
+            ..self
+        })
     }
 }
 
-struct StrictVisitor;
+impl<'de> DeserializeSeed<'de> for Strict<'_> {
+    type Value = Value;
 
-impl<'de> Visitor<'de> for StrictVisitor {
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Value, D::Error> {
+        deserializer.deserialize_any(self)
+    }
+}
+
+impl<'de> Visitor<'de> for Strict<'_> {
     type Value = Value;
 
     fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -64,20 +96,22 @@ impl<'de> Visitor<'de> for StrictVisitor {
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
+        let inside = self.enter()?;
         let mut items = Vec::new();
-        while let Some(Strict(item)) = seq.next_element()? {
+        while let Some(item) = seq.next_element_seed(inside)? {
             items.push(item);
         }
         Ok(Value::Array(items))
     }
 
     fn visit_map<A: MapAccess<'de>>(self, mut access: A) -> Result<Value, A::Error> {
+        let inside = self.enter()?;
         let mut map = Map::new();
         while let Some(key) = access.next_key::<String>()? {
             if map.contains_key(&key) {
                 return Err(de::Error::custom("duplicate member name"));
             }
-            let Strict(value) = access.next_value()?;
+            let value = access.next_value_seed(inside)?;
             map.insert(key, value);
         }
         Ok(Value::Object(map))
@@ -117,11 +151,61 @@ mod tests {
         for (what, body) in cases {
             assert_eq!(parse_object(body), Err(Rejection::NotJson), "{what}");
         }
-        let deep = format!("{{\"a\": {}{}}}", "[".repeat(200), "]".repeat(200));
+    }
+
+    /// `{"a": [[...]]}` with `open` arrays and objects open at the deepest
+    /// point, counting the outer object.
+    fn nested(open: usize) -> String {
+        let inner = open - 1;
+        format!("{{\"a\": {}0{}}}", "[".repeat(inner), "]".repeat(inner))
+    }
+
+    #[test]
+    fn reads_json_nested_up_to_the_limit() {
+        let map = parse_object(nested(MAX_JSON_DEPTH).as_bytes()).expect("at the limit");
+        assert!(map.contains_key("a"));
+        let objects = format!(
+            "{}0{}",
+            "{\"a\": ".repeat(MAX_JSON_DEPTH),
+            "}".repeat(MAX_JSON_DEPTH)
+        );
+        assert!(parse_object(objects.as_bytes()).is_ok(), "objects only");
+    }
+
+    #[test]
+    fn refuses_json_nested_past_the_limit() {
+        let cases = [
+            ("one array past", nested(MAX_JSON_DEPTH + 1)),
+            (
+                "one object past",
+                format!(
+                    "{}0{}",
+                    "{\"a\": ".repeat(MAX_JSON_DEPTH + 1),
+                    "}".repeat(MAX_JSON_DEPTH + 1)
+                ),
+            ),
+            ("past the parser's own bound", nested(200)),
+            (
+                "past the limit, then broken",
+                format!("{{\"a\": {}", "[".repeat(MAX_JSON_DEPTH)),
+            ),
+            (
+                "past the limit in a later member",
+                format!("{{\"a\": 1, \"b\": {}0{}}}", "[".repeat(80), "]".repeat(80)),
+            ),
+        ];
+        for (what, body) in cases {
+            assert_eq!(
+                parse_object(body.as_bytes()),
+                Err(Rejection::TooDeep),
+                "{what}"
+            );
+        }
+        let shallow_then_broken = format!("{{\"a\": {}", "[".repeat(MAX_JSON_DEPTH - 1));
         assert_eq!(
-            parse_object(deep.as_bytes()),
+            parse_object(shallow_then_broken.as_bytes()),
             Err(Rejection::NotJson),
-            "too deep"
+            "broken within the limit"
         );
     }
 

@@ -2942,6 +2942,7 @@
               "https://vcon-server.com/problems/precondition-failed",
               "https://vcon-server.com/problems/precondition-required",
               "https://vcon-server.com/problems/timeout",
+              "https://vcon-server.com/problems/too-deep",
               "https://vcon-server.com/problems/too-large",
               "https://vcon-server.com/problems/unauthorized",
               "https://vcon-server.com/problems/unavailable",

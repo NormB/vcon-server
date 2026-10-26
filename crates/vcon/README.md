@@ -59,14 +59,17 @@ assert_eq!(inspect(b"[]", None, &limits, &supported), Err(Rejection::NotJson));
 - The body is gzip when its media type is `application/vcon+gzip` or it
   starts with the gzip magic number; inflation is bounded by `Limits`, and
   every gzipped layer inside a signed vCon shares the same bound.
-- The body is exactly one JSON object, and no object in it repeats a member
-  name.
+- The body is exactly one JSON object, no object in it repeats a member
+  name, and no JSON text read has more than `MAX_JSON_DEPTH` (64) arrays and
+  objects open at once.
 - The form, told from the members present: `payload` and `signatures` for a
   signed vCon (a JWS), `ciphertext` and `recipients` for an encrypted one (a
   JWE), otherwise the members of an unsigned vCon.
 - The uuid, in RFC 9562 text form: from the vCon itself, from the innermost
   signed payload, or from the unprotected header of an encrypted vCon. A
-  `uuid` in a JWS header must match the signed vCon's.
+  `uuid` in a JWS header must match the signed vCon's. Nested signed layers
+  are read in a loop, at most `MAX_SIGNED_LAYERS` (64) of them; deeper
+  nesting is `Rejection::TooDeep`.
 - `created_at` is present.
 - `critical` (and `must_support`, its earlier name) lists only extensions the
   caller supports. An encrypted vCon's `critical` cannot be read and is not

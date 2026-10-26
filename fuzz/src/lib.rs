@@ -3,7 +3,7 @@
 //! must give. The targets are in `fuzz_targets/`.
 
 use std::collections::BTreeSet;
-use std::io::Write;
+use std::io::{Read, Write};
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -80,17 +80,58 @@ pub fn gzip_agrees(
     gzipped == &expected
 }
 
+/// How many signed layers `body` has: JWS objects one inside the other,
+/// from the body (inflated if gzip) to what the innermost payload holds.
+pub fn signed_layers(body: &[u8]) -> usize {
+    let mut text = inflated(body);
+    let mut layers = 0;
+    while let Ok(serde_json::Value::Object(object)) = serde_json::from_slice(&text) {
+        let (Some(serde_json::Value::String(payload)), true) =
+            (object.get("payload"), object.contains_key("signatures"))
+        else {
+            break;
+        };
+        let Ok(bytes) = URL_SAFE_NO_PAD.decode(payload) else {
+            break;
+        };
+        layers += 1;
+        text = inflated(&bytes);
+    }
+    layers
+}
+
+/// `data` inflated if it starts as gzip does, else as it is.
+fn inflated(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    if data.starts_with(&[0x1f, 0x8b])
+        && flate2::read::MultiGzDecoder::new(data)
+            .read_to_end(&mut out)
+            .is_ok()
+    {
+        return out;
+    }
+    data.to_vec()
+}
+
 /// Whether a JWS whose payload is `payload` was read as `payload` was read
 /// as a body of its own. The payload is read as a body is, with the same
-/// budget, except that it must hold a signed or unsigned vCon and that
-/// every header uuid must be its uuid.
+/// budget, except that it must hold a signed or unsigned vCon, that every
+/// header uuid must be its uuid, and that a payload already at the signed
+/// layer limit is one layer past it once signed.
 pub fn signed_agrees(
+    payload: &[u8],
     plain: &Result<Inspection, Rejection>,
     header_uuid: Option<&str>,
     signed: &Result<Inspection, Rejection>,
 ) -> bool {
     let expected = match plain {
         Ok(found) if found.form == Form::Encrypted => Err(Rejection::BadPayload),
+        // Signing adds a layer, so a payload at the limit is one past it.
+        Ok(found)
+            if found.form == Form::Signed && signed_layers(payload) == vcon::MAX_SIGNED_LAYERS =>
+        {
+            Err(Rejection::TooDeep)
+        }
         Ok(found) => match header_uuid {
             Some(text) if vcon::parse_uuid(text) != Some(found.uuid) => {
                 Err(Rejection::UuidMismatch)
@@ -183,7 +224,7 @@ mod tests {
         ];
         for (payload, header) in cases {
             let (plain, signed) = (inspect(&payload), inspect(&jws(&payload, header)));
-            assert!(signed_agrees(&plain, header, &signed),);
+            assert!(signed_agrees(&payload, &plain, header, &signed));
         }
     }
 
@@ -191,14 +232,21 @@ mod tests {
     fn a_signed_payload_read_otherwise_disagrees() {
         let plain = inspect(&unsigned());
         let signed = inspect(&jws(&unsigned(), None));
-        assert!(!signed_agrees(&plain, Some(OTHER_UUID), &signed));
-        assert!(!signed_agrees(&plain, None, &plain));
         assert!(!signed_agrees(
+            &unsigned(),
+            &plain,
+            Some(OTHER_UUID),
+            &signed
+        ));
+        assert!(!signed_agrees(&unsigned(), &plain, None, &plain));
+        assert!(!signed_agrees(
+            b"x",
             &Err(Rejection::NotJson),
             None,
             &Err(Rejection::NotJson)
         ));
         assert!(!signed_agrees(
+            b"x",
             &Err(Rejection::DuplicateKey),
             None,
             &Err(Rejection::BadPayload)
@@ -209,11 +257,52 @@ mod tests {
     fn a_signed_payload_refused_for_its_uuid_is_not_compared() {
         for refused in [Rejection::MissingUuid, Rejection::BadUuid] {
             assert!(signed_agrees(
+                b"x",
                 &Err(refused),
                 None,
                 &Err(Rejection::BadPayload)
             ));
         }
+    }
+
+    /// `layers` signed layers around an unsigned vCon, each payload gzipped.
+    fn nested(layers: usize) -> Vec<u8> {
+        (0..layers).fold(unsigned(), |body, _| jws(&gzip(&body), None))
+    }
+
+    #[test]
+    fn a_payload_at_the_layer_limit_is_too_deep_once_signed() {
+        // Past the targets' small inflation limit, so read with a large one.
+        let big = Limits { inflated: 1 << 30 };
+        let read = |body: &[u8]| vcon::inspect(body, None, &big, &supported());
+        let payload = nested(vcon::MAX_SIGNED_LAYERS);
+        let (plain, signed) = (read(&payload), read(&jws(&payload, None)));
+        assert_eq!(plain.as_ref().map(|found| found.form), Ok(Form::Signed));
+        assert_eq!(signed, Err(Rejection::TooDeep));
+        assert!(signed_agrees(&payload, &plain, None, &signed));
+        assert!(signed_agrees(&payload, &plain, Some(OTHER_UUID), &signed));
+        let shallower = nested(vcon::MAX_SIGNED_LAYERS - 1);
+        let plain = read(&shallower);
+        assert!(!signed_agrees(
+            &shallower,
+            &plain,
+            None,
+            &Err(Rejection::TooDeep)
+        ));
+        assert!(signed_agrees(
+            &shallower,
+            &plain,
+            None,
+            &read(&jws(&shallower, None))
+        ));
+    }
+
+    #[test]
+    fn signed_layers_are_counted_through_gzip() {
+        assert_eq!(signed_layers(&unsigned()), 0);
+        assert_eq!(signed_layers(&nested(3)), 3);
+        assert_eq!(signed_layers(&gzip(&nested(3))), 3);
+        assert_eq!(signed_layers(&jws(&jws(&unsigned(), None), None)), 2);
     }
 
     #[test]

@@ -29,7 +29,9 @@ it. In order:
    within `limits.inflated` ([`too-large`](@/problems/too-large.md)). Every
    gzip layer, nested signed payloads included, shares that one limit.
 2. The body is one JSON object ([`not-json`](@/problems/not-json.md)) in which
-   no object repeats a member name ([`duplicate-member`](@/problems/duplicate-member.md)).
+   no object repeats a member name ([`duplicate-member`](@/problems/duplicate-member.md))
+   and no more arrays and objects are open at once than the
+   [fixed limit](@/docs/configuration.md#fixed-limits) ([`too-deep`](@/problems/too-deep.md)).
    Parsers disagree on which duplicate wins, so a vCon with one could mean
    different things to different readers.
 3. The form is clear: not both signed and encrypted
@@ -38,7 +40,9 @@ it. In order:
 4. The uuid is found: in an unsigned vCon, `uuid` in RFC 9562 text form
    ([`missing-uuid`](@/problems/missing-uuid.md), [`bad-uuid`](@/problems/bad-uuid.md))
    and `created_at` present ([`missing-created-at`](@/problems/missing-created-at.md));
-   in a signed one, inside the payload ([`bad-payload`](@/problems/bad-payload.md)),
+   in a signed one, inside the payload ([`bad-payload`](@/problems/bad-payload.md))
+   of at most the [fixed number](@/docs/configuration.md#fixed-limits) of
+   signed layers ([`too-deep`](@/problems/too-deep.md)),
    and every uuid a signature header names must agree
    ([`uuid-mismatch`](@/problems/uuid-mismatch.md)); in an encrypted one,
    from its unprotected header.

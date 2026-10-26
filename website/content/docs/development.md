@@ -93,7 +93,7 @@ to one thing the server reads from outside:
 | --- | --- |
 | `inspect` | any body as a vCon, with no media type; the same body gzipped must give the same answer |
 | `inspect_gzip` | any body sent as `application/vcon+gzip`: the inflater and its limit |
-| `inspect_signed` | any bytes as a JWS payload: base64url, a gzipped payload, nested signatures, header uuids; it must give what the payload gives on its own |
+| `inspect_signed` | any bytes as a JWS payload: base64url, a gzipped payload, nested signatures up to the layer limit, header uuids; it must give what the payload gives on its own |
 | `inspect_encrypted` | any JSON as a JWE's `unprotected` member |
 | `parse_uuid` | any text as a uuid in a path |
 | `token` | any text as an API token |

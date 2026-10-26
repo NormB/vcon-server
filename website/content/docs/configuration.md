@@ -76,6 +76,32 @@ were inline; the other 25,445 were referenced by URL.
 The server holds each request's body in locked memory while it works on it. On
 a host short of memory, lower `limits.body`.
 
+## Fixed limits
+
+Two limits on how deeply a body nests are fixed: no key changes them. A body
+past either is refused with [`too-deep`](@/problems/too-deep.md) before
+anything deeper is read.
+
+| Limit | Value | Counted |
+|---|---|---|
+| Signed layers in one body | `64` | JWS objects from the body to the unsigned vCon: `1` for a vCon signed once |
+| Arrays and objects open at once | `64` | in each JSON text read on its own: the body, each signed payload; the outer object counts as `1` |
+
+- **Signed layers.** The vCon core draft (section 5.2.3, Long Term Archiving
+  of Signed vCons) signs an archived vCon again, as the payload of a new JWS,
+  before each signing certificate expires, for archives kept "as long as 10
+  years or more" with certificates that last "a few years at best". A
+  signed vCon encrypted (a JWE) is not opened, so it adds no layer. `64`
+  allows a new signature every year for 63 years. Of 51,642 vCons in the
+  public datasets measured, none was signed; the draft's own signed example
+  has one layer.
+- **Arrays and objects.** The deepest of those vCons nests 5 deep, and the
+  draft's examples 6. `64` is ten times that, and below the JSON parser's own
+  bound, so a body this deep is told apart from one that is not JSON.
+
+Each layer is read in turn, not by recursion, so the stack a request needs
+does not grow with the layers.
+
 ## Retention periods
 
 A period is a whole number, with no leading zero, followed by `y`, `m` or `d`. It is counted in

@@ -437,6 +437,22 @@ key = "/etc/vcon-server/key.pem"
             }
         }
 
+        /// The limits no key sets are stated as the code fixes them.
+        #[test]
+        fn every_fixed_limit_is_listed_with_its_value() {
+            let text = page("configuration.md");
+            for (limit, value) in [
+                ("Signed layers in one body", vcon::MAX_SIGNED_LAYERS),
+                ("Arrays and objects open at once", vcon::MAX_JSON_DEPTH),
+            ] {
+                let start = format!("| {limit} |");
+                let rows: Vec<&str> = text.lines().filter(|l| l.starts_with(&start)).collect();
+                assert_eq!(rows.len(), 1, "one row for {limit}");
+                let cell = rows[0].split('|').nth(2).expect("a value cell").trim();
+                assert_eq!(cell, format!("`{value}`"), "{limit}");
+            }
+        }
+
         #[test]
         fn every_example_file_on_the_site_reads() {
             let mut examples = 0;

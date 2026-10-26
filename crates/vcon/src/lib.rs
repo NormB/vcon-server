@@ -18,6 +18,20 @@ mod signed;
 /// The name of this crate.
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
 
+/// The most signed (JWS) layers a body may have, counting from the body to
+/// the unsigned vCon: one for a vCon signed once. A layer is added each time
+/// a signed vCon is signed again, as the vCon core draft describes for
+/// archives kept longer than their signing certificates; 64 allows one a
+/// year for 63 years. More is refused as [`Rejection::TooDeep`] before the
+/// next layer is read.
+pub const MAX_SIGNED_LAYERS: usize = 64;
+
+/// The most arrays and objects open at once in any one JSON text read: the
+/// body, a signed payload, the vCon itself counting as one. More is refused
+/// as [`Rejection::TooDeep`]. It is below the JSON parser's own bound of 127,
+/// so too deep is told apart from not JSON.
+pub const MAX_JSON_DEPTH: usize = 64;
+
 /// Bounds on the work one inspection may do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
@@ -89,6 +103,9 @@ pub enum Form {
 pub enum Rejection {
     /// Inflating a gzip body passed the configured limit.
     TooLarge,
+    /// The body nests deeper than [`MAX_SIGNED_LAYERS`] signed layers, or a
+    /// JSON text in it deeper than [`MAX_JSON_DEPTH`].
+    TooDeep,
     /// The body is marked as gzip but is not a valid gzip stream.
     BadGzip,
     /// The body is not exactly one JSON object.

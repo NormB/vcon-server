@@ -1245,6 +1245,7 @@ enum Invalid {
     UuidMismatch,
     BadCritical,
     UnsupportedExtension,
+    TooDeep,
 }
 
 /// The problem for Format's refusal. Inflating past the limit is a body
@@ -1265,6 +1266,7 @@ fn rejected(rejection: &Rejection) -> Problem {
         Rejection::UuidMismatch => Invalid::UuidMismatch,
         Rejection::BadCritical => Invalid::BadCritical,
         Rejection::UnsupportedCritical(_) => Invalid::UnsupportedExtension,
+        Rejection::TooDeep => Invalid::TooDeep,
     })
 }
 
@@ -1366,6 +1368,7 @@ impl Problem {
                     "unsupported-extension",
                     "An extension the vCon needs is not supported",
                 ),
+                Invalid::TooDeep => ("too-deep", "The body nests too deeply"),
             },
             Problem::Store(error) => match error {
                 StoreError::Conflict => ("conflict", "Another vCon holds the uuid"),
@@ -1967,6 +1970,7 @@ mod tests {
     fn every_refusal_from_format_has_its_own_problem() {
         let cases = [
             (Rejection::TooLarge, 413, "too-large"),
+            (Rejection::TooDeep, 422, "too-deep"),
             (Rejection::BadGzip, 422, "bad-gzip"),
             (Rejection::NotJson, 422, "not-json"),
             (Rejection::DuplicateKey, 422, "duplicate-member"),
@@ -2250,6 +2254,34 @@ mod tests {
             let answer = post(&s, &writer, Some("application/vcon+gzip"), bomb).await;
             assert_eq!(answer.status(), 413);
             assert_eq!(problem(answer).await, "too-large");
+        }
+
+        #[tokio::test]
+        async fn a_body_nested_too_deeply_is_unprocessable_and_recorded() {
+            use base64::Engine;
+            use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+            let s = server().await;
+            let writer = s.key(&[Scope::Write]);
+            let (_, mut signed) = vcon(UUID, "first");
+            for _ in 0..=vcon::MAX_SIGNED_LAYERS {
+                signed = serde_json::json!({
+                    "payload": URL_SAFE_NO_PAD.encode(gzip(&signed)),
+                    "signatures": [{}],
+                })
+                .to_string()
+                .into_bytes();
+            }
+            let open = "[".repeat(vcon::MAX_JSON_DEPTH);
+            let close = "]".repeat(vcon::MAX_JSON_DEPTH);
+            let json = format!(r#"{{"uuid":"{UUID}","created_at":"x","a":{open}{close}}}"#);
+            for body in [signed, json.into_bytes()] {
+                let answer = post(&s, &writer, None, body).await;
+                assert_eq!(answer.status(), 422);
+                assert_eq!(problem(answer).await, "too-deep");
+            }
+            let refused = s.tenant_log("create");
+            assert_eq!(refused.len(), 2);
+            assert!(refused.iter().all(|r| r["status"] == 422));
         }
 
         #[tokio::test]
@@ -4735,6 +4767,7 @@ mod site_pages {
             Invalid::UuidMismatch,
             Invalid::BadCritical,
             Invalid::UnsupportedExtension,
+            Invalid::TooDeep,
         ];
         for kind in invalid {
             match kind {
@@ -4749,7 +4782,8 @@ mod site_pages {
                 | Invalid::BadPayload
                 | Invalid::UuidMismatch
                 | Invalid::BadCritical
-                | Invalid::UnsupportedExtension => all.push(Problem::Invalid(kind)),
+                | Invalid::UnsupportedExtension
+                | Invalid::TooDeep => all.push(Problem::Invalid(kind)),
             }
         }
         let store = [
