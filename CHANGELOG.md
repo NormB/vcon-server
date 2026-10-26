@@ -6,6 +6,8 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-26
+
 ### Added
 
 - Cargo workspace with the `vcon` library and the `vcon-server` binary.
@@ -60,3 +62,6 @@ All notable changes to this project are recorded here. The format follows
 - The console's legal actions (hold, release, restore), audit log view
   (tenant log or admin log, a page at a time), and tenants and keys views
   for an operator key, each leaving the same audit record as the API.
+
+[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/NormB/vcon-server/releases/tag/v0.1.0
