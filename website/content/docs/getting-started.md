@@ -61,15 +61,66 @@ sha256sum -c SHA256SUMS.txt --ignore-missing
 The first command fails on any file that was not built by this repository's
 release workflow, or that changed after it was built.
 
+## Install it
+
+```sh
+sudo install -m 0755 target/release/vcon-server /usr/local/bin/vcon-server
+```
+
+From a release archive, install the `vcon-server` file it holds the same way.
+
+## Make the service account and its directories
+
+The server runs as its own account, `vcon`, which owns the data directory and
+the files in `/etc/vcon-server`:
+
+```sh
+sudo useradd --system --user-group --no-create-home --home-dir /var/lib/vcon-server --shell /usr/sbin/nologin vcon
+sudo install -d -m 0700 -o vcon -g vcon /var/lib/vcon-server
+sudo install -d -m 0700 -o vcon -g vcon /etc/vcon-server
+```
+
+The server makes everything inside the data directory.
+
+## Allow it to lock its memory
+
+At start the server locks all its memory, so no key or vCon body can reach
+swap, and turns core dumps off. It refuses to start if it cannot lock its
+memory. Every other command does the same, so the account that runs them
+needs the same allowance. The [systemd unit](#start-it) below allows it for
+the server. For the commands you run by hand, allow it for the `vcon`
+account:
+
+```sh
+echo 'vcon - memlock unlimited' | sudo tee /etc/security/limits.d/vcon-server.conf
+```
+
+`sudo -u vcon` then applies it, through `pam_limits`. Where the account's
+limit is too small and this file is missing, a command stops with:
+
+```text
+vcon-server: memory cannot be locked: Cannot allocate memory (os error 12); allow it, for example LimitMEMLOCK=infinity
+```
+
+Run every command as `vcon`, with `sudo -u vcon`, never as root. A command
+run as root leaves files in the data directory that `vcon` cannot open. The
+server then refuses to start, with
+`the data directory cannot be locked: Permission denied (os error 13)`, or,
+for a tenant made as root, `1 tenant(s) with data under another key`. Give
+the files back to `vcon`:
+
+```sh
+sudo chown -R vcon:vcon /var/lib/vcon-server
+```
+
 ## Make the master key
 
 The master key is a file of exactly 32 random bytes. It wraps every tenant key
 and opens the server's own catalog, so whoever holds it can read everything.
 Keep it on the server, readable only by the service account, and back it up
-separately from the data (see [operations](@/docs/operations.md#backups)).
+separately from the data (see [back up and restore](@/docs/operations.md#back-up-and-restore)).
 
 ```sh
-sudo install -d -m 0700 -o vcon -g vcon /etc/vcon-server
 head -c 32 /dev/urandom | sudo -u vcon tee /etc/vcon-server/master.key >/dev/null
 sudo chmod 0400 /etc/vcon-server/master.key
 ```
@@ -77,10 +128,38 @@ sudo chmod 0400 /etc/vcon-server/master.key
 A file of any other length is refused at start. Starting with a different key
 than the one the data directory was made under is refused too.
 
+The key's id is the first 16 hexadecimal digits of its SHA-256, the same
+`master_key_id` that `vcon-server rekey master` prints. Label each copy of the
+key with it:
+
+```sh
+sudo sha256sum /etc/vcon-server/master.key | cut -c1-16
+```
+
 ## Get a certificate
 
 The API is served over TLS only, HTTP/2 and HTTP/1.1. Give the server a PEM
-certificate chain and its PEM private key, for example from your ACME client.
+certificate chain and its PEM private key, for example from your ACME client,
+readable by the service account:
+
+```sh
+sudo install -m 0400 -o vcon -g vcon fullchain.pem /etc/vcon-server/cert.pem
+sudo install -m 0400 -o vcon -g vcon privkey.pem /etc/vcon-server/key.pem
+```
+
+The server reads them at start only: after a renewal, install the new files
+and restart it.
+
+To try the server before you have a certificate, make a self-signed one for
+the name clients will use:
+
+```sh
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 30 \
+  -subj /CN=vcon.example.com -addext subjectAltName=DNS:vcon.example.com \
+  -keyout privkey.pem -out fullchain.pem
+```
+
+Clients then need `fullchain.pem` to trust it.
 
 ## Write the configuration
 
@@ -97,14 +176,39 @@ cert = "/etc/vcon-server/cert.pem"
 key = "/etc/vcon-server/key.pem"
 ```
 
-The data directory must exist and belong to the service account. The server
-makes everything inside it.
+Save it as `vcon-server.toml`, then install it where the server reads it:
 
-## Allow it to lock its memory
+```sh
+sudo install -m 0400 -o vcon -g vcon vcon-server.toml /etc/vcon-server/vcon-server.toml
+```
 
-At start the server locks all its memory, so no key or vCon body can reach
-swap, and turns core dumps off. It refuses to start if it cannot lock its
-memory. Under systemd, allow it with `LimitMEMLOCK=infinity`:
+## Make the first tenant and its keys
+
+Every request carries a bearer key, and every vCon belongs to a tenant. Make
+the first tenant before you start the server: `tenant create` runs only
+while no server does.
+
+```sh
+sudo -u vcon vcon-server tenant create acme --config /etc/vcon-server/vcon-server.toml
+sudo -u vcon vcon-server key create --operator --label ops --config /etc/vcon-server/vcon-server.toml
+sudo -u vcon vcon-server key create --tenant <tenant id> --scope write --label recorder-1 \
+  --config /etc/vcon-server/vcon-server.toml
+sudo -u vcon vcon-server key create --tenant <tenant id> --scope read --label monitor \
+  --config /etc/vcon-server/vcon-server.toml
+```
+
+Each prints a JSON line: the tenant's `id`, then each key's `id` and `token`.
+A token is shown this once. The operator key (scope `admin`) manages tenants
+and keys over the [admin routes](@/docs/http-api.md#admin) once the server
+runs: further tenants are made with `POST /admin/tenants`. `key create` also
+runs beside the server. The `monitor` key is for the
+[health check](@/docs/operations.md#health-checks). See the
+[command line](@/docs/command-line.md) and [tenants and keys](@/docs/tenants-and-keys.md).
+
+## Start it
+
+Save this unit as `/etc/systemd/system/vcon-server.service`.
+`LimitMEMLOCK=infinity` allows the server to lock its memory:
 
 ```ini
 [Unit]
@@ -122,36 +226,38 @@ Restart=on-failure
 WantedBy=multi-user.target
 ```
 
-Run by hand, raise the limit first with `ulimit -l unlimited` (as root, or
-after raising the hard limit).
-
-## Start it
+Then start it, now and at each boot, and read its first lines:
 
 ```sh
-vcon-server serve --config /etc/vcon-server/vcon-server.toml
+sudo systemctl daemon-reload
+sudo systemctl enable --now vcon-server
+sudo journalctl -u vcon-server -n 5
 ```
 
-It logs structured lines to standard error: `serving` once it listens, a line
-per request, and `stopped` after SIGTERM or SIGINT. It refuses to start, with
-the reason, when the configuration is wrong, the master key is not the data
-directory's, memory cannot be locked, core dumps cannot be turned off,
-another server already holds the data directory, or a tenant's data is not
-all under its current key (a key rotation stopped part way: run it again;
-`vcon-server check` names the tenants).
+It logs structured lines to standard error, which the journal keeps:
+`serving` once it listens, a line per request, and `stopped` after SIGTERM or
+SIGINT:
 
-## Tenants and keys
+```text
+2026-10-26T12:53:48.651326Z  INFO vcon_server::serve: serving listen=0.0.0.0:8443
+2026-10-26T12:53:48.653954Z  INFO vcon_server::serve: purge sweep purged=0 failed=0
+```
 
-Every request carries a bearer key, and every vCon belongs to a tenant. Make
-the first tenant and its keys on the server's host:
+It refuses to start, with the reason, when the configuration is wrong, the
+master key is not the data directory's, memory cannot be locked, core dumps
+cannot be turned off, another server already holds the data directory, or a
+tenant's data is not all under its current key (a key rotation stopped part
+way: run it again; `vcon-server check` names the tenants).
+
+## Check that it answers
+
+Ask for its health with the `monitor` key's token:
 
 ```sh
-vcon-server tenant create acme --config /etc/vcon-server/vcon-server.toml
-vcon-server key create --operator --label ops --config /etc/vcon-server/vcon-server.toml
-vcon-server key create --tenant <tenant id> --scope write --label recorder-1 \
-  --config /etc/vcon-server/vcon-server.toml
+curl --cacert fullchain.pem https://vcon.example.com:8443/health \
+  -H "Authorization: Bearer <monitor token>"
 ```
 
-Each prints a JSON line; a key's token is shown this once. The operator key
-(scope `admin`) manages tenants and keys over the
-[admin routes](@/docs/http-api.md#admin) from then on. See the
-[command line](@/docs/command-line.md) and [tenants and keys](@/docs/tenants-and-keys.md).
+It answers `{"status":"ok"}`. Leave out `--cacert fullchain.pem` when the
+certificate comes from a public certificate authority. Without a key, the
+answer is `401`.

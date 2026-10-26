@@ -120,36 +120,167 @@ found a problem.
 A purge erases a version from the live system, but a copy made earlier (an
 old disk, freed blocks, a backup) still holds its sealed file and wrapped
 key. Rotation makes those copies unreadable, by destroying the keys that
-open them:
+open them. Run the `vcon-server` commands as the service account, with the
+server stopped.
 
-1. Stop the server.
-2. Run `vcon-server check`: each tenant's line gives
-   `purges_awaiting_rotation`. Run `vcon-server rekey tenant <id>` for each
-   tenant where it is above zero.
-3. Make a new master key file and run
-   `vcon-server rekey master --new-master <file>`.
-4. Point `master_key` in the configuration at the new file and start the
-   server.
-5. Destroy every copy of the old master key, backups included.
+1. Stop the server:
 
-From step 5 on, the data purged before the rotation cannot be read from any
+   ```sh
+   sudo systemctl stop vcon-server
+   ```
+
+2. List the tenants with purges since their key was last rotated:
+
+   ```sh
+   sudo -u vcon vcon-server check --config /etc/vcon-server/vcon-server.toml | jq -r 'select(.purges_awaiting_rotation > 0) | .tenant'
+   ```
+
+3. Rotate the key of each tenant it lists:
+
+   ```sh
+   sudo -u vcon vcon-server rekey tenant <tenant id> --config /etc/vcon-server/vcon-server.toml
+   ```
+
+4. Make a new master key file, under a name not used before, and rotate
+   the master key to it:
+
+   ```sh
+   head -c 32 /dev/urandom | sudo -u vcon tee /etc/vcon-server/master-2.key >/dev/null
+   sudo chmod 0400 /etc/vcon-server/master-2.key
+   sudo -u vcon vcon-server rekey master --new-master /etc/vcon-server/master-2.key \
+     --config /etc/vcon-server/vcon-server.toml
+   ```
+
+   It prints the new key's id and the next steps:
+
+   ```text
+   {"master_key_id":"2a21883e94360e22","next":"point master_key in the configuration at the new key file, start the server, then destroy every copy of the old master key"}
+   ```
+
+5. Point `master_key` in the configuration at the new file:
+
+   ```sh
+   sudo sed -i 's|^master_key = .*|master_key = "/etc/vcon-server/master-2.key"|' /etc/vcon-server/vcon-server.toml
+   ```
+
+6. While the server is still stopped, back up the new master key and the
+   data directory (see [back up and restore](#back-up-and-restore)).
+7. Start the server:
+
+   ```sh
+   sudo systemctl start vcon-server
+   ```
+
+8. Destroy every copy of the old master key, backups included:
+
+   ```sh
+   sudo rm /etc/vcon-server/master.key
+   ```
+
+From step 8 on, the data purged before the rotation cannot be read from any
 copy taken before it. A step that stops part way is finished by running it
 again. The test suite plays this procedure end to end with the binary
 (`crates/vcon-server/tests/rotation.rs`): it copies the data directory, purges
 a vCon, rotates, destroys the old master key, and then tries every key that
 still exists on the copy.
 
-## Backups
+## Back up and restore
 
-- **Back up the master key separately** from the data, and keep it as
-  carefully as the key itself. Data without its master key is unreadable;
-  that is the point.
-- **Back up the data directory consistently:** stop the server and copy it, or
-  take an atomic snapshot of the whole filesystem it lives on (LVM, ZFS,
-  btrfs). Copying the files of a running server can catch a catalog in the
-  middle of a write.
-- **A restored copy needs the master key it was made under**; the server
-  refuses any other.
-- **A backup keeps what was purged after it was taken**, readable with that
-  master key. [Key rotation](#key-rotation) is what makes such copies
-  unreadable: after a rotation, destroy every copy of the old master key.
+A backup is two things, kept in different places:
+
+| What | Where | Changes |
+|---|---|---|
+| The data directory | `data_dir`, such as `/var/lib/vcon-server` | with every request |
+| The master key file | `master_key`, such as `/etc/vcon-server/master.key` | only at a [key rotation](#key-rotation) |
+
+Data without its master key is unreadable. Kept apart, the copies of an old
+master key can be destroyed at a rotation while the data backups stay where
+they are, and those backups become unreadable. A backup that holds both
+opens everything it holds until it is destroyed.
+
+### Back up the master key
+
+Back it up when it is made and after each rotation. Copy the file to storage
+that does not hold the data backups, and label the copy with the key's id:
+
+```sh
+sudo sha256sum /etc/vcon-server/master.key | cut -c1-16
+```
+
+Keep a list of every copy, so that each one can be found and destroyed at
+the next rotation.
+
+### Back up the data directory
+
+Copy it with the server stopped. The copy below holds the data directory's
+two lock files, `lock` and `lock.commands`, as a command that runs alone does,
+so no server or other command can start while it runs:
+
+```sh
+sudo systemctl stop vcon-server
+sudo flock --nonblock /var/lib/vcon-server/lock flock --nonblock /var/lib/vcon-server/lock.commands \
+  tar -C /var/lib -cf /backup/vcon-server-data-$(date -u +%Y%m%dT%H%M%SZ).tar vcon-server
+sudo systemctl start vcon-server
+```
+
+If a server or a command still holds the directory, `flock` exits 1 and
+nothing is copied. A server that stopped cleanly leaves no `-wal` file; the
+archive holds `server.sqlite`, `lock`, `lock.commands` and `tenants/`, and
+nothing in it is readable without the master key. Store it away from the
+master key's copies.
+
+Do not copy the files of a running server. Each file is read at a different
+moment, and a catalog copied in the middle of a transaction "might contain
+some old and some new content, and thus be corrupt"
+([SQLite](https://www.sqlite.org/howtocorrupt.html#_backup_or_restore_while_a_transaction_is_active)).
+vcon-server has no command that copies a running server's data
+consistently.
+
+To back up while the server runs, take an atomic snapshot of the filesystem
+that holds the data directory (LVM, ZFS, btrfs). A snapshot holds what a
+power cut at that moment would leave on disk, and start-up recovery opens
+that state (see [stopping](#stopping)). Copy the data directory out of the snapshot, and
+leave the master key out of that copy when the key is on the same
+filesystem.
+
+### Restore the data directory
+
+Restore it with the server stopped, under the master key that was current
+when the backup was taken, then check it before starting:
+
+```sh
+sudo systemctl stop vcon-server
+sudo mv /var/lib/vcon-server /var/lib/vcon-server.old
+sudo tar -C /var/lib -xpf /backup/vcon-server-data-<time>.tar
+sudo -u vcon vcon-server check --config /etc/vcon-server/vcon-server.toml
+sudo systemctl start vcon-server
+```
+
+`tar -p`, run as root, restores the files' owner and modes. Under any other
+master key, `check` and the server both refuse:
+
+```text
+vcon-server: the master key is not the one server.sqlite was made under
+```
+
+The data directory is then as it was when the backup was taken:
+
+- vCons, tenants and keys made since are gone, with their audit records;
+- a vCon deleted or purged since is back;
+- **a key revoked since is valid again.** Revoke it again with
+  `vcon-server key revoke <id>`. The admin log records each revocation as
+  `key_revoke`; an `audit export --admin` taken after the backup lists them.
+
+Versions in the backup that are due for purge are purged again by the sweep
+at start.
+
+### What a key rotation does to backups
+
+A data backup opens only under the master key that was current when it was
+taken. Once every copy of that key is destroyed (step 8 of
+[key rotation](#key-rotation)), the backup can no longer be read or
+restored, and that includes every vCon purged before the rotation. So:
+
+- take a new data backup, and back up the new master key, right after a
+  rotation;
+- a backup taken before the rotation cannot be restored after it.

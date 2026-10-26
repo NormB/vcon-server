@@ -8,6 +8,7 @@ Every command takes `--config <file>`, the same file `serve` reads, and acts
 on the data directory it names. Like `serve`, each turns core dumps off and
 locks its memory before it reads a key, so it needs the same memory-lock
 allowance (see [getting started](@/docs/getting-started.md#allow-it-to-lock-its-memory)).
+Run each as the service account that owns the data directory, never as root.
 
 ## Output and exit codes
 
@@ -103,11 +104,11 @@ once. See [operations](@/docs/operations.md#one-server-per-directory).
 ## A first tenant, from nothing
 
 ```sh
-vcon-server tenant create acme --config /etc/vcon-server/vcon-server.toml
+sudo -u vcon vcon-server tenant create acme --config /etc/vcon-server/vcon-server.toml
 # {"id":"3f0c…"}
-vcon-server key create --operator --label ops --config /etc/vcon-server/vcon-server.toml
+sudo -u vcon vcon-server key create --operator --label ops --config /etc/vcon-server/vcon-server.toml
 # {"id":"…","token":"vcs_…"}   keep this token: it manages tenants over HTTP
-vcon-server key create --tenant 3f0c… --scope write --label recorder-1 \
+sudo -u vcon vcon-server key create --tenant 3f0c… --scope write --label recorder-1 \
   --config /etc/vcon-server/vcon-server.toml
 # {"id":"…","token":"vcs_…"}   give this one to the producer
 ```
