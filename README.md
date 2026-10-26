@@ -7,6 +7,7 @@
 
 [![CI](https://github.com/NormB/vcon-server/actions/workflows/ci.yml/badge.svg)](https://github.com/NormB/vcon-server/actions/workflows/ci.yml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/NormB/vcon-server/badge)](https://scorecard.dev/viewer/?uri=github.com/NormB/vcon-server)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15941/badge)](https://www.bestpractices.dev/projects/15941)
 [![codecov](https://codecov.io/gh/NormB/vcon-server/graph/badge.svg)](https://codecov.io/gh/NormB/vcon-server)
 [![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/NormB/badge.svg)](https://hub.xerj.org/contributors/NormB)
 
