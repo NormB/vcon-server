@@ -405,3 +405,6 @@ document.getElementById("sign-in").addEventListener("submit", signIn);
 document.getElementById("sign-out").addEventListener("click", () => showSignedOut());
 
 export { el, clear, request, refusal, holds };
+
+// Planted fault for the CodeQL check; never merged.
+document.getElementById("sign-in").insertAdjacentHTML("beforeend", decodeURIComponent(window.location.hash.slice(1)));
