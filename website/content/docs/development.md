@@ -135,6 +135,19 @@ and `scripts/icons.py --check`. A coverage job runs the same tests under
 `cargo llvm-cov` and sends the result to Codecov. Each action and each
 downloaded tool is pinned by commit or by sha256.
 
+## Contributing
+
+- **A bug or a feature request:** open an issue at
+  <https://github.com/NormB/vcon-server/issues>. For a bug, give the output
+  of `vcon-server --version`, the commit you built, what you did, what you
+  expected and what happened, and the log lines with every token removed.
+- **A change:** send a pull request against `main`. Read
+  [CONTRIBUTING.md](https://github.com/NormB/vcon-server/blob/main/CONTRIBUTING.md)
+  first, and sign the [Contributor License Agreement](@/cla.md) before
+  your first pull request merges.
+- **A security problem:** report it privately, never in an issue; see
+  [reporting a vulnerability](@/docs/security.md#reporting-a-vulnerability).
+
 ## Licence
 
 MIT OR Apache-2.0, at your option.

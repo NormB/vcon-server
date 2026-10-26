@@ -17,6 +17,24 @@ Before your first commit, turn on the hooks; they run the same checks as CI:
 git config core.hooksPath .githooks
 ```
 
+## Reporting a bug or asking for a feature
+
+Open an issue at <https://github.com/NormB/vcon-server/issues>. For a bug,
+give:
+
+- the output of `vcon-server --version` and the commit you built,
+- what you did, as a command or a request,
+- what you expected and what happened instead,
+- the server's log lines for that request, with every token removed.
+
+Issues and comments are in English. A security problem is never an issue:
+see [Reporting a security problem](#reporting-a-security-problem).
+
+## Proposing a change
+
+Send it as a pull request against `main`. CI runs the same checks as the
+hooks on every pull request.
+
 ## Contributor License Agreement
 
 Sign the vcon-server [Contributor License Agreement](CLA.md) before your first
