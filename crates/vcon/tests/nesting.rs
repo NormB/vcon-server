@@ -23,13 +23,14 @@ const OTHER: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bc47";
 const UNLIMITED: Limits = Limits { inflated: u64::MAX };
 
 /// Far past the limit, and deep enough that reading one stack frame per
-/// layer overflows `SMALL_STACK` in a debug or a release build.
+/// layer overflows `SMALL_STACK` in a debug build, as the commit hook and
+/// CI run the tests.
 const DEEP: usize = 500;
 
-/// A thread stack far smaller than the 2 MiB a Rust thread gets by default.
-/// Some platforms raise it to their own minimum, 128 KiB on Linux on
-/// aarch64.
-const SMALL_STACK: usize = 64 << 10;
+/// A quarter of the 2 MiB a Rust thread gets by default: room for one read
+/// at the limits in a debug build on x86_64 (64 KiB was not), far less than
+/// a frame per layer of `DEEP` needs.
+const SMALL_STACK: usize = 512 << 10;
 
 fn gz(bytes: &[u8]) -> Vec<u8> {
     let mut e = GzEncoder::new(Vec::new(), Compression::fast());
