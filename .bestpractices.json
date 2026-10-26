@@ -122,7 +122,7 @@
   "static_analysis_often_status": "Met",
   "static_analysis_often_justification": "CodeQL runs on every push and pull request and weekly; clippy runs on every commit: https://github.com/NormB/vcon-server/blob/main/.github/workflows/codeql.yml",
   "dynamic_analysis_status": "Met",
-  "dynamic_analysis_justification": "proptest property tests feed generated inputs (arbitrary bytes, gzip, vCon-like JSON) to the vCon reader on every CI test run: https://github.com/NormB/vcon-server/blob/main/crates/vcon-form/tests/properties.rs",
+  "dynamic_analysis_justification": "proptest property tests feed generated inputs (arbitrary bytes, gzip, vCon-like JSON) to the vCon reader on every CI test run: https://github.com/NormB/vcon-server/blob/main/crates/vcon/tests/properties.rs",
   "dynamic_analysis_unsafe_status": "Unmet",
   "dynamic_analysis_unsafe_justification": "vcon-server has unsafe Rust blocks (calls to libc and SQLCipher, slices over a locked memory page) and links C libraries (SQLCipher, OpenSSL, AWS-LC); none of its tests runs under a memory-safety detector such as AddressSanitizer or Miri.",
   "dynamic_analysis_enable_assertions_status": "Met",

@@ -40,6 +40,9 @@ mod tests {
     }
 }
 RS
+# The hook checks that every path the Best Practices answers link to exists.
+links="https://github.com/NormB/vcon-server/blob/main"
+printf '{"build": "%s/Cargo.toml"}\n' "$links" > .bestpractices.json
 cargo generate-lockfile -q
 git add -A
 git commit -q -m "Start the fixture" >"$work/first" 2>&1 || { echo "FAIL: the clean first commit was refused"; sed "s/^/    /" "$work/first"; exit 1; }
@@ -90,6 +93,8 @@ expect accept "RFC 3849 IPv6" notes.txt "host 2001:db8::5"
 expect refuse "owner surname" notes.txt "by Norm ${sur^}"
 expect accept "owner's credit in the README" README.md "Copyright 2026 Norm ${sur^}"
 expect accept "owner's credit in the site config" website/config.toml "author = \"Norm ${sur^}\""
+expect accept "Best Practices answer linking to a file in the tree" .bestpractices.json "{\"a\": \"$links/src/lib.rs\"}"
+expect refuse "Best Practices answer linking to a file that moved" .bestpractices.json "{\"a\": \"$links/src/gone.rs\"}"
 expect refuse "owner surname in a site page" website/content/a.md "by Norm ${sur^}"
 expect refuse "owner surname in a nested README" crates/x/README.md "by Norm ${sur^}"
 expect refuse "design rule id" notes.txt "see FMT""-3"
