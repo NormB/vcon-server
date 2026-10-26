@@ -69,6 +69,7 @@ pub enum Action {
     RekeyTenant,
     List,
     AuditRead,
+    Openapi,
 }
 
 impl Action {
@@ -100,6 +101,7 @@ impl Action {
             Action::RekeyTenant => "rekey_tenant",
             Action::List => "list",
             Action::AuditRead => "audit_read",
+            Action::Openapi => "openapi",
         }
     }
 }
@@ -482,6 +484,7 @@ mod tests {
             (Action::RekeyTenant, "rekey_tenant"),
             (Action::List, "list"),
             (Action::AuditRead, "audit_read"),
+            (Action::Openapi, "openapi"),
         ];
         for (action, name) in names {
             assert_eq!(action.as_str(), name);

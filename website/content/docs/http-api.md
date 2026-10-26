@@ -32,6 +32,14 @@ weight = 70
   lists them all. No problem repeats any part of the request.
 - **Every request is recorded** in an [audit log](@/docs/audit-logs.md),
   refused ones included.
+- **An OpenAPI 3.1 description** of every route, status and problem type is
+  at <https://vcon-server.com/openapi.json>, and each server answers the same
+  file at `GET /openapi.json` to any valid key. Tests hold it to the code.
+  Load it into an OpenAPI tool to generate a client:
+
+  ```sh
+  curl -s https://vcon.example.com/openapi.json -H "Authorization: Bearer $KEY" -o openapi.json
+  ```
 
 ## vCons
 
@@ -203,10 +211,11 @@ or whose tenant's log cannot be opened, gets
 curl https://vcon.example.com/key -H "Authorization: Bearer $KEY"
 ```
 
-## Health
+## Health and description
 
 | Route | Scope | Answers |
 |---|---|---|
+| `GET /openapi.json` | any valid key | `200`: this API's OpenAPI description, `application/json`; recorded as `openapi` |
 | `GET /health` | any valid key | `200` `{"status": "ok"}` when `server.sqlite` answers; [`unavailable`](@/problems/unavailable.md) (503) otherwise, and for a key whose tenant is being removed |
 
 Health requests are counted in the audit log, one record per key, status and

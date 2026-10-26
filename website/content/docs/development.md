@@ -31,6 +31,11 @@ crates/
         └── query.rs       query strings, read by one rule for every route
 ```
 
+`crates/vcon-server/openapi.json` describes the HTTP API. It is written by
+hand; `website/static/openapi.json` must be the same bytes. The unit tests
+fail when a route, a status a test produces or a problem type is missing
+from it.
+
 The binary does almost nothing itself: everything it runs is in the library,
 so tests drive the same code the binary does.
 

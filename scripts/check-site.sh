@@ -37,7 +37,7 @@ grep -qF 'https://github.com/NormB/vcon-server' "$home" || fail "the home page d
 grep -qF 'https://www.linkedin.com/in/nbrandinger' "$home" || fail "the home page lacks the author's credit"
 grep -qF 'https://github.com/sponsors/NormB' "$home" || fail "the home page lacks the sponsor link"
 
-for f in 404.html llms.txt robots.txt search_index.en.js elasticlunr.min.js js/search.js; do
+for f in 404.html llms.txt robots.txt openapi.json search_index.en.js elasticlunr.min.js js/search.js; do
   [ -s "$site/$f" ] || fail "the build has no $f"
 done
 

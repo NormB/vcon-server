@@ -31,3 +31,5 @@ All notable changes to this project are recorded here. The format follows
   framing; browser tests run it against the real server.
 - `GET /key`: the calling key's own id, tenant and scopes, recorded as
   `key_info`.
+- An OpenAPI 3.1 description of the HTTP API, served at `GET /openapi.json`
+  to any valid key and published at <https://vcon-server.com/openapi.json>.

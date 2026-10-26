@@ -71,6 +71,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/key", get(key_info))
         .route("/audit", get(audit_read))
         .route("/admin/audit", get(admin_audit_read))
+        .route("/openapi.json", get(openapi))
         .route("/legal/vcons/{uuid}", get(legal_read))
         .route("/legal/vcons/{uuid}/versions", get(legal_versions))
         .route("/legal/vcons/{uuid}/versions/{version}", get(legal_version))
@@ -100,6 +101,18 @@ async fn log_request(matched: Option<MatchedPath>, request: Request, next: Next)
         .map_or("unmatched", MatchedPath::as_str)
         .to_owned();
     let answer = next.run(request).await;
+    // In the unit tests every answer must be one the description lists, so
+    // a route or status added without its description fails the test
+    // that produced it. A method a path does not take (405) and a path no
+    // route matches are the router's, not a route's.
+    #[cfg(test)]
+    if route != "unmatched" && answer.status() != StatusCode::METHOD_NOT_ALLOWED {
+        let status = answer.status().as_u16();
+        assert!(
+            description::lists(method.as_str(), &route, status),
+            "openapi.json does not list {status} for {method} {route}"
+        );
+    }
     let mut id = [0; 8];
     // AWS-LC's RAND_bytes aborts the process when it cannot get enough
     // randomness, so `fill` never returns its error.
@@ -113,6 +126,56 @@ async fn log_request(matched: Option<MatchedPath>, request: Request, next: Next)
         "request"
     );
     answer
+}
+
+/// The OpenAPI description of every route, as `GET /openapi.json` serves
+/// it and the website publishes it.
+pub const OPENAPI: &str = include_str!("../openapi.json");
+
+/// `GET /openapi.json`: the description, to any valid key, recorded as
+/// openapi in the key's tenant log or the admin log.
+async fn openapi(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    let caller = match authenticated(&app, &headers).await {
+        Ok(caller) => caller,
+        Err(refused) => return refused.into_response(),
+    };
+    let tenants = app.tenants.clone();
+    let recorded = blocking(move || {
+        let entry = |status| Entry {
+            actor: Actor::Key(caller.key),
+            action: Action::Openapi,
+            target: None,
+            version: None,
+            status,
+        };
+        let logged = |done: bool, answer| {
+            if done {
+                answer
+            } else {
+                Err(Problem::AuditFailed)
+            }
+        };
+        match caller.tenant.map(|t| tenants.store(t)) {
+            Some(Ok(store)) => logged(store.log(&entry(200)).is_ok(), Ok(())),
+            // A tenant being removed, or whose log cannot be opened, answers
+            // 503 here too, recorded in the admin log.
+            Some(Err(_)) => logged(
+                tenants.record_alone(&entry(503)).is_ok(),
+                Err(Problem::Unavailable),
+            ),
+            None => logged(tenants.record_alone(&entry(200)).is_ok(), Ok(())),
+        }
+    })
+    .await;
+    match recorded {
+        Ok(()) => (
+            StatusCode::OK,
+            [(CONTENT_TYPE, "application/json")],
+            OPENAPI,
+        )
+            .into_response(),
+        Err(refused) => refused.into_response(),
+    }
 }
 
 /// `POST /vcons`: stores a new vCon, or answers 200 when the same bytes
@@ -1536,7 +1599,7 @@ mod tests {
         assert!(tls_config(&c.cert, &c.key).is_ok());
     }
 
-    mod pipeline {
+    pub(crate) mod pipeline {
         use std::net::SocketAddr;
 
         use serde_json::Value;
@@ -1550,15 +1613,15 @@ mod tests {
         use crate::fs::OsFs;
         use crate::ids::TenantId;
 
-        pub(super) const LIMIT: usize = 64 * 1024;
+        pub(crate) const LIMIT: usize = 64 * 1024;
 
         /// A server with one tenant, on a free port.
-        pub(super) struct Server {
+        pub(crate) struct Server {
             _dir: tempfile::TempDir,
             certificate: Certificate,
             addr: SocketAddr,
-            pub(super) tenants: Arc<Tenants>,
-            pub(super) tenant: TenantId,
+            pub(crate) tenants: Arc<Tenants>,
+            pub(crate) tenant: TenantId,
             stop: Option<tokio::sync::oneshot::Sender<()>>,
         }
 
@@ -1570,18 +1633,18 @@ mod tests {
             }
         }
 
-        pub(super) async fn server() -> Server {
+        pub(crate) async fn server() -> Server {
             server_with(&[]).await
         }
 
         /// A server that supports the must_support extensions named.
-        pub(super) async fn server_with(supported: &[&str]) -> Server {
+        pub(crate) async fn server_with(supported: &[&str]) -> Server {
             server_from(supported, Retention::Years(7)).await
         }
 
         /// A server whose tenants that set no retention period keep
         /// vCons for `default`.
-        pub(super) async fn server_keeping(default: Retention) -> Server {
+        pub(crate) async fn server_keeping(default: Retention) -> Server {
             server_from(&[], default).await
         }
 
@@ -1626,20 +1689,20 @@ mod tests {
         }
 
         impl Server {
-            pub(super) fn dir(&self) -> &std::path::Path {
+            pub(crate) fn dir(&self) -> &std::path::Path {
                 self._dir.path()
             }
 
-            pub(super) fn url(&self, path: &str) -> String {
+            pub(crate) fn url(&self, path: &str) -> String {
                 format!("https://localhost:{}{path}", self.addr.port())
             }
 
-            pub(super) fn client(&self) -> reqwest::Client {
+            pub(crate) fn client(&self) -> reqwest::Client {
                 client(&self.certificate, self.addr)
             }
 
             /// A client that shows a redirect instead of following it.
-            pub(super) fn client_not_following(&self) -> reqwest::Client {
+            pub(crate) fn client_not_following(&self) -> reqwest::Client {
                 let pem = self.certificate.pem.as_bytes();
                 reqwest::Client::builder()
                     .tls_certs_only([reqwest::Certificate::from_pem(pem).expect("pem")])
@@ -1650,14 +1713,14 @@ mod tests {
                     .expect("a client")
             }
 
-            pub(super) fn key(&self, scopes: &[Scope]) -> String {
+            pub(crate) fn key(&self, scopes: &[Scope]) -> String {
                 self.tenants
                     .create_key(Actor::Cli, Some(self.tenant), Scopes::of(scopes), "test")
                     .expect("a key")
                     .token
             }
 
-            pub(super) fn tenant_log(&self, action: &str) -> Vec<Value> {
+            pub(crate) fn tenant_log(&self, action: &str) -> Vec<Value> {
                 let store = self.tenants.store(self.tenant).expect("its store");
                 store
                     .records()
@@ -1734,7 +1797,7 @@ mod tests {
 
         /// Checks the answer is a problem document for its status, and
         /// returns its type's last part.
-        pub(super) async fn problem(answer: reqwest::Response) -> String {
+        pub(crate) async fn problem(answer: reqwest::Response) -> String {
             assert_eq!(
                 answer.headers()["content-type"],
                 "application/problem+json",
@@ -3897,6 +3960,74 @@ mod tests {
         }
     }
 
+    /// `GET /openapi.json`: the description, to any valid key.
+    mod openapi_route {
+        use super::pipeline::{Server, problem, server};
+        use crate::access::{Scope, Scopes};
+        use crate::audit::Actor;
+
+        async fn get(s: &Server, token: Option<&str>) -> reqwest::Response {
+            let mut request = s.client().get(s.url("/openapi.json"));
+            if let Some(token) = token {
+                request = request.bearer_auth(token);
+            }
+            request.send().await.expect("an answer")
+        }
+
+        fn admin_openapi_records(s: &Server) -> usize {
+            let mut out = Vec::new();
+            s.tenants.export_admin(None, &mut out).expect("export");
+            String::from_utf8(out)
+                .expect("UTF-8")
+                .lines()
+                .filter(|l| l.contains("\"action\":\"openapi\""))
+                .count()
+        }
+
+        #[tokio::test]
+        async fn any_valid_key_gets_the_description_as_compiled_and_it_is_recorded() {
+            let s = server().await;
+            let operator = s
+                .tenants
+                .create_key(Actor::Cli, None, Scopes::of(&[Scope::Admin]), "op")
+                .expect("an operator key")
+                .token;
+            for token in [s.key(&[Scope::Read]), s.key(&[Scope::Write]), operator] {
+                let answer = get(&s, Some(&token)).await;
+                assert_eq!(answer.status(), 200);
+                assert_eq!(answer.headers()["content-type"], "application/json");
+                assert_eq!(answer.text().await.expect("text"), super::super::OPENAPI);
+            }
+            let recorded = s.tenant_log("openapi");
+            assert_eq!(recorded.len(), 2, "the two tenant keys");
+            assert!(recorded.iter().all(|r| r["status"] == 200));
+            assert_eq!(admin_openapi_records(&s), 1, "the operator key");
+        }
+
+        #[tokio::test]
+        async fn no_key_is_401_and_a_read_that_cannot_be_recorded_503() {
+            let s = server().await;
+            let answer = get(&s, None).await;
+            assert_eq!(answer.status(), 401);
+            assert_eq!(problem(answer).await, "unauthorized");
+            let reader = s.key(&[Scope::Read]);
+            s.tenants.store(s.tenant).expect("its store").break_audit();
+            let answer = get(&s, Some(&reader)).await;
+            assert_eq!(answer.status(), 503);
+            assert_eq!(problem(answer).await, "audit-failed");
+        }
+
+        #[tokio::test]
+        async fn a_key_of_a_closing_tenant_is_503() {
+            let s = server().await;
+            let reader = s.key(&[Scope::Read]);
+            s.tenants.close(s.tenant);
+            let answer = get(&s, Some(&reader)).await;
+            assert_eq!(answer.status(), 503);
+            assert_eq!(problem(answer).await, "unavailable");
+        }
+    }
+
     /// `GET /audit` and `GET /admin/audit`: a log a page at a time, as the
     /// command line exports it.
     mod audit_routes {
@@ -4549,7 +4680,7 @@ mod site_pages {
     /// One of every problem the API can answer. Each list sits behind an
     /// exhaustive match, so a new kind of problem fails to compile here
     /// until it is listed, and then fails the test until it has its page.
-    fn every_problem() -> Vec<Problem> {
+    pub(super) fn every_problem() -> Vec<Problem> {
         let mut all = vec![
             Problem::Unauthorized,
             Problem::Forbidden,
@@ -4718,5 +4849,149 @@ mod site_pages {
             .map(|f| f.strip_suffix(".md").unwrap_or(&f).to_owned())
             .collect();
         assert_eq!(pages, names);
+    }
+}
+
+/// Reading the description, for the tests that hold it to the code.
+#[cfg(test)]
+mod description {
+    use std::sync::OnceLock;
+
+    use serde_json::Value;
+
+    fn parsed() -> &'static Value {
+        static PARSED: OnceLock<Value> = OnceLock::new();
+        PARSED.get_or_init(|| serde_json::from_str(super::OPENAPI).expect("openapi.json is JSON"))
+    }
+
+    /// Whether the description lists `status` for `method` on `route`, a
+    /// route template as the router writes it. The router's `{*name}`, the
+    /// rest of a path, is OpenAPI's `{name}`.
+    pub(super) fn lists(method: &str, route: &str, status: u16) -> bool {
+        let path = route.replace("{*", "{");
+        parsed()["paths"][path.as_str()][method.to_ascii_lowercase()]["responses"]
+            .get(status.to_string())
+            .is_some()
+    }
+
+    /// Whether the operation needs a key: it does unless it says
+    /// `security: []`.
+    pub(super) fn keyed(method: &str, path: &str) -> bool {
+        parsed()["paths"][path][method.to_ascii_lowercase()]["security"]
+            .as_array()
+            .is_none_or(|s| !s.is_empty())
+    }
+
+    /// Every path and its methods, as the description names them.
+    pub(super) fn operations() -> Vec<(String, String)> {
+        let mut all = Vec::new();
+        for (path, item) in parsed()["paths"].as_object().expect("paths") {
+            for method in item.as_object().expect("a path item").keys() {
+                if ["get", "put", "post", "delete", "patch"].contains(&method.as_str()) {
+                    all.push((method.to_ascii_uppercase(), path.clone()));
+                }
+            }
+        }
+        all
+    }
+
+    pub(super) fn document() -> &'static Value {
+        parsed()
+    }
+}
+
+/// The description against the code: the published copy, the version, the
+/// problem types and every route and method. Statuses are checked on every
+/// answer the unit tests produce, in `log_request`.
+#[cfg(test)]
+mod openapi_description {
+    use std::collections::BTreeSet;
+
+    use reqwest::Method;
+
+    use super::description::{document, keyed, lists, operations};
+    use super::site_pages::every_problem;
+    use super::tests::pipeline::server;
+    use super::*;
+
+    #[test]
+    fn the_website_publishes_the_compiled_description() {
+        let published = std::fs::read_to_string(format!(
+            "{}/../../website/static/openapi.json",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .expect("the website's copy");
+        assert!(published == OPENAPI, "website/static/openapi.json differs");
+    }
+
+    #[test]
+    fn it_is_openapi_3_1_for_this_version() {
+        let doc = document();
+        assert!(
+            doc["openapi"]
+                .as_str()
+                .is_some_and(|v| v.starts_with("3.1.")),
+            "{}",
+            doc["openapi"]
+        );
+        assert_eq!(doc["info"]["version"], env!("CARGO_PKG_VERSION"));
+        assert!(doc["info"]["title"].as_str().is_some_and(|t| !t.is_empty()));
+    }
+
+    #[test]
+    fn its_problem_types_are_the_ones_the_api_answers() {
+        let described: BTreeSet<String> =
+            document()["components"]["schemas"]["Problem"]["properties"]["type"]["enum"]
+                .as_array()
+                .expect("the Problem type list")
+                .iter()
+                .map(|t| t.as_str().expect("a URL").to_owned())
+                .collect();
+        let answered: BTreeSet<String> = every_problem()
+            .into_iter()
+            .map(|p| format!("https://vcon-server.com/problems/{}", p.name().0))
+            .collect();
+        assert_eq!(described, answered);
+    }
+
+    /// A path template with sample values, so it reaches its route.
+    fn concrete(path: &str) -> String {
+        path.replace("{uuid}", "01a07da8-c2bb-83e5-b9a2-279e0d16bc46")
+            .replace("{version}", "00112233445566778899aabbccddeeff")
+            .replace("{id}", "00112233445566778899aabbccddeeff")
+            .replace("{other}", "no-such-file")
+    }
+
+    /// Every operation the description names is routed (one that needs a
+    /// key asks for it; one that needs none answers a status it lists), and
+    /// every other method on its paths is not (405).
+    #[tokio::test]
+    async fn every_described_route_is_routed_and_no_other_method() {
+        let s = server().await;
+        let described: BTreeSet<(String, String)> = operations().into_iter().collect();
+        assert!(!described.is_empty());
+        let paths: BTreeSet<&String> = described.iter().map(|(_, p)| p).collect();
+        for path in paths {
+            for method in ["GET", "POST", "PUT", "PATCH", "DELETE"] {
+                // Not following redirects, so each answer is the route's own.
+                let answer = s
+                    .client_not_following()
+                    .request(
+                        Method::from_bytes(method.as_bytes()).expect("a method"),
+                        s.url(&concrete(path)),
+                    )
+                    .send()
+                    .await
+                    .expect("an answer");
+                let status = answer.status().as_u16();
+                if !described.contains(&(method.to_owned(), path.clone())) {
+                    assert_eq!(status, 405, "{method} {path}");
+                } else if keyed(method, path) {
+                    assert_eq!(status, 401, "{method} {path}");
+                } else {
+                    assert!(lists(method, path, status), "{method} {path}: {status}");
+                }
+            }
+        }
     }
 }
