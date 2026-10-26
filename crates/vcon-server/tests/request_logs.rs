@@ -80,6 +80,7 @@ async fn each_request_is_logged_by_its_route_template_and_no_id() {
         },
         supported: BTreeSet::new(),
         retention_default: Retention::Years(7),
+        mcp: vcon_server::mcp::Limits::DEFAULT,
     });
 
     let made =

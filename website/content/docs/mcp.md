@@ -85,6 +85,37 @@ write the token there, and keep the file readable only by its owner. When the
 server's certificate comes from a private CA, a client that runs on Node.js
 trusts it when `NODE_EXTRA_CA_CERTS` names the CA's PEM file.
 
+## Tool calls
+
+Each `tools/call` passes one gate before the tool runs. The gate checks, in
+this order:
+
+| Check | Refusal | Status | JSON-RPC code |
+|---|---|---|---|
+| More than `mcp.calls_per_second` calls by one key in one second (default 100) | [rate-limited](@/problems/rate-limited.md) | 429 | -32000 |
+| More than `mcp.concurrent` calls running on the server (default 100) | [at-capacity](@/problems/at-capacity.md) | 503 | -32000 |
+| A tool the server does not have | [unknown-tool](@/problems/unknown-tool.md) | 404 | -32602 |
+| A tool the key's scopes do not allow | [forbidden](@/problems/forbidden.md) | 403 | -32001 |
+| An argument of the wrong type, or one the tool does not take | [invalid-arguments](@/problems/invalid-arguments.md) | 422 | -32602 |
+
+- **A refusal** is a JSON-RPC error whose `data` is the
+  [problem document](@/problems/_index.md) the HTTP API answers with, its
+  status included. A rate-limited one also gives `retry_after_ms`, the wait
+  until the key's one-second window ends. A call past either limit is refused
+  at once, never queued.
+- **Records.** Every refusal is written to the key's audit log under the
+  tool's action, or under `mcp` for a tool the server does not have:
+  rate-limited and at-capacity are counted, the others recorded one row each.
+  A refusal that cannot be written answers
+  [audit-failed](@/problems/audit-failed.md) instead.
+- **Scopes.** `tools/list` shows a key only the tools it may call. A tool's
+  scope follows from its name and its hints: a `vcon_` tool needs read when
+  it is read-only, delete when it is destructive, and write otherwise; a
+  `legal_` tool needs legal; an `admin_` tool needs admin.
+
+The limits are set in the [configuration](@/docs/configuration.md). While
+there are no tools, every call is refused as unknown-tool.
+
 ## Tools
 
 There are no tools yet.

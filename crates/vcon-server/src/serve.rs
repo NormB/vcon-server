@@ -237,6 +237,7 @@ fn app_from(config: &Config, tenants: Arc<Tenants>) -> App {
         },
         supported: config.supported_critical.clone(),
         retention_default: config.retention_default,
+        mcp: config.mcp,
     }
 }
 
@@ -369,6 +370,10 @@ mod tests {
             inflated_limit: 67_890,
             read_timeout: Duration::from_secs(17),
             supported_critical: ["known".to_owned()].into(),
+            mcp: crate::mcp::Limits {
+                calls_per_second: 3,
+                concurrent: 4,
+            },
         };
         let app = app_from(&config, tenants.clone());
         assert!(Arc::ptr_eq(&app.tenants, &tenants));
@@ -377,6 +382,7 @@ mod tests {
         assert_eq!(app.limits.body_timeout, Duration::from_secs(17));
         assert_eq!(app.supported, config.supported_critical);
         assert_eq!(app.retention_default, config.retention_default);
+        assert_eq!(app.mcp, config.mcp);
     }
 
     mod sweeps {

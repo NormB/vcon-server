@@ -26,6 +26,8 @@ Durations are whole seconds and sizes are bytes; each must be more than zero.
 | `limits.inflated` | Most bytes gzip inflation may produce while one body is checked | `67108864` (64 MiB) |
 | `limits.timeouts.read` | Seconds a request body may take to arrive | `60` |
 | `supported_critical` | Extension names accepted in a vCon's `critical` list, for all tenants | none |
+| `mcp.calls_per_second` | MCP tool calls one key may make in each one-second window | `100` |
+| `mcp.concurrent` | MCP tool calls running at once on the server | `100` |
 
 At start and then each day, `serve` logs a warning while the oldest purge or
 tenant removal waiting for [key rotation](@/docs/operations.md#key-rotation)
@@ -52,6 +54,10 @@ inflated = 67108864
 
 [limits.timeouts]
 read = 60
+
+[mcp]
+calls_per_second = 100
+concurrent = 100
 ```
 
 A key left out of a table that is present takes its default; the others keep
@@ -75,6 +81,11 @@ were inline; the other 25,445 were referenced by URL.
 
 The server holds each request's body in locked memory while it works on it. On
 a host short of memory, lower `limits.body`.
+
+The two `mcp` limits are sipnab's defaults for its own MCP server. A tool call
+past `mcp.calls_per_second` is refused with
+[`rate-limited`](@/problems/rate-limited.md), and one past `mcp.concurrent`
+with [`at-capacity`](@/problems/at-capacity.md), at once and never queued.
 
 ## Fixed limits
 

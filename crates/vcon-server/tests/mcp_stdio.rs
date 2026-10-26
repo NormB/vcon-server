@@ -216,6 +216,22 @@ fn the_handshake_over_stdio_comes_from_the_server() {
     assert_eq!(answer["id"], 2, "{answer}");
     assert_eq!(answer["result"]["tools"], json!([]), "{answer}");
 
+    // A tool call goes to the server: its refusal comes back as it sent it.
+    writeln!(
+        stdin,
+        "{}",
+        json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+               "params": {"name": "vcon_nothing", "arguments": {}}})
+    )
+    .expect("write");
+    let answer = next(&out);
+    assert_eq!(answer["id"], 3, "{answer}");
+    assert_eq!(answer["error"]["code"], -32602, "{answer}");
+    assert_eq!(
+        answer["error"]["data"]["type"], "https://vcon-server.com/problems/unknown-tool",
+        "{answer}"
+    );
+
     // The end of stdin ends the command, cleanly.
     drop(stdin);
     let deadline = Instant::now() + Duration::from_secs(20);

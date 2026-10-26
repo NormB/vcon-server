@@ -3004,6 +3004,7 @@
             "type": "string",
             "enum": [
               "https://vcon-server.com/problems/ambiguous-form",
+              "https://vcon-server.com/problems/at-capacity",
               "https://vcon-server.com/problems/audit-failed",
               "https://vcon-server.com/problems/bad-body",
               "https://vcon-server.com/problems/bad-critical",
@@ -3022,6 +3023,7 @@
               "https://vcon-server.com/problems/holds-vcons",
               "https://vcon-server.com/problems/immutable",
               "https://vcon-server.com/problems/internal",
+              "https://vcon-server.com/problems/invalid-arguments",
               "https://vcon-server.com/problems/invalid-body",
               "https://vcon-server.com/problems/limit-reached",
               "https://vcon-server.com/problems/master-key-limit",
@@ -3036,6 +3038,7 @@
               "https://vcon-server.com/problems/path-uuid-mismatch",
               "https://vcon-server.com/problems/precondition-failed",
               "https://vcon-server.com/problems/precondition-required",
+              "https://vcon-server.com/problems/rate-limited",
               "https://vcon-server.com/problems/timeout",
               "https://vcon-server.com/problems/too-deep",
               "https://vcon-server.com/problems/too-large",
@@ -3044,6 +3047,7 @@
               "https://vcon-server.com/problems/under-hold",
               "https://vcon-server.com/problems/unknown-key",
               "https://vcon-server.com/problems/unknown-tenant",
+              "https://vcon-server.com/problems/unknown-tool",
               "https://vcon-server.com/problems/unsupported-extension",
               "https://vcon-server.com/problems/unsupported-media-type",
               "https://vcon-server.com/problems/uuid-mismatch"

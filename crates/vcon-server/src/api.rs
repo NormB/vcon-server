@@ -60,6 +60,8 @@ pub struct App {
     pub supported: BTreeSet<String>,
     /// The retention period of a tenant that sets none.
     pub retention_default: Retention,
+    /// The MCP server's limits.
+    pub mcp: crate::mcp::Limits,
 }
 
 /// The routes, served from `app`.
@@ -1153,7 +1155,12 @@ impl App {
     /// Records a refusal in the tenant's log, or the admin log when there
     /// is no tenant or its log cannot be opened, and answers it; a refusal
     /// that cannot be recorded answers that the audit failed.
-    async fn refuse(&self, tenant: Option<TenantId>, entry: Entry, refused: Problem) -> Problem {
+    pub(crate) async fn refuse(
+        &self,
+        tenant: Option<TenantId>,
+        entry: Entry,
+        refused: Problem,
+    ) -> Problem {
         let tenants = self.tenants.clone();
         let recorded = blocking(move || match tenant.and_then(|t| tenants.store(t).ok()) {
             Some(store) => store.log(&entry).is_ok(),
@@ -1231,6 +1238,14 @@ pub(crate) enum Problem {
     Store(StoreError),
     /// Tenants refused or failed the request.
     Tenant(TenantError),
+    /// An MCP key made more tool calls than its allowance for this second.
+    RateLimited,
+    /// As many MCP tool calls are running as the server allows.
+    AtCapacity,
+    /// No MCP tool has the name called.
+    UnknownTool,
+    /// An MCP tool call's arguments do not fit the tool.
+    InvalidArguments,
 }
 
 /// Why Format refused a body, one problem type each.
@@ -1285,7 +1300,7 @@ fn failed(error: StoreError) -> Problem {
 }
 
 impl Problem {
-    fn status(self) -> StatusCode {
+    pub(crate) fn status(self) -> StatusCode {
         match self {
             Problem::Unauthorized => StatusCode::UNAUTHORIZED,
             Problem::Forbidden => StatusCode::FORBIDDEN,
@@ -1298,7 +1313,12 @@ impl Problem {
             | Problem::BadQuery => StatusCode::BAD_REQUEST,
             Problem::PreconditionRequired => StatusCode::PRECONDITION_REQUIRED,
             Problem::PathUuidMismatch => StatusCode::UNPROCESSABLE_ENTITY,
-            Problem::Unavailable | Problem::AuditFailed => StatusCode::SERVICE_UNAVAILABLE,
+            Problem::Unavailable | Problem::AuditFailed | Problem::AtCapacity => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
+            Problem::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            Problem::UnknownTool => StatusCode::NOT_FOUND,
+            Problem::InvalidArguments => StatusCode::UNPROCESSABLE_ENTITY,
             Problem::UnsupportedMediaType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             Problem::Invalid(_) | Problem::InvalidBody => StatusCode::UNPROCESSABLE_ENTITY,
             Problem::Store(error) => match error {
@@ -1329,7 +1349,7 @@ impl Problem {
     }
 
     /// The last part of its type URI, and its title.
-    fn name(self) -> (&'static str, &'static str) {
+    pub(crate) fn name(self) -> (&'static str, &'static str) {
         match self {
             Problem::Unauthorized => ("unauthorized", "A valid bearer key is needed"),
             Problem::Forbidden => ("forbidden", "The key does not allow this"),
@@ -1400,6 +1420,10 @@ impl Problem {
                 StoreError::Io => ("internal", "The server failed"),
             },
             Problem::BadQuery => ("bad-query", "The query is not one this route takes"),
+            Problem::RateLimited => ("rate-limited", "Too many tool calls from this key"),
+            Problem::AtCapacity => ("at-capacity", "Too many tool calls are running"),
+            Problem::UnknownTool => ("unknown-tool", "No tool has the name"),
+            Problem::InvalidArguments => ("invalid-arguments", "The arguments do not fit the tool"),
             Problem::UnknownKey => ("unknown-key", "No key has the id"),
             Problem::InvalidBody | Problem::Tenant(TenantError::BadName) => {
                 ("invalid-body", "The body is not one this route takes")
@@ -1429,15 +1453,22 @@ impl Problem {
     }
 }
 
-impl IntoResponse for Problem {
-    fn into_response(self) -> Response {
+impl Problem {
+    /// The problem document (RFC 9457): its type, title and status. The
+    /// HTTP API answers it, and an MCP refusal carries it as its data.
+    pub(crate) fn document(self) -> serde_json::Value {
         let (name, title) = self.name();
-        let status = self.status();
-        let body = serde_json::json!({
+        serde_json::json!({
             "type": format!("https://vcon-server.com/problems/{name}"),
             "title": title,
-            "status": status.as_u16(),
-        });
+            "status": self.status().as_u16(),
+        })
+    }
+}
+
+impl IntoResponse for Problem {
+    fn into_response(self) -> Response {
+        let (status, body) = (self.status(), self.document());
         let mut answer = (
             status,
             [(CONTENT_TYPE, "application/problem+json")],
@@ -1712,6 +1743,7 @@ mod tests {
                 },
                 supported: supported.iter().map(|s| (*s).to_owned()).collect(),
                 retention_default,
+                mcp: crate::mcp::Limits::DEFAULT,
             });
             let certificate = certificate();
             let tls = tls_config(&certificate.cert, &certificate.key).expect("tls");
@@ -4830,6 +4862,10 @@ mod site_pages {
             Problem::InvalidBody,
             Problem::BadQuery,
             Problem::UnknownKey,
+            Problem::RateLimited,
+            Problem::AtCapacity,
+            Problem::UnknownTool,
+            Problem::InvalidArguments,
         ];
         for problem in &all {
             match problem {
@@ -4848,6 +4884,10 @@ mod site_pages {
                 | Problem::InvalidBody
                 | Problem::BadQuery
                 | Problem::UnknownKey
+                | Problem::RateLimited
+                | Problem::AtCapacity
+                | Problem::UnknownTool
+                | Problem::InvalidArguments
                 | Problem::Invalid(_)
                 | Problem::Store(_)
                 | Problem::Tenant(_) => {}

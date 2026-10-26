@@ -33,6 +33,8 @@ pub struct Config {
     pub read_timeout: Duration,
     /// Extension names accepted in `critical` and `must_support`.
     pub supported_critical: BTreeSet<String>,
+    /// The MCP server's limits.
+    pub mcp: crate::mcp::Limits,
 }
 
 /// Time between purge sweeps unless configured: a version is purged
@@ -110,6 +112,25 @@ pub fn parse(text: &str) -> Result<Config, ConfigError> {
             READ_TIMEOUT,
         )?,
         supported_critical: raw.supported_critical.into_iter().collect(),
+        mcp: mcp_limits(&raw.mcp)?,
+    })
+}
+
+/// The `[mcp]` table's limits, each key that is not written at its default.
+fn mcp_limits(raw: &RawMcp) -> Result<crate::mcp::Limits, ConfigError> {
+    let default = crate::mcp::Limits::DEFAULT;
+    let narrow = |key: &str, value: u64| {
+        u32::try_from(positive(key, value)?).map_err(|_| ConfigError(format!("{key} is too large")))
+    };
+    Ok(crate::mcp::Limits {
+        calls_per_second: match raw.calls_per_second {
+            None => default.calls_per_second,
+            Some(value) => narrow("mcp.calls_per_second", value)?,
+        },
+        concurrent: match raw.concurrent {
+            None => default.concurrent,
+            Some(value) => narrow("mcp.concurrent", value)?,
+        },
     })
 }
 
@@ -143,6 +164,15 @@ struct Raw {
     limits: RawLimits,
     #[serde(default)]
     supported_critical: Vec<String>,
+    #[serde(default)]
+    mcp: RawMcp,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawMcp {
+    calls_per_second: Option<u64>,
+    concurrent: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -190,6 +220,10 @@ inflated = 104857600
 
 [limits.timeouts]
 read = 30
+
+[mcp]
+calls_per_second = 20
+concurrent = 8
 "#;
 
     #[test]
@@ -209,6 +243,10 @@ read = 30
                 inflated_limit: 104_857_600,
                 read_timeout: Duration::from_secs(30),
                 supported_critical: ["known", "other"].map(String::from).into(),
+                mcp: crate::mcp::Limits {
+                    calls_per_second: 20,
+                    concurrent: 8,
+                },
             })
         );
     }
@@ -242,6 +280,7 @@ key = "/etc/vcon-server/key.pem"
         assert_eq!(config.body_limit, 16 << 20);
         assert_eq!(config.inflated_limit, 64 << 20);
         assert_eq!(config.read_timeout, Duration::from_secs(60));
+        assert_eq!(config.mcp, crate::mcp::Limits::DEFAULT);
     }
 
     /// A key left out of a table that is present takes its default; the
@@ -292,6 +331,26 @@ key = "/etc/vcon-server/key.pem"
                     ..base.clone()
                 },
             ),
+            (
+                "calls_per_second = 20\n",
+                Config {
+                    mcp: crate::mcp::Limits {
+                        calls_per_second: 100,
+                        ..base.mcp
+                    },
+                    ..base.clone()
+                },
+            ),
+            (
+                "concurrent = 8\n",
+                Config {
+                    mcp: crate::mcp::Limits {
+                        concurrent: 100,
+                        ..base.mcp
+                    },
+                    ..base.clone()
+                },
+            ),
         ] {
             assert!(FULL.contains(line), "{line}");
             assert_eq!(parse(&FULL.replace(line, "")), Ok(default), "{line}");
@@ -308,6 +367,8 @@ key = "/etc/vcon-server/key.pem"
         assert_ne!(full.body_limit, least.body_limit);
         assert_ne!(full.inflated_limit, least.inflated_limit);
         assert_ne!(full.read_timeout, least.read_timeout);
+        assert_ne!(full.mcp.calls_per_second, least.mcp.calls_per_second);
+        assert_ne!(full.mcp.concurrent, least.mcp.concurrent);
     }
 
     /// Each error names its key.
@@ -335,6 +396,10 @@ key = "/etc/vcon-server/key.pem"
             (format!("colour = \"blue\"\n{FULL}"), "colour"),
             (FULL.replace("read = 30", "read = 30\nwrite = 30"), "write"),
             (FULL.replace("[tls]", "[tls]\nca = \"x\""), "ca"),
+            (
+                FULL.replace("[mcp]", "[mcp]\nresources = true"),
+                "resources",
+            ),
         ] {
             let error = parse(&text).expect_err(key);
             assert!(error.0.contains(&format!("`{key}`")), "{key}: {error}");
@@ -358,6 +423,17 @@ key = "/etc/vcon-server/key.pem"
             ),
             ("body = 10485760", "body = 0", "limits.body"),
             ("inflated = 104857600", "inflated = 0", "limits.inflated"),
+            (
+                "calls_per_second = 20",
+                "calls_per_second = 0",
+                "mcp.calls_per_second",
+            ),
+            ("concurrent = 8", "concurrent = 0", "mcp.concurrent"),
+            (
+                "concurrent = 8",
+                "concurrent = 4294967296",
+                "mcp.concurrent",
+            ),
             ("read = 30", "read = 0", "limits.timeouts.read"),
             ("read = 30", "read = -1", "read"),
         ] {
@@ -405,7 +481,7 @@ key = "/etc/vcon-server/key.pem"
             let defaults = parse(LEAST).expect("least");
             let mut all = Vec::new();
             keys(&FULL.parse::<toml::Table>().expect("toml"), "", &mut all);
-            assert_eq!(all.len(), 12, "{all:?}");
+            assert_eq!(all.len(), 14, "{all:?}");
             for key in all {
                 let default = match key.as_str() {
                     "listen" | "data_dir" | "master_key" | "tls.cert" | "tls.key" => {
@@ -417,6 +493,8 @@ key = "/etc/vcon-server/key.pem"
                     "limits.body" => format!("`{}`", defaults.body_limit),
                     "limits.inflated" => format!("`{}`", defaults.inflated_limit),
                     "limits.timeouts.read" => format!("`{}`", defaults.read_timeout.as_secs()),
+                    "mcp.calls_per_second" => format!("`{}`", defaults.mcp.calls_per_second),
+                    "mcp.concurrent" => format!("`{}`", defaults.mcp.concurrent),
                     "supported_critical" => {
                         assert!(defaults.supported_critical.is_empty());
                         "none".to_owned()

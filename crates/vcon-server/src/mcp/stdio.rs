@@ -7,12 +7,15 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use rmcp::model::ServerConfig;
-use rmcp::service::{ClientInitializeError, RoleClient, RunningService};
+use rmcp::model::{CallToolRequestParams, CallToolResponse, ServerConfig};
+use rmcp::service::{
+    ClientInitializeError, Peer, RequestContext, RoleClient, RoleServer, RunningService,
+    ServiceError,
+};
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransport, StreamableHttpClientTransportConfig, StreamableHttpError,
 };
-use rmcp::{ServerHandler, ServiceExt};
+use rmcp::{ErrorData, ServerHandler, ServiceExt};
 use serde::Deserialize;
 
 use crate::config::ConfigError;
@@ -29,7 +32,7 @@ pub struct ClientConfig {
     pub ca: Option<PathBuf>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Raw {
     url: String,
@@ -62,7 +65,8 @@ pub fn parse_client(text: &str) -> Result<ClientConfig, ConfigError> {
 }
 
 /// Why the command stopped. None of these holds the token.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use]
 pub enum StdioError {
     /// The key file could not be read, or holds no single token.
     KeyFile(String),
@@ -76,6 +80,8 @@ pub enum StdioError {
     /// stdin or stdout failed.
     Io(String),
 }
+
+impl std::error::Error for StdioError {}
 
 impl fmt::Display for StdioError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -168,7 +174,10 @@ pub async fn stdio(config: &ClientConfig) -> Result<(), StdioError> {
         .peer_info()
         .ok_or_else(|| StdioError::Server("no server information".to_owned()))?;
     let info = identity(&peer)?;
-    let forward = Forward { info };
+    let forward = Forward {
+        upstream: upstream.peer().clone(),
+        info,
+    };
     let served = forward
         .serve(rmcp::transport::io::stdio())
         .await
@@ -184,15 +193,37 @@ pub async fn stdio(config: &ClientConfig) -> Result<(), StdioError> {
     Ok(())
 }
 
-/// The stdio side: answers the handshake as the server answered it.
+/// The stdio side: answers the handshake as the server answered it, and
+/// sends each tool call to the server.
 #[derive(Clone)]
 struct Forward {
+    upstream: Peer<RoleClient>,
     info: ServerConfig,
+}
+
+/// The server's own refusal as it sent it; any other failure as an
+/// internal error that says what failed.
+fn forwarded(error: ServiceError) -> ErrorData {
+    match error {
+        ServiceError::McpError(error) => error,
+        other => ErrorData::internal_error(format!("the server: {other}"), None),
+    }
 }
 
 impl ServerHandler for Forward {
     fn get_info(&self) -> ServerConfig {
         self.info.clone()
+    }
+
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        self.upstream
+            .call_tool_once(request)
+            .await
+            .map_err(forwarded)
     }
 }
 

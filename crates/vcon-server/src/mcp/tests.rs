@@ -12,7 +12,7 @@ use tokio::net::TcpListener;
 use crate::access::{Scope, Scopes};
 use crate::api::{self, App};
 use crate::audit::Actor;
-use crate::clock::SystemClock;
+use crate::clock::ManualClock;
 use crate::envelope::Key;
 use crate::fs::OsFs;
 use crate::ids::TenantId;
@@ -41,13 +41,24 @@ impl Drop for Server {
 }
 
 pub(super) async fn server() -> Server {
+    serving(api::router, crate::mcp::Limits::DEFAULT).await
+}
+
+/// A server whose routes `routes` makes from its App, with MCP `limits`.
+/// Its clock stands still, so every counted request falls in one minute.
+pub(super) async fn serving(
+    routes: fn(Arc<App>) -> axum::Router,
+    limits: crate::mcp::Limits,
+) -> Server {
     let dir = tempfile::tempdir().expect("temp dir");
     let tenants = Arc::new(
         Tenants::open(
             dir.path(),
             Key::generate().expect("master key"),
             Arc::new(OsFs),
-            Arc::new(SystemClock),
+            Arc::new(ManualClock::at(
+                time::macros::datetime!(2026-10-25 12:00 UTC),
+            )),
         )
         .expect("opens"),
     );
@@ -61,6 +72,7 @@ pub(super) async fn server() -> Server {
         },
         supported: Default::default(),
         retention_default: Retention::Years(7),
+        mcp: limits,
     });
     let made =
         rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).expect("a certificate");
@@ -72,7 +84,7 @@ pub(super) async fn server() -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-    tokio::spawn(api::serve(listener, tls, api::router(app), async {
+    tokio::spawn(api::serve(listener, tls, routes(app), async {
         stopped.await.ok();
     }));
     Server {
@@ -394,6 +406,381 @@ async fn a_body_over_the_limit_gets_413() {
     assert_eq!(counted[0]["status"], 413, "counted with its own status");
 }
 
+/// The dispatch gate, driven through test tools registered as real ones
+/// are.
+mod gate {
+    use std::sync::OnceLock;
+
+    use rmcp::model::JsonObject;
+    use tokio::sync::Notify;
+
+    use super::*;
+    use crate::mcp::{self, Hints, Spec};
+
+    #[derive(serde::Deserialize, rmcp::schemars::JsonSchema)]
+    #[schemars(crate = "rmcp::schemars")]
+    #[serde(deny_unknown_fields)]
+    struct NoArgs {}
+
+    /// Released by the capacity test to let `vcon_wait` return.
+    fn release() -> &'static Notify {
+        static RELEASE: OnceLock<Notify> = OnceLock::new();
+        RELEASE.get_or_init(Notify::new)
+    }
+
+    fn probe<'a>(
+        _: &'a mcp::Server,
+        _: crate::access::Caller,
+        args: JsonObject,
+    ) -> mcp::Running<'a> {
+        Box::pin(async move {
+            let _: NoArgs = mcp::arguments(args)?;
+            Ok(json!({"probed": true}))
+        })
+    }
+
+    fn wait<'a>(_: &'a mcp::Server, _: crate::access::Caller, _: JsonObject) -> mcp::Running<'a> {
+        Box::pin(async move {
+            release().notified().await;
+            Ok(json!({"waited": true}))
+        })
+    }
+
+    fn spec(name: &'static str, hints: Option<Hints>, action: Action, run: mcp::Run) -> Spec {
+        let mut tool = mcp::tool::<NoArgs>(name, "A test tool.", hints.unwrap_or(Hints::NONE));
+        if hints.is_none() {
+            tool.annotations = None;
+        }
+        Spec { tool, action, run }
+    }
+
+    use crate::audit::Action;
+
+    fn specs() -> Vec<Spec> {
+        let read = Hints {
+            read_only: true,
+            ..Hints::NONE
+        };
+        vec![
+            spec("vcon_probe", Some(read), Action::Read, probe),
+            spec("vcon_wait", Some(read), Action::Read, wait),
+            spec("vcon_change", Some(Hints::NONE), Action::Replace, probe),
+            spec(
+                "vcon_erase",
+                Some(Hints {
+                    destructive: true,
+                    ..Hints::NONE
+                }),
+                Action::Delete,
+                probe,
+            ),
+            spec("legal_probe", Some(read), Action::LegalRead, probe),
+            spec("admin_probe", Some(read), Action::TenantList, probe),
+            spec("vcon_unhinted", None, Action::Read, probe),
+        ]
+    }
+
+    /// A server on a free port serving only `/mcp`, with the test tools and
+    /// `limits`.
+    async fn gate_server(limits: mcp::Limits) -> Server {
+        serving(|app| mcp::router_with(app, specs()), limits).await
+    }
+
+    fn call(name: &str, arguments: Value) -> Value {
+        json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": arguments},
+        })
+    }
+
+    /// The JSON-RPC error's code and the problem document in its data.
+    fn refusal(a: &Answer) -> (i64, Value) {
+        let error = &a.body["error"];
+        assert!(error.is_object(), "a refusal: {:?}", a.body);
+        (
+            error["code"].as_i64().expect("a code"),
+            error["data"].clone(),
+        )
+    }
+
+    fn problem(name: &str) -> String {
+        format!("https://vcon-server.com/problems/{name}")
+    }
+
+    /// The tenant log's records of `action` with `status`.
+    fn logged(s: &Server, action: &str, status: u16) -> Vec<Value> {
+        s.tenant_log(action)
+            .into_iter()
+            .filter(|r| r["status"] == status)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_call_within_every_bound_runs_and_the_gate_records_nothing() {
+        let s = gate_server(mcp::Limits::DEFAULT).await;
+        let token = s.key(&[Scope::Read]);
+        let a = s
+            .post(Some(&token), &call("vcon_probe", json!({})), &[])
+            .await;
+        assert_eq!(a.status, 200, "{:?}", a.body);
+        assert_eq!(
+            a.body["result"]["structuredContent"],
+            json!({"probed": true})
+        );
+        assert!(a.body["result"]["isError"].is_null() || a.body["result"]["isError"] == false);
+        assert!(
+            s.tenant_log("read").is_empty(),
+            "the tool's own layer records"
+        );
+    }
+
+    #[tokio::test]
+    async fn past_the_rate_a_call_is_refused_and_counted() {
+        let s = gate_server(mcp::Limits {
+            calls_per_second: 1,
+            ..mcp::Limits::DEFAULT
+        })
+        .await;
+        let token = s.key(&[Scope::Read]);
+        let first = s
+            .post(Some(&token), &call("vcon_probe", json!({})), &[])
+            .await;
+        assert!(first.body["result"].is_object(), "{:?}", first.body);
+        for _ in 0..2 {
+            let a = s
+                .post(Some(&token), &call("vcon_probe", json!({})), &[])
+                .await;
+            let (code, data) = refusal(&a);
+            assert_eq!(code, -32000);
+            assert_eq!(data["type"], problem("rate-limited"));
+            assert_eq!(data["status"], 429);
+            let retry = data["retry_after_ms"].as_u64().expect("retry_after_ms");
+            assert!((1..=1000).contains(&retry), "{retry}");
+        }
+        let counted = logged(&s, "read", 429);
+        assert_eq!(counted.len(), 1, "counted, not one row each: {counted:?}");
+        assert_eq!(counted[0]["count"], 2);
+        // Another key has its own allowance.
+        let other = s.key(&[Scope::Read]);
+        let a = s
+            .post(Some(&other), &call("vcon_probe", json!({})), &[])
+            .await;
+        assert!(a.body["result"].is_object(), "{:?}", a.body);
+    }
+
+    #[tokio::test]
+    async fn past_the_concurrency_cap_a_call_is_refused_at_once_and_counted() {
+        let s = Arc::new(
+            gate_server(mcp::Limits {
+                concurrent: 1,
+                ..mcp::Limits::DEFAULT
+            })
+            .await,
+        );
+        let token = s.key(&[Scope::Read]);
+        let held = {
+            let (s, token) = (s.clone(), token.clone());
+            tokio::spawn(async move {
+                s.post(Some(&token), &call("vcon_wait", json!({})), &[])
+                    .await
+            })
+        };
+        // The waiting call holds the only slot once its count of mcp
+        // requests is not yet written: wait until it is running.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let refused = loop {
+            let a = s
+                .post(Some(&token), &call("vcon_probe", json!({})), &[])
+                .await;
+            if a.body["error"].is_object() {
+                break a;
+            }
+            assert!(std::time::Instant::now() < deadline, "never at capacity");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        let (code, data) = refusal(&refused);
+        assert_eq!(code, -32000);
+        assert_eq!(data["type"], problem("at-capacity"));
+        assert_eq!(data["status"], 503);
+        assert!(!logged(&s, "read", 503).is_empty());
+        release().notify_one();
+        let waited = held.await.expect("joins");
+        assert_eq!(
+            waited.body["result"]["structuredContent"],
+            json!({"waited": true})
+        );
+        let a = s
+            .post(Some(&token), &call("vcon_probe", json!({})), &[])
+            .await;
+        assert!(
+            a.body["result"].is_object(),
+            "the slot is free again: {:?}",
+            a.body
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_tool_is_refused_and_recorded() {
+        let s = gate_server(mcp::Limits::DEFAULT).await;
+        let token = s.key(&[Scope::Read]);
+        let a = s
+            .post(Some(&token), &call("vcon_nothing", json!({})), &[])
+            .await;
+        let (code, data) = refusal(&a);
+        assert_eq!(code, -32602);
+        assert_eq!(data["type"], problem("unknown-tool"));
+        assert_eq!(data["status"], 404);
+        let recorded = logged(&s, "mcp", 404);
+        assert_eq!(recorded.len(), 1, "{recorded:?}");
+        assert_eq!(recorded[0]["count"], 1);
+    }
+
+    #[tokio::test]
+    async fn a_scope_the_key_lacks_is_refused_and_recorded_under_the_tools_action() {
+        let s = gate_server(mcp::Limits::DEFAULT).await;
+        let read = s.key(&[Scope::Read]);
+        let operator = s.operator();
+        let everything = s.key(&[Scope::Read, Scope::Write, Scope::Delete, Scope::Legal]);
+        for (token, tool, action) in [
+            (&read, "vcon_change", "replace"),
+            (&read, "vcon_erase", "delete"),
+            (&read, "legal_probe", "legal_read"),
+            (&read, "admin_probe", "tenant_list"),
+            (&everything, "admin_probe", "tenant_list"),
+            (&everything, "vcon_unhinted", "read"),
+        ] {
+            let before = logged(&s, action, 403).len();
+            let a = s.post(Some(token), &call(tool, json!({})), &[]).await;
+            let (code, data) = refusal(&a);
+            assert_eq!(code, -32001, "{tool}");
+            assert_eq!(data["type"], problem("forbidden"), "{tool}");
+            assert_eq!(data["status"], 403, "{tool}");
+            assert_eq!(logged(&s, action, 403).len(), before + 1, "{tool}");
+        }
+        // An operator key holds no vCon scope, and is recorded in the admin
+        // log.
+        let a = s
+            .post(Some(&operator), &call("vcon_probe", json!({})), &[])
+            .await;
+        assert_eq!(refusal(&a).1["type"], problem("forbidden"));
+        let admin: Vec<Value> = s
+            .admin_log("read")
+            .into_iter()
+            .filter(|r| r["status"] == 403)
+            .collect();
+        assert_eq!(admin.len(), 1, "{admin:?}");
+        // And the scopes each tool needs let it through.
+        for (token, tool) in [
+            (&everything, "vcon_change"),
+            (&everything, "vcon_erase"),
+            (&everything, "legal_probe"),
+            (&operator, "admin_probe"),
+        ] {
+            let a = s.post(Some(token), &call(tool, json!({})), &[]).await;
+            assert!(a.body["result"].is_object(), "{tool}: {:?}", a.body);
+        }
+    }
+
+    #[tokio::test]
+    async fn arguments_that_do_not_fit_are_refused_and_recorded() {
+        let s = gate_server(mcp::Limits::DEFAULT).await;
+        let token = s.key(&[Scope::Read]);
+        for arguments in [json!({"token": "vcs_x"}), json!({"extra": 1})] {
+            let a = s
+                .post(Some(&token), &call("vcon_probe", arguments.clone()), &[])
+                .await;
+            let (code, data) = refusal(&a);
+            assert_eq!(code, -32602, "{arguments}");
+            assert_eq!(data["type"], problem("invalid-arguments"), "{arguments}");
+            assert_eq!(data["status"], 422);
+            let text = a.body.to_string();
+            assert!(!text.contains("vcs_x"), "a value is never repeated: {text}");
+        }
+        assert_eq!(logged(&s, "read", 422).len(), 2);
+    }
+
+    /// The audit trigger refuses inserts only, so a request counted earlier
+    /// in the minute keeps being counted while a new record fails: what
+    /// fails is the gate's own record.
+    #[tokio::test]
+    async fn a_refusal_that_cannot_be_recorded_answers_audit_failed() {
+        let s = gate_server(mcp::Limits::DEFAULT).await;
+        let token = s.key(&[Scope::Read]);
+        assert_eq!(s.post(Some(&token), &list_tools(), &[]).await.status, 200);
+        s.tenants.store(s.tenant).expect("store").break_audit();
+        for (tool, arguments) in [
+            ("vcon_change", json!({})),
+            ("vcon_nothing", json!({})),
+            ("vcon_probe", json!({"extra": 1})),
+        ] {
+            let a = s.post(Some(&token), &call(tool, arguments), &[]).await;
+            assert_eq!(a.status, 200, "{tool}: the request itself was counted");
+            let (code, data) = refusal(&a);
+            assert_eq!(code, -32000, "{tool}");
+            assert_eq!(data["type"], problem("audit-failed"), "{tool}");
+            assert_eq!(data["status"], 503, "{tool}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_count_that_cannot_be_written_answers_audit_failed() {
+        let s = gate_server(mcp::Limits {
+            calls_per_second: 1,
+            ..mcp::Limits::DEFAULT
+        })
+        .await;
+        let token = s.key(&[Scope::Read]);
+        let first = s
+            .post(Some(&token), &call("vcon_probe", json!({})), &[])
+            .await;
+        assert!(first.body["result"].is_object(), "{:?}", first.body);
+        s.tenants.store(s.tenant).expect("store").break_audit();
+        let a = s
+            .post(Some(&token), &call("vcon_probe", json!({})), &[])
+            .await;
+        assert_eq!(a.status, 200, "the request itself was counted");
+        let (code, data) = refusal(&a);
+        assert_eq!(code, -32000);
+        assert_eq!(data["type"], problem("audit-failed"));
+    }
+
+    #[tokio::test]
+    async fn tools_list_shows_only_what_the_key_may_call() {
+        let s = gate_server(mcp::Limits::DEFAULT).await;
+        let names = |a: Answer| -> Vec<String> {
+            a.body["result"]["tools"]
+                .as_array()
+                .expect("tools")
+                .iter()
+                .map(|t| t["name"].as_str().expect("name").to_owned())
+                .collect()
+        };
+        let read = s.key(&[Scope::Read]);
+        let everything = s.key(&[Scope::Read, Scope::Write, Scope::Delete, Scope::Legal]);
+        let operator = s.operator();
+        assert_eq!(
+            names(s.post(Some(&read), &list_tools(), &[]).await),
+            ["vcon_probe", "vcon_wait"]
+        );
+        assert_eq!(
+            names(s.post(Some(&everything), &list_tools(), &[]).await),
+            [
+                "legal_probe",
+                "vcon_change",
+                "vcon_erase",
+                "vcon_probe",
+                "vcon_wait"
+            ]
+        );
+        assert_eq!(
+            names(s.post(Some(&operator), &list_tools(), &[]).await),
+            ["admin_probe"]
+        );
+    }
+}
+
 /// The website's MCP page, held to the server it describes.
 mod site_page {
     use super::*;
@@ -564,5 +951,115 @@ mod site_page {
     #[test]
     fn llms_txt_links_the_page() {
         assert!(read("website/static/llms.txt").contains("(https://vcon-server.com/docs/mcp/)"));
+    }
+
+    /// The rows of the page's gate table: check, refusal link, status and
+    /// JSON-RPC code, in the order the page lists them.
+    fn gate_rows(text: &str) -> Vec<Vec<String>> {
+        text.lines()
+            .filter(|l| l.starts_with("| ") && !l.starts_with("| Check"))
+            .map(|l| {
+                l.trim_matches('|')
+                    .split(" | ")
+                    .map(|c| c.trim().to_owned())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Each refusal the gate gives, in the order it checks, with its
+    /// problem type, status and JSON-RPC code, and the limits' defaults.
+    #[test]
+    fn the_gate_the_page_names_is_the_servers() {
+        use crate::api::Problem;
+        let text = section(&page(), "Tool calls");
+        let rows = gate_rows(&text);
+        let order = [
+            Problem::RateLimited,
+            Problem::AtCapacity,
+            Problem::UnknownTool,
+            Problem::Forbidden,
+            Problem::InvalidArguments,
+        ];
+        assert_eq!(rows.len(), order.len(), "{rows:?}");
+        for (row, problem) in rows.iter().zip(order) {
+            let slug = problem.name().0;
+            let code = crate::mcp::gate::refused(problem, None).code.0;
+            assert_eq!(
+                row[1..],
+                [
+                    format!("[{slug}](@/problems/{slug}.md)"),
+                    problem.status().as_u16().to_string(),
+                    code.to_string(),
+                ],
+                "{row:?}"
+            );
+        }
+        let limits = crate::mcp::Limits::DEFAULT;
+        assert!(rows[0][0].contains(&format!(
+            "`mcp.calls_per_second` calls by one key in one second (default {})",
+            limits.calls_per_second
+        )));
+        assert!(rows[1][0].contains(&format!(
+            "`mcp.concurrent` calls running on the server (default {})",
+            limits.concurrent
+        )));
+    }
+
+    /// The scope rule the page states is the one the gate applies.
+    #[test]
+    fn the_scope_rule_the_page_states_is_the_gates() {
+        use rmcp::model::ToolAnnotations;
+        let hints = |read_only, destructive| {
+            let mut h = ToolAnnotations::new();
+            h.read_only_hint = Some(read_only);
+            h.destructive_hint = Some(destructive);
+            h
+        };
+        let scope = |name: &str, r, d| crate::mcp::gate::scope(name, Some(&hints(r, d)));
+        assert_eq!(scope("vcon_x", true, false), Some(Scope::Read));
+        assert_eq!(scope("vcon_x", false, true), Some(Scope::Delete));
+        assert_eq!(scope("vcon_x", false, false), Some(Scope::Write));
+        assert_eq!(scope("legal_x", true, false), Some(Scope::Legal));
+        assert_eq!(scope("admin_x", false, true), Some(Scope::Admin));
+        let text = section(&page(), "Tool calls")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            text.contains(
+                "a `vcon_` tool needs read when it is read-only, delete when it is \
+                 destructive, and write otherwise; a `legal_` tool needs legal; an \
+                 `admin_` tool needs admin"
+            ),
+            "{text}"
+        );
+    }
+}
+
+/// The MCP module's types carry the traits the Rust API Guidelines ask for.
+mod traits {
+    fn error<T: std::error::Error + Send + Sync + Clone + PartialEq + 'static>() {}
+
+    fn debug<T: std::fmt::Debug>() {}
+
+    #[test]
+    fn error_types_are_errors_and_every_type_is_debug() {
+        error::<crate::mcp::stdio::StdioError>();
+        error::<crate::mcp::Outcome>();
+        debug::<crate::mcp::Limits>();
+        debug::<crate::mcp::Hints>();
+        debug::<crate::mcp::Spec>();
+        debug::<crate::mcp::Server>();
+        debug::<crate::mcp::gate::Gate>();
+    }
+
+    #[test]
+    fn an_outcome_says_why_the_tool_did_not_answer() {
+        assert_eq!(
+            crate::mcp::Outcome::Arguments.to_string(),
+            "the arguments do not fit the tool",
+            "Display of Outcome::Arguments"
+        );
     }
 }
