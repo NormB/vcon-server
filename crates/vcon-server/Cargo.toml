@@ -32,6 +32,7 @@ aws-lc-rs = "1.18.2"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "http2", "matched-path"] }
 base64 = "0.23.1"
 clap = { version = "4.6.7", features = ["derive"] }
+flate2 = "1.1.10"
 form_urlencoded = "1.2.2"
 http-body-util = "0.1.5"
 hyper-util = { version = "0.1.21", features = ["server-auto", "tokio", "service", "http1", "http2"] }
@@ -70,7 +71,6 @@ zeroize = "1.9.1"
 # the names (the test catalog::tests::crates_io_rusqlite_refuses_sqlcipher_names
 # fails then).
 rusqlite_fork = { package = "rusqlite", git = "https://github.com/NormB/rusqlite", rev = "a2936ca6190f54e7ab54375385877cc96eebebe5", features = ["bundled-sqlcipher-vendored-openssl"] }
-flate2 = "1.1.10"
 rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "aws_lc_rs"] }
 reqwest = "0.13.5"
 tempfile = "3.27.0"

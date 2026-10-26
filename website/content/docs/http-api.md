@@ -14,6 +14,8 @@ weight = 70
   [tenants and keys](@/docs/tenants-and-keys.md).
 - **A key names its tenant.** No route takes a tenant id for vCons; the
   key decides.
+- **MCP** is served at `POST /mcp` on the same listener, with the same keys:
+  see [MCP](@/docs/mcp.md).
 - **Bodies** are limited to `limits.body` bytes
   ([`too-large`](@/problems/too-large.md), 413, checked against
   `Content-Length` before anything is read) and must arrive within
