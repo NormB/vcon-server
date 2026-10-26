@@ -6,6 +6,16 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- The release workflow publishes `vcon` and `vcon-server` on crates.io by
+  trusted publishing: on a `v*` tag, after the GitHub release, each crate
+  whose version crates.io does not have yet, with a token the job gets from
+  its OIDC identity and that is revoked when the job ends. A run started by
+  hand makes the same token exchange, then runs `cargo publish --dry-run`
+  for a new version, or `cargo package` for one crates.io already has,
+  uploading nothing. 0.1.0 was published by hand.
+
 ## [0.1.0] - 2026-10-26
 
 ### Added

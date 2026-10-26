@@ -4,13 +4,23 @@ name: Release
 # and SHA256SUMS.txt, and attests each archive's build provenance and its SBOM
 # with Sigstore, so anyone can check a download with
 #   gh attestation verify <file> --repo NormB/vcon-server
-# A pushed v* tag publishes a GitHub release. A run started by hand builds and
-# attests the same way and keeps the files as a workflow artifact, so the whole
-# path is proven without publishing anything.
+# A pushed v* tag publishes a GitHub release, then publishes vcon and
+# vcon-server on crates.io by trusted publishing. A run started by hand builds
+# and attests the same way and keeps the files as a workflow artifact, and
+# runs the crates.io job as a dry run, so the whole path is proven without
+# publishing anything.
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      crates_io_dry_run:
+        description: >-
+          Run the crates.io job as a dry run: the trusted-publishing token
+          exchange, then cargo publish --dry-run for both crates. Nothing is
+          uploaded.
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -189,3 +199,80 @@ jobs:
           gh release create "v${VERSION}" dist/* --repo "$GITHUB_REPOSITORY" \
             --title "vcon-server ${VERSION}" --verify-tag \
             --notes "Verify a download with: gh attestation verify <file> --repo ${GITHUB_REPOSITORY}"
+
+  crates-io:
+    name: crates.io
+    # On a v* tag, after the GitHub release: publishes each crate whose
+    # version crates.io does not have yet, vcon before vcon-server, so a run
+    # again never fails on a version already there. A crates.io version can
+    # never be replaced, so nothing uploads before the release exists. By
+    # hand: the token exchange, then cargo publish --dry-run, uploading
+    # nothing.
+    needs: [version, publish]
+    if: >-
+      ${{ !cancelled() &&
+          ((github.ref_type == 'tag' && needs.publish.result == 'success') ||
+           (github.event_name == 'workflow_dispatch' && inputs.crates_io_dry_run)) }}
+    timeout-minutes: 40
+    runs-on: ubuntu-latest
+    # crates.io's trusted publisher for both crates names this workflow,
+    # release.yml, and no environment, so this job names none. Once the
+    # trusted publishers on crates.io name the environment crates-io, this
+    # job takes `environment: crates-io` too; that GitHub environment exists
+    # and allows only v* tags and main.
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      # Exchanges this job's OIDC identity for a short-lived crates.io token,
+      # and revokes it when the job ends. No crates.io credential is stored
+      # in the repository.
+      - name: Authenticate with crates.io
+        id: auth
+        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
+      # The exchange is the proof that trusted publishing works: crates.io
+      # issued a token to this workflow. Only its length is logged.
+      - name: Check the token exchange
+        env:
+          TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          [ -n "$TOKEN" ] || { echo "the token exchange returned no token" >&2; exit 1; }
+          echo "crates.io issued a token by trusted publishing (${#TOKEN} characters)"
+      # Each crate is looked up on crates.io first. A tag publishes what is
+      # not there and skips what is. A dry run verifies a published
+      # version's package with cargo package, which uploads nothing and
+      # writes nothing to the registry, and dry-runs the publish of a new one.
+      - name: Publish what crates.io does not have yet
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          DRY_RUN: ${{ github.event_name != 'push' }}
+        run: |
+          set -euo pipefail
+          VERSION="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+          [ -n "$VERSION" ] || { echo "no version in Cargo.toml" >&2; exit 1; }
+          for crate in vcon vcon-server; do
+            status="$(curl -sS -o /dev/null -w '%{http_code}' \
+              -A 'vcon-server release workflow (https://github.com/NormB/vcon-server)' \
+              "https://crates.io/api/v1/crates/${crate}/${VERSION}")"
+            case "$status" in
+              200)
+                if [ "$DRY_RUN" = true ]; then
+                  cargo package --locked -p "$crate"
+                  echo "${crate} ${VERSION}: version already published: verified package only"
+                else
+                  echo "${crate} ${VERSION} is already on crates.io; skipped"
+                fi ;;
+              404)
+                if [ "$DRY_RUN" = true ]; then
+                  cargo publish --dry-run --locked -p "$crate"
+                else
+                  cargo publish --locked -p "$crate"
+                fi ;;
+              *) echo "crates.io answered ${status} for ${crate} ${VERSION}" >&2; exit 1 ;;
+            esac
+          done
