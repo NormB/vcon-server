@@ -190,9 +190,10 @@ runs it for 60 seconds, then `scripts/fuzz.sh plant` for it; the targets are
 read from `fuzz/Cargo.toml`, so a new one joins with no list to edit. A
 crash input is kept as a workflow artifact for 7 days.
 [ClusterFuzzLite](https://google.github.io/clusterfuzzlite/) builds the same
-targets in its own image (`.clusterfuzzlite/`) and runs them for five
-minutes on a pull request that changes `crates/` or `fuzz/`, and for an hour
-in all each Monday (`.github/workflows/clusterfuzzlite.yml`). Each action and
+targets in its own image (`.clusterfuzzlite/`) and runs them when a pull
+request or a push to `main` changes `crates/` or `fuzz/` (five and ten
+minutes), and for an hour in all each Monday
+(`.github/workflows/clusterfuzzlite.yml`). Each action and
 each downloaded tool is pinned by commit or by sha256.
 
 ## Contributing
