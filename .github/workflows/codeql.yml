@@ -1,9 +1,10 @@
 name: CodeQL
 
-# CodeQL analyses the Rust code and the workflows themselves (the `actions`
-# language: untrusted input in run steps, token permissions, unpinned
-# actions) and sends its findings to code scanning in the Security tab.
-# Neither language needs a build: both are read from source.
+# CodeQL analyses the Rust code, the JavaScript (the console the server
+# serves, its browser tests and the site's search), and the workflows
+# themselves (the `actions` language: untrusted input in run steps, token
+# permissions, unpinned actions). Findings go to code scanning in the
+# Security tab. No language needs a build: all are read from source.
 
 on:
   push:
@@ -30,7 +31,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [actions, rust]
+        language: [actions, javascript-typescript, rust]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
