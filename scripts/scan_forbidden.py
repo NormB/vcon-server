@@ -35,7 +35,7 @@ PRIVATE_DOC_IDS = [
     ),
     ("design decision id", re.compile(r"\bCD[0-9]{1,2}\b")),
     ("scope decision id", re.compile(r"\bD(?:[1-9]|[1-9][0-9])\b")),
-    ("plan task id", re.compile(r"\bP(?:10|[0-9])\.[0-9]{1,2}\b")),
+    ("plan task id", re.compile(r"\bP[0-9]{1,2}\.[0-9]{1,2}\b")),
     ("private draft number", re.compile(r"\bdraft\s+[0-9]+\.[0-9]+\b", re.I)),
 ]
 

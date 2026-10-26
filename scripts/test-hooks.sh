@@ -111,6 +111,8 @@ expect accept "word ending in a rule prefix" crates/x/src/b.rs "let restore_2 = 
 expect refuse "design decision id" notes.txt "see CD""8"
 expect refuse "scope decision id" notes.txt "see D""40"
 expect refuse "plan task id" notes.txt "done P""0.3"
+expect refuse "plan task id past phase ten" notes.txt "done P""11.7"
+expect refuse "plan task id in phase fourteen" notes.txt "see P""14.12"
 expect refuse "draft number" notes.txt "from draft ""6.8"
 ietf_tel="+1234567""8901"
 expect accept "IETF example number in IETF fixtures" crates/x/tests/fixtures/ietf/a.vcon "{\"tel\": \"$ietf_tel\"}"
