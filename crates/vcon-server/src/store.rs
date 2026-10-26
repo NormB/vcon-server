@@ -662,6 +662,33 @@ impl Store {
         audit::export(&self.conn(), since, out)
     }
 
+    /// A page of the tenant's log as JSON lines, the lines `export` writes
+    /// for the same records. The read is recorded as audit_read in the same
+    /// log and transaction, after the page is read, so a page never holds
+    /// its own record.
+    pub fn audit_page(
+        &self,
+        who: &Caller,
+        query: &audit::AuditQuery,
+    ) -> Result<Vec<u8>, StoreError> {
+        let mut conn = self.conn();
+        let tx = immediate(&mut conn)?;
+        let mut out = Vec::new();
+        let read = audit::page(&tx, query, &mut out);
+        self.record(
+            &tx,
+            &Entry {
+                actor: Actor::Key(who.key),
+                action: Action::AuditRead,
+                target: None,
+                version: None,
+                status: if read.is_ok() { 200 } else { 500 },
+            },
+        )?;
+        commit(tx)?;
+        read.map(|()| out).map_err(io)
+    }
+
     /// Records, in a transaction of its own, an action on the tenant taken
     /// elsewhere, such as a change to its retention period.
     pub fn log(&self, entry: &Entry) -> Result<(), StoreError> {
@@ -995,6 +1022,70 @@ mod tests {
             f.fs.read(&f.store.objects.join(version.to_string()))
                 .expect("file");
         envelope::open(&data_key, &ctx, &blob).expect("opens")
+    }
+
+    fn audit_page(f: &Fixture, after: i64, limit: u32) -> Result<Vec<u8>, StoreError> {
+        f.store
+            .audit_page(&f.caller, &audit::AuditQuery { after, limit })
+    }
+
+    fn export_text(store: &Store, since: Option<i64>) -> Vec<u8> {
+        let mut out = Vec::new();
+        store.export(since, &mut out).expect("export");
+        out
+    }
+
+    #[test]
+    fn an_audit_page_is_export_s_lines_and_records_its_read_after_them() {
+        let f = fixture();
+        for n in 0..3 {
+            let (found, body) = vcon(&format!("01a07da8-c2bb-83e5-b9a2-27900000000{n}"), "x");
+            f.store.create(&f.caller, &found, &body).expect("stored");
+        }
+        let before = export_text(&f.store, None);
+        assert_eq!(audit_page(&f, 0, 1000), Ok(before.clone()));
+        let read = audit_log(&f.store);
+        assert_eq!(read.len(), 4, "three creates and the read");
+        assert_eq!(read[3]["action"], "audit_read");
+        assert_eq!(read[3]["actor"], f.caller.key.to_string());
+        assert_eq!(read[3]["status"], 200);
+        assert_eq!(read[3]["seq"], 4);
+        assert_eq!(read[3]["target"], Value::Null);
+        // A page of two from seq 1: the second and third creates.
+        let lines: Vec<&[u8]> = before.split_inclusive(|b| *b == b'\n').collect();
+        assert_eq!(audit_page(&f, 1, 2), Ok(lines[1..3].concat()));
+        // Past the end: nothing but the earlier reads' records.
+        let tail = audit_page(&f, 4, 1000).expect("a page");
+        assert_eq!(tail, export_text(&f.store, Some(4))[..tail.len()]);
+        assert_eq!(String::from_utf8(tail).expect("UTF-8").lines().count(), 1);
+    }
+
+    /// A record that cannot be read back (a status past any HTTP status)
+    /// fails the page, and the read is still recorded, as 500.
+    #[test]
+    fn an_audit_page_that_cannot_be_read_is_a_failure_and_recorded() {
+        let f = fixture();
+        f.store
+            .conn_for_test()
+            .execute(
+                "INSERT INTO audit (at, actor, action, status, count)
+                 VALUES ('2026-10-23T12:00:00Z', 'cli', 'read', 70000, 1)",
+                [],
+            )
+            .expect("damaged");
+        assert_eq!(audit_page(&f, 0, 10), Err(StoreError::Io));
+        let mut recorded = Vec::new();
+        f.store.export(Some(1), &mut recorded).expect("export");
+        let recorded: Value = serde_json::from_slice(&recorded).expect("one record");
+        assert_eq!(recorded["action"], "audit_read");
+        assert_eq!(recorded["status"], 500);
+    }
+
+    #[test]
+    fn an_audit_page_whose_record_fails_is_refused() {
+        let f = fixture();
+        f.store.break_audit();
+        assert_eq!(audit_page(&f, 0, 10), Err(StoreError::AuditFailed));
     }
 
     #[test]

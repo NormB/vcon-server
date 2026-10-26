@@ -150,7 +150,7 @@ impl fmt::Display for CommandError {
                     "a vCon of the tenant is under a legal hold; only --override-holds removes it"
                 }
                 TenantError::BadScopes => {
-                    "a tenant key's scopes are one or more of write, read, delete and legal, each named once"
+                    "a tenant key's scopes are one or more of write, read, delete, legal and audit, each named once"
                 }
                 TenantError::LimitReached => {
                     "the master key has wrapped all the tenant keys it may; run rekey master"

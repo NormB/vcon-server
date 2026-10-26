@@ -21,7 +21,7 @@ can lose only the copy; the request then answers
 
 A request whose record cannot be written is not carried out: it answers
 [`audit-failed`](@/problems/audit-failed.md). Records are only ever added.
-No route reads or changes them.
+No route changes them.
 
 ## A record
 
@@ -30,7 +30,7 @@ No route reads or changes them.
 | `seq` | the record's number in its log, rising |
 | `at` | when, RFC 3339 in UTC |
 | `actor` | the key id; `sweep` for the purge sweep; `cli` for a command on the host; empty for a token that did not parse or names no known key |
-| `action` | what was asked, such as `create`, `read`, `list`, `legal_read`, `hold`, `purge`, `key_create` or `auth_failed` |
+| `action` | what was asked, such as `create`, `read`, `list`, `legal_read`, `hold`, `purge`, `key_create`, `audit_read` or `auth_failed` |
 | `target` | the uuid, tenant id or key id acted on, if any |
 | `version` | the version id involved, if any |
 | `status` | the HTTP status answered |
@@ -50,7 +50,14 @@ empty actor, so made-up tokens cannot grow the log without bound.
 
 `vcon-server audit export (--tenant <id> | --admin) [--since <seq>]` writes a
 log as JSON lines, oldest first, from after `seq`. It runs beside a serving
-server. Reading a log is not itself recorded.
+server. An export from the command line is not itself recorded.
+
+Over HTTPS, a tenant key with the `audit` scope reads its tenant's log with
+`GET /audit`, and an operator key reads the admin log with
+`GET /admin/audit`, a page at a time from after a `seq`. Each page is the
+same lines `audit export` writes for those records, byte for byte. Each read
+over HTTPS is recorded, as `audit_read`, in the log it read. See the
+[HTTP API](@/docs/http-api.md#audit-logs).
 
 ## The request log is not the audit log
 

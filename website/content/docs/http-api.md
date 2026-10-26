@@ -153,7 +153,39 @@ Refusals: [`unknown-tenant`](@/problems/unknown-tenant.md),
 
 A tenant name is 1 to 128 characters, with no control characters and no
 space at either end. A tenant key's scopes are one or more of `write`,
-`read`, `delete` and `legal`, each named once.
+`read`, `delete`, `legal` and `audit`, each named once.
+
+## Audit logs
+
+| Route | Scope | Answers |
+|---|---|---|
+| `GET /audit` | `audit` (a tenant key) | `200`: the key's tenant log |
+| `GET /admin/audit` | `admin` (an operator key) | `200`: the admin log |
+
+Both answer `Content-Type: application/jsonl`: one record a line, oldest
+first, exactly the lines `vcon-server audit export` writes for the same
+records (see [audit logs](@/docs/audit-logs.md#a-record)).
+
+- `after` is a `seq`: the page starts after it (default `0`, the start).
+- `limit` is 1 to 10000 records a page (default 1000).
+- A page shorter than `limit` reaches the end of the log. Ask for the next
+  page with `after` set to the last `seq` you read.
+- Each read is itself recorded, as `audit_read`, in the log it read, after
+  the page is read; so the next page starts with it.
+- A parameter the routes do not take, one given twice, or a bad value is
+  [`bad-query`](@/problems/bad-query.md) (400).
+
+```sh
+# Copy a tenant's log, 1000 records a page, resuming from the last seq read
+after=0
+while :; do
+  page=$(curl -s "https://vcon.example.com/audit?after=$after" -H "Authorization: Bearer $KEY")
+  [ -n "$page" ] || break
+  printf '%s\n' "$page" >> audit.jsonl
+  [ "$(printf '%s\n' "$page" | wc -l)" -lt 1000 ] && break
+  after=$(printf '%s\n' "$page" | tail -n 1 | jq .seq)
+done
+```
 
 ## Health
 

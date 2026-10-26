@@ -127,7 +127,7 @@ enum KeyCommand {
             conflicts_with = "operator"
         )]
         tenant: Option<String>,
-        /// A scope the tenant key holds: write, read, delete or legal.
+        /// A scope the tenant key holds: write, read, delete, legal or audit.
         /// Repeat it for each scope.
         #[arg(long = "scope", requires = "tenant", conflicts_with = "operator")]
         scopes: Vec<String>,

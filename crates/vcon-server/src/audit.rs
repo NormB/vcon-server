@@ -10,6 +10,7 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 use crate::ids::{KeyId, VersionId};
+use crate::query::{self, BadQuery};
 
 /// The audit table, part of every catalog that holds a log.
 pub const SCHEMA: &str = "
@@ -66,6 +67,7 @@ pub enum Action {
     RekeyMaster,
     RekeyTenant,
     List,
+    AuditRead,
 }
 
 impl Action {
@@ -95,6 +97,7 @@ impl Action {
             Action::RekeyMaster => "rekey_master",
             Action::RekeyTenant => "rekey_tenant",
             Action::List => "list",
+            Action::AuditRead => "audit_read",
         }
     }
 }
@@ -196,11 +199,18 @@ pub fn count(tx: &Transaction, entry: &Entry, now: OffsetDateTime) -> Result<(),
 
 /// Writes every record after `since` as JSON lines, oldest first.
 pub fn export(log: &Connection, since: Option<i64>, out: &mut dyn Write) -> Result<(), AuditError> {
+    // SQLite reads a negative limit as none.
+    lines(log, since.unwrap_or(0), -1, out)
+}
+
+/// Writes at most `limit` records after `after` as JSON lines, oldest
+/// first: the one rendering both `export` and `page` write.
+fn lines(log: &Connection, after: i64, limit: i64, out: &mut dyn Write) -> Result<(), AuditError> {
     let mut rows = log.prepare(
         "SELECT seq, at, actor, action, target, version, status, count
-         FROM audit WHERE seq > ?1 ORDER BY seq",
+         FROM audit WHERE seq > ?1 ORDER BY seq LIMIT ?2",
     )?;
-    let mut rows = rows.query([since.unwrap_or(0)])?;
+    let mut rows = rows.query(params![after, limit])?;
     while let Some(row) = rows.next()? {
         let record = json!({
             "seq": row.get::<_, i64>(0)?,
@@ -215,6 +225,55 @@ pub fn export(log: &Connection, since: Option<i64>, out: &mut dyn Write) -> Resu
         writeln!(out, "{record}").map_err(AuditError::Write)?;
     }
     Ok(())
+}
+
+/// What an audit read asks for: at most `limit` records after the seq
+/// `after`, oldest first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuditQuery {
+    pub after: i64,
+    pub limit: u32,
+}
+
+impl AuditQuery {
+    pub const DEFAULT_LIMIT: u32 = 1000;
+    pub const MAX_LIMIT: u32 = 10000;
+
+    /// An audit query from its parameters' values, the one rule for them
+    /// wherever they come from: `after` a seq (0, the default, is the
+    /// start of the log), `limit` 1 to `MAX_LIMIT`.
+    pub fn new(after: Option<u64>, limit: Option<u64>) -> Result<AuditQuery, BadQuery> {
+        let after = after
+            .map(|n| i64::try_from(n).map_err(|_| BadQuery))
+            .transpose()?
+            .unwrap_or(0);
+        let limit = match limit {
+            None => AuditQuery::DEFAULT_LIMIT,
+            Some(n) => u32::try_from(n)
+                .ok()
+                .filter(|n| (1..=AuditQuery::MAX_LIMIT).contains(n))
+                .ok_or(BadQuery)?,
+        };
+        Ok(AuditQuery { after, limit })
+    }
+
+    /// An audit query from an HTTP query string, which may name `after` and
+    /// `limit`, each at most once.
+    pub fn from_query(text: Option<&str>) -> Result<AuditQuery, BadQuery> {
+        let read = query::pairs(text, &["after", "limit"])?;
+        let number = |name| {
+            read.get(name)
+                .map(|n: &String| n.parse::<u64>().map_err(|_| BadQuery))
+                .transpose()
+        };
+        AuditQuery::new(number("after")?, number("limit")?)
+    }
+}
+
+/// Writes at most `query.limit` records after `query.after` as JSON lines,
+/// oldest first: the first lines `export` writes from the same place.
+pub fn page(log: &Connection, query: &AuditQuery, out: &mut dyn Write) -> Result<(), AuditError> {
+    lines(log, query.after, i64::from(query.limit), out)
 }
 
 /// Reading a log back, for tests.
@@ -419,9 +478,95 @@ mod tests {
             (Action::TenantRemove, "tenant_remove"),
             (Action::RekeyMaster, "rekey_master"),
             (Action::RekeyTenant, "rekey_tenant"),
+            (Action::List, "list"),
+            (Action::AuditRead, "audit_read"),
         ];
         for (action, name) in names {
             assert_eq!(action.as_str(), name);
+        }
+    }
+
+    /// Five read records, at whole seconds.
+    fn five(log: &mut Log) {
+        let key = Key::generate().expect("key").id();
+        let tx = log.conn.transaction().expect("tx");
+        for second in 0..5 {
+            let now = datetime!(2026-10-23 12:00:00 UTC) + time::Duration::seconds(second);
+            record(&tx, &read_by(key, 200), now).expect("record");
+        }
+        tx.commit().expect("commit");
+    }
+
+    fn exported_text(log: &Connection, since: Option<i64>) -> String {
+        let mut out = Vec::new();
+        export(log, since, &mut out).expect("export");
+        String::from_utf8(out).expect("UTF-8")
+    }
+
+    fn paged(log: &Connection, after: i64, limit: u32) -> String {
+        let mut out = Vec::new();
+        page(log, &AuditQuery { after, limit }, &mut out).expect("page");
+        String::from_utf8(out).expect("UTF-8")
+    }
+
+    #[test]
+    fn a_page_is_the_first_lines_export_writes_from_the_same_place() {
+        let mut log = log();
+        five(&mut log);
+        for after in 0..=6 {
+            let lines: Vec<String> = exported_text(&log.conn, Some(after))
+                .lines()
+                .map(|l| format!("{l}\n"))
+                .collect();
+            for limit in 1..=6 {
+                let take = lines.len().min(usize::try_from(limit).expect("small"));
+                assert_eq!(
+                    paged(&log.conn, after, limit),
+                    lines[..take].concat(),
+                    "after {after}, limit {limit}"
+                );
+            }
+        }
+        assert_eq!(paged(&log.conn, 0, 10), exported_text(&log.conn, None));
+    }
+
+    #[test]
+    fn an_audit_query_takes_a_seq_and_a_limit_of_1_to_10000() {
+        let q = |after, limit| AuditQuery { after, limit };
+        assert_eq!(AuditQuery::new(None, None), Ok(q(0, 1000)));
+        assert_eq!(AuditQuery::new(Some(7), Some(1)), Ok(q(7, 1)));
+        assert_eq!(AuditQuery::new(None, Some(10000)), Ok(q(0, 10000)));
+        assert_eq!(
+            AuditQuery::new(Some(i64::MAX as u64), None),
+            Ok(q(i64::MAX, 1000))
+        );
+        for (after, limit) in [
+            (None, Some(0)),
+            (None, Some(10001)),
+            (None, Some(u64::MAX)),
+            (Some(i64::MAX as u64 + 1), None),
+        ] {
+            assert_eq!(
+                AuditQuery::new(after, limit),
+                Err(BadQuery),
+                "{after:?} {limit:?}"
+            );
+        }
+        assert_eq!(AuditQuery::from_query(None), Ok(q(0, 1000)));
+        assert_eq!(
+            AuditQuery::from_query(Some("after=12&limit=3")),
+            Ok(q(12, 3))
+        );
+        for bad in [
+            "after=-1",
+            "after=x",
+            "after=",
+            "limit=0",
+            "limit=1&limit=1",
+            "since=3",
+            "after=1.0",
+        ] {
+            assert_eq!(AuditQuery::from_query(Some(bad)), Err(BadQuery), "{bad}");
         }
     }
 }

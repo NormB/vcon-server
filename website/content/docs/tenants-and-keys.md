@@ -36,7 +36,7 @@ base64url without padding. The server keeps only the SHA-256 of the token, so
 a token is shown once, when the key is made, and cannot be recovered. The key
 id in the token is not secret; it names the key in lists and audit records.
 
-A **tenant key** belongs to one tenant and holds any of four scopes:
+A **tenant key** belongs to one tenant and holds any of five scopes:
 
 | Scope | Allows |
 |---|---|
@@ -44,9 +44,10 @@ A **tenant key** belongs to one tenant and holds any of four scopes:
 | `read` | `GET /vcons` and `GET /vcons/{uuid}` |
 | `delete` | `DELETE /vcons/{uuid}` |
 | `legal` | the `/legal/` routes: reads of deleted vCons and old versions, restore, legal holds |
+| `audit` | `GET /audit`: the tenant's own [audit log](@/docs/audit-logs.md) |
 
 An **operator key** belongs to no tenant and holds only `admin`, which allows
-the `/admin/` routes: tenants and their keys. A tenant key can never hold
+the `/admin/` routes: tenants, their keys and the admin audit log. A tenant key can never hold
 `admin`, and an operator key can never reach a tenant's vCons.
 
 Any valid key may ask `GET /health`.

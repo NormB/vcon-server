@@ -31,7 +31,7 @@ use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
 use crate::access::{self, AuthError, Caller, Scope, Scopes};
-use crate::audit::{Action, Actor, Entry};
+use crate::audit::{Action, Actor, AuditQuery, Entry};
 use crate::ids::TenantId;
 use crate::ids::{KeyId, VersionId};
 use crate::retention::Retention;
@@ -68,6 +68,8 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/vcons", post(create).get(list))
         .route("/vcons/{uuid}", get(read).put(replace).delete(delete))
         .route("/health", get(health))
+        .route("/audit", get(audit_read))
+        .route("/admin/audit", get(admin_audit_read))
         .route("/legal/vcons/{uuid}", get(legal_read))
         .route("/legal/vcons/{uuid}/versions", get(legal_versions))
         .route("/legal/vcons/{uuid}/versions/{version}", get(legal_version))
@@ -198,6 +200,66 @@ async fn list(State(app): State<Arc<App>>, uri: Uri, headers: HeaderMap, body: B
     match blocking(move || store.list(&StoreCaller { key }, &query)).await {
         Ok(listing) => json_answer(StatusCode::OK, &listing.to_json()),
         Err(error) => failed(error).into_response(),
+    }
+}
+
+/// The media type of an audit page: JSON lines, one record a line.
+const JSON_LINES: &str = "application/jsonl";
+
+/// `GET /audit`: a page of the key's tenant's log, the lines `audit export`
+/// writes for the same records.
+async fn audit_read(
+    State(app): State<Arc<App>>,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let admitted = match admit(&app, &headers, body, Scope::Audit, Action::AuditRead).await {
+        Ok(admitted) => admitted,
+        Err(refused) => return refused.into_response(),
+    };
+    let Ok(query) = AuditQuery::from_query(uri.query()) else {
+        let refused = Problem::BadQuery;
+        let entry = refusal(admitted.caller.key, Action::AuditRead, refused);
+        return app
+            .refuse(Some(admitted.tenant), entry, refused)
+            .await
+            .into_response();
+    };
+    let (store, key) = (admitted.store.clone(), admitted.caller.key);
+    // Store records its own outcomes.
+    match blocking(move || store.audit_page(&StoreCaller { key }, &query)).await {
+        Ok(lines) => (StatusCode::OK, [(CONTENT_TYPE, JSON_LINES)], lines).into_response(),
+        Err(error) => failed(error).into_response(),
+    }
+}
+
+/// `GET /admin/audit`: a page of the admin log, the lines
+/// `audit export --admin` writes for the same records.
+async fn admin_audit_read(
+    State(app): State<Arc<App>>,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let action = Action::AuditRead;
+    let read = async {
+        let (key, _) = admin_admit(&app, &headers, body, action).await?;
+        let Ok(query) = AuditQuery::from_query(uri.query()) else {
+            let refused = Problem::BadQuery;
+            return Err(app
+                .refuse(None, refusal(key, action, refused), refused)
+                .await);
+        };
+        let tenants = app.tenants.clone();
+        // Tenants records its own outcomes.
+        blocking(move || tenants.audit_page(Actor::Key(key), &query))
+            .await
+            .map_err(Problem::Tenant)
+    };
+    match read.await {
+        Ok(lines) => (StatusCode::OK, [(CONTENT_TYPE, JSON_LINES)], lines).into_response(),
+        Err(refused) => refused.into_response(),
     }
 }
 
@@ -3760,6 +3822,196 @@ mod tests {
                 .token;
             s.tenants.break_audit();
             let answer = health(&s, Some(&operator)).await;
+            assert_eq!(answer.status(), 503);
+            assert_eq!(problem(answer).await, "audit-failed");
+        }
+    }
+
+    /// `GET /audit` and `GET /admin/audit`: a log a page at a time, as the
+    /// command line exports it.
+    mod audit_routes {
+        use super::pipeline::{Server, problem, server};
+        use crate::access::{Scope, Scopes};
+        use crate::audit::Actor;
+        use crate::store::testing::vcon;
+
+        fn operator(s: &Server) -> String {
+            s.tenants
+                .create_key(Actor::Cli, None, Scopes::of(&[Scope::Admin]), "op")
+                .expect("an operator key")
+                .token
+        }
+
+        async fn get(s: &Server, path: &str, token: Option<&str>) -> reqwest::Response {
+            let mut request = s.client().get(s.url(path));
+            if let Some(token) = token {
+                request = request.bearer_auth(token);
+            }
+            request.send().await.expect("an answer")
+        }
+
+        async fn body(answer: reqwest::Response) -> Vec<u8> {
+            assert_eq!(answer.status(), 200);
+            assert_eq!(answer.headers()["content-type"], "application/jsonl");
+            answer.bytes().await.expect("body").to_vec()
+        }
+
+        /// The tenant's log as `audit export --tenant` writes it.
+        fn tenant_export(s: &Server, since: Option<i64>) -> Vec<u8> {
+            let mut out = Vec::new();
+            s.tenants
+                .store(s.tenant)
+                .expect("its store")
+                .export(since, &mut out)
+                .expect("export");
+            out
+        }
+
+        fn admin_export(s: &Server) -> Vec<u8> {
+            let mut out = Vec::new();
+            s.tenants.export_admin(None, &mut out).expect("export");
+            out
+        }
+
+        async fn three_stored(s: &Server) {
+            let writer = s.key(&[Scope::Write]);
+            for n in 1..=3 {
+                let answer = s
+                    .client()
+                    .post(s.url("/vcons"))
+                    .bearer_auth(&writer)
+                    .header("content-type", "application/vcon")
+                    .body(vcon(&format!("01a07da8-c2bb-83e5-b9a2-{n:012x}"), "x").1)
+                    .send()
+                    .await
+                    .expect("an answer");
+                assert_eq!(answer.status(), 201);
+            }
+        }
+
+        #[tokio::test]
+        async fn the_tenant_log_is_its_export_byte_for_byte_a_page_at_a_time() {
+            let s = server().await;
+            three_stored(&s).await;
+            let auditor = s.key(&[Scope::Audit]);
+            let before = tenant_export(&s, None);
+            assert_eq!(body(get(&s, "/audit", Some(&auditor)).await).await, before);
+            let lines: Vec<&[u8]> = before.split_inclusive(|b| *b == b'\n').collect();
+            assert_eq!(
+                body(get(&s, "/audit?after=1&limit=2", Some(&auditor)).await).await,
+                lines[1..3].concat()
+            );
+            // The reads are recorded, each after its own page.
+            let reads = s.tenant_log("audit_read");
+            assert_eq!(reads.len(), 2);
+            assert!(reads.iter().all(|r| r["status"] == 200));
+            let after = 3;
+            let page = body(get(&s, &format!("/audit?after={after}"), Some(&auditor)).await).await;
+            assert_eq!(page, tenant_export(&s, Some(after))[..page.len()]);
+        }
+
+        #[tokio::test]
+        async fn the_admin_log_is_its_export_byte_for_byte() {
+            let s = server().await;
+            let op = operator(&s);
+            let before = admin_export(&s);
+            assert!(!before.is_empty(), "the tenant's creation, at least");
+            assert_eq!(body(get(&s, "/admin/audit", Some(&op)).await).await, before);
+            let lines: Vec<&[u8]> = before.split_inclusive(|b| *b == b'\n').collect();
+            assert_eq!(
+                body(get(&s, "/admin/audit?limit=1", Some(&op)).await).await,
+                lines[0]
+            );
+            let mut recorded = Vec::new();
+            s.tenants.export_admin(None, &mut recorded).expect("export");
+            let reads = String::from_utf8(recorded)
+                .expect("UTF-8")
+                .lines()
+                .filter(|l| l.contains("\"action\":\"audit_read\""))
+                .count();
+            assert_eq!(reads, 2);
+        }
+
+        #[tokio::test]
+        async fn the_tenant_log_needs_a_tenant_key_with_audit() {
+            let s = server().await;
+            assert_eq!(get(&s, "/audit", None).await.status(), 401);
+            for scopes in [
+                &[Scope::Read][..],
+                &[Scope::Legal],
+                &[Scope::Write, Scope::Delete],
+            ] {
+                let answer = get(&s, "/audit", Some(&s.key(scopes))).await;
+                assert_eq!(answer.status(), 403, "{scopes:?}");
+                assert_eq!(problem(answer).await, "forbidden");
+            }
+            let answer = get(&s, "/audit", Some(&operator(&s))).await;
+            assert_eq!(answer.status(), 403, "an operator key");
+            let refused = s.tenant_log("audit_read");
+            assert_eq!(refused.len(), 3, "the tenant keys' refusals");
+            assert!(refused.iter().all(|r| r["status"] == 403));
+        }
+
+        #[tokio::test]
+        async fn the_admin_log_needs_an_operator_key() {
+            let s = server().await;
+            assert_eq!(get(&s, "/admin/audit", None).await.status(), 401);
+            let every = s.key(&[
+                Scope::Write,
+                Scope::Read,
+                Scope::Delete,
+                Scope::Legal,
+                Scope::Audit,
+            ]);
+            let answer = get(&s, "/admin/audit", Some(&every)).await;
+            assert_eq!(answer.status(), 403);
+            assert_eq!(problem(answer).await, "forbidden");
+            assert_eq!(s.tenant_log("audit_read").len(), 1, "recorded");
+        }
+
+        #[tokio::test]
+        async fn a_query_the_routes_do_not_take_is_a_bad_query_and_recorded() {
+            let s = server().await;
+            let auditor = s.key(&[Scope::Audit]);
+            let op = operator(&s);
+            let bad = [
+                "?since=3",
+                "?after=-1",
+                "?limit=0",
+                "?limit=10001",
+                "?after=1&after=2",
+            ];
+            for query in bad {
+                for (path, token) in [("/audit", &auditor), ("/admin/audit", &op)] {
+                    let answer = get(&s, &format!("{path}{query}"), Some(token)).await;
+                    assert_eq!(answer.status(), 400, "{path}{query}");
+                    assert_eq!(problem(answer).await, "bad-query");
+                }
+            }
+            let refused = s.tenant_log("audit_read");
+            assert_eq!(refused.len(), bad.len());
+            assert!(refused.iter().all(|r| r["status"] == 400));
+            let mut admin = Vec::new();
+            s.tenants.export_admin(None, &mut admin).expect("export");
+            let admin_refused = String::from_utf8(admin)
+                .expect("UTF-8")
+                .lines()
+                .filter(|l| l.contains("\"action\":\"audit_read\"") && l.contains("\"status\":400"))
+                .count();
+            assert_eq!(admin_refused, bad.len());
+        }
+
+        #[tokio::test]
+        async fn a_read_that_cannot_be_recorded_is_503() {
+            let s = server().await;
+            let auditor = s.key(&[Scope::Audit]);
+            let op = operator(&s);
+            s.tenants.store(s.tenant).expect("its store").break_audit();
+            let answer = get(&s, "/audit", Some(&auditor)).await;
+            assert_eq!(answer.status(), 503);
+            assert_eq!(problem(answer).await, "audit-failed");
+            s.tenants.break_audit();
+            let answer = get(&s, "/admin/audit", Some(&op)).await;
             assert_eq!(answer.status(), 503);
             assert_eq!(problem(answer).await, "audit-failed");
         }

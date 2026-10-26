@@ -570,3 +570,98 @@ fn serve_sweeps_again_once_purge_interval_has_passed() {
         first.elapsed()
     );
 }
+
+/// Runs a command beside the server and returns what it printed.
+fn beside(s: &Setup, args: &[&str]) -> Vec<u8> {
+    let output = Command::new(env!("CARGO_BIN_EXE_vcon-server"))
+        .args(args)
+        .arg("--config")
+        .arg(&s.config)
+        .output()
+        .expect("runs");
+    assert!(output.status.success(), "{args:?}: {output:?}");
+    output.stdout
+}
+
+fn token_of(printed: &[u8]) -> String {
+    let made: serde_json::Value = serde_json::from_slice(printed).expect("JSON");
+    made["token"].as_str().expect("a token").to_owned()
+}
+
+/// Each audit route answers exactly the lines `audit export` writes for
+/// the same records, read from the running server and the command line.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_audit_routes_answer_what_audit_export_writes() {
+    let s = setup();
+    let mut running = Running(
+        serve(&s)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("starts"),
+    );
+    ready(&s, &mut running.0);
+    let client = reqwest::Client::builder()
+        .tls_certs_only([reqwest::Certificate::from_pem(s.pem.as_bytes()).expect("pem")])
+        .resolve("localhost", s.addr)
+        .no_proxy()
+        .build()
+        .expect("a client");
+    let url = |path: &str| format!("https://localhost:{}{path}", s.addr.port());
+    let tenant = s.tenant.to_string();
+    let body = std::fs::read(format!(
+        "{}/../vcon-form/tests/fixtures/ietf/ab_call_ext_rec.vcon",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .expect("A.4");
+    let stored = client
+        .post(url("/vcons"))
+        .bearer_auth(&s.token)
+        .header("content-type", "application/vcon")
+        .body(body)
+        .send()
+        .await
+        .expect("an answer");
+    assert_eq!(stored.status(), 201);
+    let auditor = token_of(&beside(
+        &s,
+        &[
+            "key", "create", "--tenant", &tenant, "--scope", "audit", "--label", "a",
+        ],
+    ));
+    let operator = token_of(&beside(
+        &s,
+        &["key", "create", "--operator", "--label", "o"],
+    ));
+
+    for (path, token, export) in [
+        (
+            "/audit?after=1",
+            &auditor,
+            vec!["audit", "export", "--tenant", &tenant, "--since", "1"],
+        ),
+        (
+            "/admin/audit",
+            &operator,
+            vec!["audit", "export", "--admin"],
+        ),
+    ] {
+        let answer = client
+            .get(url(path))
+            .bearer_auth(token)
+            .send()
+            .await
+            .expect("an answer");
+        assert_eq!(answer.status(), 200, "{path}");
+        assert_eq!(answer.headers()["content-type"], "application/jsonl");
+        let page = answer.bytes().await.expect("body").to_vec();
+        assert!(!page.is_empty(), "{path}");
+        // The export runs after the read, so it also holds the read's own
+        // record; the page is every line before it.
+        let exported = beside(&s, &export);
+        assert_eq!(page, exported[..page.len()], "{path}");
+        let rest = String::from_utf8(exported[page.len()..].to_vec()).expect("UTF-8");
+        assert_eq!(rest.lines().count(), 1, "{path}: {rest}");
+        assert!(rest.contains("\"action\":\"audit_read\""), "{path}: {rest}");
+    }
+}

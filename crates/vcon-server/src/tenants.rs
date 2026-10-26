@@ -674,6 +674,32 @@ impl Tenants {
         audit::export(&self.conn(), since, out)
     }
 
+    /// A page of the admin log as JSON lines, the lines `export_admin`
+    /// writes for the same records. The read is recorded as audit_read in
+    /// the admin log, in the same transaction, after the page is read.
+    pub fn audit_page(
+        &self,
+        who: Actor,
+        query: &audit::AuditQuery,
+    ) -> Result<Vec<u8>, TenantError> {
+        let mut conn = self.conn();
+        let tx = immediate(&mut conn)?;
+        let mut out = Vec::new();
+        let read = audit::page(&tx, query, &mut out);
+        self.record(
+            &tx,
+            &Entry {
+                actor: who,
+                action: Action::AuditRead,
+                target: None,
+                version: None,
+                status: if read.is_ok() { 200 } else { 500 },
+            },
+        )?;
+        tx.commit().map_err(io)?;
+        read.map(|()| out).map_err(io)
+    }
+
     /// Whether server.sqlite answers a query, for the health route.
     pub fn check(&self) -> Result<(), TenantError> {
         self.conn()
@@ -948,6 +974,63 @@ mod tests {
                 "tenant"
             ]
         );
+    }
+
+    #[test]
+    fn an_admin_audit_page_is_export_s_lines_and_records_its_read_after_them() {
+        let f = fixture();
+        for name in ["acme", "beta"] {
+            f.tenants.create(Actor::Cli, name, None).expect("made");
+        }
+        let mut before = Vec::new();
+        f.tenants.export_admin(None, &mut before).expect("export");
+        let who = Actor::Key(Key::generate().expect("key").id());
+        let query = |after, limit| audit::AuditQuery { after, limit };
+        assert_eq!(
+            f.tenants.audit_page(who, &query(0, 1000)),
+            Ok(before.clone())
+        );
+        let read = exported(&f.conn(), None);
+        let last = read.last().expect("records");
+        assert_eq!(last["action"], "audit_read");
+        assert_eq!(last["status"], 200);
+        let lines: Vec<&[u8]> = before.split_inclusive(|b| *b == b'\n').collect();
+        assert_eq!(
+            f.tenants.audit_page(who, &query(1, 1)),
+            Ok(lines[1].to_vec())
+        );
+        f.conn()
+            .execute(
+                "INSERT INTO audit (at, actor, action, status, count)
+                 VALUES ('2026-10-23T12:00:00Z', 'cli', 'read', 70000, 1)",
+                [],
+            )
+            .expect("damaged");
+        assert_eq!(
+            f.tenants.audit_page(who, &query(0, 1000)),
+            Err(TenantError::Io)
+        );
+        let last = exported_last(&f);
+        assert_eq!(last["action"], "audit_read");
+        assert_eq!(last["status"], 500);
+        f.tenants.break_audit();
+        assert_eq!(
+            f.tenants.audit_page(who, &query(0, 1000)),
+            Err(TenantError::AuditFailed)
+        );
+    }
+
+    /// The admin log's last record, read past a damaged one.
+    fn exported_last(f: &Fixture) -> Value {
+        let conn = f.conn();
+        let (action, status): (String, i64) = conn
+            .query_row(
+                "SELECT action, status FROM audit ORDER BY seq DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("a record");
+        serde_json::json!({"action": action, "status": status})
     }
 
     #[test]

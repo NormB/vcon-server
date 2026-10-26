@@ -22,16 +22,19 @@ pub enum Scope {
     Read,
     Delete,
     Legal,
+    /// Reads the tenant's own audit log.
+    Audit,
     Admin,
 }
 
 impl Scope {
     /// Every scope, in the order a key's scopes are written.
-    const ALL: [Scope; 5] = [
+    const ALL: [Scope; 6] = [
         Scope::Write,
         Scope::Read,
         Scope::Delete,
         Scope::Legal,
+        Scope::Audit,
         Scope::Admin,
     ];
 
@@ -50,6 +53,7 @@ impl Scope {
             Scope::Read => "read",
             Scope::Delete => "delete",
             Scope::Legal => "legal",
+            Scope::Audit => "audit",
             Scope::Admin => "admin",
         }
     }
@@ -199,8 +203,8 @@ fn check(keys: &Tenants, authorization: Option<&str>) -> Result<Caller, Failure>
 }
 
 /// Refuses a caller whose key does not hold `scope`. Admin belongs only to
-/// an operator key, and the vCon and legal scopes only to a tenant key, so
-/// a key holding a scope of the other kind is still refused it.
+/// an operator key, and the vCon, legal and audit scopes only to a tenant
+/// key, so a key holding a scope of the other kind is still refused it.
 pub fn require(caller: &Caller, scope: Scope) -> Result<(), AuthError> {
     let of_its_kind = (scope == Scope::Admin) == caller.tenant.is_none();
     if of_its_kind && caller.scopes.contains(scope) {
@@ -322,7 +326,7 @@ mod tests {
         assert_eq!(scopes.to_string(), "write,delete");
         assert_eq!(
             Scopes::of(&Scope::ALL).to_string(),
-            "write,read,delete,legal,admin"
+            "write,read,delete,legal,audit,admin"
         );
         for scope in Scope::ALL {
             let one = Scopes::of(&[scope]);
@@ -347,6 +351,35 @@ mod tests {
         ] {
             assert_eq!(Scopes::parse(text), None, "{text:?}");
         }
+    }
+
+    /// audit is a tenant key's scope: it reads the tenant's own log.
+    #[test]
+    fn audit_is_required_of_a_tenant_key_only() {
+        let tenant = Caller {
+            key: KeyId::generate(),
+            tenant: Some(TenantId::generate()),
+            scopes: Scopes::of(&[Scope::Audit]),
+        };
+        assert_eq!(Scope::named("audit"), Some(Scope::Audit));
+        assert_eq!(require(&tenant, Scope::Audit), Ok(()));
+        assert_eq!(
+            tenant_for(&tenant, Scope::Audit),
+            Ok(tenant.tenant.expect("one"))
+        );
+        assert_eq!(
+            require(&tenant, Scope::Read),
+            Err(AuthError::Forbidden(Scope::Read))
+        );
+        let operator = Caller {
+            tenant: None,
+            scopes: Scopes::of(&[Scope::Admin, Scope::Audit]),
+            ..tenant
+        };
+        assert_eq!(
+            require(&operator, Scope::Audit),
+            Err(AuthError::Forbidden(Scope::Audit))
+        );
     }
 
     #[test]

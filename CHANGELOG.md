@@ -22,3 +22,7 @@ All notable changes to this project are recorded here. The format follows
   stored, a page at a time with a cursor, bounded by `since` and `until`.
   A tenant catalog made by an earlier build gains the first-store time when
   it is next opened.
+- `GET /audit` and `GET /admin/audit`: a tenant's audit log, for a tenant key
+  with the new `audit` scope, and the admin log, for an operator key, a page
+  at a time, as the same lines `audit export` writes. Each read is recorded
+  as `audit_read`.

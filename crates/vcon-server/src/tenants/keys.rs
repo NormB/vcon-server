@@ -120,8 +120,8 @@ impl Tenants {
         .transpose()
     }
 
-    /// Makes a key. A tenant key holds any of write, read, delete and
-    /// legal; a key with no tenant is an operator key, holds only admin,
+    /// Makes a key. A tenant key holds any of write, read, delete, legal
+    /// and audit; a key with no tenant is an operator key, holds only admin,
     /// and only the command line may make one.
     pub fn create_key(
         &self,
@@ -429,7 +429,13 @@ mod tests {
                 "{scopes}"
             );
         }
-        let all = Scopes::of(&[Scope::Write, Scope::Read, Scope::Delete, Scope::Legal]);
+        let all = Scopes::of(&[
+            Scope::Write,
+            Scope::Read,
+            Scope::Delete,
+            Scope::Legal,
+            Scope::Audit,
+        ]);
         assert!(
             f.tenants
                 .create_key(Actor::Cli, Some(t), all, "all")
