@@ -46,6 +46,13 @@ printf '{"build": "%s/Cargo.toml"}\n' "$links" > .bestpractices.json
 cargo generate-lockfile -q
 git add -A
 git commit -q -m "Start the fixture" >"$work/first" 2>&1 || { echo "FAIL: the clean first commit was refused"; sed "s/^/    /" "$work/first"; exit 1; }
+# The hook builds the staged copy in a directory of its own, even when the
+# caller set CARGO_TARGET_DIR: a test binary records the directory it was
+# built from, so one shared with the caller's builds would later run against
+# the deleted copy.
+if [ -d "$CARGO_TARGET_DIR/debug" ] || [ ! -d "$CARGO_TARGET_DIR/pre-commit/debug" ]; then
+  echo "FAIL: the hook did not build in \$CARGO_TARGET_DIR/pre-commit"; exit 1
+fi
 
 pass=0
 fail=0

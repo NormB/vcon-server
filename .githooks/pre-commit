@@ -39,7 +39,10 @@ git checkout-index -a -f --prefix="$staged/"
 cd "$staged"
 # Every path .bestpractices.json links to on main still exists.
 python3 -I scripts/test_check_repo_links.py
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$root/target/pre-commit}"
+# Always a directory of its own: a test binary records the directory it was
+# built from, so sharing the caller's target directory would leave binaries
+# there that read files from this deleted copy.
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$root/target}/pre-commit"
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked --quiet -- -D warnings
 cargo test --workspace --locked --quiet
