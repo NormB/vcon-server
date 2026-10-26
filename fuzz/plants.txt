@@ -1,11 +1,11 @@
 # Planted-panic check: scripts/fuzz.sh plant. Each line: target, file, and
 # the text of the one line of that file the panic goes before, tab-separated.
 # The plant sits past the first checks, so the target must reach that far.
-inspect	crates/vcon-form/src/identity.rs	if !object.contains_key("created_at") {
-inspect_gzip	crates/vcon-form/src/gzip.rs	if out.len() as u64 > limit {
-inspect_signed	crates/vcon-form/src/signed.rs	let (inner, gzip) = inflate(&bytes, None, *budget)?;
-inspect_encrypted	crates/vcon-form/src/identity.rs	match object.get("unprotected").and_then(|u| u.get("uuid")) {
-parse_uuid	crates/vcon-form/src/identity.rs	Uuid::parse_str(text).map_err(|_| Rejection::BadUuid)
+inspect	crates/vcon/src/identity.rs	if !object.contains_key("created_at") {
+inspect_gzip	crates/vcon/src/gzip.rs	if out.len() as u64 > limit {
+inspect_signed	crates/vcon/src/signed.rs	let (inner, gzip) = inflate(&bytes, None, *budget)?;
+inspect_encrypted	crates/vcon/src/identity.rs	match object.get("unprotected").and_then(|u| u.get("uuid")) {
+parse_uuid	crates/vcon/src/identity.rs	Uuid::parse_str(text).map_err(|_| Rejection::BadUuid)
 token	crates/vcon-server/src/access.rs	let secret = URL_SAFE_NO_PAD.decode(secret).map_err(|_| malformed)?;
 ids	crates/vcon-server/src/ids.rs	let (pairs, _) = digits.as_chunks::<2>();
 retention	crates/vcon-server/src/retention.rs	let day = at.day().min(month.length(year));

@@ -8,7 +8,7 @@
 #                                      reads, run the target, expect the crash
 #
 # A target's seeds are fuzz/seeds/<target>/; the vCon targets also read the
-# IETF examples in crates/vcon-form/tests/fixtures/ietf. Both are only read:
+# IETF examples in crates/vcon/tests/fixtures/ietf. Both are only read:
 # what libFuzzer adds goes to fuzz/corpus/<target>/ and a crash input to
 # fuzz/artifacts/<target>/, both ignored by git.
 #
@@ -37,7 +37,7 @@ for b in bins:
 
 extra_corpora() {
   case "$1" in
-    inspect | inspect_gzip) echo "$root/crates/vcon-form/tests/fixtures/ietf" ;;
+    inspect | inspect_gzip) echo "$root/crates/vcon/tests/fixtures/ietf" ;;
   esac
 }
 

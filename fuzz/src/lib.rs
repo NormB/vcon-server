@@ -9,7 +9,7 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use vcon_form::{Form, Inspection, Limits, Rejection};
+use vcon::{Form, Inspection, Limits, Rejection};
 
 /// The inflation limit the vCon targets inspect with: small, so a body
 /// that passes it is quick to find and quick to run.
@@ -92,7 +92,7 @@ pub fn signed_agrees(
     let expected = match plain {
         Ok(found) if found.form == Form::Encrypted => Err(Rejection::BadPayload),
         Ok(found) => match header_uuid {
-            Some(text) if vcon_form::parse_uuid(text) != Some(found.uuid) => {
+            Some(text) if vcon::parse_uuid(text) != Some(found.uuid) => {
                 Err(Rejection::UuidMismatch)
             }
             _ => Ok(Inspection {
@@ -119,7 +119,7 @@ mod tests {
     const ID: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bc46";
 
     fn inspect(body: &[u8]) -> Result<Inspection, Rejection> {
-        vcon_form::inspect(body, None, &LIMITS, &supported())
+        vcon::inspect(body, None, &LIMITS, &supported())
     }
 
     fn unsigned() -> Vec<u8> {

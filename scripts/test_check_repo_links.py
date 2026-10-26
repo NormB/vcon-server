@@ -53,10 +53,10 @@ class Missing(unittest.TestCase):
     def test_a_path_that_moved_is_missing(self):
         with tempfile.TemporaryDirectory() as root:
             (pathlib.Path(root) / "crates/vcon/tests").mkdir(parents=True)
-            text = f"{BASE}/blob/main/crates/vcon-form/tests/properties.rs"
+            text = f"{BASE}/blob/main/crates/old-name/tests/properties.rs"
             self.assertEqual(
                 check_repo_links.missing(text, pathlib.Path(root)),
-                ["crates/vcon-form/tests/properties.rs"],
+                ["crates/old-name/tests/properties.rs"],
             )
 
     def test_a_path_out_of_the_tree_is_missing_even_if_it_exists(self):

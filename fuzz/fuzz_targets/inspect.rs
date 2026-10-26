@@ -8,8 +8,8 @@ use vcon_fuzz::{LIMITS, gzip, gzip_agrees, supported};
 
 fuzz_target!(|body: &[u8]| {
     let supported = supported();
-    let plain = vcon_form::inspect(body, None, &LIMITS, &supported);
-    let gzipped = vcon_form::inspect(&gzip(body), None, &LIMITS, &supported);
+    let plain = vcon::inspect(body, None, &LIMITS, &supported);
+    let gzipped = vcon::inspect(&gzip(body), None, &LIMITS, &supported);
     assert!(
         gzip_agrees(body, &plain, &gzipped),
         "gzip changed the answer"

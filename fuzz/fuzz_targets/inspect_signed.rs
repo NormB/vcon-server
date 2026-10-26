@@ -12,14 +12,14 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
     let supported = supported();
-    let plain = vcon_form::inspect(payload, None, &LIMITS, &supported);
+    let plain = vcon::inspect(payload, None, &LIMITS, &supported);
     let own = plain.as_ref().ok().map(|found| found.uuid.to_string());
     let header = match choice % 3 {
         0 => None,
         1 => own.as_deref(),
         _ => Some(OTHER_UUID),
     };
-    let signed = vcon_form::inspect(&jws(payload, header), None, &LIMITS, &supported);
+    let signed = vcon::inspect(&jws(payload, header), None, &LIMITS, &supported);
     assert!(
         signed_agrees(&plain, header, &signed),
         "signing changed the answer"

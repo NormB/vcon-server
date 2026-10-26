@@ -21,4 +21,4 @@ comment:
 # out tests/ directories; this file is a test-only module inside src/
 # (#[cfg(test)] in lib.rs), so the report would otherwise count it.
 ignore:
-  - "crates/vcon-form/src/ietf_examples.rs"
+  - "crates/vcon/src/ietf_examples.rs"

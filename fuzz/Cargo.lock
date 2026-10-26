@@ -1207,7 +1207,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "vcon-form"
+name = "vcon"
 version = "0.1.0"
 dependencies = [
  "base64",
@@ -1232,7 +1232,7 @@ dependencies = [
  "tokio",
  "tower",
  "uuid",
- "vcon-form",
+ "vcon",
  "vcon-server",
 ]
 
@@ -1259,7 +1259,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
- "vcon-form",
+ "vcon",
  "zeroize",
 ]
 

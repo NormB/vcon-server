@@ -5,7 +5,7 @@
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|text: &str| {
-    if let Some(uuid) = vcon_form::parse_uuid(text) {
+    if let Some(uuid) = vcon::parse_uuid(text) {
         assert!(
             uuid.hyphenated().to_string().eq_ignore_ascii_case(text),
             "a uuid read back otherwise than written"

@@ -18,7 +18,7 @@ for target in $(cargo fuzz list); do
   built=$((built + 1))
   seeds=("$SRC/vcon-server/fuzz/seeds/$target")
   case "$target" in
-    inspect | inspect_gzip) seeds+=("$SRC/vcon-server/crates/vcon-form/tests/fixtures/ietf") ;;
+    inspect | inspect_gzip) seeds+=("$SRC/vcon-server/crates/vcon/tests/fixtures/ietf") ;;
   esac
   files=()
   for dir in "${seeds[@]}"; do

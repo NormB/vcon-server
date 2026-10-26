@@ -321,13 +321,13 @@ fn check_limits(request: &Described, status: StatusCode) {
     if !request.known_media || request.media.as_deref() == Some("text/plain") {
         return;
     }
-    let limits = vcon_form::Limits {
+    let limits = vcon::Limits {
         inflated: INFLATED_LIMIT,
     };
     let supported = BTreeSet::from([vcon_fuzz::SUPPORTED.to_owned()]);
     let inflated_too_far =
-        vcon_form::inspect(&request.body, request.media.as_deref(), &limits, &supported)
-            == Err(vcon_form::Rejection::TooLarge);
+        vcon::inspect(&request.body, request.media.as_deref(), &limits, &supported)
+            == Err(vcon::Rejection::TooLarge);
     assert_eq!(
         status == StatusCode::PAYLOAD_TOO_LARGE,
         inflated_too_far,
