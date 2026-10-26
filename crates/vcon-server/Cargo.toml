@@ -31,6 +31,15 @@ vcon-form = { path = "../vcon-form" }
 zeroize = "1.9.1"
 
 [dev-dependencies]
+# rusqlite 0.41.0's pragma helpers refuse SQLCipher's own pragma names
+# (cipher_log_level and the rest), so the server sets them as plain SQL.
+# This fork adds those names and nothing else; the tests use it to check
+# that the plain SQL reads back what the helpers do. It is for tests only:
+# the server builds against crates.io rusqlite. Remove it, its patch in the
+# workspace Cargo.toml and the plain SQL once a crates.io rusqlite accepts
+# the names (the test catalog::tests::crates_io_rusqlite_refuses_sqlcipher_names
+# fails then).
+rusqlite_fork = { package = "rusqlite", git = "https://github.com/NormB/rusqlite", rev = "a2936ca6190f54e7ab54375385877cc96eebebe5", features = ["bundled-sqlcipher-vendored-openssl"] }
 flate2 = "1.1.10"
 rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "aws_lc_rs"] }
 reqwest = "0.13.5"

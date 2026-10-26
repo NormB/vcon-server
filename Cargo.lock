@@ -1438,6 +1438,20 @@ dependencies = [
 
 [[package]]
 name = "rusqlite"
+version = "0.41.0-sqlcipher.1"
+source = "git+https://github.com/NormB/rusqlite?rev=a2936ca6190f54e7ab54375385877cc96eebebe5#a2936ca6190f54e7ab54375385877cc96eebebe5"
+dependencies = [
+ "bitflags",
+ "fallible-iterator",
+ "fallible-streaming-iterator",
+ "hashlink",
+ "libsqlite3-sys",
+ "smallvec",
+ "sqlite-wasm-rs",
+]
+
+[[package]]
+name = "rusqlite"
 version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9c026b4444579e8d754556c6c75d040d69c4a44283cdb648ab8a8d5965c2cfa8"
@@ -2222,7 +2236,8 @@ dependencies = [
  "libc",
  "rcgen",
  "reqwest",
- "rusqlite",
+ "rusqlite 0.41.0",
+ "rusqlite 0.41.0-sqlcipher.1",
  "rustls",
  "serde",
  "serde_json",

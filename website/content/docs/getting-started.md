@@ -19,7 +19,25 @@ cargo build --release
 ```
 
 The binary is `target/release/vcon-server`. Run the tests with
-`cargo test --workspace`.
+`cargo test --workspace`. SQLCipher and OpenSSL are compiled into the binary;
+it links only the system's `libc`, `libm` and `libgcc_s`.
+
+The server is built with rusqlite from crates.io. The tests also use a fork of
+rusqlite from `github.com/NormB/rusqlite` (see
+[development](@/docs/development.md#test-dependency-from-a-fork)). Cargo
+compiles the fork only for the tests, but every build of this checkout,
+`cargo build --release` included, fetches it, because `Cargo.lock` lists it.
+So a build needs access to github.com as well as crates.io. To build without
+network access, copy every source into the checkout once while online:
+
+```sh
+mkdir -p .cargo && cargo vendor >> .cargo/config.toml
+cargo build --release --offline
+```
+
+`cargo vendor` copies the fork with the other sources, and the tests build
+offline from the copy as well. A build that reads crates.io through a mirror
+still needs github.com for the fork, or the vendored copy.
 
 ## Or download a release
 
@@ -27,8 +45,10 @@ Each release on GitHub holds the server for Linux on x86_64 and aarch64, a
 CycloneDX SBOM listing every crate built into it, and `SHA256SUMS.txt`. Every
 file carries a signed build provenance attestation, and each archive carries
 its SBOM as one too, so a download can be traced to the workflow run and the
-commit that built it. There is no release yet; until there is, build from
-source as above.
+commit that built it. The binary has SQLCipher, OpenSSL and rusqlite from
+crates.io compiled in, and links only the system's `libc`, `libm` and `libgcc_s`;
+nothing in it comes from the rusqlite fork the tests use. There is no release
+yet; until there is, build from source as above.
 
 To check a download, with the [GitHub CLI](https://cli.github.com/):
 

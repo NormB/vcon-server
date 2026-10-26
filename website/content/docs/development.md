@@ -133,6 +133,32 @@ code a target reads, runs that target (300 seconds at most, set by
 compares it with its copy, byte for byte. A target that misses its plant
 fails the check.
 
+## Test dependency from a fork
+
+The tests use a fork of rusqlite beside rusqlite itself:
+`https://github.com/NormB/rusqlite` at commit
+`a2936ca6190f54e7ab54375385877cc96eebebe5`, version `0.41.0-sqlcipher.1`,
+the dev-dependency `rusqlite_fork` of vcon-server.
+
+- **Why:** rusqlite 0.41.0's pragma helpers (`pragma_update`,
+  `pragma_query_value` and the others) refuse SQLCipher's own pragmas, such
+  as `cipher_log_level`, with "Invalid pragma". They accept only names in
+  SQLite's pragma list, and SQLCipher's are not in it. So `catalog.rs` sets
+  SQLCipher's settings as plain SQL. The fork also accepts SQLCipher's names.
+  The test `sqlcipher_settings_read_the_same_through_the_pragma_helpers`
+  reads the settings back through the fork's helpers and checks that they
+  equal what the plain SQL reads. The bug is not reported upstream yet.
+- **What uses it:** only the tests. The server, from `cargo build`, a release
+  or crates.io, uses crates.io rusqlite 0.41.0. A `[patch]` in the workspace
+  `Cargo.toml` gives the fork crates.io's libsqlite3-sys 0.39.1, so both
+  share one SQLite. A build fetches the fork all the same (see
+  [getting started](@/docs/getting-started.md#build)).
+- **When it goes:** the test `crates_io_rusqlite_refuses_sqlcipher_names`
+  fails once the workspace's rusqlite accepts SQLCipher's names, as in the
+  dependency update that brings such a release. Then set the settings
+  through the pragma helpers in `catalog.rs`, and remove the `rusqlite_fork`
+  dev-dependency, the `[patch]` section, both tests and this section.
+
 ## Gates
 
 Enable the repository's hooks once per clone:

@@ -38,3 +38,12 @@ All notable changes to this project are recorded here. The format follows
 - The console's vCons and legal views: list, read (as text, gzip inflated),
   store from a file and delete, and a vCon's versions for a legal key, each
   shown only to a key whose scopes allow it.
+
+### Changed
+
+- The tests use a fork of rusqlite (`github.com/NormB/rusqlite`) as a
+  dev-dependency, to check SQLCipher's settings through rusqlite's pragma
+  helpers, which rusqlite 0.41.0 refuses for SQLCipher's pragma names. The
+  server still builds with crates.io rusqlite, but a build of the repository
+  now fetches the fork from github.com; `cargo vendor` copies it for offline
+  builds.
