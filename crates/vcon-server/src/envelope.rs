@@ -197,8 +197,11 @@ pub struct OpenError;
 /// nonce. The blob is the format byte, the nonce, the ciphertext and the
 /// tag.
 pub fn seal(data_key: &Key, ctx: &Context, plaintext: &[u8]) -> Vec<u8> {
-    let mut nonce = [0; NONCE_LEN];
-    aws_lc_rs::rand::fill(&mut nonce).expect("AWS-LC aborts instead of failing");
+    // Drawn whole from the system generator, so no fixed value is ever a
+    // nonce, even for a moment.
+    let nonce: [u8; NONCE_LEN] = aws_lc_rs::rand::generate(&aws_lc_rs::rand::SystemRandom::new())
+        .expect("AWS-LC aborts instead of failing")
+        .expose();
     seal_with_nonce(data_key.bytes(), nonce, ctx, plaintext)
 }
 
@@ -459,6 +462,28 @@ mod tests {
         let a = seal(&key, &version_ctx(), b"same");
         let b = seal(&key, &version_ctx(), b"same");
         assert_ne!(a[1..13], b[1..13]);
+    }
+
+    /// Every byte of the nonce is random: over 1000 seals no nonce repeats
+    /// and no byte position keeps one value. For 96 random bits either
+    /// event has a probability below 2^-76.
+    #[test]
+    fn every_byte_of_a_nonce_is_random() {
+        let key = Key::generate().expect("key");
+        let nonces: Vec<[u8; 12]> = (0..1000)
+            .map(|_| {
+                let blob = seal(&key, &version_ctx(), b"same");
+                blob[1..13].try_into().expect("12 bytes")
+            })
+            .collect();
+        let distinct: std::collections::HashSet<_> = nonces.iter().collect();
+        assert_eq!(distinct.len(), nonces.len(), "a nonce repeated");
+        for i in 0..12 {
+            assert!(
+                nonces.iter().any(|n| n[i] != nonces[0][i]),
+                "byte {i} of the nonce never changes"
+            );
+        }
     }
 
     #[test]
