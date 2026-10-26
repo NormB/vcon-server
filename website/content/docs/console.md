@@ -32,6 +32,46 @@ files need no key; they hold no data.
    "The key was not accepted." and nothing else.
 3. Choose **Sign out** when you are done.
 
+## What you see
+
+After you sign in, the console shows a button for each view your key's
+scopes allow. A view, or a control inside one, that the key may not use is
+not shown; the API would refuse its request anyway.
+
+| View | Shown for | What it does |
+|---|---|---|
+| **vCons** | `read`, `write` or `delete` | lists, reads, stores and deletes vCons, as below |
+| **Legal** | `legal` | reads a vCon as a legal key sees it, and its versions |
+
+## Work with vCons
+
+Choose **vCons**.
+
+- **List them** (`read`): the tenant's live vCons, newest stored first, 25
+  at a time, with each one's uuid, current version, and when it was first
+  stored and last changed. Choose **More** for the next 25. The list uses
+  `GET /vcons`.
+- **Read one** (`read`): choose **Open** beside it in the list, or type its
+  uuid under **vCon uuid** and choose **Open**. The console shows its
+  version (`ETag`) and the vCon as text (`GET /vcons/{uuid}`). A vCon stored
+  gzipped is inflated first.
+- **Store one** (`write`): under **Store a vCon from a file**, pick the file
+  and choose **Store**. The console sends the file's bytes unchanged
+  (`POST /vcons`) and shows the stored uuid and version, or why the server
+  refused it, such as `The body is not one JSON object (422)`.
+- **Delete one** (`delete`): choose **Delete** under the vCon you opened, or
+  type its uuid and choose **Delete**, then confirm. The console calls
+  `DELETE /vcons/{uuid}`.
+
+## Look up a vCon as a legal key
+
+Choose **Legal**, type the vCon's uuid and choose **Find**. The console shows
+whether the vCon is `live` or `deleted`, its current version (or, once
+deleted, the last kept one) as text, and every kept version with when it was
+stored and hidden. Choose **Open** beside a version to read it. These use
+`GET /legal/vcons/{uuid}`, `GET /legal/vcons/{uuid}/versions` and
+`GET /legal/vcons/{uuid}/versions/{version}`.
+
 ## What the console keeps
 
 - The key is held in the page's memory only. It is never written to the

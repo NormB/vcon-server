@@ -74,3 +74,24 @@ export const nothingStored = {
   windowName: "",
   historyState: null,
 };
+
+/** A small unsigned vCon with this uuid and subject, as bytes. */
+export function vcon(uuid, subject) {
+  const body = { uuid, created_at: "2026-10-23T12:00:00Z", subject, parties: [] };
+  return Buffer.from(JSON.stringify(body));
+}
+
+/** Stores a vCon through the API with `token`, outside the page. */
+export async function store(request, token, body, contentType = "application/vcon") {
+  const answer = await request.post("/vcons", {
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": contentType },
+    data: body,
+  });
+  expect(answer.status(), `POST /vcons: ${await answer.text()}`).toBe(201);
+  return answer.headers()["etag"];
+}
+
+/** Opens a view of the signed-in console by its navigation button. */
+export async function openView(page, name) {
+  await page.click(`#views button[data-view="${name}"]`);
+}

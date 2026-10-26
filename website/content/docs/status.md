@@ -22,7 +22,8 @@ otherwise.
   admin routes (tenants and their keys); health.
 - **The console:** a web page at `/console/`, signed in with an API key
   held in page memory only; it shows the key's own id, tenant and scopes
-  (`GET /key`).
+  (`GET /key`), lists, reads, stores and deletes vCons as the key's scopes
+  allow, and shows a vCon's versions to a legal key.
 - **Tenants and keys.** Scoped bearer keys, revocation, tenant removal that
   never passes a legal hold.
 - **Retention.** Calendar periods per tenant or server-wide, the purge sweep
@@ -48,8 +49,8 @@ otherwise.
 
 ## Being built
 
-- **The console's views:** listing and reading vCons, the legal and admin
-  views, and the audit logs.
+- **The console's views:** legal holds and restore, the admin views, and
+  the audit logs.
 - **Release:** an operator guide, a review of the code against its design,
   and a full fault-injection run.
 

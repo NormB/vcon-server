@@ -35,3 +35,6 @@ All notable changes to this project are recorded here. The format follows
   `key_info`.
 - An OpenAPI 3.1 description of the HTTP API, served at `GET /openapi.json`
   to any valid key and published at <https://vcon-server.com/openapi.json>.
+- The console's vCons and legal views: list, read (as text, gzip inflated),
+  store from a file and delete, and a vCon's versions for a legal key, each
+  shown only to a key whose scopes allow it.
