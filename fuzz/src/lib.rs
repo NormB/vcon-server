@@ -138,7 +138,7 @@ mod tests {
         ];
         for body in bodies {
             let (plain, gzipped) = (inspect(&body), inspect(&gzip(&body)));
-            assert!(gzip_agrees(&body, &plain, &gzipped), "{plain:?}");
+            assert!(gzip_agrees(&body, &plain, &gzipped));
         }
     }
 
@@ -183,10 +183,7 @@ mod tests {
         ];
         for (payload, header) in cases {
             let (plain, signed) = (inspect(&payload), inspect(&jws(&payload, header)));
-            assert!(
-                signed_agrees(&plain, header, &signed),
-                "{plain:?} {signed:?}"
-            );
+            assert!(signed_agrees(&plain, header, &signed),);
         }
     }
 

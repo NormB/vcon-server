@@ -22,6 +22,6 @@ fuzz_target!(|data: &[u8]| {
     let signed = vcon_form::inspect(&jws(payload, header), None, &LIMITS, &supported);
     assert!(
         signed_agrees(&plain, header, &signed),
-        "signing changed the answer: {plain:?} then {signed:?}"
+        "signing changed the answer"
     );
 });

@@ -59,8 +59,12 @@ run() {
   extra="$(extra_corpora "$target")"
   [ -n "$extra" ] && corpora+=("$extra")
   # cargo fuzz runs from fuzz/, so fuzz/rust-toolchain.toml picks the
-  # nightly toolchain the sanitizer needs.
-  (cd "$fuzz" && cargo fuzz run --fuzz-dir "$fuzz" "$target" "${corpora[@]}" -- \
+  # nightly toolchain the sanitizer needs. The target is that toolchain's
+  # host: without --target, cargo fuzz builds for the platform it was itself
+  # built for, which for the musl release binary CI uses has no sanitizer.
+  local host
+  host="$(cd "$fuzz" && rustc -vV | sed -n 's/^host: //p')"
+  (cd "$fuzz" && cargo fuzz run --fuzz-dir "$fuzz" --target "$host" "$target" "${corpora[@]}" -- \
     -max_total_time="$seconds" -print_final_stats=1 -artifact_prefix="$artifacts")
 }
 

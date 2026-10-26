@@ -12,6 +12,6 @@ fuzz_target!(|body: &[u8]| {
     let gzipped = vcon_form::inspect(&gzip(body), None, &LIMITS, &supported);
     assert!(
         gzip_agrees(body, &plain, &gzipped),
-        "gzip changed the answer: {plain:?} then {gzipped:?}"
+        "gzip changed the answer"
     );
 });

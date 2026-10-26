@@ -8,7 +8,7 @@ fuzz_target!(|text: &str| {
     if let Some(uuid) = vcon_form::parse_uuid(text) {
         assert!(
             uuid.hyphenated().to_string().eq_ignore_ascii_case(text),
-            "{text:?} read as {uuid}"
+            "a uuid read back otherwise than written"
         );
     }
 });
