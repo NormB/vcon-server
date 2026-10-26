@@ -109,10 +109,10 @@ fn store_vcon(s: &Setup, master: &str, tenant: TenantId) -> VersionId {
     let body = format!(
         r#"{{"uuid": "{UUID}", "created_at": "2026-10-25T12:00:00Z", "subject": "to be purged", "parties": []}}"#
     );
-    let found = vcon_form::inspect(
+    let found = vcon::inspect(
         body.as_bytes(),
         None,
-        &vcon_form::Limits { inflated: 1 << 20 },
+        &vcon::Limits { inflated: 1 << 20 },
         &Default::default(),
     )
     .expect("a vCon");

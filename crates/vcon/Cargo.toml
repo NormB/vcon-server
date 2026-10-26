@@ -1,6 +1,6 @@
 [package]
-name = "vcon-form"
-description = "Reads a vCon without changing it: form, compression, uuid and critical extensions."
+name = "vcon"
+description = "A library for vCons. It reads and checks a vCon: form, compression, uuid and critical extensions."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

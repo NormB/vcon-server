@@ -1,7 +1,8 @@
-//! Reads a vCon without changing it: which form it is in, whether it is
-//! gzipped, and its uuid. Otherwise it says why the vCon cannot be stored.
-//! It does no I/O and returns no bytes, so the caller always stores the
-//! body exactly as received.
+//! A library for vCons. Its current scope is reading and checking a vCon:
+//! which form it is in, whether it is gzipped, its uuid, and whether it
+//! needs extensions the caller does not support. Otherwise it says why the
+//! vCon is refused. [`inspect`] does no I/O and returns no bytes, so the
+//! caller can store the body exactly as received.
 
 use std::collections::BTreeSet;
 

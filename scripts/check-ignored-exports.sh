@@ -31,7 +31,7 @@ for stem in "${stems[@]}"; do
 done
 
 for path in Cargo.toml README.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE \
-  crates/vcon-form/src/lib.rs crates/vcon-server/src/main.rs scripts/check-ignored-exports.sh; do
+  crates/vcon/src/lib.rs crates/vcon-server/src/main.rs scripts/check-ignored-exports.sh; do
   if ignored "$path"; then
     echo "WRONGLY IGNORED: $path"
     fail=1

@@ -47,7 +47,7 @@ every outgoing commit must carry a good signature from an allowed signer and
 the pusher's own configured name and email. Test data uses
 reserved values only: `example.com` addresses, 555-01xx numbers, and RFC 5737
 and RFC 3849 IP addresses. The one exception is the IETF draft's own examples
-in `crates/vcon-form/tests/fixtures/ietf/`, kept unchanged. `scripts/test-hooks.sh` and `scripts/test-pre-push.sh` test the hooks
+in `crates/vcon/tests/fixtures/ietf/`, kept unchanged. `scripts/test-hooks.sh` and `scripts/test-pre-push.sh` test the hooks
 themselves.
 
 ## Support the project

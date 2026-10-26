@@ -9,8 +9,8 @@ weight = 90
 ```text
 clients/            one example client per language (see Client examples)
 crates/
-├── vcon-form/      reads a vCon without changing it: form, gzip, uuid, critical
-│                   (no I/O; returns no bytes; the IETF examples are its fixtures)
+├── vcon/           the vCon library; today it reads and checks a vCon: form,
+│                   gzip, uuid, critical (no I/O; the IETF examples are its fixtures)
 └── vcon-server/
     ├── console/           the console's page, script and styles, built into the binary
     └── src/
@@ -183,7 +183,7 @@ themselves. Every commit on `main` is signed and shows as verified on GitHub.
 Test data uses reserved values only: `example.com` addresses, 555-01xx
 numbers, RFC 5737 and RFC 3849 addresses. The one exception is the IETF
 draft's own examples, kept unchanged under
-`crates/vcon-form/tests/fixtures/ietf/`.
+`crates/vcon/tests/fixtures/ietf/`.
 
 ## This website
 

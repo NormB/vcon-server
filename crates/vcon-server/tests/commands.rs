@@ -303,10 +303,10 @@ fn check_exits_0_when_sound_and_1_with_its_report_when_not() {
         .expect("opens");
         let id = vcon_server::ids::TenantId::parse(&tenant).expect("id");
         let body = br#"{"uuid": "01a07da8-c2bb-83e5-b9a2-279e0d16bc46", "created_at": "2026-10-25T12:00:00Z", "parties": []}"#;
-        let found = vcon_form::inspect(
+        let found = vcon::inspect(
             body,
             None,
-            &vcon_form::Limits { inflated: 1 << 20 },
+            &vcon::Limits { inflated: 1 << 20 },
             &Default::default(),
         )
         .expect("a vCon");

@@ -6,7 +6,7 @@ template = "page.html"
 
 | Specification | Where it applies |
 |---|---|
-| [draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/04/) | The vCon format: the three forms, `uuid`, `created_at`, `critical`. The draft's own examples are `vcon-form`'s test fixtures. `must_support`, `critical`'s name before syntax 0.4.0, is read too. |
+| [draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/04/) | The vCon format: the three forms, `uuid`, `created_at`, `critical`. The draft's own examples are the `vcon` crate's test fixtures. `must_support`, `critical`'s name before syntax 0.4.0, is read too. |
 | [RFC 7515](https://www.rfc-editor.org/rfc/rfc7515) JWS | Signed vCons, in general JSON serialization: the payload is read for the vCon's uuid; signatures are not verified. |
 | [RFC 7516](https://www.rfc-editor.org/rfc/rfc7516) JWE | Encrypted vCons, in general JSON serialization: stored as received; the uuid is read from the unprotected header. |
 | [RFC 1952](https://www.rfc-editor.org/rfc/rfc1952) gzip | Gzipped bodies, inflated within `limits.inflated` for checking only; stored as received. |

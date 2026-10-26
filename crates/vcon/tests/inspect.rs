@@ -7,7 +7,7 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use flate2::{Compression, write::GzEncoder};
 use serde_json::{Value, json};
-use vcon_form::{Form, Inspection, Limits, Rejection, inspect};
+use vcon::{Form, Inspection, Limits, Rejection, inspect};
 
 const ID: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bc46";
 const LIMITS: Limits = Limits { inflated: 1 << 20 };

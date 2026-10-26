@@ -22,7 +22,7 @@ number.
 
 ## What is checked
 
-The checks are in the `vcon-form` crate, which reads a body without changing
+The checks are in the `vcon` crate, which reads a body without changing
 it. In order:
 
 1. Gzip, if any, inflates cleanly ([`bad-gzip`](@/problems/bad-gzip.md)) and

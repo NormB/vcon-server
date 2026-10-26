@@ -375,7 +375,7 @@ mod legal_tests {
             Legal {
                 stored: Stored {
                     version,
-                    form: vcon_form::Form::Unsigned,
+                    form: vcon::Form::Unsigned,
                     gzip: false,
                     body,
                 },

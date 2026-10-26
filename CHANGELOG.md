@@ -8,9 +8,9 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
-- Cargo workspace with the `vcon-form` library and the `vcon-server` binary.
+- Cargo workspace with the `vcon` library and the `vcon-server` binary.
 - `vcon-server --version`.
-- `vcon_form::inspect`: reads a received vCon without changing it and reports
+- `vcon::inspect`: reads a received vCon without changing it and reports
   its form (unsigned, signed or encrypted), whether it is gzipped, and its
   uuid, or why it cannot be stored.
 - Licence files (MIT OR Apache-2.0), README and this changelog.

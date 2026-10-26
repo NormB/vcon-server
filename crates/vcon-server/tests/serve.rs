@@ -221,7 +221,7 @@ async fn serve_stores_reads_keeps_its_memory_locked_and_stops_on_sigterm() {
         .expect("a client");
     let url = |path: &str| format!("https://localhost:{}{path}", s.addr.port());
     let body = std::fs::read(format!(
-        "{}/../vcon-form/tests/fixtures/ietf/ab_call_ext_rec.vcon",
+        "{}/../vcon/tests/fixtures/ietf/ab_call_ext_rec.vcon",
         env!("CARGO_MANIFEST_DIR")
     ))
     .expect("A.4");
@@ -420,14 +420,14 @@ fn serve_warns_when_key_rotation_is_overdue() {
     let tenants = registry(&s);
     let store = tenants.store(s.tenant).expect("its store");
     let body = std::fs::read(format!(
-        "{}/../vcon-form/tests/fixtures/ietf/ab_call_ext_rec.vcon",
+        "{}/../vcon/tests/fixtures/ietf/ab_call_ext_rec.vcon",
         env!("CARGO_MANIFEST_DIR")
     ))
     .expect("A.4");
-    let found = vcon_form::inspect(
+    let found = vcon::inspect(
         &body,
         Some("application/vcon"),
-        &vcon_form::Limits { inflated: 1 << 20 },
+        &vcon::Limits { inflated: 1 << 20 },
         &Default::default(),
     )
     .expect("a valid vCon");
@@ -485,14 +485,14 @@ fn serve_purges_what_is_due_when_it_starts() {
     let tenants = registry(&s);
     let store = tenants.store(s.tenant).expect("its store");
     let body = std::fs::read(format!(
-        "{}/../vcon-form/tests/fixtures/ietf/ab_call_ext_rec.vcon",
+        "{}/../vcon/tests/fixtures/ietf/ab_call_ext_rec.vcon",
         env!("CARGO_MANIFEST_DIR")
     ))
     .expect("A.4");
-    let found = vcon_form::inspect(
+    let found = vcon::inspect(
         &body,
         Some("application/vcon"),
-        &vcon_form::Limits { inflated: 1 << 20 },
+        &vcon::Limits { inflated: 1 << 20 },
         &Default::default(),
     )
     .expect("a valid vCon");
@@ -610,7 +610,7 @@ async fn the_audit_routes_answer_what_audit_export_writes() {
     let url = |path: &str| format!("https://localhost:{}{path}", s.addr.port());
     let tenant = s.tenant.to_string();
     let body = std::fs::read(format!(
-        "{}/../vcon-form/tests/fixtures/ietf/ab_call_ext_rec.vcon",
+        "{}/../vcon/tests/fixtures/ietf/ab_call_ext_rec.vcon",
         env!("CARGO_MANIFEST_DIR")
     ))
     .expect("A.4");

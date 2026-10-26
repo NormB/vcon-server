@@ -9,7 +9,7 @@ use flate2::{Compression, write::GzEncoder};
 use proptest::prelude::*;
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
-use vcon_form::{Form, Limits, Rejection, inspect};
+use vcon::{Form, Limits, Rejection, inspect};
 
 const LIMIT: u64 = 4096;
 

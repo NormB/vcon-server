@@ -107,7 +107,7 @@ async fn each_request_is_logged_by_its_route_template_and_no_id() {
     let url = |path: &str| format!("https://localhost:{}{path}", addr.port());
     let token = key.token.clone();
     let body = std::fs::read(format!(
-        "{}/../vcon-form/tests/fixtures/ietf/ab_call_ext_rec.vcon",
+        "{}/../vcon/tests/fixtures/ietf/ab_call_ext_rec.vcon",
         env!("CARGO_MANIFEST_DIR")
     ))
     .expect("A.4");

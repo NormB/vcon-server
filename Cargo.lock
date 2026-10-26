@@ -2222,15 +2222,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "vcon-client"
-version = "0.0.0"
-dependencies = [
- "reqwest",
- "serde_json",
-]
-
-[[package]]
-name = "vcon-form"
+name = "vcon"
 version = "0.1.0"
 dependencies = [
  "base64",
@@ -2239,6 +2231,14 @@ dependencies = [
  "serde",
  "serde_json",
  "uuid",
+]
+
+[[package]]
+name = "vcon-client"
+version = "0.0.0"
+dependencies = [
+ "reqwest",
+ "serde_json",
 ]
 
 [[package]]
@@ -2269,7 +2269,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
- "vcon-form",
+ "vcon",
  "zeroize",
 ]
 

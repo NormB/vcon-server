@@ -39,7 +39,7 @@ use crate::store::{Caller as StoreCaller, Created, ListQuery, Store, StoreError}
 use crate::tenants::{KeyInfo, Removal, TenantError, TenantInfo, Tenants};
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
-use vcon_form::{Inspection, Rejection};
+use vcon::{Inspection, Rejection};
 
 /// The limits from configuration that the API applies to every request.
 #[derive(Debug, Clone, Copy)]
@@ -226,10 +226,10 @@ async fn inspect(
     let found = if content_type.as_deref().is_none_or(is_vcon_media_type) {
         let (worker, body) = (app.clone(), admitted.body.clone());
         blocking(move || {
-            let limits = vcon_form::Limits {
+            let limits = vcon::Limits {
                 inflated: worker.limits.inflated,
             };
-            vcon_form::inspect(&body, content_type.as_deref(), &limits, &worker.supported)
+            vcon::inspect(&body, content_type.as_deref(), &limits, &worker.supported)
                 .map_err(|r| rejected(&r))
         })
         .await
@@ -339,7 +339,7 @@ async fn read(
         Ok(admitted) => admitted,
         Err(refused) => return refused.into_response(),
     };
-    let Some(uuid) = vcon_form::parse_uuid(&uuid) else {
+    let Some(uuid) = vcon::parse_uuid(&uuid) else {
         let refused = Problem::BadPathUuid;
         let entry = refusal(admitted.caller.key, Action::Read, refused);
         return app
@@ -389,7 +389,7 @@ async fn replace(
             .await
             .into_response()
     };
-    let Some(uuid) = vcon_form::parse_uuid(&uuid) else {
+    let Some(uuid) = vcon::parse_uuid(&uuid) else {
         return refuse(Problem::BadPathUuid).await;
     };
     let current = match if_match(&headers) {
@@ -443,7 +443,7 @@ async fn delete(
         Ok(admitted) => admitted,
         Err(refused) => return refused.into_response(),
     };
-    let Some(uuid) = vcon_form::parse_uuid(&uuid) else {
+    let Some(uuid) = vcon::parse_uuid(&uuid) else {
         let refused = Problem::BadPathUuid;
         let entry = refusal(admitted.caller.key, Action::Delete, refused);
         return app
@@ -486,7 +486,7 @@ async fn legal_admit(
     uuid: &str,
 ) -> Result<(Admitted, Uuid), Problem> {
     let admitted = admit(app, headers, body, Scope::Legal, action).await?;
-    let Some(uuid) = vcon_form::parse_uuid(uuid) else {
+    let Some(uuid) = vcon::parse_uuid(uuid) else {
         let refused = Problem::BadPathUuid;
         let entry = refusal(admitted.caller.key, action, refused);
         return Err(app.refuse(Some(admitted.tenant), entry, refused).await);
@@ -2284,7 +2284,7 @@ mod tests {
 
         fn a4() -> Vec<u8> {
             std::fs::read(format!(
-                "{}/../vcon-form/tests/fixtures/ietf/ab_call_ext_rec.vcon",
+                "{}/../vcon/tests/fixtures/ietf/ab_call_ext_rec.vcon",
                 env!("CARGO_MANIFEST_DIR")
             ))
             .expect("A.4")
@@ -2988,7 +2988,7 @@ mod tests {
         /// Stores A.4 in the server's tenant with a key of its own.
         async fn stored(s: &Server) {
             let body = std::fs::read(format!(
-                "{}/../vcon-form/tests/fixtures/ietf/ab_call_ext_rec.vcon",
+                "{}/../vcon/tests/fixtures/ietf/ab_call_ext_rec.vcon",
                 env!("CARGO_MANIFEST_DIR")
             ))
             .expect("A.4");
@@ -3339,7 +3339,7 @@ mod tests {
             let reader = s.key(&[Scope::Read]);
             let legal = s.key(&[Scope::Legal]);
             let a4 = std::fs::read(format!(
-                "{}/../vcon-form/tests/fixtures/ietf/ab_call_ext_rec.vcon",
+                "{}/../vcon/tests/fixtures/ietf/ab_call_ext_rec.vcon",
                 env!("CARGO_MANIFEST_DIR")
             ))
             .expect("A.4");
@@ -3429,7 +3429,7 @@ mod tests {
 
         fn fixture(name: &str) -> Vec<u8> {
             let path = format!(
-                "{}/../vcon-form/tests/fixtures/ietf/{name}",
+                "{}/../vcon/tests/fixtures/ietf/{name}",
                 env!("CARGO_MANIFEST_DIR")
             );
             std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"))

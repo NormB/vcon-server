@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use uuid::Uuid;
-use vcon_form::Inspection;
+use vcon::Inspection;
 
 use crate::audit::{self, Action, Actor, Entry};
 use crate::catalog;
@@ -81,7 +81,7 @@ pub enum Created {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stored {
     pub version: VersionId,
-    pub form: vcon_form::Form,
+    pub form: vcon::Form,
     /// Whether the body is gzipped, as it arrived.
     pub gzip: bool,
     /// The body exactly as it arrived.
@@ -403,9 +403,7 @@ impl Store {
             Ok(match state(tx, uuid)? {
                 State::Absent => Some((404, StoreError::NotFound)),
                 State::Gone => Some((410, StoreError::Gone)),
-                State::Live(current)
-                    if version_row(tx, current)?.form != vcon_form::Form::Unsigned =>
-                {
+                State::Live(current) if version_row(tx, current)?.form != vcon::Form::Unsigned => {
                     Some((409, StoreError::Immutable))
                 }
                 State::Live(current) if current != if_match => {
@@ -784,7 +782,7 @@ fn state(tx: &Transaction, uuid: Uuid) -> Result<State, StoreError> {
 
 /// What a version row holds that a read needs.
 struct VersionRow {
-    form: vcon_form::Form,
+    form: vcon::Form,
     gzip: bool,
     wrapped: Vec<u8>,
 }
@@ -801,9 +799,9 @@ fn version_row(tx: &Transaction, version: VersionId) -> Result<VersionRow, Store
         .map_err(io)?;
     let (form, gzip, wrapped) = row.ok_or(StoreError::Damaged)?;
     let form = match form.as_str() {
-        "unsigned" => vcon_form::Form::Unsigned,
-        "signed" => vcon_form::Form::Signed,
-        "encrypted" => vcon_form::Form::Encrypted,
+        "unsigned" => vcon::Form::Unsigned,
+        "signed" => vcon::Form::Signed,
+        "encrypted" => vcon::Form::Encrypted,
         _ => return Err(StoreError::Damaged),
     };
     Ok(VersionRow {
@@ -849,11 +847,11 @@ fn io<E>(_: E) -> StoreError {
     StoreError::Io
 }
 
-fn form_name(form: vcon_form::Form) -> &'static str {
+fn form_name(form: vcon::Form) -> &'static str {
     match form {
-        vcon_form::Form::Unsigned => "unsigned",
-        vcon_form::Form::Signed => "signed",
-        vcon_form::Form::Encrypted => "encrypted",
+        vcon::Form::Unsigned => "unsigned",
+        vcon::Form::Signed => "signed",
+        vcon::Form::Encrypted => "encrypted",
     }
 }
 
@@ -862,7 +860,7 @@ fn form_name(form: vcon_form::Form) -> &'static str {
 pub(crate) mod testing {
     use std::collections::BTreeSet;
 
-    use vcon_form::{Form, Inspection, Limits, inspect};
+    use vcon::{Form, Inspection, Limits, inspect};
 
     /// An unsigned vCon with this uuid, and what `inspect` makes of it.
     pub(crate) fn vcon(uuid: &str, subject: &str) -> (Inspection, Vec<u8>) {
@@ -883,7 +881,7 @@ mod tests {
 
     use serde_json::Value;
     use time::macros::datetime;
-    use vcon_form::{Limits, inspect};
+    use vcon::{Limits, inspect};
 
     use super::testing::vcon;
     use super::*;
@@ -1365,7 +1363,7 @@ mod tests {
             stored,
             Stored {
                 version,
-                form: vcon_form::Form::Unsigned,
+                form: vcon::Form::Unsigned,
                 gzip: false,
                 body
             }
@@ -1523,9 +1521,9 @@ mod tests {
         )
         .into_bytes();
         let cases = [
-            (gzipped, vcon_form::Form::Unsigned, true),
-            (signed, vcon_form::Form::Signed, false),
-            (encrypted, vcon_form::Form::Encrypted, false),
+            (gzipped, vcon::Form::Unsigned, true),
+            (signed, vcon::Form::Signed, false),
+            (encrypted, vcon::Form::Encrypted, false),
         ];
         for (body, form, gzip) in cases {
             let found = inspect(&body, None, &Limits { inflated: 1 << 20 }, &BTreeSet::new())
