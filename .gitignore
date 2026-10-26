@@ -14,3 +14,6 @@ ARCHIVED — *
 # The console's browser tests: their packages and any run's output
 /console-tests/node_modules/
 /console-tests/test-results/
+
+# The TypeScript client's installed packages
+/clients/typescript/node_modules/

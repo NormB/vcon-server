@@ -7,6 +7,7 @@ weight = 90
 ## Layout
 
 ```text
+clients/            one example client per language (see Client examples)
 crates/
 ├── vcon-form/      reads a vCon without changing it: form, gzip, uuid, critical
 │                   (no I/O; returns no bytes; the IETF examples are its fixtures)

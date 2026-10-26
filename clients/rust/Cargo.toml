@@ -1,0 +1,12 @@
+[package]
+name = "vcon-client"
+description = "The Rust client example: stores, lists, reads and deletes a vCon; run against a live server in CI."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+reqwest = { version = "0.13.5", features = ["blocking"] }
+serde_json = "1.0.154"

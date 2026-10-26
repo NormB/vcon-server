@@ -143,6 +143,51 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  clients:
+    name: client examples against a live server
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.3'
+          # The Go client uses the standard library only: no go.sum to cache.
+          cache: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          # Runs clients/typescript/vcon-client.ts as it is (type stripping).
+          node-version: '24'
+      - name: Check each client
+        # Go: gofmt must have nothing to rewrite, then vet. TypeScript: npm ci
+        # installs exactly the tree package-lock.json pins, and tsc
+        # type-checks the client. Python: it compiles. The Rust client is a
+        # workspace member, so the clippy job holds it to -D warnings.
+        run: |
+          set -euo pipefail
+          unformatted="$(gofmt -l clients/go)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt would rewrite: $unformatted"
+            exit 1
+          fi
+          (cd clients/go && go vet ./...)
+          (cd clients/typescript && npm ci --ignore-scripts --no-audit --no-fund && npx --no-install tsc --noEmit)
+          python3 -m py_compile clients/python/vcon_client.py
+      - name: Build the server and the Rust client
+        run: cargo build --locked -p vcon-server -p vcon-client
+      - name: Run every client against a live server
+        # The server locks all of its memory; the runner's default lock limit
+        # is too small.
+        run: |
+          set -euo pipefail
+          sudo prlimit --pid $$ --memlock=unlimited:unlimited
+          scripts/run-clients.sh target/debug/vcon-server target/debug/vcon-client
+
   scan:
     name: no AI attribution or personal data
     timeout-minutes: 10

@@ -47,3 +47,6 @@ All notable changes to this project are recorded here. The format follows
   server still builds with crates.io rusqlite, but a build of the repository
   now fetches the fork from github.com; `cargo vendor` copies it for offline
   builds.
+- Client examples in `clients/` (curl, Python, TypeScript, Go and Rust), each
+  storing, listing, reading and deleting a vCon; CI runs every one against a
+  live server (`scripts/run-clients.sh`).
