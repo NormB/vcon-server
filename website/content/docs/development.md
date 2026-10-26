@@ -29,6 +29,7 @@ crates/
         ├── fs.rs, clock.rs  the filesystem and the clock, behind interfaces for tests
         ├── ids.rs         tenant, version and key ids
         └── query.rs       query strings, read by one rule for every route
+fuzz/               cargo fuzz targets for everything the server reads from outside
 ```
 
 `crates/vcon-server/openapi.json` describes the HTTP API. It is written by
@@ -80,6 +81,57 @@ any content-security violation in the page.
   can run in the gap: two writers on one uuid, a purge during a restore, a
   removal during a request.
 - **Time controlled.** Retention and the sweep run on a clock the tests set.
+- **Fuzzed.** Every parser of outside input has a fuzz target; see below.
+
+## Fuzzing
+
+Each target in `fuzz/fuzz_targets/` feeds random input, grown from its seeds,
+to one thing the server reads from outside:
+
+| Target | What it reads |
+| --- | --- |
+| `inspect` | any body as a vCon, with no media type; the same body gzipped must give the same answer |
+| `inspect_gzip` | any body sent as `application/vcon+gzip`: the inflater and its limit |
+| `inspect_signed` | any bytes as a JWS payload: base64url, a gzipped payload, nested signatures, header uuids; it must give what the payload gives on its own |
+| `inspect_encrypted` | any JSON as a JWE's `unprotected` member |
+| `parse_uuid` | any text as a uuid in a path |
+| `token` | any text as an API token |
+| `ids` | any text as a key, tenant or version id |
+| `retention` | any text as a retention period, added to any time |
+| `config` | any text as the configuration file |
+| `list_query` | any text as the query string of `GET /vcons`: names, percent decoding, limit, cursor, time bounds |
+| `sealed` | any bytes as a sealed vCon or a wrapped key read from disk; none may open |
+| `http_request` | any request to the API, served in-process: token, path, media type, `Content-Length`, `If-Match`, the body and inflation limits, every handler; no answer is 500 or more, and a body over a limit is answered 413 |
+
+A target fails on a panic, on a failed check of what it reads, and on a
+sanitizer error. Fuzzing needs the nightly toolchain named in
+`fuzz/rust-toolchain.toml` and [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz)
+0.13.2:
+
+```sh
+cargo install cargo-fuzz --version 0.13.2 --locked
+scripts/fuzz.sh list                  # the targets
+scripts/fuzz.sh run inspect 60        # run one target for 60 seconds
+scripts/fuzz.sh plant inspect         # plant a panic, expect the target to find it
+```
+
+`scripts/fuzz.sh run` reads the seeds in `fuzz/seeds/<target>/` and, for
+`inspect` and `inspect_gzip`, the IETF examples. What libFuzzer adds goes to
+`fuzz/corpus/<target>/`, and a crash input to `fuzz/artifacts/<target>/`;
+git ignores both. A crash is a defect: fix it with a regression test written
+first, in the crate the crash is in.
+
+The seeds hold no personal data. The vCons among them are three of the
+synthetic vCons from [vcon_faker](https://github.com/vcon-dev/vcon_faker),
+with every name, email address, phone number and URL replaced by a reserved
+value and every free text by neutral words.
+
+`scripts/fuzz.sh plant` checks the targets themselves. For each line of
+`fuzz/plants.txt` it puts `panic!("planted fault");` before one line of the
+code a target reads, runs that target (300 seconds at most, set by
+`PLANT_SECONDS`), and expects the crash. It then puts the file back and
+compares it with its copy, byte for byte. A target that misses its plant
+fails the check.
 
 ## Gates
 
@@ -90,7 +142,8 @@ git config core.hooksPath .githooks
 ```
 
 - **pre-commit** runs `cargo fmt --check`, `cargo clippy -D warnings` and the
-  tests on exactly what is staged, and refuses personal data and AI-tool
+  tests on exactly what is staged, then the same for the fuzz package (its
+  format, clippy and its own tests), and refuses personal data and AI-tool
   attribution in staged changes.
 - **commit-msg** refuses the same in the message.
 - **pre-push** refuses any outgoing commit that is not signed by an allowed
@@ -132,8 +185,15 @@ format, clippy and the tests as the commit hook runs them; the console's
 browser tests; the scan for AI
 attribution and personal data over every tracked file; `scripts/check-site.sh`;
 and `scripts/icons.py --check`. A coverage job runs the same tests under
-`cargo llvm-cov` and sends the result to Codecov. Each action and each
-downloaded tool is pinned by commit or by sha256.
+`cargo llvm-cov` and sends the result to Codecov. One fuzz job per target
+runs it for 60 seconds, then `scripts/fuzz.sh plant` for it; the targets are
+read from `fuzz/Cargo.toml`, so a new one joins with no list to edit. A
+crash input is kept as a workflow artifact for 7 days.
+[ClusterFuzzLite](https://google.github.io/clusterfuzzlite/) builds the same
+targets in its own image (`.clusterfuzzlite/`) and runs them for five
+minutes on a pull request that changes `crates/` or `fuzz/`, and for an hour
+in all each Monday (`.github/workflows/clusterfuzzlite.yml`). Each action and
+each downloaded tool is pinned by commit or by sha256.
 
 ## Contributing
 

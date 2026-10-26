@@ -41,3 +41,10 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$root/target/pre-commit}"
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked --quiet -- -D warnings
 cargo test --workspace --locked --quiet
+# The fuzz package is a workspace of its own, which --workspace does not
+# reach; it is checked with the same toolchain.
+if [ -f fuzz/Cargo.toml ]; then
+  cargo fmt --manifest-path fuzz/Cargo.toml --check
+  cargo clippy --manifest-path fuzz/Cargo.toml --all-targets --locked --quiet -- -D warnings
+  cargo test --manifest-path fuzz/Cargo.toml --lib --locked --quiet
+fi

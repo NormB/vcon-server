@@ -2,9 +2,12 @@
 # Each pull request runs CI like any other.
 version: 2
 updates:
-  # The Cargo workspace at the repository root (both crates, one Cargo.lock).
+  # The Cargo workspace at the repository root (both crates, one Cargo.lock),
+  # and the fuzz package, a workspace of its own with its own Cargo.lock.
   - package-ecosystem: "cargo"
-    directory: "/"
+    directories:
+      - "/"
+      - "/fuzz"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
@@ -17,10 +20,13 @@ updates:
     commit-message:
       prefix: "deps"
 
-  # The actions the workflows in .github/workflows use, pinned by commit.
-  # Dependabot updates the commit and the version comment beside it.
+  # The actions the workflows in .github/workflows and the local action in
+  # .github/actions/fuzz-setup use, pinned by commit. Dependabot updates the
+  # commit and the version comment beside it.
   - package-ecosystem: "github-actions"
-    directory: "/"
+    directories:
+      - "/"
+      - "/.github/actions/fuzz-setup"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
@@ -29,5 +35,14 @@ updates:
       github-actions:
         patterns:
           - "*"
+    commit-message:
+      prefix: "ci"
+
+  # The ClusterFuzzLite builder image, pinned by digest.
+  - package-ecosystem: "docker"
+    directory: "/.clusterfuzzlite"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
     commit-message:
       prefix: "ci"

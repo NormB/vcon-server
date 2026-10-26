@@ -1,0 +1,118 @@
+[package]
+name = "vcon-fuzz"
+description = "cargo fuzz targets for everything vcon-server reads from outside."
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Its own workspace: cargo fuzz builds this package on its own, with the
+# nightly toolchain in rust-toolchain.toml, and depends on the crates by path.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+# cargo fuzz sets `--cfg fuzzing`; a plain check or clippy of this package
+# does not, so the name is declared.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
+
+[dependencies]
+axum = { version = "0.8.9", default-features = false }
+base64 = "0.23.1"
+flate2 = "1.1.10"
+futures-util = { version = "0.3.34", default-features = false }
+libc = "0.2.191"
+libfuzzer-sys = "0.4.13"
+serde_json = "1.0.154"
+time = "0.3.55"
+tokio = { version = "1.54.1", features = ["rt"] }
+tower = { version = "0.5.3", default-features = false, features = ["util"] }
+uuid = "1.29.0"
+vcon-form = { path = "../crates/vcon-form" }
+vcon-server = { path = "../crates/vcon-server" }
+
+[[bin]]
+name = "inspect"
+path = "fuzz_targets/inspect.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "inspect_gzip"
+path = "fuzz_targets/inspect_gzip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "inspect_signed"
+path = "fuzz_targets/inspect_signed.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "inspect_encrypted"
+path = "fuzz_targets/inspect_encrypted.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_uuid"
+path = "fuzz_targets/parse_uuid.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "token"
+path = "fuzz_targets/token.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ids"
+path = "fuzz_targets/ids.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "retention"
+path = "fuzz_targets/retention.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config"
+path = "fuzz_targets/config.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sealed"
+path = "fuzz_targets/sealed.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "list_query"
+path = "fuzz_targets/list_query.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_request"
+path = "fuzz_targets/http_request.rs"
+test = false
+doc = false
+bench = false

@@ -1,0 +1,18 @@
+listen = "0.0.0.0:8443"
+data_dir = "/var/lib/vcon-server"
+master_key = "/etc/vcon-server/master.key"
+retention_default = "7y"
+purge_interval = 3600
+rotation_warn = 2592000
+supported_critical = []
+
+[tls]
+cert = "/etc/vcon-server/cert.pem"
+key = "/etc/vcon-server/key.pem"
+
+[limits]
+body = 16777216
+inflated = 67108864
+
+[limits.timeouts]
+read = 60

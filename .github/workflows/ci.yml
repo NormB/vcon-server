@@ -33,9 +33,14 @@ jobs:
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Format
-        run: cargo fmt --all --check
+        # The fuzz package is a workspace of its own, so --all misses it.
+        run: |
+          cargo fmt --all --check
+          cargo fmt --manifest-path fuzz/Cargo.toml --check
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: |
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo clippy --manifest-path fuzz/Cargo.toml --all-targets --locked -- -D warnings
       - name: Tests
         # Every command locks all of its memory before it reads a key, and the
         # tests run the binary; the runner's default lock limit is too small.
@@ -44,6 +49,7 @@ jobs:
           sudo prlimit --pid $$ --memlock=unlimited:unlimited
           # Every failing test binary reported, not only the first.
           cargo test --workspace --locked --no-fail-fast
+          cargo test --manifest-path fuzz/Cargo.toml --lib --locked
 
   coverage:
     name: coverage
@@ -84,6 +90,58 @@ jobs:
           files: lcov.info
           token: ${{ env.CODECOV_TOKEN }}
           fail_ci_if_error: true
+
+  fuzz-targets:
+    name: list the fuzz targets
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.list.outputs.targets }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: List
+        id: list
+        # Read from fuzz/Cargo.toml, so a new target runs here with no list
+        # to keep in step.
+        run: |
+          set -euo pipefail
+          targets="$(scripts/fuzz.sh list | python3 -I -c 'import json, sys; print(json.dumps(sys.stdin.read().split()))')"
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+
+  fuzz:
+    name: fuzz ${{ matrix.target }}
+    needs: fuzz-targets
+    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.fuzz-targets.outputs.targets) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/fuzz-setup
+      - name: Run for 60 seconds from the seeds
+        env:
+          TARGET: ${{ matrix.target }}
+        run: scripts/fuzz.sh run "$TARGET" 60
+      - name: Plant a panic where the target reads; the target must find it
+        env:
+          TARGET: ${{ matrix.target }}
+        run: PLANT_SECONDS=300 scripts/fuzz.sh plant "$TARGET"
+      # A crash input is kept for 7 days, to be turned into a regression
+      # test; it is never committed as it is.
+      - name: Keep the crash input
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+          retention-days: 7
+          if-no-files-found: ignore
 
   scan:
     name: no AI attribution or personal data
