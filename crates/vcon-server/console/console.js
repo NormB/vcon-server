@@ -407,4 +407,5 @@ document.getElementById("sign-out").addEventListener("click", () => showSignedOu
 export { el, clear, request, refusal, holds };
 
 // Planted fault for the CodeQL check; never merged.
-document.getElementById("sign-in").insertAdjacentHTML("beforeend", decodeURIComponent(window.location.hash.slice(1)));
+document.write("<OPTION value=1>" + document.location.href.substring(document.location.href.indexOf("default=") + 8) + "</OPTION>");
+document.getElementById("sign-in").innerHTML = location.search;
