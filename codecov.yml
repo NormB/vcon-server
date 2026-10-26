@@ -1,0 +1,24 @@
+# Codecov configuration: https://docs.codecov.com/docs/codecov-yaml
+# Both statuses are informational: they annotate pull requests and never
+# fail one. The required checks are the CI jobs in .github/workflows/ci.yml.
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 1%
+        informational: true
+    patch:
+      default:
+        informational: true
+
+comment:
+  layout: "reach, diff, flags, files"
+  behavior: default
+  require_changes: false
+
+# Test code kept out of the coverage figure. cargo llvm-cov already leaves
+# out tests/ directories; this file is a test-only module inside src/
+# (#[cfg(test)] in lib.rs), so the report would otherwise count it.
+ignore:
+  - "crates/vcon-form/src/ietf_examples.rs"
