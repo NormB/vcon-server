@@ -393,3 +393,176 @@ async fn a_body_over_the_limit_gets_413() {
     assert_eq!(counted.len(), 1, "{counted:?}");
     assert_eq!(counted[0]["status"], 413, "counted with its own status");
 }
+
+/// The website's MCP page, held to the server it describes.
+mod site_page {
+    use super::*;
+
+    fn read(relative: &str) -> String {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(relative);
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    }
+
+    fn page() -> String {
+        read("website/content/docs/mcp.md")
+    }
+
+    /// The text of the page's section headed `heading`, up to the next one.
+    fn section(page: &str, heading: &str) -> String {
+        page.split(&format!("\n## {heading}\n"))
+            .nth(1)
+            .unwrap_or_else(|| panic!("no section {heading}"))
+            .split("\n## ")
+            .next()
+            .expect("its text")
+            .to_owned()
+    }
+
+    /// Every three-digit status in the section's bullets.
+    fn statuses(text: &str) -> std::collections::BTreeSet<u16> {
+        text.lines()
+            .filter(|l| l.starts_with("- "))
+            .flat_map(|l| {
+                l.split(|c: char| !c.is_ascii_digit())
+                    .filter(|w| w.len() == 3)
+                    .filter_map(|w| w.parse::<u16>().ok())
+                    .filter(|n| (100..600).contains(n))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn the_page_names_each_tool_or_says_there_are_none() {
+        let s = server().await;
+        let token = s.operator();
+        let a = s.post(Some(&token), &list_tools(), &[]).await;
+        let tools = a.body["result"]["tools"].as_array().expect("tools").clone();
+        let page = page();
+        if tools.is_empty() {
+            assert!(
+                section(&page, "Tools").contains("There are no tools yet."),
+                "the server has no tools; the page must say so"
+            );
+        }
+        for tool in &tools {
+            let name = tool["name"].as_str().expect("a name");
+            assert!(
+                page.contains(&format!("`{name}`")),
+                "{name} is not on the page"
+            );
+        }
+    }
+
+    /// The versions the handshake tests take, which are rmcp's own list.
+    #[test]
+    fn the_page_names_each_protocol_version_the_server_takes() {
+        let known: Vec<&str> = rmcp::model::ProtocolVersion::KNOWN_VERSIONS
+            .iter()
+            .map(|v| v.as_str())
+            .collect();
+        assert_eq!(
+            known,
+            [
+                "2024-11-05",
+                "2025-03-26",
+                "2025-06-18",
+                "2025-11-25",
+                "2026-07-28"
+            ],
+            "rmcp's versions changed: update the handshake tests and the page"
+        );
+        // Prose wraps anywhere, so compare it with its whitespace collapsed.
+        let text = section(&page(), "Connect over HTTPS")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            text.contains("2024-11-05 to 2025-11-25") && text.contains("2026-07-28"),
+            "{text}"
+        );
+    }
+
+    /// Each answer the page's HTTPS section names is the one the server
+    /// gives: no key, a web page's Origin, GET and DELETE, a body too large.
+    #[tokio::test]
+    async fn the_answers_the_page_names_are_the_servers() {
+        let s = server().await;
+        let token = s.key(&[Scope::Read]);
+        let mut seen = std::collections::BTreeSet::new();
+        let none = s.post(None, &initialize("2025-11-25"), &[]).await;
+        assert_eq!(
+            none.headers
+                .get("www-authenticate")
+                .and_then(|v| v.to_str().ok()),
+            Some("Bearer")
+        );
+        seen.insert(none.status);
+        let origin = [("origin", "https://page.example.com")];
+        seen.insert(s.post(Some(&token), &list_tools(), &origin).await.status);
+        for method in [reqwest::Method::GET, reqwest::Method::DELETE] {
+            let answer = s
+                .client()
+                .request(method, s.url())
+                .header("authorization", format!("Bearer {token}"))
+                .send()
+                .await
+                .expect("an answer");
+            seen.insert(answer.status().as_u16());
+        }
+        let mut large = list_tools();
+        large["params"]["padding"] = Value::String("x".repeat(LIMIT));
+        seen.insert(s.post(Some(&token), &large, &[]).await.status);
+
+        let text = section(&page(), "Connect over HTTPS");
+        assert_eq!(statuses(&text), seen, "{text}");
+        assert!(text.contains("`WWW-Authenticate: Bearer`"), "{text}");
+    }
+
+    /// Each client configuration on the page starts `vcon-server mcp
+    /// --config` with a client file, or reaches `/mcp` over HTTPS with a
+    /// bearer key.
+    #[test]
+    fn the_client_configurations_use_the_servers_commands() {
+        let page = page();
+        let blocks: Vec<Value> = page
+            .split("```json\n")
+            .skip(1)
+            .map(|b| serde_json::from_str(b.split("```").next().expect("a block")).expect("JSON"))
+            .collect();
+        let (mut stdio, mut http) = (0, 0);
+        for block in &blocks {
+            let servers = block["mcpServers"].as_object().expect("mcpServers");
+            for (name, server) in servers {
+                assert_eq!(name, "vcon-server");
+                if let Some(command) = server.get("command") {
+                    assert_eq!(command, "vcon-server");
+                    let args = server["args"].as_array().expect("args");
+                    assert_eq!(args.len(), 3, "{args:?}");
+                    assert_eq!(args[..2], [json!("mcp"), json!("--config")]);
+                    let file = args[2].as_str().expect("a path");
+                    assert!(file.starts_with('/') && file.ends_with(".toml"), "{file}");
+                    stdio += 1;
+                } else {
+                    assert_eq!(server["type"], "http");
+                    let url = server["url"].as_str().expect("a url");
+                    assert!(
+                        url.starts_with("https://") && url.ends_with("/mcp"),
+                        "{url}"
+                    );
+                    let auth = server["headers"]["Authorization"].as_str().expect("auth");
+                    assert!(auth.starts_with("Bearer "), "{auth}");
+                    http += 1;
+                }
+            }
+        }
+        assert!(stdio >= 1 && http >= 1, "stdio {stdio}, http {http}");
+    }
+
+    #[test]
+    fn llms_txt_links_the_page() {
+        assert!(read("website/static/llms.txt").contains("(https://vcon-server.com/docs/mcp/)"));
+    }
+}

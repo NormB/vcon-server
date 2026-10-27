@@ -52,6 +52,9 @@ what is built, unless it says otherwise.
 - **`check`:** every stored version opened, leftover files listed, versions
   past due and work waiting for key rotation reported; exit 1 when anything
   needs the operator.
+- **MCP for AI agents:** `POST /mcp` on the TLS listener, authenticated by
+  API key, and `vcon-server mcp`, which forwards stdio to a running server
+  with one key. See [MCP](@/docs/mcp.md).
 - **Start-up refusals** for a tenant key wrapped under another key, a key
   rotation stopped part way, data under another key, or a tenant catalog
   the server may not open, with the system's error; and the daily warning
@@ -71,10 +74,8 @@ what is built, unless it says otherwise.
 
 ## Being built
 
-- **MCP:** a Model Context Protocol endpoint on the TLS listener, and a
-  command for clients that speak it over standard input and output, using
-  the same API keys and scopes as the HTTP API. It is being built on
-  branches and is not on `main` yet.
+- **MCP tools:** the tools an agent calls. None exist yet; the endpoint
+  and the stdio command are built, above.
 - **Review:** a review of the code against its design, a review of every
   feature against its tests, and a full fault-injection run.
 
