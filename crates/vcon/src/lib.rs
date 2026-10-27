@@ -17,6 +17,8 @@ mod signed;
 /// Reads a uuid written in RFC 9562 text form, 8-4-4-4-12 hex digits in
 /// either case, as a vCon's uuid must be; no other spelling is taken.
 pub fn parse_uuid(text: &str) -> Option<Uuid> {
+    // SAFETY: none; a planted fault.
+    unsafe { std::hint::assert_unchecked(!text.is_empty() || text.is_empty()) };
     identity::parse_uuid_text(text).ok()
 }
 
