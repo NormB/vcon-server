@@ -4,9 +4,11 @@ description = "Which parts of vcon-server work today, and which are being built.
 weight = 5
 +++
 
-vcon-server is in development and not yet for production. This page says what
-works today; each other page describes only what is built, unless it says
-otherwise.
+vcon-server 0.1.0 is released: the `vcon` and `vcon-server` crates are on
+crates.io, and the server for Linux on x86_64 and aarch64 is on
+[GitHub](https://github.com/NormB/vcon-server/releases). It is not yet for
+production. This page says what works today; each other page describes only
+what is built, unless it says otherwise.
 
 ## Built and tested
 
@@ -21,6 +23,11 @@ otherwise.
 - **The HTTP API over TLS.** Create, read, replace and delete; the legal
   routes (reads of deleted vCons, version history, restore, legal holds); the
   admin routes (tenants and their keys); health.
+- **The client API.** `GET /vcons` lists a tenant's vCons a page at a time,
+  `GET /audit` and `GET /admin/audit` read the audit logs, and
+  `GET /openapi.json` describes every route
+  ([HTTP API](@/docs/http-api.md)). The [client examples](@/docs/clients.md),
+  in curl, Python, TypeScript, Go and Rust, run against a live server in CI.
 - **The console:** a web page at `/console/`, signed in with an API key
   held in page memory only; it shows the key's own id, tenant and scopes
   (`GET /key`), lists, reads, stores and deletes vCons as the key's scopes
@@ -46,13 +53,30 @@ otherwise.
   past due and work waiting for key rotation reported; exit 1 when anything
   needs the operator.
 - **Start-up refusals** for a tenant key wrapped under another key, a key
-  rotation stopped part way, or data under another key; and the daily
-  warning while key rotation is overdue.
+  rotation stopped part way, data under another key, or a tenant catalog
+  the server may not open, with the system's error; and the daily warning
+  while key rotation is overdue.
+- **The operator guide.** [Getting started](@/docs/getting-started.md) takes
+  a fresh host to a running server under systemd, from a release, from
+  crates.io or from source; [operations](@/docs/operations.md) covers
+  backups, restores and key rotation. Every step was run on a fresh
+  Debian 13 host from the 0.1.0 release.
+- **Fuzzing.** Every parser of outside input has a
+  [fuzz target](@/docs/development.md#fuzzing), run in CI and by
+  ClusterFuzzLite.
+- **Releases.** Each release holds the server for Linux on x86_64 and
+  aarch64, a CycloneDX SBOM and checksums, every file with a signed build
+  provenance attestation; the release workflow also publishes both crates to
+  crates.io.
 
 ## Being built
 
-- **Release:** an operator guide, a review of the code against its design,
-  and a full fault-injection run.
+- **MCP:** a Model Context Protocol endpoint on the TLS listener, and a
+  command for clients that speak it over standard input and output, using
+  the same API keys and scopes as the HTTP API. It is being built on
+  branches and is not on `main` yet.
+- **Review:** a review of the code against its design, a review of every
+  feature against its tests, and a full fault-injection run.
 
 The [commit history](https://github.com/NormB/vcon-server/commits/main)
 records each change as it lands, with the reason in its message.

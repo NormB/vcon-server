@@ -6,11 +6,11 @@ tagline = "encrypted, multi-tenant, audited storage for vCons"
 headline = "Encrypted, multi-tenant, audited storage for vCons"
 +++
 
-> **Status: in development, not yet for production.** The store, the HTTP API,
-> tenants and their keys, retention and the purge sweep, legal holds, the audit
-> logs, the command line, key rotation and `check` are built and tested. The
-> last start-up checks and the release work are next. See
-> [what is built](@/docs/status.md).
+> **Status: 0.1.0 released, not yet for production.** The store, the HTTP API
+> with its client routes and OpenAPI description, tenants and their keys,
+> retention and the purge sweep, legal holds, the audit logs, the console, the
+> command line, key rotation and `check` are built and tested. MCP is being
+> built. See [what is built](@/docs/status.md).
 
 ## What it is for
 
