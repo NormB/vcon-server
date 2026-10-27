@@ -2,7 +2,7 @@
   "openapi": "3.1.1",
   "info": {
     "title": "vcon-server",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "Stores vCons encrypted at rest and returns them to authorised readers. Every route needs a bearer key; errors are RFC 9457 problem documents.",
     "license": {
       "name": "MIT OR Apache-2.0",

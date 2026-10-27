@@ -73,7 +73,7 @@ nothing in it comes from the rusqlite fork the tests use. The releases are on
 Download the archive and the checksums, check the archive and unpack it:
 
 ```sh
-VERSION=0.1.0
+VERSION=0.2.0
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$VERSION/vcon-server-$VERSION-x86_64-unknown-linux-gnu.tar.gz
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$VERSION/SHA256SUMS.txt
 sha256sum -c SHA256SUMS.txt --ignore-missing

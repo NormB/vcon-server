@@ -10,8 +10,8 @@ is in (unsigned, signed or encrypted), whether it is gzipped, its uuid, and
 whether it needs extensions the caller does not support. It does no I/O and
 returns no bytes. The API may change in any release before 1.0.
 
-This page describes vcon 0.2.0, the next release. In 0.1.0, the release on
-crates.io now, `inspect`, `Inspection`, `Limits`, `Rejection`,
+This page describes vcon 0.2.0. In 0.1.0, the first release,
+`inspect`, `Inspection`, `Limits`, `Rejection`,
 `MAX_SIGNED_LAYERS` and `MAX_JSON_DEPTH` are at the crate root rather than in
 `vcon::read`, and limits are written `Limits { inflated: 1 << 20 }`.
 

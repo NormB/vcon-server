@@ -1,9 +1,7 @@
 [package]
 name = "vcon"
 description = "A library for vCons. It reads and checks a vCon: form, compression, uuid and critical extensions."
-# The library keeps its own version: 0.2.0 moved the reading API into
-# vcon::read, a change the server, still 0.1, does not make to its own.
-version = "0.2.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

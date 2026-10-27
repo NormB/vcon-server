@@ -4,7 +4,7 @@ description = "Which parts of vcon-server work today, and which are being built.
 weight = 5
 +++
 
-vcon-server 0.1.0 is released: the `vcon` and `vcon-server` crates are on
+vcon-server 0.2.0 is released: the `vcon` and `vcon-server` crates are on
 crates.io, and the server for Linux on x86_64 and aarch64 is on
 [GitHub](https://github.com/NormB/vcon-server/releases). It is not yet for
 production. This page says what works today; each other page describes only
