@@ -109,8 +109,9 @@ prints one JSON line per tenant and a summary line. A tenant's line gives:
 - `problems`: what needs the operator.
 
 The summary gives `removed_tenants_awaiting_master_rotation` and the total
-`problems`. A problem is damage, a catalog that does not open, a stopped
-rotation, or a version that has waited longer than `purge_interval` (a sweep
+`problems`. A problem is damage, a catalog that does not open (under its
+tenant key, or at all, with the path and the system's error, such as
+`Permission denied (os error 13)`), a stopped rotation, or a version that has waited longer than `purge_interval` (a sweep
 that is not keeping up). Leftovers and work waiting for rotation are reported
 but are not problems. `check` exits 1, after printing its report, when it
 found a problem.

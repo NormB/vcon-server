@@ -115,6 +115,45 @@ pub enum StoreError {
     Io,
 }
 
+/// Why a tenant's Store did not open: kept apart so a key that does not
+/// open its catalog is never confused with files this process may not use.
+#[derive(Debug)]
+pub enum OpenError {
+    /// The catalog does not open under the tenant's catalog key.
+    WrongKey,
+    /// This process may not use `path`, a file or directory the Store
+    /// needs; `error` is the system's.
+    Access {
+        path: PathBuf,
+        error: std::io::Error,
+    },
+    /// Anything else.
+    Store(StoreError),
+}
+
+impl From<OpenError> for StoreError {
+    /// How the Store's callers see a Store that did not open.
+    fn from(_: OpenError) -> StoreError {
+        StoreError::Io
+    }
+}
+
+impl From<StoreError> for OpenError {
+    fn from(e: StoreError) -> OpenError {
+        OpenError::Store(e)
+    }
+}
+
+impl From<catalog::CatalogError> for OpenError {
+    fn from(e: catalog::CatalogError) -> OpenError {
+        match e {
+            catalog::CatalogError::WrongKey => OpenError::WrongKey,
+            catalog::CatalogError::Access { path, error } => OpenError::Access { path, error },
+            _ => OpenError::Store(StoreError::Io),
+        }
+    }
+}
+
 /// One tenant's vCons.
 pub struct Store {
     tenant: TenantId,
@@ -136,7 +175,7 @@ impl Store {
         tenant_key: Key,
         fs: Arc<dyn Fs>,
         clock: Arc<dyn Clock>,
-    ) -> Result<Store, StoreError> {
+    ) -> Result<Store, OpenError> {
         let store = Store::open_beside(dir, tenant, tenant_key, fs, clock)?;
         store.recover()?;
         Ok(store)
@@ -151,13 +190,14 @@ impl Store {
         tenant_key: Key,
         fs: Arc<dyn Fs>,
         clock: Arc<dyn Clock>,
-    ) -> Result<Store, StoreError> {
+    ) -> Result<Store, OpenError> {
         let catalog_key = envelope::catalog_key(&tenant_key).map_err(|_| StoreError::Io)?;
         let schema = format!("{TABLES}{}", audit::SCHEMA);
-        let conn = catalog::open(&dir.join("catalog.sqlite"), &catalog_key, &schema)
-            .map_err(|_| StoreError::Io)?;
+        let conn = catalog::open(&dir.join("catalog.sqlite"), &catalog_key, &schema)?;
         let objects = dir.join("objects");
         fs.create_dir_all(&objects).map_err(|_| StoreError::Io)?;
+        // Each version is written into objects/, so it must be writable too.
+        catalog::may_use(&objects, libc::W_OK | libc::X_OK)?;
         // A new directory survives a crash only once the directory that
         // holds it is synced; without this a crash could take the objects
         // directory, synced files and all, while the catalog keeps its rows.
@@ -886,6 +926,30 @@ mod tests {
     use super::testing::vcon;
     use super::*;
     use crate::audit::testing::exported;
+
+    /// Each version is written into objects/: a Store that may not write
+    /// there does not open, and says so with the path and the system's
+    /// error, as it does for its catalog.
+    #[test]
+    fn an_objects_directory_the_process_may_not_write_is_named() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = fixture();
+        let objects = f.dir.path().join("objects");
+        let mode = |m| {
+            std::fs::set_permissions(&objects, std::fs::Permissions::from_mode(m)).expect("chmod")
+        };
+        mode(0o500);
+        let refused = f.open_or_why();
+        mode(0o700);
+        match refused {
+            Err(OpenError::Access { path, error }) => {
+                assert_eq!(path, objects);
+                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+            }
+            other => panic!("{:?}", other.map(|_| "opened")),
+        }
+        assert!(f.open_or_why().is_ok(), "opens once allowed");
+    }
     use crate::catalog::testing::columns_taking_null;
     use crate::clock::ManualClock;
     use crate::fs::{CrashFs, Op};
@@ -917,6 +981,11 @@ mod tests {
 
     impl Fixture {
         pub(super) fn open(&self) -> Result<Store, StoreError> {
+            self.open_or_why().map_err(StoreError::from)
+        }
+
+        /// `open`, saying why a Store that did not open did not.
+        pub(super) fn open_or_why(&self) -> Result<Store, OpenError> {
             let ctx = Context::Tenant { tenant: TENANT };
             let tenant_key = envelope::unwrap(&self.master, &ctx, &self.wrapped).expect("unwraps");
             Store::open(
@@ -949,6 +1018,7 @@ mod tests {
                 self.fs.clone(),
                 self.clock.clone(),
             )
+            .map_err(StoreError::from)
         }
 
         /// Closes the store and opens it again, as a restart would.

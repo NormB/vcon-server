@@ -19,7 +19,7 @@ use crate::envelope::{Key, KeyError};
 use crate::fs::OsFs;
 use crate::ids::{KeyId, TenantId};
 use crate::retention::Retention;
-use crate::tenants::{self, Removal, TenantError, TenantExamination, Tenants};
+use crate::tenants::{self, OpenFailure, Removal, TenantError, TenantExamination, Tenants};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
@@ -368,7 +368,18 @@ pub fn problems(
         found.push("a key rotation was stopped part way; run rekey tenant again".to_owned());
     }
     match &tenant.store {
-        Err(_) => found.push("its catalog does not open under its tenant key".to_owned()),
+        Err(OpenFailure::WrongKey) => {
+            found.push("its catalog does not open under its tenant key".to_owned());
+        }
+        Err(OpenFailure::Access { path, error }) => {
+            found.push(format!(
+                "its catalog cannot be opened: {}: {error}",
+                path.display()
+            ));
+        }
+        Err(OpenFailure::Refused(e)) => {
+            found.push(format!("its catalog cannot be opened: {e:?}"));
+        }
         Ok(store) => {
             for version in &store.damaged {
                 found.push(format!("version {version} is missing or does not open"));
@@ -940,7 +951,7 @@ mod tests {
             }
         }
 
-        fn tenant(store: Result<Examination, TenantError>, stopped: bool) -> TenantExamination {
+        fn tenant(store: Result<Examination, OpenFailure>, stopped: bool) -> TenantExamination {
             TenantExamination {
                 id: TenantId([1; 16]),
                 name: "acme".to_owned(),
@@ -967,9 +978,33 @@ mod tests {
             let stopped = problems(&tenant(Ok(sound()), true), HOUR, NOW);
             assert_eq!(stopped.len(), 1);
             assert!(stopped[0].contains("rekey tenant"), "{stopped:?}");
-            let closed = problems(&tenant(Err(TenantError::Io), false), HOUR, NOW);
+            let closed = problems(
+                &tenant(Err(OpenFailure::Refused(TenantError::Io)), false),
+                HOUR,
+                NOW,
+            );
             assert_eq!(closed.len(), 1);
             assert!(closed[0].contains("catalog"), "{closed:?}");
+            assert!(!closed[0].contains("key"), "{closed:?}");
+        }
+
+        /// Only a catalog its key does not open is a key problem; one the
+        /// process may not open is named with its path and the system's
+        /// error.
+        #[test]
+        fn a_key_problem_and_an_access_problem_are_told_apart() {
+            let key = problems(&tenant(Err(OpenFailure::WrongKey), false), HOUR, NOW);
+            assert_eq!(key, ["its catalog does not open under its tenant key"]);
+            let access = OpenFailure::Access {
+                path: std::path::PathBuf::from("/srv/data/tenants/01/catalog.sqlite"),
+                error: std::io::Error::from_raw_os_error(libc::EACCES),
+            };
+            assert_eq!(
+                problems(&tenant(Err(access), false), HOUR, NOW),
+                [
+                    "its catalog cannot be opened: /srv/data/tenants/01/catalog.sqlite: Permission denied (os error 13)"
+                ]
+            );
         }
 
         #[test]

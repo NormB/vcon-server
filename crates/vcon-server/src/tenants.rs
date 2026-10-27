@@ -17,7 +17,7 @@ use crate::envelope::{self, Context, Key, WrapLimit};
 use crate::fs::Fs;
 use crate::ids::{KeyId, TenantId};
 use crate::retention::Retention;
-use crate::store::Store;
+use crate::store::{OpenError, Store};
 
 mod examine;
 mod keys;
@@ -95,6 +95,45 @@ pub enum TenantError {
     /// server.sqlite was made under another master key.
     WrongKey,
     Io,
+}
+
+/// Why a tenant's Store could not be had: the registry refused, its
+/// catalog does not open under its key, or this process may not use one of
+/// its files. Only `check` and `serve`'s start-up check tell these apart;
+/// every other caller sees `TenantError` (`From` below).
+#[derive(Debug)]
+pub enum OpenFailure {
+    Refused(TenantError),
+    WrongKey,
+    Access {
+        path: PathBuf,
+        error: std::io::Error,
+    },
+}
+
+impl From<OpenFailure> for TenantError {
+    fn from(f: OpenFailure) -> TenantError {
+        match f {
+            OpenFailure::Refused(e) => e,
+            OpenFailure::WrongKey | OpenFailure::Access { .. } => TenantError::Io,
+        }
+    }
+}
+
+impl From<TenantError> for OpenFailure {
+    fn from(e: TenantError) -> OpenFailure {
+        OpenFailure::Refused(e)
+    }
+}
+
+impl From<OpenError> for OpenFailure {
+    fn from(e: OpenError) -> OpenFailure {
+        match e {
+            OpenError::WrongKey => OpenFailure::WrongKey,
+            OpenError::Access { path, error } => OpenFailure::Access { path, error },
+            OpenError::Store(_) => OpenFailure::Refused(TenantError::Io),
+        }
+    }
 }
 
 /// A tenant as `list` shows it.
@@ -467,7 +506,7 @@ impl Tenants {
     ) -> Result<(), TenantError> {
         let store = match drained {
             Some(store) => store,
-            None => match self.open_store(id) {
+            None => match self.open_store(id).map_err(TenantError::from) {
                 Err(TenantError::NotFound) => {
                     self.record_alone(&entry(404))?;
                     return Err(TenantError::NotFound);
@@ -509,12 +548,17 @@ impl Tenants {
 
     /// The tenant's Store, shared by every request to it.
     pub fn store(&self, id: TenantId) -> Result<Arc<Store>, TenantError> {
+        self.store_or_why(id).map_err(TenantError::from)
+    }
+
+    /// `store`, saying why a Store that did not open did not.
+    pub fn store_or_why(&self, id: TenantId) -> Result<Arc<Store>, OpenFailure> {
         // The Store is opened under this lock, so it is opened once: a
         // second open's recovery could remove a write's temporary file.
         let mut stores = self.stores();
         match stores.get(&id) {
             Some(Slot::Open(store)) => return Ok(store.clone()),
-            Some(Slot::Closing) => return Err(TenantError::Closing),
+            Some(Slot::Closing) => return Err(TenantError::Closing.into()),
             None => {}
         }
         let store = Arc::new(self.open_store(id)?);
@@ -525,7 +569,7 @@ impl Tenants {
     /// Opens the tenant's Store under the key its row holds. Its callers
     /// make sure no other Store of the tenant is open: `store` holds the
     /// lock, and `remove` has drained the tenant.
-    fn open_store(&self, id: TenantId) -> Result<Store, TenantError> {
+    fn open_store(&self, id: TenantId) -> Result<Store, OpenFailure> {
         let wrapped: Vec<u8> = self
             .conn()
             .query_row(
@@ -557,7 +601,7 @@ impl Tenants {
             self.fs.clone(),
             self.clock.clone(),
         )
-        .map_err(io)
+        .map_err(OpenFailure::from)
     }
 
     /// Marks the tenant closing, so no new handle is handed out, and waits

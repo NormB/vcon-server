@@ -40,6 +40,13 @@ pub enum CatalogError {
     Sqlite(rusqlite::Error),
     /// A file around the catalog could not be read, written or renamed.
     Io(std::io::Error),
+    /// This process may not read and write `path`, the catalog or the
+    /// directory that holds it (where SQLite makes its `-wal` and `-shm`
+    /// files), such as when another user owns it.
+    Access {
+        path: PathBuf,
+        error: std::io::Error,
+    },
 }
 
 impl From<rusqlite::Error> for CatalogError {
@@ -51,6 +58,15 @@ impl From<rusqlite::Error> for CatalogError {
 /// Opens the catalog at `path` under `key`, making it with `schema` if it
 /// is new.
 pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogError> {
+    // SQLite opens a file it may not write read-only and fails later with
+    // its own code, which no longer says why; asking the system first
+    // gives the path and its error.
+    if let Some(dir) = path.parent() {
+        may_use(dir, libc::W_OK | libc::X_OK)?;
+    }
+    if path.exists() {
+        may_use(path, libc::R_OK | libc::W_OK)?;
+    }
     let conn = Connection::open(path)?;
     conn.busy_timeout(BUSY_TIMEOUT)?;
     // SQLCipher otherwise writes its own error lines to standard error, a
@@ -100,6 +116,23 @@ pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogE
         other => return Err(CatalogError::UnknownSchema(other)),
     }
     Ok(conn)
+}
+
+/// Whether this process, by its effective ids, may use `path` as `how`
+/// asks (`R_OK`, `W_OK`, `X_OK`); if not, the path and the system's error.
+pub(crate) fn may_use(path: &Path, how: c_int) -> Result<(), CatalogError> {
+    let denied = |error| CatalogError::Access {
+        path: path.to_owned(),
+        error,
+    };
+    let text = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
+        .map_err(|_| denied(std::io::ErrorKind::InvalidInput.into()))?;
+    // SAFETY: `text` is a NUL-terminated path that outlives the call, and
+    // faccessat reads only it and the flags.
+    if unsafe { libc::faccessat(libc::AT_FDCWD, text.as_ptr(), how, libc::AT_EACCESS) } != 0 {
+        return Err(denied(std::io::Error::last_os_error()));
+    }
+    Ok(())
 }
 
 /// Re-encrypts the catalog at `path`, kept under `old`, so that it is kept
@@ -653,6 +686,35 @@ pub(crate) mod tests {
         assert!(
             open(&path(&dir), &key, SCHEMA).is_ok(),
             "the right key still opens it"
+        );
+    }
+
+    /// A catalog file or directory this process may not write is named,
+    /// with the system's error, and never taken for a wrong key.
+    #[test]
+    fn a_catalog_the_process_may_not_write_is_an_access_error_naming_the_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path, m| {
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)).expect("chmod")
+        };
+        let dir = tempfile::tempdir().expect("temp dir");
+        let key = Key::generate().expect("key");
+        drop(open(&path(&dir), &key, SCHEMA).expect("opens"));
+        for (target, read_only) in [(path(&dir), 0o400), (dir.path().to_owned(), 0o500)] {
+            mode(&target, read_only);
+            let refused = open(&path(&dir), &key, SCHEMA);
+            mode(&target, if target.is_dir() { 0o700 } else { 0o600 });
+            match refused {
+                Err(CatalogError::Access { path, error }) => {
+                    assert_eq!(path, target);
+                    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+                }
+                other => panic!("{}: {other:?}", target.display()),
+            }
+        }
+        assert!(
+            open(&path(&dir), &key, SCHEMA).is_ok(),
+            "opens once allowed"
         );
     }
 

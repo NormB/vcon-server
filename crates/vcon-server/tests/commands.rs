@@ -355,3 +355,46 @@ fn a_wrong_or_missing_configuration_exits_1() {
     std::fs::write(&s.config, "colour = \"blue\"\n").expect("bad configuration");
     assert!(s.refused(&["tenant", "list"]).contains("colour"));
 }
+
+/// A tenant's directory the service account may not write, as a command
+/// run as root leaves it: `check` names the path and the system's error,
+/// and `serve` refuses with the error, not with a key problem.
+#[test]
+fn a_tenant_catalog_that_may_not_be_opened_is_named_as_that_by_check_and_serve() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = setup();
+    let tenant = s.ok(&["tenant", "create", "acme"])[0]["id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let dir = s.data.join("tenants").join(&tenant);
+    let mode =
+        |m| std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(m)).expect("chmod");
+    mode(0o500);
+    let check = s.run(&["check"]);
+    let serve = s.run(&["serve"]);
+    mode(0o700);
+    assert_eq!(check.status.code(), Some(1), "{}", stderr(&check));
+    let report: Vec<Value> = String::from_utf8(check.stdout)
+        .expect("text")
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("a JSON line"))
+        .collect();
+    assert_eq!(
+        report[0]["problems"],
+        serde_json::json!([format!(
+            "its catalog cannot be opened: {}: Permission denied (os error 13)",
+            dir.display()
+        )])
+    );
+    assert_eq!(serve.status.code(), Some(1), "{}", stderr(&serve));
+    assert_eq!(
+        stderr(&serve),
+        "vcon-server: 1 tenant catalog(s) cannot be opened: Permission denied (os error 13); vcon-server check names the tenants\n"
+    );
+    assert_eq!(
+        s.ok(&["check"]).last().expect("summary")["problems"],
+        0,
+        "once allowed"
+    );
+}

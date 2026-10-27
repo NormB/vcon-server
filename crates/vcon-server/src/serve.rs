@@ -68,6 +68,17 @@ impl fmt::Display for ServeError {
                         order.data_under_other_keys
                     ));
                 }
+                if order.catalogs_unopened > 0 {
+                    let why = order
+                        .unopened_error
+                        .as_ref()
+                        .map(|e| format!(": {e}"))
+                        .unwrap_or_default();
+                    parts.push(format!(
+                        "{} tenant catalog(s) cannot be opened{why}",
+                        order.catalogs_unopened
+                    ));
+                }
                 write!(
                     f,
                     "{}; vcon-server check names the tenants",
@@ -301,6 +312,7 @@ mod tests {
                 wrapped_elsewhere: 1,
                 rotations_stopped: 2,
                 data_under_other_keys: 3,
+                ..KeyOrder::default()
             };
             let text = ServeError::KeysOutOfOrder(order).to_string();
             for words in [
@@ -311,6 +323,22 @@ mod tests {
             ] {
                 assert!(text.contains(words), "{words}: {text}");
             }
+            assert!(!text.contains("cannot be opened"), "{text}");
+        }
+
+        /// Catalogs the server may not open are counted apart from keys,
+        /// with the system's error, and never a tenant or a path.
+        #[test]
+        fn a_refusal_for_catalogs_it_may_not_open_gives_the_error_not_a_key() {
+            let order = KeyOrder {
+                catalogs_unopened: 2,
+                unopened_error: Some("Permission denied (os error 13)".to_owned()),
+                ..KeyOrder::default()
+            };
+            assert_eq!(
+                ServeError::KeysOutOfOrder(order).to_string(),
+                "2 tenant catalog(s) cannot be opened: Permission denied (os error 13); vcon-server check names the tenants"
+            );
         }
     }
     use crate::retention::Retention;

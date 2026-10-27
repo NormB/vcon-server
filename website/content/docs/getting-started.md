@@ -126,8 +126,9 @@ Run every command as `vcon`, with `sudo -u vcon`, never as root. A command
 run as root leaves files in the data directory that `vcon` cannot open. The
 server then refuses to start, with
 `the data directory cannot be locked: Permission denied (os error 13)`, or,
-for a tenant made as root, `1 tenant(s) with data under another key`. Give
-the files back to `vcon`:
+for a tenant made as root,
+`1 tenant catalog(s) cannot be opened: Permission denied (os error 13)`;
+`vcon-server check` names the path. Give the files back to `vcon`:
 
 ```sh
 sudo chown -R vcon:vcon /var/lib/vcon-server

@@ -6,7 +6,7 @@ use rusqlite::OptionalExtension;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use super::{TenantError, Tenants, io, stored_retention};
+use super::{OpenFailure, TenantError, Tenants, io, stored_retention};
 use crate::audit::Action;
 use crate::clock::from_nanos;
 use crate::envelope::{self, Context};
@@ -22,7 +22,7 @@ pub struct TenantExamination {
     /// A key rotation of this tenant was stopped part way.
     pub rotation_stopped: bool,
     /// Its Store examined, or why its catalog did not open.
-    pub store: Result<Examination, TenantError>,
+    pub store: Result<Examination, OpenFailure>,
 }
 
 /// The registry as `check` found it.
@@ -37,8 +37,9 @@ pub struct RegistryExamination {
 }
 
 /// Whether every tenant's data is under its current key, as `serve`
-/// requires before it starts: counts of tenants only, never which.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// requires before it starts: counts of tenants only, never which, and no
+/// path, since a path names a tenant.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct KeyOrder {
     /// Tenants whose key does not unwrap under the master key.
     pub wrapped_elsewhere: u64,
@@ -47,6 +48,12 @@ pub struct KeyOrder {
     /// Tenants whose catalog does not open under their key, or with a
     /// version row naming another key.
     pub data_under_other_keys: u64,
+    /// Tenants whose Store did not open for a reason other than its key,
+    /// such as files this process may not use.
+    pub catalogs_unopened: u64,
+    /// The system's error for the first of those that has one, such as
+    /// `Permission denied (os error 13)`.
+    pub unopened_error: Option<String>,
 }
 
 impl KeyOrder {
@@ -90,9 +97,16 @@ impl Tenants {
             if pending {
                 order.rotations_stopped += 1;
             }
-            let elsewhere = match self.store(id) {
+            let elsewhere = match self.store_or_why(id) {
                 Ok(store) => store.rows_under_other_keys().map_err(io)? > 0,
-                Err(_) => true,
+                Err(OpenFailure::WrongKey) => true,
+                Err(failure) => {
+                    order.catalogs_unopened += 1;
+                    if let OpenFailure::Access { error, .. } = failure {
+                        order.unopened_error.get_or_insert(error.to_string());
+                    }
+                    false
+                }
             };
             if elsewhere {
                 order.data_under_other_keys += 1;
@@ -191,9 +205,11 @@ impl Tenants {
             let id = TenantId(id);
             let retention = stored_retention(retention)?.unwrap_or(default);
             let key_since = time(key_since)?;
-            let store = self
-                .store(id)
-                .and_then(|store| store.examine(retention, key_since, now).map_err(io));
+            let store = self.store_or_why(id).and_then(|store| {
+                store
+                    .examine(retention, key_since, now)
+                    .map_err(|e| OpenFailure::Refused(io(e)))
+            });
             tenants.push(TenantExamination {
                 id,
                 name,
@@ -278,7 +294,51 @@ mod examine_tests {
             .expect("examined");
         let acme = &found.tenants[0];
         assert!(acme.rotation_stopped);
-        assert!(acme.store.is_err(), "its catalog is under the pending key");
+        assert!(
+            matches!(acme.store, Err(OpenFailure::WrongKey)),
+            "its catalog is under the pending key: {:?}",
+            acme.store
+        );
+    }
+
+    /// A tenant's files this process may not write, such as ones a command
+    /// run as root left, are reported as that, with the path and the
+    /// system's error; only a key that does not open the catalog is a key
+    /// problem.
+    #[test]
+    fn a_catalog_the_process_may_not_open_is_an_access_failure_not_a_key_one() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = fixture();
+        // Made, but not yet opened through the registry, as at start-up.
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        let dir = f.dir.path().join("tenants").join(id.to_string());
+        let mode =
+            |m| std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(m)).expect("chmod");
+        mode(0o500);
+        let order = f.tenants.key_order();
+        let found = f
+            .tenants
+            .examine(Retention::Years(7), datetime!(2026-10-23 12:00 UTC));
+        mode(0o700);
+        let order = order.expect("read");
+        assert_eq!(order.data_under_other_keys, 0, "{order:?}");
+        assert_eq!(order.catalogs_unopened, 1, "{order:?}");
+        assert_eq!(
+            order.unopened_error.as_deref(),
+            Some("Permission denied (os error 13)")
+        );
+        assert!(!order.is_sound());
+        match &found.expect("examined").tenants[0].store {
+            Err(OpenFailure::Access { path, error }) => {
+                assert_eq!(path, &dir);
+                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(
+            f.tenants.key_order().expect("read").is_sound(),
+            "once allowed"
+        );
     }
 
     mod key_order {
@@ -321,6 +381,7 @@ mod examine_tests {
                         wrapped_elsewhere: 0,
                         rotations_stopped: 1,
                         data_under_other_keys: data,
+                        ..KeyOrder::default()
                     },
                     "{step:?}"
                 );
