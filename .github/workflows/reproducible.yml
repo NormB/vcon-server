@@ -1,0 +1,77 @@
+name: Reproducible build
+
+# Builds the x86_64 release binary twice from the same commit, in two
+# checkouts with two CARGO_HOMEs, and fails if the two differ by one byte.
+# The build is scripts/reproducible-build.sh `build`, the command
+# release.yml's build step runs, so this proves the release's own build.
+#
+# Modeled on sipnab's reproducible.yml, on a GitHub-hosted runner instead of
+# a self-hosted one. Weekly, and on pull requests that change what the build
+# reads beyond the source: the manifests and the lockfile, the toolchain,
+# the script and the release workflow. A change in src/ that breaks it (a
+# build time compiled in, say) is caught by the weekly run.
+on:
+  schedule:
+    # Fridays 04:23 UTC, clear of the other weekly runs.
+    - cron: '23 4 * * 5'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/*/Cargo.toml'
+      - 'crates/*/build.rs'
+      - 'rust-toolchain.toml'
+      - 'scripts/reproducible-build.sh'
+      - '.github/workflows/reproducible.yml'
+      - '.github/workflows/release.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reproducible-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  reproducible:
+    name: Reproducible build (x86_64-unknown-linux-gnu)
+    runs-on: ubuntu-latest
+    # Two release builds from nothing, and the second one's crate fetch.
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      # No build cache: the point is two builds from nothing.
+      - name: Build twice and compare
+        run: bash scripts/reproducible-build.sh check x86_64-unknown-linux-gnu "$RUNNER_TEMP/reproducible"
+
+  # Experiment only: the release build as it is today, twice, to see what differs.
+  baseline:
+    name: baseline (experiment)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install
+      - run: |
+          set -uo pipefail
+          w="$RUNNER_TEMP/base"; mkdir -p "$w"
+          for d in a b; do
+            git clone -q "$GITHUB_WORKSPACE" "$w/$d"
+            h="$HOME/.cargo"; [ "$d" = b ] && h="$w/home-b"
+            (cd "$w/$d" && CARGO_HOME="$h" cargo build -q --release --locked -p vcon-server --target x86_64-unknown-linux-gnu)
+          done
+          bash scripts/reproducible-build.sh compare "$w/a/target/x86_64-unknown-linux-gnu/release/vcon-server" "$w/b/target/x86_64-unknown-linux-gnu/release/vcon-server"
