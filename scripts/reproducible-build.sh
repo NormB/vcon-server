@@ -52,7 +52,7 @@ die() { printf 'reproducible-build: %s\n' "$*" >&2; exit 1; }
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 # Fixed for the reason in 2 above. Not under the checkout, so two checkouts
 # share it; `check` builds one at a time and empties it in between.
-TARGET_DIR=/tmp/vcon-server-release-target
+TARGET_DIR="$ROOT/target"
 
 # THE rule: each prefix that varies between builders and the fixed name it
 # becomes. The checkout is last: rustc applies the last remap that matches.
