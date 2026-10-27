@@ -16,6 +16,17 @@ All notable changes to this project are recorded here. The format follows
   for a new version, or `cargo package` for one crates.io already has,
   uploading nothing. 0.1.0 was published by hand.
 
+### Fixed
+
+- The commit hook's package check could build the packaged server against
+  an older copy of `vcon` 0.1.0 left in the same target directory by an
+  earlier run, because cargo's own verify step reuses a registry crate it
+  has built at the same version. The check now packages with `--no-verify`
+  in a directory made for each run, and builds each package from its
+  `.crate` with the published crates patched in by path, which cargo
+  checks by content. `scripts/test-check-package.sh`, run in CI, checks a
+  changed `vcon` 0.1.0 in the same target directory and two trees at once.
+
 ## [0.1.0] - 2026-10-26
 
 ### Added

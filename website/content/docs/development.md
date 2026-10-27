@@ -174,9 +174,9 @@ git config core.hooksPath .githooks
   attribution in staged changes. It also checks that every path
   `.bestpractices.json` links to exists (`scripts/check_repo_links.py`), and
   what each crate would publish to crates.io (`scripts/check_package.py`):
-  it packages and builds each crate, then refuses any file in a `.crate`
-  other than the sources, the files they include, the README and the two
-  licences; a missing README or licence; a dependency taken by git or by
+  it packages each published crate, refuses any file in a `.crate` other
+  than the sources, the files they include, the README and the two
+  licences, and builds each crate from its `.crate` alone; a missing README or licence; a dependency taken by git or by
   path, in the manifest or the lock file; a relative link in the README; and
   anything the scan above refuses.
 - **commit-msg** refuses the same in the message.

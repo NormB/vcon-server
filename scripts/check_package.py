@@ -1,9 +1,10 @@
 """Checks what each crate published from this workspace would hold.
 
-Builds every workspace crate's package with `cargo package`, which also
-compiles each package on its own, so a file the build reads but the package
-leaves out fails here. It then reads the .crate files themselves, so the
-check sees exactly what crates.io would get. For each package it refuses:
+Builds every published crate's package with `cargo package --no-verify`
+and reads the .crate files themselves, so the check sees exactly what
+crates.io would get. Then it builds each crate from its .crate alone, in a
+directory made for the run, so a file the build reads but the package
+leaves out fails here. For each package it refuses:
 
 - a file outside the allowed set: the manifest files cargo writes, the
   README, the two licences, Rust sources under src/, and the files those
@@ -31,6 +32,7 @@ import re
 import subprocess
 import sys
 import tarfile
+import tempfile
 import tomllib
 
 # Loading a script by path would otherwise leave a __pycache__ beside it.
@@ -207,6 +209,45 @@ def read_crate(path, name):
     return files
 
 
+def patches(unpacked, crates):
+    """The --config arguments that make every published crate in `crates`
+    ((package name, crate name) pairs) come from its unpacked .crate under
+    `unpacked`, by path, instead of from a registry."""
+    args = []
+    for package, name in crates:
+        path = (unpacked / package).as_posix()
+        args += ["--config", f'patch.crates-io.{name}.path="{path}"']
+    return args
+
+
+def verify_build(run, build, crates):
+    """Builds each packaged crate from its .crate file alone, in a directory
+    made for this run and removed after it, with the other published crates
+    patched in by path. cargo fingerprints a path dependency by its content,
+    so no copy of a crate from an earlier run or another tree can be built
+    in its place (cargo package's own verify takes them from a local registry
+    whose extracted copies are reused while their version stays the same).
+    `crates` holds (package name, crate name) pairs."""
+    unpacked = run / "unpacked"
+    for package, _ in crates:
+        with tarfile.open(run / "package" / f"{package}.crate", "r:gz") as tar:
+            tar.extractall(unpacked, filter="data")
+    for package, _ in crates:
+        built = subprocess.run(
+            ["cargo", "build", "--quiet", "--manifest-path", str(unpacked / package / "Cargo.toml"),
+             *patches(unpacked, crates)],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, "CARGO_TARGET_DIR": str(build)},
+        )
+        if built.returncode != 0:
+            print(built.stderr, file=sys.stderr)
+            print(f"check-package: {package} does not build from its package alone", file=sys.stderr)
+            return False
+    return True
+
+
 def main():
     # The tree this script belongs to, not git's idea of it: the commit hook
     # runs this in a copy of what is staged, where git would name the
@@ -223,17 +264,27 @@ def main():
     )
     target = pathlib.Path(os.environ.get("CARGO_TARGET_DIR") or metadata["target_directory"])
     licences = {p: (root / p).read_bytes() for p in LICENCES}
+    # Every file this run writes is in a directory of its own, removed after
+    # it, so a run in another tree at the same moment cannot read or replace
+    # them. Only the verify build shares a target directory, where cargo
+    # locks it and fingerprints each patched crate by its content.
+    with tempfile.TemporaryDirectory(prefix="check-package-") as run:
+        return check(root, pathlib.Path(run), target / "check-package-build", metadata, licences)
+
+
+def check(root, run, build, metadata, licences):
     crates, found = to_publish(metadata["packages"], published_crates((root / "Cargo.toml").read_text()))
     for finding in found:
         print(f"check-package: {finding}")
     failed = bool(found)
     selected = [arg for c in crates for arg in ("-p", c["name"])]
     packaged = subprocess.run(
-        ["cargo", "package", *selected, "--locked", "--allow-dirty", "--quiet"],
+        ["cargo", "package", *selected, "--no-verify", "--locked", "--allow-dirty", "--quiet"],
         cwd=root,
         capture_output=True,
         text=True,
         check=False,
+        env={**os.environ, "CARGO_TARGET_DIR": str(run)},
     )
     if packaged.returncode != 0:
         print(packaged.stderr, file=sys.stderr)
@@ -241,7 +292,7 @@ def main():
         return 1
     for package in crates:
         name = f"{package['name']}-{package['version']}"
-        crate = target / "package" / f"{name}.crate"
+        crate = run / "package" / f"{name}.crate"
         if not crate.is_file():
             print(f"check-package: {crate} was not written", file=sys.stderr)
             failed = True
@@ -249,6 +300,8 @@ def main():
         for finding in findings(name, read_crate(crate, name), licences):
             print(f"{name}: {finding}")
             failed = True
+    if not failed:
+        failed = not verify_build(run, build, [(f"{c['name']}-{c['version']}", c["name"]) for c in crates])
     if failed:
         print("check-package: FAILED", file=sys.stderr)
         return 1
