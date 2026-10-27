@@ -5,8 +5,6 @@ name: OSV-Scanner
 # finds them all: the workspace's Cargo.lock, the fuzz workspace's own
 # fuzz/Cargo.lock, the npm lockfiles of the TypeScript client and the
 # console tests, the Go client's go.mod and the pinned Python requirements.
-# Naming a lockfile as well (as sipnab does for fuzz/Cargo.lock) reports
-# each of its findings twice.
 #
 # Modeled on sipnab's osv-scanner.yml, with one difference. sipnab lets a
 # finding through here, because its cargo audit already blocks a merge on a
@@ -68,8 +66,8 @@ jobs:
         run: |
           set -euo pipefail
           [ -s osv.sarif ] || { echo "the scan wrote no osv.sarif"; exit 1; }
-          jq -r '.runs[].results[] | "\(.ruleId)  \(.message.text | split("\n")[0])"' osv.sarif
-          echo "$(jq '[.runs[].results[]] | length' osv.sarif) finding(s)"
+          jq -r '.runs[].results[] | "\(.locations[0].physicalLocation.artifactLocation.uri // "?")  \(.ruleId)  \(.message.text | split("\n")[0])"' osv.sarif | sort | uniq -c
+          echo "$(jq '[.runs[].results[]] | length' osv.sarif) SARIF result(s)"
 
       # always(): a scan that found something must still publish it.
       - name: Upload results
