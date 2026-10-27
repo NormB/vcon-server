@@ -70,16 +70,28 @@ crates.io compiled in, and links only the system's `libc`, `libm` and `libgcc_s`
 nothing in it comes from the rusqlite fork the tests use. The releases are on
 [GitHub](https://github.com/NormB/vcon-server/releases).
 
-To check a download, with the [GitHub CLI](https://cli.github.com/):
+Download the archive and the checksums, check the archive and unpack it:
 
 ```sh
-gh attestation verify vcon-server-VERSION-x86_64-unknown-linux-gnu.tar.gz \
-  --repo NormB/vcon-server
+VERSION=0.1.0
+curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$VERSION/vcon-server-$VERSION-x86_64-unknown-linux-gnu.tar.gz
+curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$VERSION/SHA256SUMS.txt
 sha256sum -c SHA256SUMS.txt --ignore-missing
+tar -xzf vcon-server-$VERSION-x86_64-unknown-linux-gnu.tar.gz
 ```
 
-The first command fails on any file that was not built by this repository's
-release workflow, or that changed after it was built.
+On aarch64, write `aarch64` for `x86_64`. `sha256sum` prints the archive's
+name and `OK`. The archive's directory holds `vcon-server`, `README.md` and
+the two licence files.
+
+To check where it was built, with the [GitHub CLI](https://cli.github.com/):
+
+```sh
+gh attestation verify vcon-server-$VERSION-x86_64-unknown-linux-gnu.tar.gz --repo NormB/vcon-server
+```
+
+It fails on any file that was not built by this repository's release
+workflow, or that changed after it was built.
 
 ## Install it
 
@@ -87,7 +99,11 @@ release workflow, or that changed after it was built.
 sudo install -m 0755 target/release/vcon-server /usr/local/bin/vcon-server
 ```
 
-From a release archive, install the `vcon-server` file it holds the same way.
+From a release archive:
+
+```sh
+sudo install -m 0755 vcon-server-$VERSION-x86_64-unknown-linux-gnu/vcon-server /usr/local/bin/vcon-server
+```
 
 ## Make the service account and its directories
 

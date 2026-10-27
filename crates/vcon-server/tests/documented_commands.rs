@@ -316,3 +316,17 @@ fn a_missing_subcommand_flag_or_config_is_found() {
     assert_eq!(invocation("cargo install vcon-server --locked"), None);
     assert_eq!(invocation("cd vcon-server"), None);
 }
+
+/// The release getting started downloads is this build's version, so the
+/// page names a release that exists once this version is tagged.
+#[test]
+fn the_release_getting_started_downloads_is_this_version() {
+    let page = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../website/content/docs/getting-started.md");
+    let text = std::fs::read_to_string(&page).expect("getting started");
+    let versions: Vec<&str> = text
+        .lines()
+        .filter_map(|l| l.strip_prefix("VERSION="))
+        .collect();
+    assert_eq!(versions, [env!("CARGO_PKG_VERSION")]);
+}

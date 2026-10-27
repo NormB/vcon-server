@@ -218,14 +218,15 @@ two lock files, `lock` and `lock.commands`, as a command that runs alone does,
 so no server or other command can start while it runs:
 
 ```sh
+sudo install -d -m 0700 /backup
 sudo systemctl stop vcon-server
 sudo flock --nonblock /var/lib/vcon-server/lock flock --nonblock /var/lib/vcon-server/lock.commands \
   tar -C /var/lib -cf /backup/vcon-server-data-$(date -u +%Y%m%dT%H%M%SZ).tar vcon-server
 sudo systemctl start vcon-server
 ```
 
-If a server or a command still holds the directory, `flock` exits 1 and
-nothing is copied. A server that stopped cleanly leaves no `-wal` file; the
+`/backup` stands for your backup storage. If a server or a command still
+holds the directory, `flock` exits 1 and nothing is copied. A server that stopped cleanly leaves no `-wal` file; the
 archive holds `server.sqlite`, `lock`, `lock.commands` and `tenants/`, and
 nothing in it is readable without the master key. Store it away from the
 master key's copies.
