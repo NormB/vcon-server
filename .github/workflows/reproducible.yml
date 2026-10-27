@@ -74,4 +74,7 @@ jobs:
             h="$HOME/.cargo"; [ "$d" = b ] && h="$w/home-b"
             (cd "$w/$d" && CARGO_HOME="$h" cargo build -q --release --locked -p vcon-server --target x86_64-unknown-linux-gnu)
           done
-          bash scripts/reproducible-build.sh compare "$w/a/target/x86_64-unknown-linux-gnu/release/vcon-server" "$w/b/target/x86_64-unknown-linux-gnu/release/vcon-server"
+          a="$w/a/target/x86_64-unknown-linux-gnu/release/vcon-server"; b="$w/b/target/x86_64-unknown-linux-gnu/release/vcon-server"
+          bash scripts/reproducible-build.sh compare "$a" "$b"
+          echo "== every string naming a build path, a:"; strings -n 6 "$a" | grep -oE '/home/runner/[^ "]*' | sed -E 's#(registry/src/[^/]*/[^/]*)/.*#\1/...#' | sort | uniq -c | sort -rn | head -60
+          echo "== kinds of section"; readelf -S -W "$a" | grep -E 'debug|note|symtab' || true
