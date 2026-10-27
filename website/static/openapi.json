@@ -2935,6 +2935,7 @@
               "https://vcon-server.com/problems/missing-uuid",
               "https://vcon-server.com/problems/name-taken",
               "https://vcon-server.com/problems/no-form",
+              "https://vcon-server.com/problems/not-a-vcon",
               "https://vcon-server.com/problems/not-deleted",
               "https://vcon-server.com/problems/not-found",
               "https://vcon-server.com/problems/not-json",

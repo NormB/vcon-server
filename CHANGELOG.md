@@ -8,6 +8,8 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- The `not-a-vcon` problem (422): the answer to a refusal from the vcon
+  library that this server does not name with a problem of its own.
 - `vcon-server backup <dir>`: a consistent copy of the data directory,
   taken while the server runs. Each catalog is copied with SQLite's online
   backup API, then every object file a copied catalog names; a version
@@ -21,6 +23,19 @@ All notable changes to this project are recorded here. The format follows
   hand makes the same token exchange, then runs `cargo publish --dry-run`
   for a new version, or `cargo package` for one crates.io already has,
   uploading nothing. 0.1.0 was published by hand.
+
+### Changed
+
+- vcon 0.2.0: the reading API is in `vcon::read` (`inspect`, `Inspection`,
+  `Limits`, `Rejection`, `MAX_SIGNED_LAYERS` and `MAX_JSON_DEPTH`); `Form`
+  and `parse_uuid` stay at the crate root, for what writing will share.
+  `Inspection`, `Limits` and `Rejection` are `#[non_exhaustive]`, so a later
+  release can add a field or a refusal without a breaking change; limits are
+  made with `Limits::new`. `CRATE_NAME` is gone. The library now has its own
+  version, apart from the server's.
+- The release workflow looks each crate up on crates.io at its own version,
+  and a run by hand dry-runs both crates in one `cargo publish`, so a new
+  vcon version the server needs is verified before it is on crates.io.
 
 ### Fixed
 

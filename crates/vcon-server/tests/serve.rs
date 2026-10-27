@@ -424,10 +424,10 @@ fn serve_warns_when_key_rotation_is_overdue() {
         env!("CARGO_MANIFEST_DIR")
     ))
     .expect("A.4");
-    let found = vcon::inspect(
+    let found = vcon::read::inspect(
         &body,
         Some("application/vcon"),
-        &vcon::Limits { inflated: 1 << 20 },
+        &vcon::read::Limits::new(1 << 20),
         &Default::default(),
     )
     .expect("a valid vCon");
@@ -489,10 +489,10 @@ fn serve_purges_what_is_due_when_it_starts() {
         env!("CARGO_MANIFEST_DIR")
     ))
     .expect("A.4");
-    let found = vcon::inspect(
+    let found = vcon::read::inspect(
         &body,
         Some("application/vcon"),
-        &vcon::Limits { inflated: 1 << 20 },
+        &vcon::read::Limits::new(1 << 20),
         &Default::default(),
     )
     .expect("a valid vCon");

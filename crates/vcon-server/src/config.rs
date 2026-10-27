@@ -442,8 +442,11 @@ key = "/etc/vcon-server/key.pem"
         fn every_fixed_limit_is_listed_with_its_value() {
             let text = page("configuration.md");
             for (limit, value) in [
-                ("Signed layers in one body", vcon::MAX_SIGNED_LAYERS),
-                ("Arrays and objects open at once", vcon::MAX_JSON_DEPTH),
+                ("Signed layers in one body", vcon::read::MAX_SIGNED_LAYERS),
+                (
+                    "Arrays and objects open at once",
+                    vcon::read::MAX_JSON_DEPTH,
+                ),
             ] {
                 let start = format!("| {limit} |");
                 let rows: Vec<&str> = text.lines().filter(|l| l.starts_with(&start)).collect();

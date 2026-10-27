@@ -10,6 +10,11 @@ is in (unsigned, signed or encrypted), whether it is gzipped, its uuid, and
 whether it needs extensions the caller does not support. It does no I/O and
 returns no bytes. The API may change in any release before 1.0.
 
+This page describes vcon 0.2.0, the next release. In 0.1.0, the release on
+crates.io now, `inspect`, `Inspection`, `Limits`, `Rejection`,
+`MAX_SIGNED_LAYERS` and `MAX_JSON_DEPTH` are at the crate root rather than in
+`vcon::read`, and limits are written `Limits { inflated: 1 << 20 }`.
+
 ## Add it
 
 ```sh
@@ -18,7 +23,7 @@ cargo add vcon
 
 ## Read and check a vCon
 
-`inspect` takes the body, its media type if one came with it, a bound on gzip
+`vcon::read::inspect` takes the body, its media type if one came with it, a bound on gzip
 inflation, and the extension names the caller supports in `critical`. It
 returns the form, whether the body was gzipped and the uuid, or a `Rejection`
 that says why the vCon is refused.
@@ -26,10 +31,11 @@ that says why the vCon is refused.
 ```rust
 use std::collections::BTreeSet;
 
-use vcon::{Form, Limits, Rejection, inspect};
+use vcon::Form;
+use vcon::read::{Limits, Rejection, inspect};
 
 // Gzip inflation in one body may produce at most this many bytes.
-let limits = Limits { inflated: 1 << 20 };
+let limits = Limits::new(1 << 20);
 // The extensions this caller supports in `critical`: none.
 let supported = BTreeSet::new();
 

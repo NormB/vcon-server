@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use uuid::Uuid;
-use vcon::Inspection;
+use vcon::read::Inspection;
 
 use crate::audit::{self, Action, Actor, Entry};
 use crate::catalog;
@@ -909,7 +909,8 @@ fn form_name(form: vcon::Form) -> &'static str {
 pub(crate) mod testing {
     use std::collections::BTreeSet;
 
-    use vcon::{Form, Inspection, Limits, inspect};
+    use vcon::Form;
+    use vcon::read::{Inspection, Limits, inspect};
 
     /// An unsigned vCon with this uuid, and what `inspect` makes of it.
     pub(crate) fn vcon(uuid: &str, subject: &str) -> (Inspection, Vec<u8>) {
@@ -917,8 +918,8 @@ pub(crate) mod testing {
             r#"{{"uuid": "{uuid}", "created_at": "2026-10-23T12:00:00Z", "subject": "{subject}", "parties": []}}"#
         )
         .into_bytes();
-        let found = inspect(&body, None, &Limits { inflated: 1 << 20 }, &BTreeSet::new())
-            .expect("a valid vCon");
+        let found =
+            inspect(&body, None, &Limits::new(1 << 20), &BTreeSet::new()).expect("a valid vCon");
         assert_eq!(found.form, Form::Unsigned);
         (found, body)
     }
@@ -930,7 +931,7 @@ mod tests {
 
     use serde_json::Value;
     use time::macros::datetime;
-    use vcon::{Limits, inspect};
+    use vcon::read::{Limits, inspect};
 
     use super::testing::vcon;
     use super::*;
@@ -1611,7 +1612,7 @@ mod tests {
             (encrypted, vcon::Form::Encrypted, false),
         ];
         for (body, form, gzip) in cases {
-            let found = inspect(&body, None, &Limits { inflated: 1 << 20 }, &BTreeSet::new())
+            let found = inspect(&body, None, &Limits::new(1 << 20), &BTreeSet::new())
                 .expect("a valid vCon");
             assert_eq!((found.form, found.gzip), (form, gzip));
             f.store.create(&f.caller, &found, &body).expect("stored");
@@ -1717,13 +1718,8 @@ mod tests {
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(inner)
         )
         .into_bytes();
-        let signed_found = inspect(
-            &signed,
-            None,
-            &Limits { inflated: 1 << 20 },
-            &BTreeSet::new(),
-        )
-        .expect("a signed vCon");
+        let signed_found =
+            inspect(&signed, None, &Limits::new(1 << 20), &BTreeSet::new()).expect("a signed vCon");
         let version = f
             .store
             .replace(&f.caller, old, &signed_found, &signed)
@@ -1742,13 +1738,8 @@ mod tests {
             r#"{{"unprotected": {{"uuid": "{UUID}"}}, "ciphertext": "x", "recipients": []}}"#
         )
         .into_bytes();
-        let enc_found = inspect(
-            &encrypted,
-            None,
-            &Limits { inflated: 1 << 20 },
-            &BTreeSet::new(),
-        )
-        .expect("an encrypted vCon");
+        let enc_found = inspect(&encrypted, None, &Limits::new(1 << 20), &BTreeSet::new())
+            .expect("an encrypted vCon");
         let Ok(Created::New(enc_version)) = g.store.create(&g.caller, &enc_found, &encrypted)
         else {
             panic!("stored")

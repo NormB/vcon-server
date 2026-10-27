@@ -47,7 +47,7 @@ toml = "1.1.8"
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
 uuid = "1.29.0"
-vcon = { path = "../vcon", version = "0.1.0" }
+vcon = { path = "../vcon", version = "0.2.0" }
 zeroize = "1.9.1"
 
 [dev-dependencies]

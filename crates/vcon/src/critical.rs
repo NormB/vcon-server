@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use serde_json::{Map, Value};
 
-use crate::Rejection;
+use crate::read::Rejection;
 
 /// The member names that list required extensions: `critical`, and
 /// `must_support`, its name before syntax version 0.4.0.

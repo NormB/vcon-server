@@ -39,7 +39,7 @@ use crate::store::{Caller as StoreCaller, Created, ListQuery, Store, StoreError}
 use crate::tenants::{KeyInfo, Removal, TenantError, TenantInfo, Tenants};
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
-use vcon::{Inspection, Rejection};
+use vcon::read::{Inspection, Rejection};
 
 /// The limits from configuration that the API applies to every request.
 #[derive(Debug, Clone, Copy)]
@@ -226,10 +226,8 @@ async fn inspect(
     let found = if content_type.as_deref().is_none_or(is_vcon_media_type) {
         let (worker, body) = (app.clone(), admitted.body.clone());
         blocking(move || {
-            let limits = vcon::Limits {
-                inflated: worker.limits.inflated,
-            };
-            vcon::inspect(&body, content_type.as_deref(), &limits, &worker.supported)
+            let limits = vcon::read::Limits::new(worker.limits.inflated);
+            vcon::read::inspect(&body, content_type.as_deref(), &limits, &worker.supported)
                 .map_err(|r| rejected(&r))
         })
         .await
@@ -1246,6 +1244,8 @@ enum Invalid {
     BadCritical,
     UnsupportedExtension,
     TooDeep,
+    /// A refusal from the vcon crate that this server does not name.
+    Other,
 }
 
 /// The problem for Format's refusal. Inflating past the limit is a body
@@ -1267,6 +1267,10 @@ fn rejected(rejection: &Rejection) -> Problem {
         Rejection::BadCritical => Invalid::BadCritical,
         Rejection::UnsupportedCritical(_) => Invalid::UnsupportedExtension,
         Rejection::TooDeep => Invalid::TooDeep,
+        // A refusal a later vcon release adds, before this server names it.
+        // Every refusal there is today is named above, so no test reaches
+        // this arm; the problem it answers with is tested on its own.
+        _ => Invalid::Other,
     })
 }
 
@@ -1369,6 +1373,7 @@ impl Problem {
                     "An extension the vCon needs is not supported",
                 ),
                 Invalid::TooDeep => ("too-deep", "The body nests too deeply"),
+                Invalid::Other => ("not-a-vcon", "The body is not a vCon this server can read"),
             },
             Problem::Store(error) => match error {
                 StoreError::Conflict => ("conflict", "Another vCon holds the uuid"),
@@ -1966,6 +1971,19 @@ mod tests {
         }
     }
 
+    /// A refusal the vcon crate adds in a later release, which this
+    /// server does not name yet, still has a problem: not-a-vcon. No test
+    /// can send one, since every refusal there is today is named above; this
+    /// holds the problem the catch-all arm answers with.
+    #[test]
+    fn a_refusal_this_server_does_not_name_is_not_a_vcon() {
+        let problem = Problem::Invalid(Invalid::Other);
+        assert_eq!(
+            (problem.status().as_u16(), problem.name().0),
+            (422, "not-a-vcon")
+        );
+    }
+
     #[test]
     fn every_refusal_from_format_has_its_own_problem() {
         let cases = [
@@ -2263,7 +2281,7 @@ mod tests {
             let s = server().await;
             let writer = s.key(&[Scope::Write]);
             let (_, mut signed) = vcon(UUID, "first");
-            for _ in 0..=vcon::MAX_SIGNED_LAYERS {
+            for _ in 0..=vcon::read::MAX_SIGNED_LAYERS {
                 signed = serde_json::json!({
                     "payload": URL_SAFE_NO_PAD.encode(gzip(&signed)),
                     "signatures": [{}],
@@ -2271,8 +2289,8 @@ mod tests {
                 .to_string()
                 .into_bytes();
             }
-            let open = "[".repeat(vcon::MAX_JSON_DEPTH);
-            let close = "]".repeat(vcon::MAX_JSON_DEPTH);
+            let open = "[".repeat(vcon::read::MAX_JSON_DEPTH);
+            let close = "]".repeat(vcon::read::MAX_JSON_DEPTH);
             let json = format!(r#"{{"uuid":"{UUID}","created_at":"x","a":{open}{close}}}"#);
             for body in [signed, json.into_bytes()] {
                 let answer = post(&s, &writer, None, body).await;
@@ -4768,6 +4786,7 @@ mod site_pages {
             Invalid::BadCritical,
             Invalid::UnsupportedExtension,
             Invalid::TooDeep,
+            Invalid::Other,
         ];
         for kind in invalid {
             match kind {
@@ -4783,7 +4802,8 @@ mod site_pages {
                 | Invalid::UuidMismatch
                 | Invalid::BadCritical
                 | Invalid::UnsupportedExtension
-                | Invalid::TooDeep => all.push(Problem::Invalid(kind)),
+                | Invalid::TooDeep
+                | Invalid::Other => all.push(Problem::Invalid(kind)),
             }
         }
         let store = [

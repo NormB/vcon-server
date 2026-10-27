@@ -13,14 +13,16 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use flate2::{Compression, write::GzEncoder};
 use serde_json::{Value, json};
-use vcon::{Form, Inspection, Limits, MAX_JSON_DEPTH, MAX_SIGNED_LAYERS, Rejection, inspect};
+use uuid::Uuid;
+use vcon::Form;
+use vcon::read::{Limits, MAX_JSON_DEPTH, MAX_SIGNED_LAYERS, Rejection, inspect};
 
 const ID: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bc46";
 const OTHER: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bc47";
 
 /// No inflation limit to stop the read early, as with a server configured
 /// with a high `limits.inflated`.
-const UNLIMITED: Limits = Limits { inflated: u64::MAX };
+const UNLIMITED: Limits = Limits::new(u64::MAX);
 
 /// Far past the limit, and deep enough that reading one stack frame per
 /// layer overflows `SMALL_STACK` in a debug build, as the commit hook and
@@ -84,16 +86,14 @@ fn deep_json(depth: usize) -> Vec<u8> {
         .into_bytes()
 }
 
-fn run(body: &[u8]) -> Result<Inspection, Rejection> {
-    inspect(body, None, &UNLIMITED, &BTreeSet::new())
+/// What `inspect` found, as its fields, which a test outside the crate can
+/// read but not build.
+fn run(body: &[u8]) -> Result<(Form, bool, Uuid), Rejection> {
+    inspect(body, None, &UNLIMITED, &BTreeSet::new()).map(|i| (i.form, i.gzip, i.uuid))
 }
 
-fn found(form: Form, gzip: bool) -> Result<Inspection, Rejection> {
-    Ok(Inspection {
-        form,
-        gzip,
-        uuid: ID.parse().expect("test uuid"),
-    })
+fn found(form: Form, gzip: bool) -> Result<(Form, bool, Uuid), Rejection> {
+    Ok((form, gzip, ID.parse().expect("test uuid")))
 }
 
 /// Reads `body` in a thread with a small stack; returns only if the read

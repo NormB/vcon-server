@@ -2,7 +2,8 @@
 
 use serde_json::{Map, Value};
 
-use crate::{Form, Rejection};
+use crate::Form;
+use crate::read::Rejection;
 
 /// Tells the form from the members present. A pair means signed or
 /// encrypted; any member an unsigned vCon carries means unsigned.

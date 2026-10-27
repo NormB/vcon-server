@@ -6,7 +6,7 @@ use std::io::Read;
 
 use flate2::read::MultiGzDecoder;
 
-use crate::Rejection;
+use crate::read::Rejection;
 
 /// The first two bytes of every gzip member (RFC 1952, section 2.3.1).
 const MAGIC: [u8; 2] = [0x1f, 0x8b];

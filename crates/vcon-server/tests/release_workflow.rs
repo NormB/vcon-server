@@ -80,7 +80,7 @@ fn a_tag_publishes_only_after_the_github_release_and_never_twice() {
     let vcon = job.find("vcon vcon-server").expect("both crates, in order");
     assert!(vcon > 0);
     assert!(
-        job.contains("https://crates.io/api/v1/crates/${crate}/${VERSION}"),
+        job.contains("https://crates.io/api/v1/crates/${crate}/${version}"),
         "each version is looked up on crates.io before an upload"
     );
     assert!(
@@ -110,7 +110,10 @@ fn a_run_by_hand_is_always_a_dry_run() {
         job.contains("DRY_RUN: ${{ github.event_name != 'push' }}"),
         "only a tag push uploads"
     );
-    assert!(job.contains("cargo publish --dry-run --locked -p \"$crate\""));
+    assert!(
+        job.contains("cargo publish --dry-run --locked -p vcon -p vcon-server"),
+        "both crates in one dry run, so the server verifies against the packaged vcon"
+    );
 }
 
 #[test]
@@ -146,13 +149,12 @@ fn the_token_exchange_is_checked_and_the_token_never_printed() {
 }
 
 #[test]
-fn a_dry_run_of_a_published_version_verifies_its_package_only() {
+fn a_dry_run_names_each_crate_and_never_publishes() {
     let job = code(&job(&release_yml(), "crates-io"));
     let published = &job[job
         .find("200)")
         .expect("a branch for a version crates.io has")..];
     let published = &published[..published.find(";;").expect("end of the branch")];
-    assert!(published.contains("cargo package --locked -p \"$crate\""));
     assert!(published.contains("version already published: verified package only"));
     assert!(
         !published.contains("cargo publish"),
@@ -160,8 +162,31 @@ fn a_dry_run_of_a_published_version_verifies_its_package_only() {
     );
     let new = &job[job.find("404)").expect("a branch for a new version")..];
     let new = &new[..new.find(";;").expect("end of the branch")];
-    assert!(new.contains("cargo publish --dry-run --locked -p \"$crate\""));
-    assert!(new.contains("cargo publish --locked -p \"$crate\""));
+    let (dry, real) = new.split_once("else").expect("a dry and a real branch");
+    assert!(dry.contains("new version: dry run passed"), "{dry}");
+    assert!(
+        !dry.contains("cargo publish"),
+        "a dry run uploads nothing: {dry}"
+    );
+    assert!(
+        real.contains("cargo publish --locked -p \"$crate\""),
+        "{real}"
+    );
+}
+
+#[test]
+fn each_crate_is_looked_up_at_its_own_version() {
+    // The crates keep their own versions (vcon 0.2.0 beside vcon-server
+    // 0.1), so the workspace's version names neither for certain.
+    let job = code(&job(&release_yml(), "crates-io"));
+    assert!(
+        job.contains("version=\"$(cargo pkgid -p \"$crate\" | sed 's/.*[#@]//')\""),
+        "each crate's version is read from its own manifest"
+    );
+    assert!(
+        !job.contains("${VERSION}"),
+        "no one version stands for both crates"
+    );
 }
 
 #[test]

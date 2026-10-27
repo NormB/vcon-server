@@ -9,7 +9,8 @@ use flate2::{Compression, write::GzEncoder};
 use proptest::prelude::*;
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
-use vcon::{Form, Limits, Rejection, inspect};
+use vcon::Form;
+use vcon::read::{Limits, Rejection, inspect};
 
 const LIMIT: u64 = 4096;
 
@@ -181,24 +182,24 @@ fn vcon_case() -> impl Strategy<Value = Case> {
 proptest! {
     #[test]
     fn never_panics_on_arbitrary_bytes(body in prop::collection::vec(any::<u8>(), 0..2048), ct in media_type()) {
-        let _ = inspect(&body, ct.as_deref(), &Limits { inflated: LIMIT }, &BTreeSet::new());
+        let _ = inspect(&body, ct.as_deref(), &Limits::new(LIMIT), &BTreeSet::new());
     }
 
     #[test]
     fn never_panics_on_arbitrary_gzip(body in prop::collection::vec(any::<u8>(), 0..2048)) {
-        let _ = inspect(&gz(&body), None, &Limits { inflated: LIMIT }, &BTreeSet::new());
+        let _ = inspect(&gz(&body), None, &Limits::new(LIMIT), &BTreeSet::new());
     }
 
     #[test]
     fn never_panics_on_vcon_like_json(value in json_value(), ct in media_type()) {
         let body = value.to_string();
-        let _ = inspect(body.as_bytes(), ct.as_deref(), &Limits { inflated: LIMIT }, &BTreeSet::new());
+        let _ = inspect(body.as_bytes(), ct.as_deref(), &Limits::new(LIMIT), &BTreeSet::new());
     }
 
     #[test]
     fn anything_inflating_past_the_limit_is_too_large(body in prop::collection::vec(any::<u8>(), (LIMIT as usize + 1)..(LIMIT as usize * 4))) {
         prop_assert_eq!(
-            inspect(&gz(&body), None, &Limits { inflated: LIMIT }, &BTreeSet::new()),
+            inspect(&gz(&body), None, &Limits::new(LIMIT), &BTreeSet::new()),
             Err(Rejection::TooLarge)
         );
     }
@@ -207,7 +208,7 @@ proptest! {
     fn gzip_changes_only_the_gzip_flag(value in json_value()) {
         let body = value.to_string();
         prop_assume!((body.len() as u64) <= LIMIT);
-        let limits = Limits { inflated: LIMIT };
+        let limits = Limits::new(LIMIT);
         let plain = inspect(body.as_bytes(), None, &limits, &BTreeSet::new());
         let zipped = inspect(&gz(body.as_bytes()), None, &limits, &BTreeSet::new());
         match (plain, zipped) {
@@ -223,7 +224,7 @@ proptest! {
     fn gives_the_answer_a_generated_vcon_was_built_to_get(case in vcon_case(), zip in any::<bool>()) {
         let text = case.body.to_string();
         let body = if zip { gz(text.as_bytes()) } else { text.into_bytes() };
-        let got = inspect(&body, None, &Limits { inflated: LIMIT }, &BTreeSet::new())
+        let got = inspect(&body, None, &Limits::new(LIMIT), &BTreeSet::new())
             .map(|i| (i.form, i.uuid, i.gzip));
         let expected = case.expected.map(|(form, uuid)| (form, uuid, zip));
         prop_assert_eq!(got, expected, "{}", case.body);
@@ -232,7 +233,7 @@ proptest! {
     #[test]
     fn the_same_input_gives_the_same_answer(value in json_value()) {
         let body = value.to_string();
-        let limits = Limits { inflated: LIMIT };
+        let limits = Limits::new(LIMIT);
         prop_assert_eq!(
             inspect(body.as_bytes(), None, &limits, &BTreeSet::new()),
             inspect(body.as_bytes(), None, &limits, &BTreeSet::new())

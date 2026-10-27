@@ -7,10 +7,12 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use flate2::{Compression, write::GzEncoder};
 use serde_json::{Value, json};
-use vcon::{Form, Inspection, Limits, Rejection, inspect};
+use uuid::Uuid;
+use vcon::Form;
+use vcon::read::{Limits, Rejection, inspect};
 
 const ID: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bc46";
-const LIMITS: Limits = Limits { inflated: 1 << 20 };
+const LIMITS: Limits = Limits::new(1 << 20);
 
 fn gz(bytes: &[u8]) -> Vec<u8> {
     let mut e = GzEncoder::new(Vec::new(), Compression::default());
@@ -30,16 +32,14 @@ fn sign(inner: &[u8]) -> Value {
     json!({"payload": b64(inner), "signatures": [{"header": {"uuid": ID}}]})
 }
 
-fn run(body: &[u8]) -> Result<Inspection, Rejection> {
-    inspect(body, None, &LIMITS, &BTreeSet::new())
+/// What `inspect` found, as its fields, which a test outside the crate can
+/// read but not build.
+fn run(body: &[u8]) -> Result<(Form, bool, Uuid), Rejection> {
+    inspect(body, None, &LIMITS, &BTreeSet::new()).map(|i| (i.form, i.gzip, i.uuid))
 }
 
-fn ok(form: Form, gzip: bool) -> Result<Inspection, Rejection> {
-    Ok(Inspection {
-        form,
-        gzip,
-        uuid: ID.parse().expect("test uuid"),
-    })
+fn ok(form: Form, gzip: bool) -> Result<(Form, bool, Uuid), Rejection> {
+    Ok((form, gzip, ID.parse().expect("test uuid")))
 }
 
 #[test]
@@ -128,7 +128,7 @@ fn the_media_type_and_supported_list_are_used() {
     let critical = json!({"uuid": ID, "created_at": "x", "critical": ["x"]}).to_string();
     let supported = BTreeSet::from(["x".to_owned()]);
     assert_eq!(
-        inspect(critical.as_bytes(), None, &LIMITS, &supported),
+        inspect(critical.as_bytes(), None, &LIMITS, &supported).map(|i| (i.form, i.gzip, i.uuid)),
         ok(Form::Unsigned, false)
     );
 }
@@ -140,18 +140,12 @@ fn the_body_and_every_payload_share_one_inflation_budget() {
     let body = gz(signed.as_bytes());
     let total = (padded.len() + signed.len()) as u64;
     assert_eq!(
-        inspect(&body, None, &Limits { inflated: total }, &BTreeSet::new()),
+        inspect(&body, None, &Limits::new(total), &BTreeSet::new())
+            .map(|i| (i.form, i.gzip, i.uuid)),
         ok(Form::Signed, true)
     );
     assert_eq!(
-        inspect(
-            &body,
-            None,
-            &Limits {
-                inflated: total - 1
-            },
-            &BTreeSet::new()
-        ),
+        inspect(&body, None, &Limits::new(total - 1), &BTreeSet::new()),
         Err(Rejection::TooLarge)
     );
 }

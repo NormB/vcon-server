@@ -243,36 +243,41 @@ jobs:
         run: |
           [ -n "$TOKEN" ] || { echo "the token exchange returned no token" >&2; exit 1; }
           echo "crates.io issued a token by trusted publishing (${#TOKEN} characters)"
-      # Each crate is looked up on crates.io first. A tag publishes what is
-      # not there and skips what is. A dry run verifies a published
-      # version's package with cargo package, which uploads nothing and
-      # writes nothing to the registry, and dry-runs the publish of a new one.
+      # A run by hand dry-runs both crates in one cargo publish, so a new
+      # vcon version the server needs is verified against the packaged vcon
+      # before it is on crates.io; a version already there is only warned
+      # about, and nothing is uploaded. A tag looks each crate up on
+      # crates.io at its own version, vcon first, publishes what is not
+      # there and skips what is.
       - name: Publish what crates.io does not have yet
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
           DRY_RUN: ${{ github.event_name != 'push' }}
         run: |
           set -euo pipefail
-          VERSION="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
-          [ -n "$VERSION" ] || { echo "no version in Cargo.toml" >&2; exit 1; }
+          if [ "$DRY_RUN" = true ]; then
+            cargo publish --dry-run --locked -p vcon -p vcon-server
+          fi
           for crate in vcon vcon-server; do
+            # Each crate's own version: the crates are versioned apart.
+            version="$(cargo pkgid -p "$crate" | sed 's/.*[#@]//')"
+            [ -n "$version" ] || { echo "no version for ${crate}" >&2; exit 1; }
             status="$(curl -sS -o /dev/null -w '%{http_code}' \
               -A 'vcon-server release workflow (https://github.com/NormB/vcon-server)' \
-              "https://crates.io/api/v1/crates/${crate}/${VERSION}")"
+              "https://crates.io/api/v1/crates/${crate}/${version}")"
             case "$status" in
               200)
                 if [ "$DRY_RUN" = true ]; then
-                  cargo package --locked -p "$crate"
-                  echo "${crate} ${VERSION}: version already published: verified package only"
+                  echo "${crate} ${version}: version already published: verified package only"
                 else
-                  echo "${crate} ${VERSION} is already on crates.io; skipped"
+                  echo "${crate} ${version} is already on crates.io; skipped"
                 fi ;;
               404)
                 if [ "$DRY_RUN" = true ]; then
-                  cargo publish --dry-run --locked -p "$crate"
+                  echo "${crate} ${version}: new version: dry run passed"
                 else
                   cargo publish --locked -p "$crate"
                 fi ;;
-              *) echo "crates.io answered ${status} for ${crate} ${VERSION}" >&2; exit 1 ;;
+              *) echo "crates.io answered ${status} for ${crate} ${version}" >&2; exit 1 ;;
             esac
           done

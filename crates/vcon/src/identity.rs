@@ -3,7 +3,7 @@
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
-use crate::Rejection;
+use crate::read::Rejection;
 
 /// Returns the vCon's uuid. `uuid` must be a string in RFC 9562 text form,
 /// of any version, and `created_at` must be present.

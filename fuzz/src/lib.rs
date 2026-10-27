@@ -9,11 +9,12 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use vcon::{Form, Inspection, Limits, Rejection};
+use vcon::Form;
+use vcon::read::{Inspection, Limits, Rejection};
 
 /// The inflation limit the vCon targets inspect with: small, so a body
 /// that passes it is quick to find and quick to run.
-pub const LIMITS: Limits = Limits { inflated: 64 << 10 };
+pub const LIMITS: Limits = Limits::new(64 << 10);
 
 /// The one extension the targets' server supports.
 pub const SUPPORTED: &str = "example-extension";
@@ -71,10 +72,11 @@ pub fn gzip_agrees(
         return true;
     }
     let expected = match plain {
-        Ok(found) => Ok(Inspection {
-            gzip: true,
-            ..*found
-        }),
+        Ok(found) => {
+            let mut gzipped = *found;
+            gzipped.gzip = true;
+            Ok(gzipped)
+        }
         Err(other) => Err(other.clone()),
     };
     gzipped == &expected
@@ -128,7 +130,8 @@ pub fn signed_agrees(
         Ok(found) if found.form == Form::Encrypted => Err(Rejection::BadPayload),
         // Signing adds a layer, so a payload at the limit is one past it.
         Ok(found)
-            if found.form == Form::Signed && signed_layers(payload) == vcon::MAX_SIGNED_LAYERS =>
+            if found.form == Form::Signed
+                && signed_layers(payload) == vcon::read::MAX_SIGNED_LAYERS =>
         {
             Err(Rejection::TooDeep)
         }
@@ -136,11 +139,12 @@ pub fn signed_agrees(
             Some(text) if vcon::parse_uuid(text) != Some(found.uuid) => {
                 Err(Rejection::UuidMismatch)
             }
-            _ => Ok(Inspection {
-                form: Form::Signed,
-                gzip: false,
-                uuid: found.uuid,
-            }),
+            _ => {
+                let mut signed = *found;
+                signed.form = Form::Signed;
+                signed.gzip = false;
+                Ok(signed)
+            }
         },
         Err(Rejection::NotJson | Rejection::NoForm | Rejection::AmbiguousForm) => {
             Err(Rejection::BadPayload)
@@ -160,7 +164,7 @@ mod tests {
     const ID: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bc46";
 
     fn inspect(body: &[u8]) -> Result<Inspection, Rejection> {
-        vcon::inspect(body, None, &LIMITS, &supported())
+        vcon::read::inspect(body, None, &LIMITS, &supported())
     }
 
     fn unsigned() -> Vec<u8> {
@@ -273,15 +277,15 @@ mod tests {
     #[test]
     fn a_payload_at_the_layer_limit_is_too_deep_once_signed() {
         // Past the targets' small inflation limit, so read with a large one.
-        let big = Limits { inflated: 1 << 30 };
-        let read = |body: &[u8]| vcon::inspect(body, None, &big, &supported());
-        let payload = nested(vcon::MAX_SIGNED_LAYERS);
+        let big = Limits::new(1 << 30);
+        let read = |body: &[u8]| vcon::read::inspect(body, None, &big, &supported());
+        let payload = nested(vcon::read::MAX_SIGNED_LAYERS);
         let (plain, signed) = (read(&payload), read(&jws(&payload, None)));
         assert_eq!(plain.as_ref().map(|found| found.form), Ok(Form::Signed));
         assert_eq!(signed, Err(Rejection::TooDeep));
         assert!(signed_agrees(&payload, &plain, None, &signed));
         assert!(signed_agrees(&payload, &plain, Some(OTHER_UUID), &signed));
-        let shallower = nested(vcon::MAX_SIGNED_LAYERS - 1);
+        let shallower = nested(vcon::read::MAX_SIGNED_LAYERS - 1);
         let plain = read(&shallower);
         assert!(!signed_agrees(
             &shallower,

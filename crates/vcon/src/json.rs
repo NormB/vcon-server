@@ -6,7 +6,7 @@ use std::fmt;
 use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Number, Value};
 
-use crate::{MAX_JSON_DEPTH, Rejection};
+use crate::read::{MAX_JSON_DEPTH, Rejection};
 
 /// Parses `body` as exactly one JSON object in which no object, at any
 /// depth, repeats a member name, and no more than [`MAX_JSON_DEPTH`] arrays

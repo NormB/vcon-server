@@ -8,12 +8,13 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
+use crate::Form;
 use crate::critical::check_critical;
 use crate::form::form_of;
 use crate::gzip::inflate;
 use crate::identity::{parse_uuid_text, unsigned_identity};
 use crate::json::parse_object;
-use crate::{Form, MAX_SIGNED_LAYERS, Rejection};
+use crate::read::{MAX_SIGNED_LAYERS, Rejection};
 
 /// Returns the uuid of the vCon inside a signed body, opening nested JWS
 /// layers one after another, in a loop, so the stack does not grow with the
