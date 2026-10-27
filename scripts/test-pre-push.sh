@@ -33,16 +33,22 @@ c=0
 # commit [extra git-commit options...]: one new commit
 commit() { c=$((c + 1)); echo "$c" > f; git add f; git commit -q -m "Change $c" "$@"; }
 # expect <accept|refuse> <description> <push arguments...>
+# A refusal must be the one the case is about: set why to text the hook
+# prints for it (why='author is not' expect refuse ...).
 expect() {
   local want="$1" what="$2"; shift 2
   n=$((n + 1))
   if git push -q "$@" >"$work/out" 2>&1; then got=accept; else got=refuse; fi
-  if [ "$got" = "$want" ]; then
+  if [ "$got" = "$want" ] && { [ "$want" = accept ] || { [ -n "${why:-}" ] && grep -qF -- "$why" "$work/out"; }; }; then
     pass=$((pass + 1))
   else
     fail=$((fail + 1))
-    echo "FAIL ($want expected, got $got): $what"
-    sed 's/^/    /' "$work/out" | head -5
+    if [ "$got" = "$want" ]; then
+      echo "FAIL (refused, but not with '${why:-<no why given>}'): $what"
+    else
+      echo "FAIL ($want expected, got $got): $what"
+    fi
+    sed 's/^/    /' "$work/out" | head -12
   fi
 }
 
@@ -50,25 +56,25 @@ commit -S
 expect accept "signed commit by the configured identity" origin main
 
 commit --no-gpg-sign
-expect refuse "unsigned commit" origin main
+why='has no good signature from an allowed signer' expect refuse "unsigned commit" origin main
 git reset -q --hard origin/main
 
 commit -S --author "Someone Else <someone@example.com>"
-expect refuse "wrong author" origin main
+why='author is not the configured identity' expect refuse "wrong author" origin main
 git reset -q --hard origin/main
 
 GIT_COMMITTER_NAME="Someone Else" GIT_COMMITTER_EMAIL="someone@example.com" commit -S
-expect refuse "wrong committer" origin main
+why='committer is not the configured identity' expect refuse "wrong committer" origin main
 git reset -q --hard origin/main
 
 c=$((c + 1)); echo "$c" > f; git add f
 git -c user.signingkey="$work/stranger.pub" commit -q -S -m "Change $c"
-expect refuse "signed by a key that is not an allowed signer" origin main
+why='has no good signature from an allowed signer' expect refuse "signed by a key that is not an allowed signer" origin main
 git reset -q --hard origin/main
 
 commit --no-gpg-sign
 commit -S
-expect refuse "unsigned commit under a signed one" origin main
+why='has no good signature from an allowed signer' expect refuse "unsigned commit under a signed one" origin main
 git reset -q --hard origin/main
 
 git branch copy main
@@ -82,13 +88,13 @@ expect accept "several signed commits" origin main
 git checkout -q -b topic
 commit --no-gpg-sign
 commit -S
-expect refuse "new branch hiding an unsigned commit under a signed one" origin topic
+why='has no good signature from an allowed signer' expect refuse "new branch hiding an unsigned commit under a signed one" origin topic
 git checkout -q main
 
 git clone -q -b main "$work/remote.git" "$work/other"
 (cd "$work/other" && git -c user.name="Test User" -c user.email="test@example.com" commit -q --allow-empty --no-gpg-sign -m "Elsewhere" && git push -q --no-verify origin main)
 commit -S
-expect refuse "force push over commits never fetched here" --force origin main
+why='cannot list the commits going to' expect refuse "force push over commits never fetched here" --force origin main
 
 echo "test-pre-push: $pass of $n passed"
 [ "$fail" -eq 0 ]

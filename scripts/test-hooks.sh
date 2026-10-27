@@ -80,6 +80,9 @@ pass=0
 fail=0
 n=0
 # expect <accept|refuse> <description> <file> <content> [message]
+# A refusal must be the one the case is about: set why to text its finding
+# prints (why='notes.txt: AI tool name:' expect refuse ...). A commit
+# refused only by some other check fails the case.
 expect() {
   local want="$1" what="$2" file="$3" content="$4" msg="${5:-Change a file}"
   n=$((n + 1))
@@ -87,12 +90,16 @@ expect() {
   printf '%s\n' "$content" > "$file"
   git add -f -- "$file"
   if git commit -q -m "$msg" >"$work/out" 2>&1; then got=accept; else got=refuse; fi
-  if [ "$got" = "$want" ]; then
+  if [ "$got" = "$want" ] && { [ "$want" = accept ] || { [ -n "${why:-}" ] && grep -qF -- "$why" "$work/out"; }; }; then
     pass=$((pass + 1))
   else
     fail=$((fail + 1))
-    echo "FAIL ($want expected, got $got): $what"
-    sed 's/^/    /' "$work/out" | head -5
+    if [ "$got" = "$want" ]; then
+      echo "FAIL (refused, but not with '${why:-<no why given>}'): $what"
+    else
+      echo "FAIL ($want expected, got $got): $what"
+    fi
+    sed 's/^/    /' "$work/out" | head -12
   fi
   git reset -q --hard HEAD
   git clean -qfdx -e target
@@ -104,77 +111,77 @@ sur="br""andinger"
 robot="$(printf '\xf0\x9f\xa4\x96')"
 
 expect accept "clean change" notes.txt "plain words"
-expect refuse "AI tool named" notes.txt "written by ${ai_word^}"
-expect refuse "AI company named" notes.txt "see ${ai_co}.com"
-expect refuse "robot emoji" notes.txt "done $robot"
-expect refuse "real-looking email" notes.txt "mail someone@gm""ail.com"
+why='notes.txt: AI tool name:' expect refuse "AI tool named" notes.txt "written by ${ai_word^}"
+why='notes.txt: AI company name:' expect refuse "AI company named" notes.txt "see ${ai_co}.com"
+why='notes.txt: robot emoji:' expect refuse "robot emoji" notes.txt "done $robot"
+why='notes.txt: email address:' expect refuse "real-looking email" notes.txt "mail someone@gm""ail.com"
 expect accept "reserved email" notes.txt "mail someone@example.com"
 expect accept "reserved .invalid email" notes.txt "mail a@host.invalid"
-expect refuse "phone number" notes.txt "call 212-867-""5309"
-expect refuse "E.164 phone" notes.txt "call +44207""9460000"
+why='notes.txt: phone number:' expect refuse "phone number" notes.txt "call 212-867-""5309"
+why='notes.txt: phone number:' expect refuse "E.164 phone" notes.txt "call +44207""9460000"
 expect accept "reserved 555-01xx" notes.txt "call 212-555-0100"
-expect refuse "public IPv4" notes.txt "host 8.8.""4.4"
-expect refuse "private IPv4" notes.txt "host 172.31.""78.11"
+why='notes.txt: IP address:' expect refuse "public IPv4" notes.txt "host 8.8.""4.4"
+why='notes.txt: IP address:' expect refuse "private IPv4" notes.txt "host 172.31.""78.11"
 expect accept "RFC 5737 IPv4" notes.txt "host 192.0.2.10"
 expect accept "loopback IPv4" notes.txt "bind 127.0.0.1"
-expect refuse "public IPv6" notes.txt "host 2606:47""00:4700:"":1111"
+why='notes.txt: IP address:' expect refuse "public IPv6" notes.txt "host 2606:47""00:4700:"":1111"
 expect accept "RFC 3849 IPv6" notes.txt "host 2001:db8::5"
-expect refuse "owner surname" notes.txt "by Norm ${sur^}"
+why="notes.txt: owner's name:" expect refuse "owner surname" notes.txt "by Norm ${sur^}"
 expect accept "owner's credit in the README" README.md "Copyright 2026 Norm ${sur^}"
 expect accept "owner's credit in the site config" website/config.toml "author = \"Norm ${sur^}\""
 expect accept "Best Practices answer linking to a file in the tree" .bestpractices.json "{\"a\": \"$links/crates/fixture/src/lib.rs\"}"
-expect refuse "Best Practices answer linking to a file that moved" .bestpractices.json "{\"a\": \"$links/src/gone.rs\"}"
-expect refuse "owner surname in a site page" website/content/a.md "by Norm ${sur^}"
-expect refuse "owner surname in a nested README" crates/x/README.md "by Norm ${sur^}"
-expect refuse "design rule id" notes.txt "see FMT""-3"
-expect refuse "design rule id in lower case" notes.txt "see sto""-4"
-expect refuse "design rule id in a name" crates/x/src/a.rs "fn written_in_the_sto""_3_order() {}"
+why='test_every_path_bestpractices_links_to_exists' expect refuse "Best Practices answer linking to a file that moved" .bestpractices.json "{\"a\": \"$links/src/gone.rs\"}"
+why="website/content/a.md: owner's name:" expect refuse "owner surname in a site page" website/content/a.md "by Norm ${sur^}"
+why="crates/x/README.md: owner's name:" expect refuse "owner surname in a nested README" crates/x/README.md "by Norm ${sur^}"
+why='notes.txt: design rule id:' expect refuse "design rule id" notes.txt "see FMT""-3"
+why='notes.txt: design rule id:' expect refuse "design rule id in lower case" notes.txt "see sto""-4"
+why='crates/x/src/a.rs: design rule id:' expect refuse "design rule id in a name" crates/x/src/a.rs "fn written_in_the_sto""_3_order() {}"
 expect accept "word ending in a rule prefix" crates/x/src/b.rs "let restore_2 = histo_3;"
-expect refuse "design decision id" notes.txt "see CD""8"
-expect refuse "scope decision id" notes.txt "see D""40"
-expect refuse "plan task id" notes.txt "done P""0.3"
-expect refuse "plan task id past phase ten" notes.txt "done P""11.7"
-expect refuse "plan task id in phase fourteen" notes.txt "see P""14.12"
+why='notes.txt: design decision id:' expect refuse "design decision id" notes.txt "see CD""8"
+why='notes.txt: scope decision id:' expect refuse "scope decision id" notes.txt "see D""40"
+why='notes.txt: plan task id:' expect refuse "plan task id" notes.txt "done P""0.3"
+why='notes.txt: plan task id:' expect refuse "plan task id past phase ten" notes.txt "done P""11.7"
+why='notes.txt: plan task id:' expect refuse "plan task id in phase fourteen" notes.txt "see P""14.12"
 expect accept "crate README with absolute links" crates/fixture/README.md "# hook-fixture
 
 See [the docs](https://docs.rs/hook-fixture)."
-expect refuse "crate README with a relative link" crates/fixture/README.md "# hook-fixture
+why="hook-fixture: README.md: relative link 'docs/guide.md'" expect refuse "crate README with a relative link" crates/fixture/README.md "# hook-fixture
 
 See [the guide](docs/guide.md)."
 # Ids of any length: phases and tasks past the first ten, and decisions and
 # rules past 99, are as private as the first ones.
-expect refuse "plan task id in phase 11" notes.txt "done P""11.4"
-expect refuse "plan task id in phase 13" notes.txt "done P""13.7"
-expect refuse "plan task id with a two-digit task" notes.txt "done P""14.10"
-expect refuse "plan task id in phase 100" notes.txt "done P""100.1"
-expect refuse "plan task id with a three-digit task" notes.txt "done P""2.100"
-expect refuse "design decision id past 99" notes.txt "see CD""100"
-expect refuse "scope decision id past 99" notes.txt "see D""100"
-expect refuse "design rule id past 99" notes.txt "see FMT""-100"
+why='notes.txt: plan task id:' expect refuse "plan task id in phase 11" notes.txt "done P""11.4"
+why='notes.txt: plan task id:' expect refuse "plan task id in phase 13" notes.txt "done P""13.7"
+why='notes.txt: plan task id:' expect refuse "plan task id with a two-digit task" notes.txt "done P""14.10"
+why='notes.txt: plan task id:' expect refuse "plan task id in phase 100" notes.txt "done P""100.1"
+why='notes.txt: plan task id:' expect refuse "plan task id with a three-digit task" notes.txt "done P""2.100"
+why='notes.txt: design decision id:' expect refuse "design decision id past 99" notes.txt "see CD""100"
+why='notes.txt: scope decision id:' expect refuse "scope decision id past 99" notes.txt "see D""100"
+why='notes.txt: design rule id:' expect refuse "design rule id past 99" notes.txt "see FMT""-100"
 expect accept "names like plan ids" notes.txt "RFC 9457, P-256, P256, XP11.4, HTTP/1.1, 0.1.0, AES-256-GCM, D-Bus"
-expect refuse "draft number" notes.txt "from draft ""6.8"
+why='notes.txt: private draft number:' expect refuse "draft number" notes.txt "from draft ""6.8"
 ietf_tel="+1234567""8901"
 expect accept "IETF example number in IETF fixtures" crates/x/tests/fixtures/ietf/a.vcon "{\"tel\": \"$ietf_tel\"}"
-expect refuse "IETF example number elsewhere" notes.txt "tel $ietf_tel"
-expect refuse "other number in IETF fixtures" crates/x/tests/fixtures/ietf/b.vcon "call 212-867-""5309"
-expect refuse "other E.164 number in IETF fixtures" crates/x/tests/fixtures/ietf/d.vcon "tel +44207""9460000"
-expect refuse "IETF example number in other fixtures" crates/x/tests/fixtures/c.json "tel $ietf_tel"
+why='notes.txt: phone number:' expect refuse "IETF example number elsewhere" notes.txt "tel $ietf_tel"
+why='crates/x/tests/fixtures/ietf/b.vcon: phone number:' expect refuse "other number in IETF fixtures" crates/x/tests/fixtures/ietf/b.vcon "call 212-867-""5309"
+why='crates/x/tests/fixtures/ietf/d.vcon: phone number:' expect refuse "other E.164 number in IETF fixtures" crates/x/tests/fixtures/ietf/d.vcon "tel +44207""9460000"
+why='crates/x/tests/fixtures/c.json: phone number:' expect refuse "IETF example number in other fixtures" crates/x/tests/fixtures/c.json "tel $ietf_tel"
 expect accept "ids allowed in fixtures" crates/x/tests/fixtures/a.json '{"k": "D''40 FMT''-3"}'
-expect refuse "export staged by force" "vcon-server — Notes.md" "words"
-expect refuse "AI trailer in message" notes.txt "message case one" "Fix it
+why='pre-commit: refused: private document export staged: vcon-server — Notes.md' expect refuse "export staged by force" "vcon-server — Notes.md" "words"
+why='<commit message>: AI tool name:' expect refuse "AI trailer in message" notes.txt "message case one" "Fix it
 
 Co-Authored-By: ${ai_word^} <noreply@${ai_co}.com>"
-expect refuse "plan task id in message" notes.txt "message case two" "Finish P""0.3"
-expect refuse "later plan task id in message" notes.txt "message case five" "Finish P""14.10"
-expect refuse "email in message" notes.txt "message case three" "Ask someone@gm""ail.com"
+why='<commit message>: plan task id:' expect refuse "plan task id in message" notes.txt "message case two" "Finish P""0.3"
+why='<commit message>: plan task id:' expect refuse "later plan task id in message" notes.txt "message case five" "Finish P""14.10"
+why='<commit message>: email address:' expect refuse "email in message" notes.txt "message case three" "Ask someone@gm""ail.com"
 expect accept "clean message" notes.txt "message case four" "Explain the change"
-expect refuse "unformatted code" crates/fixture/src/lib.rs "pub fn add_one(x:u32)->u32{x+1}"
-expect refuse "clippy warning" crates/fixture/src/lib.rs '/// Adds one.
+why='Diff in' expect refuse "unformatted code" crates/fixture/src/lib.rs "pub fn add_one(x:u32)->u32{x+1}"
+why='clippy::needless_return' expect refuse "clippy warning" crates/fixture/src/lib.rs '/// Adds one.
 pub fn add_one(x: u32) -> u32 {
     let y = x;
     return y + 1;
 }'
-expect refuse "failing test" crates/fixture/src/lib.rs '/// Adds one.
+why='tests::adds_one' expect refuse "failing test" crates/fixture/src/lib.rs '/// Adds one.
 pub fn add_one(x: u32) -> u32 {
     x + 2
 }
