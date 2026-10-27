@@ -2,7 +2,8 @@
 # Prepares the release build container (AlmaLinux 9, glibc 2.34, the floor
 # the release binaries are held to) for scripts/reproducible-build.sh: the
 # C toolchain and Perl the vendored OpenSSL and SQLCipher build with,
-# binutils and Python for scripts/check_glibc.py, and rustup, pinned by
+# binutils and Python for scripts/check_glibc.py, diffutils for the
+# reproducible check's cmp and diff, and rustup, pinned by
 # sha256, with the toolchain rust-toolchain.toml names. release.yml and
 # reproducible.yml both run it, so both build in the same environment.
 # git is installed before the checkout, which needs it to keep .git.
@@ -24,7 +25,7 @@ case "$(uname -m)" in
 esac
 
 # perl-core: OpenSSL's Configure needs modules the minimal perl leaves out.
-dnf install -y --setopt=install_weak_deps=False gcc make perl-core binutils python3 xz >&2
+dnf install -y --setopt=install_weak_deps=False gcc make perl-core binutils diffutils python3 xz >&2
 ldd --version | sed -n 1p >&2
 
 curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o /tmp/rustup-init \
