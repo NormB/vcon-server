@@ -39,6 +39,26 @@ cargo build --release --offline
 offline from the copy as well. A build that reads crates.io through a mirror
 still needs github.com for the fork, or the vendored copy.
 
+## Or install from crates.io
+
+With Rust 1.99 or later:
+
+```sh
+cargo install vcon-server --locked
+vcon-server --version
+```
+
+`cargo install` puts the binary in `~/.cargo/bin`. It compiles SQLCipher, the
+OpenSSL it uses, and AWS-LC, so the host needs a C compiler with the C library
+headers, `make` and `perl`. On Debian or Ubuntu:
+
+```sh
+sudo apt-get install gcc libc6-dev make perl
+```
+
+The package on crates.io holds only the server's sources and depends only on
+crates from crates.io, so this build does not fetch anything from github.com.
+
 ## Or download a release
 
 Each release on GitHub holds the server for Linux on x86_64 and aarch64, a
@@ -47,8 +67,8 @@ file carries a signed build provenance attestation, and each archive carries
 its SBOM as one too, so a download can be traced to the workflow run and the
 commit that built it. The binary has SQLCipher, OpenSSL and rusqlite from
 crates.io compiled in, and links only the system's `libc`, `libm` and `libgcc_s`;
-nothing in it comes from the rusqlite fork the tests use. There is no release
-yet; until there is, build from source as above.
+nothing in it comes from the rusqlite fork the tests use. The releases are on
+[GitHub](https://github.com/NormB/vcon-server/releases).
 
 To check a download, with the [GitHub CLI](https://cli.github.com/):
 

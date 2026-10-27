@@ -5,7 +5,7 @@
 ## Docs
 
 - [What is built](https://vcon-server.com/docs/status/): what works today and what is being built
-- [Getting started](https://vcon-server.com/docs/getting-started/): build, master key, certificate, configuration, systemd
+- [Getting started](https://vcon-server.com/docs/getting-started/): build, install from crates.io or download a release, master key, certificate, configuration, systemd
 - [Configuration](https://vcon-server.com/docs/configuration/): every key and default
 - [Tenants and keys](https://vcon-server.com/docs/tenants-and-keys/): scopes write, read, delete, legal (tenant keys) and admin (operator keys)
 - [Storing vCons](https://vcon-server.com/docs/storing-vcons/): accepted forms, checks, versions, ETag and If-Match
@@ -16,6 +16,7 @@
 - [Producers](https://vcon-server.com/docs/producers/): sending vCons and handling each answer
 - [Operations](https://vcon-server.com/docs/operations/): data directory, locks, sweep, logs, backups
 - [Command line](https://vcon-server.com/docs/command-line/): tenant, key and audit commands, output and exit codes
+- [The vcon library](https://vcon-server.com/docs/library/): reading and checking a vCon in Rust with the vcon crate
 - [Development](https://vcon-server.com/docs/development/): layout, tests and gates
 
 ## Reference

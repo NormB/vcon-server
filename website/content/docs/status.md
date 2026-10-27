@@ -13,7 +13,8 @@ otherwise.
 - **Input checks.** The three vCon forms (unsigned, signed, encrypted), plain
   or gzipped, with bounded inflation, duplicate JSON members refused, and the
   `critical` extension list honoured. These checks are a separate library
-  crate, `vcon`.
+  crate, [`vcon`](@/docs/library.md). Both crates, `vcon` and `vcon-server`,
+  are published on crates.io.
 - **Encrypted storage.** AES-256-GCM per version under a per-version data key,
   tenant keys wrapped by the master key, SQLCipher catalogs, crash-safe writes
   and start-up recovery.
