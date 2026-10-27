@@ -110,6 +110,11 @@ jobs:
           ASAN_OPTIONS: detect_stack_use_after_return=1:abort_on_error=1
         run: |
           set -euo pipefail
+          # A report names functions and lines only through a symbolizer;
+          # the runner image carries LLVM's.
+          sym="$(command -v llvm-symbolizer || printf '%s\n' /usr/lib/llvm-*/bin/llvm-symbolizer | sort -V | tail -1)"
+          [ -x "$sym" ] || { echo "::error::no llvm-symbolizer on this runner"; exit 1; }
+          export ASAN_SYMBOLIZER_PATH="$sym"
           # As in ci.yml: the binary locks its memory, the tests run it.
           sudo prlimit --pid $$ --memlock=unlimited:unlimited
           # Left out: the tests that check memory is locked. The sanitizer
