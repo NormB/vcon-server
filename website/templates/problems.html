@@ -8,8 +8,8 @@
       <h1>{{ section.title }}</h1>
       {% if section.description %}<p class="lead">{{ section.description }}</p>{% endif %}
     </header>
-    {{ section.content | safe }}
-    <table class="problems">
+    {{ <prose html={section.content} /> }}
+    <table class="problems" tabindex="0">
       <thead><tr><th>Status</th><th>Type</th><th>Title</th></tr></thead>
       <tbody>
       {% for p in section.pages %}

@@ -17,7 +17,7 @@
       <ul>{% for h in page.toc %}<li><a href="{{ h.permalink }}">{{ h.title }}</a></li>{% endfor %}</ul>
     </nav>
     {% endif %}
-    {{ page.content | safe }}
+    {{ <prose html={page.content} /> }}
     {{ <edit_link repo={config.extra.repo} path={page.relative_path} /> }}
   </article>
 </div>

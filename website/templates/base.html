@@ -56,8 +56,40 @@
     {% block content %}{% endblock content %}
   </main>
   <footer class="foot">
-    <p>vcon-server is open source under MIT OR Apache-2.0. <a href="{{ config.extra.repo | safe }}">Source</a> · <a href="{{ config.extra.repo | safe }}/issues">Issues</a> · <a href="{{ get_url(path='llms.txt') }}">llms.txt</a></p>
-    <p><a href="{{ config.extra.linkedin_url | safe }}">&copy; {{ now() | date(format="%Y") }} {{ config.extra.author }}</a> · Support the project: <a href="{{ config.extra.patreon_url | safe }}">Patreon</a> · <a href="{{ config.extra.github_sponsors_url | safe }}">GitHub Sponsors</a></p>
+    <div class="foot-inner">
+      <div class="foot-brand">
+        <a class="name" href="{{ get_url(path='/') }}"><img src="{{ get_url(path='favicon.svg') }}" alt="" width="24" height="24"> vcon-server</a>
+        <p>Open source under MIT OR Apache-2.0.</p>
+      </div>
+      <nav class="foot-group" aria-label="Project">
+        <h2>Project</h2>
+        <ul>
+          <li><a href="{{ get_url(path='@/docs/_index.md') }}">Docs</a></li>
+          <li><a href="{{ get_url(path='@/docs/http-api.md') }}">HTTP API</a></li>
+          <li><a href="{{ get_url(path='@/problems/_index.md') }}">Problem types</a></li>
+          <li><a href="{{ get_url(path='@/standards.md') }}">Standards</a></li>
+          <li><a href="{{ get_url(path='llms.txt') }}">llms.txt</a></li>
+        </ul>
+      </nav>
+      <nav class="foot-group" aria-label="Source">
+        <h2>Source</h2>
+        <ul>
+          <li><a href="{{ config.extra.repo | safe }}">GitHub</a></li>
+          <li><a href="{{ config.extra.repo | safe }}/issues">Issues</a></li>
+          <li><a href="{{ config.extra.repo | safe }}/releases">Releases</a></li>
+          <li><a href="{{ config.extra.repo | safe }}/security/policy">Security policy</a></li>
+          <li><a href="{{ get_url(path='@/cla.md') }}">Contributor agreement</a></li>
+        </ul>
+      </nav>
+      <nav class="foot-group" aria-label="Support">
+        <h2>Support the project</h2>
+        <ul>
+          <li><a href="{{ config.extra.patreon_url | safe }}">Patreon</a></li>
+          <li><a href="{{ config.extra.github_sponsors_url | safe }}">GitHub Sponsors</a></li>
+        </ul>
+      </nav>
+    </div>
+    <p class="foot-credit"><a href="{{ config.extra.linkedin_url | safe }}">&copy; {{ now() | date(format="%Y") }} {{ config.extra.author }}</a></p>
   </footer>
 </body>
 </html>

@@ -335,7 +335,7 @@ jobs:
 
   site:
     name: website
-    timeout-minutes: 15
+    timeout-minutes: 25
     runs-on: ubuntu-latest
     env:
       ZOLA_VERSION: '0.23.6'
@@ -355,6 +355,30 @@ jobs:
           rm -f zola zola.tar.gz
       - name: Check the site
         run: scripts/check-site.sh
+      # The same Node as the console job, checked by hash.
+      - name: Install Node
+        env:
+          NODE_VERSION: '24.22.1'
+          NODE_SHA256: '6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6'
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o node.tar.xz \
+            "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"
+          echo "${NODE_SHA256}  node.tar.xz" | sha256sum -c -
+          mkdir "$RUNNER_TEMP/node"
+          tar xJf node.tar.xz -C "$RUNNER_TEMP/node" --strip-components=1
+          rm -f node.tar.xz
+          echo "$RUNNER_TEMP/node/bin" >> "$GITHUB_PATH"
+      - name: Install Playwright, axe-core and the browser
+        # package-lock.json pins every package by version and integrity hash;
+        # the Playwright version fixes the browser build it installs.
+        working-directory: site-tests
+        run: |
+          set -euo pipefail
+          npm ci
+          npx playwright install --with-deps --only-shell chromium
+      - name: The site in a browser (WCAG 2.2 AA, layout, no console error)
+        run: scripts/test-site.sh
 
   brand:
     name: logo files match their source

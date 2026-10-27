@@ -39,12 +39,13 @@ updates:
     commit-message:
       prefix: "ci"
 
-  # The TypeScript client example and the console's browser tests, each
-  # with its own package-lock.json.
+  # The TypeScript client example, the console's browser tests and the
+  # site's browser tests, each with its own package-lock.json.
   - package-ecosystem: "npm"
     directories:
       - "/clients/typescript"
       - "/console-tests"
+      - "/site-tests"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5

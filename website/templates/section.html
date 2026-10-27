@@ -8,7 +8,7 @@
       <h1>{{ section.title }}</h1>
       {% if section.description %}<p class="lead">{{ section.description }}</p>{% endif %}
     </header>
-    {{ section.content | safe }}
+    {{ <prose html={section.content} /> }}
     <ul class="cards">
     {% for p in section.pages %}
       <li><a href="{{ p.permalink }}"><strong>{{ p.title }}</strong><span>{{ p.description }}</span></a></li>

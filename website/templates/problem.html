@@ -16,7 +16,7 @@
       <dt>Status</dt><dd>{{ page.extra.status }}</dd>
       <dt>Title</dt><dd>{{ page.extra.problem_title }}</dd>
     </dl>
-    {{ page.content | safe }}
+    {{ <prose html={page.content} /> }}
     {{ <edit_link repo={config.extra.repo} path={page.relative_path} /> }}
   </article>
 </div>

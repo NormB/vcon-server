@@ -1,23 +1,93 @@
 {% extends "base.html" %}
 {% block title %}{{ config.title }} — {{ section.extra.tagline }}{% endblock title %}
 {% block content %}
+{% set x = section.extra %}
 <section class="hero">
-  <h1>{{ section.extra.headline }}</h1>
+  <img class="hero-mark" src="{{ get_url(path='favicon.svg') }}" alt="" width="88" height="88">
+  <h1>{{ x.headline }}</h1>
   <p class="lead">{{ section.description }}</p>
   <p class="cta">
-    <a class="button" href="{{ get_url(path='@/docs/getting-started.md') }}">Get started</a>
-    <a class="button ghost" href="{{ get_url(path='@/docs/http-api.md') }}">HTTP API</a>
-    <a class="button ghost" href="{{ config.extra.repo | safe }}">Source</a>
+    <a class="button button-primary" href="{{ get_url(path=x.install_link) }}">Install</a>
+    <a class="button" href="{{ get_url(path='@/docs/_index.md') }}">Docs</a>
+    <a class="cta-link" href="{{ config.extra.repo | safe }}">GitHub</a>
   </p>
 {# Written at deploy time from CI's runs of the deployed commit by
    scripts/published_metrics.py, never committed; a build without it states
    no number. scripts/check-site.sh holds the page to the file. #}
 {% set m = load_data(path="data/metrics.toml", required=false) %}
 {% if m and m.automated_tests is number %}
-  <p class="metrics" data-tests="{{ m.automated_tests }}" data-coverage="{{ m.line_coverage }}">{{ m.automated_tests }} automated tests pass and cover {{ m.line_coverage }}% of lines ({{ m.lines_covered }} of {{ m.lines_counted }} lines), in <a href="{{ m.run | safe }}">CI's run</a> of commit <code>{{ m.commit | truncate(length=7, end="") }}</code>.</p>
+  <ul class="metrics" data-tests="{{ m.automated_tests }}" data-coverage="{{ m.line_coverage }}" aria-label="Measured in CI">
+    <li class="stat"><strong>{{ m.automated_tests }}</strong> automated tests pass</li>
+    <li class="stat"><strong>{{ m.line_coverage }}%</strong> of lines covered, {{ m.lines_covered }} of {{ m.lines_counted }} lines</li>
+    <li class="stat"><strong><code>{{ m.commit | truncate(length=7, end="") }}</code></strong> the commit measured, in <a href="{{ m.run | safe }}">CI's run</a></li>
+  </ul>
 {% endif %}
+  {# The same claims as the README's badges, as text: the pages' policy loads
+     no image from another site. No number is typed here. #}
+  <ul class="badges" aria-label="Project checks">
+    <li><a href="{{ config.extra.repo | safe }}/actions/workflows/ci.yml">CI</a></li>
+    <li><a href="https://scorecard.dev/viewer/?uri=github.com/NormB/vcon-server">OpenSSF Scorecard</a></li>
+    <li><a href="https://www.bestpractices.dev/projects/15941">OpenSSF Best Practices</a></li>
+    <li><a href="https://codecov.io/gh/NormB/vcon-server">Coverage on Codecov</a></li>
+    <li><a href="{{ config.extra.repo | safe }}/releases/latest">Signed releases with SBOM</a></li>
+  </ul>
 </section>
-<div class="home-body">
-{{ section.content | safe }}
-</div>
+
+<section class="intro home-section">
+{{ <prose html={section.content} /> }}
+</section>
+
+<section class="home-section" id="features" aria-labelledby="features-title">
+  <h2 id="features-title">What it guarantees</h2>
+  <ul class="feature-grid">
+  {% for f in x.features %}
+    <li class="feature">
+      <span class="feature-icon">{{ <icon name={f.icon} /> }}</span>
+      <h3>{{ f.title }}</h3>
+      <p>{{ f.body | markdown(inline=true) | safe }}</p>
+      <a href="{{ get_url(path=f.link) }}">{{ f.link_text }}</a>
+    </li>
+  {% endfor %}
+  </ul>
+</section>
+
+<section class="home-section" id="first-look" aria-labelledby="first-look-title">
+  <h2 id="first-look-title">A first look</h2>
+  <p>{{ x.first_look_intro | markdown(inline=true) | safe }}</p>
+  <ol class="steps">
+  {% for s in x.first_look %}
+    <li class="code-frame">
+      <h3 class="code-title">{{ s.title }}</h3>
+      <pre tabindex="0"><code>{{ s.code | trim }}</code></pre>
+    </li>
+  {% endfor %}
+  </ol>
+  <p>{{ x.first_look_outro | markdown(inline=true) | safe }} The <a href="{{ get_url(path='@/docs/http-api.md') }}">HTTP API</a> lists every route.</p>
+</section>
+
+{# The Install and How-to slots: their text is set in _index.md's front
+   matter; this file sets only how it is laid out. #}
+<section class="home-section" id="install" aria-labelledby="install-title">
+  <h2 id="install-title">Install</h2>
+  {% if x.install_intro %}<p>{{ x.install_intro }}</p>{% endif %}
+  <ol class="steps">
+  {% for s in x.install %}
+    <li class="code-frame">
+      <h3 class="code-title">{{ s.title }}</h3>
+      {% if s.code %}<pre tabindex="0"><code>{{ s.code | trim }}</code></pre>{% endif %}
+      {% if s.note %}<p class="code-note">{{ s.note }}</p>{% endif %}
+    </li>
+  {% endfor %}
+  </ol>
+</section>
+
+<section class="home-section" id="how-to" aria-labelledby="how-to-title">
+  <h2 id="how-to-title">How-to guides</h2>
+  {% if x.howto_intro %}<p>{{ x.howto_intro }}</p>{% endif %}
+  <ul class="cards">
+  {% for h in x.howto %}
+    <li><a href="{{ get_url(path=h.link) }}"><strong>{{ h.title }}</strong><span>{{ h.summary }}</span></a></li>
+  {% endfor %}
+  </ul>
+</section>
 {% endblock content %}

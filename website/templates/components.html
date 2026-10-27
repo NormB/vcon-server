@@ -17,3 +17,27 @@
 {% component edit_link(repo, path) %}
 <p class="doc-source">Source of this page: <a href="{{ repo | safe }}/blob/main/website/content/{{ path | safe }}">website/content/{{ path | safe }}</a></p>
 {% endcomponent edit_link %}
+
+{# Rendered markdown, with each code block and table reachable by keyboard.
+   Both scroll sideways when wider than the page (style.scss), and a region
+   that scrolls must take focus so a keyboard can scroll it (WCAG 2.1.1, axe
+   rule scrollable-region-focusable). Every template that prints markdown
+   goes through this one rule. #}
+{% component prose(html) %}
+{{ html | replace(from="<pre>", to='<pre tabindex="0">') | replace(from="<table>", to='<table tabindex="0">') | safe }}
+{% endcomponent prose %}
+
+{# The home page's feature icons: 24-unit line drawings in the text color,
+   decorative (the card's heading says what each means). #}
+{% component icon(name) %}
+<svg class="icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+{%- if name == "lock" %}<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>
+{%- elif name == "file" %}<path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5"/><path d="M9 14l2 2 4-4"/>
+{%- elif name == "tenants" %}<rect x="3" y="4" width="8" height="16" rx="1.5"/><rect x="13" y="4" width="8" height="16" rx="1.5"/>
+{%- elif name == "clock" %}<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>
+{%- elif name == "log" %}<path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/>
+{%- elif name == "alert" %}<circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/>
+{%- else %}{{ throw(message="no icon named " ~ name) }}
+{%- endif %}
+</svg>
+{% endcomponent icon %}

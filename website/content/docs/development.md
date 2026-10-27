@@ -232,6 +232,20 @@ and when the [problem types](@/problems/_index.md) or the
 CI passes on a push to `main`, `.github/workflows/pages.yml` deploys the site
 of that commit to GitHub Pages; Cloudflare fronts it.
 
+```sh
+npm ci --prefix site-tests
+npx --prefix site-tests playwright install --only-shell chromium
+scripts/test-site.sh    # the built site in a browser
+```
+
+`scripts/test-site.sh` builds the site, serves it locally and runs the
+Playwright tests in `site-tests/`. They check every page with axe-core
+against WCAG 2.2 level AA, contrast and landmarks included, in light and dark
+at 360 and 1440 pixels wide. They also check the home page at 768 pixels, that
+it never scrolls sideways, that the browser logs no error (a refusal by the
+content-security policy is one), and that it shows the sections it is built
+from. CI runs it in the website job.
+
 The home page states the number of automated tests and the share of lines
 they cover. Nobody types these numbers. The deploy downloads the test output
 and the coverage summary from CI's run of the commit it deploys, derives the

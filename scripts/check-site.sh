@@ -100,7 +100,13 @@ done < <(find "$site" -name '*.html' -print0)
 # what that file says, or no number when it is absent. Then the same site,
 # built with a made-up file, must state the made-up numbers: a number typed
 # into the template, or a template that stopped reading the file, fails.
-metrics_line() { grep -oP '<p class="metrics"[^>]*>.*?</p>' "$1" || true; }
+# The metrics element is a list of tiles over several lines: its opening tag
+# (which carries the data- attributes) then its text, tags removed and
+# whitespace collapsed, on one line.
+metrics_line() {
+  perl -0777 -ne 'if (/(<ul class="metrics"[^>]*>)(.*?)<\/ul>/s) {
+    my ($tag, $text) = ($1, $2); $text =~ s/<[^>]+>//g; $text =~ s/\s+/ /g; print "$tag$text\n" }' "$1"
+}
 metrics_check() { # built page, data file
   local page=$1 data=$2 line tests coverage
   line="$(metrics_line "$page")"
