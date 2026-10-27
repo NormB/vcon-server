@@ -92,5 +92,44 @@ while IFS= read -r -d '' html; do
   if grep -Pqi '<[a-z][^>]*\son[a-z]+\s*=' "$html"; then fail "$rel has an event-handler attribute"; fi
 done < <(find "$site" -name '*.html' -print0)
 
+# The home page's numbers come only from website/data/metrics.toml, which
+# pages.yml writes from CI's runs of the commit it deploys
+# (scripts/published_metrics.py) and nothing commits. The page states exactly
+# what that file says, or no number when it is absent. Then the same site,
+# built with a made-up file, must state the made-up numbers: a number typed
+# into the template, or a template that stopped reading the file, fails.
+metrics_line() { grep -oP '<p class="metrics"[^>]*>.*?</p>' "$1" || true; }
+metrics_check() { # built page, data file
+  local page=$1 data=$2 line tests coverage
+  line="$(metrics_line "$page")"
+  if [ ! -f "$data" ]; then
+    [ -z "$line" ] || fail "the home page states numbers with no data file: $line"
+    return
+  fi
+  tests="$(sed -n 's/^automated_tests = \([0-9][0-9]*\)$/\1/p' "$data")"
+  coverage="$(sed -n 's/^line_coverage = "\([0-9.]*\)"$/\1/p' "$data")"
+  [ -n "$tests" ] && [ -n "$coverage" ] || fail "$data does not hold automated_tests and line_coverage"
+  grep -qF "data-tests=\"$tests\"" <<<"$line" && grep -qF "$tests automated tests" <<<"$line" \
+    || fail "the home page does not state the $tests automated tests $data holds: ${line:-no metrics line}"
+  grep -qF "data-coverage=\"$coverage\"" <<<"$line" && grep -qF "$coverage% of lines" <<<"$line" \
+    || fail "the home page does not state the $coverage% coverage $data holds: ${line:-no metrics line}"
+}
+metrics_check "$home" "$root/website/data/metrics.toml"
+# Two made-up files with different numbers: a number typed into the template
+# could match one of them, never both.
+fixture="$out/fixture"
+cp -r "$root/website" "$fixture"
+mkdir -p "$fixture/data"
+for made_up in '4321 765 987 77.5 0123456' '1234 81 90 90.0 89abcde'; do
+  read -r tests covered counted coverage commit <<<"$made_up"
+  printf '%s\n' "automated_tests = $tests" "lines_covered = $covered" "lines_counted = $counted" \
+    "line_coverage = \"$coverage\"" "commit = \"${commit}89abcdef0123456789abcdef012345678\"" \
+    'run = "https://github.com/NormB/vcon-server/actions/runs/1"' > "$fixture/data/metrics.toml"
+  zola --root "$fixture" build --output-dir "$out/fixture-public" --force >/dev/null
+  metrics_check "$out/fixture-public/index.html" "$fixture/data/metrics.toml"
+  grep -qF "$covered of $counted lines" "$out/fixture-public/index.html" || fail "the home page does not state the lines counted"
+  grep -qF "<code>$commit</code>" "$out/fixture-public/index.html" || fail "the home page does not name the commit measured"
+done
+
 zola --root "$root/website" check >/dev/null || fail "zola check found a broken link"
 echo "check-site: ok ($pages problem pages)"

@@ -1,12 +1,14 @@
 name: Deploy website to GitHub Pages
 
+# After CI passes on a push to main, for the commit CI ran: the home page's
+# numbers are derived from that run's artifacts (scripts/published_metrics.py),
+# so they describe the commit deployed and are never committed. By hand, the
+# newest such run on main.
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
-    paths:
-      - 'website/**'
-      - 'scripts/check-site.sh'
-      - '.github/workflows/pages.yml'
   workflow_dispatch:
 
 # Read-only by default; the deploy job declares the writes it needs.
@@ -20,15 +22,43 @@ concurrency:
 
 jobs:
   build:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     timeout-minutes: 15
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The artifacts of CI's run.
+      actions: read
     env:
       ZOLA_VERSION: '0.23.6'
       # A tag names a release, not its bytes; the download is pinned by hash too.
       ZOLA_SHA256: '8f5132b3522412d04e395e0b25f6d68613ad272a873e54a2b3ebf664873024a4'
     steps:
+      - name: Find CI's run of the commit to deploy
+        id: ci
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = workflow_run ]; then
+            id=$RUN_ID sha=$RUN_SHA
+          else
+            read -r id sha < <(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main \
+              --event push --status success --limit 1 --json databaseId,headSha \
+              --jq '.[0] | "\(.databaseId) \(.headSha)"')
+          fi
+          [ -n "$id" ] && [ -n "$sha" ] || { echo "::error::no passing CI run of main to deploy"; exit 1; }
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "CI run $id of $sha"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ steps.ci.outputs.sha }}
           persist-credentials: false
       - name: Install Zola
         run: |
@@ -42,11 +72,47 @@ jobs:
           sudo install -m 0755 zola /usr/local/bin/zola
           rm -f zola zola.tar.gz
           zola --version
+      - name: Download the test output of CI's run
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: suite-output
+          path: ci-output
+          run-id: ${{ steps.ci.outputs.id }}
+          github-token: ${{ github.token }}
+      - name: Download the coverage summary of CI's run
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: coverage-summary
+          path: ci-output
+          run-id: ${{ steps.ci.outputs.id }}
+          github-token: ${{ github.token }}
+      - name: Derive the home page's numbers
+        env:
+          SHA: ${{ steps.ci.outputs.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ steps.ci.outputs.id }}
+        run: |
+          set -euo pipefail
+          python3 -I scripts/published_metrics.py --tests ci-output/test-output.txt \
+            --coverage ci-output/coverage-summary.json --commit "$SHA" --run "$RUN_URL" \
+            --write website/data/metrics.toml
+          cat website/data/metrics.toml
+      # With the data file in place, so the check holds the page to it.
       - name: Check the site
         run: scripts/check-site.sh
       - name: Build site
         working-directory: website
         run: zola build
+      - name: Check the page to publish states the numbers derived
+        run: |
+          set -euo pipefail
+          n=$(sed -n 's/^automated_tests = \([0-9][0-9]*\)$/\1/p' website/data/metrics.toml)
+          c=$(sed -n 's/^line_coverage = "\([0-9.]*\)"$/\1/p' website/data/metrics.toml)
+          if ! grep -qF "data-tests=\"$n\"" website/public/index.html \
+            || ! grep -qF "data-coverage=\"$c\"" website/public/index.html; then
+            echo "::error::the built home page does not state $n tests and $c% coverage"
+            exit 1
+          fi
+          echo "The home page states $n automated tests and $c% of lines covered"
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:

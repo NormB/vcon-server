@@ -17,3 +17,5 @@ ARCHIVED — *
 
 # The TypeScript client's installed packages
 /clients/typescript/node_modules/
+# The home page's numbers, written at deploy time from CI's runs (pages.yml)
+/website/data/metrics.toml

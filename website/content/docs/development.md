@@ -204,9 +204,18 @@ scripts/check-site.sh   # builds the site and checks it, as the deploy does
 The check fails on a broken internal link, on any inline script, inline style
 or event-handler attribute (the pages' content-security policy forbids them),
 and when the [problem types](@/problems/_index.md) or the
-[configuration](@/docs/configuration.md) page disagree with the code. A push
-to `main` that touches the site deploys it to GitHub Pages; Cloudflare fronts
-it.
+[configuration](@/docs/configuration.md) page disagree with the code. Once
+CI passes on a push to `main`, `.github/workflows/pages.yml` deploys the site
+of that commit to GitHub Pages; Cloudflare fronts it.
+
+The home page states the number of automated tests and the share of lines
+they cover. Nobody types these numbers. The deploy downloads the test output
+and the coverage summary from CI's run of the commit it deploys, derives the
+numbers with `scripts/published_metrics.py`, and writes them to
+`website/data/metrics.toml`, which git ignores. The page states exactly what
+that file says, or no number when it is absent; the site check fails
+otherwise, and also builds the site with a made-up file and requires the
+page to state its numbers.
 
 The logo and the favicons are drawn from `assets/brand/mark.svg` by
 `scripts/icons.py`; see `assets/brand/README.md`. The check above also
@@ -215,7 +224,9 @@ refuses an SVG that holds a script, a style, a link or an embedded object.
 ## Continuous integration
 
 Every push to `main` and every pull request runs `.github/workflows/ci.yml`:
-format, clippy and the tests as the commit hook runs them; the console's
+format, clippy and the tests as the commit hook runs them (on a push to
+`main` it keeps the test output and the coverage summary for the deploy,
+and fails if the test output cannot be counted); the console's
 browser tests; the package check; the scan for AI attribution and personal
 data over every tracked file; the `.bestpractices.json` link check; `scripts/check-site.sh`;
 and `scripts/icons.py --check`. A coverage job runs the same tests under

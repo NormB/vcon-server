@@ -47,9 +47,22 @@ jobs:
         run: |
           set -euo pipefail
           sudo prlimit --pid $$ --memlock=unlimited:unlimited
-          # Every failing test binary reported, not only the first.
-          cargo test --workspace --locked --no-fail-fast
-          cargo test --manifest-path fuzz/Cargo.toml --lib --locked
+          # Every failing test binary reported, not only the first. The output
+          # is kept: the home page's test count is derived from it.
+          cargo test --workspace --locked --no-fail-fast 2>&1 | tee test-output.txt
+          cargo test --manifest-path fuzz/Cargo.toml --lib --locked 2>&1 | tee -a test-output.txt
+      - name: Count the tests
+        # The rule pages.yml publishes by; a run it cannot count fails here.
+        run: python3 -I scripts/published_metrics.py --tests test-output.txt
+      # pages.yml reads this artifact from CI's run of the commit it deploys.
+      - name: Keep the test output
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: suite-output
+          path: test-output.txt
+          retention-days: 14
+          if-no-files-found: error
       - name: Packages
         # What each crate would publish to crates.io, checked from the
         # .crate files themselves; the commit hook runs the same.
@@ -90,6 +103,17 @@ jobs:
           sudo prlimit --pid $$ --memlock=unlimited:unlimited
           cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
           cargo llvm-cov report --summary-only
+          cargo llvm-cov report --json --summary-only --output-path coverage-summary.json
+          python3 -I scripts/published_metrics.py --coverage coverage-summary.json
+      # pages.yml reads this artifact from CI's run of the commit it deploys.
+      - name: Keep the coverage summary
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-summary
+          path: coverage-summary.json
+          retention-days: 14
+          if-no-files-found: error
       # Sent only where the repository's Codecov token is set; a pull request
       # from a fork has none, and the measure above still runs.
       - name: Send to Codecov
@@ -215,6 +239,8 @@ jobs:
           } | python3 -I scripts/scan_forbidden.py
       - name: Paths the Best Practices answers link to
         run: python3 -I scripts/test_check_repo_links.py
+      - name: The rule for the home page's numbers
+        run: python3 -I scripts/test_published_metrics.py
 
   site:
     name: website
