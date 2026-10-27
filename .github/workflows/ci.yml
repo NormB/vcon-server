@@ -242,6 +242,25 @@ jobs:
       - name: The rule for the home page's numbers
         run: python3 -I scripts/test_published_metrics.py
 
+  hooks:
+    name: git hooks
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        # The commit hook runs fmt, clippy and the tests on its fixture crate.
+        run: rustup toolchain install
+      # Each hook in a throwaway repository: every forbidden item staged or
+      # written in a message is refused with its own finding, clean changes
+      # pass; the push hook refuses unsigned and foreign commits.
+      - name: The commit hooks
+        run: scripts/test-hooks.sh
+      - name: The push hook
+        run: scripts/test-pre-push.sh
+
   site:
     name: website
     timeout-minutes: 15
