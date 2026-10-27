@@ -18,9 +18,10 @@ name: Sanitizers
 # What runs where, per crate:
 # - vcon: nothing. It has no unsafe code of its own.
 # - vcon-server, Miri: the locked page's tests (envelope::locked). Miri
-#   cannot call libc's madvise or mlock or any C library, so it runs the
-#   pure-Rust part on pages the tests place on the heap; every other test in
-#   the crate reaches aws-lc or SQLCipher, which Miri cannot run.
+#   maps the page but does not support madvise with MADV_DONTDUMP, so the
+#   test of a real page is ignored under Miri and the others run the same
+#   pure-Rust code on pages placed on the heap. Every other test in the
+#   crate reaches aws-lc or SQLCipher, C code Miri cannot run.
 # - vcon-server, AddressSanitizer: the crate's tests, the library's and the
 #   binary's, built against an instrumented standard library. The C
 #   libraries (SQLCipher, OpenSSL, aws-lc) are not rebuilt instrumented; the
@@ -111,5 +112,23 @@ jobs:
           set -euo pipefail
           # As in ci.yml: the binary locks its memory, the tests run it.
           sudo prlimit --pid $$ --memlock=unlimited:unlimited
+          # Left out: the tests that check memory is locked. The sanitizer
+          # replaces mlock, munlock, mlockall and munlockall with calls that
+          # do nothing and return 0 (compiler-rt's
+          # sanitizer_common_interceptors.inc: a process that maps terabytes
+          # of shadow memory and then calls mlock can deadlock the kernel),
+          # so under it nothing is locked and a lock limit refuses nothing.
+          # Measured on the first run: exactly these six failed, each at its
+          # locked-memory assertion; the plain test job runs them all.
+          skip=(
+            each_key_has_its_own_locked_page_left_out_of_core_dumps   # tests/key_memory.rs
+            a_key_is_refused_when_its_memory_cannot_be_locked         # tests/key_memory_limit.rs
+            every_page_now_and_later_is_locked                        # tests/lock_all_memory.rs
+            locking_all_memory_fails_under_a_zero_lock_limit          # tests/lock_all_memory_limit.rs
+            memory_that_cannot_be_locked_stops_the_start              # tests/serve.rs
+            serve_stores_reads_keeps_its_memory_locked_and_stops_on_sigterm  # tests/serve.rs
+          )
+          args=(--exact)
+          for name in "${skip[@]}"; do args+=(--skip "$name"); done
           cargo "+$NIGHTLY" test -Zbuild-std --target x86_64-unknown-linux-gnu \
-            --locked -p vcon-server --lib --bins --tests --no-fail-fast
+            --locked -p vcon-server --lib --bins --tests --no-fail-fast -- "${args[@]}"

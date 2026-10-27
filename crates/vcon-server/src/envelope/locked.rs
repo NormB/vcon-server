@@ -119,9 +119,9 @@ mod tests {
     }
 
     /// A page on the heap in place of a mapping, released by
-    /// `free_heap`. Miri runs these, since it cannot map, advise or lock
-    /// memory through libc: the slices and the zero-then-release drop are
-    /// the same code either way.
+    /// `free_heap`, so that Miri, which does not support madvise with
+    /// MADV_DONTDUMP, can run the unsafe code over it: the slices and the
+    /// zero-then-release drop are the same code either way.
     fn heap_page(len: usize, release: unsafe fn(NonNull<u8>, usize)) -> LockedPage {
         let bytes: Box<[u8]> = vec![0x5a; len].into_boxed_slice();
         let ptr = NonNull::new(Box::into_raw(bytes).cast::<u8>()).expect("a box is not null");
@@ -187,6 +187,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri does not support madvise with MADV_DONTDUMP")]
     fn a_page_is_zeroed_before_it_is_released() {
         let mut page = LockedPage::new().expect("page");
         page.bytes_mut().fill(0xa5);
