@@ -19,7 +19,9 @@ use crate::envelope::{Key, KeyError};
 use crate::fs::OsFs;
 use crate::ids::{KeyId, TenantId};
 use crate::retention::Retention;
-use crate::tenants::{self, OpenFailure, Removal, TenantError, TenantExamination, Tenants};
+use crate::tenants::{
+    self, BackupError, OpenFailure, Removal, TenantError, TenantExamination, Tenants,
+};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
@@ -65,6 +67,11 @@ pub enum Command {
     },
     /// Examines every tenant and reports what needs attention.
     Check,
+    /// Writes a consistent copy of the data directory to `to`, which must
+    /// not exist, beside a running server.
+    Backup {
+        to: std::path::PathBuf,
+    },
 }
 
 /// Whose key `key create` makes.
@@ -96,6 +103,7 @@ impl Command {
             Command::RekeyTenant { .. } => Work::RekeyTenant,
             Command::RekeyMaster { .. } => Work::RekeyMaster,
             Command::Check => Work::Check,
+            Command::Backup { .. } => Work::Backup,
         }
     }
 }
@@ -119,6 +127,7 @@ pub enum CommandError {
     SameMasterKey,
     /// `check` found this many problems; its report says which.
     CheckFound(usize),
+    Backup(BackupError),
 }
 
 impl fmt::Display for CommandError {
@@ -139,6 +148,16 @@ impl fmt::Display for CommandError {
                 f.write_str("the new master key is the one already in use")
             }
             CommandError::CheckFound(n) => write!(f, "check found {n} problem(s); see its report"),
+            CommandError::Backup(e) => f.write_str(match e {
+                BackupError::Exists => {
+                    "the backup's path already exists; a backup is written to a new directory"
+                }
+                BackupError::KeptChanging => {
+                    "tenants were removed or versions purged during each try; try again"
+                }
+                BackupError::Io => "the backup could not be written, or the data could not be read",
+                BackupError::AuditFailed => "the audit record could not be written",
+            }),
             CommandError::Tenant(e) => f.write_str(match e {
                 TenantError::NotFound => "no tenant has this id",
                 TenantError::NameTaken => "another tenant has this name",
@@ -266,6 +285,17 @@ pub fn run(config: &Config, command: &Command, out: &mut dyn Write) -> Result<()
         Command::RekeyTenant { id } => Ok(tenants.rekey_tenant(who, tenant_id(id)?)?),
         Command::RekeyMaster { .. } => unreachable!("rotated before the registry is opened"),
         Command::Check => check(config, &tenants, out),
+        Command::Backup { to } => {
+            let done = tenants.backup(who, to).map_err(CommandError::Backup)?;
+            line(
+                out,
+                &serde_json::json!({
+                    "tenants": done.tenants,
+                    "versions": done.versions,
+                    "tries": done.tries,
+                }),
+            )
+        }
         Command::AuditExport { log, since } => {
             let exported = match log {
                 Log::Admin => tenants.export_admin(*since, out),
@@ -537,6 +567,7 @@ mod tests {
             ),
             (Command::RekeyTenant { id: id() }, Work::RekeyTenant),
             (Command::Check, Work::Check),
+            (Command::Backup { to: id().into() }, Work::Backup),
             (
                 Command::RekeyMaster {
                     new_master: id().into(),
@@ -1116,6 +1147,10 @@ mod tests {
             since: None,
         })
         .expect("beside");
+        s.run(Command::Backup {
+            to: s._dir.path().join("backup"),
+        })
+        .expect("beside");
         drop(server);
         assert_eq!(s.run(Command::TenantList).expect("listed").len(), 1);
     }
@@ -1156,6 +1191,47 @@ mod tests {
     }
 
     #[test]
+    fn backup_prints_what_it_copied_and_check_finds_the_copy_whole() {
+        let s = setup();
+        s.create("acme");
+        s.create("globex");
+        let to = s._dir.path().join("backup");
+        let out = s.run(Command::Backup { to: to.clone() }).expect("backs up");
+        assert_eq!(
+            out,
+            [serde_json::json!({ "tenants": 2, "versions": 0, "tries": 1 })]
+        );
+        let copy = Setup {
+            _dir: tempfile::tempdir().expect("temp dir"),
+            config: Config {
+                data_dir: to,
+                ..s.config.clone()
+            },
+        };
+        let checked = copy.run(Command::Check).expect("check finds no problem");
+        assert_eq!(checked.last().expect("a summary")["problems"], 0);
+        let names: Vec<_> = copy
+            .run(Command::TenantList)
+            .expect("lists")
+            .iter()
+            .map(|t| t["name"].clone())
+            .collect();
+        assert_eq!(names, ["acme", "globex"]);
+    }
+
+    #[test]
+    fn a_backup_path_already_there_is_refused() {
+        let s = setup();
+        let to = s._dir.path().join("backup");
+        std::fs::create_dir(&to).expect("dir");
+        let error = s.run(Command::Backup { to }).expect_err("refused");
+        assert!(
+            matches!(error, CommandError::Backup(BackupError::Exists)),
+            "{error:?}"
+        );
+    }
+
+    #[test]
     fn each_error_says_what_went_wrong() {
         for (error, words) in [
             (CommandError::WrongMasterKey, "master key"),
@@ -1180,6 +1256,13 @@ mod tests {
                 "in use",
             ),
             (CommandError::Output(io::Error::other("closed")), "output"),
+            (CommandError::Backup(BackupError::Exists), "already exists"),
+            (CommandError::Backup(BackupError::KeptChanging), "try again"),
+            (
+                CommandError::Backup(BackupError::Io),
+                "could not be written",
+            ),
+            (CommandError::Backup(BackupError::AuditFailed), "audit"),
         ] {
             let text = error.to_string();
             assert!(text.contains(words), "{error:?}: {text}");

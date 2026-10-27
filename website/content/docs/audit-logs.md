@@ -11,7 +11,7 @@ weight = 60
   purges of its versions.
 - **The admin log** lives in `server.sqlite` and records administration:
   tenants made, listed, changed and removed, keys made, listed and revoked,
-  and requests that cannot be tied to a tenant.
+  backups, and requests that cannot be tied to a tenant.
 
 A change that concerns a tenant, such as a key made for it or its retention
 changed, is recorded in the admin log and copied to the tenant's own log.

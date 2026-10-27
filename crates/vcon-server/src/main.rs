@@ -40,6 +40,16 @@ enum Command {
         #[command(flatten)]
         config: ConfigArg,
     },
+    /// Writes a consistent copy of the data directory to a new directory
+    /// while the server runs: each catalog with SQLite's online backup, and
+    /// every object file a copied catalog names. Restore it as a data
+    /// directory, under the same master key.
+    Backup {
+        #[command(flatten)]
+        config: ConfigArg,
+        /// The directory to write; it must not exist.
+        dir: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -197,6 +207,7 @@ fn main() -> ExitCode {
             (config, commands::Command::RekeyMaster { new_master })
         }
         Command::Check { config } => (config, commands::Command::Check),
+        Command::Backup { config, dir } => (config, commands::Command::Backup { to: dir }),
         Command::Audit(AuditCommand::Export {
             config,
             tenant,

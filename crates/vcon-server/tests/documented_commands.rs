@@ -289,7 +289,7 @@ fn a_missing_subcommand_flag_or_config_is_found() {
     );
     for (words, pasted, says) in [
         ("tenant purge x --config c", true, "no subcommand `purge`"),
-        ("backup --config c", true, "no subcommand `backup`"),
+        ("frobnicate --config c", true, "no subcommand `frobnicate`"),
         (
             "tenant create a --colour --config c",
             true,

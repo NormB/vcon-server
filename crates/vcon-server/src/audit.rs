@@ -70,6 +70,7 @@ pub enum Action {
     List,
     AuditRead,
     Openapi,
+    Backup,
 }
 
 impl Action {
@@ -102,6 +103,7 @@ impl Action {
             Action::List => "list",
             Action::AuditRead => "audit_read",
             Action::Openapi => "openapi",
+            Action::Backup => "backup",
         }
     }
 }
@@ -485,6 +487,7 @@ mod tests {
             (Action::List, "list"),
             (Action::AuditRead, "audit_read"),
             (Action::Openapi, "openapi"),
+            (Action::Backup, "backup"),
         ];
         for (action, name) in names {
             assert_eq!(action.as_str(), name);

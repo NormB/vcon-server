@@ -135,6 +135,45 @@ pub(crate) fn may_use(path: &Path, how: c_int) -> Result<(), CatalogError> {
     Ok(())
 }
 
+/// Copies the catalog `source` is open on to a new file at `to`, kept
+/// under `key`, which must be the key `source` was opened with. It uses
+/// SQLite's online backup API and copies every page in one step, so the
+/// copy is the catalog as one commit left it, the WAL's committed frames
+/// included, while other connections go on writing. `to` must not exist:
+/// it is made empty first, so a file already there is never written over.
+/// The copy and its directory are synced.
+pub fn backup(source: &Connection, to: &Path, key: &Key) -> Result<(), CatalogError> {
+    let io = CatalogError::Io;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(to)
+        .map_err(io)?;
+    {
+        let mut copy = Connection::open(to)?;
+        copy.execute_batch("PRAGMA cipher_log_level = NONE")?;
+        set_key(&copy, key)?;
+        let backup = rusqlite::backup::Backup::new(source, &mut copy)?;
+        // A negative count copies every remaining page in this one step.
+        match backup.step(-1)? {
+            rusqlite::backup::StepResult::Done => {}
+            _ => {
+                return Err(io(std::io::Error::other(
+                    "the catalog was busy and could not be copied in one step",
+                )));
+            }
+        }
+    }
+    std::fs::File::open(to)
+        .and_then(|f| f.sync_all())
+        .map_err(io)?;
+    let dir = to.parent().unwrap_or(Path::new("."));
+    std::fs::File::open(dir)
+        .and_then(|f| f.sync_all())
+        .map_err(io)?;
+    Ok(())
+}
+
 /// Re-encrypts the catalog at `path`, kept under `old`, so that it is kept
 /// under `new`: every row, the schema and its version are written to a new
 /// file under `new`, which then replaces the old one by rename. A crash
@@ -671,6 +710,98 @@ pub(crate) mod tests {
             open(&path(&dir), &old, SCHEMA).is_ok(),
             "still under the old key"
         );
+    }
+
+    #[test]
+    fn a_backup_holds_every_committed_row_and_opens_under_the_same_key_only() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let key = Key::generate().expect("key");
+        let source = open(&path(&dir), &key, SCHEMA).expect("opens");
+        source
+            .execute("INSERT INTO note (text) VALUES ('committed')", [])
+            .expect("insert");
+        // A second connection holds a write transaction open: its row is
+        // not committed, so the copy must not hold it.
+        let writer = open(&path(&dir), &key, SCHEMA).expect("opens");
+        writer.execute_batch("BEGIN IMMEDIATE").expect("begin");
+        writer
+            .execute("INSERT INTO note (text) VALUES ('uncommitted')", [])
+            .expect("insert");
+        let copy = dir.path().join("copy.sqlite");
+        backup(&source, &copy, &key).expect("backs up");
+        writer.execute_batch("COMMIT").expect("commit");
+        assert!(
+            !sibling(&copy, "-wal").exists()
+                || std::fs::metadata(sibling(&copy, "-wal"))
+                    .expect("wal")
+                    .len()
+                    == 0,
+            "the copy is whole in its own file"
+        );
+        let reopened = open(&copy, &key, "").expect("the copy opens under the same key");
+        let notes: Vec<String> = reopened
+            .prepare("SELECT text FROM note")
+            .expect("prepare")
+            .query_map([], |r| r.get(0))
+            .expect("query")
+            .collect::<Result<_, _>>()
+            .expect("rows");
+        assert_eq!(notes, ["committed"]);
+        let version: i64 = reopened
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
+        drop(reopened);
+        let other = Key::generate().expect("key");
+        assert!(matches!(
+            open(&copy, &other, ""),
+            Err(CatalogError::WrongKey)
+        ));
+    }
+
+    #[test]
+    fn a_backup_holds_rows_still_in_the_source_wal_and_no_plain_text() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let key = Key::generate().expect("key");
+        let source = open(&path(&dir), &key, SCHEMA).expect("opens");
+        source
+            .execute("INSERT INTO note (text) VALUES (?1)", [MARKER])
+            .expect("insert");
+        assert!(
+            std::fs::metadata(sibling(&path(&dir), "-wal"))
+                .expect("wal")
+                .len()
+                > 0,
+            "the row is still in the WAL"
+        );
+        let copy = dir.path().join("copy.sqlite");
+        backup(&source, &copy, &key).expect("backs up");
+        let bytes = std::fs::read(&copy).expect("read the copy");
+        assert!(
+            !bytes.windows(MARKER.len()).any(|w| w == MARKER.as_bytes()),
+            "the copy is encrypted"
+        );
+        let reopened = open(&copy, &key, "").expect("opens");
+        let count: i64 = reopened
+            .query_row("SELECT count(*) FROM note WHERE text = ?1", [MARKER], |r| {
+                r.get(0)
+            })
+            .expect("count");
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn a_backup_never_writes_over_a_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let key = Key::generate().expect("key");
+        let source = open(&path(&dir), &key, SCHEMA).expect("opens");
+        let copy = dir.path().join("copy.sqlite");
+        std::fs::write(&copy, b"something else").expect("write");
+        assert!(matches!(
+            backup(&source, &copy, &key),
+            Err(CatalogError::Io(_))
+        ));
+        assert_eq!(std::fs::read(&copy).expect("read"), b"something else");
     }
 
     #[test]

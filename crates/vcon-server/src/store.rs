@@ -17,12 +17,14 @@ use crate::fs::Fs;
 use crate::ids::{KeyId, TenantId, VersionId};
 use crate::retention::Retention;
 
+mod backup;
 mod examine;
 mod legal;
 mod list;
 mod purge;
 mod rekey;
 
+pub use backup::{BackupError, Copied, TRIES};
 pub use examine::Examination;
 pub use legal::{Legal, VersionInfo};
 pub use list::{Cursor, ListQuery, Listed, Listing};
@@ -747,6 +749,13 @@ impl Store {
             .expect("trigger");
     }
 
+    /// Sets the hook a backup runs at each try, after the catalog is
+    /// copied, for tests outside this module.
+    #[cfg(test)]
+    pub(crate) fn on_backup_copied(&self, hook: tests::BackupHook) {
+        *self.hooks.copied.lock().expect("hook") = Some(hook);
+    }
+
     /// The catalog connection, for tests that damage or inspect it.
     #[cfg(test)]
     pub(crate) fn conn_for_test(&self) -> MutexGuard<'_, Connection> {
@@ -956,6 +965,9 @@ mod tests {
 
     const UUID: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bc46";
 
+    /// What a backup runs at each try, after it copies the catalog.
+    pub(crate) type BackupHook = Box<dyn FnMut(&Store) + Send>;
+
     /// Test-only points where a test can step in.
     #[derive(Default)]
     pub(super) struct Hooks {
@@ -963,6 +975,9 @@ mod tests {
         /// write's files, a read's decryption) and the transaction that
         /// confirms it.
         pub(super) between: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+        /// Runs at each try of a backup, after the catalog is copied and
+        /// before its versions' files are.
+        pub(super) copied: Mutex<Option<BackupHook>>,
     }
 
     pub(super) struct Fixture {

@@ -8,6 +8,12 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- `vcon-server backup <dir>`: a consistent copy of the data directory,
+  taken while the server runs. Each catalog is copied with SQLite's online
+  backup API, then every object file a copied catalog names; a version
+  purged or a tenant removed during the copy makes it try again, at most 5
+  times. The copy is a data directory that opens under the same master key,
+  and the admin log records each run as `backup`.
 - The release workflow publishes `vcon` and `vcon-server` on crates.io by
   trusted publishing: on a `v*` tag, after the GitHub release, each crate
   whose version crates.io does not have yet, with a token the job gets from

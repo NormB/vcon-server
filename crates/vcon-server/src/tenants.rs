@@ -19,10 +19,12 @@ use crate::ids::{KeyId, TenantId};
 use crate::retention::Retention;
 use crate::store::{OpenError, Store};
 
+mod backup;
 mod examine;
 mod keys;
 mod rekey;
 
+pub use backup::{Backup, BackupError};
 pub use examine::{KeyOrder, RegistryExamination, RotationBacklog, TenantExamination};
 pub use keys::{KeyInfo, NewKey};
 pub use rekey::rekey_master;
@@ -851,6 +853,9 @@ mod tests {
         }
     }
 
+    /// What a backup runs at each try, after it copies server.sqlite.
+    pub(super) type RegistryHook = Box<dyn FnMut(&Tenants) + Send>;
+
     #[derive(Default)]
     pub(super) struct Hooks {
         /// Runs once, between a create's directory and catalog and the
@@ -860,6 +865,9 @@ mod tests {
         pub(super) opening: Mutex<Option<Box<dyn FnOnce() + Send>>>,
         /// Stops a key rotation, as a failure, after this step.
         pub(crate) rekey_stop: Mutex<Option<super::rekey::RekeyStep>>,
+        /// Runs at each try of a backup, after server.sqlite is copied and
+        /// before the tenants it lists are.
+        pub(super) registry_copied: Mutex<Option<RegistryHook>>,
     }
 
     /// A master key kept wrapped, so a test can have it more than once.
@@ -912,6 +920,11 @@ mod tests {
 
         pub(crate) fn conn(&self) -> MutexGuard<'_, Connection> {
             self.tenants.conn()
+        }
+
+        /// The master key the registry was made under.
+        pub(crate) fn master_key(&self) -> Key {
+            self.master.key()
         }
 
         pub(crate) fn tenants_dir(&self) -> PathBuf {

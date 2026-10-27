@@ -665,3 +665,170 @@ async fn the_audit_routes_answer_what_audit_export_writes() {
         assert!(rest.contains("\"action\":\"audit_read\""), "{path}: {rest}");
     }
 }
+
+/// A backup taken beside a running server while vCons are being stored is
+/// whole: `check` on it finds no problem, and a server started on it serves
+/// what was stored before it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_backup_taken_under_write_load_checks_whole_and_serves() {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    let s = setup();
+    let mut running = Running(
+        serve(&s)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("starts"),
+    );
+    ready(&s, &mut running.0);
+    let client = reqwest::Client::builder()
+        .tls_certs_only([reqwest::Certificate::from_pem(s.pem.as_bytes()).expect("pem")])
+        .resolve("localhost", s.addr)
+        .no_proxy()
+        .build()
+        .expect("a client");
+    let first = std::fs::read(format!(
+        "{}/../vcon/tests/fixtures/ietf/ab_call_ext_rec.vcon",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .expect("A.4");
+    let port = s.addr.port();
+    let stored = client
+        .post(format!("https://localhost:{port}/vcons"))
+        .bearer_auth(&s.token)
+        .header("content-type", "application/vcon")
+        .body(first.clone())
+        .send()
+        .await
+        .expect("an answer");
+    assert_eq!(stored.status(), 201);
+
+    // Writes go on for the whole backup.
+    let stop = Arc::new(AtomicBool::new(false));
+    let written = Arc::new(AtomicU64::new(0));
+    let load = {
+        let (client, token, stop, written) = (
+            client.clone(),
+            s.token.clone(),
+            stop.clone(),
+            written.clone(),
+        );
+        tokio::spawn(async move {
+            let mut n = 0u64;
+            while !stop.load(Ordering::SeqCst) {
+                let body = format!(
+                    r#"{{"uuid": "01a07da8-c2bb-83e5-b9a2-{n:012x}", "created_at": "2026-10-23T12:00:00Z", "parties": []}}"#
+                );
+                let answer = client
+                    .post(format!("https://localhost:{port}/vcons"))
+                    .bearer_auth(&token)
+                    .header("content-type", "application/vcon")
+                    .body(body)
+                    .send()
+                    .await
+                    .expect("an answer");
+                assert_eq!(answer.status(), 201);
+                n += 1;
+                written.store(n, Ordering::SeqCst);
+            }
+        })
+    };
+    while written.load(Ordering::SeqCst) < 5 {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let before = written.load(Ordering::SeqCst);
+    let to = s.dir.path().join("backup");
+    let printed = {
+        let (config, to) = (s.config.clone(), to.clone());
+        tokio::task::spawn_blocking(move || {
+            Command::new(env!("CARGO_BIN_EXE_vcon-server"))
+                .arg("backup")
+                .arg(&to)
+                .arg("--config")
+                .arg(&config)
+                .output()
+                .expect("runs")
+        })
+        .await
+        .expect("joins")
+    };
+    let after = written.load(Ordering::SeqCst);
+    stop.store(true, Ordering::SeqCst);
+    load.await.expect("the load");
+    assert!(printed.status.success(), "{printed:?}");
+    assert!(after > before, "vCons were stored while the backup ran");
+    let done: serde_json::Value = serde_json::from_slice(&printed.stdout).expect("a JSON line");
+    assert_eq!(done["tenants"], 1);
+    assert!(
+        done["versions"].as_u64().expect("versions") > before,
+        "{done}"
+    );
+
+    // The backup as a data directory of its own, on another port.
+    let addr = TcpListener::bind("127.0.0.1:0")
+        .expect("a free port")
+        .local_addr()
+        .expect("addr");
+    let text = std::fs::read_to_string(&s.config).expect("the configuration");
+    let config = s.dir.path().join("backup.toml");
+    std::fs::write(
+        &config,
+        text.replace(&s.data.display().to_string(), &to.display().to_string())
+            .replace(&s.addr.to_string(), &addr.to_string()),
+    )
+    .expect("write");
+    let checked = Command::new(env!("CARGO_BIN_EXE_vcon-server"))
+        .arg("check")
+        .arg("--config")
+        .arg(&config)
+        .output()
+        .expect("runs");
+    assert!(checked.status.success(), "{checked:?}");
+    let lines: Vec<serde_json::Value> = String::from_utf8(checked.stdout)
+        .expect("UTF-8")
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("a JSON line"))
+        .collect();
+    assert_eq!(lines[0]["damaged"], serde_json::json!([]));
+    assert_eq!(lines[0]["leftovers"], serde_json::json!([]));
+    assert_eq!(lines[0]["versions"], done["versions"]);
+    assert_eq!(lines.last().expect("a summary")["problems"], 0);
+
+    let mut restored = Running(
+        Command::new(env!("CARGO_BIN_EXE_vcon-server"))
+            .arg("serve")
+            .arg("--config")
+            .arg(&config)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("starts"),
+    );
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while std::net::TcpStream::connect(addr).is_err() {
+        assert!(
+            restored.0.try_wait().expect("wait").is_none(),
+            "the restored server stopped"
+        );
+        assert!(
+            Instant::now() < deadline,
+            "the restored server never listened"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let client = reqwest::Client::builder()
+        .tls_certs_only([reqwest::Certificate::from_pem(s.pem.as_bytes()).expect("pem")])
+        .resolve("localhost", addr)
+        .no_proxy()
+        .build()
+        .expect("a client");
+    let read = client
+        .get(format!("https://localhost:{}/vcons/{UUID}", addr.port()))
+        .bearer_auth(&s.token)
+        .send()
+        .await
+        .expect("an answer");
+    assert_eq!(read.status(), 200);
+    assert_eq!(read.bytes().await.expect("body").to_vec(), first);
+}

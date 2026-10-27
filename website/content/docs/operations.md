@@ -33,8 +33,8 @@ recovery, and one could remove a write the other has under way.
 The commands that change the registry wholesale run alone: `tenant create`,
 `tenant remove`, `rekey tenant`, `rekey master` and `check` refuse while the
 server or any other command runs. The rest (`tenant list`,
-`tenant set-retention`, the `key` commands and `audit export`) run beside the
-server, but never beside a command that runs alone, so nothing they write can
+`tenant set-retention`, the `key` commands, `audit export` and `backup`) run
+beside the server, but never beside a command that runs alone, so nothing they write can
 be lost to a rewrite. Commands that run beside the server open the data
 without start-up recovery, so they never mistake the server's work in progress
 for a crash's leftovers. See the [command line](@/docs/command-line.md). While
@@ -213,6 +213,39 @@ the next rotation.
 
 ### Back up the data directory
 
+`backup` writes a copy of the data directory to a new directory while the
+server runs. Run it as the service account. The directory it names must not
+exist yet, and the service account must be able to write the directory that
+holds it:
+
+```sh
+sudo install -d -m 0700 -o vcon -g vcon /backup/vcon-server
+sudo -u vcon vcon-server backup /backup/vcon-server/data-$(date -u +%Y%m%dT%H%M%SZ) \
+  --config /etc/vcon-server/vcon-server.toml
+```
+
+It prints one line:
+
+```text
+{"tenants":2,"tries":1,"versions":1840}
+```
+
+It copies `server.sqlite`, then each tenant's catalog, with SQLite's online
+backup API, so each copy is its catalog as one commit left it; then it copies
+every object file a copied catalog names. Requests and the purge sweep go on
+meanwhile. Tenants are copied one after another, each as it was when its
+catalog was copied. A version purged, or a tenant removed, while it is being
+copied makes `backup` copy that part again; after 5 tries it exits 1 with
+`tenants were removed or versions purged during each try; try again`. The
+directory it writes is mode `0700`, like the data directory, and every
+file is synced before it exits 0. The admin log records each run as
+`backup`, with its outcome. The copy holds nothing readable without the
+master key, and it does not hold the master key: store it away from the
+master key's copies. A copy whose last try ended with exit 1 is not whole;
+remove it.
+
+### Or copy it with the server stopped
+
 Copy it with the server stopped. The copy below holds the data directory's
 two lock files, `lock` and `lock.commands`, as a command that runs alone does,
 so no server or other command can start while it runs:
@@ -231,14 +264,15 @@ archive holds `server.sqlite`, `lock`, `lock.commands` and `tenants/`, and
 nothing in it is readable without the master key. Store it away from the
 master key's copies.
 
-Do not copy the files of a running server. Each file is read at a different
-moment, and a catalog copied in the middle of a transaction "might contain
-some old and some new content, and thus be corrupt"
+Do not copy a running server's files with `tar` or `cp`. Each file is read
+at a different moment, and a catalog copied in the middle of a transaction
+"might contain some old and some new content, and thus be corrupt"
 ([SQLite](https://www.sqlite.org/howtocorrupt.html#_backup_or_restore_while_a_transaction_is_active)).
-vcon-server has no command that copies a running server's data
-consistently.
+`backup` reads them consistently.
 
-To back up while the server runs, take an atomic snapshot of the filesystem
+### Or take a filesystem snapshot
+
+To back up while the server runs without `backup`, take an atomic snapshot of the filesystem
 that holds the data directory (LVM, ZFS, btrfs). A snapshot holds what a
 power cut at that moment would leave on disk, and start-up recovery opens
 that state (see [stopping](#stopping)). Copy the data directory out of the snapshot, and
@@ -248,7 +282,18 @@ filesystem.
 ### Restore the data directory
 
 Restore it with the server stopped, under the master key that was current
-when the backup was taken, then check it before starting:
+when the backup was taken, then check it before starting. From a directory
+`backup` wrote:
+
+```sh
+sudo systemctl stop vcon-server
+sudo mv /var/lib/vcon-server /var/lib/vcon-server.old
+sudo cp -a /backup/vcon-server/data-<time> /var/lib/vcon-server
+sudo -u vcon vcon-server check --config /etc/vcon-server/vcon-server.toml
+sudo systemctl start vcon-server
+```
+
+From an archive of a stopped copy:
 
 ```sh
 sudo systemctl stop vcon-server
@@ -258,7 +303,9 @@ sudo -u vcon vcon-server check --config /etc/vcon-server/vcon-server.toml
 sudo systemctl start vcon-server
 ```
 
-`tar -p`, run as root, restores the files' owner and modes. Under any other
+`cp -a` and `tar -p`, run as root, keep the files' owner and modes. A
+directory `backup` wrote holds no lock files; the server and the commands
+make them. Under any other
 master key, `check` and the server both refuse:
 
 ```text

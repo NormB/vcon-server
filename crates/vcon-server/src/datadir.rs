@@ -37,6 +37,7 @@ pub enum Work {
     RekeyMaster,
     AuditExport,
     Check,
+    Backup,
 }
 
 impl Work {
@@ -54,7 +55,8 @@ impl Work {
             | Work::KeyCreate
             | Work::KeyList
             | Work::KeyRevoke
-            | Work::AuditExport => Sharing::Beside,
+            | Work::AuditExport
+            | Work::Backup => Sharing::Beside,
         }
     }
 }

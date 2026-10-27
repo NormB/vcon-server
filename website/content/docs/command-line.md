@@ -93,6 +93,17 @@ file; the old key no longer opens anything. The full procedure is in
 found a problem: the report says what. See
 [checking the data](@/docs/operations.md#checking-the-data) for each field.
 
+## Backup
+
+| Command | Prints | Runs beside `serve` |
+|---|---|---|
+| `backup <dir>` | `{"tenants", "tries", "versions"}` | yes |
+
+`backup` writes a consistent copy of the data directory to `<dir>`, which
+must not exist yet, while the server runs. See
+[back up and restore](@/docs/operations.md#back-up-and-restore) for what it
+copies, how to restore the copy, and what to keep apart from it.
+
 ## Running beside the server
 
 Commands marked "no" refuse while `serve`, or any other command, holds the
