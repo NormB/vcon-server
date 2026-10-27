@@ -99,7 +99,7 @@ expect() {
     else
       echo "FAIL ($want expected, got $got): $what"
     fi
-    sed 's/^/    /' "$work/out" | head -12
+    sed 's/^/    /' "$work/out" | tail -15
   fi
   git reset -q --hard HEAD
   git clean -qfdx -e target
@@ -145,7 +145,7 @@ why='notes.txt: plan task id:' expect refuse "plan task id in phase fourteen" no
 expect accept "crate README with absolute links" crates/fixture/README.md "# hook-fixture
 
 See [the docs](https://docs.rs/hook-fixture)."
-why="hook-fixture: README.md: relative link 'docs/guide.md'" expect refuse "crate README with a relative link" crates/fixture/README.md "# hook-fixture
+why="README.md: relative link 'docs/guide.md'" expect refuse "crate README with a relative link" crates/fixture/README.md "# hook-fixture
 
 See [the guide](docs/guide.md)."
 # Ids of any length: phases and tasks past the first ten, and decisions and

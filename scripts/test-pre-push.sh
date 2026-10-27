@@ -48,7 +48,7 @@ expect() {
     else
       echo "FAIL ($want expected, got $got): $what"
     fi
-    sed 's/^/    /' "$work/out" | head -12
+    sed 's/^/    /' "$work/out" | tail -15
   fi
 }
 
