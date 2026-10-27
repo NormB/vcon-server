@@ -7,7 +7,7 @@ use vcon_server::{config, envelope, serve};
 
 /// A vCon server: stores IETF vCons, encrypted at rest.
 #[derive(Parser)]
-#[command(name = "vcon-server", version)]
+#[command(name = "vcon-server", version = concat!(env!("CARGO_PKG_VERSION"), " built in ", env!("CARGO_MANIFEST_DIR")))]
 struct Cli {
     #[command(subcommand)]
     command: Command,
