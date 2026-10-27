@@ -25,7 +25,7 @@ esac
 
 # perl-core: OpenSSL's Configure needs modules the minimal perl leaves out.
 dnf install -y --setopt=install_weak_deps=False gcc make perl-core binutils python3 xz >&2
-ldd --version | head -n 1 >&2
+ldd --version | sed -n 1p >&2
 
 curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o /tmp/rustup-init \
   "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${triple}/rustup-init"
