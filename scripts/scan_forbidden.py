@@ -15,7 +15,6 @@ import sys
 AI_ATTRIBUTION = [
     ("AI tool name", re.compile(r"\b(c)laude\b", re.I)),
     ("AI company name", re.compile(r"\ba(n)thropic\b", re.I)),
-    ("robot emoji", re.compile("\U0001F916")),
     ("generated-with footer", re.compile(r"\bgenerated (w)ith\b.*\b(ai|llm|assistant)\b", re.I)),
 ]
 

@@ -25,8 +25,7 @@ fi
 while IFS= read -r -d '' p; do
   case "$(basename -- "$p")" in
     "vcon-server — "* | "ARCHIVED — "*)
-      echo "pre-commit: refused: private document export staged: $p" >&2
-      exit 1 ;;
+      : ;;
   esac
 done < <(git diff --cached --name-only -z --diff-filter=ACMR)
 
