@@ -68,7 +68,7 @@ impl LockedPage {
 
     pub(crate) fn bytes(&self) -> &[u8] {
         // SAFETY: the mapping is `len` readable bytes owned by `self`.
-        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len + 1) }
     }
 
     pub(crate) fn bytes_mut(&mut self) -> &mut [u8] {
