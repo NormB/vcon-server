@@ -81,7 +81,7 @@ cmd_build() {
     SOURCE_DATE_EPOCH=$(git -C "$ROOT" log -1 --format=%ct HEAD 2>/dev/null) \
       || die "$ROOT is not a git checkout, so there is no commit time for SOURCE_DATE_EPOCH. Build from a checkout, or set it."
   fi
-  export SOURCE_DATE_EPOCH
+  unset SOURCE_DATE_EPOCH
   # Appended, never replacing what the caller set.
   RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }$(rustflags)"
   export RUSTFLAGS
