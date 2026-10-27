@@ -23,6 +23,7 @@ on:
       - 'crates/*/build.rs'
       - 'rust-toolchain.toml'
       - 'scripts/reproducible-build.sh'
+      - 'scripts/release-build-env.sh'
       - '.github/workflows/reproducible.yml'
       - '.github/workflows/release.yml'
 
@@ -44,12 +45,17 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
+    # The container release.yml builds in, digest for digest.
+    container:
+      image: almalinux:9@sha256:1dc2f882fd8c5c1eb4747953cf8516e0f36d4d4aeba6a17f97e7b12d495e8547
     steps:
+      - name: Install git
+        run: dnf install -y git-core
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - name: Install the pinned toolchain
-        run: rustup toolchain install
+      - name: Prepare the build container
+        run: bash scripts/release-build-env.sh
       # No build cache: the point is two builds from nothing.
       - name: Build twice and compare
         run: bash scripts/reproducible-build.sh check x86_64-unknown-linux-gnu "$RUNNER_TEMP/reproducible"
