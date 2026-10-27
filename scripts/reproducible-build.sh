@@ -83,7 +83,7 @@ cmd_build() {
   fi
   export SOURCE_DATE_EPOCH
   # Appended, never replacing what the caller set.
-  RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }$(rustflags)"
+  RUSTFLAGS="${RUSTFLAGS:-}"
   export RUSTFLAGS
   export CARGO_TARGET_DIR="$TARGET_DIR"
   cargo build --release --locked -p vcon-server --target "$target" >&2
