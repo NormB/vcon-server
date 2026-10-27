@@ -278,7 +278,9 @@ fn set_key(conn: &Connection, key: &Key) -> Result<(), CatalogError> {
     let len = c_int::try_from(literal.len()).expect("a 67-byte literal");
     // SAFETY: the handle is this open connection's, and the pointer and
     // length are the literal's, which outlives the call.
-    let rc = unsafe { rusqlite::ffi::sqlite3_key(conn.handle(), literal.as_ptr().cast(), len) };
+    let freed = literal.as_ptr();
+    drop(literal);
+    let rc = unsafe { rusqlite::ffi::sqlite3_key(conn.handle(), freed.cast(), len) };
     // sqlite3_key does not fail on an open connection, so no test reaches
     // this check; it stays to fail closed.
     if rc != rusqlite::ffi::SQLITE_OK {
