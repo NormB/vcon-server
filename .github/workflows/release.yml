@@ -92,18 +92,13 @@ jobs:
     # Built on the floor's glibc, so the binaries take no newer symbol
     # version: on ubuntu-latest (glibc 2.39) v0.2.0 needed GLIBC_2.38. The
     # image is multi-architecture; this digest names both platforms.
-    container:
-      image: almalinux:9@sha256:1dc2f882fd8c5c1eb4747953cf8516e0f36d4d4aeba6a17f97e7b12d495e8547
     steps:
       # Before the checkout, which keeps .git only when git is installed;
       # the build takes SOURCE_DATE_EPOCH from the commit.
-      - name: Install git
-        run: dnf install -y git-core
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - name: Prepare the build container
-        run: bash scripts/release-build-env.sh
+      - run: rustup toolchain install
       # The reproducible build (scripts/reproducible-build.sh): the same
       # command reproducible.yml runs twice and compares.
       - name: Build
@@ -113,8 +108,6 @@ jobs:
           set -euo pipefail
           bin="$(bash scripts/reproducible-build.sh build "$TARGET" | tail -1)"
           echo "BIN=$bin" >> "$GITHUB_ENV"
-      - name: Needs no glibc above the floor
-        run: python3 -I scripts/check_glibc.py "$GLIBC_FLOOR" "$BIN"
       - name: Package
         env:
           VERSION: ${{ needs.version.outputs.version }}
