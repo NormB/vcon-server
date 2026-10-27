@@ -1,0 +1,115 @@
+name: Sanitizers
+
+# Miri and AddressSanitizer over vcon-server's unsafe code. Nightly is used
+# here as a tool, never to build what ships: the release stays on the stable
+# version rust-toolchain.toml names. The nightly is the one
+# fuzz/rust-toolchain.toml names, so the repository pins one nightly.
+#
+# Why. All 34 `unsafe` occurrences under crates/ are in vcon-server (vcon
+# forbids unsafe code in its Cargo.toml). Nearly all are libc or SQLCipher
+# FFI: mmap, madvise, mlock and munmap for the key pages, mlockall,
+# setrlimit and prctl at start-up, flock on the data directory, faccessat in
+# catalog::may_use, and sqlite3_key and sqlite3_key_v2 with the key literal.
+# The rest is Rust over raw pointers: the locked page's slices, its
+# zero-then-release drop, and its Send and Sync. The borrow checker stops at
+# `unsafe`, and a test that read one byte too many passes as well as one
+# that did not.
+#
+# What runs where, per crate:
+# - vcon: nothing. It has no unsafe code of its own.
+# - vcon-server, Miri: the locked page's tests (envelope::locked). Miri
+#   cannot call libc's madvise or mlock or any C library, so it runs the
+#   pure-Rust part on pages the tests place on the heap; every other test in
+#   the crate reaches aws-lc or SQLCipher, which Miri cannot run.
+# - vcon-server, AddressSanitizer: the crate's tests, the library's and the
+#   binary's, built against an instrumented standard library. The C
+#   libraries (SQLCipher, OpenSSL, aws-lc) are not rebuilt instrumented; the
+#   sanitizer's interceptors still check what they copy and compare (memcpy,
+#   strlen and the rest), which is where a wrong pointer or length handed to
+#   them is read. The tests left out are listed at the step, each with its
+#   reason.
+on:
+  pull_request:
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'fuzz/rust-toolchain.toml'
+      - '.github/workflows/sanitizers.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'fuzz/rust-toolchain.toml'
+      - '.github/workflows/sanitizers.yml'
+  schedule:
+    # Thursdays 03:17 UTC, clear of the other weekly runs (codeql.yml
+    # Tuesdays, osv-scanner.yml Wednesdays, clusterfuzzlite.yml and
+    # scorecard.yml Mondays).
+    - cron: '17 3 * * 4'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sanitizers-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  miri:
+    name: Miri (vcon-server locked pages)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install the pinned nightly with Miri
+        run: |
+          set -euo pipefail
+          nightly="$(sed -n 's/^channel = "\(nightly-[0-9-]*\)"$/\1/p' fuzz/rust-toolchain.toml)"
+          [ -n "$nightly" ] || { echo "::error::no nightly in fuzz/rust-toolchain.toml"; exit 1; }
+          echo "NIGHTLY=$nightly" >> "$GITHUB_ENV"
+          rustup toolchain install "$nightly" --profile minimal --component miri,rust-src
+          cargo "+$nightly" miri setup
+      - name: Run the locked page's tests under Miri
+        run: cargo "+$NIGHTLY" miri test --locked -p vcon-server --lib -- 'envelope::locked::'
+
+  asan:
+    name: AddressSanitizer (vcon-server)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install the pinned nightly with the standard library's source
+        run: |
+          set -euo pipefail
+          nightly="$(sed -n 's/^channel = "\(nightly-[0-9-]*\)"$/\1/p' fuzz/rust-toolchain.toml)"
+          [ -n "$nightly" ] || { echo "::error::no nightly in fuzz/rust-toolchain.toml"; exit 1; }
+          echo "NIGHTLY=$nightly" >> "$GITHUB_ENV"
+          rustup toolchain install "$nightly" --profile minimal --component rust-src
+      - name: Run vcon-server's tests under AddressSanitizer
+        env:
+          # -Zbuild-std rebuilds the standard library instrumented, so a bad
+          # access inside it (a slice made too long, then copied) is seen.
+          RUSTFLAGS: -Zsanitizer=address
+          RUSTDOCFLAGS: -Zsanitizer=address
+          ASAN_OPTIONS: detect_stack_use_after_return=1:abort_on_error=1
+        run: |
+          set -euo pipefail
+          # As in ci.yml: the binary locks its memory, the tests run it.
+          sudo prlimit --pid $$ --memlock=unlimited:unlimited
+          cargo "+$NIGHTLY" test -Zbuild-std --target x86_64-unknown-linux-gnu \
+            --locked -p vcon-server --lib --bins --tests --no-fail-fast
