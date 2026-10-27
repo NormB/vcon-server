@@ -258,7 +258,9 @@ jobs:
       # pass; the push hook refuses unsigned and foreign commits.
       - name: The commit hooks
         run: scripts/test-hooks.sh
+      # Reported even when the commit hooks' test failed.
       - name: The push hook
+        if: success() || failure()
         run: scripts/test-pre-push.sh
 
   site:
