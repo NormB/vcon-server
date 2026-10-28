@@ -249,6 +249,83 @@ jobs:
       - name: The rule for the home page's numbers
         run: python3 -I scripts/test_published_metrics.py
 
+  hooks:
+    name: git hooks
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        # The commit hook runs rustfmt, clippy and the tests on its fixture
+        # crate, rustfmt from the nightly scripts/rustfmt.sh pins.
+        run: |
+          set -euo pipefail
+          rustup toolchain install
+          scripts/rustfmt.sh install
+      # Each hook in a throwaway repository: every forbidden item staged or
+      # written in a message is refused, clean changes pass; the push hook
+      # refuses unsigned and foreign commits and forbidden messages.
+      # The tests make their own repositories; this one must not change.
+      - name: Note this repository's config
+        run: cp .git/config "$RUNNER_TEMP/config.before"
+      - name: The commit hooks
+        run: scripts/test-hooks.sh
+      # Reported even when the commit hooks' test failed.
+      - name: The push hook
+        if: success() || failure()
+        run: scripts/test-pre-push.sh
+      - name: This repository's config is as it was
+        if: success() || failure()
+        run: cmp .git/config "$RUNNER_TEMP/config.before"
+      # Each test run from inside a real hook of a scratch repository with a
+      # linked worktree, where git sets GIT_DIR and the rest: that
+      # repository's config and branch must be left as they were.
+      - name: Each hook test leaves a hook's repository alone
+        if: success() || failure()
+        run: scripts/test-hook-isolation.sh scripts/test-hooks.sh scripts/test-pre-push.sh scripts/test-scan-commit-messages.sh
+
+  messages:
+    name: commit messages
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          # The whole history, so the commits of the push or pull request
+          # are all here to read.
+          fetch-depth: 0
+      # The scanner must refuse planted messages, or a clean result below
+      # proves nothing.
+      - name: The scanner refuses a planted message
+        run: scripts/test-scan-commit-messages.sh
+      # Every commit the push or pull request brings, whole message (%B),
+      # # lines included: a commit made with --no-verify or by another
+      # tool never ran the commit-msg hook.
+      - name: Every commit message of this push or pull request
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          zero=0000000000000000000000000000000000000000
+          case "$EVENT" in
+            pull_request) range=("$PR_BASE..$PR_HEAD") ;;
+            push) if [ -n "$BEFORE" ] && [ "$BEFORE" != "$zero" ]; then range=("$BEFORE..$AFTER"); else range=(-1 "$AFTER"); fi ;;
+            *) range=(-1 "$AFTER") ;;
+          esac
+          mapfile -t commits < <(git rev-list "${range[@]}")
+          echo "scanning ${#commits[@]} commit message(s): ${range[*]}"
+          # Every push and pull request brings a commit; none found means
+          # the range is wrong, not that there is nothing to check.
+          [ "${#commits[@]}" -gt 0 ] || { echo "::error::no commits in ${range[*]}"; exit 1; }
+          scripts/scan-commit-messages.sh "${commits[@]}"
+
   site:
     name: website
     timeout-minutes: 15
