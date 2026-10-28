@@ -1,5 +1,6 @@
 //! Keys and the encryption that protects every stored body.
 
+use std::fmt;
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
@@ -110,6 +111,27 @@ pub enum KeyError {
     Damaged,
 }
 
+/// The I/O error itself is given by `source`, not repeated here.
+impl fmt::Display for KeyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            KeyError::Memory(_) => "the key's memory could not be locked or kept out of core dumps",
+            KeyError::Read(_) => "the master key file could not be read",
+            KeyError::WrongSize => "the master key file does not hold exactly 32 bytes",
+            KeyError::Damaged => "a wrapped key did not open",
+        })
+    }
+}
+
+impl std::error::Error for KeyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            KeyError::Memory(e) | KeyError::Read(e) => Some(e),
+            KeyError::WrongSize | KeyError::Damaged => None,
+        }
+    }
+}
+
 /// Locks every page of this process in memory, now and as it grows, so
 /// nothing it holds can reach swap: not AWS-LC's expanded keys, which live
 /// in its own allocations for the length of one call, and not plaintext
@@ -192,6 +214,14 @@ impl Context {
 /// caller cannot tell which part was wrong.
 #[derive(Debug, PartialEq, Eq)]
 pub struct OpenError;
+
+impl fmt::Display for OpenError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("the blob did not open under this key and context")
+    }
+}
+
+impl std::error::Error for OpenError {}
 
 /// Encrypts `plaintext` under `data_key`, bound to `ctx`, with a random
 /// nonce. The blob is the format byte, the nonce, the ciphertext and the

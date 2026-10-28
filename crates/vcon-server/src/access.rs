@@ -1,5 +1,7 @@
 //! Turns the bearer token on a request into a caller, or refuses it.
 
+use std::fmt;
+
 use aws_lc_rs::constant_time;
 use aws_lc_rs::digest::{SHA256, digest};
 use base64::Engine;
@@ -163,6 +165,25 @@ pub enum AuthError {
     /// The key table could not be read, so nothing is let through.
     Io,
 }
+
+impl fmt::Display for AuthError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AuthError::Missing => f.write_str("no Authorization header"),
+            AuthError::Forbidden(scope) => {
+                write!(f, "the key does not hold the {} scope", scope.name())
+            }
+            AuthError::Malformed => {
+                f.write_str("the Authorization header is not Bearer and a token")
+            }
+            AuthError::Unknown => f.write_str("no key has this id and secret"),
+            AuthError::Revoked => f.write_str("the key was revoked"),
+            AuthError::Io => f.write_str("the key table could not be read"),
+        }
+    }
+}
+
+impl std::error::Error for AuthError {}
 
 /// The caller a request's Authorization header names. The key is looked up
 /// on every call, with no cache, so a revoked key fails on its next

@@ -3,11 +3,23 @@
 //! refuse the same queries.
 
 use std::collections::BTreeMap;
+use std::fmt;
 
 /// A query the route does not take: a name it does not know, a name given
 /// twice, or a value it cannot read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BadQuery;
+
+impl fmt::Display for BadQuery {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(concat!(
+            "the query names a parameter the route does not take, ",
+            "names one twice, or gives a value it cannot read"
+        ))
+    }
+}
+
+impl std::error::Error for BadQuery {}
 
 /// The parameters of `query`, percent-decoded, by name. A name that is not
 /// in `names`, or that is given twice, is refused, so a misspelt or

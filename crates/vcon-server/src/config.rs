@@ -70,6 +70,8 @@ impl fmt::Display for ConfigError {
     }
 }
 
+impl std::error::Error for ConfigError {}
+
 /// Reads the configuration file at `path`.
 pub fn load(path: &Path) -> Result<Config, ConfigError> {
     let text = std::fs::read_to_string(path)
