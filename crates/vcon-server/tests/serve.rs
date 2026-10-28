@@ -479,7 +479,8 @@ fn serve_refuses_a_tenant_key_wrapped_under_another_key() {
     assert_eq!(
         stderr(&output),
         "vcon-server: 1 tenant key(s) do not unwrap under the master key; \
-         vcon-server check names the tenants\n"
+         vcon-server check names the tenants\n",
+        "the one tenant key wrapped under another key is counted, and no tenant is named"
     );
 }
 
