@@ -137,7 +137,11 @@ async fn each_request_is_logged_by_its_route_template_and_no_id() {
     for request in requests {
         statuses.push(request.send().await.expect("an answer").status().as_u16());
     }
-    assert_eq!(statuses, [201, 200, 412, 204, 200, 404]);
+    assert_eq!(
+        statuses,
+        [201, 200, 412, 204, 200, 404],
+        "store, read, a put whose if-match is not the version, delete, health, an unknown path"
+    );
     stop.send(()).expect("stop");
     server.await.expect("joins").expect("serves");
 

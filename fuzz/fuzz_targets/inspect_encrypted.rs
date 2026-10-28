@@ -9,6 +9,10 @@ use vcon_fuzz::{LIMITS, jwe, supported};
 fuzz_target!(|unprotected: &[u8]| {
     let found = vcon::read::inspect(&jwe(unprotected), None, &LIMITS, &supported());
     if let Ok(found) = found {
-        assert_eq!(found.form, Form::Encrypted);
+        assert_eq!(
+            found.form,
+            Form::Encrypted,
+            "a body built as a JWE reads as nothing else"
+        );
     }
 });

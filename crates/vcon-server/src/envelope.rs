@@ -393,9 +393,14 @@ mod tests {
             hex(concat!(
                 "522dc1f099567d07f47f37a32a84427d643a8cdcbfe5c0c97598a2bd2555d1aa",
                 "8cb08e48590dbb3da7b08b1056828838c5f61e6393ba7a0abcc9f662"
-            ))
+            )),
+            "the ciphertext is Test Case 16's"
         );
-        assert_eq!(tag.to_vec(), hex("76fc6ece0f4e1768cddf8853bb2d551b"));
+        assert_eq!(
+            tag.to_vec(),
+            hex("76fc6ece0f4e1768cddf8853bb2d551b"),
+            "the tag is Test Case 16's"
+        );
     }
 
     const TENANT: TenantId = TenantId([0x11; 16]);
@@ -430,7 +435,8 @@ mod tests {
         expected.extend(tag);
         assert_eq!(
             seal_with_nonce(&key, nonce, &version_ctx(), b"body"),
-            expected
+            expected,
+            "format byte, nonce, ciphertext, tag, under a version's associated data"
         );
 
         let mut tenant_ad = b"vcon-server/v1".to_vec();
@@ -443,7 +449,11 @@ mod tests {
         expected.extend(ciphertext);
         expected.extend(tag);
         let tenant = Context::Tenant { tenant: TENANT };
-        assert_eq!(seal_with_nonce(&key, nonce, &tenant, b"key"), expected);
+        assert_eq!(
+            seal_with_nonce(&key, nonce, &tenant, b"key"),
+            expected,
+            "a tenant blob: the same layout under the tenant's associated data"
+        );
     }
 
     #[test]
@@ -451,8 +461,16 @@ mod tests {
         let key = Key::generate().expect("key");
         for body in [&b""[..], b"x", &[0xa5; 100_000]] {
             let blob = seal(&key, &version_ctx(), body);
-            assert_eq!(blob.len(), 1 + 12 + body.len() + 16);
-            assert_eq!(open(&key, &version_ctx(), &blob).as_deref(), Ok(body));
+            assert_eq!(
+                blob.len(),
+                1 + 12 + body.len() + 16,
+                "a format byte, a 12-byte nonce, the ciphertext as long as the body, a 16-byte tag"
+            );
+            assert_eq!(
+                open(&key, &version_ctx(), &blob).as_deref(),
+                Ok(body),
+                "the same key and context open what they sealed"
+            );
         }
     }
 
@@ -461,7 +479,7 @@ mod tests {
         let key = Key::generate().expect("key");
         let a = seal(&key, &version_ctx(), b"same");
         let b = seal(&key, &version_ctx(), b"same");
-        assert_ne!(a[1..13], b[1..13]);
+        assert_ne!(a[1..13], b[1..13], "each seal draws its own random nonce");
     }
 
     /// Every byte of the nonce is random: over 1000 seals no nonce repeats
@@ -547,7 +565,11 @@ mod tests {
             assert_eq!(open(&key, &other, &blob), Err(OpenError), "{other:?}");
         }
         let other_key = Key::generate().expect("key");
-        assert_eq!(open(&other_key, &version_ctx(), &blob), Err(OpenError));
+        assert_eq!(
+            open(&other_key, &version_ctx(), &blob),
+            Err(OpenError),
+            "the tag fails under any other key"
+        );
     }
 
     const TENANT_CTX: Context = Context::Tenant { tenant: TENANT };
@@ -558,9 +580,17 @@ mod tests {
         let key = Key::generate().expect("key");
         for ctx in [TENANT_CTX, version_ctx()] {
             let wrapped = wrap(&wrapping, &ctx, &key);
-            assert_eq!(wrapped.len(), 1 + 12 + KEY_LEN + 16);
+            assert_eq!(
+                wrapped.len(),
+                1 + 12 + KEY_LEN + 16,
+                "a wrapped key is a sealed blob of the key's 32 bytes"
+            );
             let unwrapped = unwrap(&wrapping, &ctx, &wrapped).expect("unwraps");
-            assert_eq!(unwrapped.bytes(), key.bytes());
+            assert_eq!(
+                unwrapped.bytes(),
+                key.bytes(),
+                "unwrap gives back the key wrapped"
+            );
         }
     }
 
@@ -625,7 +655,7 @@ mod tests {
         }
         let sealed = seal(&wrapping, &TENANT_CTX, &[7; KEY_LEN]);
         let key = unwrap(&wrapping, &TENANT_CTX, &sealed).expect("32 bytes unwrap");
-        assert_eq!(key.bytes(), [7; KEY_LEN]);
+        assert_eq!(key.bytes(), [7; KEY_LEN], "the key is the 32 bytes sealed");
     }
 
     /// A key with the given bytes, for tests that need a known key.
@@ -696,7 +726,8 @@ mod tests {
         let catalog = catalog_key(&key_of([0x44; KEY_LEN])).expect("derives");
         assert_eq!(
             catalog.bytes(),
-            hex("c0df4ea4f63e64687ca93c494fff4ca00b3ae13112766d8ea24cca35c6b1031b")
+            hex("c0df4ea4f63e64687ca93c494fff4ca00b3ae13112766d8ea24cca35c6b1031b"),
+            "the value Python's HKDF gives for this parent and label"
         );
     }
 
@@ -706,15 +737,20 @@ mod tests {
         let again = catalog_key(&parent).expect("derives");
         assert_eq!(
             catalog_key(&parent).expect("derives").bytes(),
-            again.bytes()
+            again.bytes(),
+            "derivation is deterministic: the same parent gives the same catalog key"
         );
         let other = catalog_key(&Key::generate().expect("key")).expect("derives");
-        assert_ne!(other.bytes(), again.bytes());
+        assert_ne!(
+            other.bytes(),
+            again.bytes(),
+            "another parent gives another catalog key"
+        );
         let mut a = [0; KEY_LEN];
         let mut b = [0; KEY_LEN];
         hkdf_sha256(&[], parent.bytes(), b"label a", &mut a);
         hkdf_sha256(&[], parent.bytes(), b"label b", &mut b);
-        assert_ne!(a, b);
+        assert_ne!(a, b, "another label gives another key from the same parent");
     }
 
     #[test]
@@ -725,7 +761,11 @@ mod tests {
         let wrapped = wrap(&old, &version_ctx(), &key);
         let rewrapped = rewrap(&old, &new, &version_ctx(), &wrapped).expect("rewraps");
         let opened = unwrap(&new, &version_ctx(), &rewrapped).expect("opens under new");
-        assert_eq!(opened.bytes(), key.bytes());
+        assert_eq!(
+            opened.bytes(),
+            key.bytes(),
+            "rewrapping keeps the wrapped key itself"
+        );
         assert!(unwrap(&old, &version_ctx(), &rewrapped).is_err(), "old key");
         assert!(
             unwrap(&new, &TENANT_CTX, &rewrapped).is_err(),
@@ -738,14 +778,20 @@ mod tests {
         let old = Key::generate().expect("key");
         let new = Key::generate().expect("key");
         let wrapped = wrap(&old, &TENANT_CTX, &Key::generate().expect("key"));
-        assert!(matches!(
-            rewrap(&new, &new, &TENANT_CTX, &wrapped),
-            Err(KeyError::Damaged)
-        ));
-        assert!(matches!(
-            rewrap(&old, &new, &version_ctx(), &wrapped),
-            Err(KeyError::Damaged)
-        ));
+        assert!(
+            matches!(
+                rewrap(&new, &new, &TENANT_CTX, &wrapped),
+                Err(KeyError::Damaged)
+            ),
+            "the key was not wrapped under new, so new cannot unwrap it to rewrap"
+        );
+        assert!(
+            matches!(
+                rewrap(&old, &new, &version_ctx(), &wrapped),
+                Err(KeyError::Damaged)
+            ),
+            "the key was wrapped for the tenant context, not a version's"
+        );
     }
 
     #[test]
@@ -770,7 +816,10 @@ mod tests {
         bytes[31] = 0xff;
         let literal = key_of(bytes).sqlcipher_raw();
         let expected = format!("x'0a{}ff'", "00".repeat(30));
-        assert_eq!(*literal, expected);
+        assert_eq!(
+            *literal, expected,
+            "SQLCipher's raw key literal is x'' around two lower-case hex digits per byte"
+        );
         assert_eq!(literal.capacity(), literal.len(), "built at its final size");
     }
 

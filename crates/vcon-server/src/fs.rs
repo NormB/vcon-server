@@ -395,7 +395,8 @@ mod tests {
         fs.write_new(&a, b"one").expect("write");
         assert_eq!(
             fs.write_new(&a, b"two").map_err(|e| e.kind()),
-            Err(AlreadyExists)
+            Err(AlreadyExists),
+            "write_new never replaces a file"
         );
         assert!(fs.create_dir_all(&a).is_err(), "a file has the name");
         assert!(
@@ -403,17 +404,37 @@ mod tests {
             "a file stands in the way"
         );
         assert!(!a.join("d").exists(), "and nothing is made on disk");
-        assert_eq!(fs.read(&a).expect("read"), b"one");
+        assert_eq!(
+            fs.read(&a).expect("read"),
+            b"one",
+            "the refused write left the first one"
+        );
         fs.sync_file(&a).expect("sync the file");
         fs.sync_dir(&dir).expect("sync the dir");
         fs.rename(&a, &b).expect("rename");
-        assert_eq!(fs.read(&a).map_err(|e| e.kind()), Err(NotFound));
-        assert_eq!(fs.read(&b).expect("read"), b"one");
+        assert_eq!(
+            fs.read(&a).map_err(|e| e.kind()),
+            Err(NotFound),
+            "rename moves the file away"
+        );
+        assert_eq!(
+            fs.read(&b).expect("read"),
+            b"one",
+            "the file is under its new name"
+        );
         fs.rename(&b, &b).expect("rename onto itself");
-        assert_eq!(fs.read(&b).expect("read"), b"one");
+        assert_eq!(
+            fs.read(&b).expect("read"),
+            b"one",
+            "renaming onto itself changes nothing"
+        );
         fs.write_new(&a, b"three").expect("write again");
         fs.rename(&a, &b).expect("rename over");
-        assert_eq!(fs.read(&b).expect("read"), b"three");
+        assert_eq!(
+            fs.read(&b).expect("read"),
+            b"three",
+            "rename replaces the target"
+        );
         fs.write_new(&a, b"four").expect("write");
         fs.create_dir_all(&dir.join("c"))
             .expect("a directory inside");
@@ -441,24 +462,43 @@ mod tests {
             .expect("a file inside c");
         fs.remove_dir_all(&dir.join("c"))
             .expect("remove c and all in it");
-        assert_eq!(fs.list(&dir.join("c")).map_err(|e| e.kind()), Err(NotFound));
+        assert_eq!(
+            fs.list(&dir.join("c")).map_err(|e| e.kind()),
+            Err(NotFound),
+            "remove_dir_all removed c itself"
+        );
         assert_eq!(
             fs.remove_dir_all(&dir.join("c")).map_err(|e| e.kind()),
-            Err(NotFound)
+            Err(NotFound),
+            "a directory that is gone cannot be removed again"
         );
         fs.create_dir_all(&dir.join("c")).expect("c again");
         fs.remove(&a).expect("remove");
         fs.remove(&b).expect("remove");
-        assert_eq!(fs.list(&dir).expect("list"), [OsString::from("c")]);
-        assert_eq!(fs.remove(&b).map_err(|e| e.kind()), Err(NotFound));
-        assert_eq!(fs.sync_file(&b).map_err(|e| e.kind()), Err(NotFound));
+        assert_eq!(
+            fs.list(&dir).expect("list"),
+            [OsString::from("c")],
+            "the removed files are gone and c is left"
+        );
+        assert_eq!(
+            fs.remove(&b).map_err(|e| e.kind()),
+            Err(NotFound),
+            "b was removed"
+        );
+        assert_eq!(
+            fs.sync_file(&b).map_err(|e| e.kind()),
+            Err(NotFound),
+            "b was removed"
+        );
         assert_eq!(
             fs.sync_dir(&root.join("none")).map_err(|e| e.kind()),
-            Err(NotFound)
+            Err(NotFound),
+            "no directory has that name"
         );
         assert_eq!(
             fs.list(&root.join("none")).map_err(|e| e.kind()),
-            Err(NotFound)
+            Err(NotFound),
+            "no directory has that name"
         );
     }
 
@@ -527,7 +567,11 @@ mod tests {
                 }
             });
             m.fs.crash();
-            assert_eq!(m.fs.read(&m.f()).map_err(|e| e.kind()), Err(NotFound));
+            assert_eq!(
+                m.fs.read(&m.f()).map_err(|e| e.kind()),
+                Err(NotFound),
+                "the entry was never synced, so the crash loses the file (data synced: {sync_data})"
+            );
         }
     }
 
@@ -539,14 +583,22 @@ mod tests {
                 .expect("sync the dir");
         });
         m.fs.crash();
-        assert_eq!(m.fs.read(&m.f()).expect("the entry survives"), b"");
+        assert_eq!(
+            m.fs.read(&m.f()).expect("the entry survives"),
+            b"",
+            "the entry was synced but the data was not, so the file comes back empty"
+        );
     }
 
     #[test]
     fn a_crash_keeps_a_file_synced_in_both_ways() {
         let m = after(synced);
         m.fs.crash();
-        assert_eq!(m.fs.read(&m.f()).expect("survives"), b"data");
+        assert_eq!(
+            m.fs.read(&m.f()).expect("survives"),
+            b"data",
+            "data and entry were both synced, so the crash keeps the file whole"
+        );
     }
 
     #[test]
@@ -572,7 +624,8 @@ mod tests {
                     .fs
                     .read(&renamed.dir().join(names[0]))
                     .expect("read"),
-                b"data"
+                b"data",
+                "whichever name survives, the synced data is under it"
             );
 
             let removed = after(|fs, f| {
@@ -595,8 +648,16 @@ mod tests {
         let (a, b) = (m.root().join("a"), m.root().join("a/b"));
         m.fs.create_dir_all(&b).expect("create a/b");
         m.fs.crash();
-        assert_eq!(m.fs.list(m.root()).expect("list"), Vec::<OsString>::new());
-        assert_eq!(m.fs.list(&a).map_err(|e| e.kind()), Err(NotFound));
+        assert_eq!(
+            m.fs.list(m.root()).expect("list"),
+            Vec::<OsString>::new(),
+            "nothing was synced, so the crash loses a"
+        );
+        assert_eq!(
+            m.fs.list(&a).map_err(|e| e.kind()),
+            Err(NotFound),
+            "a is gone after the crash"
+        );
 
         m.fs.create_dir_all(&b).expect("create a/b");
         m.fs.sync_dir(&a).expect("sync a, not the root");
@@ -610,7 +671,11 @@ mod tests {
         m.fs.create_dir_all(&b).expect("create a/b");
         m.fs.sync_dir(m.root()).expect("sync the root");
         m.fs.crash();
-        assert_eq!(m.fs.list(m.root()).expect("list"), [OsString::from("a")]);
+        assert_eq!(
+            m.fs.list(m.root()).expect("list"),
+            [OsString::from("a")],
+            "the root was synced, so its entry for a survives"
+        );
         assert_eq!(
             m.fs.list(&a).expect("a survives"),
             Vec::<OsString>::new(),
@@ -620,7 +685,11 @@ mod tests {
         m.fs.create_dir_all(&b).expect("create b");
         m.fs.sync_dir(&a).expect("sync a");
         m.fs.crash();
-        assert_eq!(m.fs.list(&b).expect("b survives"), Vec::<OsString>::new());
+        assert_eq!(
+            m.fs.list(&b).expect("b survives"),
+            Vec::<OsString>::new(),
+            "a was synced, so its entry for b survives, and b is empty"
+        );
     }
 
     #[test]
@@ -630,7 +699,11 @@ mod tests {
         m.fs.create_dir_all(&a).expect("create a");
         synced(&m.fs, &a.join("f"));
         m.fs.crash();
-        assert_eq!(m.fs.list(m.root()).expect("list"), Vec::<OsString>::new());
+        assert_eq!(
+            m.fs.list(m.root()).expect("list"),
+            Vec::<OsString>::new(),
+            "the root was never synced, so a is lost with its synced file"
+        );
         m.fs.create_dir_all(&a).expect("create a again");
         assert_eq!(
             m.fs.list(&a).expect("list"),
@@ -653,9 +726,17 @@ mod tests {
             }
             m.fs.crash();
             if sync {
-                assert_eq!(m.fs.list(&a).map_err(|e| e.kind()), Err(NotFound));
+                assert_eq!(
+                    m.fs.list(&a).map_err(|e| e.kind()),
+                    Err(NotFound),
+                    "the root was synced after the removal, so it holds"
+                );
             } else {
-                assert_eq!(m.fs.read(&a.join("f")).expect("back"), b"data");
+                assert_eq!(
+                    m.fs.read(&a.join("f")).expect("back"),
+                    b"data",
+                    "the removal was never synced, so a comes back with its file"
+                );
             }
         }
     }
@@ -668,7 +749,10 @@ mod tests {
         let a = m.root().join("a");
         m.fs.create_dir_all(&a).expect("create a");
         m.fs.remove_dir_all(&a).expect("remove a");
-        assert!(a.is_dir());
+        assert!(
+            a.is_dir(),
+            "the directory stays on disk, for a crash that brings it back"
+        );
     }
 
     /// SQLite opens its files on disk, so a directory made in the model is
@@ -678,15 +762,21 @@ mod tests {
         let m = Model::new();
         let b = m.root().join("a/b");
         m.fs.create_dir_all(&b).expect("create a/b");
-        assert!(b.is_dir());
+        assert!(
+            b.is_dir(),
+            "the directory is on disk, where SQLite will open its files"
+        );
     }
 
     #[test]
     fn nothing_outside_the_root_can_be_made() {
         let m = Model::new();
         let outside = m.root().with_file_name("elsewhere-5c1e");
-        assert!(m.fs.create_dir_all(&outside).is_err());
-        assert!(!outside.exists());
+        assert!(
+            m.fs.create_dir_all(&outside).is_err(),
+            "the model refuses a path outside its root"
+        );
+        assert!(!outside.exists(), "and makes nothing there on disk");
     }
 
     #[test]
@@ -709,7 +799,8 @@ mod tests {
                 Op::Rename(f, g.clone()),
                 Op::Remove(g),
                 Op::RemoveDir(dir),
-            ]
+            ],
+            "one entry per change, in order; the create that changed nothing is not logged"
         );
     }
 
@@ -731,7 +822,11 @@ mod tests {
         assert!(m.fs.remove_dir_all(&m.dir()).is_err(), "remove dir");
         assert!(!m.dir().join("d").exists(), "not made on disk either");
         assert_eq!(m.fs.log().len(), ops, "nothing changed");
-        assert_eq!(m.fs.read(&f).expect("reads still work"), b"data");
+        assert_eq!(
+            m.fs.read(&f).expect("reads still work"),
+            b"data",
+            "the fail point stops changes, not reads"
+        );
         m.fs.crash();
         m.fs.write_new(&g, b"x")
             .expect("works again after the crash");

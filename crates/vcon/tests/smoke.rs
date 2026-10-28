@@ -21,5 +21,9 @@ fn the_shared_names_are_at_the_root_and_reading_is_under_read() {
     let _: usize = vcon::read::MAX_SIGNED_LAYERS + vcon::read::MAX_JSON_DEPTH;
     let found: Result<vcon::read::Inspection, vcon::read::Rejection> =
         vcon::read::inspect(b"[]", None, &limits, &BTreeSet::new());
-    assert_eq!(found, Err(vcon::read::Rejection::NotJson));
+    assert_eq!(
+        found,
+        Err(vcon::read::Rejection::NotJson),
+        "a JSON array is not one JSON object"
+    );
 }

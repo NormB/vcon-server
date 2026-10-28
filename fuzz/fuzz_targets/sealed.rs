@@ -20,6 +20,12 @@ fuzz_target!(|blob: &[u8]| {
         uuid: uuid::Uuid::from_bytes([9; 16]),
         version: VersionId([8; 16]),
     };
-    assert!(envelope::open(key(), &version, blob).is_err());
-    assert!(envelope::unwrap(key(), &Context::Tenant { tenant }, blob).is_err());
+    assert!(
+        envelope::open(key(), &version, blob).is_err(),
+        "only a blob sealed with this key and context opens, and the fuzzer cannot forge one"
+    );
+    assert!(
+        envelope::unwrap(key(), &Context::Tenant { tenant }, blob).is_err(),
+        "only a key wrapped with this key and context unwraps, and the fuzzer cannot forge one"
+    );
 });

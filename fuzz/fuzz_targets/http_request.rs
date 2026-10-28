@@ -164,7 +164,11 @@ fn world() -> &'static World {
             .runtime
             .block_on(world.router.clone().oneshot(request))
             .expect("infallible");
-        assert_eq!(answer.status(), StatusCode::CREATED);
+        assert_eq!(
+            answer.status(),
+            StatusCode::CREATED,
+            "the setup stores a valid vCon with a key that may write"
+        );
         world.remember_version(&answer);
         world
     })

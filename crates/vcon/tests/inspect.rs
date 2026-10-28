@@ -46,16 +46,26 @@ fn ok(form: Form, gzip: bool) -> Result<(Form, bool, Uuid), Rejection> {
 #[test]
 fn reads_each_form() {
     let text = unsigned().to_string();
-    assert_eq!(run(text.as_bytes()), ok(Form::Unsigned, false));
-    assert_eq!(run(&gz(text.as_bytes())), ok(Form::Unsigned, true));
+    assert_eq!(
+        run(text.as_bytes()),
+        ok(Form::Unsigned, false),
+        "plain JSON with a uuid and created_at is an unsigned vCon"
+    );
+    assert_eq!(
+        run(&gz(text.as_bytes())),
+        ok(Form::Unsigned, true),
+        "gzip is found from the magic number and changes only the gzip flag"
+    );
     assert_eq!(
         run(sign(text.as_bytes()).to_string().as_bytes()),
-        ok(Form::Signed, false)
+        ok(Form::Signed, false),
+        "a JWS whose payload is that vCon is the signed form, with its uuid"
     );
     let encrypted = json!({"unprotected": {"uuid": ID}, "ciphertext": "x", "recipients": []});
     assert_eq!(
         run(encrypted.to_string().as_bytes()),
-        ok(Form::Encrypted, false)
+        ok(Form::Encrypted, false),
+        "a JWE is the encrypted form, identified by its unprotected uuid"
     );
 }
 
@@ -90,13 +100,15 @@ fn the_media_type_and_supported_list_are_used() {
             &LIMITS,
             &BTreeSet::new()
         ),
-        Err(Rejection::BadGzip)
+        Err(Rejection::BadGzip),
+        "the gzip media type makes plain JSON a bad gzip stream"
     );
     let critical = json!({"uuid": ID, "created_at": "x", "critical": ["x"]}).to_string();
     let supported = BTreeSet::from(["x".to_owned()]);
     assert_eq!(
         inspect(critical.as_bytes(), None, &LIMITS, &supported).map(|i| (i.form, i.gzip, i.uuid)),
-        ok(Form::Unsigned, false)
+        ok(Form::Unsigned, false),
+        "an extension in critical is accepted when the caller supports it"
     );
 }
 
@@ -109,10 +121,12 @@ fn the_body_and_every_payload_share_one_inflation_budget() {
     assert_eq!(
         inspect(&body, None, &Limits::new(total), &BTreeSet::new())
             .map(|i| (i.form, i.gzip, i.uuid)),
-        ok(Form::Signed, true)
+        ok(Form::Signed, true),
+        "a limit of the body's and the payload's inflated sizes together is enough"
     );
     assert_eq!(
         inspect(&body, None, &Limits::new(total - 1), &BTreeSet::new()),
-        Err(Rejection::TooLarge)
+        Err(Rejection::TooLarge),
+        "one byte less is not: the body and the payload draw on one budget"
     );
 }

@@ -228,9 +228,16 @@ fn a_vcon_purged_before_a_rotation_cannot_be_recovered_from_an_old_copy() {
 
     // The rotation, as the operator guide gives it.
     let checked = s.ok(&["check"]);
-    assert_eq!(checked[0]["purges_awaiting_rotation"], 1);
+    assert_eq!(
+        checked[0]["purges_awaiting_rotation"], 1,
+        "the purged vCon can still be read from the backup until the tenant key changes"
+    );
     s.ok(&["rekey", "tenant", &tenant.to_string()]);
-    assert_eq!(s.ok(&["check"])[0]["purges_awaiting_rotation"], 0);
+    assert_eq!(
+        s.ok(&["check"])[0]["purges_awaiting_rotation"],
+        0,
+        "rekeying the tenant ends the wait"
+    );
     std::fs::write(s.key_file("new.key"), [0x62; 32]).expect("new master");
     let new_master_path = s.key_file("new.key");
     s.ok(&[
@@ -241,18 +248,25 @@ fn a_vcon_purged_before_a_rotation_cannot_be_recovered_from_an_old_copy() {
     ]);
     s.use_master("new.key");
     std::fs::remove_file(s.key_file("old.key")).expect("the old master key destroyed");
-    assert_eq!(s.ok(&["check"]).last().expect("summary")["problems"], 0);
+    assert_eq!(
+        s.ok(&["check"]).last().expect("summary")["problems"],
+        0,
+        "after the rotation the data directory checks clean under the new master alone"
+    );
 
     // Every key that still exists, tried on the copy.
     let new_master = Key::load_master(&s.key_file("new.key")).expect("new master");
-    assert!(matches!(
-        catalog::open(
-            &copy.join("server.sqlite"),
-            &envelope::catalog_key(&new_master).expect("key"),
-            ""
+    assert!(
+        matches!(
+            catalog::open(
+                &copy.join("server.sqlite"),
+                &envelope::catalog_key(&new_master).expect("key"),
+                ""
+            ),
+            Err(CatalogError::WrongKey)
         ),
-        Err(CatalogError::WrongKey)
-    ));
+        "the copy's registry was encrypted under the old master, which is gone"
+    );
     let live_server = catalog::open(
         &s.data().join("server.sqlite"),
         &envelope::catalog_key(&new_master).expect("key"),
@@ -274,10 +288,13 @@ fn a_vcon_purged_before_a_rotation_cannot_be_recovered_from_an_old_copy() {
         .join(tenant.to_string())
         .join("catalog.sqlite");
     for key in [&new_master, &tenant_key] {
-        assert!(matches!(
-            catalog::open(&old_catalog, &envelope::catalog_key(key).expect("key"), ""),
-            Err(CatalogError::WrongKey)
-        ));
+        assert!(
+            matches!(
+                catalog::open(&old_catalog, &envelope::catalog_key(key).expect("key"), ""),
+                Err(CatalogError::WrongKey)
+            ),
+            "no key that still exists opens the copy's tenant catalog"
+        );
     }
     let ctx = Context::Version {
         tenant,
@@ -285,8 +302,14 @@ fn a_vcon_purged_before_a_rotation_cannot_be_recovered_from_an_old_copy() {
         version,
     };
     for key in [&new_master, &tenant_key] {
-        assert!(envelope::unwrap(key, &ctx, &copied.wrapped_data_key).is_err());
-        assert!(envelope::open(key, &ctx, &copied.sealed).is_err());
+        assert!(
+            envelope::unwrap(key, &ctx, &copied.wrapped_data_key).is_err(),
+            "no key that still exists unwraps the purged vCon's data key"
+        );
+        assert!(
+            envelope::open(key, &ctx, &copied.sealed).is_err(),
+            "no key that still exists opens the purged vCon"
+        );
     }
     // And the live data no longer holds it at all.
     assert!(
@@ -295,6 +318,7 @@ fn a_vcon_purged_before_a_rotation_cannot_be_recovered_from_an_old_copy() {
             .join(tenant.to_string())
             .join("objects")
             .join(version.to_string())
-            .exists()
+            .exists(),
+        "the purge removed the version's object file"
     );
 }

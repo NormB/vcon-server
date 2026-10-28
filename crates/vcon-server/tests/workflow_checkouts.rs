@@ -110,7 +110,10 @@ fn the_composite_actions_are_read_too() {
         names.iter().any(|n| n.starts_with(".github/actions/")),
         "no composite action was read: {names:?}"
     );
-    assert!(names.iter().any(|n| n == ".github/workflows/ci.yml"));
+    assert!(
+        names.iter().any(|n| n == ".github/workflows/ci.yml"),
+        "ci.yml checks out the code, so it must be among the files read: {names:?}"
+    );
 }
 
 #[test]
@@ -119,29 +122,55 @@ fn checkouts_keeping_the_token_reads_each_step() {
     let next = "      - run: make\n";
     // off
     let y = format!("{co}        with:\n          persist-credentials: false\n{next}");
-    assert!(checkouts_keeping_the_token("a.yml", &y).is_empty());
-    // not said: the default keeps the token
+    assert!(
+        checkouts_keeping_the_token("a.yml", &y).is_empty(),
+        "persist-credentials: false drops the token"
+    );
     let y = format!("{co}{next}");
-    assert_eq!(checkouts_keeping_the_token("a.yml", &y), ["a.yml:1"]);
-    // the next step's setting does not count for this checkout
+    assert_eq!(
+        checkouts_keeping_the_token("a.yml", &y),
+        ["a.yml:1"],
+        "not said: the default keeps the token"
+    );
     let y = format!("{co}{next}        with:\n          persist-credentials: false\n");
-    assert_eq!(checkouts_keeping_the_token("a.yml", &y), ["a.yml:1"]);
-    // kept, but with no reason, or an empty one
+    assert_eq!(
+        checkouts_keeping_the_token("a.yml", &y),
+        ["a.yml:1"],
+        "the next step's setting does not count for this checkout"
+    );
     let y = format!("{co}        with:\n          persist-credentials: true\n{next}");
-    assert_eq!(checkouts_keeping_the_token("a.yml", &y), ["a.yml:1"]);
+    assert_eq!(
+        checkouts_keeping_the_token("a.yml", &y),
+        ["a.yml:1"],
+        "kept with no reason given"
+    );
     let y = format!(
         "{co}        # keeps the token:\n        with:\n          persist-credentials: true\n{next}"
     );
-    assert_eq!(checkouts_keeping_the_token("a.yml", &y), ["a.yml:1"]);
+    assert_eq!(
+        checkouts_keeping_the_token("a.yml", &y),
+        ["a.yml:1"],
+        "kept with an empty reason"
+    );
     // the `- name:` then `uses:` form, with `with:` beside `uses:`
     let named = "      - name: Checkout\n        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7\n";
     let y = format!("{named}        with:\n          persist-credentials: false\n{next}");
-    assert!(checkouts_keeping_the_token("a.yml", &y).is_empty());
+    assert!(
+        checkouts_keeping_the_token("a.yml", &y).is_empty(),
+        "with: beside uses: in the named form drops the token"
+    );
     let y = format!("{named}{next}        with:\n          persist-credentials: false\n");
-    assert_eq!(checkouts_keeping_the_token("a.yml", &y), ["a.yml:2"]);
+    assert_eq!(
+        checkouts_keeping_the_token("a.yml", &y),
+        ["a.yml:2"],
+        "the named form is reported at its uses: line, and the next step's with: does not count"
+    );
     // kept, with its reason
     let y = format!(
         "{co}        # keeps the token: pushes the tag\n        with:\n          persist-credentials: true\n{next}"
     );
-    assert!(checkouts_keeping_the_token("a.yml", &y).is_empty());
+    assert!(
+        checkouts_keeping_the_token("a.yml", &y).is_empty(),
+        "a checkout that keeps the token with a reason is allowed"
+    );
 }

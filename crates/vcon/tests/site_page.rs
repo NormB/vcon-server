@@ -33,11 +33,18 @@ fn the_library_page_example_is_the_readme_example() {
     let readme = rust_blocks(&read("README.md"));
     let page = rust_blocks(&read("../../website/content/docs/library.md"));
     assert_eq!(readme.len(), 1, "the README has one Rust example");
-    assert_eq!(page, readme);
+    assert_eq!(
+        page, readme,
+        "the site shows the example the README's doc test runs"
+    );
 }
 
 #[test]
 fn rust_blocks_reads_each_block() {
     let text = "a\n```rust\nlet x = 1;\n```\nb\n```sh\nls\n```\n```rust\nlet y = 2;\n```\n";
-    assert_eq!(rust_blocks(text), ["let x = 1;\n", "let y = 2;\n"]);
+    assert_eq!(
+        rust_blocks(text),
+        ["let x = 1;\n", "let y = 2;\n"],
+        "only rust blocks are read, in order, and the sh block between them is skipped"
+    );
 }

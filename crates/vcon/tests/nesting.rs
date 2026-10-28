@@ -151,18 +151,34 @@ fn deep_json_does_not_overflow_the_stack() {
 
 #[test]
 fn signed_layers_up_to_the_limit_are_read() {
-    assert_eq!(run(&nested(1)), found(Form::Signed, false));
+    assert_eq!(
+        run(&nested(1)),
+        found(Form::Signed, false),
+        "one signed layer is the plain signed form"
+    );
     let full = nested(MAX_SIGNED_LAYERS);
-    assert_eq!(run(&full), found(Form::Signed, false));
+    assert_eq!(
+        run(&full),
+        found(Form::Signed, false),
+        "exactly MAX_SIGNED_LAYERS layers is within the limit"
+    );
     assert_eq!(run(&gz(&full)), found(Form::Signed, true), "body gzipped");
 }
 
 #[test]
 fn one_signed_layer_past_the_limit_is_too_deep() {
     let over = nested(MAX_SIGNED_LAYERS + 1);
-    assert_eq!(run(&over), Err(Rejection::TooDeep));
+    assert_eq!(
+        run(&over),
+        Err(Rejection::TooDeep),
+        "one layer more than MAX_SIGNED_LAYERS is refused"
+    );
     assert_eq!(run(&gz(&over)), Err(Rejection::TooDeep), "body gzipped");
-    assert_eq!(run(&nested(2 * MAX_SIGNED_LAYERS)), Err(Rejection::TooDeep));
+    assert_eq!(
+        run(&nested(2 * MAX_SIGNED_LAYERS)),
+        Err(Rejection::TooDeep),
+        "far past the limit is refused the same way"
+    );
 }
 
 #[test]
@@ -177,30 +193,51 @@ fn the_depth_is_refused_before_what_lies_deeper() {
         no_uuid = sign(&no_uuid, true, None);
         mismatch = sign(&mismatch, true, Some(OTHER));
     }
-    assert_eq!(run(&no_uuid), Err(Rejection::TooDeep));
-    assert_eq!(run(&mismatch), Err(Rejection::TooDeep));
+    assert_eq!(
+        run(&no_uuid),
+        Err(Rejection::TooDeep),
+        "the missing uuid lies past the limit, so it is never reached"
+    );
+    assert_eq!(
+        run(&mismatch),
+        Err(Rejection::TooDeep),
+        "header uuids are compared once the vCon's uuid is read, which is past the limit"
+    );
     // Within the limit, the same vCons are refused for what they are.
     let mut within = unsigned().to_string().into_bytes();
     for _ in 0..MAX_SIGNED_LAYERS {
         within = sign(&within, true, Some(OTHER));
     }
-    assert_eq!(run(&within), Err(Rejection::UuidMismatch));
+    assert_eq!(
+        run(&within),
+        Err(Rejection::UuidMismatch),
+        "within the limit the inner vCon is read: its uuid differs from the headers'"
+    );
 }
 
 #[test]
 fn json_up_to_the_limit_is_read() {
     assert_eq!(
         run(&deep_json(MAX_JSON_DEPTH)),
-        found(Form::Unsigned, false)
+        found(Form::Unsigned, false),
+        "JSON nested exactly MAX_JSON_DEPTH deep is within the limit"
     );
     let signed = sign(&deep_json(MAX_JSON_DEPTH), true, Some(ID));
-    assert_eq!(run(&signed), found(Form::Signed, false));
+    assert_eq!(
+        run(&signed),
+        found(Form::Signed, false),
+        "the limit counts within each JSON text, so a payload as deep is read too"
+    );
 }
 
 #[test]
 fn json_one_level_past_the_limit_is_too_deep() {
     let over = deep_json(MAX_JSON_DEPTH + 1);
-    assert_eq!(run(&over), Err(Rejection::TooDeep));
+    assert_eq!(
+        run(&over),
+        Err(Rejection::TooDeep),
+        "one level past MAX_JSON_DEPTH is refused"
+    );
     assert_eq!(run(&gz(&over)), Err(Rejection::TooDeep), "body gzipped");
     let signed = sign(&over, true, Some(ID));
     assert_eq!(run(&signed), Err(Rejection::TooDeep), "in a signed payload");
@@ -217,7 +254,20 @@ fn json_one_level_past_the_limit_is_too_deep() {
 fn the_json_limit_is_below_the_parsers_own() {
     // serde_json refuses its 128th nested array or object as a syntax
     // error. The limit must refuse first, so depth gets its own answer.
-    const { assert!(MAX_JSON_DEPTH < 127) };
-    assert_eq!(run(&deep_json(127)), Err(Rejection::TooDeep));
-    assert_eq!(run(&deep_json(100_000)), Err(Rejection::TooDeep));
+    const {
+        assert!(
+            MAX_JSON_DEPTH < 127,
+            "the depth limit must refuse before serde_json's own bound"
+        )
+    };
+    assert_eq!(
+        run(&deep_json(127)),
+        Err(Rejection::TooDeep),
+        "at serde_json's bound the answer is still too deep, not not JSON"
+    );
+    assert_eq!(
+        run(&deep_json(100_000)),
+        Err(Rejection::TooDeep),
+        "a depth that would overflow a recursive parser is refused as too deep"
+    );
 }

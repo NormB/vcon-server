@@ -146,8 +146,12 @@ mod tests {
         let due = Retention::Months(1)
             .after(datetime!(2026-03-31 02:00 +05:00))
             .expect("due");
-        assert_eq!(due, datetime!(2026-04-30 21:00 UTC));
-        assert!(due.offset().is_utc());
+        assert_eq!(
+            due,
+            datetime!(2026-04-30 21:00 UTC),
+            "02:00 +05:00 on 31 March is 21:00 UTC on 30 March, and a month on is 30 April"
+        );
+        assert!(due.offset().is_utc(), "the due time is given in UTC: {due}");
     }
 
     #[test]
@@ -187,7 +191,11 @@ mod tests {
             ("4294967295d", Retention::Days(u32::MAX)),
         ] {
             assert_eq!(Retention::parse(text), Some(period), "{text}");
-            assert_eq!(period.to_string(), text);
+            assert_eq!(
+                period.to_string(),
+                text,
+                "Display writes the spelling parse reads"
+            );
         }
     }
 

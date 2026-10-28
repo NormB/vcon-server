@@ -7,12 +7,24 @@ use vcon_server::ids::{KeyId, TenantId, VersionId};
 
 fuzz_target!(|text: &str| {
     if let Some(id) = KeyId::parse(text) {
-        assert_eq!(id.to_string(), text);
+        assert_eq!(
+            id.to_string(),
+            text,
+            "a key id has one spelling, so it reads back as given"
+        );
     }
     if let Some(id) = TenantId::parse(text) {
-        assert_eq!(id.to_string(), text);
+        assert_eq!(
+            id.to_string(),
+            text,
+            "a tenant id has one spelling, so it reads back as given"
+        );
     }
     if let Some(id) = VersionId::parse(text) {
-        assert_eq!(id.to_string(), text);
+        assert_eq!(
+            id.to_string(),
+            text,
+            "a version id has one spelling, so it reads back as given"
+        );
     }
 });

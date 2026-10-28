@@ -41,5 +41,9 @@ fn licenses_holds_only_the_two_licences() {
         })
         .collect();
     names.sort();
-    assert_eq!(names, ["Apache-2.0.txt", "MIT.txt"]);
+    assert_eq!(
+        names,
+        ["Apache-2.0.txt", "MIT.txt"],
+        "the crate is MIT OR Apache-2.0, so LICENSES holds those two texts and nothing else"
+    );
 }

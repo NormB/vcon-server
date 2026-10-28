@@ -18,7 +18,11 @@ fuzz_target!(|data: &[u8]| {
     let Some(period) = Retention::parse(text) else {
         return;
     };
-    assert_eq!(period.to_string(), text);
+    assert_eq!(
+        period.to_string(),
+        text,
+        "a period has one spelling, so it reads back as given"
+    );
     let Ok(at) = OffsetDateTime::from_unix_timestamp(i64::from_le_bytes(*seconds)) else {
         return;
     };

@@ -20,7 +20,8 @@ fn a_key_is_refused_when_its_memory_cannot_be_locked() {
         rlim_max: 0,
     };
     // SAFETY: `none` is a valid rlimit.
-    assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &none) }, 0);
+    let set = unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &none) };
+    assert_eq!(set, 0, "a process may always lower its own limit");
     assert!(
         matches!(Key::generate(), Err(KeyError::Memory(_))),
         "generated in memory that is not locked"

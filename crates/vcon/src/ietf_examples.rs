@@ -26,25 +26,50 @@ fn id() -> Uuid {
 #[test]
 fn the_unsigned_example_reads_as_unsigned() {
     let object = parse_object(UNSIGNED).expect("A.4 is one JSON object");
-    assert_eq!(form_of(&object), Ok(Form::Unsigned));
-    assert_eq!(unsigned_identity(&object), Ok(id()));
-    assert_eq!(check_critical(&object, &BTreeSet::new()), Ok(()));
+    assert_eq!(
+        form_of(&object),
+        Ok(Form::Unsigned),
+        "A.4 has neither the JWS nor the JWE members"
+    );
+    assert_eq!(
+        unsigned_identity(&object),
+        Ok(id()),
+        "A.4 carries the uuid all three examples share"
+    );
+    assert_eq!(
+        check_critical(&object, &BTreeSet::new()),
+        Ok(()),
+        "A.4 needs no extension, so a reader that supports none accepts it"
+    );
 }
 
 #[test]
 fn the_signed_example_reads_as_signed() {
     let object = parse_object(SIGNED).expect("A.6 is one JSON object");
-    assert_eq!(form_of(&object), Ok(Form::Signed));
+    assert_eq!(
+        form_of(&object),
+        Ok(Form::Signed),
+        "A.6 has a JWS's payload and signatures"
+    );
     let mut budget = 1 << 20;
     assert_eq!(
         signed_identity(&object, &mut budget, &BTreeSet::new()),
-        Ok(id())
+        Ok(id()),
+        "A.6's payload is A.4, so it has A.4's uuid"
     );
 }
 
 #[test]
 fn the_encrypted_example_reads_as_encrypted() {
     let object = parse_object(ENCRYPTED).expect("A.7 is one JSON object");
-    assert_eq!(form_of(&object), Ok(Form::Encrypted));
-    assert_eq!(encrypted_identity(&object), Ok(id()));
+    assert_eq!(
+        form_of(&object),
+        Ok(Form::Encrypted),
+        "A.7 has a JWE's ciphertext and recipients"
+    );
+    assert_eq!(
+        encrypted_identity(&object),
+        Ok(id()),
+        "A.7's unprotected header carries the uuid the three examples share"
+    );
 }

@@ -161,7 +161,10 @@ mod tests {
     #[test]
     fn reads_json_nested_up_to_the_limit() {
         let map = parse_object(nested(MAX_JSON_DEPTH).as_bytes()).expect("at the limit");
-        assert!(map.contains_key("a"));
+        assert!(
+            map.contains_key("a"),
+            "nesting of exactly MAX_JSON_DEPTH is within the limit, so the object is read"
+        );
         let objects = format!(
             "{}0{}",
             "{\"a\": ".repeat(MAX_JSON_DEPTH),
@@ -240,13 +243,17 @@ mod tests {
         let expected: Value = serde_json::from_slice(body).expect("valid JSON");
         assert_eq!(
             Value::Object(parse_object(body).expect("an object")),
-            expected
+            expected,
+            "the duplicate check reads values without changing any of them"
         );
     }
 
     #[test]
     fn allows_the_same_name_in_different_objects() {
         let body = br#"{"a": {"uuid": 1}, "b": [{"uuid": 2}, {"uuid": 3}], "uuid": 4}"#;
-        assert!(parse_object(body).is_ok());
+        assert!(
+            parse_object(body).is_ok(),
+            "member names must differ only within one object"
+        );
     }
 }

@@ -10,16 +10,32 @@ use vcon_server::store::{Cursor, ListQuery};
 
 fuzz_target!(|text: &str| {
     if let Ok(query) = ListQuery::from_query(Some(text)) {
-        assert!((1..=ListQuery::MAX_LIMIT).contains(&query.limit));
+        assert!(
+            (1..=ListQuery::MAX_LIMIT).contains(&query.limit),
+            "an accepted list query's limit is within its bounds: {}",
+            query.limit
+        );
         if let Some(cursor) = query.cursor {
-            assert_eq!(Cursor::parse(&cursor.to_string()), Some(cursor));
+            assert_eq!(
+                Cursor::parse(&cursor.to_string()),
+                Some(cursor),
+                "a cursor reads back from the text it writes"
+            );
         }
         for at in [query.since, query.until].into_iter().flatten() {
             assert!(i64::try_from(at.unix_timestamp_nanos()).is_ok(), "{at}");
         }
     }
     if let Ok(query) = AuditQuery::from_query(Some(text)) {
-        assert!((1..=AuditQuery::MAX_LIMIT).contains(&query.limit));
-        assert!(query.after >= 0);
+        assert!(
+            (1..=AuditQuery::MAX_LIMIT).contains(&query.limit),
+            "an accepted audit query's limit is within its bounds: {}",
+            query.limit
+        );
+        assert!(
+            query.after >= 0,
+            "an accepted audit query starts at no negative sequence number: {}",
+            query.after
+        );
     }
 });

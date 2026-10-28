@@ -95,7 +95,10 @@ mod tests {
         let mut body = gz(b"{\"a\":");
         body.extend(gz(b"1}"));
         let (out, _) = inflate(&body, None, LIMIT).expect("two members");
-        assert_eq!(&*out, b"{\"a\":1}");
+        assert_eq!(
+            &*out, b"{\"a\":1}",
+            "the second member's bytes follow the first's"
+        );
     }
 
     #[test]
@@ -132,10 +135,15 @@ mod tests {
         let exactly = gz(&vec![b' '; LIMIT as usize]);
         assert_eq!(
             inflate(&exactly, None, LIMIT).expect("at limit").0.len(),
-            LIMIT as usize
+            LIMIT as usize,
+            "a body that inflates to exactly the limit is read whole"
         );
         let over = gz(&vec![b' '; LIMIT as usize + 1]);
-        assert_eq!(inflate(&over, None, LIMIT), Err(Rejection::TooLarge));
+        assert_eq!(
+            inflate(&over, None, LIMIT),
+            Err(Rejection::TooLarge),
+            "one byte past the limit is too large"
+        );
     }
 
     #[test]
@@ -178,7 +186,11 @@ mod tests {
             read: &mut read,
             stop: LIMIT * 64,
         };
-        assert_eq!(read_bounded(endless, LIMIT), Err(Rejection::TooLarge));
+        assert_eq!(
+            read_bounded(endless, LIMIT),
+            Err(Rejection::TooLarge),
+            "a stream that never ends is refused, not read for ever"
+        );
         assert!(
             read <= LIMIT + 1,
             "read {read} bytes for a limit of {LIMIT}"
@@ -189,7 +201,15 @@ mod tests {
     fn a_gzip_bomb_is_refused() {
         // 64 MiB of zeros compresses to about 64 KiB.
         let bomb = gz(&vec![0u8; 64 << 20]);
-        assert!(bomb.len() < 128 << 10);
-        assert_eq!(inflate(&bomb, None, 1 << 20), Err(Rejection::TooLarge));
+        assert!(
+            bomb.len() < 128 << 10,
+            "deflate shrinks a run of zeros about a thousandfold, so the bomb is small: {} bytes",
+            bomb.len()
+        );
+        assert_eq!(
+            inflate(&bomb, None, 1 << 20),
+            Err(Rejection::TooLarge),
+            "inflation stops at the 1 MiB limit, long before 64 MiB"
+        );
     }
 }

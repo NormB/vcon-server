@@ -121,8 +121,16 @@ mod tests {
         bytes[0] = 0x0a;
         bytes[15] = 0xff;
         let expected = format!("0a{}ff", "00".repeat(14));
-        assert_eq!(TenantId(bytes).to_string(), expected);
-        assert_eq!(VersionId(bytes).to_string(), expected);
+        assert_eq!(
+            TenantId(bytes).to_string(),
+            expected,
+            "two lower-case hex digits per byte, in order, zeros kept"
+        );
+        assert_eq!(
+            VersionId(bytes).to_string(),
+            expected,
+            "two lower-case hex digits per byte, in order, zeros kept"
+        );
     }
 
     /// Every byte of `ids` varies across them.
@@ -145,8 +153,16 @@ mod tests {
             );
         }
         let id = KeyId([0x0a, 0, 0, 0, 0, 0, 0, 0xff]);
-        assert_eq!(id.to_string(), "0a000000000000ff");
-        assert_eq!(KeyId::parse("0a000000000000ff"), Some(id));
+        assert_eq!(
+            id.to_string(),
+            "0a000000000000ff",
+            "two lower-case hex digits per byte, in order, zeros kept"
+        );
+        assert_eq!(
+            KeyId::parse("0a000000000000ff"),
+            Some(id),
+            "parse reads the spelling Display writes"
+        );
         for bad in [
             "0A000000000000FF",
             "0a000000000000f",
@@ -166,7 +182,11 @@ mod tests {
     #[test]
     fn a_tenant_id_parses_only_from_its_own_spelling() {
         let id = TenantId::generate();
-        assert_eq!(TenantId::parse(&id.to_string()), Some(id));
+        assert_eq!(
+            TenantId::parse(&id.to_string()),
+            Some(id),
+            "parse reads the spelling Display writes"
+        );
         let text = id.to_string();
         for bad in [
             text.to_uppercase(),
@@ -182,7 +202,11 @@ mod tests {
     #[test]
     fn a_version_id_parses_only_from_its_own_spelling() {
         let id = VersionId::generate();
-        assert_eq!(VersionId::parse(&id.to_string()), Some(id));
+        assert_eq!(
+            VersionId::parse(&id.to_string()),
+            Some(id),
+            "parse reads the spelling Display writes"
+        );
         let text = id.to_string();
         let bad = [
             String::new(),

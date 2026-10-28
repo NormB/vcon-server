@@ -55,7 +55,11 @@ mod tests {
     #[test]
     fn returns_the_uuid() {
         let body = format!(r#"{{"uuid": "{ID}", "created_at": "2026-10-23T00:00:00Z"}}"#);
-        assert_eq!(identity(&body), Ok(ID.parse().expect("test uuid")));
+        assert_eq!(
+            identity(&body),
+            Ok(ID.parse().expect("test uuid")),
+            "a vCon with a text-form uuid and a created_at is identified by that uuid"
+        );
     }
 
     #[test]
@@ -104,7 +108,11 @@ mod tests {
         let body = format!(
             r#"{{"unprotected": {{"uuid": "{ID}", "cty": "application/vcon"}}, "ciphertext": "x", "recipients": []}}"#
         );
-        assert_eq!(encrypted(&body), Ok(ID.parse().expect("test uuid")));
+        assert_eq!(
+            encrypted(&body),
+            Ok(ID.parse().expect("test uuid")),
+            "an encrypted vCon is identified by the uuid in its unprotected header"
+        );
         let no_created_at = format!(r#"{{"unprotected": {{"uuid": "{ID}"}}}}"#);
         assert_eq!(
             encrypted(&no_created_at),

@@ -203,7 +203,8 @@ proptest! {
     fn anything_inflating_past_the_limit_is_too_large(body in collection::vec(any::<u8>(), (LIMIT as usize + 1)..(LIMIT as usize * 4))) {
         prop_assert_eq!(
             inspect(&gz(&body), None, &Limits::new(LIMIT), &BTreeSet::new()),
-            Err(Rejection::TooLarge)
+            Err(Rejection::TooLarge),
+            "the body inflates to more than LIMIT bytes, whatever they are"
         );
     }
 
@@ -216,10 +217,14 @@ proptest! {
         let zipped = inspect(&gz(body.as_bytes()), None, &limits, &BTreeSet::new());
         match (plain, zipped) {
             (Ok(p), Ok(z)) => {
-                prop_assert!(!p.gzip && z.gzip);
-                prop_assert_eq!((p.form, p.uuid), (z.form, z.uuid));
+                prop_assert!(!p.gzip && z.gzip, "only the gzipped body is marked as gzip");
+                prop_assert_eq!(
+                    (p.form, p.uuid),
+                    (z.form, z.uuid),
+                    "gzip does not change what the vCon is"
+                );
             }
-            (p, z) => prop_assert_eq!(p, z),
+            (p, z) => prop_assert_eq!(p, z, "gzip does not change why a body is refused"),
         }
     }
 

@@ -283,16 +283,26 @@ mod tests {
         let no_uuid = json!({"created_at": "x", "parties": []});
         assert_eq!(
             run(&sign(&no_uuid, json!({})), LIMIT, &[]),
-            Err(Rejection::MissingUuid)
+            Err(Rejection::MissingUuid),
+            "a signed vCon's payload needs a uuid as an unsigned vCon does"
         );
         let critical = json!({"uuid": ID, "created_at": "x", "critical": ["x"]});
         assert_eq!(
             run(&sign(&critical, json!({})), LIMIT, &[]),
-            Err(Rejection::UnsupportedCritical(vec!["x".to_owned()]))
+            Err(Rejection::UnsupportedCritical(vec!["x".to_owned()])),
+            "the payload's critical list is checked against what the caller supports"
         );
-        assert_eq!(run(&sign(&critical, json!({})), LIMIT, &["x"]), Ok(id()));
+        assert_eq!(
+            run(&sign(&critical, json!({})), LIMIT, &["x"]),
+            Ok(id()),
+            "the same payload passes once the caller supports x"
+        );
         let dup = jws(b64(br#"{"uuid": "a", "uuid": "b"}"#), json!({}));
-        assert_eq!(run(&dup, LIMIT, &[]), Err(Rejection::DuplicateKey));
+        assert_eq!(
+            run(&dup, LIMIT, &[]),
+            Err(Rejection::DuplicateKey),
+            "the payload is parsed with the same duplicate-name check"
+        );
     }
 
     #[test]
@@ -302,11 +312,19 @@ mod tests {
         let outer = jws(b64(&gz(inner.to_string().as_bytes())), json!({}));
         let inner_size = padded.to_string().len() as u64;
         let outer_size = inner.to_string().len() as u64;
-        assert_eq!(run(&outer, inner_size + outer_size, &[]), Ok(id()));
+        assert_eq!(
+            run(&outer, inner_size + outer_size, &[]),
+            Ok(id()),
+            "a budget of both layers' inflated sizes is enough"
+        );
         assert_eq!(
             run(&outer, inner_size + outer_size - 1, &[]),
-            Err(Rejection::TooLarge)
+            Err(Rejection::TooLarge),
+            "one byte less is not: the two layers draw on one budget"
         );
-        assert!(inner_size.max(outer_size) < inner_size + outer_size - 1);
+        assert!(
+            inner_size.max(outer_size) < inner_size + outer_size - 1,
+            "each layer alone fits the smaller budget, so only a shared budget explains the refusal"
+        );
     }
 }

@@ -247,7 +247,8 @@ concurrent = 8
                     calls_per_second: 20,
                     concurrent: 8,
                 },
-            })
+            }),
+            "every key the file writes is read into its field"
         );
     }
 
@@ -257,8 +258,16 @@ concurrent = 8
             .replace("retention_default = \"18m\"\n", "")
             .replace("supported_critical = [\"known\", \"other\"]\n", "");
         let config = parse(&text).expect("parses");
-        assert_eq!(config.retention_default, Retention::Years(7));
-        assert_eq!(config.supported_critical, BTreeSet::new());
+        assert_eq!(
+            config.retention_default,
+            Retention::Years(7),
+            "with no retention_default, vCons are kept seven years"
+        );
+        assert_eq!(
+            config.supported_critical,
+            BTreeSet::new(),
+            "with no supported_critical, no extension is supported"
+        );
     }
 
     /// The configuration with only the keys that have no default.
@@ -275,12 +284,36 @@ key = "/etc/vcon-server/key.pem"
     #[test]
     fn periods_and_limits_have_defaults() {
         let config = parse(LEAST).expect("parses");
-        assert_eq!(config.purge_interval, Duration::from_secs(3600));
-        assert_eq!(config.rotation_warn, Duration::from_secs(30 * 86_400));
-        assert_eq!(config.body_limit, 16 << 20);
-        assert_eq!(config.inflated_limit, 64 << 20);
-        assert_eq!(config.read_timeout, Duration::from_secs(60));
-        assert_eq!(config.mcp, crate::mcp::Limits::DEFAULT);
+        assert_eq!(
+            config.purge_interval,
+            Duration::from_secs(3600),
+            "the purge sweep runs hourly by default"
+        );
+        assert_eq!(
+            config.rotation_warn,
+            Duration::from_secs(30 * 86_400),
+            "an overdue rotation is warned of after 30 days by default"
+        );
+        assert_eq!(
+            config.body_limit,
+            16 << 20,
+            "a body may be 16 MiB by default"
+        );
+        assert_eq!(
+            config.inflated_limit,
+            64 << 20,
+            "a body may inflate to 64 MiB by default"
+        );
+        assert_eq!(
+            config.read_timeout,
+            Duration::from_secs(60),
+            "a request has 60 seconds to arrive by default"
+        );
+        assert_eq!(
+            config.mcp,
+            crate::mcp::Limits::DEFAULT,
+            "with no [mcp] table, the MCP endpoint takes its default limits"
+        );
     }
 
     /// A key left out of a table that is present takes its default; the
@@ -362,13 +395,34 @@ key = "/etc/vcon-server/key.pem"
     #[test]
     fn the_full_file_sets_no_value_equal_to_its_default() {
         let (full, least) = (parse(FULL).expect("full"), parse(LEAST).expect("least"));
-        assert_ne!(full.purge_interval, least.purge_interval);
-        assert_ne!(full.rotation_warn, least.rotation_warn);
-        assert_ne!(full.body_limit, least.body_limit);
-        assert_ne!(full.inflated_limit, least.inflated_limit);
-        assert_ne!(full.read_timeout, least.read_timeout);
-        assert_ne!(full.mcp.calls_per_second, least.mcp.calls_per_second);
-        assert_ne!(full.mcp.concurrent, least.mcp.concurrent);
+        assert_ne!(
+            full.purge_interval, least.purge_interval,
+            "FULL writes purge_interval as a value other than its default"
+        );
+        assert_ne!(
+            full.rotation_warn, least.rotation_warn,
+            "FULL writes rotation_warn as a value other than its default"
+        );
+        assert_ne!(
+            full.body_limit, least.body_limit,
+            "FULL writes limits.body as a value other than its default"
+        );
+        assert_ne!(
+            full.inflated_limit, least.inflated_limit,
+            "FULL writes limits.inflated as a value other than its default"
+        );
+        assert_ne!(
+            full.read_timeout, least.read_timeout,
+            "FULL writes limits.timeouts.read as a value other than its default"
+        );
+        assert_ne!(
+            full.mcp.calls_per_second, least.mcp.calls_per_second,
+            "FULL writes mcp.calls_per_second as a value other than its default"
+        );
+        assert_ne!(
+            full.mcp.concurrent, least.mcp.concurrent,
+            "FULL writes mcp.concurrent as a value other than its default"
+        );
     }
 
     /// Each error names its key.
@@ -496,7 +550,10 @@ key = "/etc/vcon-server/key.pem"
                     "mcp.calls_per_second" => format!("`{}`", defaults.mcp.calls_per_second),
                     "mcp.concurrent" => format!("`{}`", defaults.mcp.concurrent),
                     "supported_critical" => {
-                        assert!(defaults.supported_critical.is_empty());
+                        assert!(
+                            defaults.supported_critical.is_empty(),
+                            "the page says none, which holds only while the default is empty"
+                        );
                         "none".to_owned()
                     }
                     other => panic!("a key this test does not know: {other}"),
@@ -545,7 +602,10 @@ key = "/etc/vcon-server/key.pem"
                     examples += 1;
                 }
             }
-            assert_eq!(examples, 2);
+            assert_eq!(
+                examples, 2,
+                "one example file on each page, so a block the split misses is caught"
+            );
         }
     }
 

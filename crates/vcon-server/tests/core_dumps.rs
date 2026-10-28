@@ -16,6 +16,7 @@ fn turning_core_dumps_off_clears_the_dumpable_flag_and_the_core_limit() {
         rlim_max: 1,
     };
     // SAFETY: `limit` is a valid rlimit to write into.
-    assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut limit) }, 0);
+    let read = unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut limit) };
+    assert_eq!(read, 0, "getrlimit succeeds for a valid resource");
     assert_eq!((limit.rlim_cur, limit.rlim_max), (0, 0), "core size limit");
 }

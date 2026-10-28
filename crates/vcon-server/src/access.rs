@@ -262,8 +262,16 @@ mod tests {
     #[test]
     fn scopes_are_named_in_their_fixed_order() {
         let scopes = Scopes::of(&[Scope::Legal, Scope::Write, Scope::Read]);
-        assert_eq!(scopes.names(), ["write", "read", "legal"]);
-        assert_eq!(Scopes::of(&[Scope::Admin]).names(), ["admin"]);
+        assert_eq!(
+            scopes.names(),
+            ["write", "read", "legal"],
+            "names come in Scope::ALL's order, not the order given"
+        );
+        assert_eq!(
+            Scopes::of(&[Scope::Admin]).names(),
+            ["admin"],
+            "one scope, one name"
+        );
     }
 
     const ID: &str = "0123456789abcdef";
@@ -283,7 +291,11 @@ mod tests {
             URL_SAFE_NO_PAD.encode([[0xff; 16], [0x00; 16]].concat()),
         ];
         for secret in secrets {
-            assert_eq!(secret.len(), 43);
+            assert_eq!(
+                secret.len(),
+                43,
+                "32 bytes are 43 base64url characters without padding"
+            );
             let token = format!("vcs_{ID}_{secret}");
             assert_eq!(parse(&token), Ok(id), "{token}");
         }
@@ -327,9 +339,12 @@ mod tests {
     #[test]
     fn scopes_are_a_set_written_in_a_fixed_order() {
         let none = Scopes::of(&[]);
-        assert!(none.is_empty());
+        assert!(none.is_empty(), "no scopes given, none held");
         let scopes = Scopes::of(&[Scope::Delete, Scope::Write, Scope::Delete]);
-        assert!(!scopes.is_empty());
+        assert!(
+            !scopes.is_empty(),
+            "two scopes given, so the set is not empty"
+        );
         for scope in Scope::ALL {
             assert_eq!(
                 scopes.contains(scope),
@@ -337,17 +352,26 @@ mod tests {
                 "{scope:?}"
             );
         }
-        assert_eq!(scopes.to_string(), "write,delete");
+        assert_eq!(
+            scopes.to_string(),
+            "write,delete",
+            "a repeated scope is held once, and written in the fixed order"
+        );
         assert_eq!(
             Scopes::of(&Scope::ALL).to_string(),
-            "write,read,delete,legal,audit,admin"
+            "write,read,delete,legal,audit,admin",
+            "every scope, in the fixed order"
         );
         for scope in Scope::ALL {
             let one = Scopes::of(&[scope]);
             assert_eq!(Scopes::parse(&one.to_string()), Some(one), "{scope:?}");
         }
         let all = Scopes::of(&Scope::ALL);
-        assert_eq!(Scopes::parse(&all.to_string()), Some(all));
+        assert_eq!(
+            Scopes::parse(&all.to_string()),
+            Some(all),
+            "parse reads every scope back from its written form"
+        );
     }
 
     #[test]
@@ -375,15 +399,25 @@ mod tests {
             tenant: Some(TenantId::generate()),
             scopes: Scopes::of(&[Scope::Audit]),
         };
-        assert_eq!(Scope::named("audit"), Some(Scope::Audit));
-        assert_eq!(require(&tenant, Scope::Audit), Ok(()));
+        assert_eq!(
+            Scope::named("audit"),
+            Some(Scope::Audit),
+            "the scope is named audit"
+        );
+        assert_eq!(
+            require(&tenant, Scope::Audit),
+            Ok(()),
+            "a tenant key with the audit scope may read its log"
+        );
         assert_eq!(
             tenant_for(&tenant, Scope::Audit),
-            Ok(tenant.tenant.expect("one"))
+            Ok(tenant.tenant.expect("one")),
+            "and the log it reads is its own tenant's"
         );
         assert_eq!(
             require(&tenant, Scope::Read),
-            Err(AuthError::Forbidden(Scope::Read))
+            Err(AuthError::Forbidden(Scope::Read)),
+            "audit grants no other scope"
         );
         let operator = Caller {
             tenant: None,
@@ -392,7 +426,8 @@ mod tests {
         };
         assert_eq!(
             require(&operator, Scope::Audit),
-            Err(AuthError::Forbidden(Scope::Audit))
+            Err(AuthError::Forbidden(Scope::Audit)),
+            "an operator key has no tenant log to read, even with the audit scope"
         );
     }
 
@@ -409,9 +444,13 @@ mod tests {
     #[test]
     fn a_new_token_is_well_formed_and_new_each_time() {
         let (id, token) = new_token();
-        assert_eq!(parse(&token), Ok(id));
+        assert_eq!(
+            parse(&token),
+            Ok(id),
+            "a new token parses to the id it was made with"
+        );
         let (other_id, other) = new_token();
-        assert_ne!(other_id, id);
+        assert_ne!(other_id, id, "each new token has a new random key id");
         assert_ne!(other[21..], token[21..], "a new secret");
     }
 
@@ -423,7 +462,8 @@ mod tests {
                 .iter()
                 .map(|b| format!("{b:02x}"))
                 .collect::<String>(),
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            "the hash is plain SHA-256, as the RFC's vector shows"
         );
     }
 
@@ -475,7 +515,8 @@ mod tests {
                     key: operator.id,
                     tenant: None,
                     scopes: Scopes::of(&[Scope::Admin]),
-                })
+                }),
+                "an operator key's caller has no tenant"
             );
         }
 
@@ -483,7 +524,11 @@ mod tests {
         fn a_missing_or_malformed_header_is_refused() {
             let f = fixture();
             let (_, key) = key(&f);
-            assert_eq!(authenticate(&f.tenants, None), Err(AuthError::Missing));
+            assert_eq!(
+                authenticate(&f.tenants, None),
+                Err(AuthError::Missing),
+                "no Authorization header is told apart from a bad one"
+            );
             for header in [
                 String::new(),
                 "Bearer".to_owned(),
@@ -506,13 +551,15 @@ mod tests {
             let (_, stranger) = new_token();
             assert_eq!(
                 auth(&f, &format!("Bearer {stranger}")),
-                Err(AuthError::Unknown)
+                Err(AuthError::Unknown),
+                "a well-formed token whose key id no catalog holds"
             );
             let (_, other) = new_token();
             let forged = format!("{}{}", &key.token[..21], &other[21..]);
             assert_eq!(
                 auth(&f, &format!("Bearer {forged}")),
-                Err(AuthError::Unknown)
+                Err(AuthError::Unknown),
+                "a real key id with another secret is answered as an unknown key"
             );
             f.tenants.revoke_key(Actor::Cli, key.id).expect("revoked");
             assert_eq!(
@@ -527,9 +574,16 @@ mod tests {
             let f = fixture();
             let (_, key) = key(&f);
             let header = format!("Bearer {}", key.token);
-            assert!(auth(&f, &header).is_ok());
+            assert!(
+                auth(&f, &header).is_ok(),
+                "the key works before it is revoked"
+            );
             f.tenants.revoke_key(Actor::Cli, key.id).expect("revoked");
-            assert_eq!(auth(&f, &header), Err(AuthError::Revoked));
+            assert_eq!(
+                auth(&f, &header),
+                Err(AuthError::Revoked),
+                "the next call after revocation is refused: no cache keeps it alive"
+            );
         }
 
         fn admin_failures(f: &Fixture) -> Vec<serde_json::Value> {
@@ -553,27 +607,49 @@ mod tests {
             let f = fixture();
             let (t, _) = key(&f);
             for _ in 0..20 {
-                assert!(auth(&f, "Bearer not-a-token").is_err());
+                assert!(auth(&f, "Bearer not-a-token").is_err(), "a malformed token");
             }
             for _ in 0..5 {
-                assert!(authenticate(&f.tenants, None).is_err());
+                assert!(authenticate(&f.tenants, None).is_err(), "no header");
                 let (_, made_up) = new_token();
-                assert!(auth(&f, &format!("Bearer {made_up}")).is_err());
+                assert!(
+                    auth(&f, &format!("Bearer {made_up}")).is_err(),
+                    "a key id no catalog holds"
+                );
             }
             let records = admin_failures(&f);
             assert_eq!(records.len(), 1, "{records:?}");
-            assert_eq!(records[0]["actor"], "");
-            assert_eq!(records[0]["status"], 401);
-            assert_eq!(records[0]["count"], 30);
-            assert_eq!(records[0]["at"], "2026-10-23T12:00:00Z");
-            assert_eq!(tenant_failures(&f, t), Vec::<serde_json::Value>::new());
+            assert_eq!(
+                records[0]["actor"], "",
+                "no key is known, so no actor is named"
+            );
+            assert_eq!(
+                records[0]["status"], 401,
+                "each was refused as unauthenticated"
+            );
+            assert_eq!(
+                records[0]["count"], 30,
+                "20 malformed, 5 missing, 5 unknown"
+            );
+            assert_eq!(
+                records[0]["at"], "2026-10-23T12:00:00Z",
+                "the record is stamped with the fixture clock's minute"
+            );
+            assert_eq!(
+                tenant_failures(&f, t),
+                Vec::<serde_json::Value>::new(),
+                "no failure named this tenant's key"
+            );
 
             f.clock
                 .set(time::macros::datetime!(2026-10-23 12:01:30 UTC));
-            assert!(auth(&f, "Bearer not-a-token").is_err());
+            assert!(auth(&f, "Bearer not-a-token").is_err(), "a malformed token");
             let records = admin_failures(&f);
             assert_eq!(records.len(), 2, "a new minute, a new record");
-            assert_eq!(records[1]["count"], 1);
+            assert_eq!(
+                records[1]["count"], 1,
+                "the new record counts only the new failure"
+            );
         }
 
         #[test]
@@ -581,21 +657,40 @@ mod tests {
             let f = fixture();
             let (t, key) = key(&f);
             for _ in 0..3 {
-                assert_eq!(auth(&f, &forged(&key)), Err(AuthError::Unknown));
+                assert_eq!(
+                    auth(&f, &forged(&key)),
+                    Err(AuthError::Unknown),
+                    "a wrong secret for a real key"
+                );
             }
             f.tenants.revoke_key(Actor::Cli, key.id).expect("revoked");
             for _ in 0..2 {
                 assert_eq!(
                     auth(&f, &format!("Bearer {}", key.token)),
-                    Err(AuthError::Revoked)
+                    Err(AuthError::Revoked),
+                    "the right secret for a revoked key"
                 );
             }
             let records = tenant_failures(&f, t);
             assert_eq!(records.len(), 1, "{records:?}");
-            assert_eq!(records[0]["actor"], key.id.to_string());
-            assert_eq!(records[0]["status"], 401);
-            assert_eq!(records[0]["count"], 5);
-            assert_eq!(admin_failures(&f), Vec::<serde_json::Value>::new());
+            assert_eq!(
+                records[0]["actor"],
+                key.id.to_string(),
+                "the failures name the key they tried"
+            );
+            assert_eq!(
+                records[0]["status"], 401,
+                "each was refused as unauthenticated"
+            );
+            assert_eq!(
+                records[0]["count"], 5,
+                "3 wrong secrets and 2 calls after revocation"
+            );
+            assert_eq!(
+                admin_failures(&f),
+                Vec::<serde_json::Value>::new(),
+                "a tenant key's failures go to its tenant's log only"
+            );
         }
 
         #[test]
@@ -605,10 +700,18 @@ mod tests {
                 .tenants
                 .create_key(Actor::Cli, None, Scopes::of(&[Scope::Admin]), "op")
                 .expect("made");
-            assert!(auth(&f, &forged(&operator)).is_err());
+            assert!(auth(&f, &forged(&operator)).is_err(), "a wrong secret");
             let records = admin_failures(&f);
-            assert_eq!(records.len(), 1);
-            assert_eq!(records[0]["actor"], operator.id.to_string());
+            assert_eq!(
+                records.len(),
+                1,
+                "an operator key has no tenant log: {records:?}"
+            );
+            assert_eq!(
+                records[0]["actor"],
+                operator.id.to_string(),
+                "the record names the operator key tried"
+            );
         }
 
         #[test]
@@ -620,11 +723,16 @@ mod tests {
                 .expect("removed");
             assert_eq!(
                 auth(&f, &format!("Bearer {}", key.token)),
-                Err(AuthError::Revoked)
+                Err(AuthError::Revoked),
+                "removing a tenant revokes its keys"
             );
             let records = admin_failures(&f);
-            assert_eq!(records.len(), 1);
-            assert_eq!(records[0]["actor"], key.id.to_string());
+            assert_eq!(records.len(), 1, "with the tenant's log gone: {records:?}");
+            assert_eq!(
+                records[0]["actor"],
+                key.id.to_string(),
+                "the record still names the key tried"
+            );
         }
 
         #[test]
@@ -636,16 +744,31 @@ mod tests {
                      BEGIN SELECT RAISE(ABORT, 'no audit'); END;",
                 )
                 .expect("trigger");
-            assert_eq!(auth(&f, "Bearer not-a-token"), Err(AuthError::Malformed));
+            assert_eq!(
+                auth(&f, "Bearer not-a-token"),
+                Err(AuthError::Malformed),
+                "a failed audit write does not turn a refusal into a pass"
+            );
         }
 
         #[test]
         fn a_successful_check_counts_nothing() {
             let f = fixture();
             let (t, key) = key(&f);
-            assert!(auth(&f, &format!("Bearer {}", key.token)).is_ok());
-            assert_eq!(admin_failures(&f), Vec::<serde_json::Value>::new());
-            assert_eq!(tenant_failures(&f, t), Vec::<serde_json::Value>::new());
+            assert!(
+                auth(&f, &format!("Bearer {}", key.token)).is_ok(),
+                "the right token"
+            );
+            assert_eq!(
+                admin_failures(&f),
+                Vec::<serde_json::Value>::new(),
+                "a success is not a failure to count"
+            );
+            assert_eq!(
+                tenant_failures(&f, t),
+                Vec::<serde_json::Value>::new(),
+                "a success is not a failure to count"
+            );
         }
 
         #[test]
@@ -724,10 +847,15 @@ mod tests {
         #[test]
         fn a_request_acts_on_the_tenant_of_its_key() {
             let tenant_key = caller(Some(TENANT), &[Scope::Write]);
-            assert_eq!(tenant_for(&tenant_key, Scope::Write), Ok(TENANT));
+            assert_eq!(
+                tenant_for(&tenant_key, Scope::Write),
+                Ok(TENANT),
+                "a tenant key acts on its own tenant"
+            );
             assert_eq!(
                 tenant_for(&tenant_key, Scope::Read),
-                Err(AuthError::Forbidden(Scope::Read))
+                Err(AuthError::Forbidden(Scope::Read)),
+                "only with a scope it holds"
             );
         }
 

@@ -151,12 +151,20 @@ mod tests {
     #[test]
     fn a_page_gives_out_all_its_bytes_and_keeps_what_is_written() {
         let mut page = heap_page(64, free_heap);
-        assert_eq!(page.bytes(), &[0x5a; 64][..]);
+        assert_eq!(
+            page.bytes(),
+            &[0x5a; 64][..],
+            "bytes gives the whole page as heap_page filled it"
+        );
         for (i, b) in page.bytes_mut().iter_mut().enumerate() {
             *b = u8::try_from(i).expect("under 256");
         }
         let expected: Vec<u8> = (0..64).collect();
-        assert_eq!(page.bytes(), &expected[..]);
+        assert_eq!(
+            page.bytes(),
+            &expected[..],
+            "what bytes_mut wrote reads back"
+        );
     }
 
     #[test]
@@ -165,7 +173,11 @@ mod tests {
         page.bytes_mut().fill(0xa5);
         drop(page);
         let released = RELEASED.with(|r| r.borrow_mut().take()).expect("released");
-        assert_eq!(released, vec![0; 64]);
+        assert_eq!(
+            released,
+            vec![0; 64],
+            "drop zeroes the page before it is released"
+        );
     }
 
     #[test]
@@ -183,8 +195,16 @@ mod tests {
             std::thread::spawn(move || other.bytes().iter().map(|&b| u32::from(b)).sum::<u32>())
                 .join()
                 .expect("the thread ends");
-        assert_eq!(sum, 7 * 64);
-        assert_eq!(shared.bytes(), &[7; 64][..]);
+        assert_eq!(
+            sum,
+            7 * 64,
+            "the other thread reads the 64 sevens written here"
+        );
+        assert_eq!(
+            shared.bytes(),
+            &[7; 64][..],
+            "sharing the page changes none of its bytes"
+        );
     }
 
     #[test]
@@ -196,6 +216,10 @@ mod tests {
         page.release = record_then_release;
         drop(page);
         let released = RELEASED.with(|r| r.borrow_mut().take()).expect("released");
-        assert_eq!(released, vec![0; len]);
+        assert_eq!(
+            released,
+            vec![0; len],
+            "drop zeroes the mapped page before it is unmapped"
+        );
     }
 }

@@ -48,8 +48,16 @@ mod tests {
 
     #[test]
     fn no_query_and_an_empty_one_are_no_parameters() {
-        assert_eq!(pairs(None, NAMES), Ok(BTreeMap::new()));
-        assert_eq!(read(""), Ok(vec![]));
+        assert_eq!(
+            pairs(None, NAMES),
+            Ok(BTreeMap::new()),
+            "no query string has no parameters"
+        );
+        assert_eq!(
+            read(""),
+            Ok(vec![]),
+            "an empty query string has none either"
+        );
     }
 
     #[test]
@@ -59,25 +67,46 @@ mod tests {
             Ok(vec![
                 pair("limit", "10"),
                 pair("since", "2026-10-25T12:00:00+01:00")
-            ])
+            ]),
+            "each value is percent-decoded"
         );
-        assert_eq!(read("cursor="), Ok(vec![pair("cursor", "")]));
+        assert_eq!(
+            read("cursor="),
+            Ok(vec![pair("cursor", "")]),
+            "a name with an empty value is given, with that value"
+        );
     }
 
     #[test]
     fn an_unknown_name_is_refused() {
-        assert_eq!(read("limit=10&offset=5"), Err(BadQuery));
+        assert_eq!(
+            read("limit=10&offset=5"),
+            Err(BadQuery),
+            "offset is not a name this query takes"
+        );
         assert_eq!(read("Limit=10"), Err(BadQuery), "names are exact");
     }
 
     #[test]
     fn a_name_given_twice_is_refused() {
-        assert_eq!(read("limit=10&limit=20"), Err(BadQuery));
-        assert_eq!(read("limit=10&limit=10"), Err(BadQuery));
+        assert_eq!(
+            read("limit=10&limit=20"),
+            Err(BadQuery),
+            "two values would be ambiguous"
+        );
+        assert_eq!(
+            read("limit=10&limit=10"),
+            Err(BadQuery),
+            "a repeated name is refused even with the same value"
+        );
     }
 
     #[test]
     fn a_name_with_no_equals_sign_is_refused() {
-        assert_eq!(read("limit"), Err(BadQuery));
+        assert_eq!(
+            read("limit"),
+            Err(BadQuery),
+            "a parameter is a name, an equals sign and a value"
+        );
     }
 }
