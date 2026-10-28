@@ -20,12 +20,17 @@ const SECRET_LEN: usize = 32;
 /// What a key may do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
+    /// Stores vCons: `POST /vcons` and `PUT /vcons/{uuid}`.
     Write,
+    /// Lists and reads vCons: `GET /vcons` and `GET /vcons/{uuid}`.
     Read,
+    /// Deletes vCons: `DELETE /vcons/{uuid}`.
     Delete,
+    /// The `/legal/` routes: deleted vCons, old versions, restore, holds.
     Legal,
     /// Reads the tenant's own audit log.
     Audit,
+    /// Manages tenants and keys; held only by an operator key.
     Admin,
 }
 
@@ -41,6 +46,7 @@ impl Scope {
     ];
 
     /// The scope with this exact name.
+    #[must_use]
     pub fn named(name: &str) -> Option<Scope> {
         Scope::ALL.into_iter().find(|s| s.name() == name)
     }
@@ -66,14 +72,20 @@ impl Scope {
 pub struct Scopes(u8);
 
 impl Scopes {
+    /// The set of `scopes`; a scope given twice is held once.
+    #[must_use]
     pub fn of(scopes: &[Scope]) -> Scopes {
         Scopes(scopes.iter().fold(0, |bits, scope| bits | scope.bit()))
     }
 
+    /// Whether the set holds `scope`.
+    #[must_use]
     pub fn contains(self, scope: Scope) -> bool {
         self.0 & scope.bit() != 0
     }
 
+    /// Whether the set holds no scope.
+    #[must_use]
     pub fn is_empty(self) -> bool {
         self.0 == 0
     }
@@ -81,6 +93,7 @@ impl Scopes {
     /// The scopes a list names, or None when one is unknown or named twice,
     /// so a list means one thing. Which scopes a key may hold is Tenants'
     /// rule.
+    #[must_use]
     pub fn named(names: &[String]) -> Option<Scopes> {
         let mut held = Vec::new();
         for name in names {
@@ -144,8 +157,11 @@ pub(crate) fn token_hash(token: &str) -> [u8; 32] {
 /// operator's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Caller {
+    /// The id of the key the request's token names.
     pub key: KeyId,
+    /// The key's tenant, or None for an operator key.
     pub tenant: Option<TenantId>,
+    /// The scopes the key holds.
     pub scopes: Scopes,
 }
 
@@ -191,6 +207,13 @@ impl std::error::Error for AuthError {}
 ///
 /// A failed check is counted in the audit (`Tenants::count_auth_failure`),
 /// except when the key table could not be read.
+///
+/// # Errors
+///
+/// [`AuthError::Missing`] with no header, [`AuthError::Malformed`] when it
+/// is not `Bearer` and a token, [`AuthError::Unknown`] for a key id no key
+/// has or a wrong secret, [`AuthError::Revoked`] for a revoked key, and
+/// [`AuthError::Io`] when the key table cannot be read.
 pub fn authenticate(keys: &Tenants, authorization: Option<&str>) -> Result<Caller, AuthError> {
     match check(keys, authorization) {
         Ok(caller) => Ok(caller),
@@ -233,6 +256,10 @@ fn check(keys: &Tenants, authorization: Option<&str>) -> Result<Caller, Failure>
 /// Refuses a caller whose key does not hold `scope`. Admin belongs only to
 /// an operator key, and the vCon, legal and audit scopes only to a tenant
 /// key, so a key holding a scope of the other kind is still refused it.
+///
+/// # Errors
+///
+/// [`AuthError::Forbidden`] naming `scope`.
 pub fn require(caller: &Caller, scope: Scope) -> Result<(), AuthError> {
     let of_its_kind = (scope == Scope::Admin) == caller.tenant.is_none();
     if of_its_kind && caller.scopes.contains(scope) {
@@ -244,6 +271,11 @@ pub fn require(caller: &Caller, scope: Scope) -> Result<(), AuthError> {
 
 /// The tenant a vCon or legal request acts on: the caller's own, from its
 /// key, never from the request.
+///
+/// # Errors
+///
+/// [`AuthError::Forbidden`] naming `scope` when [`require`] refuses it or
+/// the key has no tenant.
 pub fn tenant_for(caller: &Caller, scope: Scope) -> Result<TenantId, AuthError> {
     require(caller, scope)?;
     caller.tenant.ok_or(AuthError::Forbidden(scope))
@@ -261,6 +293,10 @@ fn bearer(header: &str) -> Option<&str> {
 /// Reads a token written as `vcs_<key id>_<secret>`: the key id is 16
 /// lowercase hex digits, and the secret is 256 bits in base64url without
 /// padding. The secret may hold `_`, so the parts are found by position.
+///
+/// # Errors
+///
+/// [`AuthError::Malformed`] for any other text.
 pub fn parse(token: &str) -> Result<KeyId, AuthError> {
     let malformed = AuthError::Malformed;
     let rest = token.strip_prefix(PREFIX).ok_or(malformed)?;

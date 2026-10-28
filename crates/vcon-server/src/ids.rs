@@ -10,6 +10,7 @@ pub struct KeyId(pub [u8; 8]);
 
 impl KeyId {
     /// A new random key id.
+    #[must_use]
     pub fn generate() -> KeyId {
         KeyId(random())
     }
@@ -32,6 +33,7 @@ pub struct TenantId(pub [u8; 16]);
 
 impl TenantId {
     /// A new random tenant id.
+    #[must_use]
     pub fn generate() -> TenantId {
         TenantId(random())
     }
@@ -49,6 +51,7 @@ pub struct VersionId(pub [u8; 16]);
 
 impl VersionId {
     /// A new random version id.
+    #[must_use]
     pub fn generate() -> VersionId {
         VersionId(random())
     }

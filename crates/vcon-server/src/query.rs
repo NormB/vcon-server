@@ -24,6 +24,11 @@ impl std::error::Error for BadQuery {}
 /// The parameters of `query`, percent-decoded, by name. A name that is not
 /// in `names`, or that is given twice, is refused, so a misspelt or
 /// repeated parameter never goes unnoticed. No query is no parameters.
+///
+/// # Errors
+///
+/// [`BadQuery`] if a name is not in `names`, a name is given twice, or a
+/// piece has no `=`.
 pub fn pairs(query: Option<&str>, names: &[&str]) -> Result<BTreeMap<String, String>, BadQuery> {
     let mut read = BTreeMap::new();
     // Empty pieces, as a trailing `&` leaves, name nothing.

@@ -20,6 +20,7 @@ pub(crate) fn from_nanos(at: i64) -> Option<OffsetDateTime> {
 }
 
 /// The system's clock.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct SystemClock;
 
 impl Clock for SystemClock {

@@ -8,14 +8,18 @@ use time::{Date, Duration, Month, OffsetDateTime, UtcOffset};
 /// How long a version is kept after it is stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Retention {
+    /// This many calendar years, written `7y`.
     Years(u32),
+    /// This many calendar months, written `18m`.
     Months(u32),
+    /// This many days of 24 hours, written `90d`.
     Days(u32),
 }
 
 impl Retention {
     /// Reads a period written by `Display`: decimal digits with no sign and
     /// no leading zero, then `y`, `m` or `d`.
+    #[must_use]
     pub fn parse(text: &str) -> Option<Retention> {
         let (digits, unit) = text.split_at_checked(text.len().checked_sub(1)?)?;
         let leading_zero = digits.len() > 1 && digits.starts_with('0');
@@ -33,6 +37,7 @@ impl Retention {
 
     /// The time this period after `at`, in UTC, or None if that is past
     /// the last time this build can hold.
+    #[must_use]
     pub fn after(self, at: OffsetDateTime) -> Option<OffsetDateTime> {
         let at = at.to_offset(UtcOffset::UTC);
         let months = match self {

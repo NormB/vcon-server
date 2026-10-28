@@ -34,13 +34,32 @@ const CATALOG_LABEL: &[u8] = b"vcon-server/v1 catalog";
 
 /// A 256-bit key. Its bytes live only in a page of their own that is locked
 /// in memory, so they never reach swap, and that core dumps leave out; they
-/// are zeroed when the key is dropped. A key cannot be copied or printed.
+/// are zeroed when the key is dropped. A key cannot be copied, and Debug
+/// shows only its id.
 pub struct Key {
     page: LockedPage,
 }
 
+impl fmt::Debug for Key {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Key")
+            .field("id", &format_args!("{}", self.id()))
+            .finish_non_exhaustive()
+    }
+}
+
 impl Key {
     /// Makes a new random key, refusing if its memory cannot be locked.
+    ///
+    /// # Errors
+    ///
+    /// [`KeyError::Memory`] if the key's page cannot be locked or kept out
+    /// of core dumps.
+    ///
+    /// # Panics
+    ///
+    /// Never: AWS-LC aborts the process rather than fail to give random
+    /// bytes.
     pub fn generate() -> Result<Key, KeyError> {
         let mut page = LockedPage::new().map_err(KeyError::Memory)?;
         // AWS-LC's RAND_bytes aborts the process when it cannot get enough
@@ -52,6 +71,12 @@ impl Key {
 
     /// Loads the master key: the file must hold exactly 32 bytes. They are
     /// read straight into the key's own locked page.
+    ///
+    /// # Errors
+    ///
+    /// [`KeyError::Read`] if the file cannot be opened or read,
+    /// [`KeyError::WrongSize`] if it holds other than 32 bytes, and
+    /// [`KeyError::Memory`] if the key's page cannot be locked.
     pub fn load_master(path: &Path) -> Result<Key, KeyError> {
         let mut page = LockedPage::new().map_err(KeyError::Memory)?;
         let mut file = File::open(path).map_err(KeyError::Read)?;
@@ -72,6 +97,11 @@ impl Key {
     }
 
     /// The key's id: the first 8 bytes of its SHA-256 hash.
+    ///
+    /// # Panics
+    ///
+    /// Never: a SHA-256 hash is 32 bytes.
+    #[must_use]
     pub fn id(&self) -> KeyId {
         let hash = digest(&SHA256, self.bytes());
         KeyId(hash.as_ref()[..8].try_into().expect("SHA-256 is 32 bytes"))
@@ -137,6 +167,11 @@ impl std::error::Error for KeyError {
 /// in its own allocations for the length of one call, and not plaintext
 /// bodies. It fails if the lock limit is too low; the operator then raises
 /// it (for example LimitMEMLOCK=infinity under systemd).
+///
+/// # Errors
+///
+/// The error mlockall(2) gives: ENOMEM when the limit is too low, EPERM
+/// when it is zero and the process may not lock memory.
 pub fn lock_all_memory() -> io::Result<()> {
     // SAFETY: mlockall takes only flags.
     if unsafe { libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) } != 0 {
@@ -151,6 +186,10 @@ pub fn lock_all_memory() -> io::Result<()> {
 /// its own: the limit is not enforced when core dumps are piped to a
 /// program, and a host with `suid_dumpable` set to 2 still dumps processes
 /// that are not dumpable. Each key's page is left out of core dumps as well.
+///
+/// # Errors
+///
+/// The error setrlimit(2) or prctl(2) gives.
 pub fn disable_core_dumps() -> io::Result<()> {
     let none = libc::rlimit {
         rlim_cur: 0,
@@ -173,12 +212,18 @@ pub fn disable_core_dumps() -> io::Result<()> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Context {
     /// A tenant key, wrapped under the master key.
-    Tenant { tenant: TenantId },
+    Tenant {
+        /// The tenant the key belongs to.
+        tenant: TenantId,
+    },
     /// One version's data key, wrapped under its tenant key, and the body
     /// sealed under that data key.
     Version {
+        /// The tenant the vCon belongs to.
         tenant: TenantId,
+        /// The vCon's uuid.
         uuid: Uuid,
+        /// The version.
         version: VersionId,
     },
 }
@@ -226,6 +271,12 @@ impl std::error::Error for OpenError {}
 /// Encrypts `plaintext` under `data_key`, bound to `ctx`, with a random
 /// nonce. The blob is the format byte, the nonce, the ciphertext and the
 /// tag.
+///
+/// # Panics
+///
+/// Never: AWS-LC aborts the process rather than fail to give random
+/// bytes.
+#[must_use]
 pub fn seal(data_key: &Key, ctx: &Context, plaintext: &[u8]) -> Vec<u8> {
     // Drawn whole from the system generator, so no fixed value is ever a
     // nonce, even for a moment.
@@ -238,6 +289,10 @@ pub fn seal(data_key: &Key, ctx: &Context, plaintext: &[u8]) -> Vec<u8> {
 /// Decrypts a blob made by [`seal`] with the same key and context. Any
 /// change to the blob, the context or the key is an error, never partial
 /// plaintext.
+///
+/// # Errors
+///
+/// [`OpenError`] for a blob that does not open under this key and context.
 pub fn open(data_key: &Key, ctx: &Context, blob: &[u8]) -> Result<Vec<u8>, OpenError> {
     let mut text = vec![0; blob.len().saturating_sub(1 + NONCE_LEN)];
     let len = open_into(data_key.bytes(), ctx, blob, &mut text)?;
@@ -247,6 +302,7 @@ pub fn open(data_key: &Key, ctx: &Context, blob: &[u8]) -> Result<Vec<u8>, OpenE
 
 /// Wraps `key` under `wrapping`, bound to `ctx`: a blob like [`seal`]'s,
 /// whose plaintext is the key.
+#[must_use]
 pub fn wrap(wrapping: &Key, ctx: &Context, key: &Key) -> Vec<u8> {
     seal(wrapping, ctx, key.bytes())
 }
@@ -255,6 +311,12 @@ pub fn wrap(wrapping: &Key, ctx: &Context, key: &Key) -> Vec<u8> {
 /// It is opened straight into the new key's own locked page, so the plain
 /// key is never anywhere else; on any error that page is dropped, and so
 /// zeroed.
+///
+/// # Errors
+///
+/// [`KeyError::Damaged`] for a blob that does not open under this key and
+/// context to exactly 32 bytes, and [`KeyError::Memory`] if the new key's
+/// page cannot be locked.
 pub fn unwrap(wrapping: &Key, ctx: &Context, wrapped: &[u8]) -> Result<Key, KeyError> {
     let mut page = LockedPage::new().map_err(KeyError::Memory)?;
     match open_into(wrapping.bytes(), ctx, wrapped, page.bytes_mut()) {
@@ -266,6 +328,10 @@ pub fn unwrap(wrapping: &Key, ctx: &Context, wrapped: &[u8]) -> Result<Key, KeyE
 /// Moves a wrapped key from `old` to `new`, keeping its context: the
 /// rotation step. The plain key exists only in its own locked page in
 /// between, and what it protects is never re-encrypted.
+///
+/// # Errors
+///
+/// Any error [`unwrap`] gives for `wrapped` under `old`.
 pub fn rewrap(old: &Key, new: &Key, ctx: &Context, wrapped: &[u8]) -> Result<Vec<u8>, KeyError> {
     let key = unwrap(old, ctx, wrapped)?;
     Ok(wrap(new, ctx, &key))
@@ -286,6 +352,7 @@ pub enum WrapLimit {
 /// nonce, and NIST SP 800-38D 8.3 allows at most 2^32 such encryptions
 /// under one key, so a key that has made 2^32 wraps makes no more. The
 /// warning starts at half that.
+#[must_use]
 pub fn wrap_limit(wraps: u64) -> WrapLimit {
     const REFUSE_AT: u64 = 1 << 32;
     const WARN_AT: u64 = 1 << 31;
@@ -312,6 +379,11 @@ fn open_into(key: &[u8], ctx: &Context, blob: &[u8], out: &mut [u8]) -> Result<u
 /// server.sqlite, a tenant key's for that tenant's catalog. It is HKDF-SHA256
 /// of the parent with no salt and the info `vcon-server/v1 catalog`, made in
 /// a locked page of its own and never stored.
+///
+/// # Errors
+///
+/// [`KeyError::Memory`] if the key's page cannot be locked or kept out
+/// of core dumps.
 pub fn catalog_key(parent: &Key) -> Result<Key, KeyError> {
     let mut page = LockedPage::new().map_err(KeyError::Memory)?;
     hkdf_sha256(
@@ -843,6 +915,30 @@ mod tests {
             "SQLCipher's raw key literal is x'' around two lower-case hex digits per byte"
         );
         assert_eq!(literal.capacity(), literal.len(), "built at its final size");
+    }
+
+    /// Debug is how a key reaches a log line or a panic message, so it must
+    /// name the key without any rendering of its bytes.
+    #[test]
+    fn a_keys_debug_shows_its_id_and_none_of_its_bytes() {
+        let bytes: [u8; KEY_LEN] = std::array::from_fn(|i| 0xa0 ^ (5 * i as u8));
+        let key = key_of(bytes);
+        let shown = format!("{key:?}");
+        assert!(
+            shown.contains(&key.id().to_string()),
+            "the id tells keys apart in a log: {shown}"
+        );
+        for run in bytes.windows(4) {
+            let lower: String = run.iter().map(|b| format!("{b:02x}")).collect();
+            let upper = lower.to_uppercase();
+            let decimal = run.iter().map(u8::to_string).collect::<Vec<_>>().join(", ");
+            for rendering in [lower, upper, decimal] {
+                assert!(
+                    !shown.contains(&rendering),
+                    "no run of the key's bytes may be printed, found {rendering:?} in {shown}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -16,14 +16,22 @@ use crate::retention::Retention;
 /// default.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
+    /// The address and port `serve` listens on (`listen`).
     pub listen: SocketAddr,
+    /// The file holding the server's PEM certificate chain (`tls.cert`).
     pub tls_cert: PathBuf,
+    /// The file holding the server's PEM private key (`tls.key`).
     pub tls_key: PathBuf,
+    /// The data directory (`data_dir`).
     pub data_dir: PathBuf,
+    /// The file holding the 32-byte master key (`master_key`).
     pub master_key: PathBuf,
     /// For tenants that set none; 7 years unless configured.
     pub retention_default: Retention,
+    /// Time between purge sweeps; [`PURGE_INTERVAL`] unless configured.
     pub purge_interval: Duration,
+    /// Age of the oldest work waiting for key rotation before `serve`
+    /// warns; [`ROTATION_WARN`] unless configured.
     pub rotation_warn: Duration,
     /// The largest request body.
     pub body_limit: usize,
@@ -73,6 +81,11 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 /// Reads the configuration file at `path`.
+///
+/// # Errors
+///
+/// A [`ConfigError`] naming the file if it cannot be read, or any error
+/// [`parse`] gives for its text.
 pub fn load(path: &Path) -> Result<Config, ConfigError> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| ConfigError(format!("{}: {e}", path.display())))?;
@@ -80,6 +93,12 @@ pub fn load(path: &Path) -> Result<Config, ConfigError> {
 }
 
 /// Reads a configuration from its TOML text.
+///
+/// # Errors
+///
+/// A [`ConfigError`] naming the key at fault: text that is not TOML, an
+/// unknown key, a required key missing, or a value of the wrong type or
+/// not more than zero.
 pub fn parse(text: &str) -> Result<Config, ConfigError> {
     let raw: Raw = toml::from_str(text).map_err(|e| ConfigError(e.to_string()))?;
     let retention_default = match raw.retention_default {

@@ -20,31 +20,71 @@ pub const DIR_MODE: u32 = 0o700;
 pub trait Fs: Send + Sync {
     /// Creates a file that must not exist yet and writes `data` to it,
     /// without syncing.
+    ///
+    /// # Errors
+    ///
+    /// `AlreadyExists` if the path is taken, `NotFound` if its directory
+    /// does not exist, or any other I/O error.
     fn write_new(&self, path: &Path, data: &[u8]) -> io::Result<()>;
     /// Makes a file's data durable.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` if there is no such file, or any other I/O error.
     fn sync_file(&self, path: &Path) -> io::Result<()>;
     /// Renames a file, replacing any file at `to`.
+    ///
+    /// # Errors
+    ///
+    /// The I/O error that stopped the rename.
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
     /// Makes a directory's entries durable: files created, renamed or
     /// removed in it.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` if there is no such directory, or any other I/O error.
     fn sync_dir(&self, dir: &Path) -> io::Result<()>;
     /// Reads a whole file.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` if there is no such file, or any other I/O error.
     fn read(&self, path: &Path) -> io::Result<Vec<u8>>;
     /// Removes a file.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` if there is no such file, an error if the path is a
+    /// directory, or any other I/O error.
     fn remove(&self, path: &Path) -> io::Result<()>;
     /// The names in a directory, sorted.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` if there is no such directory, or any other I/O error.
     fn list(&self, dir: &Path) -> io::Result<Vec<OsString>>;
     /// Creates a directory and its parents, without syncing. A new
     /// directory survives a crash once the directory holding it is synced.
+    ///
+    /// # Errors
+    ///
+    /// An error if a file stands in the path, or any other I/O error.
     fn create_dir_all(&self, dir: &Path) -> io::Result<()>;
     /// Removes a directory and everything in it, without syncing. The
     /// removal survives a crash once the directory that held it is synced.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` if there is no such directory, an error if the path is a
+    /// file, or any other I/O error.
     fn remove_dir_all(&self, dir: &Path) -> io::Result<()>;
 }
 
 /// The operating system's filesystem. No test can see whether a sync
 /// reached the disk without cutting power, so Store's crash tests use the
 /// crash filesystem's model of syncing instead.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct OsFs;
 
 impl Fs for OsFs {

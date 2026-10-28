@@ -15,12 +15,6 @@
     reason = "an internal library: no semver promise, see the crate docs"
 )]
 
-#[expect(
-    missing_docs,
-    clippy::missing_errors_doc,
-    clippy::must_use_candidate,
-    reason = "the Rust style rules, met module by module"
-)]
 pub mod access;
 #[expect(
     missing_docs,
@@ -45,10 +39,6 @@ pub(crate) mod backend;
     reason = "the Rust style rules, met module by module"
 )]
 pub mod catalog;
-#[expect(
-    missing_debug_implementations,
-    reason = "the Rust style rules, met module by module"
-)]
 pub mod clock;
 #[expect(
     missing_docs,
@@ -57,11 +47,6 @@ pub mod clock;
     reason = "the Rust style rules, met module by module"
 )]
 pub mod commands;
-#[expect(
-    missing_docs,
-    clippy::missing_errors_doc,
-    reason = "the Rust style rules, met module by module"
-)]
 pub mod config;
 pub mod console;
 #[expect(
@@ -71,25 +56,8 @@ pub mod console;
     reason = "the Rust style rules, met module by module"
 )]
 pub mod datadir;
-#[expect(
-    missing_docs,
-    missing_debug_implementations,
-    clippy::missing_errors_doc,
-    clippy::missing_panics_doc,
-    clippy::must_use_candidate,
-    reason = "the Rust style rules, met module by module"
-)]
 pub mod envelope;
-#[expect(
-    missing_debug_implementations,
-    clippy::missing_errors_doc,
-    reason = "the Rust style rules, met module by module"
-)]
 pub mod fs;
-#[expect(
-    clippy::must_use_candidate,
-    reason = "the Rust style rules, met module by module"
-)]
 pub mod ids;
 #[expect(
     missing_docs,
@@ -98,16 +66,7 @@ pub mod ids;
     reason = "the Rust style rules, met module by module"
 )]
 pub mod mcp;
-#[expect(
-    clippy::missing_errors_doc,
-    reason = "the Rust style rules, met module by module"
-)]
 pub mod query;
-#[expect(
-    missing_docs,
-    clippy::must_use_candidate,
-    reason = "the Rust style rules, met module by module"
-)]
 pub mod retention;
 #[expect(
     clippy::missing_errors_doc,
