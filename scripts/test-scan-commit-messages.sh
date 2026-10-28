@@ -12,7 +12,6 @@ src="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # commit hook this test once committed its samples onto the branch being
 # committed.
 # shellcheck disable=SC2046 # one variable name per word, none with spaces
-unset $(git rev-parse --local-env-vars)
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 cd "$work"
