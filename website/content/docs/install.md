@@ -292,7 +292,7 @@ with. Cargo prints each crate as it compiles it, and near the end:
 
 ```text
 …
-   Installed package `vcon-server v<version>` (executable `vcon-server`)
+   Installed package `vcon-serve v<version>` (executable `vcon-serve`)
 …
 ```
 
@@ -361,7 +361,7 @@ cargo build --release --locked -p vcon-server
 
 ```text
 …
-vcon-server <version>
+vcon-server-planted <version>
 ```
 
 `-p vcon-server` builds the server alone. Without it, `cargo build` builds
