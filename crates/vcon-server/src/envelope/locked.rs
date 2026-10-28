@@ -118,7 +118,77 @@ mod tests {
         unsafe { unmap(ptr, len) }
     }
 
+    /// A page on the heap in place of a mapping, released by
+    /// `free_heap`, so that Miri, which does not support madvise with
+    /// MADV_DONTDUMP, can run the unsafe code over it: the slices and the
+    /// zero-then-release drop are the same code either way.
+    fn heap_page(len: usize, release: unsafe fn(NonNull<u8>, usize)) -> LockedPage {
+        let bytes: Box<[u8]> = vec![0x5a; len].into_boxed_slice();
+        let ptr = NonNull::new(Box::into_raw(bytes).cast::<u8>()).expect("a box is not null");
+        LockedPage { ptr, len, release }
+    }
+
+    /// Frees a page made by `heap_page`.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` and `len` must be a page from `heap_page`, unused afterwards.
+    unsafe fn free_heap(ptr: NonNull<u8>, len: usize) {
+        let slice = std::ptr::slice_from_raw_parts_mut(ptr.as_ptr(), len);
+        // SAFETY: the caller's guarantee: this is the box heap_page leaked.
+        drop(unsafe { Box::from_raw(slice) });
+    }
+
+    /// As `record_then_release`, for a page made by `heap_page`.
+    unsafe fn record_then_free(ptr: NonNull<u8>, len: usize) {
+        // SAFETY: the page is still allocated here.
+        let bytes = unsafe { std::slice::from_raw_parts(ptr.as_ptr(), len) }.to_vec();
+        RELEASED.with(|r| *r.borrow_mut() = Some(bytes));
+        // SAFETY: the caller's guarantee.
+        unsafe { free_heap(ptr, len) }
+    }
+
     #[test]
+    fn a_page_gives_out_all_its_bytes_and_keeps_what_is_written() {
+        let mut page = heap_page(64, free_heap);
+        assert_eq!(page.bytes(), &[0x5a; 64][..]);
+        for (i, b) in page.bytes_mut().iter_mut().enumerate() {
+            *b = u8::try_from(i).expect("under 256");
+        }
+        let expected: Vec<u8> = (0..64).collect();
+        assert_eq!(page.bytes(), &expected[..]);
+    }
+
+    #[test]
+    fn a_heap_page_is_zeroed_before_it_is_released() {
+        let mut page = heap_page(64, record_then_free);
+        page.bytes_mut().fill(0xa5);
+        drop(page);
+        let released = RELEASED.with(|r| r.borrow_mut().take()).expect("released");
+        assert_eq!(released, vec![0; 64]);
+    }
+
+    #[test]
+    fn a_page_can_move_to_another_thread_and_be_shared() {
+        let mut page = heap_page(64, free_heap);
+        page = std::thread::spawn(move || {
+            page.bytes_mut().fill(7);
+            page
+        })
+        .join()
+        .expect("the thread ends");
+        let shared = std::sync::Arc::new(page);
+        let other = std::sync::Arc::clone(&shared);
+        let sum =
+            std::thread::spawn(move || other.bytes().iter().map(|&b| u32::from(b)).sum::<u32>())
+                .join()
+                .expect("the thread ends");
+        assert_eq!(sum, 7 * 64);
+        assert_eq!(shared.bytes(), &[7; 64][..]);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri does not support madvise with MADV_DONTDUMP")]
     fn a_page_is_zeroed_before_it_is_released() {
         let mut page = LockedPage::new().expect("page");
         page.bytes_mut().fill(0xa5);
