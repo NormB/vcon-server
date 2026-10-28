@@ -1,5 +1,6 @@
 # Dependabot proposes dependency updates as pull requests, once a week.
-# Each pull request runs CI like any other.
+# Each pull request runs CI like any other. scripts/check_dependabot.py,
+# run in CI, fails when a dependency file in the tree has no entry here.
 version: 2
 updates:
   # The Cargo workspace at the repository root (both crates, one Cargo.lock),
@@ -37,6 +38,39 @@ updates:
           - "*"
     commit-message:
       prefix: "ci"
+
+  # The TypeScript client example and the console's browser tests, each
+  # with its own package-lock.json.
+  - package-ecosystem: "npm"
+    directories:
+      - "/clients/typescript"
+      - "/console-tests"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      # Minor and patch bumps in one pull request; a major bump gets its own.
+      npm-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    commit-message:
+      prefix: "deps"
+
+  # The Python packages scripts/icons.py uses, pinned with their hashes in
+  # scripts/icons-requirements.txt.
+  - package-ecosystem: "pip"
+    directory: "/scripts"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      pip-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    commit-message:
+      prefix: "deps"
 
   # The ClusterFuzzLite builder image, pinned by digest.
   - package-ecosystem: "docker"

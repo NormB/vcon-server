@@ -250,6 +250,11 @@ jobs:
         run: python3 -I scripts/test_published_metrics.py
       - name: The site's link checker
         run: python3 -I scripts/test_check_site_links.py
+      - name: Dependabot watches every dependency file
+        run: |
+          set -euo pipefail
+          python3 -I scripts/test_check_dependabot.py
+          python3 -I scripts/check_dependabot.py
 
   hooks:
     name: git hooks
