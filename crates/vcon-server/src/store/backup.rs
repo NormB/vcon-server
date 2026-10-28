@@ -7,9 +7,8 @@ use std::io;
 use std::path::Path;
 
 use super::Store;
-use crate::catalog;
-use crate::envelope;
 use crate::ids::VersionId;
+use crate::{catalog, envelope};
 
 /// How many times the catalog is copied while versions in each copy are
 /// purged before their object files are copied.

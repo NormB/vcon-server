@@ -52,7 +52,8 @@ fn is_gzip_media_type(content_type: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flate2::{Compression, write::GzEncoder};
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
     use std::io::Write;
 
     const LIMIT: u64 = 1024;

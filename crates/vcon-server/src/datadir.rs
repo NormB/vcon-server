@@ -3,11 +3,10 @@
 //! runs alone; the other commands run beside a server and beside each
 //! other, but never beside a command that runs alone.
 
-use std::fmt;
 use std::fs::{File, OpenOptions};
-use std::io;
 use std::os::fd::AsRawFd;
 use std::path::Path;
+use std::{fmt, io};
 
 /// How a process shares the data directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

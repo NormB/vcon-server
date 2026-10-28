@@ -102,7 +102,8 @@ mod tests {
     use super::*;
     use base64::Engine;
     use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
-    use flate2::{Compression, write::GzEncoder};
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
     use serde_json::json;
     use std::io::Write;
 

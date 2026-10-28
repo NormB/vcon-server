@@ -5,7 +5,8 @@ use std::io::Write;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use flate2::{Compression, write::GzEncoder};
+use flate2::Compression;
+use flate2::write::GzEncoder;
 use serde_json::{Value, json};
 use uuid::Uuid;
 use vcon::Form;

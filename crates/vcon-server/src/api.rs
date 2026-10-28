@@ -8,8 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::Router;
-use axum::body::Body;
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::extract::{MatchedPath, Path as UriPath, Request, State};
 use axum::http::header::{
     AUTHORIZATION, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, ETAG, IF_MATCH, LOCATION,
@@ -32,8 +31,7 @@ use tokio_rustls::TlsAcceptor;
 
 use crate::access::{self, AuthError, Caller, Scope, Scopes};
 use crate::audit::{Action, Actor, AuditQuery, Entry};
-use crate::ids::TenantId;
-use crate::ids::{KeyId, VersionId};
+use crate::ids::{KeyId, TenantId, VersionId};
 use crate::retention::Retention;
 use crate::store::{Caller as StoreCaller, Created, ListQuery, Store, StoreError};
 use crate::tenants::{KeyInfo, Removal, TenantError, TenantInfo, Tenants};

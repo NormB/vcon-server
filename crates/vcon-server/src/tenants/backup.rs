@@ -8,10 +8,9 @@ use std::path::Path;
 
 use super::{TenantError, Tenants};
 use crate::audit::{Action, Actor, Entry};
-use crate::catalog;
-use crate::envelope;
 use crate::ids::TenantId;
 use crate::store::{self, TRIES};
+use crate::{catalog, envelope};
 
 /// What `backup` copied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

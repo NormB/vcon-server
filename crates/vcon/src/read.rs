@@ -40,8 +40,7 @@ use std::collections::BTreeSet;
 
 use uuid::Uuid;
 
-use crate::Form;
-use crate::{critical, form, gzip, identity, json, signed};
+use crate::{Form, critical, form, gzip, identity, json, signed};
 
 /// The most signed (JWS) layers a body may have, counting from the body to
 /// the unsigned vCon: one for a vCon signed once. A layer is added each time

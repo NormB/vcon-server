@@ -9,10 +9,8 @@ use std::io::{self, Write};
 use std::sync::Arc;
 
 use crate::access::{Scope, Scopes};
-use crate::audit::Actor;
-use crate::audit::AuditError;
-use crate::clock::Clock;
-use crate::clock::SystemClock;
+use crate::audit::{Actor, AuditError};
+use crate::clock::{Clock, SystemClock};
 use crate::config::Config;
 use crate::datadir::{self, LockError, Sharing, Work};
 use crate::envelope::{Key, KeyError};

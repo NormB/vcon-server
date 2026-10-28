@@ -1,10 +1,9 @@
 //! `vcon-server serve`: the server, run from its configuration.
 
-use std::fmt;
 use std::future::Future;
-use std::io;
 use std::sync::Arc;
 use std::time::Duration;
+use std::{fmt, io};
 
 use tokio::net::TcpListener;
 

@@ -1,0 +1,8 @@
+# The Google Rust Style Guide's settings, on the 2024 style edition. Some are
+# unstable and only a nightly rustfmt reads them: run scripts/rustfmt.sh,
+# which runs the pinned one, not cargo fmt.
+style_edition = "2024"
+max_width = 100
+hex_literal_case = "Lower"
+format_macro_matchers = true
+imports_granularity = "Module"
