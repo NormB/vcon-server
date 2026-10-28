@@ -180,10 +180,14 @@ git config core.hooksPath .githooks
   licences, and builds each crate from its `.crate` alone; a missing README or licence; a dependency taken by git or by
   path, in the manifest or the lock file; a relative link in the README; and
   anything the scan above refuses.
-- **commit-msg** refuses the same in the message.
+- **commit-msg** refuses the same in the message, every line of it,
+  including lines that start with `#`, which `git commit -m` keeps.
 - **pre-push** refuses any outgoing commit that is not signed by an allowed
-  signer, or whose author and committer are not the pusher's configured
-  identity.
+  signer, whose author and committer are not the pusher's configured
+  identity, or whose whole message the same scan refuses
+  (`scripts/scan-commit-messages.sh`), so a commit made with `--no-verify`
+  is still caught. CI scans every commit message of a push or pull
+  request the same way.
 
 `scripts/test-hooks.sh` and `scripts/test-pre-push.sh` test the hooks
 themselves. Every commit on `main` is signed and shows as verified on GitHub.

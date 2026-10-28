@@ -6,6 +6,13 @@
 # so that this file never contains them itself.
 set -euo pipefail
 src="$(git rev-parse --show-toplevel)"
+# A git hook runs with GIT_DIR and GIT_INDEX_FILE set (in a linked
+# worktree, to absolute paths). Left set, every git command below would act
+# on the caller's repository instead of the throwaway one: in a worktree's
+# commit hook this test once committed its samples onto the branch being
+# committed.
+# shellcheck disable=SC2046 # one variable name per word, none with spaces
+unset $(git rev-parse --local-env-vars)
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 export CARGO_TARGET_DIR="$work/target"
@@ -164,6 +171,11 @@ expect refuse "export staged by force" "vcon-server — Notes.md" "words"
 expect refuse "AI trailer in message" notes.txt "message case one" "Fix it
 
 Co-Authored-By: ${ai_word^} <noreply@${ai_co}.com>"
+# git commit -m keeps lines that start with # (cleanup mode whitespace),
+# so a # line is stored in the commit and must be scanned too.
+expect refuse "AI trailer on a # line in message" notes.txt "message case six" "Fix it
+
+# Co-Authored-By: ${ai_word^} <noreply@${ai_co}.com>"
 expect refuse "plan task id in message" notes.txt "message case two" "Finish P""0.3"
 expect refuse "later plan task id in message" notes.txt "message case five" "Finish P""14.10"
 expect refuse "email in message" notes.txt "message case three" "Ask someone@gm""ail.com"
@@ -186,6 +198,24 @@ mod tests {
         assert_eq!(super::add_one(1), 2);
     }
 }'
+
+# The hooks also run from a linked worktree, where git hands them GIT_DIR
+# and GIT_INDEX_FILE as absolute paths. A clean change must commit there,
+# adding exactly its one commit: a hook test that made its own repository
+# without unsetting them once committed into this one and broke the commit.
+n=$((n + 1))
+git worktree add -q -b linked "$work/linked"
+if (cd "$work/linked" && before="$(git rev-parse HEAD)" && echo linked > linked.txt && git add linked.txt \
+    && git commit -q -m "Commit from a linked worktree" && [ "$(git rev-list --count "$before..HEAD")" = 1 ] \
+    && [ "$(git log -1 --format=%s)" = "Commit from a linked worktree" ]) >"$work/out" 2>&1; then
+  pass=$((pass + 1))
+else
+  fail=$((fail + 1))
+  echo "FAIL (one clean commit expected): commit from a linked worktree"
+  sed 's/^/    /' "$work/out" | tail -15
+  git -C "$work/linked" log --oneline -5 | sed 's/^/    /'
+fi
+git worktree remove --force "$work/linked"
 
 echo "test-hooks: $pass of $n passed"
 [ "$fail" -eq 0 ]

@@ -5,6 +5,13 @@
 # committer match the pusher's configured identity.
 set -euo pipefail
 src="$(git rev-parse --show-toplevel)"
+# A git hook runs with GIT_DIR and GIT_INDEX_FILE set (in a linked
+# worktree, to absolute paths). Left set, every git command below would act
+# on the caller's repository instead of the throwaway one: in a worktree's
+# commit hook this test once committed its samples onto the branch being
+# committed.
+# shellcheck disable=SC2046 # one variable name per word, none with spaces
+unset $(git rev-parse --local-env-vars)
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
@@ -16,6 +23,8 @@ git init -q --bare "$work/remote.git"
 repo="$work/repo"
 mkdir -p "$repo/hooks"
 cp "$src/.githooks/pre-push" "$repo/hooks/"
+mkdir -p "$repo/scripts"
+cp "$src/scripts/scan-commit-messages.sh" "$src/scripts/scan_forbidden.py" "$repo/scripts/"
 cd "$repo"
 git init -q -b main
 git config user.name "Test User"
@@ -69,6 +78,19 @@ git reset -q --hard origin/main
 commit --no-gpg-sign
 commit -S
 expect refuse "unsigned commit under a signed one" origin main
+git reset -q --hard origin/main
+
+# A message the commit-msg hook would refuse, made where that hook did not
+# run: on a line that starts with #, which git commit -m keeps.
+c=$((c + 1)); echo "$c" > f; git add f
+ai_word="cl""aude"; git commit -q -S -m "Change $c
+
+# Co-Authored-By: ${ai_word^} <noreply@example.com>"
+expect refuse "AI credit on a # line of a message" origin main
+git reset -q --hard origin/main
+
+commit -S -m "Finish P""0.3"
+expect refuse "plan task id in a message" origin main
 git reset -q --hard origin/main
 
 git branch copy main
