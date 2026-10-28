@@ -97,13 +97,16 @@ fn found(form: Form, gzip: bool) -> Result<(Form, bool, Uuid), Rejection> {
 }
 
 /// Reads `body` in a thread with a small stack; returns only if the read
-/// did not overflow it.
+/// did not overflow it, and fails unless it refused the body as too deep.
 fn read_on_a_small_stack(body: Vec<u8>) {
     let reader = std::thread::Builder::new()
         .stack_size(SMALL_STACK)
-        .spawn(move || run(&body).is_ok())
+        .spawn(move || run(&body))
         .expect("spawn the reader");
-    let _ = reader.join().expect("the reader returns");
+    assert_eq!(
+        reader.join().expect("the reader returns"),
+        Err(Rejection::TooDeep)
+    );
 }
 
 /// Runs the ignored test `name` of this binary in a child process and

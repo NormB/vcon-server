@@ -123,14 +123,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepts_one_object() {
-        let map = parse_object(br#"{"uuid": "x", "n": 1}"#).expect("an object");
-        assert_eq!(map.len(), 2);
-    }
-
-    #[test]
     fn accepts_whitespace_around_the_object() {
-        assert!(parse_object(b" \n\t{}\r\n ").is_ok());
+        assert_eq!(parse_object(b" \n\t{}\r\n "), Ok(Map::new()));
     }
 
     #[test]

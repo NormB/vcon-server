@@ -106,8 +106,9 @@ mod tests {
         );
         assert_eq!(encrypted(&body), Ok(ID.parse().expect("test uuid")));
         let no_created_at = format!(r#"{{"unprotected": {{"uuid": "{ID}"}}}}"#);
-        assert!(
-            encrypted(&no_created_at).is_ok(),
+        assert_eq!(
+            encrypted(&no_created_at),
+            Ok(ID.parse().expect("test uuid")),
             "nothing else is required"
         );
     }
@@ -158,19 +159,21 @@ mod tests {
 
     #[test]
     fn accepts_only_the_rfc_9562_text_form() {
+        // Each expected value is written out as its 128 bits, not read by
+        // the parser under test.
+        let id = Uuid::from_u128(0x01a07da8_c2bb_83e5_b9a2_279e0d16bc46);
         let good = [
-            ID,
-            "01A07DA8-C2BB-83E5-B9A2-279E0D16BC46",
-            "01a07DA8-c2BB-83e5-B9a2-279e0d16BC46",
-            "00000000-0000-0000-0000-000000000000",
-            "f81d4fae-7dec-11d0-a765-00a0c91e6bf6",
+            (ID, id),
+            ("01A07DA8-C2BB-83E5-B9A2-279E0D16BC46", id),
+            ("01a07DA8-c2BB-83e5-B9a2-279e0d16BC46", id),
+            ("00000000-0000-0000-0000-000000000000", Uuid::nil()),
+            (
+                "f81d4fae-7dec-11d0-a765-00a0c91e6bf6",
+                Uuid::from_u128(0xf81d4fae_7dec_11d0_a765_00a0c91e6bf6),
+            ),
         ];
-        for text in good {
-            assert_eq!(
-                parse_uuid_text(text),
-                Ok(Uuid::parse_str(text).expect("valid")),
-                "{text}"
-            );
+        for (text, expected) in good {
+            assert_eq!(parse_uuid_text(text), Ok(expected), "{text}");
         }
         let bad = [
             "",

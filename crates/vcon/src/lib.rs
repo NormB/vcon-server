@@ -38,11 +38,3 @@ pub enum Form {
 /// ```
 #[cfg(doctest)]
 pub struct NoCrateName;
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn the_crate_is_named_vcon() {
-        assert_eq!(env!("CARGO_PKG_NAME"), "vcon");
-    }
-}

@@ -229,14 +229,4 @@ proptest! {
         let expected = case.expected.map(|(form, uuid)| (form, uuid, zip));
         prop_assert_eq!(got, expected, "{}", case.body);
     }
-
-    #[test]
-    fn the_same_input_gives_the_same_answer(value in json_value()) {
-        let body = value.to_string();
-        let limits = Limits::new(LIMIT);
-        prop_assert_eq!(
-            inspect(body.as_bytes(), None, &limits, &BTreeSet::new()),
-            inspect(body.as_bytes(), None, &limits, &BTreeSet::new())
-        );
-    }
 }

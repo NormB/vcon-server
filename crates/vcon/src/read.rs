@@ -152,3 +152,101 @@ pub enum Rejection {
     /// support; they are listed in order of first appearance.
     UnsupportedCritical(Vec<String>),
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use flate2::{Compression, write::GzEncoder};
+    use serde_json::{Value, json};
+
+    use super::*;
+
+    // Here, not in tests/inspect.rs: Rejection is #[non_exhaustive], so
+    // only a match inside the crate can leave out the catch-all arm.
+    const ID: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bc46";
+    const LIMITS: Limits = Limits::new(1 << 20);
+
+    fn gz(bytes: &[u8]) -> Vec<u8> {
+        let mut e = GzEncoder::new(Vec::new(), Compression::default());
+        e.write_all(bytes).expect("compress");
+        e.finish().expect("finish")
+    }
+
+    fn b64(bytes: &[u8]) -> String {
+        URL_SAFE_NO_PAD.encode(bytes)
+    }
+
+    fn unsigned() -> Value {
+        json!({"uuid": ID, "created_at": "2026-10-23T00:00:00Z", "parties": []})
+    }
+
+    fn run(body: &[u8]) -> Result<(Form, bool, Uuid), Rejection> {
+        inspect(body, None, &LIMITS, &BTreeSet::new()).map(|i| (i.form, i.gzip, i.uuid))
+    }
+
+    /// A body `inspect` refuses with `rejection`. The match has no catch-all
+    /// arm, so a new Rejection fails to compile here until it has a body.
+    fn refused_as(rejection: &Rejection) -> Vec<u8> {
+        match rejection {
+            Rejection::TooLarge => gz(&vec![b' '; (LIMITS.inflated + 1) as usize]),
+            Rejection::TooDeep => format!(
+                "{}{}",
+                "[".repeat(MAX_JSON_DEPTH + 1),
+                "]".repeat(MAX_JSON_DEPTH + 1)
+            )
+            .into_bytes(),
+            Rejection::BadGzip => vec![0x1f, 0x8b, 0],
+            Rejection::NotJson => b"[]".to_vec(),
+            Rejection::DuplicateKey => br#"{"uuid": "a", "uuid": "b"}"#.to_vec(),
+            Rejection::AmbiguousForm => {
+                br#"{"payload": "", "signatures": [], "ciphertext": "", "recipients": []}"#.to_vec()
+            }
+            Rejection::NoForm => b"{}".to_vec(),
+            Rejection::MissingUuid => br#"{"parties": []}"#.to_vec(),
+            Rejection::BadUuid => br#"{"uuid": "x"}"#.to_vec(),
+            Rejection::MissingCreatedAt => format!(r#"{{"uuid": "{ID}"}}"#).into_bytes(),
+            Rejection::BadPayload => br#"{"payload": "%", "signatures": []}"#.to_vec(),
+            Rejection::UuidMismatch => json!({
+                "payload": b64(unsigned().to_string().as_bytes()),
+                "signatures": [{"header": {"uuid": "01a07da8-c2bb-83e5-b9a2-279e0d16bc47"}}]
+            })
+            .to_string()
+            .into_bytes(),
+            Rejection::BadCritical => {
+                format!(r#"{{"uuid": "{ID}", "created_at": "x", "critical": 1}}"#).into_bytes()
+            }
+            Rejection::UnsupportedCritical(names) => {
+                json!({"uuid": ID, "created_at": "x", "critical": names})
+                    .to_string()
+                    .into_bytes()
+            }
+        }
+    }
+
+    #[test]
+    fn every_rejection_is_reachable() {
+        // Every variant, each once; refused_as names each of them too.
+        let every = [
+            Rejection::TooLarge,
+            Rejection::TooDeep,
+            Rejection::BadGzip,
+            Rejection::NotJson,
+            Rejection::DuplicateKey,
+            Rejection::AmbiguousForm,
+            Rejection::NoForm,
+            Rejection::MissingUuid,
+            Rejection::BadUuid,
+            Rejection::MissingCreatedAt,
+            Rejection::BadPayload,
+            Rejection::UuidMismatch,
+            Rejection::BadCritical,
+            Rejection::UnsupportedCritical(vec!["x".to_owned()]),
+        ];
+        for rejection in every {
+            assert_eq!(run(&refused_as(&rejection)), Err(rejection.clone()));
+        }
+    }
+}

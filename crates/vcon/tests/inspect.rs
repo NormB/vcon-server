@@ -80,40 +80,6 @@ fn reads_the_ietf_examples() {
 }
 
 #[test]
-fn every_rejection_is_reachable() {
-    let text = unsigned().to_string();
-    let critical = json!({"uuid": ID, "created_at": "x", "critical": ["x"]}).to_string();
-    let cases: Vec<(&str, Vec<u8>, Rejection)> = vec![
-        ("too large", gz(&vec![b' '; (LIMITS.inflated + 1) as usize]), Rejection::TooLarge),
-        ("bad gzip", vec![0x1f, 0x8b, 0], Rejection::BadGzip),
-        ("not JSON", b"[]".to_vec(), Rejection::NotJson),
-        ("duplicate key", br#"{"uuid": "a", "uuid": "b"}"#.to_vec(), Rejection::DuplicateKey),
-        (
-            "ambiguous form",
-            br#"{"payload": "", "signatures": [], "ciphertext": "", "recipients": []}"#.to_vec(),
-            Rejection::AmbiguousForm,
-        ),
-        ("no form", b"{}".to_vec(), Rejection::NoForm),
-        ("missing uuid", br#"{"parties": []}"#.to_vec(), Rejection::MissingUuid),
-        ("bad uuid", br#"{"uuid": "x"}"#.to_vec(), Rejection::BadUuid),
-        ("missing created_at", format!(r#"{{"uuid": "{ID}"}}"#).into_bytes(), Rejection::MissingCreatedAt),
-        ("bad critical", format!(r#"{{"uuid": "{ID}", "created_at": "x", "critical": 1}}"#).into_bytes(), Rejection::BadCritical),
-        ("unsupported critical", critical.into_bytes(), Rejection::UnsupportedCritical(vec!["x".to_owned()])),
-        ("bad payload", br#"{"payload": "%", "signatures": []}"#.to_vec(), Rejection::BadPayload),
-        (
-            "uuid mismatch",
-            json!({"payload": b64(text.as_bytes()), "signatures": [{"header": {"uuid": "01a07da8-c2bb-83e5-b9a2-279e0d16bc47"}}]})
-                .to_string()
-                .into_bytes(),
-            Rejection::UuidMismatch,
-        ),
-    ];
-    for (what, body, expected) in cases {
-        assert_eq!(run(&body), Err(expected), "{what}");
-    }
-}
-
-#[test]
 fn the_media_type_and_supported_list_are_used() {
     let text = unsigned().to_string();
     assert_eq!(

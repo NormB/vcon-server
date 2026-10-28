@@ -73,7 +73,7 @@ mod tests {
     }
 
     #[test]
-    fn gzip_is_found_by_magic_number_or_media_type() {
+    fn a_gzip_body_is_inflated_whatever_its_media_type() {
         let body = gz(b"{\"a\":1}");
         let cases = [
             None,
