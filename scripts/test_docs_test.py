@@ -219,6 +219,25 @@ class Releases(unittest.TestCase):
             dt.release_sets(self.blocks(), {}, lambda v: False, lambda: None)
 
 
+class HomePage(unittest.TestCase):
+    INSTALL = dt.parse("```sh\nVERSION=0.2.0\ncurl -fsSLO x\nsha256sum -c y\n```\n", "docs/install.md")
+
+    def test_each_install_step_is_on_the_install_page(self):
+        front = '[extra]\n[[extra.install]]\ntitle = "t"\ncode = """\nVERSION=0.2.0\ncurl -fsSLO x"""\n'
+        self.assertEqual(dt.home_install_problems(front, self.INSTALL), [])
+
+    def test_a_step_the_install_page_does_not_show_is_found(self):
+        front = '[extra]\n[[extra.install]]\ntitle = "Fetch"\ncode = """\ncurl -fsSL x"""\n'
+        self.assertEqual(
+            dt.home_install_problems(front, self.INSTALL),
+            ["_index.md: the install step \"Fetch\" is not a run of lines in any block of docs/install.md"],
+        )
+
+    def test_a_step_without_code_needs_nothing(self):
+        front = '[extra]\n[[extra.install]]\ntitle = "Then"\nnote = "n"\n'
+        self.assertEqual(dt.home_install_problems(front, self.INSTALL), [])
+
+
 class Lint(unittest.TestCase):
     def test_a_request_needs_its_answer_on_the_page(self):
         page = "```sh\ncurl -sS https://vcon.example.com:8443/health\n```\n"
