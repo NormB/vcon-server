@@ -464,36 +464,76 @@ mod tests {
 
     #[test]
     fn every_action_has_its_name_in_the_log() {
-        let names = [
-            (Action::Create, "create"),
-            (Action::Replace, "replace"),
-            (Action::Read, "read"),
-            (Action::Delete, "delete"),
-            (Action::Purge, "purge"),
-            (Action::LegalRead, "legal_read"),
-            (Action::LegalVersions, "legal_versions"),
-            (Action::Restore, "restore"),
-            (Action::Hold, "hold"),
-            (Action::Release, "release"),
-            (Action::KeyCreate, "key_create"),
-            (Action::KeyRevoke, "key_revoke"),
-            (Action::KeyList, "key_list"),
-            (Action::Retention, "retention"),
-            (Action::Health, "health"),
-            (Action::AuthFailed, "auth_failed"),
-            (Action::TenantCreate, "tenant_create"),
-            (Action::TenantList, "tenant_list"),
-            (Action::TenantRetention, "tenant_retention"),
-            (Action::TenantRemove, "tenant_remove"),
-            (Action::RekeyMaster, "rekey_master"),
-            (Action::RekeyTenant, "rekey_tenant"),
-            (Action::List, "list"),
-            (Action::AuditRead, "audit_read"),
-            (Action::Openapi, "openapi"),
-            (Action::Backup, "backup"),
+        // The name each action has in the logs, which exports and the audit
+        // routes give to operators. The match has no catch-all arm, so a
+        // new action fails to compile here until its name is written down.
+        let named = |action: Action| match action {
+            Action::Create => "create",
+            Action::Replace => "replace",
+            Action::Read => "read",
+            Action::Delete => "delete",
+            Action::Purge => "purge",
+            Action::LegalRead => "legal_read",
+            Action::LegalVersions => "legal_versions",
+            Action::Restore => "restore",
+            Action::Hold => "hold",
+            Action::Release => "release",
+            Action::KeyCreate => "key_create",
+            Action::KeyRevoke => "key_revoke",
+            Action::KeyList => "key_list",
+            Action::KeyInfo => "key_info",
+            Action::Retention => "retention",
+            Action::Health => "health",
+            Action::AuthFailed => "auth_failed",
+            Action::TenantCreate => "tenant_create",
+            Action::TenantList => "tenant_list",
+            Action::TenantRetention => "tenant_retention",
+            Action::TenantRemove => "tenant_remove",
+            Action::RekeyMaster => "rekey_master",
+            Action::RekeyTenant => "rekey_tenant",
+            Action::List => "list",
+            Action::AuditRead => "audit_read",
+            Action::Openapi => "openapi",
+            Action::Backup => "backup",
+            Action::Mcp => "mcp",
+        };
+        let every = [
+            Action::Create,
+            Action::Replace,
+            Action::Read,
+            Action::Delete,
+            Action::Purge,
+            Action::LegalRead,
+            Action::LegalVersions,
+            Action::Restore,
+            Action::Hold,
+            Action::Release,
+            Action::KeyCreate,
+            Action::KeyRevoke,
+            Action::KeyList,
+            Action::KeyInfo,
+            Action::Retention,
+            Action::Health,
+            Action::AuthFailed,
+            Action::TenantCreate,
+            Action::TenantList,
+            Action::TenantRetention,
+            Action::TenantRemove,
+            Action::RekeyMaster,
+            Action::RekeyTenant,
+            Action::List,
+            Action::AuditRead,
+            Action::Openapi,
+            Action::Backup,
+            Action::Mcp,
         ];
-        for (action, name) in names {
-            assert_eq!(action.as_str(), name);
+        let mut seen = std::collections::BTreeSet::new();
+        for action in every {
+            assert_eq!(action.as_str(), named(action), "{action:?}");
+            assert!(
+                seen.insert(action.as_str()),
+                "{action:?}: a name of its own"
+            );
         }
     }
 

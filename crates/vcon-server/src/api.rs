@@ -1623,18 +1623,45 @@ mod tests {
         use super::*;
         use crate::access::{Scope, Scopes};
         use crate::audit::Actor;
-        use crate::clock::SystemClock;
+        use crate::clock::Clock;
         use crate::envelope::Key;
         use crate::fs::OsFs;
         use crate::ids::TenantId;
 
         pub(crate) const LIMIT: usize = 64 * 1024;
 
-        /// A server with one tenant, on a free port.
+        /// The time every test server starts at.
+        pub(crate) const START: time::OffsetDateTime =
+            time::macros::datetime!(2026-10-23 12:00 UTC);
+
+        /// The test servers' clock. It starts at START, and each reading
+        /// moves it on by a microsecond, so times read one after another are
+        /// in order and differ, as on a real clock, but no answer depends on
+        /// when a test runs. A test may set it.
+        pub(crate) struct TestClock(std::sync::Mutex<time::OffsetDateTime>);
+
+        impl TestClock {
+            pub(crate) fn set(&self, now: time::OffsetDateTime) {
+                *self.0.lock().expect("clock") = now;
+            }
+        }
+
+        impl Clock for TestClock {
+            fn now(&self) -> time::OffsetDateTime {
+                let mut next = self.0.lock().expect("clock");
+                let now = *next;
+                *next += time::Duration::MICROSECOND;
+                now
+            }
+        }
+
+        /// A server with one tenant, on a free port. Its registry and stores
+        /// read the time from `clock`.
         pub(crate) struct Server {
             _dir: tempfile::TempDir,
             certificate: Certificate,
             addr: SocketAddr,
+            pub(crate) clock: Arc<TestClock>,
             pub(crate) tenants: Arc<Tenants>,
             pub(crate) tenant: TenantId,
             stop: Option<tokio::sync::oneshot::Sender<()>>,
@@ -1665,12 +1692,13 @@ mod tests {
 
         async fn server_from(supported: &[&str], retention_default: Retention) -> Server {
             let dir = tempfile::tempdir().expect("temp dir");
+            let clock = Arc::new(TestClock(std::sync::Mutex::new(START)));
             let tenants = Arc::new(
                 Tenants::open(
                     dir.path(),
                     Key::generate().expect("master key"),
                     Arc::new(OsFs),
-                    Arc::new(SystemClock),
+                    clock.clone(),
                 )
                 .expect("opens"),
             );
@@ -1697,6 +1725,7 @@ mod tests {
                 _dir: dir,
                 certificate,
                 addr,
+                clock,
                 tenants,
                 tenant,
                 stop: Some(stop),
@@ -1989,8 +2018,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn every_refusal_from_format_has_its_own_problem() {
+    #[tokio::test]
+    async fn every_refusal_from_format_has_its_own_problem() {
         let cases = [
             (Rejection::TooLarge, 413, "too-large"),
             (Rejection::TooDeep, 422, "too-deep"),
@@ -2018,8 +2047,15 @@ mod tests {
                 (*status, *name),
                 "{rejection:?}"
             );
-            let answer = format!("{:?}", problem.into_response().into_body());
-            assert!(!answer.contains("secret-name"), "the body is not repeated");
+            let body = axum::body::to_bytes(problem.into_response().into_body(), usize::MAX)
+                .await
+                .expect("the body");
+            let answer = String::from_utf8(body.to_vec()).expect("UTF-8");
+            assert!(answer.contains(&format!("\"status\":{status}")), "{answer}");
+            assert!(
+                !answer.contains("secret-name"),
+                "the name is not repeated: {answer}"
+            );
         }
     }
 
@@ -2249,7 +2285,12 @@ mod tests {
                 assert_eq!(answer.status(), 415, "{content_type}");
                 assert_eq!(problem(answer).await, "unsupported-media-type");
             }
-            assert_eq!(s.tenant_log("create")[0]["status"], 415);
+            let refused: Vec<_> = s
+                .tenant_log("create")
+                .iter()
+                .map(|r| r["status"].clone())
+                .collect();
+            assert_eq!(refused, [415, 415, 415], "one record per refusal");
         }
 
         #[tokio::test]
@@ -3476,7 +3517,7 @@ mod tests {
     }
 
     mod by_uuid {
-        use super::pipeline::{Server, problem, server, server_keeping};
+        use super::pipeline::{START, Server, problem, server, server_keeping};
         use crate::access::{Scope, Scopes};
         use crate::audit::Actor;
         use crate::ids::TenantId;
@@ -3972,6 +4013,24 @@ mod tests {
             assert_eq!(counted.len(), 1, "one record a minute");
             assert_eq!(counted[0]["count"], 2);
             assert_eq!(counted[0]["status"], 200);
+            // The last second of the minute still counts in it; the next
+            // minute starts a record of its own.
+            s.clock.set(START + time::Duration::seconds(59));
+            health(&s, Some(&reader)).await;
+            s.clock.set(START + time::Duration::minutes(1));
+            health(&s, Some(&reader)).await;
+            let counted = s.tenant_log("health");
+            assert_eq!(
+                counted
+                    .iter()
+                    .map(|r| (
+                        r["at"].as_str().expect("at"),
+                        r["count"].as_u64().expect("count")
+                    ))
+                    .collect::<Vec<_>>(),
+                [("2026-10-23T12:00:00Z", 3), ("2026-10-23T12:01:00Z", 1)],
+                "a record counts the requests of its minute only"
+            );
 
             let operator = s
                 .tenants
@@ -4163,9 +4222,19 @@ mod tests {
             let reads = s.tenant_log("audit_read");
             assert_eq!(reads.len(), 2);
             assert!(reads.iter().all(|r| r["status"] == 200));
+            // The page is the log as it stood before the read, which then
+            // records itself after it.
             let after = 3;
+            let expected = tenant_export(&s, Some(after));
+            assert!(
+                !expected.is_empty(),
+                "three stores and two reads leave records past seq 3"
+            );
             let page = body(get(&s, &format!("/audit?after={after}"), Some(&auditor)).await).await;
-            assert_eq!(page, tenant_export(&s, Some(after))[..page.len()]);
+            assert_eq!(
+                page, expected,
+                "the page is every record after seq 3, whole"
+            );
         }
 
         #[tokio::test]
@@ -4277,11 +4346,9 @@ mod tests {
 
     /// `GET /vcons`: a tenant's live vCons, a page at a time.
     mod list {
-        use std::collections::BTreeSet;
-
         use serde_json::Value;
 
-        use super::pipeline::{Server, problem, server};
+        use super::pipeline::{START, Server, problem, server};
         use crate::access::{Scope, Scopes};
         use crate::audit::Actor;
         use crate::ids::TenantId;
@@ -4415,12 +4482,16 @@ mod tests {
             let beta = s.tenants.create(Actor::Cli, "beta", None).expect("made");
             let acme_writer = s.key(&[Scope::Write]);
             let beta_writer = key_of(&s, beta, &[Scope::Write]);
-            for n in [1, 3, 5] {
-                stored(&s, &acme_writer, n).await;
-            }
-            // vCon 3 is held by both tenants, each its own.
-            for n in [2, 3, 4] {
-                stored(&s, &beta_writer, n).await;
+            // Stored a second apart, acme's first: 1, 3, 5, then beta's
+            // 2, 3, 4. vCon 3 is held by both tenants, each its own.
+            let mut at = START;
+            for (writer, n) in [(&acme_writer, 1), (&acme_writer, 3), (&acme_writer, 5)]
+                .into_iter()
+                .chain([(&beta_writer, 2), (&beta_writer, 3), (&beta_writer, 4)])
+            {
+                at += time::Duration::SECOND;
+                s.clock.set(at);
+                stored(&s, writer, n).await;
             }
             let acme = s.key(&[Scope::Read]);
             let beta_reader = key_of(&s, beta, &[Scope::Read]);
@@ -4429,9 +4500,14 @@ mod tests {
             // A cursor from the other tenant's list only sets a place.
             let beta_page = page(&s, &beta_reader, "?limit=1").await;
             let cursor = beta_page["next"].as_str().expect("a cursor");
+            // Beta's first, vCon 4, was stored after all of acme's, so the
+            // place is before every acme vCon.
             let mixed = page(&s, &acme, &format!("?cursor={cursor}")).await;
-            let acme_uuids: BTreeSet<String> = [5, 3, 1].map(uuid).into_iter().collect();
-            assert!(uuids(&mixed).iter().all(|u| acme_uuids.contains(u)));
+            assert_eq!(
+                uuids(&mixed),
+                [5, 3, 1].map(uuid),
+                "a foreign cursor sets a place in this tenant's list, and lists all of it after"
+            );
         }
 
         #[tokio::test]
