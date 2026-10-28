@@ -14,9 +14,6 @@ src="$(git rev-parse --show-toplevel)"
 # repository's config, set core.bare, and committed its samples there.
 # Every GIT_* variable goes, and each throwaway repository is checked to
 # be inside this test's own directory before it is used.
-while IFS='=' read -r name _; do
-  case "$name" in GIT_*) unset "$name" ;; esac
-done < <(env)
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 export CARGO_TARGET_DIR="$work/target"
