@@ -7,6 +7,10 @@ the layout of the workspace, how to build and test, how the code is tested,
 the commit hooks and CI. The [security page](https://vcon-server.com/docs/security/)
 says what the server guarantees; a change must keep every guarantee there.
 
+Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
+[GOVERNANCE.md](GOVERNANCE.md) says who decides and what a contributor and the
+maintainer each do.
+
 Each change comes with the test that encodes it, written first and seen
 failing for the right reason. Test data uses reserved values only:
 `example.com` addresses, 555-01xx numbers, RFC 5737 and RFC 3849 addresses.
