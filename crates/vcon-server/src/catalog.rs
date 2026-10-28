@@ -511,12 +511,12 @@ pub(crate) mod tests {
         }
 
         #[test]
-        fn getting_started_says_what_a_build_fetches() {
-            let page = read("../../website/content/docs/getting-started.md");
+        fn the_install_page_says_what_a_build_fetches() {
+            let page = read("../../website/content/docs/install.md");
             let build = page
                 .split("\n## ")
-                .find(|s| s.starts_with("Build\n"))
-                .expect("a Build section");
+                .find(|s| s.starts_with("Build from source\n"))
+                .expect("a Build from source section");
             assert!(
                 build.contains("github.com/NormB/rusqlite"),
                 "names the fork"
@@ -528,7 +528,7 @@ pub(crate) mod tests {
             assert!(build.contains("cargo build --release --offline\n"));
             let release = page
                 .split("\n## ")
-                .find(|s| s.starts_with("Or download a release\n"))
+                .find(|s| s.starts_with("Download a release\n"))
                 .expect("a release section");
             assert!(
                 release.contains("crates.io"),

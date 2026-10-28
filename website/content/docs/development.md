@@ -154,7 +154,7 @@ the dev-dependency `rusqlite_fork` of vcon-server.
   or crates.io, uses crates.io rusqlite 0.41.0. A `[patch]` in the workspace
   `Cargo.toml` gives the fork crates.io's libsqlite3-sys 0.39.1, so both
   share one SQLite. A build fetches the fork all the same (see
-  [getting started](@/docs/getting-started.md#build)).
+  [building without network access](@/docs/install.md#building-without-network-access)).
 - **When it goes:** the test `crates_io_rusqlite_refuses_sqlcipher_names`
   fails once the workspace's rusqlite accepts SQLCipher's names, as in the
   dependency update that brings such a release. Then set the settings
@@ -222,6 +222,49 @@ The logo and the favicons are drawn from `assets/brand/mark.svg` by
 `scripts/icons.py`; see `assets/brand/README.md`. The check above also
 refuses an SVG that holds a script, a style, a link or an embedded object.
 
+## The how-to pages are tested
+
+The [install](@/docs/install.md), [getting started](@/docs/getting-started.md)
+and how-to pages are run, not only read. `scripts/docs_test.py` reads a page
+from top to bottom, runs each `sh` block in one bash shell in a fresh
+container, and compares what each block prints with the `text` block that
+follows it on the page. In that `text` block, `<words>` stands for any text
+on its line, such as a token or a date, and a line holding only `…` stands
+for any number of lines. A block must exit 0, unless its marker says
+otherwise.
+
+An HTML comment on the line before a block changes how it runs:
+
+| Marker | Effect |
+|---|---|
+| `<!-- docs-test: only apt release -->` | runs only in scenarios that have every tag named |
+| `<!-- docs-test: skip <reason> -->` | never runs; the reason is required |
+| `<!-- docs-test: exit 1 -->` | the block must exit 1 |
+| `<!-- docs-test: background serving -->` | runs in the background; the run waits until it prints `serving` |
+| `<!-- docs-test: file <path> -->` | a block, such as TOML or a systemd unit, that the page says to save as `<path>` |
+| `<!-- docs-test: always -->` | runs at the end, even after a failure |
+
+A scenario names the pages it runs, the system it runs them on, and its
+tags. The scenarios include Debian 13 and Fedora 44 with the server in the
+foreground, Debian 13 under systemd, and each install path on each
+distribution. The how-to scenarios get the server built from the commit
+under test. The release scenarios download the release that the install page
+names. Until that release is published, they download the newest published
+release and say so.
+
+```sh
+python3 -I scripts/test_docs_test.py                    # the runner's own tests
+python3 -I scripts/docs_test.py lint                    # the rules every tested page keeps
+python3 -I scripts/docs_test.py list                    # the scenarios
+cargo build -p vcon-server
+python3 -I scripts/docs_test.py run foreground --binary target/debug/vcon-server
+```
+
+It needs Docker. `lint` fails on a block that no scenario runs, on a request
+to the server with no output shown after it, and on a marker it does not
+know. A run prints one line per block, and for a failure, the block, what the
+page says it prints, and what it printed.
+
 ## Continuous integration
 
 Every push to `main` and every pull request runs `.github/workflows/ci.yml`:
@@ -231,7 +274,9 @@ and fails if the test output cannot be counted); the console's
 browser tests; the package check; the scan for AI attribution and personal
 data over every tracked file; the `.bestpractices.json` link check; `scripts/check-site.sh`;
 and `scripts/icons.py --check`. A coverage job runs the same tests under
-`cargo llvm-cov` and sends the result to Codecov. One fuzz job per target
+`cargo llvm-cov` and sends the result to Codecov. The how-to jobs run `scripts/docs_test.py`
+for each scenario it lists, against the server built from the commit (see
+[the how-to pages are tested](#the-how-to-pages-are-tested)). One fuzz job per target
 runs it for 60 seconds, then `scripts/fuzz.sh plant` for it; the targets are
 read from `fuzz/Cargo.toml`, so a new one joins with no list to edit. A
 crash input is kept as a workflow artifact for 7 days.

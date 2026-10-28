@@ -37,7 +37,15 @@ struct Documented {
 /// and its options, and any `NAME=value` settings; the program may be named
 /// by a path.
 fn invocation(command: &str) -> Option<Vec<String>> {
-    let mut words = command.split_whitespace().peekable();
+    let mut words: Vec<&str> = command.split_whitespace().collect();
+    // `NAME=$(command ...`: a variable keeps the command's output.
+    if let Some((name, rest)) = words.first().and_then(|w| w.split_once("=$("))
+        && !name.is_empty()
+        && !name.starts_with('-')
+    {
+        words[0] = rest;
+    }
+    let mut words = words.into_iter().filter(|w| !w.is_empty()).peekable();
     if words.peek() == Some(&"sudo") {
         words.next();
         while let Some(w) = words.peek() {
@@ -111,7 +119,7 @@ fn documented(page: &Path) -> Vec<Documented> {
             }
             Some(_) => {}
             None => {
-                let spans: Vec<&str> = line.split('`').skip(1).step_by(2).collect();
+                let spans = code_spans(line);
                 for (i, span) in spans.iter().enumerate() {
                     let words = if let Some(rest) = span.strip_prefix("vcon-server ") {
                         Some(rest)
@@ -134,6 +142,45 @@ fn documented(page: &Path) -> Vec<Documented> {
         }
     }
     found
+}
+
+/// The code spans of one line of prose, as CommonMark reads them: a run of
+/// backticks opens a span that the next run of the same length closes, so a
+/// span may hold shorter or longer runs; a run with no such closer is text.
+/// One space is stripped from each end of a span that has one at both.
+fn code_spans(line: &str) -> Vec<&str> {
+    let run = |at: usize| line[at..].bytes().take_while(|&b| b == b'`').count();
+    let mut spans = Vec::new();
+    let mut at = 0;
+    while let Some(found) = line[at..].find('`') {
+        let open = at + found;
+        let width = run(open);
+        let start = open + width;
+        let mut closer = None;
+        let mut look = start;
+        while let Some(next) = line[look..].find('`') {
+            let candidate = look + next;
+            let length = run(candidate);
+            if length == width {
+                closer = Some(candidate);
+                break;
+            }
+            look = candidate + length;
+        }
+        match closer {
+            Some(end) => {
+                let inner = &line[start..end];
+                let inner = match inner.strip_prefix(' ').and_then(|i| i.strip_suffix(' ')) {
+                    Some(trimmed) if !trimmed.trim().is_empty() => trimmed,
+                    _ => inner,
+                };
+                spans.push(inner);
+                at = end + width;
+            }
+            None => at = start,
+        }
+    }
+    spans
 }
 
 /// What `vcon-server <path> --help` shows: its subcommands and its flags.
@@ -313,20 +360,48 @@ fn a_missing_subcommand_flag_or_config_is_found() {
         invocation("ExecStart=/usr/local/bin/vcon-server serve --config c"),
         Some(vec!["serve".into(), "--config".into(), "c".into()])
     );
+    // A command whose output a variable keeps.
+    assert_eq!(
+        invocation("TENANT=$(sudo -u vcon vcon-server tenant list --config c"),
+        Some(vec![
+            "tenant".into(),
+            "list".into(),
+            "--config".into(),
+            "c".into()
+        ])
+    );
     assert_eq!(invocation("cargo install vcon-server --locked"), None);
+    // A span opens and closes on backtick runs of the same length
+    // (CommonMark), so a span may hold backticks of its own.
+    assert_eq!(
+        code_spans("see `one`, ``a span holding `inner` backticks`` and `two`"),
+        ["one", "a span holding `inner` backticks", "two"]
+    );
+    assert_eq!(
+        code_spans("``error: `vcon-server <version>` is old``"),
+        ["error: `vcon-server <version>` is old"]
+    );
+    // A longer run inside does not close a span.
+    assert_eq!(code_spans("`a ``b`` c`"), ["a ``b`` c"]);
+    // A run with no closing run of its length is text, not a span.
+    assert_eq!(code_spans("a `` b `c`"), ["c"]);
     assert_eq!(invocation("cd vcon-server"), None);
 }
 
-/// The release getting started downloads is this build's version, so the
-/// page names a release that exists once this version is tagged.
+/// Each page that downloads a release, and the variable that names its version.
+const PAGES: &[(&str, &str)] = &[("install.md", "VERSION=")];
+
+/// The release each page downloads is this build's version, so a page names
+/// a release that exists once this version is tagged.
 #[test]
-fn the_release_getting_started_downloads_is_this_version() {
-    let page = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../website/content/docs/getting-started.md");
-    let text = std::fs::read_to_string(&page).expect("getting started");
-    let versions: Vec<&str> = text
-        .lines()
-        .filter_map(|l| l.strip_prefix("VERSION="))
-        .collect();
-    assert_eq!(versions, [env!("CARGO_PKG_VERSION")]);
+fn the_release_each_page_downloads_is_this_version() {
+    let docs = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../website/content/docs");
+    for &(page, variable) in PAGES {
+        let text = std::fs::read_to_string(docs.join(page)).expect(page);
+        let versions: Vec<&str> = text
+            .lines()
+            .filter_map(|l| l.strip_prefix(variable))
+            .collect();
+        assert_eq!(versions, [env!("CARGO_PKG_VERSION")], "{page}");
+    }
 }
