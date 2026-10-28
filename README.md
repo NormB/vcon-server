@@ -40,8 +40,8 @@ Enable the repository's git hooks once per clone:
 git config core.hooksPath .githooks
 ```
 
-Before each commit they run `cargo fmt --check`, `cargo clippy -D warnings`
-and `cargo test` on exactly what is staged. They refuse personal data and
+Before each commit they run `scripts/rustfmt.sh --check`, `scripts/check_style.py`,
+`cargo clippy -D warnings` and `cargo test` on exactly what is staged. They refuse personal data and
 AI-tool attribution in staged changes and commit messages. Before each push,
 every outgoing commit must carry a good signature from an allowed signer and
 the pusher's own configured name and email. Test data uses

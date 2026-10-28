@@ -33,10 +33,15 @@ jobs:
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Format
-        # The fuzz package is a workspace of its own, so --all misses it.
+        # rustfmt.toml's options need the nightly rustfmt the script pins;
+        # it checks the fuzz package too, which --all misses.
         run: |
-          cargo fmt --all --check
-          cargo fmt --manifest-path fuzz/Cargo.toml --check
+          scripts/rustfmt.sh install
+          scripts/rustfmt.sh --check
+      - name: Style rules rustfmt and clippy do not check
+        run: |
+          python3 -I scripts/test_check_style.py
+          python3 -I scripts/check_style.py
       - name: Clippy
         run: |
           cargo clippy --workspace --all-targets --locked -- -D warnings

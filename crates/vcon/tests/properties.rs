@@ -7,7 +7,9 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use proptest::prelude::*;
+use proptest::arbitrary::any;
+use proptest::strategy::{Just, Strategy};
+use proptest::{collection, prop_assert, prop_assert_eq, prop_assume, prop_oneof, proptest};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 use vcon::Form;
@@ -58,8 +60,8 @@ fn json_value() -> impl Strategy<Value = Value> {
     ];
     leaf.prop_recursive(4, 48, 6, move |inner| {
         prop_oneof![
-            prop::collection::vec(inner.clone(), 0..4).prop_map(Value::Array),
-            prop::collection::btree_map(name.clone(), inner, 0..6)
+            collection::vec(inner.clone(), 0..4).prop_map(Value::Array),
+            collection::btree_map(name.clone(), inner, 0..6)
                 .prop_map(|m| Value::Object(m.into_iter().collect::<Map<_, _>>())),
         ]
     })
@@ -162,7 +164,7 @@ fn sign(inner: Case, zip: bool, header: u8) -> Case {
 /// An unsigned vCon in zero to two signed layers, or an encrypted vCon
 /// with or without a readable uuid.
 fn vcon_case() -> impl Strategy<Value = Case> {
-    let layers = prop::collection::vec((any::<bool>(), 0..3u8), 0..3);
+    let layers = collection::vec((any::<bool>(), 0..3u8), 0..3);
     let signed = (unsigned_case(), layers).prop_map(|(inner, layers)| {
         layers
             .into_iter()
@@ -182,12 +184,12 @@ fn vcon_case() -> impl Strategy<Value = Case> {
 
 proptest! {
     #[test]
-    fn never_panics_on_arbitrary_bytes(body in prop::collection::vec(any::<u8>(), 0..2048), ct in media_type()) {
+    fn never_panics_on_arbitrary_bytes(body in collection::vec(any::<u8>(), 0..2048), ct in media_type()) {
         let _ = inspect(&body, ct.as_deref(), &Limits::new(LIMIT), &BTreeSet::new());
     }
 
     #[test]
-    fn never_panics_on_arbitrary_gzip(body in prop::collection::vec(any::<u8>(), 0..2048)) {
+    fn never_panics_on_arbitrary_gzip(body in collection::vec(any::<u8>(), 0..2048)) {
         let _ = inspect(&gz(&body), None, &Limits::new(LIMIT), &BTreeSet::new());
     }
 
@@ -198,7 +200,7 @@ proptest! {
     }
 
     #[test]
-    fn anything_inflating_past_the_limit_is_too_large(body in prop::collection::vec(any::<u8>(), (LIMIT as usize + 1)..(LIMIT as usize * 4))) {
+    fn anything_inflating_past_the_limit_is_too_large(body in collection::vec(any::<u8>(), (LIMIT as usize + 1)..(LIMIT as usize * 4))) {
         prop_assert_eq!(
             inspect(&gz(&body), None, &Limits::new(LIMIT), &BTreeSet::new()),
             Err(Rejection::TooLarge)

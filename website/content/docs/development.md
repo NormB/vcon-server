@@ -161,6 +161,25 @@ the dev-dependency `rusqlite_fork` of vcon-server.
   through the pragma helpers in `catalog.rs`, and remove the `rusqlite_fork`
   dev-dependency, the `[patch]` section, both tests and this section.
 
+## Code style
+
+The Rust code follows the
+[Google Rust Style Guide](https://google.github.io/styleguide/rustguide.html),
+the [Rust Style Guide](https://doc.rust-lang.org/nightly/style-guide/) and,
+for the published crates' public API, the
+[Rust API Guidelines](https://rust-lang.github.io/api-guidelines/).
+
+- **Format** with `scripts/rustfmt.sh`, not `cargo fmt`. `rustfmt.toml`
+  sets options only a nightly rustfmt reads, so the script runs the nightly
+  it pins, for formatting only; `scripts/rustfmt.sh install` installs it.
+  Builds, clippy and tests use the stable toolchain.
+- **`scripts/check_style.py`** checks what rustfmt and clippy do not: glob
+  imports (allowed: `use super::*` in an inline module, `use Enum::*` in a
+  function, `pub use sub::*` in a non-leaf module) and a reason above each
+  `#[rustfmt::skip]`.
+- **Clippy and rustc lints** for the rest are set in `[workspace.lints]` in
+  `Cargo.toml`.
+
 ## Gates
 
 Enable the repository's hooks once per clone:
@@ -169,8 +188,8 @@ Enable the repository's hooks once per clone:
 git config core.hooksPath .githooks
 ```
 
-- **pre-commit** runs `cargo fmt --check`, `cargo clippy -D warnings` and the
-  tests on exactly what is staged, then the same for the fuzz package (its
+- **pre-commit** runs `scripts/rustfmt.sh --check`, `scripts/check_style.py`,
+  `cargo clippy -D warnings` and the tests on exactly what is staged, then the same for the fuzz package (its
   format, clippy and its own tests), and refuses personal data and AI-tool
   attribution in staged changes. It also checks that every path
   `.bestpractices.json` links to exists (`scripts/check_repo_links.py`), and

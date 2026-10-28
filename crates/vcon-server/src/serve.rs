@@ -385,19 +385,20 @@ mod tests {
     }
 
     mod sweeps {
+        use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::time::Duration;
 
         use time::macros::datetime;
         use uuid::Uuid;
 
-        use super::super::*;
         use crate::audit::Actor;
         use crate::ids::{KeyId, TenantId};
         use crate::retention::Retention;
+        use crate::serve::{SweepReport, every, sweep};
         use crate::store::Caller;
         use crate::store::testing::vcon;
-        use crate::tenants::fixture;
+        use crate::tenants::{Tenants, fixture};
 
         const CALLER: Caller = Caller { key: KeyId([7; 8]) };
 
