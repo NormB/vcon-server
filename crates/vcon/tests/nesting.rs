@@ -105,7 +105,8 @@ fn read_on_a_small_stack(body: Vec<u8>) {
         .expect("spawn the reader");
     assert_eq!(
         reader.join().expect("the reader returns"),
-        Err(Rejection::TooDeep)
+        Err(Rejection::TooDeep),
+        "both bodies are past a nesting limit"
     );
 }
 

@@ -124,7 +124,11 @@ mod tests {
 
     #[test]
     fn accepts_whitespace_around_the_object() {
-        assert_eq!(parse_object(b" \n\t{}\r\n "), Ok(Map::new()));
+        assert_eq!(
+            parse_object(b" \n\t{}\r\n "),
+            Ok(Map::new()),
+            "JSON whitespace around the object is not part of it"
+        );
     }
 
     #[test]

@@ -8,7 +8,8 @@ fn the_shared_names_are_at_the_root_and_reading_is_under_read() {
         vcon::parse_uuid("01a07da8-c2bb-83e5-b9a2-279e0d16bc46"),
         Some(uuid::Uuid::from_u128(
             0x01a07da8_c2bb_83e5_b9a2_279e0d16bc46
-        ))
+        )),
+        "the RFC 9562 text form reads as its 128 bits"
     );
     assert_eq!(
         vcon::parse_uuid("{01a07da8-c2bb-83e5-b9a2-279e0d16bc46}"),

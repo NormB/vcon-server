@@ -159,7 +159,8 @@ mod tests {
 
     use base64::Engine;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    use flate2::{Compression, write::GzEncoder};
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
     use serde_json::{Value, json};
 
     use super::*;
@@ -246,7 +247,11 @@ mod tests {
             Rejection::UnsupportedCritical(vec!["x".to_owned()]),
         ];
         for rejection in every {
-            assert_eq!(run(&refused_as(&rejection)), Err(rejection.clone()));
+            assert_eq!(
+                run(&refused_as(&rejection)),
+                Err(rejection.clone()),
+                "refused_as gives a body that only this rejection fits"
+            );
         }
     }
 }
