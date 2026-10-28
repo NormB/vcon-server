@@ -5,6 +5,17 @@
 # committer match the pusher's configured identity.
 set -euo pipefail
 src="$(git rev-parse --show-toplevel)"
+# A git hook runs with GIT_DIR, GIT_INDEX_FILE and other GIT_* variables
+# set (in a linked worktree, to absolute paths). Left set, every git command
+# below acts on the caller's repository instead of the throwaway one: run
+# by a worktree's commit hook on 2026-10-28, scan-commit-messages' test
+# wrote its test identity and commit.gpgsign = false into the real
+# repository's config, set core.bare, and committed its samples there.
+# Every GIT_* variable goes, and each throwaway repository is checked to
+# be inside this test's own directory before it is used.
+while IFS='=' read -r name _; do
+  case "$name" in GIT_*) unset "$name" ;; esac
+done < <(env)
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
@@ -16,8 +27,14 @@ git init -q --bare "$work/remote.git"
 repo="$work/repo"
 mkdir -p "$repo/hooks"
 cp "$src/.githooks/pre-push" "$repo/hooks/"
+mkdir -p "$repo/scripts"
+cp "$src/scripts/scan-commit-messages.sh" "$src/scripts/scan_forbidden.py" "$repo/scripts/"
 cd "$repo"
 git init -q -b main
+case "$(git rev-parse --absolute-git-dir)" in
+  "$work"/*) ;;
+  *) echo "test-pre-push: refusing: the throwaway repository is not inside $work" >&2; exit 1 ;;
+esac
 git config user.name "Test User"
 git config user.email "test@example.com"
 git config gpg.format ssh
@@ -69,6 +86,19 @@ git reset -q --hard origin/main
 commit --no-gpg-sign
 commit -S
 expect refuse "unsigned commit under a signed one" origin main
+git reset -q --hard origin/main
+
+# A message the commit-msg hook would refuse, made where that hook did not
+# run: on a line that starts with #, which git commit -m keeps.
+c=$((c + 1)); echo "$c" > f; git add f
+ai_word="cl""aude"; git commit -q -S -m "Change $c
+
+# Co-Authored-By: ${ai_word^} <noreply@example.com>"
+expect refuse "AI credit on a # line of a message" origin main
+git reset -q --hard origin/main
+
+commit -S -m "Finish P""0.3"
+expect refuse "plan task id in a message" origin main
 git reset -q --hard origin/main
 
 git branch copy main

@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Refuses a push unless every outgoing commit has a good signature from an
-# allowed signer (git verify-commit) and its author and committer both match
-# the pusher's configured user.name and user.email.
+# allowed signer (git verify-commit), its author and committer both match
+# the pusher's configured user.name and user.email, and its whole message
+# passes scripts/scan-commit-messages.sh: a commit made with --no-verify or
+# by another tool never ran the commit-msg hook.
 set -euo pipefail
 remote="$1"
+root="$(git rev-parse --show-toplevel)"
 zero="0000000000000000000000000000000000000000"
 name="$(git config user.name)"
 email="$(git config user.email)"
@@ -35,6 +38,10 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     fi
     if [ "$cn" != "$name" ] || [ "$ce" != "$email" ]; then
       echo "pre-push: refused: $sha committer is not the configured identity" >&2
+      bad=1
+    fi
+    if ! "$root/scripts/scan-commit-messages.sh" "$sha"; then
+      echo "pre-push: refused: $sha has a message the commit rules refuse" >&2
       bad=1
     fi
   done <<< "$commits"
