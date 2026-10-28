@@ -38,11 +38,19 @@ test("an operator key reads the admin log", async ({ page, tenant }) => {
   await signIn(page, operatorKey);
   await openView(page, "audit");
   await expect(page.locator("#audit-title")).toHaveText("Admin log");
-  for (;;) {
-    const more = page.locator("#audit-more");
-    if (await more.isHidden()) break;
+  const rows = page.locator("#audit-log tbody tr");
+  const more = page.locator("#audit-more");
+  await expect(rows.first()).toBeVisible();
+  // One click per page, each only once the page before it has arrived: the
+  // button stays visible while a page is in flight, and a second click then
+  // would load the same page again.
+  while (await more.isVisible()) {
+    const before = await rows.count();
     await more.click();
+    await expect.poll(() => rows.count(), { message: "the next page arrives" }).toBeGreaterThan(before);
   }
+  const seqs = (await rows.locator("td:first-child").allTextContents()).map(Number);
+  expect(new Set(seqs).size, "each record is shown once").toBe(seqs.length);
   await expect(page.locator(`#audit-log tbody tr:has-text("${tenant.id}")`).first()).toContainText("tenant_create");
 });
 

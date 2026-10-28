@@ -3,7 +3,7 @@
 # reuse target directories:
 #   1. after a change to vcon's public API with no version bump, a second
 #      run in the same target directory must see the new API (cargo package's
-#      own verify reused the vcon 0.1.0 built by the first run);
+#      own verify reused the vcon built by the first run, of the same version);
 #   2. two trees checked at the same moment, sharing one target directory,
 #      each using a symbol only its own vcon has, must both pass.
 set -euo pipefail
@@ -26,7 +26,7 @@ fail=0
 copy "$work/a"
 check "$work/a" || { echo "FAIL: the unchanged tree"; tail -n 5 "$work/a.log"; exit 1; }
 add_symbol "$work/a" ADDED_LATER
-if check "$work/a"; then echo "ok: a changed vcon 0.1.0 is checked as it is now"
+if check "$work/a"; then echo "ok: a changed vcon of the same version is checked as it is now"
 else echo "FAIL: the second run did not see vcon's new API"; tail -n 5 "$work/a.log"; fail=1; fi
 
 copy "$work/b"; add_symbol "$work/b" ONLY_B
