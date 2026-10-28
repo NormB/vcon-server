@@ -129,7 +129,7 @@ jobs:
             each_key_has_its_own_locked_page_left_out_of_core_dumps   # tests/key_memory.rs
             a_key_is_refused_when_its_memory_cannot_be_locked         # tests/key_memory_limit.rs
             every_page_now_and_later_is_locked                        # tests/lock_all_memory.rs
-            locking_all_memory_fails_under_a_zero_lock_limit          # tests/lock_all_memory_limit.rs
+            locking_all_memory_fails_under_a_low_lock_limit_and_says_why # tests/lock_all_memory_limit.rs
             memory_that_cannot_be_locked_stops_the_start              # tests/serve.rs
             serve_stores_reads_keeps_its_memory_locked_and_stops_on_sigterm  # tests/serve.rs
           )
