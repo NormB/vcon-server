@@ -307,7 +307,7 @@ fn status_kb(pid: u32, field: &str) -> u64 {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn serve_stores_reads_keeps_its_memory_locked_and_stops_on_sigterm() {
+async fn mlock_serve_stores_reads_keeps_its_memory_locked_and_stops_on_sigterm() {
     let s = setup();
     let mut started = start(serve(&s));
     let pid = started.running.0.id();
@@ -400,7 +400,7 @@ fn a_configuration_error_stops_the_start_and_names_the_key() {
 }
 
 #[test]
-fn memory_that_cannot_be_locked_stops_the_start() {
+fn mlock_memory_that_cannot_be_locked_stops_the_start() {
     let s = setup();
     let mut command = serve(&s);
     // SAFETY: setrlimit is async-signal-safe and touches only the child.
