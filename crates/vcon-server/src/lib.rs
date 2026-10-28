@@ -4,6 +4,7 @@
 pub mod access;
 pub mod api;
 pub mod audit;
+pub(crate) mod backend;
 pub mod catalog;
 pub mod clock;
 pub mod commands;

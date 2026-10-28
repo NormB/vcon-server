@@ -33,7 +33,7 @@ PRIVATE_DOC_IDS = [
     # spelled out.
     (
         "design rule id",
-        re.compile(r"(?<![A-Za-z0-9])(?:FMT|ENV|STO|ACC|AUD|API|OPS|TEN)[-_][0-9]+(?![0-9])", re.I),
+        re.compile(r"(?<![A-Za-z0-9])(?:FMT|ENV|STO|ACC|AUD|API|OPS|TEN|BKD)[-_][0-9]+(?![0-9])", re.I),
     ),
     ("design decision id", re.compile(r"\bCD[0-9]+\b")),
     ("scope decision id", re.compile(r"\bD[1-9][0-9]*\b")),

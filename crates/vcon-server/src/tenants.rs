@@ -7,15 +7,17 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use time::OffsetDateTime;
 
 use crate::audit::{self, Action, Actor, Entry};
-use crate::catalog::{self, CatalogError};
+#[cfg(test)]
+use crate::backend::local::LocalConn;
+use crate::backend::local::{LocalRegistry, LocalTenantSpace};
+use crate::backend::{CommitError, Registry, RegistryTx, TenantRow, TenantSpace};
 use crate::clock::{Clock, from_nanos, nanos};
 use crate::envelope::{self, Context, Key, WrapLimit};
 use crate::fs::Fs;
-use crate::ids::{KeyId, TenantId};
+use crate::ids::TenantId;
 use crate::retention::Retention;
 use crate::store::{OpenError, Store};
 
@@ -27,41 +29,10 @@ mod rekey;
 pub use backup::{Backup, BackupError};
 pub use examine::{KeyOrder, RegistryExamination, RotationBacklog, TenantExamination};
 pub use keys::{KeyInfo, NewKey};
+pub(crate) use rekey::MasterStep;
 pub use rekey::rekey_master;
 #[cfg(test)]
 pub(crate) use tests::{Fixture, fixture};
-
-/// The tables of server.sqlite, besides the admin audit log. A key column
-/// says NOT NULL because SQLite lets a PRIMARY KEY other than an INTEGER
-/// one hold NULL. Times are nanoseconds since the epoch. A retention period
-/// is written as `Retention` writes it; NULL means the server default.
-const TABLES: &str = "
-CREATE TABLE tenant (
-    id BLOB PRIMARY KEY NOT NULL,
-    name TEXT NOT NULL UNIQUE,
-    retention TEXT,
-    created_at INTEGER NOT NULL,
-    tenant_key_id BLOB NOT NULL,
-    wrapped_tenant_key BLOB NOT NULL,
-    pending_wrapped_tenant_key BLOB,
-    key_since INTEGER NOT NULL
-);
-CREATE TABLE master_key_use (
-    master_key_id BLOB PRIMARY KEY NOT NULL,
-    wraps INTEGER NOT NULL,
-    since INTEGER NOT NULL
-);
-CREATE TABLE api_key (
-    id BLOB PRIMARY KEY NOT NULL,
-    tenant BLOB,
-    token_hash BLOB NOT NULL,
-    scopes TEXT NOT NULL,
-    label TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    revoked_at INTEGER
-);
-CREATE INDEX api_key_tenant ON api_key (tenant);
-";
 
 /// A tenant's retention column as read: None is the server default. A
 /// period that does not read back is damage, not the server default.
@@ -186,10 +157,10 @@ enum Slot {
 
 /// The registry of tenants.
 pub struct Tenants {
-    /// `<data>/tenants`, which holds a directory per tenant.
-    tenants: PathBuf,
+    /// Where each tenant's catalog and objects are kept.
+    space: Box<dyn TenantSpace>,
     master: Key,
-    conn: Mutex<Connection>,
+    registry: Box<dyn Registry>,
     /// Each tenant's Store, once a request has opened it.
     stores: Mutex<HashMap<TenantId, Slot>>,
     /// Opened beside a server: its Stores are opened without recovery.
@@ -236,27 +207,39 @@ impl Tenants {
         beside: bool,
     ) -> Result<Tenants, TenantError> {
         let catalog_key = envelope::catalog_key(&master).map_err(|_| TenantError::Io)?;
-        let schema = format!("{TABLES}{}", audit::SCHEMA);
-        let conn = catalog::open(&dir.join("server.sqlite"), &catalog_key, &schema).map_err(
-            |e| match e {
-                CatalogError::WrongKey => TenantError::WrongKey,
-                _ => TenantError::Io,
-            },
-        )?;
-        let tenants = dir.join("tenants");
-        fs.create_dir_all(&tenants).map_err(io)?;
-        fs.sync_dir(dir).map_err(io)?;
-        Ok(Tenants {
-            tenants,
+        let registry = LocalRegistry::open(dir, catalog_key)?;
+        let space = LocalTenantSpace::open(dir, fs.clone())?;
+        Ok(Tenants::with_backends(
+            Box::new(registry),
+            Box::new(space),
             master,
-            conn: Mutex::new(conn),
+            fs,
+            clock,
+            beside,
+        ))
+    }
+
+    /// The registry over the given backends, opened as `open_beside` opens
+    /// one when `beside`, else without its start-up recovery yet.
+    pub(crate) fn with_backends(
+        registry: Box<dyn Registry>,
+        space: Box<dyn TenantSpace>,
+        master: Key,
+        fs: Arc<dyn Fs>,
+        clock: Arc<dyn Clock>,
+        beside: bool,
+    ) -> Tenants {
+        Tenants {
+            space,
+            master,
+            registry,
             stores: Mutex::new(HashMap::new()),
             beside,
             fs,
             clock,
             #[cfg(test)]
             hooks: tests::Hooks::default(),
-        })
+        }
     }
 
     /// Removes each tenant directory with no row: a create cut off before
@@ -264,20 +247,9 @@ impl Tenants {
     /// alone. A removal a crash undoes is made again at the next start, so
     /// none is synced.
     fn recover(&self) -> Result<(), TenantError> {
-        for name in self.fs.list(&self.tenants).map_err(io)? {
-            let Some(id) = name.to_str().and_then(TenantId::parse) else {
-                continue;
-            };
-            let has_row = self
-                .conn()
-                .query_row("SELECT 1 FROM tenant WHERE id = ?1", [id.0], |_| Ok(()))
-                .optional()
-                .map_err(io)?
-                .is_some();
-            if !has_row {
-                self.fs
-                    .remove_dir_all(&self.tenants.join(&name))
-                    .map_err(io)?;
+        for id in self.space.present()? {
+            if self.registry.snapshot()?.tenant(id)?.is_none() {
+                self.space.remove(id)?;
             }
         }
         Ok(())
@@ -304,26 +276,25 @@ impl Tenants {
         };
         let master_id = self.master.id();
         {
-            let mut conn = self.conn();
-            let tx = immediate(&mut conn)?;
+            let mut tx = self.registry.immediate()?;
             let refused = if !good_name(name) {
                 Some((422, TenantError::BadName))
-            } else if name_taken(&tx, name)? {
+            } else if tx.name_taken(name)? {
                 Some((409, TenantError::NameTaken))
-            } else if envelope::wrap_limit(wraps(&tx, master_id)?) == WrapLimit::Refuse {
+            } else if envelope::wrap_limit(tx.master_wraps(master_id)?) == WrapLimit::Refuse {
                 Some((503, TenantError::LimitReached))
             } else {
                 None
             };
             if let Some((status, error)) = refused {
-                self.record(&tx, &entry(status, None))?;
-                tx.commit().map_err(io)?;
+                self.record(&mut tx, &entry(status, None))?;
+                commit(tx)?;
                 return Err(error);
             }
             // The wrap is counted before it is made, so every wrap is
             // counted once whether this create wins or loses.
-            add_wrap(&tx, master_id, nanos(self.clock.now()))?;
-            tx.commit().map_err(io)?;
+            tx.add_master_wrap(master_id, nanos(self.clock.now()))?;
+            commit(tx)?;
         }
 
         let tenant_key = Key::generate().map_err(|_| TenantError::Io)?;
@@ -332,14 +303,11 @@ impl Tenants {
         // The directory and its catalog are made before the row, and made
         // durable: the directory's entry in `tenants/` by syncing it. Any
         // step that fails once the directory may exist removes it.
-        let dir = self.tenants.join(id.to_string());
+        let unknown = std::cell::Cell::new(false);
         let made = (|| {
-            self.fs.create_dir_all(&dir).map_err(io)?;
-            drop(
-                Store::open(&dir, id, tenant_key, self.fs.clone(), self.clock.clone())
-                    .map_err(|_| TenantError::Io)?,
-            );
-            self.fs.sync_dir(&self.tenants).map_err(io)?;
+            self.space
+                .make(id, tenant_key, self.clock.clone())
+                .map_err(|_| TenantError::Io)?;
             #[cfg(test)]
             {
                 let hook = self.hooks.between.lock().expect("hook").take();
@@ -348,61 +316,53 @@ impl Tenants {
                 }
             }
 
-            let mut conn = self.conn();
-            let tx = immediate(&mut conn)?;
-            if name_taken(&tx, name)? {
+            let mut tx = self.registry.immediate()?;
+            if tx.name_taken(name)? {
                 // A refusal's record commits.
-                self.record(&tx, &entry(409, None))?;
-                tx.commit().map_err(io)?;
+                self.record(&mut tx, &entry(409, None))?;
+                commit(tx)?;
                 return Err(TenantError::NameTaken);
             }
-            tx.execute(
-                "INSERT INTO tenant (id, name, retention, created_at, tenant_key_id,
-                     wrapped_tenant_key, key_since)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?4)",
-                params![
-                    id.0,
-                    name,
-                    retention.map(|r| r.to_string()),
-                    nanos(self.clock.now()),
-                    key_id.bytes(),
-                    wrapped
-                ],
-            )
-            .map_err(io)?;
-            self.record(&tx, &entry(201, Some(id)))?;
-            tx.commit().map_err(io)?;
+            let now = nanos(self.clock.now());
+            tx.insert_tenant(&TenantRow {
+                id,
+                name: name.to_owned(),
+                retention: retention.map(|r| r.to_string()),
+                created_at: now,
+                tenant_key_id: key_id,
+                wrapped: wrapped.clone(),
+                pending: None,
+                key_since: now,
+            })?;
+            self.record(&mut tx, &entry(201, Some(id)))?;
+            tx.commit().map_err(|e| {
+                unknown.set(e == CommitError::Unknown);
+                TenantError::Io
+            })?;
             Ok(id)
         })();
-        if made.is_err() {
-            let _ = self.fs.remove_dir_all(&dir);
+        // After a commit whose outcome is unknown the directory stays: the
+        // row may be kept, and a row without its directory is a tenant
+        // that cannot open, while a directory without a row is removed at
+        // the next start.
+        if made.is_err() && !unknown.get() {
+            let _ = self.space.remove(id);
         }
         made
     }
 
     /// Every tenant, by name.
     pub fn list(&self, who: Actor) -> Result<Vec<TenantInfo>, TenantError> {
-        let mut conn = self.conn();
-        let tx = immediate(&mut conn)?;
+        let mut tx = self.registry.immediate()?;
         let tenants = tx
-            .prepare("SELECT id, name, retention, created_at FROM tenant ORDER BY name")
-            .map_err(io)?
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, [u8; 16]>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, Option<String>>(2)?,
-                    r.get::<_, i64>(3)?,
-                ))
-            })
-            .map_err(io)?
+            .tenants()?
+            .into_iter()
             .map(|row| {
-                let (id, name, retention, created_at) = row.map_err(io)?;
                 Ok(TenantInfo {
-                    id: TenantId(id),
-                    name,
-                    retention: stored_retention(retention)?,
-                    created_at: from_nanos(created_at).ok_or(TenantError::Io)?,
+                    id: row.id,
+                    name: row.name,
+                    retention: stored_retention(row.retention)?,
+                    created_at: from_nanos(row.created_at).ok_or(TenantError::Io)?,
                 })
             })
             .collect::<Result<Vec<_>, TenantError>>()?;
@@ -413,8 +373,8 @@ impl Tenants {
             version: None,
             status: 200,
         };
-        self.record(&tx, &entry)?;
-        tx.commit().map_err(io)?;
+        self.record(&mut tx, &entry)?;
+        commit(tx)?;
         Ok(tenants)
     }
 
@@ -435,25 +395,18 @@ impl Tenants {
         };
         let closing = matches!(self.stores().get(&id), Some(Slot::Closing));
         {
-            let mut conn = self.conn();
-            let tx = immediate(&mut conn)?;
+            let mut tx = self.registry.immediate()?;
+            let text = retention.map(|r| r.to_string());
             let refused = if closing {
                 Some((503, TenantError::Closing))
-            } else if tx
-                .execute(
-                    "UPDATE tenant SET retention = ?2 WHERE id = ?1",
-                    params![id.0, retention.map(|r| r.to_string())],
-                )
-                .map_err(io)?
-                == 0
-            {
+            } else if !tx.set_retention(id, text.as_deref())? {
                 Some((404, TenantError::NotFound))
             } else {
                 None
             };
             let status = refused.map_or(200, |(status, _)| status);
-            self.record(&tx, &entry(Action::TenantRetention, status))?;
-            tx.commit().map_err(io)?;
+            self.record(&mut tx, &entry(Action::TenantRetention, status))?;
+            commit(tx)?;
             if let Some((_, error)) = refused {
                 return Err(error);
             }
@@ -527,23 +480,16 @@ impl Tenants {
             return Err(error);
         }
         {
-            let mut conn = self.conn();
-            let tx = immediate(&mut conn)?;
-            tx.execute("DELETE FROM tenant WHERE id = ?1", [id.0])
-                .map_err(io)?;
-            tx.execute(
-                "UPDATE api_key SET revoked_at = ?2 WHERE tenant = ?1 AND revoked_at IS NULL",
-                params![id.0, nanos(self.clock.now())],
-            )
-            .map_err(io)?;
-            self.record(&tx, &entry(204))?;
-            tx.commit().map_err(io)?;
+            let mut tx = self.registry.immediate()?;
+            tx.delete_tenant(id, nanos(self.clock.now()))?;
+            self.record(&mut tx, &entry(204))?;
+            commit(tx)?;
         }
         // The removal stands with its commit. The Store is closed before
         // its directory goes; a directory left here, by a crash or a
         // failed removal, goes at the next start.
         drop(store);
-        let _ = self.fs.remove_dir_all(&self.tenants.join(id.to_string()));
+        let _ = self.space.remove(id);
         self.stores().remove(&id);
         Ok(())
     }
@@ -572,16 +518,12 @@ impl Tenants {
     /// make sure no other Store of the tenant is open: `store` holds the
     /// lock, and `remove` has drained the tenant.
     fn open_store(&self, id: TenantId) -> Result<Store, OpenFailure> {
-        let wrapped: Vec<u8> = self
-            .conn()
-            .query_row(
-                "SELECT wrapped_tenant_key FROM tenant WHERE id = ?1",
-                [id.0],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(io)?
-            .ok_or(TenantError::NotFound)?;
+        let wrapped = self
+            .registry
+            .snapshot()?
+            .tenant(id)?
+            .ok_or(TenantError::NotFound)?
+            .wrapped;
         let tenant_key = envelope::unwrap(&self.master, &Context::Tenant { tenant: id }, &wrapped)
             .map_err(io)?;
         #[cfg(test)]
@@ -591,19 +533,9 @@ impl Tenants {
                 hook();
             }
         }
-        let open = if self.beside {
-            Store::open_beside
-        } else {
-            Store::open
-        };
-        open(
-            &self.tenants.join(id.to_string()),
-            id,
-            tenant_key,
-            self.fs.clone(),
-            self.clock.clone(),
-        )
-        .map_err(OpenFailure::from)
+        self.space
+            .open(id, tenant_key, !self.beside, self.clock.clone())
+            .map_err(OpenFailure::from)
     }
 
     /// Marks the tenant closing, so no new handle is handed out, and waits
@@ -655,20 +587,16 @@ impl Tenants {
 
     /// server.sqlite's connection, for tests that damage it.
     #[cfg(test)]
-    pub(crate) fn conn_for_test(&self) -> MutexGuard<'_, Connection> {
+    pub(crate) fn conn_for_test(&self) -> MutexGuard<'_, LocalConn> {
         self.conn()
     }
 
     /// The id of the tenant's current key, for tests.
     #[cfg(test)]
     pub(crate) fn tenant_key_id_for_test(&self, id: TenantId) -> Vec<u8> {
-        self.conn()
-            .query_row(
-                "SELECT tenant_key_id FROM tenant WHERE id = ?1",
-                [id.0],
-                |r| r.get(0),
-            )
-            .expect("the tenant's row")
+        let row = self.registry.snapshot().expect("reads").tenant(id);
+        let row = row.expect("reads").expect("the tenant's row");
+        row.tenant_key_id.bytes().to_vec()
     }
 
     /// The admin log as `export` writes it, for tests.
@@ -689,25 +617,20 @@ impl Tenants {
     /// read for the server's own use, such as a delete's purge, so nothing
     /// is recorded.
     pub fn retention(&self, id: TenantId) -> Result<Option<Retention>, TenantError> {
-        let row: Option<Option<String>> = self
-            .conn()
-            .query_row("SELECT retention FROM tenant WHERE id = ?1", [id.0], |r| {
-                r.get(0)
-            })
-            .optional()
-            .map_err(io)?;
-        stored_retention(row.ok_or(TenantError::NotFound)?)
+        let row = self.registry.snapshot()?.tenant(id)?;
+        stored_retention(row.ok_or(TenantError::NotFound)?.retention)
     }
 
     /// Every tenant's id, read for the server's own use, such as the purge
     /// sweep, so nothing is recorded.
     pub fn ids(&self) -> Result<Vec<TenantId>, TenantError> {
-        let conn = self.conn();
-        let mut rows = conn.prepare("SELECT id FROM tenant").map_err(io)?;
-        rows.query_map([], |r| r.get::<_, [u8; 16]>(0))
-            .map_err(io)?
-            .map(|row| row.map(TenantId).map_err(io))
-            .collect()
+        Ok(self
+            .registry
+            .snapshot()?
+            .tenants()?
+            .into_iter()
+            .map(|row| row.id)
+            .collect())
     }
 
     /// Writes the admin log after `since` as JSON lines, oldest first.
@@ -717,7 +640,7 @@ impl Tenants {
         since: Option<i64>,
         out: &mut dyn std::io::Write,
     ) -> Result<(), audit::AuditError> {
-        audit::export(&self.conn(), since, out)
+        self.registry.export(since.unwrap_or(0), out)
     }
 
     /// A page of the admin log as JSON lines, the lines `export_admin`
@@ -728,12 +651,11 @@ impl Tenants {
         who: Actor,
         query: &audit::AuditQuery,
     ) -> Result<Vec<u8>, TenantError> {
-        let mut conn = self.conn();
-        let tx = immediate(&mut conn)?;
+        let mut tx = self.registry.immediate()?;
         let mut out = Vec::new();
-        let read = audit::page(&tx, query, &mut out);
+        let read = tx.audit_lines(query.after, Some(query.limit), &mut out);
         self.record(
-            &tx,
+            &mut tx,
             &Entry {
                 actor: who,
                 action: Action::AuditRead,
@@ -742,41 +664,39 @@ impl Tenants {
                 status: if read.is_ok() { 200 } else { 500 },
             },
         )?;
-        tx.commit().map_err(io)?;
+        commit(tx)?;
         read.map(|()| out).map_err(io)
     }
 
     /// Whether server.sqlite answers a query, for the health route.
     pub fn check(&self) -> Result<(), TenantError> {
-        self.conn()
-            .query_row("SELECT count(*) FROM tenant", [], |_| Ok(()))
-            .map_err(io)
+        self.registry.snapshot()?.tenants().map(|_| ())
     }
 
     /// Records an event in the admin log, in a transaction of its own.
     pub(crate) fn record_alone(&self, entry: &Entry) -> Result<(), TenantError> {
-        let mut conn = self.conn();
-        let tx = immediate(&mut conn)?;
-        self.record(&tx, entry)?;
-        tx.commit().map_err(io)
+        let mut tx = self.registry.immediate()?;
+        self.record(&mut tx, entry)?;
+        commit(tx)
     }
 
     /// Counts an event in the admin log, in a transaction of its own.
     pub(crate) fn count_admin(&self, entry: &Entry) -> Result<(), TenantError> {
-        let mut conn = self.conn();
-        let tx = immediate(&mut conn)?;
-        audit::count(&tx, entry, self.clock.now()).map_err(|_| TenantError::AuditFailed)?;
-        tx.commit().map_err(io)
+        let mut tx = self.registry.immediate()?;
+        tx.count(entry, self.clock.now())
+            .map_err(|_| TenantError::AuditFailed)?;
+        commit(tx)
     }
 
-    fn record(&self, tx: &Transaction, entry: &Entry) -> Result<(), TenantError> {
-        audit::record(tx, entry, self.clock.now()).map_err(|_| TenantError::AuditFailed)
+    fn record(&self, tx: &mut RTx, entry: &Entry) -> Result<(), TenantError> {
+        tx.record(entry, self.clock.now())
+            .map_err(|_| TenantError::AuditFailed)
     }
 
-    fn conn(&self) -> MutexGuard<'_, Connection> {
-        self.conn
-            .lock()
-            .expect("no thread panicked holding server.sqlite")
+    /// The local registry's connection, for tests.
+    #[cfg(test)]
+    fn conn(&self) -> MutexGuard<'_, LocalConn> {
+        self.registry.local_conn()
     }
 }
 
@@ -789,42 +709,14 @@ fn good_name(name: &str) -> bool {
         && name.trim() == name
 }
 
-fn name_taken(tx: &Transaction, name: &str) -> Result<bool, TenantError> {
-    Ok(tx
-        .query_row("SELECT 1 FROM tenant WHERE name = ?1", [name], |_| Ok(()))
-        .optional()
-        .map_err(io)?
-        .is_some())
+/// A registry transaction.
+pub(crate) type RTx<'a> = Box<dyn RegistryTx + 'a>;
+
+pub(crate) fn commit(tx: RTx) -> Result<(), TenantError> {
+    tx.commit().map_err(io)
 }
 
-fn wraps(tx: &Transaction, key: KeyId) -> Result<u64, TenantError> {
-    let wraps: Option<i64> = tx
-        .query_row(
-            "SELECT wraps FROM master_key_use WHERE master_key_id = ?1",
-            [key.bytes()],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(io)?;
-    u64::try_from(wraps.unwrap_or(0)).map_err(io)
-}
-
-fn add_wrap(tx: &Transaction, key: KeyId, now: i64) -> Result<(), TenantError> {
-    tx.execute(
-        "INSERT INTO master_key_use (master_key_id, wraps, since) VALUES (?1, 1, ?2)
-         ON CONFLICT (master_key_id) DO UPDATE SET wraps = wraps + 1",
-        params![key.bytes(), now],
-    )
-    .map_err(io)?;
-    Ok(())
-}
-
-fn immediate(conn: &mut Connection) -> Result<Transaction<'_>, TenantError> {
-    conn.transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(io)
-}
-
-fn io<E>(_: E) -> TenantError {
+pub(crate) fn io<E>(_: E) -> TenantError {
     TenantError::Io
 }
 
@@ -832,11 +724,14 @@ fn io<E>(_: E) -> TenantError {
 mod tests {
     use std::ffi::OsString;
 
+    use rusqlite::{Connection, OptionalExtension, params};
+
     use serde_json::Value;
     use time::macros::datetime;
 
     use super::*;
     use crate::audit::testing::exported;
+    use crate::catalog;
     use crate::catalog::testing::columns_taking_null;
     use crate::clock::ManualClock;
     use crate::fs::{CrashFs, Op};
@@ -1439,6 +1334,51 @@ mod tests {
             Err(TenantError::Io)
         );
         assert_eq!(f.count("SELECT count(*) FROM tenant"), 0);
+        assert_eq!(f.dirs(), Vec::<OsString>::new(), "its directory is removed");
+    }
+
+    #[test]
+    fn a_create_whose_commit_outcome_is_unknown_keeps_its_directory() {
+        let f = fixture();
+        // The wrap count commits first; the second commit, which adds the
+        // row, is kept and then reported as failed, as a lost connection
+        // reports a commit the database made.
+        f.tenants.registry.fail_commit(2, CommitError::Unknown);
+        assert_eq!(
+            f.tenants.create(Actor::Cli, "acme", None),
+            Err(TenantError::Io),
+            "a_create_whose_commit_outcome_is_unknown_keeps_its_directory: f.tenants.create(Actor::Cli, \"acme\", None)"
+        );
+        assert_eq!(
+            f.count("SELECT count(*) FROM tenant"),
+            1,
+            "a_create_whose_commit_outcome_is_unknown_keeps_its_directory: f.count(\"SELECT count(*) FROM tenant\")"
+        );
+        assert_eq!(
+            f.dirs().len(),
+            1,
+            "the directory made for the kept row stays"
+        );
+        let id = f.tenants.ids().expect("ids")[0];
+        let store = f.tenants.store(id).expect("the kept tenant opens");
+        let (found, body) = vcon(UUID, "kept");
+        store.create(&caller(), &found, &body).expect("stores");
+    }
+
+    #[test]
+    fn a_create_whose_commit_rolls_back_leaves_nothing() {
+        let f = fixture();
+        f.tenants.registry.fail_commit(2, CommitError::RolledBack);
+        assert_eq!(
+            f.tenants.create(Actor::Cli, "acme", None),
+            Err(TenantError::Io),
+            "a_create_whose_commit_rolls_back_leaves_nothing: f.tenants.create(Actor::Cli, \"acme\", None)"
+        );
+        assert_eq!(
+            f.count("SELECT count(*) FROM tenant"),
+            0,
+            "a_create_whose_commit_rolls_back_leaves_nothing: f.count(\"SELECT count(*) FROM tenant\")"
+        );
         assert_eq!(f.dirs(), Vec::<OsString>::new(), "its directory is removed");
     }
 

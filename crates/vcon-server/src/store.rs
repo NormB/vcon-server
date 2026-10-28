@@ -1,15 +1,22 @@
-//! One tenant's vCons: a sealed object file per kept version and a catalog
-//! row for it. The catalog is the truth: a version exists once its row is
-//! committed, and an object file with no row is garbage.
+//! One tenant's vCons: a sealed object per kept version and a catalog row
+//! for it. The catalog is the truth: a version exists once its row is
+//! committed, and an object with no row is garbage. Every rule is here;
+//! the catalog and the objects are reached through the backend traits.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::{Mutex, MutexGuard};
 
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+#[cfg(test)]
+use crate::backend::local::LocalConn;
+
 use uuid::Uuid;
 use vcon::read::Inspection;
 
 use crate::audit::{self, Action, Actor, Entry};
+use crate::backend::local::{LocalCatalog, LocalObjects};
+use crate::backend::{Catalog, CatalogTx, CommitError, NewVersion, ObjectError, Objects};
 use crate::catalog;
 use crate::clock::{Clock, nanos};
 use crate::envelope::{self, Context, Key, WrapLimit};
@@ -29,40 +36,6 @@ pub use examine::Examination;
 pub use legal::{Legal, VersionInfo};
 pub use list::{Cursor, ListQuery, Listed, Listing};
 pub use purge::{Kept, PurgeReport, due};
-
-/// The tables of a tenant's catalog, besides its audit log. A key column
-/// says NOT NULL because SQLite lets a PRIMARY KEY other than an INTEGER
-/// one hold NULL.
-const TABLES: &str = "
-CREATE TABLE vcon (
-    uuid BLOB PRIMARY KEY NOT NULL,
-    current BLOB,
-    deleted_at INTEGER,
-    hold INTEGER NOT NULL DEFAULT 0,
-    stored_at INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX vcon_listed ON vcon (stored_at, uuid);
-CREATE TABLE version (
-    version BLOB PRIMARY KEY NOT NULL,
-    uuid BLOB NOT NULL,
-    form TEXT NOT NULL,
-    gzip INTEGER NOT NULL,
-    size INTEGER NOT NULL,
-    stored_at INTEGER NOT NULL,
-    hidden_at INTEGER,
-    tenant_key_id BLOB NOT NULL,
-    wrapped_key BLOB NOT NULL
-);
-CREATE INDEX version_uuid ON version (uuid);
-CREATE TABLE tombstone (
-    uuid BLOB PRIMARY KEY NOT NULL,
-    purged_at INTEGER NOT NULL
-);
-CREATE TABLE key_use (
-    tenant_key_id BLOB PRIMARY KEY NOT NULL,
-    wraps INTEGER NOT NULL
-);
-";
 
 /// Who is calling, for the audit record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,21 +129,28 @@ impl From<catalog::CatalogError> for OpenError {
     }
 }
 
+/// A catalog transaction.
+type Tx<'a> = Box<dyn CatalogTx + 'a>;
+
 /// One tenant's vCons.
 pub struct Store {
     tenant: TenantId,
     tenant_key: Key,
-    objects: PathBuf,
-    conn: Mutex<Connection>,
+    catalog: Box<dyn Catalog>,
+    objects: Arc<dyn Objects>,
+    /// The filesystem a backup is written to.
     fs: Arc<dyn Fs>,
     clock: Arc<dyn Clock>,
+    /// The local objects directory, for tests that look at its files.
+    #[cfg(test)]
+    objects_dir: PathBuf,
     #[cfg(test)]
     hooks: tests::Hooks,
 }
 
 impl Store {
-    /// Opens the tenant's catalog under its catalog key, making it if new,
-    /// then runs start-up recovery.
+    /// Opens the tenant's local catalog under its catalog key, making it
+    /// if new, then runs start-up recovery.
     pub fn open(
         dir: &Path,
         tenant: TenantId,
@@ -194,8 +174,7 @@ impl Store {
         clock: Arc<dyn Clock>,
     ) -> Result<Store, OpenError> {
         let catalog_key = envelope::catalog_key(&tenant_key).map_err(|_| StoreError::Io)?;
-        let schema = format!("{TABLES}{}", audit::SCHEMA);
-        let conn = catalog::open(&dir.join("catalog.sqlite"), &catalog_key, &schema)?;
+        let catalog = LocalCatalog::open(&dir.join("catalog.sqlite"), catalog_key)?;
         let objects = dir.join("objects");
         fs.create_dir_all(&objects).map_err(|_| StoreError::Io)?;
         // Each version is written into objects/, so it must be writable too.
@@ -204,56 +183,74 @@ impl Store {
         // holds it is synced; without this a crash could take the objects
         // directory, synced files and all, while the catalog keeps its rows.
         fs.sync_dir(dir).map_err(|_| StoreError::Io)?;
-        Ok(Store {
+        #[cfg_attr(
+            not(test),
+            allow(unused_mut, reason = "only tests set the objects directory after")
+        )]
+        let mut store = Store::with_backends(
             tenant,
             tenant_key,
+            Box::new(catalog),
+            Arc::new(LocalObjects::new(objects.clone(), fs.clone())),
+            fs,
+            clock,
+        );
+        #[cfg(test)]
+        {
+            store.objects_dir = objects;
+        }
+        Ok(store)
+    }
+
+    /// A Store over the given catalog and objects, opened as `open_beside`
+    /// opens one: without start-up recovery.
+    pub(crate) fn with_backends(
+        tenant: TenantId,
+        tenant_key: Key,
+        catalog: Box<dyn Catalog>,
+        objects: Arc<dyn Objects>,
+        fs: Arc<dyn Fs>,
+        clock: Arc<dyn Clock>,
+    ) -> Store {
+        Store {
+            tenant,
+            tenant_key,
+            catalog,
             objects,
-            conn: Mutex::new(conn),
             fs,
             clock,
             #[cfg(test)]
+            objects_dir: PathBuf::new(),
+            #[cfg(test)]
             hooks: tests::Hooks::default(),
-        })
+        }
     }
 
-    /// Start-up recovery: the WAL is checkpointed with truncation, and
-    /// temporary files and object files with no row are removed. A name
-    /// that is not a version id, with or without `.tmp`, is not ours and
-    /// is left alone.
+    /// Start-up recovery: the catalog recovers itself, and temporary
+    /// objects and objects with no row are removed. A name that is not a
+    /// version id, with or without `.tmp`, is not ours and is left alone.
     fn recover(&self) -> Result<(), StoreError> {
-        let conn = self.conn();
-        let busy: i64 = conn
-            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))
-            .map_err(io)?;
-        if busy != 0 {
-            return Err(StoreError::Io);
-        }
+        self.catalog.recover()?;
         let mut removed = false;
-        for name in self.fs.list(&self.objects).map_err(io)? {
-            let Some(name) = name.to_str() else { continue };
+        for name in self.objects.list().map_err(io)? {
             let (id, temporary) = match name.strip_suffix(".tmp") {
                 Some(id) => (id, true),
-                None => (name, false),
+                None => (name.as_str(), false),
             };
             let Some(version) = VersionId::parse(id) else {
                 continue;
             };
-            let has_row = conn
-                .query_row(
-                    "SELECT 1 FROM version WHERE version = ?1",
-                    [version.0],
-                    |_| Ok(()),
-                )
-                .optional()
-                .map_err(io)?
-                .is_some();
+            let has_row = {
+                let mut tx = self.catalog.snapshot()?;
+                tx.version_row(version)?.is_some()
+            };
             if temporary || !has_row {
-                self.fs.remove(&self.objects.join(name)).map_err(io)?;
+                self.objects.remove_name(&name).map_err(io)?;
                 removed = true;
             }
         }
         if removed {
-            self.fs.sync_dir(&self.objects).map_err(io)?;
+            self.objects.sync().map_err(io)?;
         }
         Ok(())
     }
@@ -261,7 +258,7 @@ impl Store {
     /// Stores a new vCon. The uuid's state is checked before anything is
     /// sealed, the body is written in the order below, and the
     /// commit checks the state again, so of two racing writers one wins
-    /// and the other's file is removed.
+    /// and the other's object is removed.
     pub fn create(
         &self,
         who: &Caller,
@@ -278,13 +275,12 @@ impl Store {
         };
         let key_id = self.tenant_key.id();
         {
-            let mut conn = self.conn();
-            let tx = immediate(&mut conn)?;
-            let refused = match state(&tx, uuid)? {
+            let mut tx = self.catalog.immediate()?;
+            let refused = match state(&mut tx, uuid)? {
                 State::Gone => Some((410, None, StoreError::Gone)),
-                State::Live(current) => match self.read_version(&tx, uuid, current) {
+                State::Live(current) => match self.read_version(&mut tx, uuid, current) {
                     Ok(stored) if stored == body => {
-                        self.record(&tx, &entry(200, Some(current)))?;
+                        self.record(&mut tx, &entry(200, Some(current)))?;
                         commit(tx)?;
                         return Ok(Created::Same(current));
                     }
@@ -292,38 +288,38 @@ impl Store {
                     Err(StoreError::Damaged) => Some((500, Some(current), StoreError::Damaged)),
                     Err(e) => return Err(e),
                 },
-                State::Absent if envelope::wrap_limit(wraps(&tx, key_id)?) == WrapLimit::Refuse => {
+                State::Absent if envelope::wrap_limit(tx.wraps(key_id)?) == WrapLimit::Refuse => {
                     Some((503, None, StoreError::LimitReached))
                 }
                 // The wrap is counted before it is made, so every wrap is
                 // counted once whether this write wins or loses.
                 State::Absent => {
-                    add_wrap(&tx, key_id)?;
+                    tx.add_wrap(key_id)?;
                     None
                 }
             };
             if let Some((status, version, error)) = refused {
-                self.record(&tx, &entry(status, version))?;
+                self.record(&mut tx, &entry(status, version))?;
                 commit(tx)?;
                 return Err(error);
             }
             commit(tx)?;
         }
 
-        let (version, wrapped, file) = self.write_version(uuid, body)?;
+        let (version, wrapped) = self.write_version(uuid, body)?;
         self.pause();
 
+        let unknown = std::cell::Cell::new(false);
         let committed = (|| {
-            let mut conn = self.conn();
-            let tx = immediate(&mut conn)?;
-            match state(&tx, uuid)? {
+            let mut tx = self.catalog.immediate()?;
+            match state(&mut tx, uuid)? {
                 State::Absent => {}
                 lost => {
                     let (status, error) = match lost {
                         State::Gone => (410, StoreError::Gone),
                         _ => (409, StoreError::Conflict),
                     };
-                    self.record(&tx, &entry(status, None))?;
+                    self.record(&mut tx, &entry(status, None))?;
                     commit(tx)?;
                     return Err(error);
                 }
@@ -331,35 +327,22 @@ impl Store {
             // The version's time, and the uuid's first: the list keeps
             // its place by it through replace, delete and restore.
             let stored_at = nanos(self.clock.now());
-            tx.execute(
-                "INSERT INTO version
-                     (version, uuid, form, gzip, size, stored_at, hidden_at, tenant_key_id, wrapped_key)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8)",
-                params![
-                    version.0,
-                    uuid.as_bytes(),
-                    form_name(found.form),
-                    found.gzip,
-                    i64::try_from(body.len()).map_err(io)?,
-                    stored_at,
-                    key_id.bytes(),
-                    wrapped,
-                ],
-            )
-            .map_err(io)?;
-            tx.execute(
-                "INSERT INTO vcon (uuid, current, stored_at) VALUES (?1, ?2, ?3)",
-                params![uuid.as_bytes(), version.0, stored_at],
-            )
-            .map_err(io)?;
-            self.record(&tx, &entry(201, Some(version)))?;
-            commit(tx)?;
+            tx.insert_version(&NewVersion {
+                version,
+                uuid,
+                form: form_name(found.form),
+                gzip: found.gzip,
+                size: i64::try_from(body.len()).map_err(io)?,
+                stored_at,
+                key: key_id,
+                wrapped: &wrapped,
+            })?;
+            tx.insert_vcon(uuid, version, stored_at)?;
+            self.record(&mut tx, &entry(201, Some(version)))?;
+            kept(tx.commit(), &unknown)?;
             Ok(Created::New(version))
         })();
-        if committed.is_err() {
-            // Best effort: start-up recovery removes any file left over.
-            let _ = self.fs.remove(&file);
-        }
+        self.drop_unless_kept(committed.is_err(), unknown.get(), version);
         committed
     }
 
@@ -375,21 +358,20 @@ impl Store {
             version,
             status,
         };
-        let refuse = |tx: Transaction, state: State| {
+        let refuse = |mut tx: Tx, state: State| {
             let (status, error) = match state {
                 State::Gone => (410, StoreError::Gone),
                 _ => (404, StoreError::NotFound),
             };
-            self.record(&tx, &entry(status, None))?;
+            self.record(&mut tx, &entry(status, None))?;
             commit(tx)?;
             Err(error)
         };
         loop {
             let (version, row) = {
-                let mut conn = self.conn();
-                let tx = immediate(&mut conn)?;
-                match state(&tx, uuid)? {
-                    State::Live(version) => (version, version_row(&tx, version)),
+                let mut tx = self.catalog.immediate()?;
+                match state(&mut tx, uuid)? {
+                    State::Live(version) => (version, version_row(&mut tx, version)),
                     other => return refuse(tx, other),
                 }
             };
@@ -403,12 +385,11 @@ impl Store {
                 })
             });
             self.pause();
-            let mut conn = self.conn();
-            let tx = immediate(&mut conn)?;
-            match state(&tx, uuid)? {
+            let mut tx = self.catalog.immediate()?;
+            match state(&mut tx, uuid)? {
                 State::Live(now) if now == version => {
                     let status = if opened.is_ok() { 200 } else { 500 };
-                    self.record(&tx, &entry(status, Some(version)))?;
+                    self.record(&mut tx, &entry(status, Some(version)))?;
                     commit(tx)?;
                     return opened;
                 }
@@ -423,7 +404,7 @@ impl Store {
     /// body's uuid is the one asked for. The old version is hidden, and
     /// kept for legal reads until it is purged. As in `create`, the state
     /// is checked before sealing and again at the commit, so of two racing
-    /// replaces one wins and the other's file is removed.
+    /// replaces one wins and the other's object is removed.
     pub fn replace(
         &self,
         who: &Caller,
@@ -441,7 +422,7 @@ impl Store {
         };
         let key_id = self.tenant_key.id();
         // Why the state does not allow this replace, if it does not.
-        let refusal = |tx: &Transaction| -> Result<Option<(u16, StoreError)>, StoreError> {
+        let refusal = |tx: &mut Tx| -> Result<Option<(u16, StoreError)>, StoreError> {
             Ok(match state(tx, uuid)? {
                 State::Absent => Some((404, StoreError::NotFound)),
                 State::Gone => Some((410, StoreError::Gone)),
@@ -455,69 +436,51 @@ impl Store {
             })
         };
         {
-            let mut conn = self.conn();
-            let tx = immediate(&mut conn)?;
-            let refused = match refusal(&tx)? {
-                None if envelope::wrap_limit(wraps(&tx, key_id)?) == WrapLimit::Refuse => {
+            let mut tx = self.catalog.immediate()?;
+            let refused = match refusal(&mut tx)? {
+                None if envelope::wrap_limit(tx.wraps(key_id)?) == WrapLimit::Refuse => {
                     Some((503, StoreError::LimitReached))
                 }
                 other => other,
             };
             if let Some((status, error)) = refused {
-                self.record(&tx, &entry(status, None))?;
+                self.record(&mut tx, &entry(status, None))?;
                 commit(tx)?;
                 return Err(error);
             }
-            add_wrap(&tx, key_id)?;
+            tx.add_wrap(key_id)?;
             commit(tx)?;
         }
 
-        let (version, wrapped, file) = self.write_version(uuid, body)?;
+        let (version, wrapped) = self.write_version(uuid, body)?;
         self.pause();
 
+        let unknown = std::cell::Cell::new(false);
         let committed = (|| {
-            let mut conn = self.conn();
-            let tx = immediate(&mut conn)?;
-            if let Some((status, error)) = refusal(&tx)? {
-                self.record(&tx, &entry(status, None))?;
+            let mut tx = self.catalog.immediate()?;
+            if let Some((status, error)) = refusal(&mut tx)? {
+                self.record(&mut tx, &entry(status, None))?;
                 commit(tx)?;
                 return Err(error);
             }
             let now = nanos(self.clock.now());
-            tx.execute(
-                "INSERT INTO version
-                     (version, uuid, form, gzip, size, stored_at, hidden_at, tenant_key_id, wrapped_key)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8)",
-                params![
-                    version.0,
-                    uuid.as_bytes(),
-                    form_name(found.form),
-                    found.gzip,
-                    i64::try_from(body.len()).map_err(io)?,
-                    now,
-                    key_id.bytes(),
-                    wrapped,
-                ],
-            )
-            .map_err(io)?;
-            tx.execute(
-                "UPDATE version SET hidden_at = ?1 WHERE version = ?2",
-                params![now, if_match.0],
-            )
-            .map_err(io)?;
-            tx.execute(
-                "UPDATE vcon SET current = ?1 WHERE uuid = ?2",
-                params![version.0, uuid.as_bytes()],
-            )
-            .map_err(io)?;
-            self.record(&tx, &entry(200, Some(version)))?;
-            commit(tx)?;
+            tx.insert_version(&NewVersion {
+                version,
+                uuid,
+                form: form_name(found.form),
+                gzip: found.gzip,
+                size: i64::try_from(body.len()).map_err(io)?,
+                stored_at: now,
+                key: key_id,
+                wrapped: &wrapped,
+            })?;
+            tx.hide_version(if_match, now)?;
+            tx.set_current(uuid, version)?;
+            self.record(&mut tx, &entry(200, Some(version)))?;
+            kept(tx.commit(), &unknown)?;
             Ok(version)
         })();
-        if committed.is_err() {
-            // Best effort: start-up recovery removes any file left over.
-            let _ = self.fs.remove(&file);
-        }
+        self.drop_unless_kept(committed.is_err(), unknown.get(), version);
         committed
     }
 
@@ -536,70 +499,43 @@ impl Store {
             version: None,
             status,
         };
-        let mut conn = self.conn();
-        let tx = immediate(&mut conn)?;
-        let outcome = match state(&tx, uuid)? {
-            State::Absent => Err(StoreError::NotFound),
-            State::Gone => Ok(()),
-            State::Live(_) => {
-                let now = nanos(self.clock.now());
-                tx.execute(
-                    "UPDATE vcon SET current = NULL, deleted_at = ?1 WHERE uuid = ?2",
-                    params![now, uuid.as_bytes()],
-                )
-                .map_err(io)?;
-                tx.execute(
-                    "UPDATE version SET hidden_at = ?1 WHERE uuid = ?2 AND hidden_at IS NULL",
-                    params![now, uuid.as_bytes()],
-                )
-                .map_err(io)?;
-                Ok(())
-            }
-        };
-        let status = if outcome.is_ok() { 204 } else { 404 };
-        self.record(&tx, &entry(status))?;
-        commit(tx)?;
-        outcome?;
-        drop(conn);
+        {
+            let mut tx = self.catalog.immediate()?;
+            let outcome = match state(&mut tx, uuid)? {
+                State::Absent => Err(StoreError::NotFound),
+                State::Gone => Ok(()),
+                State::Live(_) => {
+                    tx.mark_deleted(uuid, nanos(self.clock.now()))?;
+                    Ok(())
+                }
+            };
+            let status = if outcome.is_ok() { 204 } else { 404 };
+            self.record(&mut tx, &entry(status))?;
+            commit(tx)?;
+            outcome?;
+        }
         // A version already as old as `retention` is erased now, not at
         // the next sweep.
         self.purge_hidden(Actor::Key(who.key), retention, Some(uuid))?;
         Ok(())
     }
 
-    /// Every version whose object file is missing. Such a version answers
-    /// 500 when read; it is reported, never dropped.
+    /// Every version whose object is missing. Such a version answers 500
+    /// when read; it is reported, never dropped.
     pub fn check(&self) -> Result<Vec<VersionId>, StoreError> {
-        let conn = self.conn();
-        let mut rows = conn
-            .prepare("SELECT version FROM version ORDER BY version")
-            .map_err(io)?;
-        let versions = rows
-            .query_map([], |r| r.get::<_, [u8; 16]>(0))
-            .map_err(io)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(io)?;
-        let present: std::collections::BTreeSet<_> = self
-            .fs
-            .list(&self.objects)
-            .map_err(io)?
-            .into_iter()
-            .collect();
+        let versions = self.catalog.snapshot()?.version_ids()?;
+        let present: std::collections::BTreeSet<String> =
+            self.objects.list().map_err(io)?.into_iter().collect();
         Ok(versions
             .into_iter()
-            .map(VersionId)
-            .filter(|v| !present.contains(std::ffi::OsStr::new(&v.to_string())))
+            .filter(|v| !present.contains(&v.to_string()))
             .collect())
     }
 
     /// Seals `body` as a new version of `uuid` under a new data key, wraps
-    /// that key under the tenant key, and writes the object file. Returns
-    /// the version id, the wrapped key and the file's path.
-    fn write_version(
-        &self,
-        uuid: Uuid,
-        body: &[u8],
-    ) -> Result<(VersionId, Vec<u8>, PathBuf), StoreError> {
+    /// that key under the tenant key, and writes the object. Returns the
+    /// version id and the wrapped key.
+    fn write_version(&self, uuid: Uuid, body: &[u8]) -> Result<(VersionId, Vec<u8>), StoreError> {
         let version = VersionId::generate();
         let ctx = Context::Version {
             tenant: self.tenant,
@@ -609,8 +545,20 @@ impl Store {
         let data_key = Key::generate().map_err(|_| StoreError::Io)?;
         let blob = envelope::seal(&data_key, &ctx, body);
         let wrapped = envelope::wrap(&self.tenant_key, &ctx, &data_key);
-        let file = self.write_object(version, &blob)?;
-        Ok((version, wrapped, file))
+        self.objects.put(version, &blob).map_err(io)?;
+        Ok((version, wrapped))
+    }
+
+    /// Removes a new version's object when the write failed and its rows
+    /// were surely not kept. After a commit whose outcome is unknown the
+    /// object stays: its rows may be kept, and a row without its object is
+    /// damage, while an object without a row is a leftover that start-up
+    /// recovery removes.
+    fn drop_unless_kept(&self, failed: bool, unknown: bool, version: VersionId) {
+        if failed && !unknown {
+            // Best effort: start-up recovery removes any object left over.
+            let _ = self.objects.remove(version);
+        }
     }
 
     /// In tests, runs the hook set for the gap between work done outside
@@ -625,32 +573,11 @@ impl Store {
         }
     }
 
-    /// Writes a sealed body in order: a temporary file, synced,
-    /// renamed to its version id, and the directory synced. Returns the
-    /// file's path.
-    fn write_object(&self, version: VersionId, blob: &[u8]) -> Result<PathBuf, StoreError> {
-        let tmp = self.objects.join(format!("{version}.tmp"));
-        let file = self.objects.join(version.to_string());
-        let written = self
-            .fs
-            .write_new(&tmp, blob)
-            .and_then(|()| self.fs.sync_file(&tmp))
-            .and_then(|()| self.fs.rename(&tmp, &file))
-            .and_then(|()| self.fs.sync_dir(&self.objects));
-        if written.is_err() {
-            // Best effort: start-up recovery removes any file left over.
-            let _ = self.fs.remove(&tmp);
-            let _ = self.fs.remove(&file);
-            return Err(StoreError::Io);
-        }
-        Ok(file)
-    }
-
-    /// The plaintext of a stored version. A missing row or file, or one
+    /// The plaintext of a stored version. A missing row or object, or one
     /// that does not open, is damage.
     fn read_version(
         &self,
-        tx: &Transaction,
+        tx: &mut Tx,
         uuid: Uuid,
         version: VersionId,
     ) -> Result<Vec<u8>, StoreError> {
@@ -658,7 +585,7 @@ impl Store {
         self.open_version(uuid, version, &row.wrapped)
     }
 
-    /// Opens a version's object file with its wrapped data key.
+    /// Opens a version's object with its wrapped data key.
     fn open_version(
         &self,
         uuid: Uuid,
@@ -672,23 +599,16 @@ impl Store {
         };
         let data_key =
             envelope::unwrap(&self.tenant_key, &ctx, wrapped).map_err(|_| StoreError::Damaged)?;
-        let blob = self
-            .fs
-            .read(&self.objects.join(version.to_string()))
-            .map_err(|_| StoreError::Damaged)?;
+        let blob = self.objects.get(version).map_err(|_| StoreError::Damaged)?;
         envelope::open(&data_key, &ctx, &blob).map_err(|_| StoreError::Damaged)
     }
 
     /// How many versions the Store keeps and how many uuids are held.
     pub fn counts(&self) -> Result<Counts, StoreError> {
-        let conn = self.conn();
-        let count = |sql| -> Result<u64, StoreError> {
-            let n: i64 = conn.query_row(sql, [], |r| r.get(0)).map_err(io)?;
-            u64::try_from(n).map_err(io)
-        };
+        let mut tx = self.catalog.snapshot()?;
         Ok(Counts {
-            versions: count("SELECT count(*) FROM version")?,
-            held: count("SELECT count(*) FROM vcon WHERE hold != 0")?,
+            versions: tx.count_versions()?,
+            held: tx.count_held()?,
         })
     }
 
@@ -699,7 +619,7 @@ impl Store {
         since: Option<i64>,
         out: &mut dyn std::io::Write,
     ) -> Result<(), audit::AuditError> {
-        audit::export(&self.conn(), since, out)
+        self.catalog.export(since.unwrap_or(0), out)
     }
 
     /// A page of the tenant's log as JSON lines, the lines `export` writes
@@ -711,12 +631,11 @@ impl Store {
         who: &Caller,
         query: &audit::AuditQuery,
     ) -> Result<Vec<u8>, StoreError> {
-        let mut conn = self.conn();
-        let tx = immediate(&mut conn)?;
+        let mut tx = self.catalog.immediate()?;
         let mut out = Vec::new();
-        let read = audit::page(&tx, query, &mut out);
+        let read = tx.audit_lines(query.after, Some(query.limit), &mut out);
         self.record(
-            &tx,
+            &mut tx,
             &Entry {
                 actor: Actor::Key(who.key),
                 action: Action::AuditRead,
@@ -732,13 +651,11 @@ impl Store {
     /// Records, in a transaction of its own, an action on the tenant taken
     /// elsewhere, such as a change to its retention period.
     pub fn log(&self, entry: &Entry) -> Result<(), StoreError> {
-        let mut conn = self.conn();
-        let tx = immediate(&mut conn)?;
-        self.record(&tx, entry)?;
+        let mut tx = self.catalog.immediate()?;
+        self.record(&mut tx, entry)?;
         commit(tx)
     }
 
-    /// Makes every audit insert on this Store's connection fail, for tests.
     #[cfg(test)]
     pub(crate) fn break_audit(&self) {
         self.conn()
@@ -749,20 +666,16 @@ impl Store {
             .expect("trigger");
     }
 
-    /// Sets the hook a backup runs at each try, after the catalog is
-    /// copied, for tests outside this module.
     #[cfg(test)]
     pub(crate) fn on_backup_copied(&self, hook: tests::BackupHook) {
         *self.hooks.copied.lock().expect("hook") = Some(hook);
     }
 
-    /// The catalog connection, for tests that damage or inspect it.
     #[cfg(test)]
-    pub(crate) fn conn_for_test(&self) -> MutexGuard<'_, Connection> {
+    pub(crate) fn conn_for_test(&self) -> MutexGuard<'_, LocalConn> {
         self.conn()
     }
 
-    /// The tenant's log as `export` writes it, for tests.
     #[cfg(test)]
     pub(crate) fn records(&self) -> Vec<serde_json::Value> {
         crate::audit::testing::exported(&self.conn(), None)
@@ -772,82 +685,55 @@ impl Store {
     /// keeps one record per minute for, such as a failed check of one of
     /// its keys.
     pub fn count(&self, entry: &Entry) -> Result<(), StoreError> {
-        let mut conn = self.conn();
-        let tx = immediate(&mut conn)?;
-        audit::count(&tx, entry, self.clock.now()).map_err(|_| StoreError::AuditFailed)?;
+        let mut tx = self.catalog.immediate()?;
+        tx.count(entry, self.clock.now())
+            .map_err(|_| StoreError::AuditFailed)?;
         commit(tx)
     }
 
     /// Writes an audit record in `tx`; if it cannot, nothing is done.
-    fn record(&self, tx: &Transaction, entry: &Entry) -> Result<(), StoreError> {
-        audit::record(tx, entry, self.clock.now()).map_err(|_| StoreError::AuditFailed)
+    fn record(&self, tx: &mut Tx, entry: &Entry) -> Result<(), StoreError> {
+        tx.record(entry, self.clock.now())
+            .map_err(|_| StoreError::AuditFailed)
     }
 
-    fn conn(&self) -> MutexGuard<'_, Connection> {
-        self.conn
-            .lock()
-            .expect("no thread panicked holding the catalog")
+    /// The local catalog's connection, for tests.
+    #[cfg(test)]
+    fn conn(&self) -> MutexGuard<'_, LocalConn> {
+        self.catalog.local_conn()
     }
 }
 
-/// What the catalog says about a uuid.
 enum State {
-    /// Never stored.
     Absent,
-    /// Stored, with this current version.
     Live(VersionId),
-    /// Deleted or purged.
     Gone,
 }
 
-fn state(tx: &Transaction, uuid: Uuid) -> Result<State, StoreError> {
-    let purged = tx
-        .query_row(
-            "SELECT 1 FROM tombstone WHERE uuid = ?1",
-            [uuid.as_bytes()],
-            |_| Ok(()),
-        )
-        .optional()
-        .map_err(io)?;
-    if purged.is_some() {
+/// A uuid's state: purged or deleted is Gone. A row that is neither
+/// deleted nor current is damage.
+fn state(tx: &mut Tx, uuid: Uuid) -> Result<State, StoreError> {
+    if tx.tombstoned(uuid)? {
         return Ok(State::Gone);
     }
-    let row: Option<(Option<[u8; 16]>, Option<i64>)> = tx
-        .query_row(
-            "SELECT current, deleted_at FROM vcon WHERE uuid = ?1",
-            [uuid.as_bytes()],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()
-        .map_err(io)?;
-    match row {
+    match tx.vcon_row(uuid)? {
         None => Ok(State::Absent),
-        Some((_, Some(_))) => Ok(State::Gone),
-        Some((Some(current), None)) => Ok(State::Live(VersionId(current))),
-        // A live row always names its current version.
-        Some((None, None)) => Err(StoreError::Damaged),
+        Some(row) if row.deleted_at.is_some() => Ok(State::Gone),
+        Some(row) => row.current.map(State::Live).ok_or(StoreError::Damaged),
     }
 }
 
-/// What a version row holds that a read needs.
 struct VersionRow {
     form: vcon::Form,
     gzip: bool,
     wrapped: Vec<u8>,
 }
 
-/// A version's row. One that is missing or unreadable is damage.
-fn version_row(tx: &Transaction, version: VersionId) -> Result<VersionRow, StoreError> {
-    let row: Option<(String, bool, Vec<u8>)> = tx
-        .query_row(
-            "SELECT form, gzip, wrapped_key FROM version WHERE version = ?1",
-            [version.0],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .optional()
-        .map_err(io)?;
-    let (form, gzip, wrapped) = row.ok_or(StoreError::Damaged)?;
-    let form = match form.as_str() {
+/// A version's row; one missing, or with a form this build does not
+/// know, is damage.
+fn version_row(tx: &mut Tx, version: VersionId) -> Result<VersionRow, StoreError> {
+    let row = tx.version_row(version)?.ok_or(StoreError::Damaged)?;
+    let form = match row.form.as_str() {
         "unsigned" => vcon::Form::Unsigned,
         "signed" => vcon::Form::Signed,
         "encrypted" => vcon::Form::Encrypted,
@@ -855,41 +741,25 @@ fn version_row(tx: &Transaction, version: VersionId) -> Result<VersionRow, Store
     };
     Ok(VersionRow {
         form,
-        gzip,
-        wrapped,
+        gzip: row.gzip,
+        wrapped: row.wrapped,
     })
 }
 
-/// Data keys wrapped so far under the tenant key `key`.
-fn wraps(tx: &Transaction, key: KeyId) -> Result<u64, StoreError> {
-    let wraps: Option<i64> = tx
-        .query_row(
-            "SELECT wraps FROM key_use WHERE tenant_key_id = ?1",
-            [key.bytes()],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(io)?;
-    u64::try_from(wraps.unwrap_or(0)).map_err(io)
-}
-
-fn add_wrap(tx: &Transaction, key: KeyId) -> Result<(), StoreError> {
-    tx.execute(
-        "INSERT INTO key_use (tenant_key_id, wraps) VALUES (?1, 1)
-         ON CONFLICT (tenant_key_id) DO UPDATE SET wraps = wraps + 1",
-        [key.bytes()],
-    )
-    .map_err(io)?;
-    Ok(())
-}
-
-fn immediate(conn: &mut Connection) -> Result<Transaction<'_>, StoreError> {
-    conn.transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(io)
-}
-
-fn commit(tx: Transaction) -> Result<(), StoreError> {
+fn commit(tx: Tx) -> Result<(), StoreError> {
     tx.commit().map_err(io)
+}
+
+/// The commit that adds a version's rows: an error is Io, and one whose
+/// outcome is unknown is noted in `unknown`, since its rows may be kept.
+fn kept(
+    outcome: Result<(), CommitError>,
+    unknown: &std::cell::Cell<bool>,
+) -> Result<(), StoreError> {
+    outcome.map_err(|e| {
+        unknown.set(e == CommitError::Unknown);
+        StoreError::Io
+    })
 }
 
 fn io<E>(_: E) -> StoreError {
@@ -904,7 +774,12 @@ fn form_name(form: vcon::Form) -> &'static str {
     }
 }
 
-/// Stored vCons, for tests.
+impl From<ObjectError> for StoreError {
+    fn from(_: ObjectError) -> StoreError {
+        StoreError::Io
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod testing {
     use std::collections::BTreeSet;
@@ -962,6 +837,9 @@ mod tests {
     }
     use crate::catalog::testing::columns_taking_null;
     use crate::clock::ManualClock;
+    use rusqlite::{Connection, params};
+
+    use crate::catalog;
     use crate::fs::{CrashFs, Op};
 
     const UUID: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bc46";
@@ -1103,7 +981,7 @@ mod tests {
         };
         let data_key = envelope::unwrap(&f.store.tenant_key, &ctx, &wrapped).expect("unwraps");
         let blob =
-            f.fs.read(&f.store.objects.join(version.to_string()))
+            f.fs.read(&f.store.objects_dir.join(version.to_string()))
                 .expect("file");
         envelope::open(&data_key, &ctx, &blob).expect("opens")
     }
@@ -1181,8 +1059,8 @@ mod tests {
             panic!("a new vCon")
         };
         let (tmp, done) = (
-            f.store.objects.join(format!("{version}.tmp")),
-            f.store.objects.join(version.to_string()),
+            f.store.objects_dir.join(format!("{version}.tmp")),
+            f.store.objects_dir.join(version.to_string()),
         );
         assert_eq!(
             f.fs.log()[ops..],
@@ -1190,7 +1068,7 @@ mod tests {
                 Op::Write(tmp.clone()),
                 Op::SyncFile(tmp.clone()),
                 Op::Rename(tmp, done),
-                Op::SyncDir(f.store.objects.clone()),
+                Op::SyncDir(f.store.objects_dir.clone()),
             ]
         );
         assert_eq!(stored_body(&f, found.uuid, version), body);
@@ -1366,7 +1244,7 @@ mod tests {
         let Ok(Created::New(version)) = f.store.create(&f.caller, &found, &body) else {
             panic!("a new vCon")
         };
-        f.fs.remove(&f.store.objects.join(version.to_string()))
+        f.fs.remove(&f.store.objects_dir.join(version.to_string()))
             .expect("remove");
         assert_eq!(
             f.store.create(&f.caller, &found, &body),
@@ -1397,7 +1275,7 @@ mod tests {
             "only the winner"
         );
         assert_eq!(
-            f.fs.list(&f.store.objects).expect("list").len(),
+            f.fs.list(&f.store.objects_dir).expect("list").len(),
             1,
             "the loser's file is gone"
         );
@@ -1428,8 +1306,85 @@ mod tests {
         assert_eq!(count(&f.store, "SELECT count(*) FROM version"), 0);
         assert_eq!(count(&f.store, "SELECT count(*) FROM vcon"), 0);
         assert_eq!(
-            f.fs.list(&f.store.objects).expect("list"),
+            f.fs.list(&f.store.objects_dir).expect("list"),
             Vec::<std::ffi::OsString>::new()
+        );
+    }
+
+    #[test]
+    fn a_create_whose_commit_outcome_is_unknown_keeps_its_object() {
+        let f = fixture();
+        let (found, body) = vcon(UUID, "first");
+        // The wrap count commits first; the second commit, which adds the
+        // rows, is kept and then reported as failed, as a lost connection
+        // reports a commit the database made.
+        f.store.catalog.fail_commit(2, CommitError::Unknown);
+        assert_eq!(
+            f.store.create(&f.caller, &found, &body),
+            Err(StoreError::Io),
+            "a_create_whose_commit_outcome_is_unknown_keeps_its_object: f.store.create(&f.caller, &found, &body)"
+        );
+        let stored = f
+            .store
+            .get(&f.caller, found.uuid)
+            .expect("the kept row reads");
+        assert_eq!(
+            stored.body, body,
+            "a_create_whose_commit_outcome_is_unknown_keeps_its_object: stored.body"
+        );
+        assert_eq!(f.store.check(), Ok(Vec::new()), "no row without its object");
+        drop(f.open().expect("reopens"));
+        assert_eq!(
+            f.store.get(&f.caller, found.uuid).map(|s| s.body),
+            Ok(body),
+            "recovery keeps an object a row names"
+        );
+    }
+
+    #[test]
+    fn a_replace_whose_commit_outcome_is_unknown_keeps_its_object() {
+        let f = fixture();
+        let (found, body) = vcon(UUID, "first");
+        let Ok(Created::New(first)) = f.store.create(&f.caller, &found, &body) else {
+            panic!("a new vCon")
+        };
+        let (found, second) = vcon(UUID, "second");
+        f.store.catalog.fail_commit(2, CommitError::Unknown);
+        assert_eq!(
+            f.store.replace(&f.caller, first, &found, &second),
+            Err(StoreError::Io),
+            "a_replace_whose_commit_outcome_is_unknown_keeps_its_object: f.store.replace(&f.caller, first, &found, &second)"
+        );
+        let stored = f
+            .store
+            .get(&f.caller, found.uuid)
+            .expect("the kept row reads");
+        assert_eq!(
+            stored.body, second,
+            "a_replace_whose_commit_outcome_is_unknown_keeps_its_object: stored.body"
+        );
+        assert_eq!(f.store.check(), Ok(Vec::new()), "no row without its object");
+    }
+
+    #[test]
+    fn a_create_whose_commit_rolls_back_leaves_no_object() {
+        let f = fixture();
+        let (found, body) = vcon(UUID, "first");
+        f.store.catalog.fail_commit(2, CommitError::RolledBack);
+        assert_eq!(
+            f.store.create(&f.caller, &found, &body),
+            Err(StoreError::Io),
+            "a_create_whose_commit_rolls_back_leaves_no_object: f.store.create(&f.caller, &found, &body)"
+        );
+        assert_eq!(
+            count(&f.store, "SELECT count(*) FROM version"),
+            0,
+            "a_create_whose_commit_rolls_back_leaves_no_object: count(&f.store, \"SELECT count(*) FROM version\")"
+        );
+        assert_eq!(
+            f.fs.list(&f.store.objects_dir).expect("list"),
+            Vec::<std::ffi::OsString>::new(),
+            "a_create_whose_commit_rolls_back_leaves_no_object: f.fs.list(&f.store.objects_dir).expect(\"list\")"
         );
     }
 
@@ -1504,7 +1459,7 @@ mod tests {
         let Ok(Created::New(version)) = f.store.create(&f.caller, &found, &body) else {
             panic!("a new vCon")
         };
-        let file = f.store.objects.join(version.to_string());
+        let file = f.store.objects_dir.join(version.to_string());
         let blob = f.fs.read(&file).expect("file");
         f.fs.remove(&file).expect("remove");
         assert_eq!(
@@ -1550,7 +1505,7 @@ mod tests {
         let (found, body) = vcon(UUID, "first");
         f.store.create(&f.caller, &found, &body).expect("stored");
         let (_, newer) = vcon(UUID, "newer");
-        let (version, wrapped, _) = f.store.write_version(found.uuid, &newer).expect("written");
+        let (version, wrapped) = f.store.write_version(found.uuid, &newer).expect("written");
         let writer = f.clone();
         *f.store.hooks.between.lock().expect("hook") = Some(Box::new(move || {
             let conn = writer.store.conn();
@@ -1653,7 +1608,8 @@ mod tests {
             .expect("the old row is kept");
         assert!(hidden.is_some(), "the old version is hidden");
         assert!(
-            f.fs.read(&f.store.objects.join(old.to_string())).is_ok(),
+            f.fs.read(&f.store.objects_dir.join(old.to_string()))
+                .is_ok(),
             "its file is kept"
         );
         let record = audit_log(&f.store)
@@ -1785,7 +1741,7 @@ mod tests {
             Err(StoreError::PreconditionFailed)
         );
         assert_eq!(
-            f.fs.list(&f.store.objects).expect("list").len(),
+            f.fs.list(&f.store.objects_dir).expect("list").len(),
             2,
             "first and winner only"
         );
@@ -1847,7 +1803,7 @@ mod tests {
             old
         );
         assert_eq!(
-            f.fs.list(&f.store.objects).expect("list").len(),
+            f.fs.list(&f.store.objects_dir).expect("list").len(),
             1,
             "only the first file"
         );
@@ -1908,7 +1864,7 @@ mod tests {
         );
         assert_eq!(hidden_versions(&f), 2, "both versions hidden");
         assert_eq!(
-            f.fs.list(&f.store.objects).expect("list").len(),
+            f.fs.list(&f.store.objects_dir).expect("list").len(),
             2,
             "files kept for legal reads"
         );
@@ -2084,7 +2040,7 @@ mod tests {
         let mut f = fixture();
         let (found, version) = stored(&f, "first");
         let orphan = VersionId([0x0e; 16]);
-        let objects = f.store.objects.clone();
+        let objects = f.store.objects_dir.clone();
         for name in [
             format!("{orphan}"),
             format!("{orphan}.tmp"),
@@ -2126,7 +2082,7 @@ mod tests {
         let f = fixture();
         let (found, version) = stored(&f, "first");
         let orphan = VersionId([0x0e; 16]);
-        let objects = f.store.objects.clone();
+        let objects = f.store.objects_dir.clone();
         let mut written = vec![version.to_string()];
         for name in [
             format!("{orphan}"),
@@ -2177,7 +2133,7 @@ mod tests {
         let f = fixture();
         let (_, version) = stored(&f, "first");
         assert_eq!(f.store.check(), Ok(vec![]));
-        f.fs.remove(&f.store.objects.join(version.to_string()))
+        f.fs.remove(&f.store.objects_dir.join(version.to_string()))
             .expect("remove");
         assert_eq!(f.store.check(), Ok(vec![version]));
     }
@@ -2211,7 +2167,7 @@ mod tests {
             Ok(vec![]),
             "a row without its file at step {step}"
         );
-        for name in f.fs.list(&f.store.objects).expect("list") {
+        for name in f.fs.list(&f.store.objects_dir).expect("list") {
             let name = name.to_string_lossy().into_owned();
             let version = VersionId::parse(&name)
                 .unwrap_or_else(|| panic!("{name} left over at step {step}"));

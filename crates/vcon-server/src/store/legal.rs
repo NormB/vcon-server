@@ -2,11 +2,10 @@
 //! kept of a uuid, for a legal key. Access decides who holds a legal key;
 //! these calls trust their caller and record each answer.
 
-use rusqlite::{Connection, OptionalExtension, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::{Caller, Store, StoreError, Stored, commit, immediate, io, version_row};
+use super::{Caller, Store, StoreError, Stored, Tx, commit, version_row};
 use crate::audit::{Action, Actor, Entry};
 use crate::clock::from_nanos;
 use crate::ids::VersionId;
@@ -38,31 +37,14 @@ enum Standing {
     Deleted,
 }
 
-fn standing(tx: &Connection, uuid: Uuid) -> Result<Standing, StoreError> {
-    let purged = tx
-        .query_row(
-            "SELECT 1 FROM tombstone WHERE uuid = ?1",
-            [uuid.as_bytes()],
-            |_| Ok(()),
-        )
-        .optional()
-        .map_err(io)?;
-    if purged.is_some() {
+fn standing(tx: &mut Tx, uuid: Uuid) -> Result<Standing, StoreError> {
+    if tx.tombstoned(uuid)? {
         return Ok(Standing::Purged);
     }
-    let row: Option<(Option<[u8; 16]>, Option<i64>)> = tx
-        .query_row(
-            "SELECT current, deleted_at FROM vcon WHERE uuid = ?1",
-            [uuid.as_bytes()],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()
-        .map_err(io)?;
-    match row {
+    match tx.vcon_row(uuid)? {
         None => Ok(Standing::Absent),
-        Some((_, Some(_))) => Ok(Standing::Deleted),
-        Some((Some(current), None)) => Ok(Standing::Live(VersionId(current))),
-        Some((None, None)) => Err(StoreError::Damaged),
+        Some(row) if row.deleted_at.is_some() => Ok(Standing::Deleted),
+        Some(row) => row.current.map(Standing::Live).ok_or(StoreError::Damaged),
     }
 }
 
@@ -79,34 +61,24 @@ fn status<T>(answer: &Result<T, StoreError>, ok: u16) -> u16 {
 
 /// The latest kept version of a deleted uuid. A deleted uuid left with no
 /// version is purged, with a tombstone, so a deleted row always keeps one.
-fn latest(tx: &Connection, uuid: Uuid) -> Result<VersionId, StoreError> {
-    let latest: Option<[u8; 16]> = tx
-        .query_row(
-            "SELECT version FROM version WHERE uuid = ?1
-             ORDER BY stored_at DESC, rowid DESC LIMIT 1",
-            [uuid.as_bytes()],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(io)?;
-    Ok(VersionId(latest.ok_or(StoreError::Damaged)?))
+fn latest(tx: &mut Tx, uuid: Uuid) -> Result<VersionId, StoreError> {
+    tx.latest(uuid)?.ok_or(StoreError::Damaged)
 }
 
 impl Store {
     /// Reads `version` of `uuid`, or with None its current version, or its
     /// latest kept one when the uuid is deleted. A version purged, never
     /// stored or of another uuid is NotFound; a purged uuid is Gone. The
-    /// whole read, file included, is one immediate transaction, so a purge
-    /// cannot remove what is being read. Each answer is recorded.
+    /// whole read, object included, is one immediate transaction, so a
+    /// purge cannot remove what is being read. Each answer is recorded.
     pub fn legal_get(
         &self,
         who: &Caller,
         uuid: Uuid,
         version: Option<VersionId>,
     ) -> Result<Legal, StoreError> {
-        let mut conn = self.conn();
-        let tx = immediate(&mut conn)?;
-        let answer = self.legal_read(&tx, uuid, version);
+        let mut tx = self.catalog.immediate()?;
+        let answer = self.legal_read(&mut tx, uuid, version);
         let entry = Entry {
             actor: Actor::Key(who.key),
             action: Action::LegalRead,
@@ -114,14 +86,14 @@ impl Store {
             version: answer.as_ref().ok().map(|read| read.stored.version),
             status: status(&answer, 200),
         };
-        self.record(&tx, &entry)?;
+        self.record(&mut tx, &entry)?;
         commit(tx)?;
         answer
     }
 
     fn legal_read(
         &self,
-        tx: &Transaction,
+        tx: &mut Tx,
         uuid: Uuid,
         asked: Option<VersionId>,
     ) -> Result<Legal, StoreError> {
@@ -132,17 +104,8 @@ impl Store {
             Standing::Deleted => (None, true),
         };
         let version = match (asked, current) {
-            (Some(asked), _) => {
-                let kept = tx
-                    .query_row(
-                        "SELECT 1 FROM version WHERE version = ?1 AND uuid = ?2",
-                        (asked.0, uuid.as_bytes()),
-                        |_| Ok(()),
-                    )
-                    .optional()
-                    .map_err(io)?;
-                kept.map(|()| asked).ok_or(StoreError::NotFound)?
-            }
+            (Some(asked), _) if tx.has_version(asked, uuid)? => asked,
+            (Some(_), _) => return Err(StoreError::NotFound),
             (None, Some(current)) => current,
             (None, None) => latest(tx, uuid)?,
         };
@@ -162,9 +125,8 @@ impl Store {
     /// Every kept version of `uuid`, oldest first, with its times. A purged
     /// uuid is Gone and one never stored NotFound. Each answer is recorded.
     pub fn legal_versions(&self, who: &Caller, uuid: Uuid) -> Result<Vec<VersionInfo>, StoreError> {
-        let mut conn = self.conn();
-        let tx = immediate(&mut conn)?;
-        let answer = versions(&tx, uuid);
+        let mut tx = self.catalog.immediate()?;
+        let answer = versions(&mut tx, uuid);
         let entry = Entry {
             actor: Actor::Key(who.key),
             action: Action::LegalVersions,
@@ -172,7 +134,7 @@ impl Store {
             version: None,
             status: status(&answer, 200),
         };
-        self.record(&tx, &entry)?;
+        self.record(&mut tx, &entry)?;
         commit(tx)?;
         answer
     }
@@ -182,18 +144,10 @@ impl Store {
     /// purges it. Older hidden versions stay hidden. A live uuid is
     /// NotDeleted, a purged one Gone, one never stored NotFound. Recorded.
     pub fn restore(&self, who: &Caller, uuid: Uuid) -> Result<VersionId, StoreError> {
-        let mut conn = self.conn();
-        let mut tx = immediate(&mut conn)?;
-        // The writes go in a savepoint, so a failure undoes them and still
-        // leaves the record.
-        let answer = {
-            let changes = tx.savepoint().map_err(io)?;
-            let answer = restored(&changes, uuid);
-            if answer.is_ok() {
-                changes.commit().map_err(io)?;
-            }
-            answer
-        };
+        let mut tx = self.catalog.immediate()?;
+        // The writes go in a part of their own, so a failure undoes them
+        // and still leaves the record.
+        let answer = in_part(&mut tx, |tx| restored(tx, uuid))?;
         let entry = Entry {
             actor: Actor::Key(who.key),
             action: Action::Restore,
@@ -201,7 +155,7 @@ impl Store {
             version: answer.as_ref().ok().copied(),
             status: status(&answer, 200),
         };
-        self.record(&tx, &entry)?;
+        self.record(&mut tx, &entry)?;
         commit(tx)?;
         answer
     }
@@ -210,16 +164,8 @@ impl Store {
     /// purged; a delete still hides it. A purged uuid is Gone, one never
     /// stored NotFound. Recorded.
     pub fn set_hold(&self, who: &Caller, uuid: Uuid, on: bool) -> Result<(), StoreError> {
-        let mut conn = self.conn();
-        let mut tx = immediate(&mut conn)?;
-        let answer = {
-            let changes = tx.savepoint().map_err(io)?;
-            let answer = held(&changes, uuid, on);
-            if answer.is_ok() {
-                changes.commit().map_err(io)?;
-            }
-            answer
-        };
+        let mut tx = self.catalog.immediate()?;
+        let answer = in_part(&mut tx, |tx| held(tx, uuid, on))?;
         let entry = Entry {
             actor: Actor::Key(who.key),
             action: if on { Action::Hold } else { Action::Release },
@@ -227,13 +173,30 @@ impl Store {
             version: None,
             status: status(&answer, 204),
         };
-        self.record(&tx, &entry)?;
+        self.record(&mut tx, &entry)?;
         commit(tx)?;
         answer
     }
 }
 
-fn restored(tx: &Connection, uuid: Uuid) -> Result<VersionId, StoreError> {
+/// Runs `writes` in a part of `tx` of its own: kept if they succeed, undone
+/// if they fail. The outer error is the part's own failure; the inner one
+/// is `writes`'s answer.
+fn in_part<T>(
+    tx: &mut Tx,
+    writes: impl FnOnce(&mut Tx) -> Result<T, StoreError>,
+) -> Result<Result<T, StoreError>, StoreError> {
+    tx.begin_part()?;
+    let answer = writes(tx);
+    if answer.is_ok() {
+        tx.release_part()?;
+    } else {
+        tx.rollback_part()?;
+    }
+    Ok(answer)
+}
+
+fn restored(tx: &mut Tx, uuid: Uuid) -> Result<VersionId, StoreError> {
     match standing(tx, uuid)? {
         Standing::Purged => return Err(StoreError::Gone),
         Standing::Absent => return Err(StoreError::NotFound),
@@ -241,35 +204,20 @@ fn restored(tx: &Connection, uuid: Uuid) -> Result<VersionId, StoreError> {
         Standing::Deleted => {}
     }
     let version = latest(tx, uuid)?;
-    tx.execute(
-        "UPDATE version SET hidden_at = NULL WHERE version = ?1",
-        [version.0],
-    )
-    .map_err(io)?;
-    tx.execute(
-        "UPDATE vcon SET current = ?1, deleted_at = NULL WHERE uuid = ?2",
-        (version.0, uuid.as_bytes()),
-    )
-    .map_err(io)?;
+    tx.unhide(version)?;
+    tx.undelete(uuid, version)?;
     Ok(version)
 }
 
-fn held(tx: &Connection, uuid: Uuid, on: bool) -> Result<(), StoreError> {
+fn held(tx: &mut Tx, uuid: Uuid, on: bool) -> Result<(), StoreError> {
     match standing(tx, uuid)? {
         Standing::Purged => Err(StoreError::Gone),
         Standing::Absent => Err(StoreError::NotFound),
-        Standing::Live(_) | Standing::Deleted => {
-            tx.execute(
-                "UPDATE vcon SET hold = ?1 WHERE uuid = ?2",
-                (on, uuid.as_bytes()),
-            )
-            .map_err(io)?;
-            Ok(())
-        }
+        Standing::Live(_) | Standing::Deleted => tx.set_hold(uuid, on),
     }
 }
 
-fn versions(tx: &Transaction, uuid: Uuid) -> Result<Vec<VersionInfo>, StoreError> {
+fn versions(tx: &mut Tx, uuid: Uuid) -> Result<Vec<VersionInfo>, StoreError> {
     let current = match standing(tx, uuid)? {
         Standing::Purged => return Err(StoreError::Gone),
         Standing::Absent => return Err(StoreError::NotFound),
@@ -277,29 +225,14 @@ fn versions(tx: &Transaction, uuid: Uuid) -> Result<Vec<VersionInfo>, StoreError
         Standing::Deleted => None,
     };
     let time = |nanos: i64| from_nanos(nanos).ok_or(StoreError::Damaged);
-    let mut rows = tx
-        .prepare(
-            "SELECT version, stored_at, hidden_at FROM version WHERE uuid = ?1
-             ORDER BY stored_at, rowid",
-        )
-        .map_err(io)?;
-    let found = rows
-        .query_map([uuid.as_bytes()], |r| {
-            Ok((
-                VersionId(r.get(0)?),
-                r.get::<_, i64>(1)?,
-                r.get::<_, Option<i64>>(2)?,
-            ))
-        })
-        .map_err(io)?;
-    found
+    tx.kept(uuid)?
+        .into_iter()
         .map(|row| {
-            let (version, stored_at, hidden_at) = row.map_err(io)?;
             Ok(VersionInfo {
-                version,
-                stored_at: time(stored_at)?,
-                hidden_at: hidden_at.map(time).transpose()?,
-                current: Some(version) == current,
+                version: row.version,
+                stored_at: time(row.stored_at)?,
+                hidden_at: row.hidden_at.map(time).transpose()?,
+                current: Some(row.version) == current,
             })
         })
         .collect()
@@ -527,7 +460,7 @@ mod legal_tests {
         f.store
             .delete(&f.caller, uuid(), Retention::Years(7))
             .expect("deleted");
-        let file = f.store.objects.join(version.to_string());
+        let file = f.store.objects_dir.join(version.to_string());
         let mut blob = f.fs.read(&file).expect("file");
         let last_byte = blob.len() - 1;
         blob[last_byte] ^= 1;

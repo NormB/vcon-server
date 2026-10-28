@@ -6,10 +6,8 @@ use std::collections::BTreeSet;
 
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
-use uuid::Uuid;
 
 use super::{Kept, Store, StoreError, due, io};
-use crate::audit::Action;
 use crate::clock::from_nanos;
 use crate::ids::VersionId;
 use crate::retention::Retention;
@@ -44,22 +42,8 @@ impl Store {
         key_since: OffsetDateTime,
         now: OffsetDateTime,
     ) -> Result<Examination, StoreError> {
-        let mut conn = self.conn();
-        let tx = conn.transaction().map_err(io)?;
-        // version, uuid, stored_at, hidden_at, held
-        type Row = ([u8; 16], [u8; 16], i64, Option<i64>, bool);
-        let rows: Vec<Row> = tx
-            .prepare(
-                "SELECT v.version, v.uuid, v.stored_at, v.hidden_at, c.hold != 0
-                 FROM version v JOIN vcon c ON c.uuid = v.uuid ORDER BY v.version",
-            )
-            .map_err(io)?
-            .query_map([], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
-            })
-            .map_err(io)?
-            .collect::<Result<_, _>>()
-            .map_err(io)?;
+        let mut tx = self.catalog.snapshot()?;
+        let rows = tx.examined()?;
         let time = |nanos| from_nanos(nanos).ok_or(StoreError::Damaged);
         let mut found = Examination {
             versions: rows.len() as u64,
@@ -70,14 +54,16 @@ impl Store {
             purges_since_key: 0,
             oldest_purge_since_key: None,
         };
-        for &(version, uuid, stored_at, hidden_at, held) in &rows {
-            let version = VersionId(version);
-            match self.read_version(&tx, Uuid::from_bytes(uuid), version) {
+        for row in &rows {
+            let (version, stored_at, held) = (row.version, row.stored_at, row.held);
+            match self.read_version(&mut tx, row.uuid, version) {
                 Ok(_) => {}
                 Err(StoreError::Damaged) => found.damaged.push(version),
                 Err(e) => return Err(e),
             }
-            let Some(hidden_at) = hidden_at else { continue };
+            let Some(hidden_at) = row.hidden_at else {
+                continue;
+            };
             let stored_at = time(stored_at)?;
             let kept = Kept {
                 stored_at,
@@ -94,12 +80,9 @@ impl Store {
             found.due += 1;
             found.oldest_due_since = Some(found.oldest_due_since.map_or(since, |o| o.min(since)));
         }
-        let named: BTreeSet<String> = rows
-            .iter()
-            .map(|(version, ..)| VersionId(*version).to_string())
-            .collect();
-        for name in self.fs.list(&self.objects).map_err(io)? {
-            let Some(name) = name.to_str() else { continue };
+        let named: BTreeSet<String> = rows.iter().map(|row| row.version.to_string()).collect();
+        for name in self.objects.list().map_err(io)? {
+            let name = name.as_str();
             let (id, temporary) = match name.strip_suffix(".tmp") {
                 Some(id) => (id, true),
                 None => (name, false),
@@ -110,7 +93,6 @@ impl Store {
         }
         found.leftovers.sort();
         drop(tx);
-        drop(conn);
         (found.purges_since_key, found.oldest_purge_since_key) = self.purges_since(key_since)?;
         Ok(found)
     }
@@ -121,14 +103,7 @@ impl Store {
         &self,
         since: OffsetDateTime,
     ) -> Result<(u64, Option<OffsetDateTime>), StoreError> {
-        let purged: Vec<String> = self
-            .conn()
-            .prepare("SELECT at FROM audit WHERE action = ?1 AND status = 200")
-            .map_err(io)?
-            .query_map([Action::Purge.as_str()], |r| r.get(0))
-            .map_err(io)?
-            .collect::<Result<_, _>>()
-            .map_err(io)?;
+        let purged = self.catalog.snapshot()?.purge_times()?;
         let (mut count, mut oldest) = (0, None::<OffsetDateTime>);
         for at in purged {
             let at = OffsetDateTime::parse(&at, &Rfc3339).map_err(|_| StoreError::Damaged)?;
@@ -190,7 +165,7 @@ mod examine_tests {
         let (_, missing) = stored(&f, 0);
         let (_, altered) = stored(&f, 1);
         stored(&f, 2);
-        let objects = f.store.objects.clone();
+        let objects = f.store.objects_dir.clone();
         f.fs.remove(&objects.join(missing.to_string()))
             .expect("remove");
         f.fs.remove(&objects.join(altered.to_string()))
@@ -207,7 +182,7 @@ mod examine_tests {
         let f = fixture();
         let (_, version) = stored(&f, 0);
         let orphan = VersionId([0x0e; 16]);
-        let objects = f.store.objects.clone();
+        let objects = f.store.objects_dir.clone();
         for name in [
             orphan.to_string(),
             format!("{orphan}.tmp"),

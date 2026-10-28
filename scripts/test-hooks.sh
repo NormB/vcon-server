@@ -128,6 +128,7 @@ expect refuse "owner surname in a site page" website/content/a.md "by Norm ${sur
 expect refuse "owner surname in a nested README" crates/x/README.md "by Norm ${sur^}"
 expect refuse "design rule id" notes.txt "see FMT""-3"
 expect refuse "design rule id in lower case" notes.txt "see sto""-4"
+expect refuse "backend design rule id" notes.txt "see BKD""-4"
 expect refuse "design rule id in a name" crates/x/src/a.rs "fn written_in_the_sto""_3_order() {}"
 expect accept "word ending in a rule prefix" crates/x/src/b.rs "let restore_2 = histo_3;"
 expect refuse "design decision id" notes.txt "see CD""8"

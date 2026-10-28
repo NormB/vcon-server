@@ -5,16 +5,15 @@
 
 use std::path::Path;
 
-use rusqlite::{OptionalExtension, params};
 use time::OffsetDateTime;
 
-use super::{TenantError, Tenants, add_wrap, immediate, io, wraps};
-use crate::audit::{self, Action, Actor, Entry};
-use crate::catalog::{self, CatalogError};
+use super::{TenantError, Tenants, commit, io};
+use crate::audit::{Action, Actor, Entry};
+use crate::backend::Under;
 use crate::clock::nanos;
 use crate::envelope::{self, Context, Key, WrapLimit};
 use crate::ids::TenantId;
-use crate::store::{Store, StoreError};
+use crate::store::StoreError;
 
 /// How many data keys one catalog transaction rewraps.
 pub(super) const REKEY_BATCH: usize = 1000;
@@ -66,70 +65,7 @@ pub(crate) fn rekey_master_stopping(
     now: OffsetDateTime,
     stop: Option<MasterStep>,
 ) -> Result<(), TenantError> {
-    let stop_after = |step| match stop == Some(step) {
-        true => Err(TenantError::Io),
-        false => Ok(()),
-    };
-    let path = dir.join("server.sqlite");
-    let old_catalog = envelope::catalog_key(old).map_err(io)?;
-    let new_catalog = envelope::catalog_key(new).map_err(io)?;
-    match catalog::open(&path, &old_catalog, "") {
-        Ok(conn) => drop(conn),
-        // A run stopped after its rename left server.sqlite under the new
-        // key: nothing is left to do.
-        Err(CatalogError::WrongKey) => {
-            return match catalog::open(&path, &new_catalog, "") {
-                Ok(_) => Ok(()),
-                Err(CatalogError::WrongKey) => Err(TenantError::WrongKey),
-                Err(e) => Err(io(e)),
-            };
-        }
-        Err(e) => return Err(io(e)),
-    }
-    let copy = catalog::copy_under(&path, &old_catalog, &new_catalog).map_err(io)?;
-    stop_after(MasterStep::Copied)?;
-    {
-        let mut conn = catalog::open(&copy, &new_catalog, "").map_err(io)?;
-        let tx = immediate(&mut conn)?;
-        let rows: Vec<(TenantId, Vec<u8>, Option<Vec<u8>>)> = tx
-            .prepare("SELECT id, wrapped_tenant_key, pending_wrapped_tenant_key FROM tenant")
-            .map_err(io)?
-            .query_map([], |r| Ok((TenantId(r.get(0)?), r.get(1)?, r.get(2)?)))
-            .map_err(io)?
-            .collect::<Result<_, _>>()
-            .map_err(io)?;
-        let mut wraps = 0_i64;
-        for (id, wrapped, pending) in rows {
-            let ctx = Context::Tenant { tenant: id };
-            let rewrap = |w: &[u8]| envelope::rewrap(old, new, &ctx, w).map_err(io);
-            let pending = pending.as_deref().map(rewrap).transpose()?;
-            wraps += 1 + i64::from(pending.is_some());
-            tx.execute(
-                "UPDATE tenant SET wrapped_tenant_key = ?1, pending_wrapped_tenant_key = ?2
-                 WHERE id = ?3",
-                params![rewrap(&wrapped)?, pending, id.0],
-            )
-            .map_err(io)?;
-        }
-        tx.execute("DELETE FROM master_key_use", []).map_err(io)?;
-        tx.execute(
-            "INSERT INTO master_key_use (master_key_id, wraps, since) VALUES (?1, ?2, ?3)",
-            params![new.id().bytes(), wraps, nanos(now)],
-        )
-        .map_err(io)?;
-        let entry = Entry {
-            actor: Actor::Cli,
-            action: Action::RekeyMaster,
-            target: None,
-            version: None,
-            status: 200,
-        };
-        audit::record(&tx, &entry, now).map_err(|_| TenantError::AuditFailed)?;
-        tx.commit().map_err(io)?;
-    }
-    stop_after(MasterStep::Rewrapped)?;
-    catalog::replace(&path, &copy).map_err(io)?;
-    stop_after(MasterStep::Renamed)
+    crate::backend::local::rekey_master(dir, old, new, now, stop)
 }
 
 impl Tenants {
@@ -157,43 +93,31 @@ impl Tenants {
         // 1. The new key, committed as pending before anything uses it, so a
         // stopped run's data keys are never wrapped under a key that is lost.
         let (old, new) = {
-            let mut conn = self.conn();
-            let tx = immediate(&mut conn)?;
-            let row: Option<(Vec<u8>, Option<Vec<u8>>)> = tx
-                .query_row(
-                    "SELECT wrapped_tenant_key, pending_wrapped_tenant_key FROM tenant WHERE id = ?1",
-                    [id.0],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .optional()
-                .map_err(io)?;
-            let Some((wrapped, pending)) = row else {
-                self.record(&tx, &entry(404))?;
-                tx.commit().map_err(io)?;
+            let mut tx = self.registry.immediate()?;
+            let Some(row) = tx.tenant(id)? else {
+                self.record(&mut tx, &entry(404))?;
+                commit(tx)?;
                 return Err(TenantError::NotFound);
             };
+            let (wrapped, pending) = (row.wrapped, row.pending);
             let old = envelope::unwrap(&self.master, &ctx, &wrapped).map_err(io)?;
             let new = match pending {
                 Some(pending) => envelope::unwrap(&self.master, &ctx, &pending).map_err(io)?,
                 None => {
                     let master_id = self.master.id();
-                    if envelope::wrap_limit(wraps(&tx, master_id)?) == WrapLimit::Refuse {
-                        self.record(&tx, &entry(503))?;
-                        tx.commit().map_err(io)?;
+                    if envelope::wrap_limit(tx.master_wraps(master_id)?) == WrapLimit::Refuse {
+                        self.record(&mut tx, &entry(503))?;
+                        commit(tx)?;
                         return Err(TenantError::LimitReached);
                     }
-                    add_wrap(&tx, master_id, nanos(self.clock.now()))?;
+                    tx.add_master_wrap(master_id, nanos(self.clock.now()))?;
                     let new = Key::generate().map_err(io)?;
                     let pending = envelope::wrap(&self.master, &ctx, &new);
-                    tx.execute(
-                        "UPDATE tenant SET pending_wrapped_tenant_key = ?1 WHERE id = ?2",
-                        params![pending, id.0],
-                    )
-                    .map_err(io)?;
+                    tx.set_pending(id, &pending)?;
                     new
                 }
             };
-            tx.commit().map_err(io)?;
+            commit(tx)?;
             (old, new)
         };
         self.stop_after(RekeyStep::Pending)?;
@@ -208,18 +132,10 @@ impl Tenants {
         // 4. The new key becomes current and the old one goes, in one
         // transaction with its record.
         {
-            let mut conn = self.conn();
-            let tx = immediate(&mut conn)?;
-            tx.execute(
-                "UPDATE tenant SET tenant_key_id = ?1,
-                    wrapped_tenant_key = pending_wrapped_tenant_key,
-                    pending_wrapped_tenant_key = NULL, key_since = ?2
-                 WHERE id = ?3",
-                params![new.id().bytes(), nanos(self.clock.now()), id.0],
-            )
-            .map_err(io)?;
-            self.record(&tx, &entry(200))?;
-            tx.commit().map_err(io)?;
+            let mut tx = self.registry.immediate()?;
+            tx.promote_pending(id, new.id(), nanos(self.clock.now()))?;
+            self.record(&mut tx, &entry(200))?;
+            commit(tx)?;
         }
         self.copy_to_tenant(id, &entry(200))
     }
@@ -234,19 +150,15 @@ impl Tenants {
         new: &Key,
         batch: usize,
     ) -> Result<(), TenantError> {
-        let dir = self.tenants.join(id.to_string());
-        let path = dir.join("catalog.sqlite");
         let old_catalog = envelope::catalog_key(&old).map_err(io)?;
         let new_catalog = envelope::catalog_key(new).map_err(io)?;
-        match catalog::open(&path, &old_catalog, "") {
-            Ok(conn) => drop(conn),
-            Err(CatalogError::WrongKey) => {
-                drop(catalog::open(&path, &new_catalog, "").map_err(io)?);
-                return Ok(());
-            }
-            Err(e) => return Err(io(e)),
+        if self.space.catalog_under(id, &old_catalog, &new_catalog)? == Under::New {
+            return Ok(());
         }
-        let store = Store::open(&dir, id, old, self.fs.clone(), self.clock.clone()).map_err(io)?;
+        let store = self
+            .space
+            .open(id, old, true, self.clock.clone())
+            .map_err(io)?;
         loop {
             let done = store.rewrap(new, batch).map_err(|e| match e {
                 StoreError::LimitReached => TenantError::LimitReached,
@@ -259,7 +171,7 @@ impl Tenants {
         }
         drop(store);
         self.stop_after(RekeyStep::Rewrapped)?;
-        catalog::reencrypt(&path, &old_catalog, &new_catalog).map_err(io)?;
+        self.space.reseal(id, &old_catalog, &new_catalog)?;
         self.stop_after(RekeyStep::Reencrypted)
     }
 

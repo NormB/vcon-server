@@ -4,7 +4,7 @@
 
 use std::io::{self, Write};
 
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Connection, params};
 use serde_json::json;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -157,7 +157,7 @@ fn rfc3339(now: OffsetDateTime) -> String {
 }
 
 /// Appends one record, at `now`, in `tx`.
-pub fn record(tx: &Transaction, entry: &Entry, now: OffsetDateTime) -> Result<(), AuditError> {
+pub fn record(tx: &Connection, entry: &Entry, now: OffsetDateTime) -> Result<(), AuditError> {
     tx.execute(
         "INSERT INTO audit (at, actor, action, target, version, status, count)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)",
@@ -176,7 +176,7 @@ pub fn record(tx: &Transaction, entry: &Entry, now: OffsetDateTime) -> Result<()
 /// Adds one to the record for this actor, action and status in the minute
 /// of `now`, making it if needed. For requests that could otherwise grow a
 /// log one row each: failed authentications and health checks.
-pub fn count(tx: &Transaction, entry: &Entry, now: OffsetDateTime) -> Result<(), AuditError> {
+pub fn count(tx: &Connection, entry: &Entry, now: OffsetDateTime) -> Result<(), AuditError> {
     let minute = now
         .to_offset(time::UtcOffset::UTC)
         .replace_second(0)

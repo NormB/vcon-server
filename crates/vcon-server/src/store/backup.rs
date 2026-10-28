@@ -7,8 +7,8 @@ use std::io;
 use std::path::Path;
 
 use super::Store;
+use crate::backend::ObjectError;
 use crate::ids::VersionId;
-use crate::{catalog, envelope};
 
 /// How many times the catalog is copied while versions in each copy are
 /// purged before their object files are copied.
@@ -48,7 +48,6 @@ impl Store {
     /// synced, so the backup is whole once this returns.
     pub fn backup_to(&self, dir: &Path) -> Result<Copied, BackupError> {
         let fail = |_| BackupError::Io;
-        let key = envelope::catalog_key(&self.tenant_key).map_err(|_| BackupError::Io)?;
         let objects = dir.join("objects");
         self.fs.create_dir_all(&objects).map_err(fail)?;
         let catalog = dir.join("catalog.sqlite");
@@ -56,12 +55,17 @@ impl Store {
             for file in ["catalog.sqlite", "catalog.sqlite-wal", "catalog.sqlite-shm"] {
                 remove_if_there(&dir.join(file)).map_err(fail)?;
             }
-            catalog::backup(&self.conn(), &catalog, &key).map_err(|_| BackupError::Io)?;
+            let versions: BTreeSet<String> = self
+                .catalog
+                .backup_into(&catalog)
+                .map_err(|_| BackupError::Io)?
+                .into_iter()
+                .map(|v| v.to_string())
+                .collect();
             #[cfg(test)]
             if let Some(hook) = self.hooks.copied.lock().expect("hook").as_mut() {
                 hook(self);
             }
-            let versions = versions_in(&catalog, &key)?;
             let present: BTreeSet<String> = self
                 .fs
                 .list(&objects)
@@ -74,7 +78,10 @@ impl Store {
                 if present.contains(name) {
                     continue;
                 }
-                match self.fs.read(&self.objects.join(name)) {
+                let Some(version) = VersionId::parse(name) else {
+                    return Err(BackupError::Io);
+                };
+                match self.objects.get(version) {
                     Ok(bytes) => {
                         let tmp = objects.join(format!("{name}.tmp"));
                         if present.contains(&format!("{name}.tmp")) {
@@ -84,8 +91,8 @@ impl Store {
                         self.fs.sync_file(&tmp).map_err(fail)?;
                         self.fs.rename(&tmp, &objects.join(name)).map_err(fail)?;
                     }
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => missing = true,
-                    Err(e) => return Err(fail(e)),
+                    Err(ObjectError::Missing) => missing = true,
+                    Err(ObjectError::Io(e)) => return Err(fail(e)),
                 }
             }
             if missing {
@@ -111,18 +118,6 @@ impl Store {
         }
         Err(BackupError::KeptChanging)
     }
-}
-
-/// The object file names, one per version row, of the catalog copy at
-/// `path`.
-fn versions_in(path: &Path, key: &crate::envelope::Key) -> Result<BTreeSet<String>, BackupError> {
-    let fail = |_| BackupError::Io;
-    let conn = catalog::open(path, key, "").map_err(|_| BackupError::Io)?;
-    let mut rows = conn.prepare("SELECT version FROM version").map_err(fail)?;
-    rows.query_map([], |r| r.get::<_, [u8; 16]>(0))
-        .map_err(fail)?
-        .map(|row| row.map(|id| VersionId(id).to_string()).map_err(fail))
-        .collect()
 }
 
 fn remove_if_there(path: &Path) -> io::Result<()> {

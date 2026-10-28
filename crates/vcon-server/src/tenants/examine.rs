@@ -2,7 +2,6 @@
 //! its own retention period, rotations left part way, and tenant removals
 //! since the master key was last rotated. Reading changes nothing.
 
-use rusqlite::OptionalExtension;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
@@ -77,19 +76,10 @@ pub struct RotationBacklog {
 impl Tenants {
     /// Counts the tenants whose data is not all under their current key.
     pub fn key_order(&self) -> Result<KeyOrder, TenantError> {
-        let rows: Vec<([u8; 16], Vec<u8>, bool)> = self
-            .conn()
-            .prepare(
-                "SELECT id, wrapped_tenant_key, pending_wrapped_tenant_key IS NOT NULL FROM tenant",
-            )
-            .map_err(io)?
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-            .map_err(io)?
-            .collect::<Result<_, _>>()
-            .map_err(io)?;
+        let rows = self.registry.snapshot()?.tenants()?;
         let mut order = KeyOrder::default();
-        for (id, wrapped, pending) in rows {
-            let id = TenantId(id);
+        for row in rows {
+            let (id, wrapped, pending) = (row.id, row.wrapped, row.pending.is_some());
             if envelope::unwrap(&self.master, &Context::Tenant { tenant: id }, &wrapped).is_err() {
                 order.wrapped_elsewhere += 1;
                 continue;
@@ -118,21 +108,11 @@ impl Tenants {
     /// The rotation backlog: purges per tenant since its key's rotation,
     /// and removals since the master key's.
     pub fn rotation_backlog(&self) -> Result<RotationBacklog, TenantError> {
-        let rows: Vec<([u8; 16], i64)> = self
-            .conn()
-            .prepare("SELECT id, key_since FROM tenant")
-            .map_err(io)?
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .map_err(io)?
-            .collect::<Result<_, _>>()
-            .map_err(io)?;
+        let rows = self.registry.snapshot()?.tenants()?;
         let mut backlog = RotationBacklog::default();
-        for (id, key_since) in rows {
-            let key_since = from_nanos(key_since).ok_or(TenantError::Io)?;
-            let (purges, oldest) = self
-                .store(TenantId(id))?
-                .purges_since(key_since)
-                .map_err(io)?;
+        for row in rows {
+            let key_since = from_nanos(row.key_since).ok_or(TenantError::Io)?;
+            let (purges, oldest) = self.store(row.id)?.purges_since(key_since).map_err(io)?;
             if purges > 0 {
                 backlog.tenants_with_purges += 1;
                 backlog.purges += purges;
@@ -146,22 +126,9 @@ impl Tenants {
     /// Tenant removals since the master key's rotation, and the oldest.
     fn removals_since_master(&self) -> Result<(u64, Option<OffsetDateTime>), TenantError> {
         let (since, removals) = {
-            let conn = self.conn();
-            let since: Option<i64> = conn
-                .query_row(
-                    "SELECT since FROM master_key_use WHERE master_key_id = ?1",
-                    [self.master.id().bytes()],
-                    |r| r.get(0),
-                )
-                .optional()
-                .map_err(io)?;
-            let removals: Vec<String> = conn
-                .prepare("SELECT at FROM audit WHERE action = ?1 AND status = 204")
-                .map_err(io)?
-                .query_map([Action::TenantRemove.as_str()], |r| r.get(0))
-                .map_err(io)?
-                .collect::<Result<_, _>>()
-                .map_err(io)?;
+            let mut tx = self.registry.snapshot()?;
+            let since = tx.master_since(self.master.id())?;
+            let removals = tx.record_times(Action::TenantRemove, 204)?;
             (since, removals)
         };
         let since = since
@@ -185,24 +152,12 @@ impl Tenants {
         default: Retention,
         now: OffsetDateTime,
     ) -> Result<RegistryExamination, TenantError> {
-        type Row = ([u8; 16], String, Option<String>, i64, bool);
-        let rows: Vec<Row> = self
-            .conn()
-            .prepare(
-                "SELECT id, name, retention, key_since, pending_wrapped_tenant_key IS NOT NULL
-                 FROM tenant ORDER BY name",
-            )
-            .map_err(io)?
-            .query_map([], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
-            })
-            .map_err(io)?
-            .collect::<Result<_, _>>()
-            .map_err(io)?;
+        let rows = self.registry.snapshot()?.tenants()?;
         let time = |nanos| from_nanos(nanos).ok_or(TenantError::Io);
         let mut tenants = Vec::new();
-        for (id, name, retention, key_since, rotation_stopped) in rows {
-            let id = TenantId(id);
+        for row in rows {
+            let (id, name, retention, key_since) = (row.id, row.name, row.retention, row.key_since);
+            let rotation_stopped = row.pending.is_some();
             let retention = stored_retention(retention)?.unwrap_or(default);
             let key_since = time(key_since)?;
             let store = self.store_or_why(id).and_then(|store| {

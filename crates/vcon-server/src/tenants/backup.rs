@@ -10,7 +10,6 @@ use super::{TenantError, Tenants};
 use crate::audit::{Action, Actor, Entry};
 use crate::ids::TenantId;
 use crate::store::{self, TRIES};
-use crate::{catalog, envelope};
 
 /// What `backup` copied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,7 +72,6 @@ impl Tenants {
             Err(e) if e.kind() == io::ErrorKind::NotADirectory => return Err(BackupError::Exists),
             Err(_) => return Err(BackupError::Io),
         }
-        let key = envelope::catalog_key(&self.master).map_err(|_| BackupError::Io)?;
         let tenants = to.join("tenants");
         self.fs.create_dir_all(&tenants).map_err(fail)?;
         // Only the service account may enter the copy, as with the data
@@ -88,12 +86,14 @@ impl Tenants {
             for file in ["server.sqlite", "server.sqlite-wal", "server.sqlite-shm"] {
                 remove_if_there(&to.join(file)).map_err(fail)?;
             }
-            catalog::backup(&self.conn(), &registry, &key).map_err(|_| BackupError::Io)?;
+            let listed = self
+                .registry
+                .backup_into(&registry)
+                .map_err(|_| BackupError::Io)?;
             #[cfg(test)]
             if let Some(hook) = self.hooks.registry_copied.lock().expect("hook").as_mut() {
                 hook(self);
             }
-            let listed = tenants_in(&registry, &key)?;
             let mut versions = 0;
             for id in &listed {
                 let copied = match self.store(*id) {
@@ -136,27 +136,9 @@ impl Tenants {
 
     /// Whether server.sqlite, as it is now, lists the tenant.
     fn listed(&self, id: TenantId) -> Result<bool, BackupError> {
-        use rusqlite::OptionalExtension;
-        Ok(self
-            .conn()
-            .query_row("SELECT 1 FROM tenant WHERE id = ?1", [id.0], |_| Ok(()))
-            .optional()
-            .map_err(|_| BackupError::Io)?
-            .is_some())
+        let mut tx = self.registry.snapshot().map_err(|_| BackupError::Io)?;
+        Ok(tx.tenant(id).map_err(|_| BackupError::Io)?.is_some())
     }
-}
-
-/// The tenants the server.sqlite copy at `path` lists.
-fn tenants_in(path: &Path, key: &crate::envelope::Key) -> Result<Vec<TenantId>, BackupError> {
-    let fail = |_| BackupError::Io;
-    let conn = catalog::open(path, key, "").map_err(|_| BackupError::Io)?;
-    let mut rows = conn
-        .prepare("SELECT id FROM tenant ORDER BY id")
-        .map_err(fail)?;
-    rows.query_map([], |r| r.get::<_, [u8; 16]>(0))
-        .map_err(fail)?
-        .map(|row| row.map(TenantId).map_err(fail))
-        .collect()
 }
 
 fn remove_if_there(path: &Path) -> io::Result<()> {

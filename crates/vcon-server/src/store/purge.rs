@@ -1,13 +1,11 @@
 //! When a kept version is erased: the purge rule, apart from the files and
 //! rows it touches, so its boundaries can be tested directly.
 
-use rusqlite::{OptionalExtension, params};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::{Store, StoreError, commit, immediate, io};
+use super::{Store, StoreError, commit, io};
 use crate::audit::{Action, Actor, Entry};
-use crate::catalog;
 use crate::clock::{from_nanos, nanos};
 use crate::ids::VersionId;
 use crate::retention::Retention;
@@ -44,10 +42,6 @@ pub struct PurgeReport {
     pub purged: u64,
 }
 
-/// How long a checkpoint waits before it tries again while a reader still
-/// holds the WAL.
-const CHECKPOINT_RETRY: std::time::Duration = std::time::Duration::from_millis(10);
-
 impl Store {
     /// Erases every version due under `retention`. Each goes in a
     /// transaction of its own that checks the rule again, so a restore or
@@ -70,30 +64,18 @@ impl Store {
         retention: Retention,
         uuid: Option<Uuid>,
     ) -> Result<PurgeReport, StoreError> {
-        let hidden: Vec<[u8; 16]> = {
-            let conn = self.conn();
-            let mut rows = conn
-                .prepare(
-                    "SELECT version FROM version
-                     WHERE hidden_at IS NOT NULL AND (?1 IS NULL OR uuid = ?1)",
-                )
-                .map_err(io)?;
-            rows.query_map([uuid.map(|u| *u.as_bytes())], |r| r.get(0))
-                .map_err(io)?
-                .collect::<Result<_, _>>()
-                .map_err(io)?
-        };
+        let hidden = self.catalog.snapshot()?.hidden_versions(uuid)?;
         // A restore, hold or read may commit here, between the listing and
         // each version's own transaction, which checks the rule again.
         self.pause();
         let mut report = PurgeReport::default();
         for version in hidden {
-            if self.purge(who, VersionId(version), retention)? {
+            if self.purge(who, version, retention)? {
                 report.purged += 1;
             }
         }
         if report.purged > 0 {
-            self.checkpoint()?;
+            self.catalog.after_purge()?;
         }
         Ok(report)
     }
@@ -105,82 +87,34 @@ impl Store {
         version: VersionId,
         retention: Retention,
     ) -> Result<bool, StoreError> {
-        let mut conn = self.conn();
-        let tx = immediate(&mut conn)?;
-        let row: Option<([u8; 16], i64, bool, bool)> = tx
-            .query_row(
-                "SELECT v.uuid, v.stored_at, c.hold != 0, c.deleted_at IS NOT NULL
-                 FROM version v JOIN vcon c ON c.uuid = v.uuid
-                 WHERE v.version = ?1 AND v.hidden_at IS NOT NULL",
-                [version.0],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .optional()
-            .map_err(io)?;
-        let Some((uuid, stored_at, held, deleted)) = row else {
+        let mut tx = self.catalog.immediate()?;
+        let Some(row) = tx.hidden_row(version)? else {
             return Ok(false);
         };
         let now = self.clock.now();
         let kept = Kept {
-            stored_at: from_nanos(stored_at).ok_or(StoreError::Damaged)?,
+            stored_at: from_nanos(row.stored_at).ok_or(StoreError::Damaged)?,
             hidden: true,
-            held,
+            held: row.held,
         };
         if !due(&kept, retention, now) {
             return Ok(false);
         }
-        tx.execute("DELETE FROM version WHERE version = ?1", [version.0])
-            .map_err(io)?;
-        let left: i64 = tx
-            .query_row(
-                "SELECT count(*) FROM version WHERE uuid = ?1",
-                [uuid],
-                |r| r.get(0),
-            )
-            .map_err(io)?;
-        if deleted && left == 0 {
-            tx.execute("DELETE FROM vcon WHERE uuid = ?1", [uuid])
-                .map_err(io)?;
-            tx.execute(
-                "INSERT INTO tombstone (uuid, purged_at) VALUES (?1, ?2)",
-                params![uuid, nanos(now)],
-            )
-            .map_err(io)?;
+        tx.delete_version(version)?;
+        if row.deleted && tx.versions_of(row.uuid)? == 0 {
+            tx.tombstone(row.uuid, nanos(now))?;
         }
         let entry = Entry {
             actor: who,
             action: Action::Purge,
-            target: Some(Uuid::from_bytes(uuid).to_string()),
+            target: Some(row.uuid.to_string()),
             version: Some(version),
             status: 200,
         };
-        self.record(&tx, &entry)?;
+        self.record(&mut tx, &entry)?;
         commit(tx)?;
-        drop(conn);
-        self.fs
-            .remove(&self.objects.join(version.to_string()))
-            .map_err(io)?;
+        self.objects.remove(version).map_err(io)?;
         Ok(true)
-    }
-
-    /// Checkpoints the WAL with truncation, trying again while a reader
-    /// holds it. Each try asks without waiting, so the wait for a reader
-    /// happens here, between tries, with the catalog free to other callers,
-    /// not inside SQLite with the catalog locked.
-    fn checkpoint(&self) -> Result<(), StoreError> {
-        loop {
-            let busy: i64 = {
-                let conn = self.conn();
-                conn.busy_timeout(std::time::Duration::ZERO).map_err(io)?;
-                let busy = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0));
-                conn.busy_timeout(catalog::BUSY_TIMEOUT).map_err(io)?;
-                busy.map_err(io)?
-            };
-            if busy == 0 {
-                return Ok(());
-            }
-            std::thread::sleep(CHECKPOINT_RETRY);
-        }
     }
 }
 
@@ -330,7 +264,7 @@ mod purge_tests {
     }
 
     fn object_exists(f: &Fixture, version: VersionId) -> bool {
-        f.fs.read(&f.store.objects.join(version.to_string()))
+        f.fs.read(&f.store.objects_dir.join(version.to_string()))
             .is_ok()
     }
 

@@ -1,13 +1,13 @@
 //! The access keys in server.sqlite: made, listed and revoked here, and
 //! read by `access` on every request.
 
-use rusqlite::{OptionalExtension, Transaction, params};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use super::{Slot, TenantError, Tenants, immediate, io};
+use super::{Slot, TenantError, Tenants, commit};
 use crate::access::{self, Scope, Scopes};
 use crate::audit::{Action, Actor, Entry};
+use crate::backend::KeyRow;
 use crate::clock::{from_nanos, nanos};
 use crate::ids::{KeyId, TenantId};
 
@@ -90,30 +90,14 @@ impl Tenants {
     /// counts from the next request. Nothing is recorded here; `access`
     /// records the outcome.
     pub(crate) fn stored_key(&self, id: KeyId) -> Result<Option<StoredKey>, TenantError> {
-        let row = self
-            .conn()
-            .query_row(
-                "SELECT token_hash, tenant, scopes, revoked_at IS NOT NULL
-                 FROM api_key WHERE id = ?1",
-                [id.bytes()],
-                |r| {
-                    Ok((
-                        r.get::<_, Vec<u8>>(0)?,
-                        r.get::<_, Option<[u8; 16]>>(1)?,
-                        r.get::<_, String>(2)?,
-                        r.get::<_, bool>(3)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(io)?;
-        row.map(|(hash, tenant, scopes, revoked)| {
+        let row = self.registry.snapshot()?.key(id)?;
+        row.map(|row| {
             Ok(StoredKey {
-                hash,
-                tenant: tenant.map(TenantId),
+                hash: row.token_hash,
+                tenant: row.tenant,
                 // Scopes that do not read back are damage, not none.
-                scopes: Scopes::parse(&scopes).ok_or(TenantError::Io)?,
-                revoked,
+                scopes: Scopes::parse(&row.scopes).ok_or(TenantError::Io)?,
+                revoked: row.revoked_at.is_some(),
             })
         })
         .transpose()
@@ -145,38 +129,32 @@ impl Tenants {
             _ => None,
         };
         let closing = tenant.is_some_and(|t| matches!(self.stores().get(&t), Some(Slot::Closing)));
-        let mut conn = self.conn();
-        let tx = immediate(&mut conn)?;
+        let mut tx = self.registry.immediate()?;
         let refused = match (shape, tenant) {
             (Some(refused), _) => Some(refused),
-            (None, Some(t)) if !tenant_exists(&tx, t)? => Some((404, TenantError::NotFound)),
+            (None, Some(t)) if tx.tenant(t)?.is_none() => Some((404, TenantError::NotFound)),
             (None, Some(_)) if closing => Some((503, TenantError::Closing)),
             _ => None,
         };
         if let Some((status, error)) = refused {
-            self.record(&tx, &entry(status, tenant.map(|t| t.to_string())))?;
-            tx.commit().map_err(io)?;
+            self.record(&mut tx, &entry(status, tenant.map(|t| t.to_string())))?;
+            commit(tx)?;
             return Err(error);
         }
         let (id, token) = access::new_token();
-        tx.execute(
-            "INSERT INTO api_key (id, tenant, token_hash, scopes, label, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                id.bytes(),
-                tenant.map(|t| t.0),
-                access::token_hash(&token),
-                scopes.to_string(),
-                label,
-                nanos(self.clock.now())
-            ],
-        )
-        .map_err(io)?;
+        tx.insert_key(&KeyRow {
+            id,
+            tenant,
+            token_hash: access::token_hash(&token).to_vec(),
+            scopes: scopes.to_string(),
+            label: label.to_owned(),
+            created_at: nanos(self.clock.now()),
+            revoked_at: None,
+        })?;
         let made = entry(201, Some(id.to_string()));
-        self.record(&tx, &made)?;
-        tx.commit().map_err(io)?;
-        // The copy opens the tenant's Store, which reads server.sqlite.
-        drop(conn);
+        self.record(&mut tx, &made)?;
+        // The copy opens the tenant's Store, which reads the registry.
+        commit(tx)?;
         if let Some(t) = tenant {
             self.copy_to_tenant(t, &made)?;
         }
@@ -196,70 +174,42 @@ impl Tenants {
             version: None,
             status,
         };
-        let mut conn = self.conn();
-        let tx = immediate(&mut conn)?;
+        let mut tx = self.registry.immediate()?;
         if let Some(t) = tenant
-            && !tenant_exists(&tx, t)?
+            && tx.tenant(t)?.is_none()
         {
-            self.record(&tx, &entry(404))?;
-            tx.commit().map_err(io)?;
+            self.record(&mut tx, &entry(404))?;
+            commit(tx)?;
             return Err(TenantError::NotFound);
         }
         let keys = tx
-            .prepare(
-                "SELECT id, tenant, scopes, label, created_at, revoked_at FROM api_key
-                 WHERE ?1 IS NULL OR tenant = ?1 ORDER BY created_at, id",
-            )
-            .map_err(io)?
-            .query_map([tenant.map(|t| t.0)], |r| {
-                Ok((
-                    r.get::<_, [u8; 8]>(0)?,
-                    r.get::<_, Option<[u8; 16]>>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, String>(3)?,
-                    r.get::<_, i64>(4)?,
-                    r.get::<_, Option<i64>>(5)?,
-                ))
-            })
-            .map_err(io)?
+            .keys(tenant)?
+            .into_iter()
             .map(|row| {
-                let (id, tenant, scopes, label, created_at, revoked_at) = row.map_err(io)?;
                 let time = |at| from_nanos(at).ok_or(TenantError::Io);
                 Ok(KeyInfo {
-                    id: KeyId(id),
-                    tenant: tenant.map(TenantId),
+                    id: row.id,
+                    tenant: row.tenant,
                     // Scopes that do not read back are damage, not none.
-                    scopes: Scopes::parse(&scopes).ok_or(TenantError::Io)?,
-                    label,
-                    created_at: time(created_at)?,
-                    revoked_at: revoked_at.map(time).transpose()?,
+                    scopes: Scopes::parse(&row.scopes).ok_or(TenantError::Io)?,
+                    label: row.label,
+                    created_at: time(row.created_at)?,
+                    revoked_at: row.revoked_at.map(time).transpose()?,
                 })
             })
             .collect::<Result<Vec<_>, TenantError>>()?;
-        self.record(&tx, &entry(200))?;
-        tx.commit().map_err(io)?;
+        self.record(&mut tx, &entry(200))?;
+        commit(tx)?;
         Ok(keys)
     }
 
     /// Revokes a key; revoking it again changes nothing.
     pub fn revoke_key(&self, who: Actor, id: KeyId) -> Result<(), TenantError> {
-        let mut conn = self.conn();
-        let tx = immediate(&mut conn)?;
+        let mut tx = self.registry.immediate()?;
         // The key's tenant, if the key is known: None for an operator key.
-        let found: Option<Option<[u8; 16]>> = tx
-            .query_row(
-                "SELECT tenant FROM api_key WHERE id = ?1",
-                [id.bytes()],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(io)?;
+        let found = tx.key(id)?.map(|row| row.tenant);
         if found.is_some() {
-            tx.execute(
-                "UPDATE api_key SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL",
-                params![id.bytes(), nanos(self.clock.now())],
-            )
-            .map_err(io)?;
+            tx.revoke_key(id, nanos(self.clock.now()))?;
         }
         let entry = Entry {
             actor: who,
@@ -268,24 +218,15 @@ impl Tenants {
             version: None,
             status: if found.is_some() { 204 } else { 404 },
         };
-        self.record(&tx, &entry)?;
-        tx.commit().map_err(io)?;
-        // The copy opens the tenant's Store, which reads server.sqlite.
-        drop(conn);
+        self.record(&mut tx, &entry)?;
+        // The copy opens the tenant's Store, which reads the registry.
+        commit(tx)?;
         match found {
             None => Err(TenantError::NotFound),
-            Some(Some(t)) => self.copy_to_tenant(TenantId(t), &entry),
+            Some(Some(t)) => self.copy_to_tenant(t, &entry),
             Some(None) => Ok(()),
         }
     }
-}
-
-fn tenant_exists(tx: &Transaction, tenant: TenantId) -> Result<bool, TenantError> {
-    Ok(tx
-        .query_row("SELECT 1 FROM tenant WHERE id = ?1", [tenant.0], |_| Ok(()))
-        .optional()
-        .map_err(io)?
-        .is_some())
 }
 
 #[cfg(test)]

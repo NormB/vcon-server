@@ -8,10 +8,9 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 
-use rusqlite::params;
-
-use super::{Caller, Store, StoreError, commit, immediate, io};
+use super::{Caller, Store, StoreError, Tx, commit, io};
 use crate::audit::{Action, Actor, Entry};
+use crate::backend::PageQuery;
 use crate::clock::{from_nanos, nanos};
 use crate::ids::VersionId;
 use crate::query::{self, BadQuery};
@@ -151,12 +150,11 @@ impl Store {
     /// was first stored, then by uuid. The page and its audit record are
     /// one transaction.
     pub fn list(&self, who: &Caller, query: &ListQuery) -> Result<Listing, StoreError> {
-        let mut conn = self.conn();
-        let tx = immediate(&mut conn)?;
-        let listing = page(&tx, query);
+        let mut tx = self.catalog.immediate()?;
+        let listing = page(&mut tx, query);
         let status = if listing.is_ok() { 200 } else { 500 };
         self.record(
-            &tx,
+            &mut tx,
             &Entry {
                 actor: Actor::Key(who.key),
                 action: Action::List,
@@ -187,51 +185,23 @@ fn rfc3339(at: OffsetDateTime) -> String {
 /// The page itself, read in `tx`. One row past the limit says whether a
 /// next page exists. A live uuid whose current version has no row is
 /// damage, never left out quietly.
-fn page(tx: &rusqlite::Transaction, query: &ListQuery) -> Result<Listing, StoreError> {
-    let mut rows = tx
-        .prepare(
-            "SELECT vcon.uuid, vcon.current, vcon.stored_at, version.stored_at
-             FROM vcon LEFT JOIN version ON version.version = vcon.current
-             WHERE vcon.current IS NOT NULL
-               AND (?1 IS NULL OR vcon.stored_at < ?1 OR (vcon.stored_at = ?1 AND vcon.uuid < ?2))
-               AND (?3 IS NULL OR vcon.stored_at >= ?3)
-               AND (?4 IS NULL OR vcon.stored_at < ?4)
-             ORDER BY vcon.stored_at DESC, vcon.uuid DESC
-             LIMIT ?5",
-        )
-        .map_err(io)?;
-    let cursor = query.cursor;
-    let found = rows
-        .query_map(
-            params![
-                cursor.map(|c| c.stored_at),
-                cursor.map(|c| c.uuid.as_bytes().to_vec()),
-                query.since.map(nanos),
-                query.until.map(nanos),
-                i64::from(query.limit) + 1,
-            ],
-            |r| {
-                Ok((
-                    r.get::<_, [u8; 16]>(0)?,
-                    r.get::<_, [u8; 16]>(1)?,
-                    r.get::<_, i64>(2)?,
-                    r.get::<_, Option<i64>>(3)?,
-                ))
-            },
-        )
-        .map_err(io)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(io)?;
+fn page(tx: &mut Tx, query: &ListQuery) -> Result<Listing, StoreError> {
+    let found = tx.page(&PageQuery {
+        before: query.cursor.map(|c| (c.stored_at, c.uuid)),
+        since: query.since.map(nanos),
+        until: query.until.map(nanos),
+        rows: i64::from(query.limit) + 1,
+    })?;
     let mut vcons = Vec::with_capacity(found.len());
-    for (uuid, version, stored_at, updated_at) in found {
+    for row in found {
         let (Some(first), Some(Some(current))) =
-            (from_nanos(stored_at), updated_at.map(from_nanos))
+            (from_nanos(row.stored_at), row.updated_at.map(from_nanos))
         else {
             return Err(StoreError::Damaged);
         };
         vcons.push(Listed {
-            uuid: Uuid::from_bytes(uuid),
-            version: VersionId(version),
+            uuid: row.uuid,
+            version: row.version,
             stored_at: first,
             updated_at: current,
         });

@@ -2,12 +2,8 @@
 //! key, wrapped under the old tenant key, is rewrapped under the new one.
 //! Bodies are never re-encrypted.
 
-use rusqlite::params;
-use uuid::Uuid;
-
-use super::{Store, StoreError, add_wrap, commit, immediate, io, wraps};
+use super::{Store, StoreError, commit};
 use crate::envelope::{self, Context, Key, WrapLimit};
-use crate::ids::VersionId;
 
 impl Store {
     /// Rewraps up to `limit` of the data keys still wrapped under this
@@ -16,39 +12,22 @@ impl Store {
     /// Each rewrap is counted against `new`, and refused at its wrap limit.
     pub fn rewrap(&self, new: &Key, limit: usize) -> Result<usize, StoreError> {
         let old = self.tenant_key.id();
-        let mut conn = self.conn();
-        let tx = immediate(&mut conn)?;
-        let rows: Vec<(VersionId, Uuid, Vec<u8>)> = tx
-            .prepare(
-                "SELECT version, uuid, wrapped_key FROM version
-                 WHERE tenant_key_id = ?1 ORDER BY version LIMIT ?2",
-            )
-            .map_err(io)?
-            .query_map(
-                params![old.bytes(), i64::try_from(limit).map_err(io)?],
-                |r| Ok((VersionId(r.get(0)?), Uuid::from_bytes(r.get(1)?), r.get(2)?)),
-            )
-            .map_err(io)?
-            .collect::<Result<_, _>>()
-            .map_err(io)?;
-        let after = wraps(&tx, new.id())?.saturating_add(rows.len() as u64);
+        let mut tx = self.catalog.immediate()?;
+        let rows = tx.wrapped_under(old, limit)?;
+        let after = tx.wraps(new.id())?.saturating_add(rows.len() as u64);
         if !rows.is_empty() && envelope::wrap_limit(after - 1) == WrapLimit::Refuse {
             return Err(StoreError::LimitReached);
         }
-        for (version, uuid, wrapped) in &rows {
+        for row in &rows {
             let ctx = Context::Version {
                 tenant: self.tenant,
-                uuid: *uuid,
-                version: *version,
+                uuid: row.uuid,
+                version: row.version,
             };
-            let rewrapped = envelope::rewrap(&self.tenant_key, new, &ctx, wrapped)
+            let rewrapped = envelope::rewrap(&self.tenant_key, new, &ctx, &row.wrapped)
                 .map_err(|_| StoreError::Damaged)?;
-            tx.execute(
-                "UPDATE version SET wrapped_key = ?1, tenant_key_id = ?2 WHERE version = ?3",
-                params![rewrapped, new.id().bytes(), version.0],
-            )
-            .map_err(io)?;
-            add_wrap(&tx, new.id())?;
+            tx.set_wrapped(row.version, new.id(), &rewrapped)?;
+            tx.add_wrap(new.id())?;
         }
         commit(tx)?;
         Ok(rows.len())
@@ -57,15 +36,9 @@ impl Store {
     /// How many version rows name a key other than this Store's tenant key:
     /// a rotation stopped part way leaves some.
     pub fn rows_under_other_keys(&self) -> Result<u64, StoreError> {
-        let n: i64 = self
-            .conn()
-            .query_row(
-                "SELECT count(*) FROM version WHERE tenant_key_id != ?1",
-                [self.tenant_key.id().bytes()],
-                |r| r.get(0),
-            )
-            .map_err(io)?;
-        u64::try_from(n).map_err(io)
+        self.catalog
+            .snapshot()?
+            .count_not_under(self.tenant_key.id())
     }
 }
 
