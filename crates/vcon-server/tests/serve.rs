@@ -2,17 +2,21 @@
 //! configuration, stores and reads, holds its memory locked and out of core
 //! dumps, and stops on SIGTERM. Each way it refuses to start is tried too.
 
-use std::net::{SocketAddr, TcpListener};
+use std::collections::VecDeque;
+use std::net::SocketAddr;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::Arc;
+use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
+
+use time::OffsetDateTime;
 
 use vcon_server::access::{Scope, Scopes};
 use vcon_server::audit::Actor;
-use vcon_server::clock::SystemClock;
+use vcon_server::clock::{Clock, SystemClock};
 use vcon_server::envelope::Key;
 use vcon_server::fs::OsFs;
 use vcon_server::ids::{KeyId, TenantId};
@@ -23,16 +27,26 @@ use vcon_server::tenants::Tenants;
 const UUID: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bc46";
 
 /// A data directory with one tenant and a key for it, a certificate and a
-/// configuration file, ready for `serve`.
+/// configuration file, ready for `serve`. The configuration listens on
+/// port 0, so each server takes a port of its own when it binds, and
+/// `start` reads that port from the `serving` line.
 struct Setup {
     dir: tempfile::TempDir,
     config: PathBuf,
     master_key: PathBuf,
     pem: String,
     token: String,
-    addr: SocketAddr,
     data: PathBuf,
     tenant: TenantId,
+}
+
+/// A clock a fixed time behind the system's.
+struct Behind(Duration);
+
+impl Clock for Behind {
+    fn now(&self) -> OffsetDateTime {
+        OffsetDateTime::now_utc() - self.0
+    }
 }
 
 fn random_key_file(path: &std::path::Path) {
@@ -46,6 +60,11 @@ fn random_key_file(path: &std::path::Path) {
 }
 
 fn setup() -> Setup {
+    setup_on(Arc::new(SystemClock))
+}
+
+/// `setup`, with the tenant and its key made at `clock`'s time.
+fn setup_on(clock: Arc<dyn Clock>) -> Setup {
     let dir = tempfile::tempdir().expect("temp dir");
     let data = dir.path().join("data");
     std::fs::create_dir(&data).expect("data dir");
@@ -55,7 +74,7 @@ fn setup() -> Setup {
         &data,
         Key::load_master(&master_key).expect("the master key"),
         Arc::new(OsFs),
-        Arc::new(SystemClock),
+        clock,
     )
     .expect("opens");
     let tenant = tenants.create(Actor::Cli, "acme", None).expect("a tenant");
@@ -76,15 +95,11 @@ fn setup() -> Setup {
     let (cert, key) = (dir.path().join("cert.pem"), dir.path().join("key.pem"));
     std::fs::write(&cert, &pem).expect("write");
     std::fs::write(&key, made.signing_key.serialize_pem()).expect("write");
-    let addr = TcpListener::bind("127.0.0.1:0")
-        .expect("a free port")
-        .local_addr()
-        .expect("addr");
     let config = dir.path().join("vcon-server.toml");
     std::fs::write(
         &config,
         format!(
-            r#"listen = "{addr}"
+            r#"listen = "127.0.0.1:0"
 data_dir = "{data}"
 master_key = "{master}"
 purge_interval = 3600
@@ -114,7 +129,6 @@ read = 30
         master_key,
         pem,
         token,
-        addr,
         data,
         tenant,
     }
@@ -175,17 +189,109 @@ impl Drop for Running {
     }
 }
 
-/// Waits until the server takes connections.
-fn ready(s: &Setup, child: &mut Child) {
+/// A server that has said where it listens: the address its `serving`
+/// line names, and its stderr, line by line, including the lines it wrote
+/// before that one.
+struct Started {
+    running: Running,
+    addr: SocketAddr,
+    early: VecDeque<String>,
+    lines: Receiver<String>,
+}
+
+/// Starts `command` with its stderr piped, and waits for its `serving`
+/// line.
+fn start(mut command: Command) -> Started {
+    let mut running = Running(
+        command
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("starts"),
+    );
+    let stderr = running.0.stderr.take().expect("piped");
+    let (line_tx, lines) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(stderr)
+            .lines()
+            .map_while(Result::ok)
+        {
+            if line_tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
     let deadline = Instant::now() + Duration::from_secs(20);
-    while std::net::TcpStream::connect(s.addr).is_err() {
-        assert!(
-            child.try_wait().expect("wait").is_none(),
-            "serve stopped before it listened"
-        );
-        assert!(Instant::now() < deadline, "serve never listened");
-        std::thread::sleep(Duration::from_millis(20));
+    let mut early = VecDeque::new();
+    let addr = loop {
+        match lines.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(line) => match bound(&line) {
+                Some(addr) => break addr,
+                None => early.push_back(line),
+            },
+            Err(_) => panic!(
+                "serve never said where it listens ({:?}): {early:?}",
+                running.0.try_wait()
+            ),
+        }
+    };
+    assert_ne!(
+        addr.port(),
+        0,
+        "the serving line names the port bound, not the port configured"
+    );
+    Started {
+        running,
+        addr,
+        early,
+        lines,
     }
+}
+
+impl Started {
+    /// The next stderr line that contains `pattern`, if one comes within
+    /// `within`.
+    fn line_with(&mut self, pattern: &str, within: Duration) -> Option<String> {
+        while let Some(line) = self.early.pop_front() {
+            if line.contains(pattern) {
+                return Some(line);
+            }
+        }
+        let deadline = Instant::now() + within;
+        loop {
+            let line = self
+                .lines
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .ok()?;
+            if line.contains(pattern) {
+                return Some(line);
+            }
+        }
+    }
+
+    /// A client that trusts `s`'s certificate and reaches this server as
+    /// localhost.
+    fn client(&self, s: &Setup) -> reqwest::Client {
+        reqwest::Client::builder()
+            .tls_certs_only([reqwest::Certificate::from_pem(s.pem.as_bytes()).expect("pem")])
+            .resolve("localhost", self.addr)
+            .no_proxy()
+            .build()
+            .expect("a client")
+    }
+
+    /// The URL of `path` on this server.
+    fn url(&self, path: &str) -> String {
+        format!("https://localhost:{}{path}", self.addr.port())
+    }
+}
+
+/// The address a `serving` line names, from its `listen=` field.
+fn bound(line: &str) -> Option<SocketAddr> {
+    let mut fields = line.split_whitespace();
+    fields.find(|f| *f == "serving")?;
+    fields.find_map(|f| f.strip_prefix("listen="))?.parse().ok()
 }
 
 /// A field of a process's status, in kB.
@@ -203,23 +309,11 @@ fn status_kb(pid: u32, field: &str) -> u64 {
 #[tokio::test(flavor = "multi_thread")]
 async fn serve_stores_reads_keeps_its_memory_locked_and_stops_on_sigterm() {
     let s = setup();
-    let mut running = Running(
-        serve(&s)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("starts"),
-    );
-    ready(&s, &mut running.0);
-    let pid = running.0.id();
+    let mut started = start(serve(&s));
+    let pid = started.running.0.id();
 
-    let client = reqwest::Client::builder()
-        .tls_certs_only([reqwest::Certificate::from_pem(s.pem.as_bytes()).expect("pem")])
-        .resolve("localhost", s.addr)
-        .no_proxy()
-        .build()
-        .expect("a client");
-    let url = |path: &str| format!("https://localhost:{}{path}", s.addr.port());
+    let client = started.client(&s);
+    let url = |path: &str| started.url(path);
     let body = std::fs::read(format!(
         "{}/../vcon/tests/fixtures/ietf/ab_call_ext_rec.vcon",
         env!("CARGO_MANIFEST_DIR")
@@ -268,7 +362,7 @@ async fn serve_stores_reads_keeps_its_memory_locked_and_stops_on_sigterm() {
     assert_eq!(unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) }, 0);
     let deadline = Instant::now() + Duration::from_secs(20);
     let status = loop {
-        if let Some(status) = running.0.try_wait().expect("wait") {
+        if let Some(status) = started.running.0.try_wait().expect("wait") {
             break status;
         }
         assert!(Instant::now() < deadline, "serve did not stop on SIGTERM");
@@ -282,8 +376,10 @@ fn a_wrong_master_key_stops_the_start() {
     let s = setup();
     random_key_file(&s.master_key);
     let output = refused(serve(&s));
+    // Not "the master key cannot be read", which is a key file that is
+    // missing or of the wrong size.
     assert!(
-        stderr(&output).contains("master key"),
+        stderr(&output).contains("the master key is not the one server.sqlite was made under"),
         "{}",
         stderr(&output)
     );
@@ -321,45 +417,18 @@ fn memory_that_cannot_be_locked_stops_the_start() {
         });
     }
     let output = refused(command);
-    assert!(stderr(&output).contains("lock"), "{}", stderr(&output));
+    // Not "the data directory cannot be locked", the other refusal that
+    // speaks of a lock. A limit above zero but too small is ENOMEM
+    // (mlockall(2)), the line getting-started.md shows.
+    assert!(
+        stderr(&output).contains(
+            "vcon-server: memory cannot be locked: Cannot allocate memory (os error 12); \
+             allow it, for example LimitMEMLOCK=infinity"
+        ),
+        "{}",
+        stderr(&output)
+    );
     let _ = &s.dir;
-}
-
-/// The "purge sweep" lines `running` writes to its stderr, as they come.
-fn sweep_lines(running: &mut Running) -> std::sync::mpsc::Receiver<String> {
-    let stderr = running.0.stderr.take().expect("piped");
-    let (line_tx, line_rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        use std::io::BufRead;
-        for line in std::io::BufReader::new(stderr)
-            .lines()
-            .map_while(Result::ok)
-        {
-            if line.contains("purge sweep") && line_tx.send(line).is_err() {
-                break;
-            }
-        }
-    });
-    line_rx
-}
-
-/// The lines `running` writes to its stderr that contain `pattern`, as
-/// they come.
-fn lines_with(running: &mut Running, pattern: &'static str) -> std::sync::mpsc::Receiver<String> {
-    let stderr = running.0.stderr.take().expect("piped");
-    let (line_tx, line_rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        use std::io::BufRead;
-        for line in std::io::BufReader::new(stderr)
-            .lines()
-            .map_while(Result::ok)
-        {
-            if line.contains(pattern) && line_tx.send(line).is_err() {
-                break;
-            }
-        }
-    });
-    line_rx
 }
 
 /// server.sqlite opened directly, to put the registry in a state no
@@ -407,17 +476,28 @@ fn serve_refuses_a_tenant_key_wrapped_under_another_key() {
         .execute("UPDATE tenant SET wrapped_tenant_key = randomblob(61)", [])
         .expect("a foreign wrap");
     let output = refused(serve(&s));
-    assert!(
-        stderr(&output).contains("tenant key"),
-        "{}",
-        stderr(&output)
+    assert_eq!(
+        stderr(&output),
+        "vcon-server: 1 tenant key(s) do not unwrap under the master key; \
+         vcon-server check names the tenants\n"
     );
 }
 
 #[test]
 fn serve_warns_when_key_rotation_is_overdue() {
-    let s = setup();
-    let tenants = registry(&s);
+    // The tenant and its key made 32 days ago, and a purge 31 days ago:
+    // older than rotation_warn (30 days), with no rotation since.
+    const DAY: Duration = Duration::from_secs(86_400);
+    let s = setup_on(Arc::new(Behind(32 * DAY)));
+    assert_eq!(
+        std::fs::read_to_string(&s.config)
+            .expect("configuration")
+            .matches("rotation_warn = 2592000")
+            .count(),
+        1,
+        "rotation_warn is 30 days"
+    );
+    let tenants = registry_on(&s, Arc::new(Behind(31 * DAY)));
     let store = tenants.store(s.tenant).expect("its store");
     let body = std::fs::read(format!(
         "{}/../vcon/tests/fixtures/ietf/ab_call_ext_rec.vcon",
@@ -438,22 +518,8 @@ fn serve_warns_when_key_rotation_is_overdue() {
         .expect("deleted and purged");
     drop(store);
     drop(tenants);
-    let text = std::fs::read_to_string(&s.config).expect("configuration");
-    std::fs::write(
-        &s.config,
-        text.replace("rotation_warn = 2592000", "rotation_warn = 1"),
-    )
-    .expect("written");
-    std::thread::sleep(Duration::from_millis(1100));
-    let mut running = Running(
-        serve(&s)
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("starts"),
-    );
-    let warned = lines_with(&mut running, "key rotation overdue")
-        .recv_timeout(Duration::from_secs(20))
+    let warned = start(serve(&s))
+        .line_with("key rotation overdue", Duration::from_secs(20))
         .expect("serve warned of no overdue rotation");
     assert!(warned.contains("WARN"), "{warned}");
     let fields: Vec<&str> = warned.split_whitespace().collect();
@@ -468,11 +534,16 @@ fn serve_warns_when_key_rotation_is_overdue() {
 
 /// The registry of `s`'s data directory, opened as `serve` opens it.
 fn registry(s: &Setup) -> Tenants {
+    registry_on(s, Arc::new(SystemClock))
+}
+
+/// `registry`, on `clock`.
+fn registry_on(s: &Setup, clock: Arc<dyn Clock>) -> Tenants {
     Tenants::open(
         &s.data,
         Key::load_master(&s.master_key).expect("the master key"),
         Arc::new(OsFs),
-        Arc::new(SystemClock),
+        clock,
     )
     .expect("opens")
 }
@@ -507,16 +578,9 @@ fn serve_purges_what_is_due_when_it_starts() {
     drop(store);
     drop(tenants);
 
-    let mut running = Running(
-        serve(&s)
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("starts"),
-    );
-    let sweeps = sweep_lines(&mut running);
-    let swept = sweeps
-        .recv_timeout(Duration::from_secs(20))
+    let mut started = start(serve(&s));
+    let swept = started
+        .line_with("purge sweep", Duration::from_secs(20))
         .expect("serve logged no purge sweep");
     assert!(swept.contains("purged=1"), "{swept}");
     assert!(swept.contains("failed=0"), "{swept}");
@@ -525,10 +589,12 @@ fn serve_purges_what_is_due_when_it_starts() {
         "a sweep logs counts, never a tenant: {swept}"
     );
     assert!(
-        sweeps.recv_timeout(Duration::from_secs(3)).is_err(),
+        started
+            .line_with("purge sweep", Duration::from_secs(3))
+            .is_none(),
         "no second sweep long before purge_interval (an hour here)"
     );
-    drop(running);
+    drop(started);
 
     let tenants = registry(&s);
     let counts = tenants
@@ -549,26 +615,27 @@ fn serve_sweeps_again_once_purge_interval_has_passed() {
         text.replace("purge_interval = 3600", "purge_interval = 1"),
     )
     .expect("write");
-    let mut running = Running(
-        serve(&s)
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("starts"),
-    );
-    let sweeps = sweep_lines(&mut running);
-    sweeps
-        .recv_timeout(Duration::from_secs(20))
+    let mut started = start(serve(&s));
+    let first = started
+        .line_with("purge sweep", Duration::from_secs(20))
         .expect("a sweep at start");
-    let first = Instant::now();
-    sweeps
-        .recv_timeout(Duration::from_secs(10))
+    let second = started
+        .line_with("purge sweep", Duration::from_secs(10))
         .expect("a second sweep after purge_interval");
+    // Each line is stamped when the sweep is logged, at its end; the next
+    // sweep starts purge_interval after that.
+    let gap = logged_at(&second) - logged_at(&first);
     assert!(
-        first.elapsed() >= Duration::from_millis(800),
-        "not before purge_interval: {:?}",
-        first.elapsed()
+        gap >= time::Duration::SECOND,
+        "not before purge_interval: {gap}\n{first}\n{second}"
     );
+}
+
+/// The time a log line was written, from the timestamp it starts with.
+fn logged_at(line: &str) -> OffsetDateTime {
+    let stamp = line.split_whitespace().next().expect("a timestamp");
+    OffsetDateTime::parse(stamp, &time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|e| panic!("{e}: {line}"))
 }
 
 /// Runs a command beside the server and returns what it printed.
@@ -593,21 +660,9 @@ fn token_of(printed: &[u8]) -> String {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_audit_routes_answer_what_audit_export_writes() {
     let s = setup();
-    let mut running = Running(
-        serve(&s)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("starts"),
-    );
-    ready(&s, &mut running.0);
-    let client = reqwest::Client::builder()
-        .tls_certs_only([reqwest::Certificate::from_pem(s.pem.as_bytes()).expect("pem")])
-        .resolve("localhost", s.addr)
-        .no_proxy()
-        .build()
-        .expect("a client");
-    let url = |path: &str| format!("https://localhost:{}{path}", s.addr.port());
+    let started = start(serve(&s));
+    let client = started.client(&s);
+    let url = |path: &str| started.url(path);
     let tenant = s.tenant.to_string();
     let body = std::fs::read(format!(
         "{}/../vcon/tests/fixtures/ietf/ab_call_ext_rec.vcon",
@@ -674,26 +729,14 @@ async fn a_backup_taken_under_write_load_checks_whole_and_serves() {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     let s = setup();
-    let mut running = Running(
-        serve(&s)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("starts"),
-    );
-    ready(&s, &mut running.0);
-    let client = reqwest::Client::builder()
-        .tls_certs_only([reqwest::Certificate::from_pem(s.pem.as_bytes()).expect("pem")])
-        .resolve("localhost", s.addr)
-        .no_proxy()
-        .build()
-        .expect("a client");
+    let started = start(serve(&s));
+    let client = started.client(&s);
     let first = std::fs::read(format!(
         "{}/../vcon/tests/fixtures/ietf/ab_call_ext_rec.vcon",
         env!("CARGO_MANIFEST_DIR")
     ))
     .expect("A.4");
-    let port = s.addr.port();
+    let port = started.addr.port();
     let stored = client
         .post(format!("https://localhost:{port}/vcons"))
         .bearer_auth(&s.token)
@@ -765,17 +808,12 @@ async fn a_backup_taken_under_write_load_checks_whole_and_serves() {
         "{done}"
     );
 
-    // The backup as a data directory of its own, on another port.
-    let addr = TcpListener::bind("127.0.0.1:0")
-        .expect("a free port")
-        .local_addr()
-        .expect("addr");
+    // The backup as a data directory of its own, on a port of its own.
     let text = std::fs::read_to_string(&s.config).expect("the configuration");
     let config = s.dir.path().join("backup.toml");
     std::fs::write(
         &config,
-        text.replace(&s.data.display().to_string(), &to.display().to_string())
-            .replace(&s.addr.to_string(), &addr.to_string()),
+        text.replace(&s.data.display().to_string(), &to.display().to_string()),
     )
     .expect("write");
     let checked = Command::new(env!("CARGO_BIN_EXE_vcon-server"))
@@ -795,36 +833,16 @@ async fn a_backup_taken_under_write_load_checks_whole_and_serves() {
     assert_eq!(lines[0]["versions"], done["versions"]);
     assert_eq!(lines.last().expect("a summary")["problems"], 0);
 
-    let mut restored = Running(
-        Command::new(env!("CARGO_BIN_EXE_vcon-server"))
-            .arg("serve")
-            .arg("--config")
-            .arg(&config)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("starts"),
+    let mut restore = Command::new(env!("CARGO_BIN_EXE_vcon-server"));
+    restore.arg("serve").arg("--config").arg(&config);
+    let restored = start(restore);
+    assert_ne!(
+        restored.addr, started.addr,
+        "each server binds a port of its own"
     );
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while std::net::TcpStream::connect(addr).is_err() {
-        assert!(
-            restored.0.try_wait().expect("wait").is_none(),
-            "the restored server stopped"
-        );
-        assert!(
-            Instant::now() < deadline,
-            "the restored server never listened"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let client = reqwest::Client::builder()
-        .tls_certs_only([reqwest::Certificate::from_pem(s.pem.as_bytes()).expect("pem")])
-        .resolve("localhost", addr)
-        .no_proxy()
-        .build()
-        .expect("a client");
+    let client = restored.client(&s);
     let read = client
-        .get(format!("https://localhost:{}/vcons/{UUID}", addr.port()))
+        .get(restored.url(&format!("/vcons/{UUID}")))
         .bearer_auth(&s.token)
         .send()
         .await

@@ -59,7 +59,8 @@ needs a look.
 Structured lines on standard error, so systemd's journal or any collector can
 take them:
 
-- `serving` with the listen address once the server listens;
+- `serving` with the address it listens on once it listens; with port 0 in
+  `listen`, this names the port the system chose;
 - one `request` line per request: `request_id`, `method`, `route` (the route
   template, never the path), `status`, `duration_ms`;
 - `purge sweep` lines;

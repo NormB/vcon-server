@@ -116,6 +116,9 @@ pub async fn run(config: &Config, shutdown: impl Future<Output = ()>) -> Result<
     let listener = TcpListener::bind(config.listen)
         .await
         .map_err(ServeError::Listen)?;
+    // The address bound, which names the port the system chose when the
+    // configuration gives port 0.
+    let bound = listener.local_addr().map_err(ServeError::Listen)?;
     let tenants = Arc::new(tenants);
     // The purge sweep: at start, then purge_interval after each sweep ends,
     // until the server stops.
@@ -152,7 +155,7 @@ pub async fn run(config: &Config, shutdown: impl Future<Output = ()>) -> Result<
         },
     ));
     let app = app_from(config, tenants);
-    tracing::info!(listen = %config.listen, "serving");
+    tracing::info!(listen = %bound, "serving");
     let served = api::serve(listener, tls, api::router(Arc::new(app)), shutdown).await;
     let _ = stop.send(());
     let _ = stop_warning.send(());

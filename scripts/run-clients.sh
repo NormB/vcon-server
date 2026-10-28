@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Runs every client example in clients/ against a live vcon-server: a new
-# data directory, master key, certificate and tenant, a server on a free
-# loopback port, and one key with the write, read and delete scopes. Each
-# client must store a vCon, find it in the list, read it back byte for
-# byte, delete it, and print exactly these four lines, one uuid in all:
+# data directory, master key, certificate and tenant, a server on a
+# loopback port the kernel picks, and one key with the write, read and
+# delete scopes. Each client must store a vCon, find it in the list, read
+# it back byte for byte, delete it, and print exactly these four lines, one
+# uuid in all:
 #
 #   stored <uuid>
 #   listed <uuid>
@@ -51,9 +52,8 @@ printf 'subjectAltName=DNS:localhost\nbasicConstraints=critical,CA:FALSE\nkeyUsa
   > "$work/server.ext"
 openssl x509 -req -in "$work/server.csr" -CA "$work/ca.pem" -CAkey "$work/ca.key" \
   -days 1 -extfile "$work/server.ext" -out "$work/cert.pem" 2>/dev/null
-port="$(python3 -I -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
 cat > "$work/vcon-server.toml" <<TOML
-listen = "127.0.0.1:$port"
+listen = "127.0.0.1:0"
 data_dir = "$work/data"
 master_key = "$work/master.key"
 
@@ -68,12 +68,17 @@ key="$("$server" key create --tenant "$tenant" --scope write --scope read --scop
 
 "$server" serve "${config[@]}" 2> "$work/server.log" &
 pid=$!
+# The server binds port 0, so the kernel picks a free port; its serving line
+# names the port it bound, and it listens from that line on.
+port=""
 for _ in $(seq 100); do
-  if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then break; fi
+  port="$(sed -n 's/.* serving listen=127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' "$work/server.log")"
+  [ -n "$port" ] && break
   kill -0 "$pid" 2>/dev/null || { cat "$work/server.log" >&2; fail "the server stopped"; }
   sleep 0.1
 done
-(exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null || fail "the server never listened"
+[ -n "$port" ] || fail "the server never said where it listens"
+(exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null || fail "the server does not listen on port $port"
 
 export VCON_URL="https://localhost:$port"
 export VCON_CA="$work/ca.pem"
