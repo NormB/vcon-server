@@ -322,7 +322,8 @@ mod tests {
                 "1 tenant key(s) do not unwrap under the master key; \
                  2 key rotation(s) stopped part way; run rekey tenant again; \
                  3 tenant(s) with data under another key; \
-                 vcon-server check names the tenants"
+                 vcon-server check names the tenants",
+                "each count in its fixed place, then where to look"
             );
         }
 

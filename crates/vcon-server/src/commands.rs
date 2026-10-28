@@ -953,11 +953,13 @@ mod tests {
                 [
                     "version 02020202020202020202020202020202 is missing or does not open",
                     "version 03030303030303030303030303030303 is missing or does not open",
-                ]
+                ],
+                "one line per damaged version, in its order"
             );
             assert_eq!(
                 problems(&tenant(Ok(sound()), true), HOUR, NOW),
-                ["a key rotation was stopped part way; run rekey tenant again"]
+                ["a key rotation was stopped part way; run rekey tenant again"],
+                "a stopped rotation is named with the command that finishes it"
             );
             assert_eq!(
                 problems(
@@ -965,7 +967,8 @@ mod tests {
                     HOUR,
                     NOW,
                 ),
-                ["its catalog cannot be opened: Io"]
+                ["its catalog cannot be opened: Io"],
+                "a refused catalog names the refusal, not a key"
             );
         }
 
@@ -1005,7 +1008,8 @@ mod tests {
                 problems(&tenant(Ok(stalled), false), HOUR, NOW),
                 [
                     "1 version(s) due for purge, the oldest longer than purge_interval: the sweep is not keeping up"
-                ]
+                ],
+                "one second past purge_interval is a stalled sweep"
             );
         }
 

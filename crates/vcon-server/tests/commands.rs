@@ -294,9 +294,14 @@ fn check_exits_0_when_sound_and_1_with_its_report_when_not() {
     let report = s.ok(&["check"]);
     assert_eq!(
         report[0]["leftovers"],
-        serde_json::json!(["00000000000000000000000000000000.tmp"])
+        serde_json::json!(["00000000000000000000000000000000.tmp"]),
+        "check reports the leftover temporary file"
     );
-    assert_eq!(report.last().expect("summary")["problems"], 0);
+    assert_eq!(
+        report.last().expect("summary")["problems"],
+        0,
+        "a leftover is not a problem"
+    );
     // A stored version's sealed file goes missing.
     let version = {
         let tenants = vcon_server::tenants::Tenants::open(
