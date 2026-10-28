@@ -10,6 +10,36 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/NormB/vcon-server"
 homepage = "https://vcon-server.com"
 
+# The lints the Rust style rules add to clippy's defaults (Google Rust Style
+# Guide, Rust API Guidelines), at deny. A module that does not meet one yet
+# carries an #[expect(lint, reason)] on its `mod` line, which fails once the
+# module is fixed, so the list of exceptions only shrinks. expect() is
+# allowed: the Google guide prefers it to unwrap, with the reason.
+# Assertion messages belong to scripts/check_style.py alone, which reads test
+# code too; clippy::missing_assert_message skips tests, so it stays off here
+# rather than make a second rule.
+[workspace.lints.rust]
+missing_docs = "deny"
+missing_debug_implementations = "deny"
+
+[workspace.lints.clippy]
+borrowed_box = "deny"
+ptr_arg = "deny"
+should_implement_trait = "deny"
+wrong_self_convention = "deny"
+new_without_default = "deny"
+len_without_is_empty = "deny"
+unwrap_used = "deny"
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+missing_safety_doc = "deny"
+missing_errors_doc = "deny"
+missing_panics_doc = "deny"
+must_use_candidate = "deny"
+exhaustive_enums = "deny"
+exhaustive_structs = "deny"
+allow_attributes_without_reason = "deny"
+
 # The crates published on crates.io; scripts/check_package.py checks what
 # each would publish and refuses if one is missing or says publish = false.
 [workspace.metadata]

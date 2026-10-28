@@ -47,24 +47,22 @@ fn page_kb() -> u64 {
 /// their own use (GitHub's x86_64 runners have two at start).
 fn foreign_page_left_out() {
     let len = usize::try_from(page_kb() * 1024).expect("a page");
-    // SAFETY: a fresh private anonymous mapping, never freed: the test
-    // process ends with it.
-    unsafe {
-        let addr = libc::mmap(
+    // SAFETY: asks for a fresh private anonymous mapping, never freed: the
+    // test process ends with it. No existing memory is named.
+    let addr = unsafe {
+        libc::mmap(
             std::ptr::null_mut(),
             len,
             libc::PROT_READ,
             libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
             -1,
             0,
-        );
-        assert_ne!(addr, libc::MAP_FAILED, "map a page");
-        assert_eq!(
-            libc::madvise(addr, len, libc::MADV_DONTDUMP),
-            0,
-            "leave it out"
-        );
-    }
+        )
+    };
+    assert_ne!(addr, libc::MAP_FAILED, "map a page");
+    // SAFETY: `addr` and `len` are exactly the mapping made above.
+    let advised = unsafe { libc::madvise(addr, len, libc::MADV_DONTDUMP) };
+    assert_eq!(advised, 0, "leave it out");
 }
 
 #[test]

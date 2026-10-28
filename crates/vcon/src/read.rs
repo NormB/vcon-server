@@ -68,6 +68,7 @@ pub struct Limits {
 impl Limits {
     /// Limits that let gzip inflation in one body produce at most
     /// `inflated` bytes.
+    #[must_use]
     pub const fn new(inflated: u64) -> Limits {
         Limits { inflated }
     }
@@ -90,6 +91,15 @@ pub struct Inspection {
 /// arrived with, if any, and `supported` the extension names this server
 /// accepts in `critical`. An encrypted vCon's `critical` cannot be read and
 /// is not checked.
+///
+/// # Errors
+///
+/// A [`Rejection`] naming the first reason found that `body` is not a vCon
+/// this caller can store: too large or too deep, bad gzip, not one JSON
+/// object, a repeated member name, no form or two, a missing or bad uuid, no
+/// created_at, an unreadable signed payload, a uuid that differs between
+/// layers, or a `critical` that is not an array of strings or names
+/// extensions `supported` does not list.
 pub fn inspect(
     body: &[u8],
     content_type: Option<&str>,

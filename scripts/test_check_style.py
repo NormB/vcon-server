@@ -151,6 +151,127 @@ def clean_env():
     return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
 
 
+class AssertMessages(unittest.TestCase):
+    def missing(self, text):
+        return [f.line for f in check_style.findings(text) if f.rule == "assert-message"]
+
+    def test_each_assertion_needs_a_message(self):
+        text = (
+            "fn f() {\n"
+            "    assert!(x);\n"
+            "    assert_eq!(a, b);\n"
+            "    assert_ne!(a, b);\n"
+            "    debug_assert!(x);\n"
+            "    debug_assert_eq!(a, b);\n"
+            "    debug_assert_ne!(a, b);\n"
+            "    prop_assert!(x);\n"
+            "    prop_assert_eq!(a, b);\n"
+            "    prop_assert_ne!(a, b);\n"
+            "}\n"
+        )
+        self.assertEqual(self.missing(text), [2, 3, 4, 5, 6, 7, 8, 9, 10])
+
+    def test_an_assertion_with_a_message_passes(self):
+        text = (
+            "fn f() {\n"
+            "    assert!(x, \"x holds after open\");\n"
+            "    assert_eq!(a, b, \"read back {a}\");\n"
+            "    assert_ne!(a, b, \"{}\", why);\n"
+            "    prop_assert_eq!(a, b, \"why\");\n"
+            "}\n"
+        )
+        self.assertEqual(self.missing(text), [])
+
+    def test_commas_inside_nested_brackets_are_not_a_message(self):
+        text = (
+            "fn f() {\n"
+            "    assert!(matches!(r, Err(E::A | E::B)));\n"
+            "    assert_eq!(f(a, b), [1, 2]);\n"
+            "    assert_eq!(v, vec![(1, 2), (3, 4)]);\n"
+            "    assert!(m.iter().all(|(k, v)| k == v));\n"
+            "    assert_eq!(\n        a,\n        b,\n    );\n"
+            "}\n"
+        )
+        self.assertEqual(self.missing(text), [2, 3, 4, 5, 6])
+
+    def test_any_bracket_works(self):
+        self.assertEqual(self.missing("fn f() { assert![x]; assert_eq!{a, b}; }\n"), [1, 1])
+
+    def test_a_name_that_is_not_a_macro_call_is_not_an_assertion(self):
+        text = "fn assert(x: bool) {}\nfn f() { assert(true); let assert_eq = 1; }\n// assert!(x);\n"
+        self.assertEqual(self.missing(text), [])
+
+
+class Ratchet(unittest.TestCase):
+    def verdict(self, counts, baseline):
+        return check_style.ratchet(counts, baseline)
+
+    def test_a_file_at_its_baseline_passes(self):
+        self.assertEqual(self.verdict({"a.rs": 3}, {"a.rs": 3}), [])
+
+    def test_a_file_above_its_baseline_is_refused(self):
+        self.assertEqual(len(self.verdict({"a.rs": 4}, {"a.rs": 3})), 1)
+
+    def test_a_new_file_must_have_none(self):
+        problems = self.verdict({"a.rs": 0, "new.rs": 1}, {})
+        self.assertEqual(len(problems), 1)
+        self.assertIn("new.rs", problems[0])
+
+    def test_a_file_below_its_baseline_must_lower_it(self):
+        # The baseline only shrinks: a fixed site is written down at once.
+        problems = self.verdict({"a.rs": 1}, {"a.rs": 3})
+        self.assertEqual(len(problems), 1)
+        self.assertIn("--write-baseline", problems[0])
+
+    def test_a_baseline_entry_for_a_file_that_is_gone_or_clean_must_go(self):
+        self.assertEqual(len(self.verdict({}, {"gone.rs": 2})), 1)
+        self.assertEqual(len(self.verdict({"a.rs": 0}, {"a.rs": 1})), 1)
+
+    def test_the_written_baseline_never_rises(self):
+        self.assertEqual(
+            check_style.next_baseline({"a.rs": 5, "b.rs": 1, "c.rs": 0, "new.rs": 2}, {"a.rs": 3, "b.rs": 2, "c.rs": 1}),
+            {"a.rs": 3, "b.rs": 1},
+        )
+
+    def test_the_baseline_file_round_trips(self):
+        text = check_style.format_baseline({"b.rs": 1, "a.rs": 12})
+        self.assertTrue(text.startswith("#"), "the file says what it is")
+        self.assertEqual(check_style.parse_baseline(text), {"a.rs": 12, "b.rs": 1})
+
+
+class LintTables(unittest.TestCase):
+    WORKSPACE = {"rust": {"missing_docs": "deny"}, "clippy": {"unwrap_used": "deny", "missing_errors_doc": "deny"}}
+
+    def problems(self, lints, omit=()):
+        return check_style.lint_table_problems(self.WORKSPACE, "crate", lints, omit)
+
+    def test_a_member_that_takes_the_workspace_lints_passes(self):
+        self.assertEqual(self.problems({"workspace": True}), [])
+
+    def test_a_member_with_no_lints_is_refused(self):
+        self.assertEqual(len(self.problems({})), 3, "each missing lint is named")
+
+    def test_an_own_table_must_hold_every_workspace_lint_at_its_level(self):
+        own = {"rust": {"missing_docs": "deny", "unsafe_code": "forbid"}, "clippy": {"unwrap_used": "deny", "missing_errors_doc": "deny"}}
+        self.assertEqual(self.problems(own), [], "an own table may add lints")
+        weaker = {"rust": {"missing_docs": "warn"}, "clippy": {"unwrap_used": "deny", "missing_errors_doc": "deny"}}
+        found = self.problems(weaker)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("missing_docs", found[0])
+
+    def test_a_lint_given_as_a_table_is_read_by_its_level(self):
+        own = {"rust": {"missing_docs": {"level": "deny", "priority": 1}}, "clippy": {"unwrap_used": "deny", "missing_errors_doc": "deny"}}
+        self.assertEqual(self.problems(own), [])
+
+    def test_named_lints_may_be_left_out(self):
+        own = {"clippy": {"unwrap_used": "deny"}}
+        self.assertEqual(self.problems(own, omit={"missing_docs", "missing_errors_doc"}), [])
+
+    def test_the_repository_tables_agree(self):
+        root = HERE.parent
+        self.assertEqual(check_style.lint_tables(root), [], "every member holds the workspace's lints")
+
+
 class Command(unittest.TestCase):
     def run_in(self, files, untracked=None):
         env = clean_env()
@@ -212,6 +333,18 @@ class Command(unittest.TestCase):
         self.assertEqual(result.returncode, 1, "a glob import must fail the check")
         self.assertIn("src/a.rs:1: glob-import:", result.stderr)
         self.assertNotIn("target", result.stderr, "build output is not source")
+
+    def test_an_assertion_without_a_message_in_a_new_file_fails_the_command(self):
+        result = self.run_in({"src/lib.rs": "fn f() {\n    assert!(true);\n}\n"})
+        self.assertEqual(result.returncode, 1, "a new file may not lack messages")
+        self.assertIn("src/lib.rs", result.stderr)
+
+    def test_a_file_within_the_baseline_passes_the_command(self):
+        result = self.run_in({
+            "src/lib.rs": "fn f() {\n    assert!(true);\n}\n",
+            "scripts/assert-message-baseline.txt": "# counts\n1\tsrc/lib.rs\n",
+        })
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_files_that_are_not_tracked_are_not_read(self):
         result = self.run_in({"src/lib.rs": "\n"}, untracked={"src/b.rs": "use std::io::*;\n"})

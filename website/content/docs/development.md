@@ -175,10 +175,20 @@ for the published crates' public API, the
   Builds, clippy and tests use the stable toolchain.
 - **`scripts/check_style.py`** checks what rustfmt and clippy do not: glob
   imports (allowed: `use super::*` in an inline module, `use Enum::*` in a
-  function, `pub use sub::*` in a non-leaf module) and a reason above each
-  `#[rustfmt::skip]`.
-- **Clippy and rustc lints** for the rest are set in `[workspace.lints]` in
-  `Cargo.toml`.
+  function, `pub use sub::*` in a non-leaf module), a reason above each
+  `#[rustfmt::skip]`, and a message on every assertion, tests included,
+  saying why it holds. Until every assertion has one,
+  `scripts/assert-message-baseline.txt` holds how many each file may still
+  lack; a new file may lack none, and a file that gets better lowers its
+  count with `scripts/check_style.py --write-baseline`, which never raises
+  one.
+- **Clippy and rustc lints** for the rest are set at deny in
+  `[workspace.lints]` in `Cargo.toml`. Every package takes them, and
+  `check_style.py` fails if one does not. A module that does not meet one
+  yet carries `#[expect(lint, reason = "...")]` on its `mod` line in
+  `lib.rs`; the expectation fails once the module is fixed, and is then
+  removed. `expect()` is allowed: the Google guide prefers it to `unwrap()`,
+  with the reason.
 
 ## Gates
 

@@ -8,11 +8,8 @@ fn lock_under(limit: libc::rlim_t) -> std::io::Error {
         rlim_max: limit,
     };
     // SAFETY: `lowered` is a valid rlimit.
-    assert_eq!(
-        unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &lowered) },
-        0,
-        "a process may always lower its own limit"
-    );
+    let set = unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &lowered) };
+    assert_eq!(set, 0, "a process may always lower its own limit");
     vcon_server::envelope::lock_all_memory().expect_err("the lock is refused")
 }
 

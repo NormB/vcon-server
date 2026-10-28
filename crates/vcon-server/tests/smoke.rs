@@ -1,3 +1,5 @@
+//! The binary starts: it prints its version and refuses an unknown flag.
+
 use std::process::Command;
 
 fn run(args: &[&str]) -> std::process::Output {

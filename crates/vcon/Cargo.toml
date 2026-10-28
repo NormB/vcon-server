@@ -26,8 +26,32 @@ uuid = "1.29.0"
 [dev-dependencies]
 proptest = "1.12.0"
 
+# The workspace's style lints ([workspace.lints] in ../../Cargo.toml),
+# written out here because a crate takes either the workspace's table or its
+# own, and vcon adds one: it reads untrusted bytes and has no unsafe code of
+# its own, so Miri and AddressSanitizer (.github/workflows/sanitizers.yml)
+# have nothing in it to check, and unsafe_code = "forbid" keeps it that way
+# in every target of the crate. scripts/check_style.py fails if this table
+# lacks a workspace lint.
 [lints.rust]
-# vcon reads untrusted bytes and has no unsafe code of its own, so Miri and
-# AddressSanitizer (.github/workflows/sanitizers.yml) have nothing in it to
-# check. This keeps it that way, in every target of the crate.
 unsafe_code = "forbid"
+missing_docs = "deny"
+missing_debug_implementations = "deny"
+
+[lints.clippy]
+borrowed_box = "deny"
+ptr_arg = "deny"
+should_implement_trait = "deny"
+wrong_self_convention = "deny"
+new_without_default = "deny"
+len_without_is_empty = "deny"
+unwrap_used = "deny"
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+missing_safety_doc = "deny"
+missing_errors_doc = "deny"
+missing_panics_doc = "deny"
+must_use_candidate = "deny"
+exhaustive_enums = "deny"
+exhaustive_structs = "deny"
+allow_attributes_without_reason = "deny"

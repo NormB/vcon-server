@@ -403,18 +403,22 @@ fn a_configuration_error_stops_the_start_and_names_the_key() {
 fn memory_that_cannot_be_locked_stops_the_start() {
     let s = setup();
     let mut command = serve(&s);
-    // SAFETY: setrlimit is async-signal-safe and touches only the child.
+    let limit_locked_memory = || {
+        let small = libc::rlimit {
+            rlim_cur: 64 * 1024,
+            rlim_max: 64 * 1024,
+        };
+        // SAFETY: `small` is a valid rlimit that outlives the call, and the
+        // limit it sets is the calling process's own.
+        if unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &small) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    };
+    // SAFETY: the closure runs in the child between fork and exec, where
+    // only async-signal-safe calls may be made; its one call, setrlimit, is.
     unsafe {
-        command.pre_exec(|| {
-            let small = libc::rlimit {
-                rlim_cur: 64 * 1024,
-                rlim_max: 64 * 1024,
-            };
-            if libc::setrlimit(libc::RLIMIT_MEMLOCK, &small) != 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
+        command.pre_exec(limit_locked_memory);
     }
     let output = refused(command);
     // Not "the data directory cannot be locked", the other refusal that

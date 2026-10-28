@@ -766,12 +766,9 @@ fn io<E>(_: E) -> StoreError {
     StoreError::Io
 }
 
+/// The name the catalog stores for `form`.
 fn form_name(form: vcon::Form) -> &'static str {
-    match form {
-        vcon::Form::Unsigned => "unsigned",
-        vcon::Form::Signed => "signed",
-        vcon::Form::Encrypted => "encrypted",
-    }
+    form.as_str()
 }
 
 impl From<ObjectError> for StoreError {

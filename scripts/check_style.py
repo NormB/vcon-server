@@ -8,6 +8,22 @@ The rules are the Google Rust Style Guide's
   submodule declared in a non-leaf module. A prelude is a glob too.
 - rustfmt-skip: `#[rustfmt::skip]` only with a `//` comment on the line
   above saying why (deliberate alignment or generated code).
+- assert-message: every assertion (assert!, assert_eq!, assert_ne!, their
+  debug_ and prop_ forms) carries a message saying why it holds. Clippy's
+  missing_assert_message does not look at test code; this does. Commas
+  inside a turbofish (`f::<A, B>()`) at the macro's top level are miscounted
+  as arguments; write such a call outside the assertion.
+
+- lint-table: every package holds the lints of [workspace.lints] in
+  Cargo.toml, at their level or stricter: with `[lints] workspace = true`,
+  or in a table of its own (vcon's adds unsafe_code = "forbid"). The fuzz
+  package, which has no public API, may leave out the documentation lints.
+
+Assertions without a message are being added file by file. Until that is
+done, scripts/assert-message-baseline.txt holds, per file, how many each
+may still have: a file over its count, or a file not listed with any, is
+refused, and a file under its count must have the count lowered
+(--write-baseline does it, and never raises a count).
 
 Clippy checks the rest of what the hooks hold the code to (SAFETY
 comments, assertion messages, unwrap); see [workspace.lints] in Cargo.toml.
@@ -17,18 +33,19 @@ message. Exits 1 if there is any. With --walk it reads every .rs file
 below the current directory instead, outside target/: the commit hook runs
 it in a copy of the index, which is not a repository.
 
-Run with: python3 -I scripts/check_style.py [--walk]
+Run with: python3 -I scripts/check_style.py [--walk] [--write-baseline]
 """
 
 import dataclasses
 import pathlib
 import subprocess
 import sys
+import tomllib
 
 
 @dataclasses.dataclass(frozen=True)
 class Token:
-    kind: str  # "ident", "punct" or "attr" (an attribute's text, whole)
+    kind: str  # "ident", "punct", "literal" (a string or character) or "attr"
     text: str
     line: int
 
@@ -76,8 +93,9 @@ def _skip_raw_string(text, i, line):
 
 
 def tokens(text):
-    """The identifiers and punctuation of Rust source `text`, without
-    comments, strings or character literals."""
+    """The identifiers, punctuation, attributes and literals of Rust source
+    `text`, without comments. A string or character literal is one token
+    with no text, so nothing inside it is read as code."""
     out = []
     i = 0
     line = 1
@@ -108,16 +126,21 @@ def tokens(text):
                         line += 1
                     i += 1
         elif c == '"':
+            out.append(Token("literal", "", line))
             i, line = _skip_string(text, i, line)
         elif c in "rbc" and (raw := _skip_raw_string(text, i + (c != "r" and text[i + 1 : i + 2] == "r"), line)):
+            out.append(Token("literal", "", line))
             i, line = raw
         elif c in "bc" and text[i + 1 : i + 2] == '"':
+            out.append(Token("literal", "", line))
             i, line = _skip_string(text, i + 1, line)
         elif c == "b" and text[i + 1 : i + 2] == "'":
+            out.append(Token("literal", "", line))
             i = _skip_char(text, i + 1)
         elif c == "'":
             # A character literal, or a lifetime or label ('a, 'static).
             if text[i + 1 : i + 2] == "\\" or text[i + 2 : i + 3] == "'":
+                out.append(Token("literal", "", line))
                 i = _skip_char(text, i)
             else:
                 j = i + 1
@@ -205,6 +228,156 @@ def _check_use(use_tokens, line, stack, is_pub, nonleaf, submodules):
     return Finding(line, "glob-import", f"`use {shown}`: import the names used, not a glob")
 
 
+# Each assertion macro and how many arguments it has with a message.
+ASSERTIONS = {
+    "assert": 2,
+    "debug_assert": 2,
+    "prop_assert": 2,
+    "assert_eq": 3,
+    "assert_ne": 3,
+    "debug_assert_eq": 3,
+    "debug_assert_ne": 3,
+    "prop_assert_eq": 3,
+    "prop_assert_ne": 3,
+}
+
+BASELINE = pathlib.Path("scripts/assert-message-baseline.txt")
+
+
+def _arguments(toks, open_at):
+    """How many comma-separated arguments the macro call whose opening
+    bracket is toks[open_at] has at its top level."""
+    depth = 0
+    count = 0
+    seen = False
+    for t in toks[open_at:]:
+        if t.kind != "punct":
+            if depth == 1:
+                seen = True
+            continue
+        if t.text in "([{":
+            depth += 1
+            if depth > 1:
+                seen = True
+        elif t.text in ")]}":
+            depth -= 1
+            if depth == 0:
+                return count + (1 if seen else 0)
+        elif t.text == "," and depth == 1:
+            if seen:
+                count += 1
+            seen = False
+        elif depth == 1:
+            seen = True
+    return count + (1 if seen else 0)
+
+
+def ratchet(counts, baseline):
+    """The problems with assertions without a message: `counts` per file
+    now against `baseline`, the counts each file may still have."""
+    problems = []
+    for name in sorted(set(counts) | set(baseline)):
+        now = counts.get(name, 0)
+        allowed = baseline.get(name, 0)
+        if now > allowed:
+            problems.append(
+                f"{name}: {now} assertion(s) without a message, {allowed} allowed; give each a message"
+            )
+        elif now < allowed:
+            problems.append(
+                f"{name}: {now} assertion(s) without a message, the baseline says {allowed}; "
+                "lower it with check_style.py --write-baseline"
+            )
+    return problems
+
+
+def next_baseline(counts, baseline):
+    """The baseline after this tree: each file's count, never above what
+    it was, and no entry for a file with none."""
+    out = {}
+    for name, allowed in baseline.items():
+        now = min(counts.get(name, 0), allowed)
+        if now:
+            out[name] = now
+    return out
+
+
+def format_baseline(baseline):
+    lines = [
+        "# Assertions without a message each file may still have, written by",
+        "# scripts/check_style.py --write-baseline. A count only goes down.",
+    ]
+    lines += [f"{n}\t{name}" for name, n in sorted(baseline.items())]
+    return "\n".join(lines) + "\n"
+
+
+def parse_baseline(text):
+    out = {}
+    for line in text.splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        n, name = line.split("\t")
+        out[name] = int(n)
+    return out
+
+
+# Lint levels, weakest first.
+LEVELS = ["allow", "warn", "deny", "forbid"]
+
+# The workspace lints that concern documentation and a public API, which the
+# fuzz package (no public API) leaves out.
+API_LINTS = {
+    "missing_docs",
+    "missing_debug_implementations",
+    "missing_errors_doc",
+    "missing_panics_doc",
+    "must_use_candidate",
+    "exhaustive_enums",
+    "exhaustive_structs",
+}
+
+
+def _level(value):
+    return value["level"] if isinstance(value, dict) else value
+
+
+def lint_table_problems(workspace, name, lints, omit=()):
+    """What the [lints] table `lints` of package `name` lacks of the
+    workspace's `workspace` lints: every one, at its level or stricter,
+    unless the package takes them with `workspace = true` or the lint is in
+    `omit`."""
+    if lints.get("workspace") is True:
+        return []
+    problems = []
+    for group, table in sorted(workspace.items()):
+        for lint, value in sorted(table.items()):
+            if lint in omit:
+                continue
+            want = _level(value)
+            have = lints.get(group, {}).get(lint)
+            if have is None or LEVELS.index(_level(have)) < LEVELS.index(want):
+                problems.append(f"{name}: [lints.{group}] {lint} must be {want} or stricter, as in [workspace.lints]")
+    return problems
+
+
+def lint_tables(root):
+    """The lint-table problems of every package under `root`: the
+    workspace's members, and the fuzz package, which leaves out API_LINTS."""
+    root = pathlib.Path(root)
+    if not (root / "Cargo.toml").exists():
+        return []  # Not a Cargo tree: there are no packages to compare.
+    manifest = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
+    workspace = manifest["workspace"].get("lints", {})
+    packages = [(m, ()) for m in manifest["workspace"]["members"]]
+    if (root / "fuzz" / "Cargo.toml").exists():
+        packages.append(("fuzz", API_LINTS))
+    problems = []
+    for path, omit in packages:
+        member = tomllib.loads((root / path / "Cargo.toml").read_text(encoding="utf-8"))
+        problems += lint_table_problems(workspace, f"{path}/Cargo.toml", member.get("lints", {}), omit)
+    return problems
+
+
 # The tokens of a visibility: pub, pub(crate), pub(super), pub(in path).
 VISIBILITY = {"pub", "(", ")", "crate", "super", "self", "in", "::"}
 
@@ -232,6 +405,15 @@ def findings(text, nonleaf=False):
             above = lines[t.line - 2].strip() if t.line >= 2 else ""
             if not (above.startswith("//") and not above.startswith(("///", "//!"))):
                 out.append(Finding(t.line, "rustfmt-skip", "say why on the line above: `// ...`"))
+        if (
+            t.kind == "ident"
+            and t.text in ASSERTIONS
+            and k + 2 < len(toks)
+            and toks[k + 1].text == "!"
+            and toks[k + 2].text in ("(", "[", "{")
+            and _arguments(toks, k + 2) < ASSERTIONS[t.text]
+        ):
+            out.append(Finding(t.line, "assert-message", f"`{t.text}!` without a message saying why it holds"))
         words = [h.text for h in header if h.kind != "attr"]
         # A use item starts a statement, after nothing but a visibility;
         # `use<'a>` in an `impl Trait` bound is not one.
@@ -285,15 +467,31 @@ def sources(walk):
 
 
 def main(argv):
-    if argv not in ([], ["--walk"]):
-        print("usage: check_style.py [--walk]", file=sys.stderr)
+    flags = set(argv)
+    if not flags <= {"--walk", "--write-baseline"} or len(flags) != len(argv):
+        print("usage: check_style.py [--walk] [--write-baseline]", file=sys.stderr)
         return 2
+    baseline = parse_baseline(BASELINE.read_text(encoding="utf-8")) if BASELINE.exists() else {}
     total = 0
-    for name in sources(walk=argv == ["--walk"]):
+    counts = {}
+    for name in sources(walk="--walk" in flags):
         text = pathlib.Path(name).read_text(encoding="utf-8")
+        counts[name] = 0
         for f in findings(text, nonleaf=is_nonleaf(name)):
+            if f.rule == "assert-message":
+                counts[name] += 1
+                continue
             print(f"{name}:{f.line}: {f.rule}: {f.message}", file=sys.stderr)
             total += 1
+    if "--write-baseline" in flags:
+        BASELINE.write_text(format_baseline(next_baseline(counts, baseline)), encoding="utf-8")
+        baseline = parse_baseline(BASELINE.read_text(encoding="utf-8"))
+    for problem in ratchet(counts, baseline):
+        print(f"assert-message: {problem}", file=sys.stderr)
+        total += 1
+    for problem in lint_tables("."):
+        print(f"lint-table: {problem}", file=sys.stderr)
+        total += 1
     if total:
         print(f"check_style: {total} finding(s)", file=sys.stderr)
         return 1

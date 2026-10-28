@@ -50,11 +50,8 @@ fn a_missing_or_unreadable_file_is_refused() {
     let locked = file(&dir, &[7; 32]);
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).expect("chmod");
     // SAFETY: geteuid has no preconditions.
-    assert_ne!(
-        unsafe { libc::geteuid() },
-        0,
-        "root reads any file; run as another user"
-    );
+    let euid = unsafe { libc::geteuid() };
+    assert_ne!(euid, 0, "root reads any file; run as another user");
     assert!(
         matches!(Key::load_master(&locked), Err(KeyError::Read(e)) if e.kind() == std::io::ErrorKind::PermissionDenied),
         "no read permission"

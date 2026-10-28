@@ -1,3 +1,6 @@
+//! The vcon-server command: parses the command line and runs the
+//! subcommand from the vcon_server library.
+
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
