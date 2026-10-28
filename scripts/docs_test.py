@@ -244,18 +244,46 @@ SYSTEMD_RUN = (
 # A container's memory-lock limit is a ceiling its root cannot raise, unlike
 # a host's. With CAP_SYS_RESOURCE it can, so the limits file the pages install
 # raises it, as on a host, and a page that leaves that file out fails here too.
-AS_A_HOST = ("--cap-add", "SYS_RESOURCE")
+# CAP_IPC_LOCK lets root lock memory past its limit, as root can on a host.
+AS_A_HOST = ("--cap-add", "SYS_RESOURCE", "--cap-add", "IPC_LOCK")
 
-HOWTO = ("getting-started.md", "first-vcon.md")
+HOWTO = (
+    "getting-started.md",
+    "first-vcon.md",
+    "keys-and-scopes.md",
+    "second-tenant.md",
+    "backup-and-restore.md",
+    "rotate-keys.md",
+    "connect-mcp.md",
+    "upgrading.md",
+)
+# docs/upgrading.md installs the binary it names as NEW: the one under test.
+UNDER_TEST = {"NEW": "/docs-test/vcon-server"}
+# The release before this one, which the upgrade scenario upgrades from.
+PREVIOUS = "0.1.0"
 
 SCENARIOS = [
     # The how-tos, on a Debian and a Fedora with no systemd: the server runs
     # in the foreground.
-    Scenario("foreground", "debian:trixie-slim", frozenset({"apt", "no-systemd"}), HOWTO, docker=AS_A_HOST),
-    Scenario("foreground-fedora", "fedora:44", frozenset({"dnf", "no-systemd"}), HOWTO, docker=AS_A_HOST),
+    Scenario("foreground", "debian:trixie-slim", frozenset({"apt", "no-systemd"}), HOWTO, UNDER_TEST, docker=AS_A_HOST),
+    Scenario("foreground-fedora", "fedora:44", frozenset({"dnf", "no-systemd"}), HOWTO, UNDER_TEST, docker=AS_A_HOST),
     # The same, under systemd. No memory-lock option: the unit and the
     # limits file are what allow it, as on a host.
-    Scenario("systemd", "systemd", frozenset({"apt", "systemd"}), HOWTO),
+    Scenario("systemd", "systemd", frozenset({"apt", "systemd"}), HOWTO, UNDER_TEST),
+    # An upgrade from the previous release, installed as the install page
+    # says, to the server under test, and back.
+    Scenario(
+        "upgrade",
+        "debian:trixie-slim",
+        frozenset({"apt", "no-systemd", "release"}),
+        ("install.md", "getting-started.md", "upgrading.md"),
+        {"VERSION": PREVIOUS, **UNDER_TEST},
+        install_binary=False,
+        docker=AS_A_HOST,
+    ),
+    # The container how-to, with this host's Docker: it builds an image from
+    # the release the page names, and removes what it made at the end.
+    Scenario("container", "host", frozenset({"docker"}), ("container.md",), binary=False),
     # Each install path, from a system with nothing installed.
     Scenario("release-debian", "debian:trixie-slim", frozenset({"apt", "release"}), ("install.md",), binary=False),
     Scenario("release-ubuntu", "ubuntu:24.04", frozenset({"apt", "release"}), ("install.md",), binary=False),
@@ -364,7 +392,16 @@ SERVER_REQUEST = re.compile(r"\bcurl\b[^\n]*https://vcon\.example\.com|https://v
 
 def lint_page(blocks: list[Block], tag_sets: list[frozenset], host: bool = False) -> list[str]:
     problems = []
+    seen: set[str] = set()
     for b in blocks:
+        if b.kind == "sh" and b.skip is None:
+            for name in RELEASE_VARIABLES:
+                if re.search(rf"(?m)^{name}=", b.code):
+                    if name in seen:
+                        problems.append(
+                            f"{b.at}: {name} is set again; a scenario that sets it would rewrite both"
+                        )
+                    seen.add(name)
         if b.skip is not None:
             continue
         if not any(b.only <= tags for tags in tag_sets):

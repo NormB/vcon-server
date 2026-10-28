@@ -297,8 +297,9 @@ An HTML comment on the line before a block changes how it runs:
 
 A scenario names the pages it runs, the system it runs them on, and its
 tags. The scenarios include Debian 13 and Fedora 44 with the server in the
-foreground, Debian 13 under systemd, and each install path on each
-distribution. The how-to scenarios get the server built from the commit
+foreground, Debian 13 under systemd, each install path on each distribution,
+an upgrade from the previous release to the server under test and back, and
+the container page with Docker on the runner. The how-to scenarios get the server built from the commit
 under test. The release scenarios download the release that the install page
 names. Until that release is published, they download the newest published
 release and say so.

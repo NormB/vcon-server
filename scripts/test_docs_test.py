@@ -230,6 +230,13 @@ class Lint(unittest.TestCase):
         problems = dt.lint_page(dt.parse(page, "p.md"), [frozenset({"apt"})])
         self.assertEqual(problems, ["p.md:2: no scenario runs this block (only nowhere)"])
 
+    def test_a_release_variable_set_twice_is_found(self):
+        page = "```sh\nVERSION=0.2.0\n```\n\n```sh\nVERSION=$VERSION docker compose up\n```\n"
+        problems = dt.lint_page(dt.parse(page, "p.md"), [frozenset()])
+        self.assertEqual(
+            problems, ["p.md:5: VERSION is set again; a scenario that sets it would rewrite both"]
+        )
+
     def test_a_good_page_has_no_problems(self):
         self.assertEqual(dt.lint_page(dt.parse(PAGE, "page.md"), [frozenset({"apt"})]), [])
 

@@ -596,7 +596,7 @@ key = "/etc/vcon-server/key.pem"
         #[test]
         fn every_example_file_on_the_site_reads() {
             let mut examples = 0;
-            for name in ["configuration.md", "getting-started.md"] {
+            for name in ["configuration.md", "getting-started.md", "container.md"] {
                 let text = page(name);
                 for block in text.split("```toml\n").skip(1) {
                     let toml = block.split("```").next().expect("a block");
@@ -605,7 +605,7 @@ key = "/etc/vcon-server/key.pem"
                 }
             }
             assert_eq!(
-                examples, 2,
+                examples, 3,
                 "one example file on each page, so a block the split misses is caught"
             );
         }

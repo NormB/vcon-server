@@ -324,15 +324,24 @@ fn a_missing_subcommand_flag_or_config_is_found() {
             cache,
         )
     };
-    assert_eq!(check("check --config c.toml", true, &mut cache), None);
-    assert_eq!(check("--version", true, &mut cache), None);
+    assert_eq!(
+        check("check --config c.toml", true, &mut cache),
+        None,
+        "a real subcommand with --config is a sound pasted command"
+    );
+    assert_eq!(
+        check("--version", true, &mut cache),
+        None,
+        "--version is the one pasted command that needs no --config"
+    );
     assert_eq!(
         check(
             "tenant remove <id> [--force [--override-holds]]",
             false,
             &mut cache
         ),
-        None
+        None,
+        "a form from the command line page's tables, with its brackets, names real flags"
     );
     for (words, pasted, says) in [
         ("tenant purge x --config c", true, "no subcommand `purge`"),
@@ -354,11 +363,13 @@ fn a_missing_subcommand_flag_or_config_is_found() {
     }
     assert_eq!(
         invocation("sudo -u vcon /usr/local/bin/vcon-server check --config c"),
-        Some(vec!["check".into(), "--config".into(), "c".into()])
+        Some(vec!["check".into(), "--config".into(), "c".into()]),
+        "sudo, its options and a path to the program come off before the words"
     );
     assert_eq!(
         invocation("ExecStart=/usr/local/bin/vcon-server serve --config c"),
-        Some(vec!["serve".into(), "--config".into(), "c".into()])
+        Some(vec!["serve".into(), "--config".into(), "c".into()]),
+        "a unit's ExecStart= is the command systemd runs"
     );
     // A command whose output a variable keeps.
     assert_eq!(
@@ -368,31 +379,55 @@ fn a_missing_subcommand_flag_or_config_is_found() {
             "list".into(),
             "--config".into(),
             "c".into()
-        ])
+        ]),
+        "the pages keep ids and tokens with NAME=$(command), and that command is still documented"
     );
-    assert_eq!(invocation("cargo install vcon-server --locked"), None);
+    assert_eq!(
+        invocation("cargo install vcon-server --locked"),
+        None,
+        "vcon-server as an argument to another program is not a command of its own"
+    );
     // A span opens and closes on backtick runs of the same length
     // (CommonMark), so a span may hold backticks of its own.
     assert_eq!(
         code_spans("see `one`, ``a span holding `inner` backticks`` and `two`"),
-        ["one", "a span holding `inner` backticks", "two"]
+        ["one", "a span holding `inner` backticks", "two"],
+        "CommonMark closes a span on a run as long as the one that opened it"
     );
     assert_eq!(
         code_spans("``error: `vcon-server <version>` is old``"),
-        ["error: `vcon-server <version>` is old"]
+        ["error: `vcon-server <version>` is old"],
+        "a quoted error is one span, so the command inside it is not read as documented"
     );
     // A longer run inside does not close a span.
-    assert_eq!(code_spans("`a ``b`` c`"), ["a ``b`` c"]);
+    assert_eq!(
+        code_spans("`a ``b`` c`"),
+        ["a ``b`` c"],
+        "a longer run is part of the span, not its end"
+    );
     // A run with no closing run of its length is text, not a span.
-    assert_eq!(code_spans("a `` b `c`"), ["c"]);
-    assert_eq!(invocation("cd vcon-server"), None);
+    assert_eq!(
+        code_spans("a `` b `c`"),
+        ["c"],
+        "an opener with no closer of its length is text, and the scan goes on after it"
+    );
+    assert_eq!(
+        invocation("cd vcon-server"),
+        None,
+        "a directory named vcon-server is not the program"
+    );
 }
 
 /// Each page that downloads a release, and the variable that names its version.
-const PAGES: &[(&str, &str)] = &[("install.md", "VERSION=")];
+const PAGES: &[(&str, &str)] = &[
+    ("install.md", "VERSION="),
+    ("container.md", "VERSION="),
+    ("upgrading.md", "NEW_VERSION="),
+];
 
 /// The release each page downloads is this build's version, so a page names
-/// a release that exists once this version is tagged.
+/// a release that exists once this version is tagged: install and the
+/// container image set `VERSION`, the upgrade sets `NEW_VERSION`.
 #[test]
 fn the_release_each_page_downloads_is_this_version() {
     let docs = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../website/content/docs");
@@ -402,6 +437,11 @@ fn the_release_each_page_downloads_is_this_version() {
             .lines()
             .filter_map(|l| l.strip_prefix(variable))
             .collect();
-        assert_eq!(versions, [env!("CARGO_PKG_VERSION")], "{page}");
+        assert_eq!(
+            versions,
+            [env!("CARGO_PKG_VERSION")],
+            "{page} names one release, this build's, so its download exists once this version is \
+             tagged"
+        );
     }
 }

@@ -84,7 +84,8 @@ vcon-server: memory cannot be locked: Cannot allocate memory (os error 12); allo
 ```
 
 In a container, the limits file cannot raise the limit past the container's
-own. Start the container with `--ulimit memlock=-1`.
+own. Start the container with `--ulimit memlock=-1`, as
+[running it in a container](@/docs/container.md) shows.
 
 Run every command as `vcon`, with `sudo -u vcon`, never as root. A command
 run as root leaves files in the data directory that `vcon` cannot open. The
@@ -148,21 +149,28 @@ The server reads them at start only. After a renewal, install the new files
 and restart it.
 
 To try the server before you have a certificate, make a self-signed one for
-the name that clients use, and install it the same way:
+the name that clients use, and install it the same way. By default
+`openssl req -x509` marks the certificate as a certificate authority
+(`CA:TRUE`), and `vcon-server mcp`, which is built on rustls, refuses such a
+certificate from a server. The `-addext` options below mark it `CA:FALSE`,
+for signatures, and for a TLS server:
 
 ```sh
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 30 \
   -subj /CN=vcon.example.com -addext subjectAltName=DNS:vcon.example.com \
+  -addext basicConstraints=critical,CA:FALSE -addext keyUsage=critical,digitalSignature -addext extendedKeyUsage=serverAuth \
   -keyout privkey.pem -out fullchain.pem 2>/dev/null
 sudo install -m 0400 -o vcon -g vcon fullchain.pem /etc/vcon-server/cert.pem
 sudo install -m 0400 -o vcon -g vcon privkey.pem /etc/vcon-server/key.pem
-openssl x509 -in fullchain.pem -noout -subject -ext subjectAltName
+openssl x509 -in fullchain.pem -noout -subject -ext subjectAltName,basicConstraints
 ```
 
 ```text
 subject=CN=vcon.example.com
 X509v3 Subject Alternative Name:
     DNS:vcon.example.com
+X509v3 Basic Constraints: critical
+    CA:FALSE
 ```
 
 Clients then need `fullchain.pem` to trust it: the `curl` commands on these
@@ -319,7 +327,8 @@ sudo -u vcon vcon-server serve --config /etc/vcon-server/vcon-server.toml
 It keeps the terminal and logs there. Leave it running, and open a second
 terminal for the next steps. To keep it running after you log out, run it
 under your init system or a supervisor, with the same command, as `vcon`,
-and with a memory-lock limit of `unlimited`.
+and with a memory-lock limit of `unlimited`. A
+[container](@/docs/container.md) is one way.
 
 ## When it does not start
 
@@ -431,8 +440,8 @@ curl -sS --cacert fullchain.pem https://vcon.example.com:8443/health -H "Authori
 
 - [Store your first vCon](@/docs/first-vcon.md): store, read, list and
   delete a vCon, with a key for each scope.
-- [The how-to guides](@/docs/how-to.md): every guide, and the ones not
-  written yet.
+- [The how-to guides](@/docs/how-to.md): keys and scopes, a second tenant,
+  key rotation, backups, containers and upgrades.
 - [Operations](@/docs/operations.md): the data directory, logs, health
   checks, backups and key rotation.
 - [Configuration](@/docs/configuration.md): every key, and its default.

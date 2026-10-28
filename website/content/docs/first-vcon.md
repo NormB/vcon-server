@@ -316,6 +316,11 @@ A revoked key is refused at its next request.
 
 ## Next
 
+- [Use keys and scopes](@/docs/keys-and-scopes.md): what each scope allows.
+- [Add a second tenant](@/docs/second-tenant.md): a tenant made over the
+  admin API, and its data kept apart from acme's.
+- [Revoke and rotate keys](@/docs/rotate-keys.md): revoke a key over HTTP,
+  after which it gets `401`.
 - [Tenants and keys](@/docs/tenants-and-keys.md): every scope, and what an
   operator key may do.
 - [Producers](@/docs/producers.md): what a producer does with each answer.

@@ -23,7 +23,6 @@
 22	crates/vcon-server/src/tenants/rekey.rs
 1	crates/vcon-server/tests/catalog_temp.rs
 34	crates/vcon-server/tests/commands.rs
-12	crates/vcon-server/tests/documented_commands.rs
 2	crates/vcon-server/tests/master_key.rs
 1	crates/vcon-server/tests/mcp_stdio.rs
 6	crates/vcon-server/tests/release_workflow.rs

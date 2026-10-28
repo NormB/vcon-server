@@ -20,6 +20,8 @@ page shows.
 | The binary the project built and signed, checked before you run it | [Download a release](#download-a-release) |
 | A build on a host the release binary does not run on, such as Debian 12 | [Install with cargo](#install-with-cargo) |
 | A build of the newest code, or a build you have changed | [Build from source](#build-from-source) |
+| The server in Docker or another container runtime | [Run it in a container](@/docs/container.md) |
+| A newer version over one you already run | [Upgrade](@/docs/upgrading.md) |
 
 ## What the host needs
 
