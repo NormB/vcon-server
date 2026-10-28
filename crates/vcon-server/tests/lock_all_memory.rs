@@ -30,3 +30,5 @@ fn mlock_every_page_now_and_later_is_locked() {
     );
     drop(grown);
 }
+
+// A name no build holds: fn mlock_ghost_test
