@@ -40,7 +40,17 @@ impl Drop for Running {
     }
 }
 
+/// The server listens on port 0, so it takes a port of its own when it
+/// binds, and the address comes from its `serving` line. A port chosen
+/// here and freed for the server could be taken by another test's
+/// listener first (MCP-STDIO-HANDSHAKE-RACE).
 fn setup() -> Setup {
+    setup_at("127.0.0.1:0")
+}
+
+/// As `setup`, with the server's configuration listening at `listen`; the
+/// server is ready once its own log says where it listens.
+fn setup_at(listen: &str) -> Setup {
     let dir = tempfile::tempdir().expect("temp dir");
     let data = dir.path().join("data");
     std::fs::create_dir(&data).expect("data dir");
@@ -74,15 +84,11 @@ fn setup() -> Setup {
     let (cert, tls_key) = (dir.path().join("cert.pem"), dir.path().join("key.pem"));
     std::fs::write(&cert, made.cert.pem()).expect("write");
     std::fs::write(&tls_key, made.signing_key.serialize_pem()).expect("write");
-    let addr = TcpListener::bind("127.0.0.1:0")
-        .expect("a free port")
-        .local_addr()
-        .expect("addr");
     let config = dir.path().join("vcon-server.toml");
     std::fs::write(
         &config,
         format!(
-            "listen = \"{addr}\"\ndata_dir = \"{}\"\nmaster_key = \"{}\"\n\n[tls]\ncert = \"{}\"\nkey = \"{}\"\n",
+            "listen = \"{listen}\"\ndata_dir = \"{}\"\nmaster_key = \"{}\"\n\n[tls]\ncert = \"{}\"\nkey = \"{}\"\n",
             data.display(),
             master_key.display(),
             cert.display(),
@@ -96,19 +102,39 @@ fn setup() -> Setup {
             .arg("--config")
             .arg(&config)
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .expect("serve starts"),
     );
+    // Its stderr is read to the end on a thread, so the server never
+    // blocks on a full pipe; the lines come here until it says where it
+    // listens.
+    let stderr = server.0.stderr.take().expect("piped");
+    let (send, log) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            let _ = send.send(line);
+        }
+    });
     let deadline = Instant::now() + Duration::from_secs(20);
-    while std::net::TcpStream::connect(addr).is_err() {
-        assert!(
-            server.0.try_wait().expect("wait").is_none(),
-            "serve stopped before it listened"
-        );
-        assert!(Instant::now() < deadline, "serve never listened");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    let mut early = Vec::new();
+    let addr = loop {
+        match log.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(line) => match bound(&line) {
+                Some(addr) => break addr,
+                None => early.push(line),
+            },
+            Err(_) => panic!(
+                "serve never said where it listens ({:?}): {early:?}",
+                server.0.try_wait()
+            ),
+        }
+    };
+    assert_ne!(
+        addr.port(),
+        0,
+        "the serving line names the port bound, not the port configured"
+    );
     Setup {
         dir,
         cert,
@@ -117,6 +143,13 @@ fn setup() -> Setup {
         addr,
         server,
     }
+}
+
+/// The address a `serving` line names, from its `listen=` field.
+fn bound(line: &str) -> Option<SocketAddr> {
+    let mut fields = line.split_whitespace();
+    fields.find(|f| *f == "serving")?;
+    fields.find_map(|f| f.strip_prefix("listen="))?.parse().ok()
 }
 
 impl Setup {
@@ -167,11 +200,47 @@ fn lines(stdout: ChildStdout) -> mpsc::Receiver<String> {
     receive
 }
 
-fn next(lines: &mpsc::Receiver<String>) -> Value {
-    let line = lines
-        .recv_timeout(Duration::from_secs(20))
-        .expect("an answer on stdout");
+/// The next answer on the command's stdout. When none comes, the
+/// command's exit status and stderr say why.
+fn next(lines: &mpsc::Receiver<String>, running: &mut Running) -> Value {
+    let line = match lines.recv_timeout(Duration::from_secs(20)) {
+        Ok(line) => line,
+        Err(e) => {
+            let _ = running.0.kill();
+            let status = running.0.wait();
+            let mut stderr = String::new();
+            if let Some(mut pipe) = running.0.stderr.take() {
+                let _ = pipe.read_to_string(&mut stderr);
+            }
+            panic!("an answer on stdout: {e}; the command: {status:?}, stderr: {stderr}");
+        }
+    };
     serde_json::from_str(&line).unwrap_or_else(|e| panic!("{e}: {line}"))
+}
+
+/// A server that cannot bind its port is never taken for a ready one,
+/// even when another process listens there. That other listener is what
+/// a test found when a port it had freed was taken before its server
+/// bound it: the command then reached the other server, or none, and
+/// stopped before it answered (MCP-STDIO-HANDSHAKE-RACE).
+#[test]
+fn a_server_that_cannot_bind_is_never_taken_for_ready() {
+    let decoy = TcpListener::bind("127.0.0.1:0").expect("a port");
+    let held = decoy.local_addr().expect("addr").to_string();
+    let started = std::panic::catch_unwind(|| setup_at(&held));
+    let refused = started
+        .err()
+        .expect("the setup refuses a server that never bound its port");
+    let why = refused
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| refused.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+        .unwrap_or_default();
+    assert!(
+        why.contains("serve never said where it listens"),
+        "the refusal names the missing serving line: {why}"
+    );
+    drop(decoy);
 }
 
 #[test]
@@ -191,7 +260,7 @@ fn the_handshake_over_stdio_comes_from_the_server() {
         },
     });
     writeln!(stdin, "{initialize}").expect("write");
-    let answer = next(&out);
+    let answer = next(&out, &mut running);
     assert_eq!(answer["id"], 1, "{answer}");
     let result = &answer["result"];
     assert_eq!(result["serverInfo"]["name"], "vcon-server", "{answer}");
@@ -211,7 +280,7 @@ fn the_handshake_over_stdio_comes_from_the_server() {
         json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
     )
     .expect("write");
-    let answer = next(&out);
+    let answer = next(&out, &mut running);
     assert_eq!(answer["id"], 2, "{answer}");
     assert_eq!(answer["result"]["tools"], json!([]), "{answer}");
 
@@ -223,7 +292,7 @@ fn the_handshake_over_stdio_comes_from_the_server() {
                "params": {"name": "vcon_nothing", "arguments": {}}})
     )
     .expect("write");
-    let answer = next(&out);
+    let answer = next(&out, &mut running);
     assert_eq!(answer["id"], 3, "{answer}");
     assert_eq!(answer["error"]["code"], -32602, "{answer}");
     assert_eq!(
@@ -293,10 +362,14 @@ fn a_ca_file_without_a_certificate_or_a_server_not_there_stops_the_command() {
     .expect("write");
     let key_file = s.dir.path().join("agent.token");
     std::fs::write(&key_file, &s.token).expect("write");
-    let nothing = TcpListener::bind("127.0.0.1:0")
-        .expect("a free port")
-        .local_addr()
-        .expect("addr");
+    // A port held by the client end of a connection, where nothing
+    // listens: a connection to it is refused, and no server can bind it
+    // while it is held. A port freed here could be taken by another
+    // test's server first (MCP-STDIO-HANDSHAKE-RACE).
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
+    let held =
+        std::net::TcpStream::connect(listener.local_addr().expect("addr")).expect("a connection");
+    let nothing = held.local_addr().expect("its client end");
     for (name, url, ca, named) in [
         (
             "empty ca",
