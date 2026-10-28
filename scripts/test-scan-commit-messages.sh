@@ -2,7 +2,9 @@
 # Tests scripts/scan-commit-messages.sh in a throwaway repository: a clean
 # message passes; an AI credit on a line that starts with #, a plan task id
 # and a real-looking email address are each refused and named, with the
-# commit; one bad commit among clean ones fails the whole run.
+# commit; one bad commit among clean ones fails the whole run. GitHub's
+# own service address, which Dependabot signs with, passes; any other
+# address at github.com does not.
 # Forbidden samples are assembled at run time, so this file holds none.
 set -euo pipefail
 src="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -54,11 +56,18 @@ hashed="$(commit "Fix it
 # Co-Authored-By: ${tool^} <noreply@${co}.com>")"
 plan="$(commit "Finish P""0.3")"
 mail="$(commit "Ask someone@gm""ail.com")"
+# What Dependabot writes: GitHub's own service address is not personal data.
+bot="$(commit "deps: bump a package
+
+Signed-off-by: dependabot[bot] <support@github.com>")"
+staff="$(commit "Ask someone@git""hub.com")"
 expect 0 "a clean message, # line included" "" "$clean"
 expect 1 "an AI credit on a # line" "<commit message>: AI tool name:" "$hashed"
 expect 1 "the refused commit is named" "refused: $hashed" "$hashed"
 expect 1 "a plan task id" "<commit message>: plan task id:" "$plan"
 expect 1 "an email address" "<commit message>: email address:" "$mail"
+expect 0 "Dependabot's sign-off with GitHub's service address" "" "$bot"
+expect 1 "anyone else's address at github.com" "<commit message>: email address:" "$staff"
 expect 1 "one bad commit among clean ones" "refused: $plan" "$clean" "$plan" "$clean"
 expect 1 "a commit that does not exist" "cannot read" "0000000000000000000000000000000000000000"
 echo "test-scan-commit-messages: $pass of $((pass + fail)) passed"

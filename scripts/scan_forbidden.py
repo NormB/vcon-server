@@ -50,6 +50,10 @@ PRIVATE_DOC_IDS = [
 
 EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)")
 RESERVED_DOMAINS = ("example.com", "example.net", "example.org")
+# Addresses of GitHub's own services, not of a person: Dependabot signs
+# its commits "Signed-off-by: dependabot[bot] <support@github.com>".
+# Exact addresses only; anyone else at github.com is still found.
+SERVICE_ADDRESSES = ("support@github.com",)
 RESERVED_TLDS = (".example", ".invalid", ".test", ".localhost")
 
 PHONE_NANP = re.compile(r"(?<![\d.])(?:\+?1[\s.-]?)?\(?([2-9]\d{2})\)?[\s.-](\d{3})[\s.-](\d{4})(?![\d.])")
@@ -81,7 +85,7 @@ def reserved_phone(exchange, line):
 
 def personal_data(text, path=""):
     for m in EMAIL.finditer(text):
-        if not reserved_domain(m.group(1)):
+        if not reserved_domain(m.group(1)) and m.group(0).lower() not in SERVICE_ADDRESSES:
             yield "email address", m.group(0)
     for m in PHONE_NANP.finditer(text):
         if not reserved_phone(m.group(2), m.group(3)):
