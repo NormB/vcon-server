@@ -12,6 +12,19 @@ name: Release
 on:
   push:
     tags: ['v*']
+  # A pull request that changes the build builds both binaries and holds
+  # them to the glibc floor; nothing is attested, released or published.
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/*/Cargo.toml'
+      - 'rust-toolchain.toml'
+      - 'scripts/reproducible-build.sh'
+      - 'scripts/release-build-env.sh'
+      - 'scripts/check_glibc.py'
+      - 'scripts/run-clients.sh'
+      - '.github/workflows/release.yml'
   workflow_dispatch:
     inputs:
       crates_io_dry_run:
@@ -31,6 +44,9 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: never
+  # The oldest glibc the release binaries run on: RHEL 9 and AlmaLinux 9
+  # (2.34); Ubuntu 22.04 has 2.35, Debian 12 2.36.
+  GLIBC_FLOOR: '2.34'
 
 jobs:
   version:
@@ -73,12 +89,21 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
+    # Built on the floor's glibc, so the binaries take no newer symbol
+    # version: on ubuntu-latest (glibc 2.39) v0.2.0 needed GLIBC_2.38. The
+    # image is multi-architecture; this digest names both platforms.
+    container:
+      image: almalinux:9@sha256:1dc2f882fd8c5c1eb4747953cf8516e0f36d4d4aeba6a17f97e7b12d495e8547
     steps:
+      # Before the checkout, which keeps .git only when git is installed;
+      # the build takes SOURCE_DATE_EPOCH from the commit.
+      - name: Install git
+        run: dnf install -y git-core
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - name: Install the pinned toolchain
-        run: rustup toolchain install
+      - name: Prepare the build container
+        run: bash scripts/release-build-env.sh
       # The reproducible build (scripts/reproducible-build.sh): the same
       # command reproducible.yml runs twice and compares.
       - name: Build
@@ -88,6 +113,8 @@ jobs:
           set -euo pipefail
           bin="$(bash scripts/reproducible-build.sh build "$TARGET" | tail -1)"
           echo "BIN=$bin" >> "$GITHUB_ENV"
+      - name: Needs no glibc above the floor
+        run: python3 -I scripts/check_glibc.py "$GLIBC_FLOOR" "$BIN"
       - name: Package
         env:
           VERSION: ${{ needs.version.outputs.version }}
@@ -106,9 +133,59 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # Each binary as a user runs it, on each distribution at or above the
+  # floor: --version, then a vCon stored, listed, read and deleted through
+  # the curl client against a live server (scripts/run-clients.sh).
+  smoke:
+    name: run on ${{ matrix.image }} (${{ matrix.target }})
+    needs: [version, build]
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
+        image:
+          - debian:12@sha256:854dd8ab51d62866dbd8f5431d15ce77b12983a2a4a1e1fe43a2395dc7ef9f61
+          - ubuntu:22.04@sha256:e0f80c829509ef4df9e76bd8944eb7b8ec25cbb379b112a7f9448b2c77a77c9b
+          - almalinux:9@sha256:1dc2f882fd8c5c1eb4747953cf8516e0f36d4d4aeba6a17f97e7b12d495e8547
+    runs-on: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    container:
+      image: ${{ matrix.image }}
+      # The server locks all its memory before it reads a key.
+      options: --ulimit memlock=-1:-1
+    steps:
+      - name: Install what the curl client needs
+        run: |
+          set -eu
+          if command -v apt-get >/dev/null; then
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends curl jq openssl python3 ca-certificates >/dev/null
+          else
+            dnf install -y --setopt=install_weak_deps=False jq openssl python3 >/dev/null
+          fi
+          ldd --version | sed -n 1p
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: build-${{ matrix.target }}
+          path: dist
+      - name: Run the binary
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -eu
+          tar xzf "dist/vcon-server-${VERSION}-${TARGET}.tar.gz" -C dist
+          bin="dist/vcon-server-${VERSION}-${TARGET}/vcon-server"
+          "$bin" --version
+          RUN_CLIENTS=curl bash scripts/run-clients.sh "$bin" -
+
   attest:
     name: SBOM, checksums and attestations
-    needs: [version, build]
+    needs: [version, build, smoke]
+    if: github.event_name != 'pull_request'
     timeout-minutes: 20
     runs-on: ubuntu-latest
     permissions:

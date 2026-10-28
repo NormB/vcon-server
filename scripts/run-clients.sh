@@ -17,11 +17,17 @@
 # Usage: scripts/run-clients.sh <vcon-server binary> <rust client binary>
 # Needs curl, jq, openssl, python3, go and node (22.18 or later) on PATH,
 # and a memory lock limit the server can lock all its memory under.
+#
+# RUN_CLIENTS, a space-separated list of names (curl python go typescript
+# rust), runs only those; with "curl" alone it needs only curl, jq,
+# openssl and python3, and the rust client binary may be given as "-".
+# release.yml runs that against each release binary on each supported
+# distribution.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 server="$(realpath "$1")"
-rust_client="$(realpath "$2")"
+if [ "$2" = - ]; then rust_client=-; else rust_client="$(realpath "$2")"; fi
 work="$(mktemp -d)"
 pid=""
 cleanup() {
@@ -95,9 +101,13 @@ clients=(
   "rust|$rust_client"
 )
 cd "$root"
+ran=0
 for entry in "${clients[@]}"; do
   name="${entry%%|*}"
   command="${entry#*|}"
+  if [ -n "${RUN_CLIENTS:-}" ] && [[ " $RUN_CLIENTS " != *" $name "* ]]; then continue; fi
+  [ "$name" != rust ] || [ "$rust_client" != - ] || fail "rust: no client binary given"
+  ran=$((ran + 1))
   if ! out="$(VCON_KEY="$key" $command 2> "$work/$name.err")"; then
     cat "$work/$name.err" >&2
     fail "$name: exited non-zero"
@@ -119,3 +129,4 @@ $out"
     || fail "$name: a refusal did not name its route, status and problem type: $(cat "$work/$name.refused")"
   echo "run-clients: $name: ok"
 done
+[ "$ran" -gt 0 ] || fail "RUN_CLIENTS named no client: ${RUN_CLIENTS:-}"

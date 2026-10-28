@@ -43,7 +43,9 @@
 # sources' paths.
 #
 # A rebuild must also hold fixed the Rust toolchain (rust-toolchain.toml)
-# and the runner image's C compiler and linker.
+# and the C compiler and linker: release.yml and reproducible.yml build in
+# the AlmaLinux 9 container they name by digest, prepared by
+# scripts/release-build-env.sh, which also sets the glibc floor (2.34).
 
 set -euo pipefail
 
