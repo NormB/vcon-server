@@ -23,8 +23,9 @@ tab and choose "Report a vulnerability". Include:
 
 ## Supported versions
 
-vcon-server is in development and has no release yet. Reports are taken
-against the `main` branch.
+Fixes are made on `main` and ship in the next release. Only the newest
+release is supported: upgrade to it to receive a fix. Reports are taken
+against the newest release and `main`.
 
 ## Scope
 
