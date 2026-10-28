@@ -117,23 +117,33 @@ jobs:
           export ASAN_SYMBOLIZER_PATH="$sym"
           # As in ci.yml: the binary locks its memory, the tests run it.
           sudo prlimit --pid $$ --memlock=unlimited:unlimited
-          # Left out: the tests that check memory is locked. The sanitizer
-          # replaces mlock, munlock, mlockall and munlockall with calls that
-          # do nothing and return 0 (compiler-rt's
-          # sanitizer_common_interceptors.inc: a process that maps terabytes
-          # of shadow memory and then calls mlock can deadlock the kernel),
-          # so under it nothing is locked and a lock limit refuses nothing.
-          # Measured on the first run: exactly these six failed, each at its
-          # locked-memory assertion; the plain test job runs them all.
-          skip=(
-            each_key_has_its_own_locked_page_left_out_of_core_dumps   # tests/key_memory.rs
-            a_key_is_refused_when_its_memory_cannot_be_locked         # tests/key_memory_limit.rs
-            every_page_now_and_later_is_locked                        # tests/lock_all_memory.rs
-            locking_all_memory_fails_under_a_low_lock_limit_and_says_why # tests/lock_all_memory_limit.rs
-            memory_that_cannot_be_locked_stops_the_start              # tests/serve.rs
-            serve_stores_reads_keeps_its_memory_locked_and_stops_on_sigterm  # tests/serve.rs
-          )
-          args=(--exact)
-          for name in "${skip[@]}"; do args+=(--skip "$name"); done
-          cargo "+$NIGHTLY" test -Zbuild-std --target x86_64-unknown-linux-gnu \
-            --locked -p vcon-server --lib --bins --tests --no-fail-fast -- "${args[@]}"
+          # Left out: the tests that check memory is locked, each named with
+          # the prefix mlock_. The sanitizer replaces mlock, munlock,
+          # mlockall and munlockall with calls that do nothing and return 0
+          # (compiler-rt's sanitizer_common_interceptors.inc: a process that
+          # maps terabytes of shadow memory and then calls mlock can
+          # deadlock the kernel), so under it nothing is locked and a lock
+          # limit refuses nothing. Measured on the first run: exactly these
+          # tests failed, each at its locked-memory assertion; the plain
+          # test job runs them all.
+          #
+          # By prefix, not by a list of names: a list went stale when one of
+          # them was renamed (#66), and the job failed for a test it meant
+          # to leave out. A test that loses the prefix runs here and fails
+          # at its assertion, loudly. And the two must agree: the mlock_
+          # tests in the source and the mlock_ tests this build lists, so a
+          # prefix that matches nothing, or a name the build does not hold,
+          # fails here before anything runs.
+          test=(cargo "+$NIGHTLY" test -Zbuild-std --target x86_64-unknown-linux-gnu
+            --locked -p vcon-server --lib --bins --tests --no-fail-fast)
+          defined="$(git grep -hoE '\bfn mlock_[a-z0-9_]+' -- crates | sed 's/^fn //' | sort -u)"
+          listed="$("${test[@]}" -- --list --format terse 2>/dev/null \
+            | sed -n 's/^\([a-z0-9_]*::\)*\(mlock_[a-z0-9_]*\): test$/\2/p' | sort -u)"
+          mapfile -t names <<< "$defined"; echo "left out under AddressSanitizer:"; printf '  %s\n' "${names[@]}"
+          [ -n "$defined" ] || { echo "::error::no test is named mlock_*; the skip below would leave out nothing"; exit 1; }
+          if [ "$defined" != "$listed" ]; then
+            echo "::error::the mlock_ tests in the source and in this build differ"
+            diff <(printf '%s\n' "$defined") <(printf '%s\n' "$listed") || true
+            exit 1
+          fi
+          "${test[@]}" -- --skip mlock_

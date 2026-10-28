@@ -17,7 +17,7 @@ fn lock_under(limit: libc::rlim_t) -> std::io::Error {
 /// memory to lock, EPERM when it is zero. The limit is only lowered, so the
 /// small limit is tried first.
 #[test]
-fn locking_all_memory_fails_under_a_low_lock_limit_and_says_why() {
+fn mlock_locking_all_memory_fails_under_a_low_lock_limit_and_says_why() {
     assert_eq!(
         lock_under(64 * 1024).raw_os_error(),
         Some(libc::ENOMEM),
