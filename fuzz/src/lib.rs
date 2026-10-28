@@ -12,6 +12,8 @@ use flate2::write::GzEncoder;
 use vcon::Form;
 use vcon::read::{Inspection, Limits, Rejection};
 
+pub mod http;
+
 /// The inflation limit the vCon targets inspect with: small, so a body
 /// that passes it is quick to find and quick to run.
 pub const LIMITS: Limits = Limits::new(64 << 10);
