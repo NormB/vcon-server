@@ -6,7 +6,7 @@
 # git's own template is scanned as well, which can only refuse more.
 set -euo pipefail
 root="$(git rev-parse --show-toplevel)"
-if ! sed 's/^/<commit message>\t/' "$1" | python3 -I "$root/scripts/scan_forbidden.py"; then
+if ! grep -v '^#' "$1" | sed 's/^/<commit message>\t/' | python3 -I "$root/scripts/scan_forbidden.py"; then
   echo "commit-msg: refused (see the findings above)" >&2
   exit 1
 fi

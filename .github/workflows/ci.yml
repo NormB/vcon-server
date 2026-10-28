@@ -292,7 +292,7 @@ jobs:
           set -euo pipefail
           zero=0000000000000000000000000000000000000000
           case "$EVENT" in
-            pull_request) range=("$PR_BASE..$PR_HEAD") ;;
+            pull_request) range=("$PR_HEAD..$PR_HEAD") ;;
             push) if [ -n "$BEFORE" ] && [ "$BEFORE" != "$zero" ]; then range=("$BEFORE..$AFTER"); else range=(-1 "$AFTER"); fi ;;
             *) range=(-1 "$AFTER") ;;
           esac
