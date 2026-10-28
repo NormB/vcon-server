@@ -107,35 +107,6 @@ class Selection(unittest.TestCase):
             check_package.published_crates('[workspace]\nmembers = ["a"]\n')
 
 
-PUBLISHED = ["vcon", "vcon-server"]
-
-
-class Selection(unittest.TestCase):
-    def test_a_member_marked_publish_false_is_not_packaged(self):
-        members = [{"name": "vcon", "publish": None}, {"name": "vcon-server", "publish": None}, {"name": "vcon-client", "publish": []}]
-        crates, found = check_package.to_publish(members, PUBLISHED)
-        self.assertEqual([c["name"] for c in crates], ["vcon", "vcon-server"])
-        self.assertEqual(found, [])
-
-    def test_each_published_crate_must_stay_publishable(self):
-        members = [{"name": "vcon", "publish": []}, {"name": "vcon-server", "publish": None}]
-        crates, found = check_package.to_publish(members, PUBLISHED)
-        self.assertEqual([c["name"] for c in crates], ["vcon-server"])
-        self.assertTrue(any("vcon" in f and "publish" in f for f in found), found)
-
-    def test_a_missing_published_crate_is_refused(self):
-        crates, found = check_package.to_publish([{"name": "vcon", "publish": None}], PUBLISHED)
-        self.assertTrue(any("vcon-server" in f for f in found), found)
-
-    def test_the_list_is_read_from_the_workspace_manifest(self):
-        manifest = '[workspace]\nmembers = ["a"]\n\n[workspace.metadata]\npublished = ["a", "b"]\n'
-        self.assertEqual(check_package.published_crates(manifest), ["a", "b"])
-
-    def test_a_workspace_without_the_list_is_refused(self):
-        with self.assertRaises(SystemExit):
-            check_package.published_crates('[workspace]\nmembers = ["a"]\n')
-
-
 class Patches(unittest.TestCase):
     def test_each_published_crate_is_patched_in_by_path(self):
         args = check_package.patches(pathlib.Path("/run/x"), [("vcon-0.1.0", "vcon"), ("vcon-server-0.1.0", "vcon-server")])

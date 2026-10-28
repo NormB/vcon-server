@@ -244,6 +244,13 @@ jobs:
           } | python3 -I scripts/scan_forbidden.py
       - name: The glibc floor rule for release binaries
         run: python3 -I scripts/test_check_glibc.py
+      # A second class or test method of one name replaces the first,
+      # whose tests then never run.
+      - name: No test module defines a name twice
+        run: |
+          set -euo pipefail
+          python3 -I scripts/test_check_test_names.py
+          python3 -I scripts/check_test_names.py
       - name: Paths the Best Practices answers link to
         run: python3 -I scripts/test_check_repo_links.py
       - name: The rule for the home page's numbers
