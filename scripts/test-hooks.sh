@@ -164,6 +164,11 @@ expect refuse "export staged by force" "vcon-server — Notes.md" "words"
 expect refuse "AI trailer in message" notes.txt "message case one" "Fix it
 
 Co-Authored-By: ${ai_word^} <noreply@${ai_co}.com>"
+# git commit -m keeps lines that start with # (cleanup mode whitespace),
+# so a # line is stored in the commit and must be scanned too.
+expect refuse "AI trailer on a # line in message" notes.txt "message case six" "Fix it
+
+# Co-Authored-By: ${ai_word^} <noreply@${ai_co}.com>"
 expect refuse "plan task id in message" notes.txt "message case two" "Finish P""0.3"
 expect refuse "later plan task id in message" notes.txt "message case five" "Finish P""14.10"
 expect refuse "email in message" notes.txt "message case three" "Ask someone@gm""ail.com"
