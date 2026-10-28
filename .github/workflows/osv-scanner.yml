@@ -1,0 +1,78 @@
+name: OSV-Scanner
+
+# Matches every lockfile in the repository against osv.dev, which gathers
+# the RustSec database, the GitHub Advisory Database and others. --recursive
+# finds them all: the workspace's Cargo.lock, the fuzz workspace's own
+# fuzz/Cargo.lock, the npm lockfiles of the TypeScript client and the
+# console tests, the Go client's go.mod and the pinned Python requirements.
+#
+# Modeled on sipnab's osv-scanner.yml, with one difference. sipnab lets a
+# finding through here, because its cargo audit already blocks a merge on a
+# Rust advisory. vcon-server has no other vulnerability gate, so a finding
+# fails this job; the SARIF upload still runs, so the finding also shows in
+# code scanning.
+#
+# The action is used directly, not through upstream's reusable workflow,
+# because a job that `uses:` a workflow cannot carry timeout-minutes.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Wednesdays 05:41 UTC, clear of codeql.yml (Tuesdays 02:34),
+    # clusterfuzzlite.yml (Mondays 04:41) and scorecard.yml (Mondays 07:40).
+    # Weekly, because an advisory published today makes an unchanged tree
+    # vulnerable.
+    - cron: '41 5 * * 3'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: osv-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  scan:
+    name: OSV (all lockfiles)
+    runs-on: ubuntu-latest
+    # A scan takes well under a minute; this bounds a hang.
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # For the SARIF upload.
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # osv-scanner exits non-zero when it finds a vulnerability, which
+      # fails this step and the job.
+      - name: Scan every lockfile
+        uses: google/osv-scanner-action/osv-scanner-action@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
+        with:
+          scan-args: |-
+            --format=sarif
+            --output-file=osv.sarif
+            --recursive
+            ./
+
+      # The findings in a readable form in the log. always(): the job is
+      # already red when there is something to read.
+      - name: Show the findings
+        if: always()
+        run: |
+          set -euo pipefail
+          [ -s osv.sarif ] || { echo "the scan wrote no osv.sarif"; exit 1; }
+          jq -r '.runs[].results[] | "\(.locations[0].physicalLocation.artifactLocation.uri // "?")  \(.ruleId)  \(.message.text | split("\n")[0])"' osv.sarif | sort | uniq -c
+          echo "$(jq '[.runs[].results[]] | length' osv.sarif) SARIF result(s)"
+
+      # always(): a scan that found something must still publish it.
+      - name: Upload results
+        if: always()
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          sarif_file: osv.sarif
+          category: osv-scanner
