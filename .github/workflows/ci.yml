@@ -421,3 +421,66 @@ jobs:
           set -euo pipefail
           sudo prlimit --pid $$ --memlock=unlimited:unlimited
           scripts/test-console.sh
+
+  docs-binary:
+    name: how-to pages, the runner and the server
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    outputs:
+      scenarios: ${{ steps.list.outputs.scenarios }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: The runner's own tests, and the rules every tested page keeps
+        run: |
+          set -euo pipefail
+          python3 -I scripts/test_docs_test.py
+          python3 -I scripts/docs_test.py lint
+      - name: List the scenarios
+        id: list
+        # Read from scripts/docs_test.py, so a new scenario runs here with no
+        # list to keep in step.
+        run: echo "scenarios=$(python3 -I scripts/docs_test.py list)" >> "$GITHUB_OUTPUT"
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build the server
+        run: cargo build --locked -p vcon-server
+      - name: Keep the server for the scenarios
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: docs-vcon-server
+          path: target/debug/vcon-server
+          retention-days: 1
+          if-no-files-found: error
+
+  docs:
+    name: how-to ${{ matrix.scenario }} against a live server
+    needs: docs-binary
+    timeout-minutes: 75
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: ${{ fromJSON(needs.docs-binary.outputs.scenarios) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Get the server built from this commit
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: docs-vcon-server
+          path: ${{ runner.temp }}/server
+      - name: Run the pages' commands and compare what each prints
+        # Each scenario runs in a fresh container (see scripts/docs_test.py).
+        # GH_TOKEN lets the install page's `gh attestation verify` read the
+        # release's attestations.
+        env:
+          SCENARIO: ${{ matrix.scenario }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          chmod 0755 "$RUNNER_TEMP/server/vcon-server"
+          python3 -I scripts/docs_test.py run "$SCENARIO" --binary "$RUNNER_TEMP/server/vcon-server"
