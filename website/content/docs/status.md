@@ -33,6 +33,11 @@ what is built, unless it says otherwise.
   (`GET /key`), lists, reads, stores and deletes vCons as the key's scopes
   allow; the legal view (versions, holds, restore), the audit logs, and for
   an operator key the tenants and their keys.
+- **The MCP server** for AI agents, at `/mcp` and through `vcon-server mcp`:
+  tools that read, list, store, replace and delete vCons, the legal tools, the
+  audit logs, and for an operator key the tenants and their keys; each passes
+  one gate for rate, concurrency and scope, and leaves the records its HTTP
+  route leaves. See [MCP](@/docs/mcp.md).
 - **Tenants and keys.** Scoped bearer keys, revocation, tenant removal that
   never passes a legal hold.
 - **Retention.** Calendar periods per tenant or server-wide, the purge sweep
@@ -54,7 +59,10 @@ what is built, unless it says otherwise.
   needs the operator.
 - **MCP for AI agents:** `POST /mcp` on the TLS listener, authenticated by
   API key, and `vcon-server mcp`, which forwards stdio to a running server
-  with one key. See [MCP](@/docs/mcp.md).
+  with one key; tools that store, read, list and delete vCons, read the
+  legal record and the audit logs, and manage tenants and keys, each through
+  the same gate, scopes and audit records as its HTTP route. See
+  [MCP](@/docs/mcp.md).
 - **Start-up refusals** for a tenant key wrapped under another key, a key
   rotation stopped part way, data under another key, or a tenant catalog
   the server may not open, with the system's error; and the daily warning
@@ -74,8 +82,6 @@ what is built, unless it says otherwise.
 
 ## Being built
 
-- **MCP tools:** the tools an agent calls. None exist yet; the endpoint
-  and the stdio command are built, above.
 - **Review:** a review of the code against its design, a review of every
   feature against its tests, and a full fault-injection run.
 

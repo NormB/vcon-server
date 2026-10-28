@@ -17,9 +17,10 @@ use crate::ids::KeyId;
 
 /// The scope a tool needs, from its name's area and its hints: `vcon_`
 /// tools need read when read-only, delete when destructive, else write;
-/// `legal_` tools legal; `admin_` tools admin. None, which refuses every
-/// call, for a tool that does not state both hints, states both true, or
-/// has no known area.
+/// `legal_` tools legal; `audit_` tools audit; `admin_` tools admin. None,
+/// which refuses every call, for a tool that does not state both hints,
+/// states both true, or has no known area.
+#[must_use]
 pub fn scope(name: &str, hints: Option<&ToolAnnotations>) -> Option<Scope> {
     let hints = hints?;
     let (read_only, destructive) = (hints.read_only_hint?, hints.destructive_hint?);
@@ -31,6 +32,7 @@ pub fn scope(name: &str, hints: Option<&ToolAnnotations>) -> Option<Scope> {
         "vcon" if destructive => Some(Scope::Delete),
         "vcon" => Some(Scope::Write),
         "legal" => Some(Scope::Legal),
+        "audit" => Some(Scope::Audit),
         "admin" => Some(Scope::Admin),
         _ => None,
     }
@@ -132,6 +134,7 @@ mod tests {
             ("legal_get", t, f, Some(Scope::Legal)),
             ("legal_restore", f, f, Some(Scope::Legal)),
             ("legal_hold", f, t, Some(Scope::Legal)),
+            ("audit_read", t, f, Some(Scope::Audit)),
             ("admin_tenant_list", t, f, Some(Scope::Admin)),
             ("admin_tenant_remove", f, t, Some(Scope::Admin)),
             // Both hints, and only consistent ones, are needed.
@@ -195,6 +198,7 @@ mod tests {
         let gate = Gate::new(Limits {
             calls_per_second: 1,
             concurrent: 2,
+            ..Limits::DEFAULT
         });
         let first = gate.slot().expect("a slot");
         let second = gate.slot().expect("a slot");

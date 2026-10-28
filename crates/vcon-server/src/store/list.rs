@@ -24,6 +24,14 @@ pub struct Cursor {
 }
 
 impl Cursor {
+    /// The cursor of a page that ends at `last`.
+    pub fn after(last: &Listed) -> Cursor {
+        Cursor {
+            stored_at: nanos(last.stored_at),
+            uuid: last.uuid,
+        }
+    }
+
     /// The cursor `Display` wrote, or None for any other text.
     pub fn parse(text: &str) -> Option<Cursor> {
         // The engine refuses padding and spare bits, so one cursor has one

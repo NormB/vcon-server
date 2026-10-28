@@ -2170,6 +2170,7 @@ dependencies = [
  "axum",
  "base64",
  "clap",
+ "flate2",
  "form_urlencoded",
  "http-body-util",
  "hyper-util",
