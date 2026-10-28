@@ -523,63 +523,6 @@ mod tests {
     }
 
     #[test]
-    fn each_command_does_its_own_work() {
-        let id = || "x".to_owned();
-        for (command, work) in [
-            (
-                Command::TenantCreate {
-                    name: id(),
-                    retention: None,
-                },
-                Work::TenantCreate,
-            ),
-            (Command::TenantList, Work::TenantList),
-            (
-                Command::TenantSetRetention {
-                    id: id(),
-                    retention: id(),
-                },
-                Work::TenantSetRetention,
-            ),
-            (
-                Command::TenantRemove {
-                    id: id(),
-                    force: false,
-                    override_holds: false,
-                },
-                Work::TenantRemove,
-            ),
-            (
-                Command::KeyCreate {
-                    owner: Owner::Operator,
-                    label: id(),
-                },
-                Work::KeyCreate,
-            ),
-            (Command::KeyList { tenant: None }, Work::KeyList),
-            (Command::KeyRevoke { id: id() }, Work::KeyRevoke),
-            (
-                Command::AuditExport {
-                    log: Log::Admin,
-                    since: None,
-                },
-                Work::AuditExport,
-            ),
-            (Command::RekeyTenant { id: id() }, Work::RekeyTenant),
-            (Command::Check, Work::Check),
-            (Command::Backup { to: id().into() }, Work::Backup),
-            (
-                Command::RekeyMaster {
-                    new_master: id().into(),
-                },
-                Work::RekeyMaster,
-            ),
-        ] {
-            assert_eq!(command.work(), work, "{command:?}");
-        }
-    }
-
-    #[test]
     fn tenant_create_prints_the_new_id_and_list_shows_it() {
         let s = setup();
         let out = s
@@ -1005,18 +948,25 @@ mod tests {
                 damaged: vec![VersionId([2; 16]), VersionId([3; 16])],
                 ..sound()
             };
-            assert_eq!(problems(&tenant(Ok(damaged), false), HOUR, NOW).len(), 2);
-            let stopped = problems(&tenant(Ok(sound()), true), HOUR, NOW);
-            assert_eq!(stopped.len(), 1);
-            assert!(stopped[0].contains("rekey tenant"), "{stopped:?}");
-            let closed = problems(
-                &tenant(Err(OpenFailure::Refused(TenantError::Io)), false),
-                HOUR,
-                NOW,
+            assert_eq!(
+                problems(&tenant(Ok(damaged), false), HOUR, NOW),
+                [
+                    "version 02020202020202020202020202020202 is missing or does not open",
+                    "version 03030303030303030303030303030303 is missing or does not open",
+                ]
             );
-            assert_eq!(closed.len(), 1);
-            assert!(closed[0].contains("catalog"), "{closed:?}");
-            assert!(!closed[0].contains("key"), "{closed:?}");
+            assert_eq!(
+                problems(&tenant(Ok(sound()), true), HOUR, NOW),
+                ["a key rotation was stopped part way; run rekey tenant again"]
+            );
+            assert_eq!(
+                problems(
+                    &tenant(Err(OpenFailure::Refused(TenantError::Io)), false),
+                    HOUR,
+                    NOW,
+                ),
+                ["its catalog cannot be opened: Io"]
+            );
         }
 
         /// Only a catalog its key does not open is a key problem; one the
@@ -1051,9 +1001,12 @@ mod tests {
                 Vec::<String>::new()
             );
             let stalled = waited(datetime!(2026-10-25 10:59:59 UTC));
-            let found = problems(&tenant(Ok(stalled), false), HOUR, NOW);
-            assert_eq!(found.len(), 1);
-            assert!(found[0].contains("sweep"), "{found:?}");
+            assert_eq!(
+                problems(&tenant(Ok(stalled), false), HOUR, NOW),
+                [
+                    "1 version(s) due for purge, the oldest longer than purge_interval: the sweep is not keeping up"
+                ]
+            );
         }
 
         #[test]
@@ -1142,6 +1095,16 @@ mod tests {
         })
         .expect("beside");
         s.run(Command::KeyList { tenant: None }).expect("beside");
+        let made = s
+            .run(Command::KeyCreate {
+                owner: Owner::Operator,
+                label: "l".to_owned(),
+            })
+            .expect("beside");
+        s.run(Command::KeyRevoke {
+            id: made[0]["id"].as_str().expect("an id").to_owned(),
+        })
+        .expect("beside");
         s.run(Command::AuditExport {
             log: Log::Admin,
             since: None,
@@ -1231,41 +1194,81 @@ mod tests {
         );
     }
 
+    /// Words the message of `error` must hold to say what went wrong. The
+    /// matches have no catch-all arm, so a new error fails to compile here
+    /// until its words are given.
+    fn says(error: &CommandError) -> &'static str {
+        match error {
+            CommandError::DataDir(_) => "the data directory is in use",
+            CommandError::MasterKey(_) => "the master key cannot be read",
+            CommandError::WrongMasterKey => "is not the one server.sqlite was made under",
+            CommandError::BadPeriod(_) => "\"7w\" is not a period",
+            CommandError::UnknownKey => "no key has this id",
+            CommandError::Output(_) => "the output could not be written",
+            CommandError::SameMasterKey => "already in use",
+            CommandError::CheckFound(_) => "check found 2 problem(s)",
+            CommandError::Backup(e) => match e {
+                BackupError::Exists => "already exists",
+                BackupError::KeptChanging => "try again",
+                BackupError::Io => "could not be written",
+                BackupError::AuditFailed => "audit record",
+            },
+            CommandError::Tenant(e) => match e {
+                TenantError::NotFound => "no tenant",
+                TenantError::NameTaken => "another tenant has this name",
+                TenantError::BadName => "a tenant name is",
+                TenantError::HoldsVcons => "--force",
+                TenantError::UnderHold => "--override-holds",
+                TenantError::LimitReached => "rekey master",
+                TenantError::AuditFailed => "audit record",
+                TenantError::Closing => "being removed",
+                TenantError::CliOnly => "command line",
+                TenantError::BadScopes => "scopes",
+                // Display folds a registry made under another master key
+                // into WrongMasterKey's message.
+                TenantError::WrongKey => "is not the one server.sqlite was made under",
+                TenantError::Io => "could not be read or written",
+            },
+        }
+    }
+
     #[test]
     fn each_error_says_what_went_wrong() {
-        for (error, words) in [
-            (CommandError::WrongMasterKey, "master key"),
-            (CommandError::BadPeriod("7w".to_owned()), "7w"),
-            (CommandError::UnknownKey, "no key"),
-            (CommandError::Tenant(TenantError::NotFound), "no tenant"),
-            (CommandError::Tenant(TenantError::NameTaken), "name"),
-            (CommandError::Tenant(TenantError::BadName), "name"),
-            (CommandError::Tenant(TenantError::HoldsVcons), "--force"),
-            (
-                CommandError::Tenant(TenantError::UnderHold),
-                "--override-holds",
-            ),
-            (CommandError::Tenant(TenantError::BadScopes), "scope"),
-            (
-                CommandError::Tenant(TenantError::LimitReached),
-                "rekey master",
-            ),
-            (CommandError::Tenant(TenantError::AuditFailed), "audit"),
-            (
-                CommandError::DataDir(LockError::InUse(Sharing::Alone)),
-                "in use",
-            ),
-            (CommandError::Output(io::Error::other("closed")), "output"),
-            (CommandError::Backup(BackupError::Exists), "already exists"),
-            (CommandError::Backup(BackupError::KeptChanging), "try again"),
-            (
-                CommandError::Backup(BackupError::Io),
-                "could not be written",
-            ),
-            (CommandError::Backup(BackupError::AuditFailed), "audit"),
-        ] {
+        let tenant = [
+            TenantError::NotFound,
+            TenantError::NameTaken,
+            TenantError::BadName,
+            TenantError::HoldsVcons,
+            TenantError::UnderHold,
+            TenantError::LimitReached,
+            TenantError::AuditFailed,
+            TenantError::Closing,
+            TenantError::CliOnly,
+            TenantError::BadScopes,
+            TenantError::WrongKey,
+            TenantError::Io,
+        ]
+        .map(CommandError::Tenant);
+        let backup = [
+            BackupError::Exists,
+            BackupError::KeptChanging,
+            BackupError::Io,
+            BackupError::AuditFailed,
+        ]
+        .map(CommandError::Backup);
+        let rest = [
+            CommandError::DataDir(LockError::InUse(Sharing::Alone)),
+            CommandError::MasterKey(crate::envelope::KeyError::WrongSize),
+            CommandError::WrongMasterKey,
+            CommandError::BadPeriod("7w".to_owned()),
+            CommandError::UnknownKey,
+            CommandError::Output(io::Error::other("closed")),
+            CommandError::SameMasterKey,
+            CommandError::CheckFound(2),
+        ];
+        for error in tenant.into_iter().chain(backup).chain(rest) {
             let text = error.to_string();
-            assert!(text.contains(words), "{error:?}: {text}");
+            assert!(text.contains(says(&error)), "{error:?}: {text}");
         }
     }
 }

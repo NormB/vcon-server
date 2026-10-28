@@ -317,16 +317,13 @@ mod tests {
                 data_under_other_keys: 3,
                 ..KeyOrder::default()
             };
-            let text = ServeError::KeysOutOfOrder(order).to_string();
-            for words in [
-                "1 tenant key",
-                "2 key rotation",
-                "3 tenant",
-                "vcon-server check",
-            ] {
-                assert!(text.contains(words), "{words}: {text}");
-            }
-            assert!(!text.contains("cannot be opened"), "{text}");
+            assert_eq!(
+                ServeError::KeysOutOfOrder(order).to_string(),
+                "1 tenant key(s) do not unwrap under the master key; \
+                 2 key rotation(s) stopped part way; run rekey tenant again; \
+                 3 tenant(s) with data under another key; \
+                 vcon-server check names the tenants"
+            );
         }
 
         /// Catalogs the server may not open are counted apart from keys,

@@ -85,29 +85,51 @@ mod tests {
         std::fs::read_to_string(path).expect("the source file")
     }
 
-    /// The headers say what the design says, word for word: a weaker
-    /// policy fails here, not only in a browser.
+    /// The headers hold the rules the design sets, so a weaker policy
+    /// fails here, not only in a browser: the CSP allows nothing by
+    /// default, each source is the console's own origin or none, and no
+    /// script may run but the console's file; the page is never framed,
+    /// cached, sniffed or sent a referrer.
     #[test]
     fn the_headers_are_the_designed_ones() {
-        let headers: Vec<(&str, &str)> = super::HEADERS.to_vec();
-        assert_eq!(
-            headers,
-            [
-                (
-                    "content-security-policy",
-                    "default-src 'none'; script-src 'self'; style-src 'self'; \
-                     img-src 'self'; connect-src 'self'; base-uri 'none'; \
-                     form-action 'none'; frame-ancestors 'none'; \
-                     require-trusted-types-for 'script'; trusted-types 'none'"
-                ),
-                ("x-frame-options", "DENY"),
-                ("x-content-type-options", "nosniff"),
-                ("referrer-policy", "no-referrer"),
-                ("cache-control", "no-store"),
-                ("cross-origin-opener-policy", "same-origin"),
-                ("cross-origin-resource-policy", "same-origin"),
-            ]
-        );
+        let headers: std::collections::BTreeMap<&str, &str> = super::HEADERS.into_iter().collect();
+        assert_eq!(headers.len(), super::HEADERS.len(), "each header once");
+        let csp: std::collections::BTreeMap<&str, Vec<&str>> = headers["content-security-policy"]
+            .split(';')
+            .map(|d| {
+                let mut words = d.split_whitespace();
+                (words.next().expect("a directive"), words.collect())
+            })
+            .collect();
+        for (directive, sources) in [
+            ("default-src", ["'none'"]),
+            ("script-src", ["'self'"]),
+            ("frame-ancestors", ["'none'"]),
+            ("base-uri", ["'none'"]),
+            ("form-action", ["'none'"]),
+            ("require-trusted-types-for", ["'script'"]),
+            ("trusted-types", ["'none'"]),
+        ] {
+            assert_eq!(csp.get(directive), Some(&sources.to_vec()), "{directive}");
+        }
+        for (directive, sources) in &csp {
+            assert!(
+                sources
+                    .iter()
+                    .all(|s| ["'none'", "'self'", "'script'"].contains(s)),
+                "{directive} allows only the console's own origin: {sources:?}"
+            );
+        }
+        for (name, value) in [
+            ("x-frame-options", "DENY"),
+            ("x-content-type-options", "nosniff"),
+            ("referrer-policy", "no-referrer"),
+            ("cache-control", "no-store"),
+            ("cross-origin-opener-policy", "same-origin"),
+            ("cross-origin-resource-policy", "same-origin"),
+        ] {
+            assert_eq!(headers.get(name), Some(&value), "{name}");
+        }
     }
 
     /// The page loads its one script and one stylesheet and holds no

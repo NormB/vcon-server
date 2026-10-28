@@ -286,11 +286,17 @@ fn check_exits_0_when_sound_and_1_with_its_report_when_not() {
         .to_owned();
     let report = s.ok(&["check"]);
     assert_eq!(report.last().expect("summary")["problems"], 0);
-    // A version's sealed file goes missing.
+    // A temporary file left in the objects directory is reported as a
+    // leftover, but is not a problem.
     let objects = s.data.join("tenants").join(&tenant).join("objects");
     let catalog_only = objects.join("00000000000000000000000000000000.tmp");
     std::fs::write(&catalog_only, b"x").expect("a leftover is not a problem");
-    assert_eq!(s.ok(&["check"]).last().expect("summary")["problems"], 0);
+    let report = s.ok(&["check"]);
+    assert_eq!(
+        report[0]["leftovers"],
+        serde_json::json!(["00000000000000000000000000000000.tmp"])
+    );
+    assert_eq!(report.last().expect("summary")["problems"], 0);
     // A stored version's sealed file goes missing.
     let version = {
         let tenants = vcon_server::tenants::Tenants::open(
@@ -354,6 +360,12 @@ fn a_wrong_or_missing_configuration_exits_1() {
     let s = setup();
     std::fs::write(&s.config, "colour = \"blue\"\n").expect("bad configuration");
     assert!(s.refused(&["tenant", "list"]).contains("colour"));
+    std::fs::remove_file(&s.config).expect("remove the configuration");
+    let said = s.refused(&["tenant", "list"]);
+    assert!(
+        said.contains(&s.config.display().to_string()),
+        "the missing file is named: {said}"
+    );
 }
 
 /// A tenant's directory the service account may not write, as a command
