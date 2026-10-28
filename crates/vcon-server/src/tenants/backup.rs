@@ -186,20 +186,33 @@ mod tests {
             .expect("the backup opens under the master key")
     }
 
-    fn assert_whole(backup: &Tenants, tenants: usize) {
-        let now = crate::clock::SystemClock.now();
+    /// Checks the backup `backup` holds `tenants` tenants, each whole with
+    /// its one version, examined at the fixture's time.
+    fn assert_whole(backup: &Tenants, tenants: usize, now: time::OffsetDateTime) {
         let found = backup
             .examine(crate::retention::Retention::Years(7), now)
             .expect("examines");
-        assert_eq!(found.tenants.len(), tenants);
+        assert_eq!(
+            found.tenants.len(),
+            tenants,
+            "the backup holds every tenant the registry did"
+        );
         for tenant in &found.tenants {
             let store = tenant
                 .store
                 .as_ref()
                 .expect("each catalog opens under its key");
-            assert!(store.damaged.is_empty(), "{:?}", store.damaged);
-            assert!(store.leftovers.is_empty(), "{:?}", store.leftovers);
-            assert_eq!(store.versions, 1);
+            assert!(
+                store.damaged.is_empty(),
+                "every copied version opens: {:?}",
+                store.damaged
+            );
+            assert!(
+                store.leftovers.is_empty(),
+                "the copy holds no file its catalog does not name: {:?}",
+                store.leftovers
+            );
+            assert_eq!(store.versions, 1, "each tenant stored one version");
         }
     }
 
@@ -226,7 +239,7 @@ mod tests {
             }
         );
         let backup = opened(&f, &to);
-        assert_whole(&backup, 2);
+        assert_whole(&backup, 2, f.clock.now());
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&to)
             .expect("the backup")
@@ -262,7 +275,7 @@ mod tests {
                 .len(),
             2
         );
-        assert_whole(&opened(&f, &to), 2);
+        assert_whole(&opened(&f, &to), 2, f.clock.now());
     }
 
     #[test]
@@ -303,7 +316,7 @@ mod tests {
                 tries: 2
             }
         );
-        assert_whole(&opened(&f, &to), 1);
+        assert_whole(&opened(&f, &to), 1, f.clock.now());
         let dirs = f.fs.list(&to.join("tenants")).expect("list");
         assert_eq!(
             dirs.len(),
@@ -335,9 +348,16 @@ mod tests {
             }));
         let to = f.dir.path().join("backup");
         let done = f.tenants.backup(Actor::Cli, &to).expect("backs up");
-        assert_eq!(done.tenants, 1);
-        assert_eq!(done.tries, 2);
-        assert_whole(&opened(&f, &to), 1);
+        assert_eq!(
+            done,
+            Backup {
+                tenants: 1,
+                versions: 1,
+                tries: 2
+            },
+            "the second try copies the one tenant left and its one version"
+        );
+        assert_whole(&opened(&f, &to), 1, f.clock.now());
         let dirs = f.fs.list(&to.join("tenants")).expect("list");
         assert_eq!(
             dirs.len(),

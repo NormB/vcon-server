@@ -49,6 +49,36 @@ pub enum CatalogError {
     },
 }
 
+impl std::fmt::Display for CatalogError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CatalogError::WrongKey => {
+                f.write_str("the key is not the one the catalog was made with")
+            }
+            CatalogError::UnknownSchema(version) => {
+                write!(f, "schema version {version} is not one this build knows")
+            }
+            CatalogError::Sqlite(_) => f.write_str("sqlite failed"),
+            CatalogError::Io(_) => {
+                f.write_str("a file around the catalog could not be read, written or renamed")
+            }
+            CatalogError::Access { path, .. } => {
+                write!(f, "this process may not read and write {}", path.display())
+            }
+        }
+    }
+}
+
+impl std::error::Error for CatalogError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            CatalogError::Sqlite(e) => Some(e),
+            CatalogError::Io(e) | CatalogError::Access { error: e, .. } => Some(e),
+            CatalogError::WrongKey | CatalogError::UnknownSchema(_) => None,
+        }
+    }
+}
+
 impl From<rusqlite::Error> for CatalogError {
     fn from(e: rusqlite::Error) -> CatalogError {
         CatalogError::Sqlite(e)
@@ -531,8 +561,8 @@ pub(crate) mod tests {
                 .find(|s| s.starts_with("Build from source\n"))
                 .expect("a Build from source section");
             assert!(
-                build.contains("github.com/NormB/rusqlite"),
-                "names the fork"
+                build.contains(FORK.trim_start_matches("https://")),
+                "names the fork Cargo.toml pins, from the one constant both checks read"
             );
             assert!(
                 build.contains("mkdir -p .cargo && cargo vendor >> .cargo/config.toml\n"),
@@ -641,8 +671,11 @@ pub(crate) mod tests {
         ));
         let conn = open(&path(&dir), &new, SCHEMA).expect("opens under the new key");
         let kept = notes(&conn);
-        assert_eq!(kept.len(), 300);
-        assert_eq!(kept[299], "note 299");
+        assert_eq!(
+            kept,
+            (0..300).map(|n| format!("note {n}")).collect::<Vec<_>>(),
+            "every row is kept, each with its own text, in order"
+        );
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .expect("version");

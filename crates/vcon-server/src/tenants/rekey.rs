@@ -303,14 +303,26 @@ mod rekey_tests {
             since_after > since_before,
             "key_since moves to the rotation"
         );
+        assert_eq!(
+            since_after,
+            crate::clock::nanos(time::macros::datetime!(2026-10-23 13:00 UTC)),
+            "key_since is the rotation's own time"
+        );
         let records = f.admin_records("rekey_tenant");
         assert_eq!(records.len(), 1);
         assert_eq!(records[0]["status"], 200);
         assert_eq!(records[0]["target"], id.to_string().as_str());
         let own = crate::audit::testing::exported(&f.store(id).conn_for_test(), None);
-        assert!(
-            own.iter().any(|r| r["action"] == "rekey_tenant"),
-            "the tenant's log keeps a copy"
+        let copies: Vec<_> = own
+            .iter()
+            .filter(|r| r["action"] == "rekey_tenant")
+            .collect();
+        assert_eq!(copies.len(), 1, "the tenant's log keeps one copy");
+        assert_eq!(copies[0]["status"], 200, "the copy records the success");
+        assert_eq!(
+            copies[0]["target"],
+            id.to_string().as_str(),
+            "the copy names the tenant"
         );
         assert_eq!(f.master_wraps(), 2, "the new tenant key's wrap is counted");
     }
@@ -365,7 +377,7 @@ mod rekey_tests {
             fn key(&self, name: &str) -> Key {
                 Key::load_master(&self.key_file(name)).expect("a key file")
             }
-            fn open(&self, name: &str) -> Result<Tenants, TenantError> {
+            fn open(&self, name: &str) -> Result<Tenants, crate::tenants::RegistryError> {
                 Tenants::open(
                     self.data(),
                     self.key(name),
@@ -412,7 +424,10 @@ mod rekey_tests {
 
         /// Everything opens under "new", and "old" opens nothing.
         fn rotated(d: &Dir, made: &[(TenantId, Uuid)], pending: TenantId) {
-            assert!(matches!(d.open("old"), Err(TenantError::WrongKey)));
+            assert!(
+                matches!(d.open("old"), Err(crate::tenants::RegistryError::WrongKey)),
+                "after the rotation, server.sqlite is under the new master key only"
+            );
             let tenants = d.open("new").expect("opens under the new master key");
             // The stopped tenant rotation finishes under the new master key.
             tenants

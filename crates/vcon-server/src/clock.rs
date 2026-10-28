@@ -61,8 +61,6 @@ mod manual {
 
 #[cfg(test)]
 mod tests {
-    use time::macros::datetime;
-
     use super::*;
 
     #[test]
@@ -74,21 +72,9 @@ mod tests {
             before <= now && now <= after,
             "the system clock reads the time now: {before} <= {now} <= {after}"
         );
-    }
-
-    #[test]
-    fn a_manual_clock_moves_only_when_set() {
-        let clock = ManualClock::at(datetime!(2026-10-23 12:00 UTC));
-        assert_eq!(
-            clock.now(),
-            datetime!(2026-10-23 12:00 UTC),
-            "a manual clock starts at the time it is given"
-        );
-        clock.set(datetime!(2026-10-24 12:00 UTC));
-        assert_eq!(
-            clock.now(),
-            datetime!(2026-10-24 12:00 UTC),
-            "set moves it to exactly the time set"
+        assert!(
+            now.offset().is_utc(),
+            "the trait promises UTC, and comparing instants alone cannot tell"
         );
     }
 }

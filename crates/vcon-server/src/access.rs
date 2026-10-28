@@ -280,21 +280,6 @@ pub fn parse(token: &str) -> Result<KeyId, AuthError> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn scopes_are_named_in_their_fixed_order() {
-        let scopes = Scopes::of(&[Scope::Legal, Scope::Write, Scope::Read]);
-        assert_eq!(
-            scopes.names(),
-            ["write", "read", "legal"],
-            "names come in Scope::ALL's order, not the order given"
-        );
-        assert_eq!(
-            Scopes::of(&[Scope::Admin]).names(),
-            ["admin"],
-            "one scope, one name"
-        );
-    }
-
     const ID: &str = "0123456789abcdef";
 
     fn secret(byte: u8) -> String {
@@ -382,6 +367,11 @@ mod tests {
             Scopes::of(&Scope::ALL).to_string(),
             "write,read,delete,legal,audit,admin",
             "every scope, in the fixed order"
+        );
+        assert_eq!(
+            Scopes::of(&[Scope::Legal, Scope::Write, Scope::Read]).names(),
+            ["write", "read", "legal"],
+            "names come in Scope::ALL's order, not the order given"
         );
         for scope in Scope::ALL {
             let one = Scopes::of(&[scope]);

@@ -161,6 +161,10 @@ pub trait Catalog: Send + Sync {
     /// reported unknown, or rolled back.
     #[cfg(test)]
     fn fail_commit(&self, nth: usize, how: CommitError);
+    /// For tests: `busy` is sent a message each time a checkpoint after a
+    /// purge finds a reader in its way and is about to wait.
+    #[cfg(test)]
+    fn on_checkpoint_wait(&self, busy: std::sync::mpsc::Sender<()>);
     #[cfg(test)]
     fn local_conn(&self) -> std::sync::MutexGuard<'_, rusqlite::Connection>;
 }

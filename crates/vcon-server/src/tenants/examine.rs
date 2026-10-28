@@ -158,7 +158,7 @@ impl Tenants {
         for row in rows {
             let (id, name, retention, key_since) = (row.id, row.name, row.retention, row.key_since);
             let rotation_stopped = row.pending.is_some();
-            let retention = stored_retention(retention)?.unwrap_or(default);
+            let retention = super::kept_for(stored_retention(retention)?, default);
             let key_since = time(key_since)?;
             let store = self.store_or_why(id).and_then(|store| {
                 store

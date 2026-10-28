@@ -523,7 +523,11 @@ mod tests {
         f.clock.set(datetime!(2026-10-23 13:00 UTC));
         f.tenants.revoke_key(Actor::Cli, key.id).expect("revoked");
         let first = revoked_at(&f, key.id);
-        assert!(first.is_some());
+        assert_eq!(
+            first,
+            Some(crate::clock::nanos(datetime!(2026-10-23 13:00 UTC))),
+            "revoked at the time of the revocation"
+        );
         f.clock.set(datetime!(2026-10-23 14:00 UTC));
         f.tenants
             .revoke_key(Actor::Cli, key.id)

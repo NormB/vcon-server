@@ -70,6 +70,108 @@ pub enum TenantError {
     Io,
 }
 
+/// Why the registry did not open: the key it was made under, or the step
+/// that failed, on which file, with the error underneath as its source, so
+/// a failure says its cause.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum RegistryError {
+    /// server.sqlite was made under another master key.
+    WrongKey,
+    /// `step` failed on `path`.
+    Failed {
+        /// What was being done.
+        step: OpenStep,
+        /// The file or directory it was done to.
+        path: PathBuf,
+        /// The error underneath.
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+    /// Start-up recovery failed.
+    Recovery(TenantError),
+}
+
+/// A step of opening the registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum OpenStep {
+    /// Deriving server.sqlite's key from the master key.
+    CatalogKey,
+    /// Opening, or making, server.sqlite.
+    OpenCatalog,
+    /// Making the tenants/ directory.
+    MakeTenantsDir,
+    /// Syncing the data directory.
+    SyncDataDir,
+}
+
+impl RegistryError {
+    pub(crate) fn failed(
+        step: OpenStep,
+        path: PathBuf,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> RegistryError {
+        RegistryError::Failed {
+            step,
+            path,
+            source: Box::new(source),
+        }
+    }
+}
+
+impl std::fmt::Display for RegistryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RegistryError::WrongKey => {
+                f.write_str("the master key is not the one server.sqlite was made under")
+            }
+            RegistryError::Failed { step, path, .. } => {
+                let doing = match step {
+                    OpenStep::CatalogKey => "the catalog key for",
+                    OpenStep::OpenCatalog => "opening",
+                    OpenStep::MakeTenantsDir => "making",
+                    OpenStep::SyncDataDir => "syncing",
+                };
+                write!(f, "{doing} {} failed", path.display())
+            }
+            RegistryError::Recovery(e) => write!(f, "start-up recovery failed: {e:?}"),
+        }
+    }
+}
+
+impl std::error::Error for RegistryError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            RegistryError::Failed { source, .. } => Some(source.as_ref()),
+            RegistryError::WrongKey | RegistryError::Recovery(_) => None,
+        }
+    }
+}
+
+/// `error` and each error under it, as their Displays joined by ": ", for
+/// a report that gives the whole cause.
+pub(crate) fn with_causes(error: &dyn std::error::Error) -> String {
+    let mut text = error.to_string();
+    let mut under = error.source();
+    while let Some(cause) = under {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        under = cause.source();
+    }
+    text
+}
+
+/// Every caller but the two that report it sees what TenantError can say.
+impl From<RegistryError> for TenantError {
+    fn from(e: RegistryError) -> TenantError {
+        match e {
+            RegistryError::WrongKey => TenantError::WrongKey,
+            RegistryError::Failed { .. } => TenantError::Io,
+            RegistryError::Recovery(e) => e,
+        }
+    }
+}
+
 /// Why a tenant's Store could not be had: the registry refused, its
 /// catalog does not open under its key, or this process may not use one of
 /// its files. Only `check` and `serve`'s start-up check tell these apart;
@@ -133,8 +235,14 @@ impl TenantInfo {
     /// How long the tenant's vCons are kept: its own period, else the
     /// server's `default`.
     pub fn kept_for(&self, default: Retention) -> Retention {
-        self.retention.unwrap_or(default)
+        kept_for(self.retention, default)
     }
+}
+
+/// How long a tenant's vCons are kept: its own period `own`, else the
+/// server's `default`. The one rule the sweep, `check` and TenantInfo use.
+pub(crate) fn kept_for(own: Option<Retention>, default: Retention) -> Retention {
+    own.unwrap_or(default)
 }
 
 /// How far `remove` may go.
@@ -180,9 +288,9 @@ impl Tenants {
         master: Key,
         fs: Arc<dyn Fs>,
         clock: Arc<dyn Clock>,
-    ) -> Result<Tenants, TenantError> {
+    ) -> Result<Tenants, RegistryError> {
         let registry = Tenants::opened(dir, master, fs, clock, false)?;
-        registry.recover()?;
+        registry.recover().map_err(RegistryError::Recovery)?;
         Ok(registry)
     }
 
@@ -195,7 +303,7 @@ impl Tenants {
         master: Key,
         fs: Arc<dyn Fs>,
         clock: Arc<dyn Clock>,
-    ) -> Result<Tenants, TenantError> {
+    ) -> Result<Tenants, RegistryError> {
         Tenants::opened(dir, master, fs, clock, true)
     }
 
@@ -205,8 +313,10 @@ impl Tenants {
         fs: Arc<dyn Fs>,
         clock: Arc<dyn Clock>,
         beside: bool,
-    ) -> Result<Tenants, TenantError> {
-        let catalog_key = envelope::catalog_key(&master).map_err(|_| TenantError::Io)?;
+    ) -> Result<Tenants, RegistryError> {
+        let catalog_key = envelope::catalog_key(&master).map_err(|e| {
+            RegistryError::failed(OpenStep::CatalogKey, dir.join("server.sqlite"), e)
+        })?;
         let registry = LocalRegistry::open(dir, catalog_key)?;
         let space = LocalTenantSpace::open(dir, fs.clone())?;
         Ok(Tenants::with_backends(
@@ -796,7 +906,7 @@ mod tests {
     }
 
     impl Fixture {
-        fn open(&self) -> Result<Tenants, TenantError> {
+        fn open(&self) -> Result<Tenants, RegistryError> {
             Tenants::open(
                 self.dir.path(),
                 self.master.key(),
@@ -985,6 +1095,50 @@ mod tests {
         serde_json::json!({"action": action, "status": status})
     }
 
+    /// What a registry that does not open says: everything a failure
+    /// report shows of the error.
+    fn said(dir: &Path) -> String {
+        let error = Tenants::open(
+            dir,
+            Key::generate().expect("key"),
+            Arc::new(crate::fs::OsFs),
+            Arc::new(ManualClock::at(datetime!(2026-10-23 12:00 UTC))),
+        )
+        .err()
+        .expect("it does not open");
+        format!("{error:?}")
+    }
+
+    /// A server.sqlite that cannot be opened names the file, the step and
+    /// SQLite's error, not only "Io".
+    #[test]
+    fn a_server_sqlite_that_cannot_be_opened_names_the_file_and_the_cause() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::create_dir(dir.path().join("server.sqlite")).expect("a directory in its place");
+        let said = said(dir.path());
+        assert!(said.contains("server.sqlite"), "the file is named: {said}");
+        assert!(said.contains("OpenCatalog"), "the step is named: {said}");
+        assert!(
+            said.contains("unable to open database file"),
+            "SQLite's own error is kept: {said}"
+        );
+    }
+
+    /// A tenants/ that cannot be made names the directory and the system's
+    /// error.
+    #[test]
+    fn a_tenants_directory_that_cannot_be_made_names_it_and_the_cause() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(dir.path().join("tenants"), b"").expect("a file in its place");
+        let said = said(dir.path());
+        assert!(said.contains("tenants"), "the directory is named: {said}");
+        assert!(said.contains("MakeTenantsDir"), "the step is named: {said}");
+        assert!(
+            said.contains("File exists"),
+            "the system's error is kept: {said}"
+        );
+    }
+
     #[test]
     fn a_wrong_master_key_does_not_open_server_sqlite() {
         let f = fixture();
@@ -994,7 +1148,11 @@ mod tests {
             f.fs.clone(),
             f.clock.clone(),
         );
-        assert_eq!(wrong.err(), Some(TenantError::WrongKey));
+        assert!(
+            matches!(wrong, Err(RegistryError::WrongKey)),
+            "a wrong key is told apart from every other failure: {:?}",
+            wrong.err()
+        );
         assert!(f.open().is_ok(), "the right key still opens it");
     }
 
@@ -1696,6 +1854,7 @@ mod tests {
         }
     }
 
+    /// The rule the sweep and `check` both apply.
     #[test]
     fn retention_falls_back_to_the_server_default_when_unset() {
         let info = |retention| TenantInfo {

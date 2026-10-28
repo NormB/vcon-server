@@ -179,47 +179,45 @@ mod tests {
         varies(&(0..8).map(|_| TenantId::generate().0).collect::<Vec<_>>());
     }
 
-    #[test]
-    fn a_tenant_id_parses_only_from_its_own_spelling() {
-        let id = TenantId::generate();
-        assert_eq!(
-            TenantId::parse(&id.to_string()),
-            Some(id),
-            "parse reads the spelling Display writes"
-        );
-        let text = id.to_string();
-        for bad in [
-            text.to_uppercase(),
-            text[..31].to_owned(),
-            format!("{text}0"),
-        ] {
-            if bad != text {
-                assert_eq!(TenantId::parse(&bad), None, "{bad:?}");
-            }
-        }
-    }
-
-    #[test]
-    fn a_version_id_parses_only_from_its_own_spelling() {
-        let id = VersionId::generate();
-        assert_eq!(
-            VersionId::parse(&id.to_string()),
-            Some(id),
-            "parse reads the spelling Display writes"
-        );
-        let text = id.to_string();
-        let bad = [
+    /// The spellings parse refuses, given one id's own spelling `text`.
+    fn misspelled(text: &str) -> [String; 7] {
+        [
             String::new(),
             text[..31].to_owned(),
             format!("{text}0"),
             text.to_uppercase(),
             format!("g{}", &text[1..]),
-            format!("{}.tmp", text),
+            format!("{text}.tmp"),
             format!("+{}", &text[1..]),
-        ];
-        for bad in bad {
-            if bad != text {
-                assert_eq!(VersionId::parse(&bad), None, "{bad:?}");
+        ]
+    }
+
+    #[test]
+    fn tenant_and_version_ids_parse_only_from_their_own_spelling() {
+        let tenant = TenantId::generate();
+        let version = VersionId::generate();
+        assert_eq!(
+            TenantId::parse(&tenant.to_string()),
+            Some(tenant),
+            "parse reads the spelling Display writes"
+        );
+        assert_eq!(
+            VersionId::parse(&version.to_string()),
+            Some(version),
+            "parse reads the spelling Display writes"
+        );
+        for (text, parsed) in [
+            (
+                tenant.to_string(),
+                (|t: &str| TenantId::parse(t).is_some()) as fn(&str) -> bool,
+            ),
+            (version.to_string(), |t: &str| VersionId::parse(t).is_some()),
+        ] {
+            for bad in misspelled(&text) {
+                // An id with no letter is its own upper-case spelling.
+                if bad != text {
+                    assert!(!parsed(&bad), "not an id's own spelling: {bad:?}");
+                }
             }
         }
     }

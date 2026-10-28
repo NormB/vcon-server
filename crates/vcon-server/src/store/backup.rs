@@ -309,27 +309,47 @@ mod tests {
         let f = Arc::new(fixture());
         stored(&f);
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // The writer says when its first create is done, so the backup
+        // starts with writes under way whatever the scheduler does.
+        let (first, written_once) = std::sync::mpsc::channel();
         let writer = {
             let (f, stop) = (f.clone(), stop.clone());
             std::thread::spawn(move || {
                 let mut n = 0u32;
-                while !stop.load(Ordering::SeqCst) {
+                while n == 0 || !stop.load(Ordering::SeqCst) {
                     let uuid = format!("01a07da8-c2bb-83e5-b9a2-{n:012x}");
                     let (found, body) = vcon(&uuid, "load");
                     f.store.create(&f.caller, &found, &body).expect("create");
+                    if n == 0 {
+                        let _ = first.send(());
+                    }
                     n += 1;
                 }
                 n
             })
         };
+        written_once
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("the writer stores its first vCon");
         let dir = f.dir.path().join("backup");
         let copied = f.store.backup_to(&dir).expect("backs up");
         stop.store(true, Ordering::SeqCst);
         let written = writer.join().expect("writer");
         assert!(written > 0, "writes went on");
         let (_, found) = examined(&f, &dir);
-        assert_eq!(found.versions, copied.versions);
-        assert!(found.damaged.is_empty(), "{:?}", found.damaged);
-        assert!(found.leftovers.is_empty(), "{:?}", found.leftovers);
+        assert_eq!(
+            found.versions, copied.versions,
+            "the copy holds the versions the backup says it copied"
+        );
+        assert!(
+            found.damaged.is_empty(),
+            "every copied version opens: {:?}",
+            found.damaged
+        );
+        assert!(
+            found.leftovers.is_empty(),
+            "the copy holds no file its catalog does not name: {:?}",
+            found.leftovers
+        );
     }
 }

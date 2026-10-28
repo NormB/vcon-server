@@ -209,7 +209,6 @@ mod tests {
 #[cfg(test)]
 mod purge_tests {
     use std::path::Path;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, mpsc};
     use std::time::Duration as Wait;
 
@@ -488,7 +487,11 @@ mod purge_tests {
             )
             .expect("trigger");
 
-        assert!(f.store.delete(&f.caller, uuid, DAY).is_err());
+        assert_eq!(
+            f.store.delete(&f.caller, uuid, DAY),
+            Err(StoreError::Io),
+            "the delete answers the failed purge: the store's I/O error, not a refusal"
+        );
 
         assert_eq!(f.store.get(&f.caller, uuid), Err(StoreError::Gone));
         assert_eq!(
@@ -535,7 +538,7 @@ mod purge_tests {
     fn a_purge_cut_off_before_its_commit_leaves_the_version_whole() {
         let mut f = fixture();
         let (uuid, version, body) = due_for_purge(&f);
-        let other = super::super::tests::block_commits(&f);
+        let other = super::super::tests::second_connection(&f);
         other
             .execute_batch(
                 "CREATE TRIGGER dead BEFORE INSERT ON audit
@@ -727,6 +730,15 @@ mod purge_tests {
         );
     }
 
+    /// Lets the test's reader go when dropped.
+    struct LetGo(mpsc::Sender<()>);
+
+    impl Drop for LetGo {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+
     #[test]
     fn the_checkpoint_waits_for_a_reader_without_holding_the_catalog() {
         let f = fixture();
@@ -738,38 +750,50 @@ mod purge_tests {
         let path = f.dir.path().join("catalog.sqlite");
         let key = envelope::catalog_key(&f.store.tenant_key).expect("catalog key");
         let mut reader = catalog::open(&path, &key, "").expect("a second connection");
-        let released = Arc::new(AtomicBool::new(false));
+        // The reader holds its snapshot until this thread lets it go,
+        // after the checks below, so no timing decides what they see.
         let (reading, started) = mpsc::channel();
-        let held = {
-            let released = released.clone();
-            std::thread::spawn(move || {
-                let tx = reader.transaction().expect("begin");
-                let _: i64 = tx
-                    .query_row("SELECT count(*) FROM version", [], |r| r.get(0))
-                    .expect("reads");
-                reading.send(()).expect("signal");
-                std::thread::sleep(Wait::from_millis(500));
-                released.store(true, Ordering::SeqCst);
-                drop(tx);
-            })
-        };
+        let (release, released) = mpsc::channel::<()>();
+        let held = std::thread::spawn(move || {
+            let tx = reader.transaction().expect("begin");
+            let _: i64 = tx
+                .query_row("SELECT count(*) FROM version", [], |r| r.get(0))
+                .expect("reads");
+            reading.send(()).expect("signal");
+            released.recv().expect("let go");
+            drop(tx);
+        });
         started.recv().expect("the reader started");
+        let (busy, waiting) = mpsc::channel();
+        f.store.catalog.on_checkpoint_wait(busy);
 
         std::thread::scope(|s| {
             let purging = s.spawn(|| f.store.purge_due(DAY));
-            // By now the purge waits on the reader at its checkpoint.
-            std::thread::sleep(Wait::from_millis(100));
-            f.store.counts().expect("the catalog answers");
-            assert!(
-                !released.load(Ordering::SeqCst),
-                "another call had to wait for the reader"
+            // Dropped on the way out of this block, also when a check below
+            // fails, so the purge never waits for the reader forever and the
+            // failure is reported instead of hanging the test.
+            let let_go = LetGo(release);
+            waiting
+                .recv_timeout(Wait::from_secs(20))
+                .expect("the purge reaches its checkpoint and waits for the reader");
+            // In a thread of its own, so a catalog held by the checkpoint
+            // fails here instead of hanging the test.
+            let (answer, answered) = mpsc::channel();
+            let store = &f.store;
+            let counting = s.spawn(move || answer.send(store.counts().is_ok()));
+            assert_eq!(
+                answered.recv_timeout(Wait::from_secs(20)),
+                Ok(true),
+                "the catalog answers another call while the checkpoint waits"
             );
+            counting.join().expect("the count finished").expect("sent");
+            drop(let_go);
             assert_eq!(
                 purging.join().expect("the purge finished"),
-                Ok(PurgeReport { purged: 1 })
+                Ok(PurgeReport { purged: 1 }),
+                "the purge completes once the reader is gone"
             );
         });
-
         held.join().expect("the reader finished");
         let timeout: i64 = f
             .store

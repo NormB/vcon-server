@@ -2,7 +2,7 @@
 # scripts/check_style.py --write-baseline. A count only goes down.
 343	crates/vcon-server/src/api.rs
 12	crates/vcon-server/src/audit.rs
-33	crates/vcon-server/src/catalog.rs
+31	crates/vcon-server/src/catalog.rs
 68	crates/vcon-server/src/commands.rs
 4	crates/vcon-server/src/datadir.rs
 7	crates/vcon-server/src/mcp/gate.rs
@@ -10,17 +10,17 @@
 55	crates/vcon-server/src/mcp/tests.rs
 13	crates/vcon-server/src/serve.rs
 113	crates/vcon-server/src/store.rs
-12	crates/vcon-server/src/store/backup.rs
+11	crates/vcon-server/src/store/backup.rs
 13	crates/vcon-server/src/store/examine.rs
 48	crates/vcon-server/src/store/legal.rs
 36	crates/vcon-server/src/store/list.rs
-53	crates/vcon-server/src/store/purge.rs
+51	crates/vcon-server/src/store/purge.rs
 9	crates/vcon-server/src/store/rekey.rs
-138	crates/vcon-server/src/tenants.rs
-15	crates/vcon-server/src/tenants/backup.rs
+137	crates/vcon-server/src/tenants.rs
+11	crates/vcon-server/src/tenants/backup.rs
 16	crates/vcon-server/src/tenants/examine.rs
-47	crates/vcon-server/src/tenants/keys.rs
-23	crates/vcon-server/src/tenants/rekey.rs
+46	crates/vcon-server/src/tenants/keys.rs
+22	crates/vcon-server/src/tenants/rekey.rs
 1	crates/vcon-server/tests/catalog_temp.rs
 34	crates/vcon-server/tests/commands.rs
 12	crates/vcon-server/tests/documented_commands.rs

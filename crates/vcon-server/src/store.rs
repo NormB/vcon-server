@@ -1603,7 +1603,11 @@ mod tests {
                 |r| r.get(0),
             )
             .expect("the old row is kept");
-        assert!(hidden.is_some(), "the old version is hidden");
+        assert_eq!(
+            hidden,
+            Some(crate::clock::nanos(datetime!(2026-10-23 12:00 UTC))),
+            "the old version is hidden at the replace's time"
+        );
         assert!(
             f.fs.read(&f.store.objects_dir.join(old.to_string()))
                 .is_ok(),
@@ -2176,9 +2180,10 @@ mod tests {
         }
     }
 
-    /// Makes the next audit insert fail for every connection, as if the
-    /// process died before its commit; `unblock` removes it again.
-    pub(super) fn block_commits(f: &Fixture) -> Connection {
+    /// A second connection to the store's catalog, outside the store, on
+    /// which a test makes a trigger that every connection then meets (a
+    /// TEMP trigger would hold only for this one).
+    pub(super) fn second_connection(f: &Fixture) -> Connection {
         let ctx = Context::Tenant { tenant: TENANT };
         let tenant_key = envelope::unwrap(&f.master, &ctx, &f.wrapped).expect("unwraps");
         let catalog_key = envelope::catalog_key(&tenant_key).expect("catalog key");
@@ -2187,7 +2192,7 @@ mod tests {
     }
 
     fn die_before_commit(f: &Fixture) {
-        let other = block_commits(f);
+        let other = second_connection(f);
         let fs = f.fs.clone();
         *f.store.hooks.between.lock().expect("hook") = Some(Box::new(move || {
             fs.fail_from(0);
@@ -2304,7 +2309,7 @@ mod tests {
     fn a_delete_cut_off_before_its_commit_leaves_the_vcon_live() {
         let mut f = fixture();
         let (found, version) = stored(&f, "first");
-        let other = block_commits(&f);
+        let other = second_connection(&f);
         other
             .execute_batch(
                 "CREATE TRIGGER dead BEFORE INSERT ON audit

@@ -23,7 +23,7 @@ use crate::envelope::{self, Context, Key};
 use crate::fs::Fs;
 use crate::ids::{KeyId, TenantId, VersionId};
 use crate::store::{OpenError, Store, StoreError};
-use crate::tenants::TenantError;
+use crate::tenants::{OpenStep, RegistryError, TenantError};
 
 /// The connection tests reach the local catalogs through.
 #[cfg(test)]
@@ -73,6 +73,8 @@ pub struct LocalCatalog {
     catalog_key: Key,
     #[cfg(test)]
     fault: Mutex<Option<(usize, CommitError)>>,
+    #[cfg(test)]
+    checkpoint_wait: Mutex<Option<std::sync::mpsc::Sender<()>>>,
 }
 
 impl LocalCatalog {
@@ -85,6 +87,8 @@ impl LocalCatalog {
             catalog_key,
             #[cfg(test)]
             fault: Mutex::new(None),
+            #[cfg(test)]
+            checkpoint_wait: Mutex::new(None),
         })
     }
 
@@ -142,6 +146,10 @@ impl Catalog for LocalCatalog {
             if busy == 0 {
                 return Ok(());
             }
+            #[cfg(test)]
+            if let Some(busy) = &*self.checkpoint_wait.lock().expect("hook") {
+                let _ = busy.send(());
+            }
             std::thread::sleep(CHECKPOINT_RETRY);
         }
     }
@@ -163,6 +171,11 @@ impl Catalog for LocalCatalog {
     #[cfg(test)]
     fn fail_commit(&self, nth: usize, how: CommitError) {
         *self.fault.lock().expect("fault") = Some((nth, how));
+    }
+
+    #[cfg(test)]
+    fn on_checkpoint_wait(&self, busy: std::sync::mpsc::Sender<()>) {
+        *self.checkpoint_wait.lock().expect("hook") = Some(busy);
     }
 
     #[cfg(test)]
@@ -764,14 +777,13 @@ pub struct LocalRegistry {
 
 impl LocalRegistry {
     /// Opens `<dir>/server.sqlite` under `catalog_key`, making it if new.
-    pub fn open(dir: &Path, catalog_key: Key) -> Result<LocalRegistry, TenantError> {
+    pub fn open(dir: &Path, catalog_key: Key) -> Result<LocalRegistry, RegistryError> {
         let schema = format!("{REGISTRY_TABLES}{}", audit::SCHEMA);
-        let conn = catalog::open(&dir.join("server.sqlite"), &catalog_key, &schema).map_err(
-            |e| match e {
-                catalog::CatalogError::WrongKey => TenantError::WrongKey,
-                _ => TenantError::Io,
-            },
-        )?;
+        let path = dir.join("server.sqlite");
+        let conn = catalog::open(&path, &catalog_key, &schema).map_err(|e| match e {
+            catalog::CatalogError::WrongKey => RegistryError::WrongKey,
+            e => RegistryError::failed(OpenStep::OpenCatalog, path.clone(), e),
+        })?;
         Ok(LocalRegistry {
             conn: Mutex::new(conn),
             catalog_key,
@@ -1128,10 +1140,12 @@ pub struct LocalTenantSpace {
 
 impl LocalTenantSpace {
     /// The space under `<data>/tenants`, made if new and made durable.
-    pub fn open(data: &Path, fs: Arc<dyn Fs>) -> Result<LocalTenantSpace, TenantError> {
+    pub fn open(data: &Path, fs: Arc<dyn Fs>) -> Result<LocalTenantSpace, RegistryError> {
         let tenants = data.join("tenants");
-        fs.create_dir_all(&tenants).map_err(tenant_io)?;
-        fs.sync_dir(data).map_err(tenant_io)?;
+        fs.create_dir_all(&tenants)
+            .map_err(|e| RegistryError::failed(OpenStep::MakeTenantsDir, tenants.clone(), e))?;
+        fs.sync_dir(data)
+            .map_err(|e| RegistryError::failed(OpenStep::SyncDataDir, data.to_path_buf(), e))?;
         Ok(LocalTenantSpace { tenants, fs })
     }
 

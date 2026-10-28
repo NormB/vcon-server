@@ -504,14 +504,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn each_seal_uses_a_new_nonce() {
-        let key = Key::generate().expect("key");
-        let a = seal(&key, &version_ctx(), b"same");
-        let b = seal(&key, &version_ctx(), b"same");
-        assert_ne!(a[1..13], b[1..13], "each seal draws its own random nonce");
-    }
-
     /// Every byte of the nonce is random: over 1000 seals no nonce repeats
     /// and no byte position keeps one value. For 96 random bits either
     /// event has a probability below 2^-76.

@@ -141,23 +141,44 @@ fn flock(path: &Path, how: libc::c_int) -> io::Result<File> {
 mod tests {
     use super::*;
 
+    /// Each kind of work and how it shares the data directory, as the
+    /// command-line page documents it: the server alone with others beside
+    /// it, the commands that change tenants or keys under them alone, and
+    /// the rest beside a server. The match has no catch-all arm, so a new
+    /// kind of work fails to compile here until its sharing is written down.
     #[test]
-    fn rekey_check_and_tenant_create_and_remove_run_alone() {
-        for (work, sharing) in [
-            (Work::Serve, Sharing::Serve),
-            (Work::TenantCreate, Sharing::Alone),
-            (Work::TenantList, Sharing::Beside),
-            (Work::TenantSetRetention, Sharing::Beside),
-            (Work::TenantRemove, Sharing::Alone),
-            (Work::KeyCreate, Sharing::Beside),
-            (Work::KeyList, Sharing::Beside),
-            (Work::KeyRevoke, Sharing::Beside),
-            (Work::RekeyTenant, Sharing::Alone),
-            (Work::RekeyMaster, Sharing::Alone),
-            (Work::AuditExport, Sharing::Beside),
-            (Work::Check, Sharing::Alone),
+    fn every_kind_of_work_shares_the_directory_as_documented() {
+        let documented = |work: Work| match work {
+            Work::Serve => Sharing::Serve,
+            Work::TenantCreate => Sharing::Alone,
+            Work::TenantList => Sharing::Beside,
+            Work::TenantSetRetention => Sharing::Beside,
+            Work::TenantRemove => Sharing::Alone,
+            Work::KeyCreate => Sharing::Beside,
+            Work::KeyList => Sharing::Beside,
+            Work::KeyRevoke => Sharing::Beside,
+            Work::RekeyTenant => Sharing::Alone,
+            Work::RekeyMaster => Sharing::Alone,
+            Work::AuditExport => Sharing::Beside,
+            Work::Check => Sharing::Alone,
+            Work::Backup => Sharing::Beside,
+        };
+        for work in [
+            Work::Serve,
+            Work::TenantCreate,
+            Work::TenantList,
+            Work::TenantSetRetention,
+            Work::TenantRemove,
+            Work::KeyCreate,
+            Work::KeyList,
+            Work::KeyRevoke,
+            Work::RekeyTenant,
+            Work::RekeyMaster,
+            Work::AuditExport,
+            Work::Check,
+            Work::Backup,
         ] {
-            assert_eq!(work.sharing(), sharing, "{work:?}");
+            assert_eq!(work.sharing(), documented(work), "{work:?}");
         }
     }
 

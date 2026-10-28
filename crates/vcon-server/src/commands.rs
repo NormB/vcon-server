@@ -18,7 +18,7 @@ use crate::fs::OsFs;
 use crate::ids::{KeyId, TenantId};
 use crate::retention::Retention;
 use crate::tenants::{
-    self, BackupError, OpenFailure, Removal, TenantError, TenantExamination, Tenants,
+    self, BackupError, OpenFailure, RegistryError, Removal, TenantError, TenantExamination, Tenants,
 };
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -117,6 +117,8 @@ pub enum CommandError {
     /// `default`.
     BadPeriod(String),
     Tenant(TenantError),
+    /// The registry could not be opened.
+    Open(RegistryError),
     /// No key has this id.
     UnknownKey,
     /// The output could not be written.
@@ -133,6 +135,11 @@ impl fmt::Display for CommandError {
         match self {
             CommandError::DataDir(e) => write!(f, "{e}"),
             CommandError::MasterKey(e) => write!(f, "the master key cannot be read: {e:?}"),
+            CommandError::Open(e) => write!(
+                f,
+                "the registry cannot be opened: {}",
+                crate::tenants::with_causes(e)
+            ),
             CommandError::WrongMasterKey | CommandError::Tenant(TenantError::WrongKey) => {
                 f.write_str("the master key is not the one server.sqlite was made under")
             }
@@ -208,8 +215,8 @@ pub fn run(config: &Config, command: &Command, out: &mut dyn Write) -> Result<()
         Arc::new(SystemClock),
     )
     .map_err(|e| match e {
-        TenantError::WrongKey => CommandError::WrongMasterKey,
-        other => CommandError::Tenant(other),
+        RegistryError::WrongKey => CommandError::WrongMasterKey,
+        other => CommandError::Open(other),
     })?;
     let who = Actor::Cli;
     match command {
@@ -1203,6 +1210,8 @@ mod tests {
         match error {
             CommandError::DataDir(_) => "the data directory is in use",
             CommandError::MasterKey(_) => "the master key cannot be read",
+            // The step, the file and the error under it, all three.
+            CommandError::Open(_) => "opening /srv/data/server.sqlite failed: disk I/O error",
             CommandError::WrongMasterKey => "is not the one server.sqlite was made under",
             CommandError::BadPeriod(_) => "\"7w\" is not a period",
             CommandError::UnknownKey => "no key has this id",
@@ -1261,6 +1270,11 @@ mod tests {
         let rest = [
             CommandError::DataDir(LockError::InUse(Sharing::Alone)),
             CommandError::MasterKey(crate::envelope::KeyError::WrongSize),
+            CommandError::Open(RegistryError::failed(
+                tenants::OpenStep::OpenCatalog,
+                std::path::PathBuf::from("/srv/data/server.sqlite"),
+                io::Error::other("disk I/O error"),
+            )),
             CommandError::WrongMasterKey,
             CommandError::BadPeriod("7w".to_owned()),
             CommandError::UnknownKey,

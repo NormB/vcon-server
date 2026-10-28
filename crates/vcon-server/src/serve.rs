@@ -14,7 +14,7 @@ use crate::datadir::{self, LockError, Work};
 use crate::envelope::{Key, KeyError};
 use crate::fs::OsFs;
 use crate::retention::Retention;
-use crate::tenants::{KeyOrder, RotationBacklog, TenantError, Tenants};
+use crate::tenants::{KeyOrder, RegistryError, RotationBacklog, TenantError, Tenants, with_causes};
 use time::OffsetDateTime;
 
 /// Why the server did not start, or stopped.
@@ -26,7 +26,9 @@ pub enum ServeError {
     MasterKey(KeyError),
     /// server.sqlite was made under another master key.
     WrongMasterKey,
-    /// server.sqlite could not be opened.
+    /// The registry could not be opened.
+    Open(RegistryError),
+    /// server.sqlite could not be read.
     Registry(TenantError),
     /// Some tenant's data is not under its current key.
     KeysOutOfOrder(KeyOrder),
@@ -45,6 +47,9 @@ impl fmt::Display for ServeError {
             ServeError::MasterKey(e) => write!(f, "the master key cannot be read: {e:?}"),
             ServeError::WrongMasterKey => {
                 f.write_str("the master key is not the one server.sqlite was made under")
+            }
+            ServeError::Open(e) => {
+                write!(f, "the registry cannot be opened: {}", with_causes(e))
             }
             ServeError::Registry(e) => write!(f, "server.sqlite cannot be opened: {e:?}"),
             ServeError::KeysOutOfOrder(order) => {
@@ -104,8 +109,8 @@ pub async fn run(config: &Config, shutdown: impl Future<Output = ()>) -> Result<
         Arc::new(SystemClock),
     )
     .map_err(|e| match e {
-        TenantError::WrongKey => ServeError::WrongMasterKey,
-        other => ServeError::Registry(other),
+        RegistryError::WrongKey => ServeError::WrongMasterKey,
+        other => ServeError::Open(other),
     })?;
     let order = tenants.key_order().map_err(ServeError::Registry)?;
     if !order.is_sound() {
@@ -185,7 +190,7 @@ pub fn sweep(tenants: &Tenants, default: Retention) -> SweepReport {
             for id in ids {
                 let purged = tenants.retention(id).and_then(|own| {
                     let store = tenants.store(id)?;
-                    Ok(store.purge_due(own.unwrap_or(default)))
+                    Ok(store.purge_due(crate::tenants::kept_for(own, default)))
                 });
                 match purged {
                     Ok(Ok(done)) => report.purged += done.purged,
