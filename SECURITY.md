@@ -56,6 +56,43 @@ write access to the data directory, since those already hold every vCon;
 denial of service by sending more traffic than the configured limits allow;
 reports from automated scanners without a demonstrated impact.
 
+## Verifying a release
+
+Releases after 0.2.0 attach two files that prove where the release came
+from. The `attest` job in `.github/workflows/release.yml` makes both from
+its own short-lived OpenID Connect identity. No signing key is stored
+anywhere.
+
+| File | What it is |
+|---|---|
+| `SHA256SUMS.txt.sigstore.json` | A keyless Sigstore signature over `SHA256SUMS.txt` |
+| `vcon-server-<version>.intoto.jsonl` | The SLSA build provenance for every archive and the SBOM, as a Sigstore bundle |
+
+Check the signature with
+[cosign](https://docs.sigstore.dev/cosign/system_config/installation/),
+then check the download against the signed list:
+
+```sh
+cosign verify-blob SHA256SUMS.txt \
+  --bundle SHA256SUMS.txt.sigstore.json \
+  --certificate-identity-regexp '^https://github\.com/NormB/vcon-server/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+sha256sum -c SHA256SUMS.txt --ignore-missing
+```
+
+Check the provenance of one archive against the attached file, with the
+[GitHub CLI](https://cli.github.com/) 2.49 or newer:
+
+```sh
+gh attestation verify vcon-server-$VERSION-x86_64-unknown-linux-gnu.tar.gz \
+  --bundle vcon-server-$VERSION.intoto.jsonl --repo NormB/vcon-server
+```
+
+The `attest` job runs both checks before the release exists, so a release
+whose files do not verify is never published. A run of the workflow started
+by hand runs the same job, signs and verifies the same way, and creates no
+release.
+
 ## Disclosure
 
 A fix is released first. The advisory is then published on GitHub with

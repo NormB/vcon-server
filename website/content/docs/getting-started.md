@@ -93,6 +93,22 @@ gh attestation verify vcon-server-$VERSION-x86_64-unknown-linux-gnu.tar.gz --rep
 It fails on any file that was not built by this repository's release
 workflow, or that changed after it was built.
 
+Releases after 0.2.0 also attach `SHA256SUMS.txt.sigstore.json`, a keyless
+Sigstore signature over the checksums, and `vcon-server-$VERSION.intoto.jsonl`,
+the build provenance as a file. To check that the checksums themselves came
+from the release workflow, with [cosign](https://docs.sigstore.dev/cosign/system_config/installation/):
+
+```sh
+curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$VERSION/SHA256SUMS.txt.sigstore.json
+cosign verify-blob SHA256SUMS.txt \
+  --bundle SHA256SUMS.txt.sigstore.json \
+  --certificate-identity-regexp '^https://github\.com/NormB/vcon-server/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+It prints `Verified OK`. [SECURITY.md](https://github.com/NormB/vcon-server/blob/main/SECURITY.md#verifying-a-release)
+has the provenance file's check too.
+
 ## Install it
 
 ```sh
