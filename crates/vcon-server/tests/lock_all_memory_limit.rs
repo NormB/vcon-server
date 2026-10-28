@@ -10,7 +10,8 @@ fn lock_under(limit: libc::rlim_t) -> std::io::Error {
     // SAFETY: `lowered` is a valid rlimit.
     assert_eq!(
         unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &lowered) },
-        0
+        0,
+        "a process may always lower its own limit"
     );
     vcon_server::envelope::lock_all_memory().expect_err("the lock is refused")
 }
@@ -20,6 +21,14 @@ fn lock_under(limit: libc::rlim_t) -> std::io::Error {
 /// small limit is tried first.
 #[test]
 fn locking_all_memory_fails_under_a_low_lock_limit_and_says_why() {
-    assert_eq!(lock_under(64 * 1024).raw_os_error(), Some(libc::ENOMEM));
-    assert_eq!(lock_under(0).raw_os_error(), Some(libc::EPERM));
+    assert_eq!(
+        lock_under(64 * 1024).raw_os_error(),
+        Some(libc::ENOMEM),
+        "a test binary maps more than 64 KiB"
+    );
+    assert_eq!(
+        lock_under(0).raw_os_error(),
+        Some(libc::EPERM),
+        "a zero limit without CAP_IPC_LOCK is EPERM"
+    );
 }
