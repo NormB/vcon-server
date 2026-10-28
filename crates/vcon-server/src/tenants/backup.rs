@@ -80,7 +80,8 @@ impl Tenants {
         // directory, which is restored by copying this one with its modes.
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(to, std::fs::Permissions::from_mode(0o700)).map_err(fail)?;
+            std::fs::set_permissions(to, std::fs::Permissions::from_mode(crate::fs::DIR_MODE))
+                .map_err(fail)?;
         }
         let registry = to.join("server.sqlite");
         'tries: for tries in 1..=TRIES {

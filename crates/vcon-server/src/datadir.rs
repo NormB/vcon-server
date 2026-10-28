@@ -5,6 +5,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::os::fd::AsRawFd;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::{fmt, io};
 
@@ -126,6 +127,7 @@ fn flock(path: &Path, how: libc::c_int) -> io::Result<File> {
         .create(true)
         .truncate(false)
         .write(true)
+        .mode(crate::fs::FILE_MODE)
         .open(path)?;
     // SAFETY: the descriptor is this open file's, and flock takes only it
     // and flags.

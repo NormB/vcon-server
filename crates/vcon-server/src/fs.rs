@@ -3,9 +3,18 @@
 //! I/O and is durable once a commit returns.
 
 use std::ffi::OsString;
-use std::fs::{File, OpenOptions};
+use std::fs::{DirBuilder, File, OpenOptions};
 use std::io::{self, Write};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::Path;
+
+/// The mode of every file the server makes: the service account's alone,
+/// whatever the umask of the process. The umask can only take bits away,
+/// and these have none for group or others to lose.
+pub const FILE_MODE: u32 = 0o600;
+
+/// The mode of every directory the server makes, as `FILE_MODE`.
+pub const DIR_MODE: u32 = 0o700;
 
 /// The filesystem calls Store makes.
 pub trait Fs: Send + Sync {
@@ -43,6 +52,7 @@ impl Fs for OsFs {
         OpenOptions::new()
             .write(true)
             .create_new(true)
+            .mode(FILE_MODE)
             .open(path)?
             .write_all(data)
     }
@@ -76,7 +86,7 @@ impl Fs for OsFs {
     }
 
     fn create_dir_all(&self, dir: &Path) -> io::Result<()> {
-        std::fs::create_dir_all(dir)
+        DirBuilder::new().recursive(true).mode(DIR_MODE).create(dir)
     }
 
     fn remove_dir_all(&self, dir: &Path) -> io::Result<()> {

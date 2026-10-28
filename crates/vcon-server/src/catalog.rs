@@ -66,6 +66,8 @@ pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogE
     }
     if path.exists() {
         may_use(path, libc::R_OK | libc::W_OK)?;
+    } else {
+        make_file(path)?;
     }
     let conn = Connection::open(path)?;
     conn.busy_timeout(BUSY_TIMEOUT)?;
@@ -144,11 +146,7 @@ pub(crate) fn may_use(path: &Path, how: c_int) -> Result<(), CatalogError> {
 /// The copy and its directory are synced.
 pub fn backup(source: &Connection, to: &Path, key: &Key) -> Result<(), CatalogError> {
     let io = CatalogError::Io;
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(to)
-        .map_err(io)?;
+    make_file(to)?;
     {
         let mut copy = Connection::open(to)?;
         copy.execute_batch("PRAGMA cipher_log_level = NONE")?;
@@ -198,6 +196,7 @@ pub fn copy_under(path: &Path, old: &Key, new: &Key) -> Result<PathBuf, CatalogE
     ] {
         remove_if_there(&stale)?;
     }
+    make_file(&target)?;
     let conn = open(path, old, "")?;
     let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
     let target_text = target
@@ -238,6 +237,20 @@ pub fn replace(path: &Path, copy: &Path) -> Result<(), CatalogError> {
         .and_then(|f| f.sync_all())
         .map_err(io)?;
     Ok(())
+}
+
+/// Makes an empty file at `path`, which must not exist, with the server's
+/// file mode: SQLite then opens it as a new database, and makes its WAL
+/// and shared-memory files with the same mode.
+fn make_file(path: &Path) -> Result<(), CatalogError> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(crate::fs::FILE_MODE)
+        .open(path)
+        .map(drop)
+        .map_err(CatalogError::Io)
 }
 
 fn remove_if_there(file: &Path) -> Result<(), CatalogError> {

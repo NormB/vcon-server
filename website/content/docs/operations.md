@@ -237,9 +237,9 @@ every object file a copied catalog names. Requests and the purge sweep go on
 meanwhile. Tenants are copied one after another, each as it was when its
 catalog was copied. A version purged, or a tenant removed, while it is being
 copied makes `backup` copy that part again; after 5 tries it exits 1 with
-`tenants were removed or versions purged during each try; try again`. The
-directory it writes is mode `0700`, like the data directory, and every
-file is synced before it exits 0. The admin log records each run as
+`tenants were removed or versions purged during each try; try again`. Every
+directory it writes is mode `0700` and every file `0600`, whatever the
+umask it runs under, and every file is synced before it exits 0. The admin log records each run as
 `backup`, with its outcome. The copy holds nothing readable without the
 master key, and it does not hold the master key: store it away from the
 master key's copies. A copy whose last try ended with exit 1 is not whole;

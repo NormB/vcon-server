@@ -6,6 +6,14 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Every file the server and its commands write into the data directory or a
+  backup is made mode `0600` and every directory `0700`, whatever the umask
+  of the process. They followed the umask before: `backup` under umask 0002
+  wrote its files `0664` and its `tenants` directory `0775`, inside its own
+  `0700` directory, and the catalogs were made `0644`.
+
 ## [0.2.0] - 2026-10-27
 
 ### Added
