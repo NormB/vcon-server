@@ -7,7 +7,10 @@
     var box = document.getElementById("search");
     var input = document.getElementById("search-input");
     var list = document.getElementById("search-results");
-    if (!box || !input || !list || !window.elasticlunr || !window.searchIndex) {
+    // A live region (role="status"): what the search found is announced
+    // without moving focus from the box (WCAG 4.1.3).
+    var status = document.getElementById("search-status");
+    if (!box || !input || !list || !status || !window.elasticlunr || !window.searchIndex) {
       return;
     }
     var index = window.elasticlunr.Index.load(window.searchIndex);
@@ -18,6 +21,7 @@
       }
       if (term.trim().length < 2) {
         list.hidden = true;
+        status.textContent = "";
         return;
       }
       var found = index.search(term, {
@@ -46,6 +50,8 @@
         list.appendChild(item);
       });
       list.hidden = false;
+      status.textContent = found.length === 0 ? "No match for " + term.trim()
+        : found.length + (found.length === 1 ? " result" : " results") + " for " + term.trim();
     }
     input.addEventListener("input", function () { show(input.value); });
     input.addEventListener("keydown", function (e) {

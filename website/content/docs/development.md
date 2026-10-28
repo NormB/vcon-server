@@ -254,7 +254,11 @@ against WCAG 2.2 level AA, contrast and landmarks included, in light and dark
 at 360 and 1440 pixels wide. They also check the home page at 768 pixels, that
 it never scrolls sideways, that the browser logs no error (a refusal by the
 content-security policy is one), and that it shows the sections it is built
-from. CI runs it in the website job.
+from. On every page they check three WCAG 2.2 AA criteria axe does not:
+nothing scrolls sideways at 320 pixels (reflow), no keyboard focus stop is
+hidden under the pinned header, and a link to a place on a page shows it below
+the header. The search tests check that the search box is labelled and that
+what it finds is announced as a status. CI runs it in the website job.
 
 The home page states the number of automated tests and the share of lines
 they cover. Nobody types these numbers. The deploy downloads the test output
