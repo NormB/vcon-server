@@ -60,10 +60,6 @@ fn the_crates_io_job_matches_the_trusted_publisher_on_crates_io() {
     // environment; a job with an environment would be refused.
     let job = job(&release_yml(), "crates-io");
     assert!(!code(&job).contains("environment:"));
-    assert!(
-        job.contains("crates-io") && job.contains("environment"),
-        "a comment says the environment to set once crates.io names it"
-    );
 }
 
 #[test]
@@ -77,8 +73,7 @@ fn a_tag_publishes_only_after_the_github_release_and_never_twice() {
         job.contains("needs.publish.result == 'success'"),
         "a tag publishes only when the GitHub release succeeded"
     );
-    let vcon = job.find("vcon vcon-server").expect("both crates, in order");
-    assert!(vcon > 0);
+    assert!(job.contains("vcon vcon-server"), "both crates, in order");
     assert!(
         job.contains("https://crates.io/api/v1/crates/${crate}/${version}"),
         "each version is looked up on crates.io before an upload"

@@ -313,5 +313,7 @@ mod tests {
     fn a_jwe_carries_the_unprotected_member() {
         let found = inspect(&jwe(format!(r#"{{"uuid":"{ID}"}}"#).as_bytes())).expect("encrypted");
         assert_eq!(found.form, Form::Encrypted);
+        // The uuid is read from `unprotected`, so it shows the member is there.
+        assert_eq!(found.uuid, ID.parse::<uuid::Uuid>().expect("uuid"));
     }
 }
