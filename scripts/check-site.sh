@@ -6,7 +6,9 @@
 # and every SVG is a plain drawing, and no page carries an inline
 # script, an inline style or an event-handler attribute (the pages'
 # content-security policy refuses them, so they would not run anyway).
-# Then `zola check` fails on any broken internal link. The Pages workflow
+# Then `zola check` fails on any broken internal link, and
+# check_site_links.py on any internal link or anchor in the built pages that
+# does not resolve, or a problem type without its page. The Pages workflow
 # runs this before it publishes; run it by hand after changing the site.
 # That the problem pages and the configuration page match the code is
 # checked by the test suite (api::site_pages, config::tests::site_page).
@@ -132,4 +134,8 @@ for made_up in '4321 765 987 77.5 0123456' '1234 81 90 90.0 89abcde'; do
 done
 
 zola --root "$root/website" check >/dev/null || fail "zola check found a broken link"
+# Every internal link and anchor in the built pages, and the problem types
+# in openapi.json against the built problem pages; nothing is fetched.
+python3 -I "$root/scripts/check_site_links.py" "$site" "https://vcon-server.com" \
+  || fail "the built site has a broken internal link or problem type (listed above)"
 echo "check-site: ok ($pages problem pages)"
