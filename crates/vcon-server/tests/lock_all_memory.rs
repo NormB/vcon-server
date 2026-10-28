@@ -15,7 +15,7 @@ fn status_kb(field: &str) -> u64 {
 }
 
 #[test]
-fn mlock_every_page_now_and_later_is_locked() {
+fn every_page_now_and_later_is_locked() {
     assert_eq!(status_kb("VmLck"), 0, "nothing is locked before");
     vcon_server::envelope::lock_all_memory().expect("locks all memory");
     let locked = status_kb("VmLck");
