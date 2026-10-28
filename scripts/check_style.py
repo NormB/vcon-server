@@ -20,7 +20,7 @@ The rules are the Google Rust Style Guide's
   package, which has no public API, may leave out the documentation lints.
 
 Assertions without a message are being added file by file. Until that is
-done, scripts/assert-message-baseline.txt holds, per file, how many each
+done, style/assert-message-baseline.txt holds, per file, how many each
 may still have: a file over its count, or a file not listed with any, is
 refused, and a file under its count must have the count lowered
 (--write-baseline does it, and never raises a count).
@@ -241,7 +241,7 @@ ASSERTIONS = {
     "prop_assert_ne": 3,
 }
 
-BASELINE = pathlib.Path("scripts/assert-message-baseline.txt")
+BASELINE = pathlib.Path("style/assert-message-baseline.txt")
 
 
 def _arguments(toks, open_at):
@@ -274,10 +274,17 @@ def _arguments(toks, open_at):
 
 def ratchet(counts, baseline):
     """The problems with assertions without a message: `counts` per file
-    now against `baseline`, the counts each file may still have."""
+    now (every file read, 0 included) against `baseline`, the counts each
+    file may still have. An entry for a file that was not read is stale."""
     problems = []
     for name in sorted(set(counts) | set(baseline)):
-        now = counts.get(name, 0)
+        if name not in counts:
+            problems.append(
+                f"{name}: in the baseline but not in the tree; "
+                "drop the entry with check_style.py --write-baseline"
+            )
+            continue
+        now = counts[name]
         allowed = baseline.get(name, 0)
         if now > allowed:
             problems.append(

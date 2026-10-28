@@ -178,7 +178,7 @@ for the published crates' public API, the
   function, `pub use sub::*` in a non-leaf module), a reason above each
   `#[rustfmt::skip]`, and a message on every assertion, tests included,
   saying why it holds. Until every assertion has one,
-  `scripts/assert-message-baseline.txt` holds how many each file may still
+  `style/assert-message-baseline.txt` holds how many each file may still
   lack; a new file may lack none, and a file that gets better lowers its
   count with `scripts/check_style.py --write-baseline`, which never raises
   one.

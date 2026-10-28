@@ -223,6 +223,18 @@ class Ratchet(unittest.TestCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("--write-baseline", problems[0])
 
+    def test_an_entry_for_a_file_not_in_the_tree_is_named_as_stale_once(self):
+        # A file that was removed, or a tree that is not this repository (the
+        # hook tests' fixture), is not a file whose count fell.
+        problems = self.verdict({"a.rs": 0}, {"gone.rs": 2})
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("gone.rs", problems[0])
+        self.assertIn("not in the tree", problems[0])
+        self.assertNotIn("0 assertion", problems[0], "no count is reported for a file that is not there")
+
+    def test_the_written_baseline_drops_an_entry_for_a_file_not_in_the_tree(self):
+        self.assertEqual(check_style.next_baseline({"a.rs": 1}, {"a.rs": 1, "gone.rs": 2}), {"a.rs": 1})
+
     def test_a_baseline_entry_for_a_file_that_is_gone_or_clean_must_go(self):
         self.assertEqual(len(self.verdict({}, {"gone.rs": 2})), 1)
         self.assertEqual(len(self.verdict({"a.rs": 0}, {"a.rs": 1})), 1)
@@ -342,7 +354,7 @@ class Command(unittest.TestCase):
     def test_a_file_within_the_baseline_passes_the_command(self):
         result = self.run_in({
             "src/lib.rs": "fn f() {\n    assert!(true);\n}\n",
-            "scripts/assert-message-baseline.txt": "# counts\n1\tsrc/lib.rs\n",
+            "style/assert-message-baseline.txt": "# counts\n1\tsrc/lib.rs\n",
         })
         self.assertEqual(result.returncode, 0, result.stderr)
 

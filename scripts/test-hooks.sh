@@ -73,7 +73,7 @@ pub fn add_one(x: u32) -> u32 {
 mod tests {
     #[test]
     fn adds_one() {
-        assert_eq!(super::add_one(1), 2);
+        assert_eq!(super::add_one(1), 2, "one more than one is two");
     }
 }
 RS
@@ -204,8 +204,26 @@ pub fn add_one(x: u32) -> u32 {
 mod tests {
     #[test]
     fn adds_one() {
+        assert_eq!(super::add_one(1), 2, "one more than one is two");
+    }
+}'
+
+expect refuse "assertion without a message" crates/fixture/src/lib.rs '/// Adds one.
+pub fn add_one(x: u32) -> u32 {
+    x + 1
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn adds_one() {
         assert_eq!(super::add_one(1), 2);
     }
+}'
+expect refuse "glob import" crates/fixture/src/lib.rs '/// Adds one.
+pub fn add_one(x: u32) -> u32 {
+    use std::ops::*;
+    x.add(1)
 }'
 
 echo "test-hooks: $pass of $n passed"
