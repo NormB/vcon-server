@@ -122,6 +122,9 @@ class Paths(unittest.TestCase):
         files = package()
         files[path] = b"x\n"
         found = findings(files)
+        # A clean package has no findings, so the one file added is the
+        # only one: anything else found beside it is a wrong answer too.
+        self.assertEqual(len(found), 1, found)
         self.assertTrue(any(path in f and "not allowed" in f for f in found), found)
 
     def test_website_pages_are_refused(self):
@@ -175,6 +178,9 @@ class Required(unittest.TestCase):
         files = package()
         del files[path]
         found = findings(files)
+        # A clean package has no findings, so the one file taken out is the
+        # only one: anything else found beside it is a wrong answer too.
+        self.assertEqual(len(found), 1, found)
         self.assertTrue(any(path in f and "missing" in f for f in found), found)
 
     def test_the_readme_is_required(self):
