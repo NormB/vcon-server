@@ -7,7 +7,7 @@
 4	crates/vcon-server/src/datadir.rs
 7	crates/vcon-server/src/mcp/gate.rs
 13	crates/vcon-server/src/mcp/stdio.rs
-55	crates/vcon-server/src/mcp/tests.rs
+50	crates/vcon-server/src/mcp/tests.rs
 13	crates/vcon-server/src/serve.rs
 113	crates/vcon-server/src/store.rs
 11	crates/vcon-server/src/store/backup.rs
