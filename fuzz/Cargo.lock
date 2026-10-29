@@ -2149,6 +2149,7 @@ dependencies = [
  "sha1_smol",
  "time",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

@@ -1065,7 +1065,7 @@ fn every_member_table_1_does_not_mark_x_is_written_for_that_type() {
                 _ => minimal(*kind),
             };
             v.add_dialog(set(dialog));
-            let out = written(&v).unwrap_or_else(|e| panic!("{name} on {kind:?}: {e:?}"));
+            let out = written(&v).unwrap_or_else(|_| panic!("{name} on {kind:?} is refused"));
             assert!(out["dialog"][1].get(*name).is_some(), "{name} on {kind:?}");
         }
     }
@@ -1076,7 +1076,7 @@ fn every_type_is_written_with_only_what_table_1_requires() {
     for kind in ALL_TYPES {
         let mut v = with_two_parties_and_a_recording();
         v.add_dialog(minimal(kind));
-        let out = written(&v).unwrap_or_else(|e| panic!("{kind:?}: {e:?}"));
+        let out = written(&v).unwrap_or_else(|_| panic!("{kind:?} is refused"));
         assert_eq!(
             out["dialog"][1]["type"],
             json!(kind.as_str()),
@@ -1379,7 +1379,7 @@ fn absent_content_is_refused_outside_a_redaction_or_placeholder() {
             "{case}"
         );
         v.set_redacted_without_prior("PII Redaction");
-        written(&v).unwrap_or_else(|e| panic!("{case} in a redacted vCon: {e:?}"));
+        written(&v).unwrap_or_else(|_| panic!("{case} in a redacted vCon is refused"));
     }
 }
 
@@ -1822,7 +1822,7 @@ fn a_civic_address_is_written_in_the_drafts_order_whatever_order_it_was_set_in()
     let text = String::from_utf8(v.to_json().expect("written")).expect("UTF-8");
     assert!(
         text.contains(r#""civicaddress":{"country":"US","a1":"CA","pc":"94000"}"#),
-        "{text}"
+        "the civicaddress members in the draft's order"
     );
 }
 
@@ -2002,7 +2002,7 @@ fn a_whole_duration_has_no_decimal_point_and_a_fractional_one_has_one() {
         r#"{"type":"incomplete","duration":9007199254740991,"disposition":"failed"}"#,
         r#"{"type":"incomplete","duration":0.0,"disposition":"failed"}"#,
     ] {
-        assert!(text.contains(written), "{written} in {text}");
+        assert!(text.contains(written), "{written} is written");
     }
 }
 
@@ -2190,7 +2190,7 @@ fn a_member_set_again_is_written_once_in_its_first_place() {
     let text = String::from_utf8(v.to_json().expect("written")).expect("UTF-8");
     assert!(
         text.ends_with(r#""attachments":[],"first":3,"second":2}"#),
-        "{text}"
+        "a member set again keeps its first place"
     );
 }
 

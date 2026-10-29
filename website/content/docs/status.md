@@ -19,9 +19,10 @@ what is built, unless it says otherwise.
   are published on crates.io.
 - **Writing vCons** in the `vcon` library, on `main` and not yet released:
   `vcon::write` builds a vCon from the core draft's object model and writes
-  it unsigned or gzipped, refusing what the draft does not allow; the
-  draft's examples A.4, A.8 and A.9 are built with it. vcon-server itself
-  never writes a vCon.
+  it unsigned or gzipped, refusing what the draft does not allow, or signed
+  (a JWS) or encrypted (a JWE) through signers and encrypters the caller
+  provides; the draft's examples A.4, A.8 and A.9 are built with it.
+  vcon-server itself never writes a vCon.
 - **Encrypted storage.** AES-256-GCM per version under a per-version data key,
   tenant keys wrapped by the master key, SQLCipher catalogs, crash-safe writes
   and start-up recovery.
@@ -79,9 +80,10 @@ what is built, unless it says otherwise.
 
 ## Being built
 
-- **Signing and encrypting vCons** in `vcon::write` (a JWS or JWE, through
-  traits the caller implements, with the draft's recommended algorithms as
-  an option); they are released with `vcon::write` in vcon 0.3.0.
+- **The draft's recommended algorithms** for `vcon::write` (RS256,
+  RSA-OAEP and A256CBC-HS512) as an option of the `vcon` crate, and a check
+  of its output with another JOSE library; released with `vcon::write` in
+  vcon 0.3.0.
 - **MCP tools:** the tools an agent calls. None exist yet; the endpoint
   and the stdio command are built, above.
 - **Review:** a review of the code against its design, a review of every

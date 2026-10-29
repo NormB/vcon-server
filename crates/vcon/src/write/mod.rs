@@ -45,7 +45,6 @@ use std::str::FromStr;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use flate2::Compression;
 use flate2::write::GzEncoder;
 use serde_json::Value;
 use time::OffsetDateTime;
@@ -53,8 +52,13 @@ use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 
 mod emit;
+mod jose;
 
 use emit::{Node, Obj};
+pub use jose::{
+    Chain, Compression, ContentEncrypter, CryptoError, KeyEncrypter, Sealed, Signer, Zeroizing,
+    encrypt, sign, sign_again,
+};
 
 /// A Date as core-04 section 2.2 defines it: an RFC 3339 date and time
 /// with its offset.
@@ -2416,7 +2420,7 @@ impl Vcon {
 /// flate2 reports an I/O error from its writer, and a `Vec` never returns
 /// one, so neither `expect` can fail.
 fn gzip(bytes: &[u8]) -> Vec<u8> {
-    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    let mut encoder = GzEncoder::new(Vec::new(), flate2::Compression::default());
     encoder
         .write_all(bytes)
         .expect("writing to a Vec does not fail");
@@ -2969,6 +2973,19 @@ pub enum WriteError {
     /// The output would have more than [`crate::read::MAX_JSON_DEPTH`]
     /// arrays and objects open at once.
     TooDeep,
+    /// The input to sign again or encrypt is not a signed vCon.
+    NotSigned,
+    /// Signing again would pass [`crate::read::MAX_SIGNED_LAYERS`] signed
+    /// layers.
+    TooManyLayers,
+    /// No signer was given.
+    NoSigner,
+    /// No recipient was given.
+    NoRecipient,
+    /// A signer's chain is an empty `x5c` or an `x5u` that is not https.
+    BadChain,
+    /// A signer or encrypter failed.
+    Crypto(CryptoError),
 }
 
 impl fmt::Display for WriteError {
@@ -3003,8 +3020,27 @@ impl fmt::Display for WriteError {
                 "the output would nest more than {} arrays and objects",
                 crate::read::MAX_JSON_DEPTH
             ),
+            WriteError::NotSigned => f.write_str("the input is not a signed vCon"),
+            WriteError::TooManyLayers => write!(
+                f,
+                "signing again would pass {} signed layers",
+                crate::read::MAX_SIGNED_LAYERS
+            ),
+            WriteError::NoSigner => f.write_str("no signer was given"),
+            WriteError::NoRecipient => f.write_str("no recipient was given"),
+            WriteError::BadChain => {
+                f.write_str("a signer's chain is an empty x5c or an x5u that is not https")
+            }
+            WriteError::Crypto(e) => write!(f, "a signer or encrypter failed: {e}"),
         }
     }
 }
 
-impl std::error::Error for WriteError {}
+impl std::error::Error for WriteError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            WriteError::Crypto(e) => Some(e),
+            _ => None,
+        }
+    }
+}

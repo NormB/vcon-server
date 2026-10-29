@@ -23,7 +23,17 @@ All notable changes to this project are recorded here. The format follows
   placeholder so no index moves. `uuid_v8` makes the version 8 uuid the
   draft recommends. The draft's examples A.4, A.8 and A.9 are built with it
   and equal the draft's files. `WriteError` implements `std::error::Error`.
-  Signing and encryption follow; it is released with vcon 0.3.0.
+- The signed and encrypted forms in `vcon::write`: `sign` writes a General
+  JWS JSON Serialization with one signature per `Signer` and `updated_at`
+  set to the signing time; `sign_again` signs a signed vCon again for a
+  long-term archive, at most `read::MAX_SIGNED_LAYERS` layers; `encrypt`
+  writes a General JWE JSON Serialization of a signed vCon, its content key
+  from a `ContentEncrypter` and wrapped by each `KeyEncrypter`. The
+  cryptography is the caller's, through those three traits; a payload or
+  plaintext can be gzipped first (`Compression`). The input to sign again
+  or encrypt is read under the caller's `read::Limits`, and every output
+  reads back with `read::inspect`. The draft's recommended algorithms
+  follow as an option; it is all released with vcon 0.3.0.
 
 ### Fixed
 
