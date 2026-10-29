@@ -488,26 +488,52 @@ def _docker(*args: str, check: bool = True, timeout: int | None = 600, **kw) -> 
     return subprocess.run(["docker", *args], check=check, timeout=timeout, **kw)
 
 
-def _latest_release() -> str | None:
-    """The newest published release's version, from the GitHub API."""
-    out = subprocess.run(
-        ["curl", "-fsSL", "--retry", "3", "https://api.github.com/repos/NormB/vcon-server/releases/latest"],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
+GITHUB_API = "https://api.github.com/"
+REPO = "NormB/vcon-server"
+
+
+def github_api(path: str, token: str | None, run=subprocess.run) -> tuple[int, str]:
+    """One GitHub API request: its HTTP status and body. With a token (CI's
+    GH_TOKEN), the request carries it, so it is not held to the hosted
+    runners' shared limit for unauthenticated requests. curl reads the header
+    from standard input, so the token is never in a process's arguments."""
+    cmd = ["curl", "-sS", "--retry", "3", "-w", "\n%{http_code}", GITHUB_API + path]
+    stdin = None
+    if token:
+        cmd[1:1] = ["-H", "@-"]
+        stdin = f"Authorization: Bearer {token}\n"
+    out = run(cmd, input=stdin, capture_output=True, text=True, timeout=60)
     if out.returncode != 0:
-        return None
-    return json.loads(out.stdout)["tag_name"].removeprefix("v")
+        raise PageError(f"GitHub API {path}: {out.stderr.strip() or f'curl exited {out.returncode}'}")
+    body, _, code = out.stdout.rpartition("\n")
+    return int(code), body
 
 
-def _released(version: str) -> bool:
-    out = subprocess.run(
-        ["curl", "-fsSL", "-o", "/dev/null", "--retry", "3",
-         f"https://api.github.com/repos/NormB/vcon-server/releases/tags/v{version}"],
-        timeout=60,
-    )
-    return out.returncode == 0
+def _refused(path: str, code: int, body: str) -> PageError:
+    try:
+        message = json.loads(body).get("message", body)
+    except ValueError:
+        message = body
+    return PageError(f"GitHub API {path} answered {code}: {message}")
+
+
+def released(version: str, token: str | None, run=subprocess.run) -> bool:
+    """Whether release v<version> is published: 200 yes, 404 no, and any
+    other answer an error, never a guess."""
+    path = f"repos/{REPO}/releases/tags/v{version}"
+    code, body = github_api(path, token, run)
+    if code in (200, 404):
+        return code == 200
+    raise _refused(path, code, body)
+
+
+def latest_release(token: str | None, run=subprocess.run) -> str:
+    """The newest published release's version."""
+    path = f"repos/{REPO}/releases/latest"
+    code, body = github_api(path, token, run)
+    if code != 200:
+        raise _refused(path, code, body)
+    return json.loads(body)["tag_name"].removeprefix("v")
 
 
 RELEASE_VARIABLES = ("VERSION", "NEW_VERSION")
@@ -581,7 +607,10 @@ def run(scenario: Scenario, binary: str | None, keep: str | None) -> int:
     for p in scenario.pages:
         blocks += page_blocks(p)
     steps = select(blocks, scenario)
-    sets = release_sets(steps, scenario.sets, _released, _latest_release)
+    token = os.environ.get("GH_TOKEN") or None
+    sets = release_sets(
+        steps, scenario.sets, lambda v: released(v, token), lambda: latest_release(token)
+    )
     for name, value in sets.items():
         if name not in scenario.sets:
             print(f"docs-test: the release a page names is not published yet; running with {name}={value}")

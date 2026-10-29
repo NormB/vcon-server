@@ -8,6 +8,7 @@ Run: python3 -I scripts/test_docs_test.py
 """
 
 import os
+import subprocess
 import sys
 import unittest
 
@@ -236,6 +237,56 @@ class HomePage(unittest.TestCase):
     def test_a_step_without_code_needs_nothing(self):
         front = '[extra]\n[[extra.install]]\ntitle = "Then"\nnote = "n"\n'
         self.assertEqual(dt.home_install_problems(front, self.INSTALL), [])
+
+
+class GitHubApi(unittest.TestCase):
+    """The release lookups ask the GitHub API with the job's token, and a
+    refusal says why instead of passing for an unpublished release."""
+
+    def runner(self, stdout, returncode=0, stderr=""):
+        calls = []
+
+        def run(cmd, **kw):
+            calls.append((cmd, kw))
+            return subprocess.CompletedProcess(cmd, returncode, stdout, stderr)
+
+        return run, calls
+
+    def test_the_token_goes_on_standard_input_never_in_the_arguments(self):
+        run, calls = self.runner('{"tag_name":"v0.2.0"}\n200')
+        self.assertEqual(dt.github_api("repos/o/r/releases/latest", "secret-token", run), (200, '{"tag_name":"v0.2.0"}'))
+        cmd, kw = calls[0]
+        self.assertNotIn("secret-token", " ".join(cmd), "a token in the arguments shows in ps")
+        self.assertEqual(kw["input"], "Authorization: Bearer secret-token\n")
+        self.assertIn("@-", cmd, "curl reads the header from standard input")
+
+    def test_without_a_token_no_header_is_sent(self):
+        run, calls = self.runner("{}\n200")
+        dt.github_api("repos/o/r/releases/latest", None, run)
+        self.assertNotIn("@-", calls[0][0])
+        self.assertIsNone(calls[0][1]["input"])
+
+    def test_a_refusal_names_its_status_and_message(self):
+        run, _ = self.runner('{"message":"API rate limit exceeded for 192.0.2.1."}\n403')
+        with self.assertRaisesRegex(dt.PageError, "403: API rate limit exceeded"):
+            dt.released("0.2.0", None, run)
+        with self.assertRaisesRegex(dt.PageError, "403: API rate limit exceeded"):
+            dt.latest_release(None, run)
+
+    def test_released_is_true_on_200_and_false_only_on_404(self):
+        run, _ = self.runner("{}\n200")
+        self.assertTrue(dt.released("0.2.0", None, run))
+        run, _ = self.runner('{"message":"Not Found"}\n404')
+        self.assertFalse(dt.released("0.9.0", None, run))
+
+    def test_the_newest_release_is_read_from_its_tag(self):
+        run, _ = self.runner('{"tag_name":"v0.3.0"}\n200')
+        self.assertEqual(dt.latest_release(None, run), "0.3.0")
+
+    def test_a_curl_failure_says_so(self):
+        run, _ = self.runner("", returncode=6, stderr="curl: (6) Could not resolve host: api.github.com")
+        with self.assertRaisesRegex(dt.PageError, "Could not resolve host"):
+            dt.released("0.2.0", None, run)
 
 
 class Lint(unittest.TestCase):
