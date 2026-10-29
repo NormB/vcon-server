@@ -30,7 +30,7 @@ jobs:
           persist-credentials: false
       - name: Install the pinned toolchain
         # rust-toolchain.toml names the version and its components.
-        run: rustup toolchain install
+        run: scripts/retry.sh rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Format
         # rustfmt.toml's options need the nightly rustfmt the script pins;
@@ -93,8 +93,8 @@ jobs:
       - name: Install the pinned toolchain and cargo-llvm-cov
         run: |
           set -euo pipefail
-          rustup toolchain install
-          rustup component add llvm-tools
+          scripts/retry.sh rustup toolchain install
+          scripts/retry.sh rustup component add llvm-tools
           curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o llvm-cov.tar.gz \
             "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v${LLVM_COV_VERSION}/cargo-llvm-cov-x86_64-unknown-linux-gnu.tar.gz"
           echo "${LLVM_COV_SHA256}  llvm-cov.tar.gz" | sha256sum -c -
@@ -190,7 +190,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install the pinned toolchain
-        run: rustup toolchain install
+        run: scripts/retry.sh rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -214,7 +214,7 @@ jobs:
             exit 1
           fi
           (cd clients/go && go vet ./...)
-          (cd clients/typescript && npm ci --ignore-scripts --no-audit --no-fund && npx --no-install tsc --noEmit)
+          (cd clients/typescript && ../../scripts/retry.sh npm ci --ignore-scripts --no-audit --no-fund && npx --no-install tsc --noEmit)
           python3 -m py_compile clients/python/vcon_client.py
       - name: Build the server and the Rust client
         run: cargo build --locked -p vcon-server -p vcon-client
@@ -253,6 +253,13 @@ jobs:
           python3 -I scripts/check_test_names.py
       - name: The rule for AI attribution and personal data
         run: python3 -I scripts/test_scan_forbidden.py
+      # A toolchain or tool download retries, so a runner's dropped
+      # connection does not fail a job (scripts/check_workflow_downloads.py).
+      - name: Every download retries
+        run: |
+          set -euo pipefail
+          scripts/test-retry.sh
+          python3 -I scripts/test_workflow_downloads.py
       - name: Paths the Best Practices answers link to
         run: python3 -I scripts/test_check_repo_links.py
       - name: The rule for the home page's numbers
@@ -278,7 +285,7 @@ jobs:
         # crate, rustfmt from the nightly scripts/rustfmt.sh pins.
         run: |
           set -euo pipefail
-          rustup toolchain install
+          scripts/retry.sh rustup toolchain install
           scripts/rustfmt.sh install
       # Each hook in a throwaway repository: every forbidden item staged or
       # written in a message is refused, clean changes pass; the push hook
@@ -384,8 +391,8 @@ jobs:
         working-directory: site-tests
         run: |
           set -euo pipefail
-          npm ci
-          npx playwright install --with-deps --only-shell chromium
+          ../scripts/retry.sh npm ci
+          ../scripts/retry.sh npx playwright install --with-deps --only-shell chromium
       - name: The site in a browser (WCAG 2.2 AA, layout, no console error)
         run: scripts/test-site.sh
 
@@ -427,7 +434,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install the pinned toolchain
-        run: rustup toolchain install
+        run: scripts/retry.sh rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Install Node
         run: |
@@ -446,8 +453,8 @@ jobs:
         run: |
           set -euo pipefail
           node --version
-          npm ci
-          npx playwright install --with-deps --only-shell chromium
+          ../scripts/retry.sh npm ci
+          ../scripts/retry.sh npx playwright install --with-deps --only-shell chromium
       - name: Browser tests
         # The server locks all of its memory, as in the tests job.
         run: |
@@ -476,7 +483,7 @@ jobs:
         # list to keep in step.
         run: echo "scenarios=$(python3 -I scripts/docs_test.py list)" >> "$GITHUB_OUTPUT"
       - name: Install the pinned toolchain
-        run: rustup toolchain install
+        run: scripts/retry.sh rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build the server
         run: cargo build --locked -p vcon-server
