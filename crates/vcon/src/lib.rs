@@ -15,6 +15,7 @@ mod ietf_examples;
 mod json;
 pub mod read;
 mod signed;
+pub mod write;
 
 /// Reads a uuid written in RFC 9562 text form, 8-4-4-4-12 hex digits in
 /// either case, as a vCon's uuid must be; no other spelling is taken.

@@ -15,6 +15,10 @@ This page describes vcon 0.2.0. In 0.1.0, the first release,
 `MAX_SIGNED_LAYERS` and `MAX_JSON_DEPTH` are at the crate root rather than in
 `vcon::read`, and limits are written `Limits { inflated: 1 << 20 }`.
 
+Writing vCons, in `vcon::write`, is on `main` and not yet released; it
+ships in vcon 0.3.0 with signing and encryption, and this page will describe
+it then.
+
 ## Add it
 
 ```sh

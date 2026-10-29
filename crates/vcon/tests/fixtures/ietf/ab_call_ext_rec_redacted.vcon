@@ -1,0 +1,151 @@
+{
+  "created_at": "2022-06-21T13:53:00-04:00",
+  "parties": [
+    {
+      "name": "Alice"
+    },
+    {
+      "name": "Bob"
+    }
+  ],
+  "dialog": [
+    {
+      "type": "recording",
+      "start": "2022-06-21T17:53:26.000+00:00",
+      "duration": 33.12,
+      "parties": [
+        0,
+        1
+      ],
+      "mediatype": "audio/x-mp3",
+      "filename": "ab_call.mp3",
+      "content_hash": "sha512-GLy6IPaIUM1GqzZqfIPZlWjaDsNgNvZM0iCONNThnH0a75fhUM6cYzLZ5GynSURREvZwmOh54-2lRRieyj82UQ"
+    }
+  ],
+  "analysis": [
+    {
+      "type": "transcript-redacted",
+      "dialog": 0,
+      "body": [
+        {
+          "parties": 0,
+          "start": "2022-06-21T17:53:27.200000+00:00",
+          "duration": 0.5600001000000001,
+          "text": "Hello."
+        },
+        {
+          "parties": 0,
+          "start": "2022-06-21T17:53:27.760000+00:00",
+          "duration": 1.6799997999999998,
+          "text": "This is {{URL}}."
+        },
+        {
+          "parties": 0,
+          "start": "2022-06-21T17:53:29.440000+00:00",
+          "duration": 0.8799999000000005,
+          "text": "My name is Bob."
+        },
+        {
+          "parties": 0,
+          "start": "2022-06-21T17:53:30.320000+00:00",
+          "duration": 1.2000002999999992,
+          "text": "How can I help you?"
+        },
+        {
+          "parties": 0,
+          "start": "2022-06-21T17:53:31.600000+00:00",
+          "duration": 0.7199997000000007,
+          "text": "Hi."
+        },
+        {
+          "parties": 0,
+          "start": "2022-06-21T17:53:32.320000+00:00",
+          "duration": 2.4799992999999994,
+          "text": "I'd like to add Fu to my service."
+        },
+        {
+          "parties": 0,
+          "start": "2022-06-21T17:53:35.200000+00:00",
+          "duration": 0.6399990000000013,
+          "text": "{{US_STATE}}."
+        },
+        {
+          "parties": 0,
+          "start": "2022-06-21T17:53:36.160000+00:00",
+          "duration": 2.959999999999999,
+          "text": "Can you give me your name and phone number so I can look up your account?"
+        },
+        {
+          "parties": 0,
+          "start": "2022-06-21T17:53:39.735000+00:00",
+          "duration": 6.879999999999999,
+          "text": "My name is Alice, and my number is {{BAN}}."
+        },
+        {
+          "parties": 0,
+          "start": "2022-06-21T17:53:46.775000+00:00",
+          "duration": 0.8799990000000015,
+          "text": "Thank you."
+        },
+        {
+          "parties": 0,
+          "start": "2022-06-21T17:53:48.935000+00:00",
+          "duration": 0.40000000000000213,
+          "text": "{{US_STATE}}."
+        },
+        {
+          "parties": 0,
+          "start": "2022-06-21T17:53:50.134874+00:00",
+          "duration": 1.600000999999999,
+          "text": "I've added two to your service."
+        },
+        {
+          "parties": 0,
+          "start": "2022-06-21T17:53:51.734875+00:00",
+          "duration": 2,
+          "text": "Is there anything else that I can help you with?"
+        },
+        {
+          "parties": 0,
+          "start": "2022-06-21T17:53:54.054874+00:00",
+          "duration": 0.4799999999999969,
+          "text": "No."
+        },
+        {
+          "parties": 0,
+          "start": "2022-06-21T17:53:54.534874+00:00",
+          "duration": 0.7999990000000032,
+          "text": "Thank you."
+        },
+        {
+          "parties": 0,
+          "start": "2022-06-21T17:53:55.334875+00:00",
+          "duration": 0.6399989999999995,
+          "text": "Goodbye."
+        },
+        {
+          "parties": 0,
+          "start": "2022-06-21T17:53:56.374874+00:00",
+          "duration": 0.6400000000000006,
+          "text": "Goodbye."
+        },
+        {
+          "parties": 0,
+          "start": "2022-06-21T17:53:57.014874+00:00",
+          "duration": 0.880001,
+          "text": "Have a nice day."
+        }
+      ],
+      "encoding": "json",
+      "vendor": "CapitalOne",
+      "schema": "data_labeler_schema",
+      "product": "dataprofiler"
+    }
+  ],
+  "attachments": [],
+  "uuid": "01928e10-193e-8231-b9a2-279e0d16bc46",
+  "redacted": {
+    "uuid": "01a07da8-c2bb-83e5-b9a2-279e0d16bc46",
+    "type": "PII Redaction"
+  }
+}

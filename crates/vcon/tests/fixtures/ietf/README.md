@@ -9,6 +9,8 @@ Appendix A. Please reproduce this note if possible.
 | `ab_call_ext_rec.vcon` | A.4 Two Party Call vCon With Externally Referenced Recording | unsigned |
 | `ab_call_ext_rec_signed.vcon` | A.6 Signed vCon | signed (JWS) |
 | `ab_call_ext_rec_encrypted.vcon` | A.7 Encrypted vCon | encrypted (JWE) |
+| `ab_call_ext_rec_redacted.vcon` | A.8 Redacted vCon | unsigned |
+| `ab_call_ext_rec_amended.vcon` | A.9 Amended Signed vCon | unsigned |
 
 They are the unformatted versions the draft links to, downloaded unchanged
 from the vCon working group's repository at commit

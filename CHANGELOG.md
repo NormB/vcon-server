@@ -6,6 +6,25 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `vcon::write` in the vcon library: an object model of the vCon core
+  draft (parties, dialogs of each type, attachments, analysis, extension
+  members) and its unsigned and gzip forms. The output is compact JSON
+  with members in the draft's order, so the same model gives the same
+  bytes, and `read::inspect` reads every output back with the same form,
+  gzip flag and uuid. It refuses what core-04 does not allow and names the
+  JSON path: an index to nothing, a member Table 1 forbids or a missing one
+  it requires, content without an https URL and a hash, an inline
+  attachment without a mediatype, both `amended` and `redacted`, an
+  extension member with a reserved name, and output deeper than
+  `read::MAX_JSON_DEPTH`. `Vcon::amend` and `Vcon::redact` copy a vCon
+  under a new uuid and link the prior one; a removed entry leaves a
+  placeholder so no index moves. `uuid_v8` makes the version 8 uuid the
+  draft recommends. The draft's examples A.4, A.8 and A.9 are built with it
+  and equal the draft's files. `WriteError` implements `std::error::Error`.
+  Signing and encryption follow; it is released with vcon 0.3.0.
+
 ### Fixed
 
 - Every file the server and its commands write into the data directory or a
