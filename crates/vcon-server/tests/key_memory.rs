@@ -66,7 +66,7 @@ fn foreign_page_left_out() {
 }
 
 #[test]
-fn each_key_has_its_own_locked_page_left_out_of_core_dumps() {
+fn mlock_each_key_has_its_own_locked_page_left_out_of_core_dumps() {
     foreign_page_left_out();
     assert_eq!(status_kb("VmLck"), 0, "nothing is locked before");
     let left_out_before = mappings_with("dd");
