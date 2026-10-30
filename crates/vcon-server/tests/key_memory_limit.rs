@@ -7,7 +7,7 @@ use vcon_server::envelope::{Context, Key, KeyError, unwrap, wrap};
 use vcon_server::ids::TenantId;
 
 #[test]
-fn a_key_is_refused_when_its_memory_cannot_be_locked() {
+fn mlock_a_key_is_refused_when_its_memory_cannot_be_locked() {
     let ctx = Context::Tenant {
         tenant: TenantId([1; 16]),
     };

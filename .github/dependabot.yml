@@ -49,6 +49,13 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    ignore:
+      # @types/node describes one Node major's API. The TypeScript client
+      # type-checks against the Node CI runs it on (node-version '24' in
+      # ci.yml; engines >=22.18), so a newer major's types would accept
+      # calls the supported Node lacks. Raise it with CI's Node version.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
       # Minor and patch bumps in one pull request; a major bump gets its own.
       npm-minor-patch:

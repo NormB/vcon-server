@@ -25,7 +25,8 @@ case "$(uname -m)" in
 esac
 
 # perl-core: OpenSSL's Configure needs modules the minimal perl leaves out.
-dnf install -y --setopt=install_weak_deps=False gcc make perl-core binutils diffutils python3 xz >&2
+RETRY_BETWEEN='dnf clean metadata' scripts/retry.sh \
+  dnf install -y --setopt=install_weak_deps=False gcc make perl-core binutils diffutils python3 xz >&2
 ldd --version | sed -n 1p >&2
 
 curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o /tmp/rustup-init \
@@ -36,5 +37,5 @@ chmod +x /tmp/rustup-init
 rm -f /tmp/rustup-init
 export PATH="$HOME/.cargo/bin:$PATH"
 if [ -n "${GITHUB_PATH:-}" ]; then echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"; fi
-rustup toolchain install >&2
+scripts/retry.sh rustup toolchain install >&2
 rustc --version >&2
