@@ -45,13 +45,13 @@ expect() {
   fi
 }
 c=cl a=an
-ai="${c}aude" co="${a}thropic"
+tool="${c}aude" co="${a}thropic"
 clean="$(commit "Explain the change
 
 # a line that starts with #, with nothing forbidden")"
 hashed="$(commit "Fix it
 
-# Co-Authored-By: ${ai^} <noreply@${co}.com>")"
+# Co-Authored-By: ${tool^} <noreply@${co}.com>")"
 plan="$(commit "Finish P""0.3")"
 mail="$(commit "Ask someone@gm""ail.com")"
 expect 0 "a clean message, # line included" "" "$clean"

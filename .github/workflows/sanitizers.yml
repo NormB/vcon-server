@@ -79,7 +79,7 @@ jobs:
           nightly="$(sed -n 's/^channel = "\(nightly-[0-9-]*\)"$/\1/p' fuzz/rust-toolchain.toml)"
           [ -n "$nightly" ] || { echo "::error::no nightly in fuzz/rust-toolchain.toml"; exit 1; }
           echo "NIGHTLY=$nightly" >> "$GITHUB_ENV"
-          rustup toolchain install "$nightly" --profile minimal --component miri,rust-src
+          scripts/retry.sh rustup toolchain install "$nightly" --profile minimal --component miri,rust-src
           cargo "+$nightly" miri setup
       - name: Run the locked page's tests under Miri
         run: cargo "+$NIGHTLY" miri test --locked -p vcon-server --lib -- 'envelope::locked::'
@@ -100,7 +100,7 @@ jobs:
           nightly="$(sed -n 's/^channel = "\(nightly-[0-9-]*\)"$/\1/p' fuzz/rust-toolchain.toml)"
           [ -n "$nightly" ] || { echo "::error::no nightly in fuzz/rust-toolchain.toml"; exit 1; }
           echo "NIGHTLY=$nightly" >> "$GITHUB_ENV"
-          rustup toolchain install "$nightly" --profile minimal --component rust-src
+          scripts/retry.sh rustup toolchain install "$nightly" --profile minimal --component rust-src
       - name: Run vcon-server's tests under AddressSanitizer
         env:
           # -Zbuild-std rebuilds the standard library instrumented, so a bad
