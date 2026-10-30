@@ -13,9 +13,14 @@ struct Setup {
     config: PathBuf,
     data: PathBuf,
     pem: String,
-    addr: SocketAddr,
     umask: &'static str,
 }
+
+/// Where every server in these tests listens: port 0, so each takes a port
+/// of its own when it binds, and `start` reads that port from its
+/// `serving` line. A port picked beforehand could be taken by another
+/// process before the server binds it.
+const ANY_PORT: &str = "127.0.0.1:0";
 
 fn key_file(path: &Path, byte: u8) {
     std::fs::write(path, [byte; 32]).expect("a key file");
@@ -35,14 +40,10 @@ fn setup(umask: &'static str) -> Setup {
     let (cert, key) = (dir.path().join("cert.pem"), dir.path().join("key.pem"));
     std::fs::write(&cert, &pem).expect("write");
     std::fs::write(&key, made.signing_key.serialize_pem()).expect("write");
-    let addr = TcpListener::bind("127.0.0.1:0")
-        .expect("a free port")
-        .local_addr()
-        .expect("addr");
     let config = dir.path().join("vcon-server.toml");
     write_config(
         &config,
-        addr,
+        ANY_PORT.parse().expect("an address"),
         &data,
         &dir.path().join("master.key"),
         &cert,
@@ -53,7 +54,6 @@ fn setup(umask: &'static str) -> Setup {
         config,
         data,
         pem,
-        addr,
         umask,
     }
 }
@@ -119,32 +119,64 @@ impl Drop for Running {
     }
 }
 
-/// Stores one vCon through a server started under the setup's umask.
-async fn store_one(s: &Setup, token: &str) {
+/// Starts `serve` under the setup's umask with the configuration file
+/// `config`, and waits for its `serving` line: the server running, and the
+/// address it bound. Only that line says the server is ready; something
+/// else accepting on its port does not.
+fn start(s: &Setup, config: &Path) -> Result<(Running, SocketAddr), String> {
     let mut running = Running(
-        s.command(&["serve", "--config", s.config()])
+        s.command(&["serve", "--config", config.to_str().expect("a UTF-8 path")])
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .expect("starts"),
     );
+    let stderr = running.0.stderr.take().expect("piped");
+    let (line_tx, lines) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        // Read to the end even once no one wants the lines: a pipe left
+        // unread fills, and a closed one fails serve's next log line;
+        // either stops the server in the middle of a request.
+        for line in std::io::BufReader::new(stderr)
+            .lines()
+            .map_while(Result::ok)
+        {
+            let _ = line_tx.send(line);
+        }
+    });
     let deadline = Instant::now() + Duration::from_secs(20);
-    while std::net::TcpStream::connect(s.addr).is_err() {
-        assert!(
-            running.0.try_wait().expect("wait").is_none(),
-            "serve stopped"
-        );
-        assert!(Instant::now() < deadline, "serve never listened");
-        std::thread::sleep(Duration::from_millis(20));
+    let mut said = Vec::new();
+    loop {
+        match lines.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(line) => match bound(&line) {
+                Some(addr) => return Ok((running, addr)),
+                None => said.push(line),
+            },
+            // The sender is gone once serve exits, or the deadline passed.
+            Err(_) => return Err(format!("serve never said where it listens: {said:?}")),
+        }
     }
+}
+
+/// The address a `serving` line names, from its `listen=` field.
+fn bound(line: &str) -> Option<SocketAddr> {
+    let mut fields = line.split_whitespace();
+    fields.find(|f| *f == "serving")?;
+    fields.find_map(|f| f.strip_prefix("listen="))?.parse().ok()
+}
+
+/// Stores one vCon through a server started under the setup's umask.
+async fn store_one(s: &Setup, token: &str) {
+    let (running, addr) = start(s, &s.config).expect("the server starts");
     let client = reqwest::Client::builder()
         .tls_certs_only([reqwest::Certificate::from_pem(s.pem.as_bytes()).expect("pem")])
-        .resolve("localhost", s.addr)
+        .resolve("localhost", addr)
         .no_proxy()
         .build()
         .expect("a client");
     let answer = client
-        .post(format!("https://localhost:{}/vcons", s.addr.port()))
+        .post(format!("https://localhost:{}/vcons", addr.port()))
         .bearer_auth(token)
         .header("content-type", "application/vcon")
         .body(r#"{"uuid": "01a07da8-c2bb-83e5-b9a2-279e0d16bc46", "created_at": "2026-10-23T12:00:00Z", "parties": []}"#)
@@ -211,7 +243,7 @@ async fn every_writer_under(umask: &'static str) {
     ]);
     write_config(
         &s.config,
-        s.addr,
+        ANY_PORT.parse().expect("an address"),
         &s.data,
         &new_master,
         &s.dir.path().join("cert.pem"),
@@ -250,4 +282,29 @@ async fn modes_do_not_follow_a_group_writable_umask() {
 #[tokio::test(flavor = "multi_thread")]
 async fn modes_do_not_follow_the_usual_umask() {
     every_writer_under("0022").await;
+}
+
+/// A server that cannot bind its address is never taken for ready, even
+/// when another process listens on that address: the test must not talk to
+/// whatever holds the port.
+#[test]
+fn a_server_that_cannot_bind_is_never_taken_for_ready() {
+    let s = setup("0022");
+    let holder = TcpListener::bind("127.0.0.1:0").expect("a port held by the test");
+    let held = holder.local_addr().expect("addr");
+    let config = s.dir.path().join("held.toml");
+    write_config(
+        &config,
+        held,
+        &s.data,
+        &s.dir.path().join("master.key"),
+        &s.dir.path().join("cert.pem"),
+        &s.dir.path().join("key.pem"),
+    );
+    let started = start(&s, &config);
+    assert!(
+        started.is_err(),
+        "a server that could not bind {held} is not ready; the test would talk to the holder"
+    );
+    drop(holder);
 }
