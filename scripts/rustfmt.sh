@@ -21,7 +21,7 @@ case "${1:-}" in
     echo "$toolchain"
     exit 0 ;;
   install)
-    exec rustup toolchain install "$toolchain" --profile minimal --component rustfmt ;;
+    exec "$root/scripts/retry.sh" rustup toolchain install "$toolchain" --profile minimal --component rustfmt ;;
   "" | --check) ;;
   *)
     echo "usage: scripts/rustfmt.sh [--check | toolchain | install]" >&2
