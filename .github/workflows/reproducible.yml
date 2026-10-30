@@ -50,7 +50,10 @@ jobs:
       image: almalinux:9@sha256:1dc2f882fd8c5c1eb4747953cf8516e0f36d4d4aeba6a17f97e7b12d495e8547
     steps:
       - name: Install git
-        run: dnf install -y git-core
+        # No repository script exists before the checkout, so the retry is
+        # inline; it cleans dnf's metadata between tries, since an empty
+        # repomd.xml from a mirror is a parse error dnf does not retry.
+        run: for i in 1 2 3 4 5; do dnf install -y git-core && break; [ "$i" = 5 ] && exit 1; dnf clean metadata; sleep $((i * 10)); done
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false

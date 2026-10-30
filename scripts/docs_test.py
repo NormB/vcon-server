@@ -415,9 +415,52 @@ def lint_page(blocks: list[Block], tag_sets: list[frozenset], host: bool = False
     return problems
 
 
+def home_install_problems(front: str, install: list[Block]) -> list[str]:
+    """The home page's install steps that docs/install.md does not show.
+
+    `front` is the home page's TOML front matter. Each step's code must be a
+    run of whole lines in one block of the install page, which CI runs, so the
+    home page cannot drift from it.
+    """
+    import tomllib
+
+    steps = tomllib.loads(front).get("extra", {}).get("install", [])
+    blocks = [b.code.splitlines() for b in install if b.kind == "sh"]
+    problems = []
+    for step in steps:
+        lines = [l for l in step.get("code", "").splitlines() if l.strip()]
+        if not lines:
+            continue
+        found = any(
+            block[i : i + len(lines)] == lines
+            for block in blocks
+            for i in range(len(block) - len(lines) + 1)
+        )
+        if not found:
+            problems.append(
+                f'_index.md: the install step "{step.get("title", "")}" is not a run of lines '
+                "in any block of docs/install.md"
+            )
+    return problems
+
+
+def _front_matter(path: str) -> str:
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    parts = text.split("+++\n")
+    return parts[1] if len(parts) > 2 else ""
+
+
 def lint() -> list[str]:
-    """Every rule, over every page a scenario runs."""
+    """Every rule, over every page a scenario runs, and the home page's
+    install steps."""
     problems: list[str] = []
+    try:
+        problems += home_install_problems(
+            _front_matter(os.path.join(ROOT, "website", "content", "_index.md")), page_blocks("install.md")
+        )
+    except (OSError, PageError) as e:
+        problems.append(str(e))
     pages: dict[str, list] = {}
     for s in SCENARIOS:
         for p in s.pages:

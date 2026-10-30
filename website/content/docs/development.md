@@ -313,8 +313,9 @@ python3 -I scripts/docs_test.py run foreground --binary target/debug/vcon-server
 ```
 
 It needs Docker. `lint` fails on a block that no scenario runs, on a request
-to the server with no output shown after it, and on a marker it does not
-know. A run prints one line per block, and for a failure, the block, what the
+to the server with no output shown after it, on a marker it does not know,
+and on an install step on the home page whose code is not a run of lines in
+a block of the install page. A run prints one line per block, and for a failure, the block, what the
 page says it prints, and what it printed.
 
 ## Continuous integration

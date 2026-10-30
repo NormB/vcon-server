@@ -58,7 +58,7 @@ these files:
 
 - `vcon-server-<version>-x86_64-unknown-linux-gnu.tar.gz` and
   `vcon-server-<version>-aarch64-unknown-linux-gnu.tar.gz`: the server, its
-  `README.md` and the two licence files;
+  `README.md` and the two license files;
 - `vcon-server-<version>.cdx.json`: a CycloneDX SBOM listing every crate
   built into the server;
 - `SHA256SUMS.txt`: the SHA-256 of each file.

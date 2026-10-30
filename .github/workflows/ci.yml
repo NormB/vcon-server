@@ -30,7 +30,7 @@ jobs:
           persist-credentials: false
       - name: Install the pinned toolchain
         # rust-toolchain.toml names the version and its components.
-        run: rustup toolchain install
+        run: scripts/retry.sh rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Format
         # rustfmt.toml's options need the nightly rustfmt the script pins;
@@ -93,8 +93,8 @@ jobs:
       - name: Install the pinned toolchain and cargo-llvm-cov
         run: |
           set -euo pipefail
-          rustup toolchain install
-          rustup component add llvm-tools
+          scripts/retry.sh rustup toolchain install
+          scripts/retry.sh rustup component add llvm-tools
           curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o llvm-cov.tar.gz \
             "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v${LLVM_COV_VERSION}/cargo-llvm-cov-x86_64-unknown-linux-gnu.tar.gz"
           echo "${LLVM_COV_SHA256}  llvm-cov.tar.gz" | sha256sum -c -
@@ -190,7 +190,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install the pinned toolchain
-        run: rustup toolchain install
+        run: scripts/retry.sh rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -214,7 +214,7 @@ jobs:
             exit 1
           fi
           (cd clients/go && go vet ./...)
-          (cd clients/typescript && npm ci --ignore-scripts --no-audit --no-fund && npx --no-install tsc --noEmit)
+          (cd clients/typescript && ../../scripts/retry.sh npm ci --ignore-scripts --no-audit --no-fund && npx --no-install tsc --noEmit)
           python3 -m py_compile clients/python/vcon_client.py
       - name: Build the server and the Rust client
         run: cargo build --locked -p vcon-server -p vcon-client
@@ -251,6 +251,15 @@ jobs:
           set -euo pipefail
           python3 -I scripts/test_check_test_names.py
           python3 -I scripts/check_test_names.py
+      - name: The rule for AI attribution and personal data
+        run: python3 -I scripts/test_scan_forbidden.py
+      # A toolchain or tool download retries, so a runner's dropped
+      # connection does not fail a job (scripts/check_workflow_downloads.py).
+      - name: Every download retries
+        run: |
+          set -euo pipefail
+          scripts/test-retry.sh
+          python3 -I scripts/test_workflow_downloads.py
       - name: Paths the Best Practices answers link to
         run: python3 -I scripts/test_check_repo_links.py
       - name: The rule for the home page's numbers
@@ -276,7 +285,7 @@ jobs:
         # crate, rustfmt from the nightly scripts/rustfmt.sh pins.
         run: |
           set -euo pipefail
-          rustup toolchain install
+          scripts/retry.sh rustup toolchain install
           scripts/rustfmt.sh install
       # Each hook in a throwaway repository: every forbidden item staged or
       # written in a message is refused, clean changes pass; the push hook
@@ -340,6 +349,38 @@ jobs:
           [ "${#commits[@]}" -gt 0 ] || { echo "::error::no commits in ${range[*]}"; exit 1; }
           scripts/scan-commit-messages.sh "${commits[@]}"
 
+  deny:
+    name: cargo-deny (licences, bans, sources)
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    env:
+      CARGO_DENY_VERSION: '0.20.2'
+      # From the release's own .sha256 file.
+      CARGO_DENY_SHA256: '9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain and cargo-deny
+        run: |
+          set -euo pipefail
+          scripts/retry.sh rustup toolchain install
+          name="cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl"
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o cargo-deny.tar.gz \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/${name}.tar.gz"
+          echo "${CARGO_DENY_SHA256}  cargo-deny.tar.gz" | sha256sum -c -
+          tar xzf cargo-deny.tar.gz --strip-components=1 "${name}/cargo-deny"
+          sudo install -m 0755 cargo-deny /usr/local/bin/cargo-deny
+          rm -f cargo-deny cargo-deny.tar.gz
+          cargo-deny --version
+      # deny.toml's rules, on the workspace and on the fuzz package, which
+      # has its own Cargo.lock. Advisories are osv-scanner.yml's job.
+      - name: Licences, bans and sources
+        run: |
+          set -euo pipefail
+          cargo-deny check licenses bans sources
+          cargo-deny --manifest-path fuzz/Cargo.toml --config deny.toml check licenses bans sources
+
   site:
     name: website
     timeout-minutes: 25
@@ -382,8 +423,8 @@ jobs:
         working-directory: site-tests
         run: |
           set -euo pipefail
-          npm ci
-          npx playwright install --with-deps --only-shell chromium
+          ../scripts/retry.sh npm ci
+          ../scripts/retry.sh npx playwright install --with-deps --only-shell chromium
       - name: The site in a browser (WCAG 2.2 AA, layout, no console error)
         run: scripts/test-site.sh
 
@@ -425,7 +466,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install the pinned toolchain
-        run: rustup toolchain install
+        run: scripts/retry.sh rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Install Node
         run: |
@@ -444,8 +485,8 @@ jobs:
         run: |
           set -euo pipefail
           node --version
-          npm ci
-          npx playwright install --with-deps --only-shell chromium
+          ../scripts/retry.sh npm ci
+          ../scripts/retry.sh npx playwright install --with-deps --only-shell chromium
       - name: Browser tests
         # The server locks all of its memory, as in the tests job.
         run: |
@@ -474,7 +515,7 @@ jobs:
         # list to keep in step.
         run: echo "scenarios=$(python3 -I scripts/docs_test.py list)" >> "$GITHUB_OUTPUT"
       - name: Install the pinned toolchain
-        run: rustup toolchain install
+        run: scripts/retry.sh rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build the server
         run: cargo build --locked -p vcon-server

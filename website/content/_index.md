@@ -5,7 +5,7 @@ description = "vcon-server stores vCons, the IETF format for conversation record
 tagline = "encrypted, multi-tenant, audited storage for vCons"
 headline = "Encrypted, multi-tenant, audited storage for vCons"
 # The target of the hero's primary button.
-install_link = "@/docs/getting-started.md"
+install_link = "@/docs/install.md"
 
 # The texts around "A first look", inline markdown.
 first_look_intro = "Send a vCon with a key that holds the `write` scope, then read it back."
@@ -13,8 +13,8 @@ first_look_outro = "Sending the same bytes again answers `200` with the same ver
 # The Install and How-to sections: their text is the docs' (see the how-to
 # pages); the layout is the template's. Plain text, not markdown. Every plain
 # key sits above the first [[...]] table, or TOML puts it inside that table.
-install_intro = "With Rust 1.99 or later, from crates.io. Getting started also covers the signed release archives and a build from source."
-howto_intro = "Where to start, by what you are doing."
+install_intro = "vcon-server is one binary for Linux on x86_64 or aarch64. These are the release path's steps on Debian or Ubuntu. The install page also covers Fedora, cargo install, a build from source and a container, and what to do when a step fails. CI runs every one of these commands on each change."
+howto_intro = "Each guide gives every command and what it prints, and CI runs each against a live server."
 
 # "What it guarantees": one card each. `body` is inline markdown; `icon` names
 # a drawing in templates/components.html.
@@ -80,27 +80,84 @@ curl --fail-with-body https://vcon.example.com/vcons/01a07da8-c2bb-83e5-b9a2-279
   -H "Authorization: Bearer $VCON_KEY""""
 
 [[extra.install]]
-title = "Install from crates.io"
+title = "Install what a minimal system lacks"
 code = """
-cargo install vcon-server --locked
+apt-get update -qq
+apt-get install -y -qq sudo curl ca-certificates tar gzip >/dev/null"""
+note = "As root, on Debian or Ubuntu. A minimal image has no sudo, curl or CA certificates."
+
+[[extra.install]]
+title = "Download the release and check it"
+code = """
+VERSION=0.2.0
+ARCHIVE=vcon-server-$VERSION-$(uname -m)-unknown-linux-gnu.tar.gz
+curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$VERSION/$ARCHIVE
+curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$VERSION/SHA256SUMS.txt
+sha256sum -c SHA256SUMS.txt --ignore-missing"""
+note = "sha256sum prints the archive's name and OK. The 0.2.0 binaries need glibc 2.38 or later, such as Debian 13, Ubuntu 24.04 or Fedora 44; on an older system, install with cargo or build from source."
+
+[[extra.install]]
+title = "Unpack it"
+code = """
+tar -xzf "$ARCHIVE"
+ls "${ARCHIVE%.tar.gz}""""
+note = "The archive holds vcon-server, its README and the two license files."
+
+[[extra.install]]
+title = "Install it"
+code = """
+sudo install -m 0755 "${ARCHIVE%.tar.gz}/vcon-server" /usr/local/bin/vcon-server
 vcon-server --version"""
-note = "The build compiles SQLCipher, OpenSSL and AWS-LC, so the host needs a C compiler, make and perl."
+note = "It prints vcon-server and its version. The install page also checks the archive's build provenance with gh attestation verify."
 
-
-[[extra.howto]]
-title = "Running a server"
-link = "@/docs/getting-started.md"
-summary = "Getting started, then configuration and operations."
+[[extra.install]]
+title = "Set it up and start it"
+note = "Getting started makes the service account, the master key, a certificate, the configuration and the first keys, then starts the server under systemd or in the foreground."
 
 [[extra.howto]]
-title = "Sending vCons from a producer"
-link = "@/docs/producers.md"
-summary = "Producers and the HTTP API."
+title = "Store your first vCon"
+link = "@/docs/first-vcon.md"
+summary = "Store it, store it again, see a conflict refused, read it back, list it and delete it, with a key for each scope."
 
 [[extra.howto]]
-title = "Working on the code"
-link = "@/docs/development.md"
-summary = "Building, testing, fuzzing and contributing."
+title = "Use keys and scopes"
+link = "@/docs/keys-and-scopes.md"
+summary = "A key for each scope, what each one may do, and what each one is refused."
+
+[[extra.howto]]
+title = "Add a second tenant"
+link = "@/docs/second-tenant.md"
+summary = "A tenant made over the admin API, its key, and its data kept apart from the first."
+
+[[extra.howto]]
+title = "Revoke and rotate keys"
+link = "@/docs/rotate-keys.md"
+summary = "Revoke an API key, replace one without a gap, and rotate the tenant key and the master key."
+
+[[extra.howto]]
+title = "Back up and restore"
+link = "@/docs/backup-and-restore.md"
+summary = "The master key and the data directory, a restore, and what the restore brings back."
+
+[[extra.howto]]
+title = "Run it in a container"
+link = "@/docs/container.md"
+summary = "An image built from a checked release, named volumes, and the memory-lock limit a container needs."
+
+[[extra.howto]]
+title = "Upgrade"
+link = "@/docs/upgrading.md"
+summary = "A new binary over a running server, the data checked with it, and the way back."
+
+[[extra.howto]]
+title = "Connect an AI agent over MCP"
+link = "@/docs/connect-mcp.md"
+summary = "A key for the agent, the handshake and the tool list over HTTPS and through vcon-server mcp."
+
+[[extra.howto]]
+title = "All the guides"
+link = "@/docs/how-to.md"
+summary = "Every how-to guide, with the install and getting-started pages."
 +++
 
 > **Status: 0.2.0 released, not yet for production.** The store, the HTTP API
