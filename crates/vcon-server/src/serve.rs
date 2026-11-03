@@ -377,6 +377,7 @@ mod tests {
             mcp: crate::mcp::Limits {
                 calls_per_second: 3,
                 concurrent: 4,
+                response_bytes: 5,
             },
         };
         let app = app_from(&config, tenants.clone());

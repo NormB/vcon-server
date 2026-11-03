@@ -59,12 +59,6 @@ pub mod datadir;
 pub mod envelope;
 pub mod fs;
 pub mod ids;
-#[expect(
-    missing_docs,
-    clippy::missing_errors_doc,
-    clippy::must_use_candidate,
-    reason = "the Rust style rules, met module by module"
-)]
 pub mod mcp;
 pub mod query;
 pub mod retention;

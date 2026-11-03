@@ -19,6 +19,14 @@ authorised readers.
 documentation, including what is built so far, is at
 [vcon-server.com](https://vcon-server.com/docs/).
 
+## For AI agents
+
+vcon-server serves MCP at `/mcp` on its TLS listener, and through
+`vcon-server mcp` for an agent that starts its servers as commands. Each tool
+does the work of one HTTP route, with the same API keys, scopes and audit
+records. The [MCP page](https://vcon-server.com/docs/mcp/) lists every tool
+with its parameters and an example.
+
 ## Building
 
 The Rust toolchain is pinned in `rust-toolchain.toml`.

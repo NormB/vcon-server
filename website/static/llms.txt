@@ -13,9 +13,10 @@
 - [Audit logs](https://vcon-server.com/docs/audit-logs/): what is recorded and what never is
 - [Security](https://vcon-server.com/docs/security/): key hierarchy and memory protection
 - [HTTP API](https://vcon-server.com/docs/http-api/): every route with its scope and answers
+- [MCP](https://vcon-server.com/docs/mcp/): the MCP server for AI agents, over HTTPS or stdio, and every tool with its parameters and an example
 - [Producers](https://vcon-server.com/docs/producers/): sending vCons and handling each answer
 - [Operations](https://vcon-server.com/docs/operations/): data directory, locks, sweep, logs, backups
-- [MCP](https://vcon-server.com/docs/mcp/): connecting an AI agent over HTTPS or the stdio command; no tools yet
+- [MCP](https://vcon-server.com/docs/mcp/): connecting an AI agent over HTTPS or the stdio command, and every tool with its parameters and an example
 - [Command line](https://vcon-server.com/docs/command-line/): tenant, key and audit commands, output and exit codes
 - [The vcon library](https://vcon-server.com/docs/library/): reading and checking a vCon in Rust with the vcon crate
 - [Development](https://vcon-server.com/docs/development/): layout, tests and gates

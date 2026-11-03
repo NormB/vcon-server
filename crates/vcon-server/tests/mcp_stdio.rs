@@ -282,7 +282,17 @@ fn the_handshake_over_stdio_comes_from_the_server() {
     .expect("write");
     let answer = next(&out, &mut running);
     assert_eq!(answer["id"], 2, "{answer}");
-    assert_eq!(answer["result"]["tools"], json!([]), "{answer}");
+    let names: Vec<&str> = answer["result"]["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .map(|t| t["name"].as_str().expect("a name"))
+        .collect();
+    assert_eq!(
+        names,
+        ["vcon_get", "vcon_list"],
+        "the key's tools, from the server: {answer}"
+    );
 
     // A tool call goes to the server: its refusal comes back as it sent it.
     writeln!(

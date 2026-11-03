@@ -212,6 +212,23 @@ async fn create(State(app): State<Arc<App>>, headers: HeaderMap, body: Body) -> 
     }
 }
 
+/// What Format makes of `body`, sent as `content_type`, within the
+/// configured inflation limit and supported extensions; the HTTP routes
+/// and the MCP tools read every vCon through this. Records nothing.
+pub(crate) async fn read_vcon(
+    app: &Arc<App>,
+    body: Bytes,
+    content_type: Option<String>,
+) -> Result<Inspection, Problem> {
+    let worker = app.clone();
+    blocking(move || {
+        let limits = vcon::read::Limits::new(worker.limits.inflated);
+        vcon::read::inspect(&body, content_type.as_deref(), &limits, &worker.supported)
+            .map_err(|r| rejected(&r))
+    })
+    .await
+}
+
 /// Reads an admitted body as a vCon: its media type must be one a vCon is
 /// sent as (415), and Format must take it (422, or 413 when it inflates
 /// too far). A refusal here is recorded here, since Store never sees it.
@@ -225,13 +242,7 @@ async fn inspect(
         .get(CONTENT_TYPE)
         .map(|v| v.to_str().unwrap_or("\u{0}").to_owned());
     let found = if content_type.as_deref().is_none_or(is_vcon_media_type) {
-        let (worker, body) = (app.clone(), admitted.body.clone());
-        blocking(move || {
-            let limits = vcon::read::Limits::new(worker.limits.inflated);
-            vcon::read::inspect(&body, content_type.as_deref(), &limits, &worker.supported)
-                .map_err(|r| rejected(&r))
-        })
-        .await
+        read_vcon(app, admitted.body.clone(), content_type).await
     } else {
         Err(Problem::UnsupportedMediaType)
     };
@@ -573,35 +584,41 @@ async fn legal_versions(
         };
     let (store, key) = (admitted.store.clone(), admitted.caller.key);
     match blocking(move || store.legal_versions(&StoreCaller { key }, uuid)).await {
-        Ok(versions) => {
-            let time = |at: time::OffsetDateTime| at.format(&Rfc3339).ok();
-            let listed: Option<Vec<serde_json::Value>> = versions
-                .iter()
-                .map(|v| {
-                    let hidden_at = match v.hidden_at {
-                        Some(at) => Some(time(at)?),
-                        None => None,
-                    };
-                    Some(serde_json::json!({
-                        "version": v.version.to_string(),
-                        "stored_at": time(v.stored_at)?,
-                        "hidden_at": hidden_at,
-                        "current": v.current,
-                    }))
-                })
-                .collect();
-            match listed {
-                Some(listed) => (
-                    StatusCode::OK,
-                    [(CONTENT_TYPE, "application/json")],
-                    serde_json::Value::Array(listed).to_string(),
-                )
-                    .into_response(),
-                None => failed(StoreError::Damaged).into_response(),
-            }
-        }
+        Ok(versions) => match versions_json(&versions) {
+            Some(listed) => (
+                StatusCode::OK,
+                [(CONTENT_TYPE, "application/json")],
+                serde_json::Value::Array(listed).to_string(),
+            )
+                .into_response(),
+            None => failed(StoreError::Damaged).into_response(),
+        },
         Err(error) => failed(error).into_response(),
     }
+}
+
+/// Kept versions as the legal routes and tools render them: each one's id,
+/// when it was stored and hidden (RFC 3339, UTC; null while current), and
+/// whether it is current. None when a time cannot be written.
+pub(crate) fn versions_json(
+    versions: &[crate::store::VersionInfo],
+) -> Option<Vec<serde_json::Value>> {
+    let time = |at: time::OffsetDateTime| at.format(&Rfc3339).ok();
+    versions
+        .iter()
+        .map(|v| {
+            let hidden_at = match v.hidden_at {
+                Some(at) => Some(time(at)?),
+                None => None,
+            };
+            Some(serde_json::json!({
+                "version": v.version.to_string(),
+                "stored_at": time(v.stored_at)?,
+                "hidden_at": hidden_at,
+                "current": v.current,
+            }))
+        })
+        .collect()
 }
 
 /// `POST /legal/vcons/{uuid}/restore`: makes a deleted vCon live again and

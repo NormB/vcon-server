@@ -152,6 +152,11 @@ fn mcp_limits(raw: &RawMcp) -> Result<crate::mcp::Limits, ConfigError> {
             None => default.concurrent,
             Some(value) => narrow("mcp.concurrent", value)?,
         },
+        response_bytes: match raw.response_bytes {
+            None => default.response_bytes,
+            Some(value) => usize::try_from(positive("mcp.response_bytes", value)?)
+                .map_err(|_| ConfigError("mcp.response_bytes is too large".to_owned()))?,
+        },
     })
 }
 
@@ -194,6 +199,7 @@ struct Raw {
 struct RawMcp {
     calls_per_second: Option<u64>,
     concurrent: Option<u64>,
+    response_bytes: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -245,6 +251,7 @@ read = 30
 [mcp]
 calls_per_second = 20
 concurrent = 8
+response_bytes = 262144
 "#;
 
     #[test]
@@ -267,6 +274,7 @@ concurrent = 8
                 mcp: crate::mcp::Limits {
                     calls_per_second: 20,
                     concurrent: 8,
+                    response_bytes: 262_144,
                 },
             }),
             "every key the file writes is read into its field"
@@ -405,6 +413,16 @@ key = "/etc/vcon-server/key.pem"
                     ..base.clone()
                 },
             ),
+            (
+                "response_bytes = 262144\n",
+                Config {
+                    mcp: crate::mcp::Limits {
+                        response_bytes: 1 << 20,
+                        ..base.mcp
+                    },
+                    ..base.clone()
+                },
+            ),
         ] {
             assert!(FULL.contains(line), "{line}");
             assert_eq!(parse(&FULL.replace(line, "")), Ok(default), "{line}");
@@ -443,6 +461,10 @@ key = "/etc/vcon-server/key.pem"
         assert_ne!(
             full.mcp.concurrent, least.mcp.concurrent,
             "FULL writes mcp.concurrent as a value other than its default"
+        );
+        assert_ne!(
+            full.mcp.response_bytes, least.mcp.response_bytes,
+            "FULL writes mcp.response_bytes as a value other than its default"
         );
     }
 
@@ -505,6 +527,11 @@ key = "/etc/vcon-server/key.pem"
             ),
             ("concurrent = 8", "concurrent = 0", "mcp.concurrent"),
             (
+                "response_bytes = 262144",
+                "response_bytes = 0",
+                "mcp.response_bytes",
+            ),
+            (
                 "concurrent = 8",
                 "concurrent = 4294967296",
                 "mcp.concurrent",
@@ -556,7 +583,7 @@ key = "/etc/vcon-server/key.pem"
             let defaults = parse(LEAST).expect("least");
             let mut all = Vec::new();
             keys(&FULL.parse::<toml::Table>().expect("toml"), "", &mut all);
-            assert_eq!(all.len(), 14, "{all:?}");
+            assert_eq!(all.len(), 15, "{all:?}");
             for key in all {
                 let default = match key.as_str() {
                     "listen" | "data_dir" | "master_key" | "tls.cert" | "tls.key" => {
@@ -570,6 +597,7 @@ key = "/etc/vcon-server/key.pem"
                     "limits.timeouts.read" => format!("`{}`", defaults.read_timeout.as_secs()),
                     "mcp.calls_per_second" => format!("`{}`", defaults.mcp.calls_per_second),
                     "mcp.concurrent" => format!("`{}`", defaults.mcp.concurrent),
+                    "mcp.response_bytes" => format!("`{}`", defaults.mcp.response_bytes),
                     "supported_critical" => {
                         assert!(
                             defaults.supported_critical.is_empty(),

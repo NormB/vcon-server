@@ -7,7 +7,9 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use rmcp::model::{CallToolRequestParams, CallToolResponse, ServerConfig};
+use rmcp::model::{
+    CallToolRequestParams, CallToolResponse, ListToolsResult, PaginatedRequestParams, ServerConfig,
+};
 use rmcp::service::{
     ClientInitializeError, Peer, RequestContext, RoleClient, RoleServer, RunningService,
     ServiceError,
@@ -41,6 +43,11 @@ struct Raw {
 }
 
 /// Reads the client file at `path`.
+///
+/// # Errors
+///
+/// [`ConfigError`] when the file cannot be read or does not parse as a
+/// client file.
 pub fn client_config(path: &Path) -> Result<ClientConfig, ConfigError> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| ConfigError(format!("{}: {e}", path.display())))?;
@@ -49,6 +56,11 @@ pub fn client_config(path: &Path) -> Result<ClientConfig, ConfigError> {
 
 /// Reads a client file from its TOML text. The URL must be `https`: the
 /// server speaks TLS only.
+///
+/// # Errors
+///
+/// [`ConfigError`] when the text is not TOML, has a key a client file
+/// does not take, or names a URL that is not `https`.
 pub fn parse_client(text: &str) -> Result<ClientConfig, ConfigError> {
     let raw: Raw = toml::from_str(text).map_err(|e| ConfigError(e.to_string()))?;
     if !raw.url.starts_with("https://") {
@@ -157,6 +169,12 @@ fn identity(peer: &rmcp::model::ServerPeerInfo) -> Result<ServerConfig, StdioErr
 }
 
 /// Runs the command until stdin ends.
+///
+/// # Errors
+///
+/// [`StdioError`] when the key file or the CA cannot be read, when the
+/// server cannot be reached or refuses the key, or when stdin or stdout
+/// fails.
 pub async fn stdio(config: &ClientConfig) -> Result<(), StdioError> {
     let token = token(&config.key_file)?;
     let client = https_client(config.ca.as_deref())?;
@@ -194,7 +212,7 @@ pub async fn stdio(config: &ClientConfig) -> Result<(), StdioError> {
 }
 
 /// The stdio side: answers the handshake as the server answered it, and
-/// sends each tool call to the server.
+/// sends each tool listing and tool call to the server.
 #[derive(Clone)]
 struct Forward {
     upstream: Peer<RoleClient>,
@@ -213,6 +231,14 @@ fn forwarded(error: ServiceError) -> ErrorData {
 impl ServerHandler for Forward {
     fn get_info(&self) -> ServerConfig {
         self.info.clone()
+    }
+
+    async fn list_tools(
+        &self,
+        request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, ErrorData> {
+        self.upstream.list_tools(request).await.map_err(forwarded)
     }
 
     async fn call_tool(

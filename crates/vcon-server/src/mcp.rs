@@ -4,8 +4,14 @@
 //! JSON answers, behind the same authentication as every route. The stdio
 //! command in [`stdio`] forwards to it, so both transports pass one gate.
 
+mod admin;
+mod audit;
+pub mod budget;
+pub mod fence;
 mod gate;
+mod legal;
 pub mod stdio;
+mod vcons;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -50,6 +56,8 @@ pub struct Limits {
     pub calls_per_second: u32,
     /// Tool calls in flight on the server.
     pub concurrent: u32,
+    /// The largest result, in bytes.
+    pub response_bytes: usize,
 }
 
 impl Limits {
@@ -57,19 +65,20 @@ impl Limits {
     pub const DEFAULT: Limits = Limits {
         calls_per_second: 100,
         concurrent: 100,
+        response_bytes: 1 << 20,
     };
 }
 
 /// The hints a tool states besides `openWorldHint: false`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Hints {
-    pub read_only: bool,
-    pub destructive: bool,
-    pub idempotent: bool,
+pub(crate) struct Hints {
+    pub(crate) read_only: bool,
+    pub(crate) destructive: bool,
+    pub(crate) idempotent: bool,
 }
 
 impl Hints {
-    pub const NONE: Hints = Hints {
+    pub(crate) const NONE: Hints = Hints {
         read_only: false,
         destructive: false,
         idempotent: false,
@@ -77,7 +86,7 @@ impl Hints {
 }
 
 /// A tool named `name` taking `A` as its arguments, with `hints`.
-pub fn tool<A: rmcp::schemars::JsonSchema + 'static>(
+pub(crate) fn tool<A: rmcp::schemars::JsonSchema + 'static>(
     name: &'static str,
     description: &'static str,
     hints: Hints,
@@ -94,15 +103,24 @@ pub fn tool<A: rmcp::schemars::JsonSchema + 'static>(
 /// Why a tool did not answer with a result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use]
-pub enum Outcome {
-    /// Its arguments do not fit its type.
+pub(crate) enum Outcome {
+    /// Its arguments do not fit its type, or a value in them names nothing
+    /// the tool can read; the gate records invalid-arguments.
     Arguments,
+    /// The tool refused before the layer it calls saw the call; the gate
+    /// records the problem, and the result carries it.
+    Refused(Problem),
+    /// The layer the tool calls refused or failed, and recorded it; the
+    /// result carries the problem.
+    Answered(Problem),
 }
 
 impl std::fmt::Display for Outcome {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Outcome::Arguments => f.write_str("the arguments do not fit the tool"),
+            Outcome::Refused(problem) => write!(f, "refused: {}", problem.name().1),
+            Outcome::Answered(problem) => write!(f, "answered: {}", problem.name().1),
         }
     }
 }
@@ -110,35 +128,133 @@ impl std::fmt::Display for Outcome {
 impl std::error::Error for Outcome {}
 
 /// A tool's running call.
-pub type Running<'a> = Pin<Box<dyn Future<Output = Result<Value, Outcome>> + Send + 'a>>;
+pub(crate) type Running<'a> = Pin<Box<dyn Future<Output = Result<Value, Outcome>> + Send + 'a>>;
 
 /// What a tool does with its caller and arguments.
-pub type Run = for<'a> fn(&'a Server, Caller, JsonObject) -> Running<'a>;
+pub(crate) type Run = for<'a> fn(&'a Server, Caller, JsonObject) -> Running<'a>;
 
 /// One registered tool: what clients are shown, the action it is recorded
 /// under, and what it runs.
 #[derive(Debug, Clone)]
-pub struct Spec {
+pub(crate) struct Spec {
     /// The tool as `tools/list` shows it.
-    pub tool: Tool,
+    pub(crate) tool: Tool,
     /// The action its calls are recorded under.
-    pub action: Action,
+    pub(crate) action: Action,
     /// What a call runs.
-    pub run: Run,
+    pub(crate) run: Run,
 }
 
 /// A tool's arguments as its type, or the refusal when they do not fit.
-pub fn arguments<A: DeserializeOwned>(arguments: JsonObject) -> Result<A, Outcome> {
+pub(crate) fn arguments<A: DeserializeOwned>(arguments: JsonObject) -> Result<A, Outcome> {
     serde_json::from_value(Value::Object(arguments)).map_err(|_| Outcome::Arguments)
 }
 
-/// The MCP server's routes: `/mcp`, behind authentication and counting.
+/// The MCP server's routes: `/mcp`, behind authentication and counting,
+/// with every tool.
 pub fn router(app: Arc<App>) -> Router {
-    router_with(app, Vec::new())
+    router_with(app, tools())
+}
+
+/// Every tool, by area.
+pub(crate) fn tools() -> Vec<Spec> {
+    let mut all = vcons::specs();
+    all.extend(legal::specs());
+    all.extend(audit::specs());
+    all.extend(admin::specs());
+    all
+}
+
+/// The caller's Store and its caller for Store, for a tool needing `scope`;
+/// a tenant being removed is unavailable.
+pub(crate) struct Opened {
+    pub(crate) store: Arc<crate::store::Store>,
+    pub(crate) who: crate::store::Caller,
+}
+
+impl std::fmt::Debug for Opened {
+    // The store holds the tenant's keys; only the caller is shown.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Opened")
+            .field("who", &self.who)
+            .finish_non_exhaustive()
+    }
+}
+
+pub(crate) async fn opened(
+    server: &Server,
+    caller: Caller,
+    scope: access::Scope,
+) -> Result<Opened, Outcome> {
+    let tenant =
+        access::tenant_for(&caller, scope).map_err(|_| Outcome::Refused(Problem::Forbidden))?;
+    let tenants = server.app.tenants.clone();
+    let store = api::blocking(move || tenants.store(tenant))
+        .await
+        .map_err(|_| Outcome::Refused(Problem::Unavailable))?;
+    Ok(Opened {
+        store,
+        who: crate::store::Caller { key: caller.key },
+    })
+}
+
+/// A stored version's JSON text, inflated within `limit` when it was
+/// stored gzipped, with the characters the fence never holds raw escaped.
+pub(crate) fn vcon_text(stored: &crate::store::Stored, limit: u64) -> Result<String, Outcome> {
+    use std::io::Read;
+    let damaged = || Outcome::Answered(Problem::Store(crate::store::StoreError::Damaged));
+    let text = if stored.gzip {
+        let mut inflated = Vec::new();
+        flate2::read::MultiGzDecoder::new(stored.body.as_slice())
+            .take(limit.saturating_add(1))
+            .read_to_end(&mut inflated)
+            .map_err(|_| damaged())?;
+        if inflated.len() as u64 > limit {
+            return Err(Outcome::Answered(Problem::TooLarge));
+        }
+        inflated
+    } else {
+        stored.body.clone()
+    };
+    let text = String::from_utf8(text).map_err(|_| damaged())?;
+    Ok(fence::escape_json(&text))
+}
+
+/// A result holding a piece of `text`: `head`'s members, the piece fenced,
+/// whether more follows and where, and the provenance sentence; the piece
+/// from `cursor`, a byte offset an earlier page gave, as long as `room`
+/// allows.
+pub(crate) fn text_result(
+    head: Value,
+    text: &str,
+    cursor: Option<&str>,
+    room: usize,
+) -> Result<Value, Outcome> {
+    let start = match cursor {
+        None => 0,
+        Some(cursor) => cursor
+            .parse::<usize>()
+            .ok()
+            .filter(|&at| at <= text.len() && text.is_char_boundary(at))
+            .ok_or(Outcome::Arguments)?,
+    };
+    let build = |piece: &str, next: Option<usize>| {
+        let mut result = head.clone();
+        result["vcon"] = fence::fence(piece).into();
+        result["truncated"] = next.is_some().into();
+        result["next_cursor"] = next.map(|at| at.to_string()).into();
+        result["provenance"] = fence::PROVENANCE.into();
+        result
+    };
+    let (piece, next) = budget::piece(text, start, |piece, more| {
+        // A following page's cursor is at most the text's length.
+        budget::size(&build(piece, more.then_some(text.len()))) <= room
+    });
+    Ok(build(piece, next))
 }
 
 /// The MCP server's routes with the tools in `specs`.
-pub fn router_with(app: Arc<App>, specs: Vec<Spec>) -> Router {
+pub(crate) fn router_with(app: Arc<App>, specs: Vec<Spec>) -> Router {
     let server = Server {
         app: app.clone(),
         specs: Arc::new(specs),
@@ -167,7 +283,7 @@ pub fn router_with(app: Arc<App>, specs: Vec<Spec>) -> Router {
 
 /// The MCP request handler: the tools, and the gate every call passes.
 #[derive(Clone)]
-pub struct Server {
+pub(crate) struct Server {
     pub(crate) app: Arc<App>,
     specs: Arc<Vec<Spec>>,
     gate: Arc<gate::Gate>,
@@ -295,11 +411,33 @@ impl ServerHandler for Server {
         if !allows(&caller, &spec.tool) {
             return Err(self.recorded(caller, action, Problem::Forbidden).await);
         }
-        match (spec.run)(self, caller, request.arguments.unwrap_or_default()).await {
+        // The tool runs in its own task, so a panic in it is answered and
+        // recorded as internal instead of leaving the request unanswered.
+        let (run, server, arguments) = (
+            spec.run,
+            self.clone(),
+            request.arguments.unwrap_or_default(),
+        );
+        let ran = tokio::spawn(async move { (run)(&server, caller, arguments).await }).await;
+        let Ok(ran) = ran else {
+            let failed = Problem::Store(crate::store::StoreError::Io);
+            let entry = refusal(caller, action, failed);
+            let problem = self.app.refuse(caller.tenant, entry, failed).await;
+            return Ok(CallToolResult::structured_error(problem.document()).into());
+        };
+        match ran {
             Ok(value) => Ok(CallToolResult::structured(value).into()),
             Err(Outcome::Arguments) => Err(self
                 .recorded(caller, action, Problem::InvalidArguments)
                 .await),
+            Err(Outcome::Refused(problem)) => {
+                let entry = refusal(caller, action, problem);
+                let problem = self.app.refuse(caller.tenant, entry, problem).await;
+                Ok(CallToolResult::structured_error(problem.document()).into())
+            }
+            Err(Outcome::Answered(problem)) => {
+                Ok(CallToolResult::structured_error(problem.document()).into())
+            }
         }
     }
 }
