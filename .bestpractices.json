@@ -14,7 +14,7 @@
   "license_location_status": "Met",
   "license_location_justification": "https://github.com/NormB/vcon-server/blob/main/DUAL-LICENSE in the repository root states MIT OR Apache-2.0 at the user's option and names the full texts: LICENSE-APACHE and LICENSE-MIT in the repository root, and the same texts named by SPDX identifier in https://github.com/NormB/vcon-server/tree/main/LICENSES (REUSE layout).",
   "documentation_basics_status": "Met",
-  "documentation_basics_justification": "Install, start and use: https://vcon-server.com/docs/getting-started/ . Secure use: https://vcon-server.com/docs/security/ and https://vcon-server.com/docs/operations/ .",
+  "documentation_basics_justification": "https://github.com/NormB/vcon-server/blob/main/docs/README.md indexes the documentation published at https://vcon-server.com/docs/ . Install, start and use: https://vcon-server.com/docs/getting-started/ . Secure use: https://vcon-server.com/docs/security/ and https://vcon-server.com/docs/operations/ .",
   "documentation_interface_status": "Met",
   "documentation_interface_justification": "HTTP API: https://vcon-server.com/docs/http-api/ . Command line: https://vcon-server.com/docs/command-line/ . Configuration file: https://vcon-server.com/docs/configuration/ . Problem documents: https://vcon-server.com/problems/ . OpenAPI 3.1 description: https://github.com/NormB/vcon-server/blob/main/crates/vcon-server/openapi.json",
   "sites_https_status": "Met",
