@@ -61,7 +61,10 @@ these files:
   `README.md` and the two license files;
 - `vcon-server-<version>.cdx.json`: a CycloneDX SBOM listing every crate
   built into the server;
-- `SHA256SUMS.txt`: the SHA-256 of each file.
+- `SHA256SUMS.txt`: the SHA-256 of each file;
+- from the release after 0.2.0, `SHA256SUMS.txt.sigstore.json`, a keyless
+  Sigstore signature over `SHA256SUMS.txt`, and
+  `vcon-server-<version>.intoto.jsonl`, the build provenance as a file.
 
 Every file also carries a signed build provenance attestation. The attestation
 ties the file to the workflow run and the commit that built it. The binary has
@@ -212,6 +215,24 @@ Error: HTTP 404: Not Found (<url of the changed file's attestations>)
 ```sh
 rm changed.tar.gz
 ```
+
+### Check the signed checksums
+
+Releases after 0.2.0 also hold `SHA256SUMS.txt.sigstore.json`. To check that
+`SHA256SUMS.txt` itself came from this repository's release workflow, with
+[cosign](https://docs.sigstore.dev/cosign/system_config/installation/):
+
+<!-- docs-test: skip no published release holds the signature until the release after 0.2.0 -->
+```sh
+curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$VERSION/SHA256SUMS.txt.sigstore.json
+cosign verify-blob SHA256SUMS.txt \
+  --bundle SHA256SUMS.txt.sigstore.json \
+  --certificate-identity-regexp '^https://github\.com/NormB/vcon-server/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+It prints `Verified OK`. [SECURITY.md](https://github.com/NormB/vcon-server/blob/main/SECURITY.md#verifying-a-release)
+also checks the provenance file.
 
 ### When a step fails
 
