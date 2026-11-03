@@ -11,9 +11,10 @@ describes both, and the configuration an agent's client reads. This how-to
 makes a key for an agent and checks each path by hand, with `curl` and with
 `vcon-server mcp`, before an agent is pointed at it.
 
-The server has no MCP tools yet: an agent can connect and complete the
-handshake, and the tool list is empty. The tools are being built (see
-[what is built](@/docs/status.md)).
+The tools the server lists are the ones the key's scopes allow;
+[MCP](@/docs/mcp.md) gives every tool and the scope it needs. The key this
+page makes holds only `read`, so its tool list has the two tools that read
+vCons.
 
 CI runs every command on this page against a live server, after
 [getting started](@/docs/getting-started.md), and checks each answer.
@@ -60,17 +61,18 @@ curl -sS --cacert fullchain.pem "$URL/mcp" \
 {"protocol":"2025-06-18","server":"vcon-server"}
 ```
 
-The tool list is empty:
+The tool list names the tools this key may call, here the two that need
+only `read`:
 
 ```sh
 curl -sS --cacert fullchain.pem "$URL/mcp" \
   -H "Authorization: Bearer $AGENT" \
   -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | jq -c .result
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | jq -c '[.result.tools[].name]'
 ```
 
 ```text
-{"tools":[]}
+["vcon_get","vcon_list"]
 ```
 
 ## What the endpoint refuses
@@ -122,12 +124,13 @@ printf '%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"shell","version":"1"}}}' \
   '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
-  | vcon-server mcp --config agent/mcp.toml | jq -c '.result | {server: .serverInfo.name, tools}'
+  | vcon-server mcp --config agent/mcp.toml \
+  | jq -c 'if .result.tools then [.result.tools[].name] else {server: .result.serverInfo.name} end'
 ```
 
 ```text
-{"server":"vcon-server","tools":null}
-{"server":null,"tools":[]}
+{"server":"vcon-server"}
+["vcon_get","vcon_list"]
 ```
 
 Like every `vcon-server` command, `mcp` locks its memory, so the account that
