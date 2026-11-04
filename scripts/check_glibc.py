@@ -11,10 +11,12 @@ Run with: python3 -I scripts/check_glibc.py <floor> <binary>...
 It reads each binary's dynamic symbols with `objdump -T` and exits 1,
 naming every symbol above the floor, when any binary has one.
 
-The pages in FLOOR_PAGES tell a reader the same floor; docs_floor_problems
-holds them to release.yml's GLIBC_FLOOR (scripts/test_check_glibc.py).
+The pages in FLOOR_PAGES tell a reader the same floor. CI checks them
+against release.yml's GLIBC_FLOOR with:
+  python3 -I scripts/check_glibc.py --docs <repository root>
 """
 
+import pathlib
 import re
 import subprocess
 import sys
@@ -88,9 +90,30 @@ def docs_floor_problems(workflow_text, pages):
     return problems
 
 
+def docs_problems(root):
+    """docs_floor_problems for the repository at `root`, reading release.yml
+    and FLOOR_PAGES; a file that cannot be read is a problem."""
+    root = pathlib.Path(root)
+    texts = {}
+    for relative in (".github/workflows/release.yml", *(f"website/content/{p}" for p in FLOOR_PAGES)):
+        try:
+            texts[relative] = (root / relative).read_text(encoding="utf-8")
+        except OSError:
+            return [f"cannot read {relative}"]
+    workflow = texts.pop(".github/workflows/release.yml")
+    return docs_floor_problems(workflow, {k.removeprefix("website/content/"): v for k, v in texts.items()})
+
+
 def main(argv):
+    if len(argv) == 3 and argv[1] == "--docs":
+        problems = docs_problems(argv[2])
+        for problem in problems:
+            print(f"check_glibc: {problem}", file=sys.stderr)
+        if not problems:
+            print("check_glibc: the pages name release.yml's glibc floor")
+        return 1 if problems else 0
     if len(argv) < 3:
-        print("usage: check_glibc.py <floor> <binary>...", file=sys.stderr)
+        print("usage: check_glibc.py <floor> <binary>... | check_glibc.py --docs <root>", file=sys.stderr)
         return 2
     floor, binaries = argv[1], argv[2:]
     bad = False

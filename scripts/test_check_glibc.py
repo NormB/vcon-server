@@ -6,7 +6,9 @@ Run with: python3 -I scripts/test_check_glibc.py
 
 import importlib.util
 import pathlib
+import shutil
 import sys
+import tempfile
 import unittest
 
 # Loading a script by path would otherwise leave a __pycache__ beside it.
@@ -132,15 +134,43 @@ class DocsFloor(unittest.TestCase):
             "each page must state the floor",
         )
 
-    def test_the_real_pages_name_the_real_floor(self):
-        root = HERE.parent
-        workflow = (root / ".github/workflows/release.yml").read_text(encoding="utf-8")
-        pages = {
-            name: (root / "website/content" / name).read_text(encoding="utf-8")
-            for name in check_glibc.FLOOR_PAGES
-        }
-        self.assertEqual(check_glibc.docs_floor_problems(workflow, pages), [], "the pages match release.yml")
+    def tree(self, install, home):
+        """A repository root holding release.yml and the two pages."""
+        root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        (root / ".github/workflows").mkdir(parents=True)
+        (root / ".github/workflows/release.yml").write_text(self.WORKFLOW, encoding="utf-8")
+        (root / "website/content/docs").mkdir(parents=True)
+        (root / "website/content/docs/install.md").write_text(install, encoding="utf-8")
+        (root / "website/content/_index.md").write_text(home, encoding="utf-8")
+        return root
 
+    def test_a_tree_whose_pages_name_the_floor_is_clean(self):
+        root = self.tree("glibc 2.34 or later", "glibc 2.34 or later")
+        self.assertEqual(check_glibc.docs_problems(root), [], "release.yml and both pages agree")
+
+    def test_a_tree_with_a_stale_page_is_found(self):
+        root = self.tree("glibc 2.34 or later", "glibc 2.38 or later")
+        self.assertEqual(
+            check_glibc.docs_problems(root),
+            ["_index.md says glibc 2.38 or later; release.yml builds for 2.34"],
+            "the home page's stale floor is named",
+        )
+
+    def test_a_missing_page_is_a_problem_not_a_pass(self):
+        root = self.tree("glibc 2.34 or later", "")
+        (root / "website/content/_index.md").unlink()
+        self.assertEqual(
+            check_glibc.docs_problems(root),
+            ["cannot read website/content/_index.md"],
+            "a page that is gone cannot state the floor",
+        )
+
+    def test_the_docs_mode_exits_1_on_a_problem(self):
+        stale = self.tree("glibc 2.38 or later", "glibc 2.34 or later")
+        clean = self.tree("glibc 2.34 or later", "glibc 2.34 or later")
+        self.assertEqual(check_glibc.main(["check_glibc.py", "--docs", str(stale)]), 1, "stale")
+        self.assertEqual(check_glibc.main(["check_glibc.py", "--docs", str(clean)]), 0, "clean")
 
 if __name__ == "__main__":
     unittest.main()

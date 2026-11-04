@@ -242,8 +242,13 @@ jobs:
           { git ls-files | awk '{ printf "%s\t%s\n", $0, $0 }'
             git grep -I --full-name -e '' | sed 's/:/\t/'
           } | python3 -I scripts/scan_forbidden.py
+      # The rule's tests, then the pages that state the floor against
+      # release.yml's GLIBC_FLOOR.
       - name: The glibc floor rule for release binaries
-        run: python3 -I scripts/test_check_glibc.py
+        run: |
+          set -euo pipefail
+          python3 -I scripts/test_check_glibc.py
+          python3 -I scripts/check_glibc.py --docs .
       # A second class or test method of one name replaces the first,
       # whose tests then never run.
       - name: No test module defines a name twice
