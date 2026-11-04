@@ -59,7 +59,7 @@ reports from automated scanners without a demonstrated impact.
 
 ## Verifying a release
 
-Releases after 0.2.0 attach two files that prove where the release came
+From 0.3.0, each release attaches two files that prove where the release came
 from. The `attest` job in `.github/workflows/release.yml` makes both from
 its own short-lived OpenID Connect identity. No signing key is stored
 anywhere.

@@ -10,6 +10,9 @@ release.yml, which builds in a container with that glibc.
 Run with: python3 -I scripts/check_glibc.py <floor> <binary>...
 It reads each binary's dynamic symbols with `objdump -T` and exits 1,
 naming every symbol above the floor, when any binary has one.
+
+The pages in FLOOR_PAGES tell a reader the same floor; docs_floor_problems
+holds them to release.yml's GLIBC_FLOOR (scripts/test_check_glibc.py).
 """
 
 import re
@@ -19,6 +22,11 @@ import sys
 # A glibc symbol version as objdump prints it, with or without parentheses.
 SYMBOL = re.compile(r"\(?GLIBC_([0-9]+(?:\.[0-9]+)+|PRIVATE)\)?\s+(\S+)\s*$")
 FLOOR = re.compile(r"[0-9]+(?:\.[0-9]+)+")
+WORKFLOW_FLOOR = re.compile(r"^\s*GLIBC_FLOOR:\s*'([0-9]+(?:\.[0-9]+)+)'\s*$", re.MULTILINE)
+# How a page states the floor: "glibc 2.34 or later".
+PAGE_FLOOR = re.compile(r"glibc\s+([0-9]+(?:\.[0-9]+)+)\s+or\s+later")
+# The pages, under website/content, that state the release binary's floor.
+FLOOR_PAGES = ("docs/install.md", "_index.md")
 
 
 def needed(objdump_text):
@@ -53,6 +61,31 @@ def verdict(objdump_text, floor):
     if not needed(objdump_text):
         return ["no glibc symbol found: not a dynamically linked glibc binary, or objdump failed"]
     return [f"needs GLIBC_{version} for {symbol}, above the floor {floor}" for version, symbol in too_new(objdump_text, floor)]
+
+
+def workflow_floor(workflow_text):
+    """release.yml's GLIBC_FLOOR."""
+    match = WORKFLOW_FLOOR.search(workflow_text)
+    if not match:
+        raise ValueError("release.yml sets no GLIBC_FLOOR")
+    return match.group(1)
+
+
+def docs_floor_problems(workflow_text, pages):
+    """One line per page, of `pages` (name to text), that states a floor
+    other than release.yml's or states none."""
+    floor = workflow_floor(workflow_text)
+    problems = []
+    for name, text in pages.items():
+        stated = PAGE_FLOOR.findall(" ".join(text.split()))
+        if not stated:
+            problems.append(f"{name} never says glibc {floor} or later")
+        problems += [
+            f"{name} says glibc {version} or later; release.yml builds for {floor}"
+            for version in stated
+            if version != floor
+        ]
+    return problems
 
 
 def main(argv):

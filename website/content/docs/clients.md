@@ -27,7 +27,9 @@ Each reads the same environment variables:
 - `VCON_KEY`: a tenant key with the `write`, `read` and `delete` scopes (see
   [tenants and keys](@/docs/tenants-and-keys.md)).
 - `VCON_CA`: the PEM file of the authority that signed the server's
-  certificate, when your system does not trust it. Node.js reads
+  certificate, when your system does not trust it, by its absolute path.
+  For the self-signed certificate of [getting started](@/docs/getting-started.md),
+  that is `/usr/local/share/vcon-server/ca.pem`. Node.js reads
   `NODE_EXTRA_CA_CERTS` instead.
 
 From the repository root:

@@ -15,7 +15,8 @@ CI runs every command on this page against a live server, after
 ## Before you start
 
 - A running server, set up as in [getting started](@/docs/getting-started.md),
-  with the tenant `acme`, and `fullchain.pem` in the current directory.
+  with the tenant `acme`, and the certificate's copy for clients at
+  `/usr/local/share/vcon-server/ca.pem`.
 - One shell for every step: later steps use variables that earlier steps set.
 
 ```sh
@@ -37,7 +38,7 @@ OPS=$(sudo -u vcon vcon-server key create --operator --label second-tenant-ops -
 Without `retention`, the tenant takes the server's `retention_default`:
 
 ```sh
-curl -sS -i --cacert fullchain.pem -X POST "$URL/admin/tenants" \
+curl -sS -i --cacert /usr/local/share/vcon-server/ca.pem -X POST "$URL/admin/tenants" \
   -H "Authorization: Bearer $OPS" -H "Content-Type: application/json" \
   -d '{"name": "globex", "retention": "90d"}'
 ```
@@ -55,7 +56,7 @@ A name is unique on the server. A second `globex` is refused with
 [`name-taken`](@/problems/name-taken.md):
 
 ```sh
-curl -sS --cacert fullchain.pem -X POST "$URL/admin/tenants" \
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem -X POST "$URL/admin/tenants" \
   -H "Authorization: Bearer $OPS" -H "Content-Type: application/json" -d '{"name": "globex"}'
 ```
 
@@ -67,7 +68,7 @@ A member the route does not take, such as `title`, is refused with
 [`invalid-body`](@/problems/invalid-body.md), so a mistake is never ignored:
 
 ```sh
-curl -sS --cacert fullchain.pem -X POST "$URL/admin/tenants" \
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem -X POST "$URL/admin/tenants" \
   -H "Authorization: Bearer $OPS" -H "Content-Type: application/json" -d '{"title": "initech"}'
 ```
 
@@ -78,7 +79,7 @@ curl -sS --cacert fullchain.pem -X POST "$URL/admin/tenants" \
 List the tenants, by name:
 
 ```sh
-curl -sS --cacert fullchain.pem "$URL/admin/tenants" -H "Authorization: Bearer $OPS" | jq -c '.[] | {name, retention}'
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem "$URL/admin/tenants" -H "Authorization: Bearer $OPS" | jq -c '.[] | {name, retention}'
 ```
 
 ```text
@@ -89,7 +90,7 @@ curl -sS --cacert fullchain.pem "$URL/admin/tenants" -H "Authorization: Bearer $
 `retention` `null` means the server default. Keep globex's id:
 
 ```sh
-GLOBEX=$(curl -sS --cacert fullchain.pem "$URL/admin/tenants" -H "Authorization: Bearer $OPS" | jq -r '.[] | select(.name == "globex") | .id')
+GLOBEX=$(curl -sS --cacert /usr/local/share/vcon-server/ca.pem "$URL/admin/tenants" -H "Authorization: Bearer $OPS" | jq -r '.[] | select(.name == "globex") | .id')
 ```
 
 ## Give it a key
@@ -98,7 +99,7 @@ GLOBEX=$(curl -sS --cacert fullchain.pem "$URL/admin/tenants" -H "Authorization:
 carries the token once, with `Cache-Control: no-store`:
 
 ```sh
-curl -sS -i --cacert fullchain.pem -X POST "$URL/admin/tenants/$GLOBEX/keys" \
+curl -sS -i --cacert /usr/local/share/vcon-server/ca.pem -X POST "$URL/admin/tenants/$GLOBEX/keys" \
   -H "Authorization: Bearer $OPS" -H "Content-Type: application/json" \
   -d '{"scopes": ["write", "read"], "label": "globex-app"}' | tee globex-key.txt | grep -v '"token"'
 ```
@@ -117,7 +118,7 @@ Keep the token, and delete the file that held it:
 ```sh
 GLOBEX_KEY=$(tail -n 1 globex-key.txt | jq -r .token)
 rm globex-key.txt
-curl -sS --cacert fullchain.pem "$URL/key" -H "Authorization: Bearer $GLOBEX_KEY" | jq -c --arg g "$GLOBEX" '{scopes, tenant: (.tenant == $g)}'
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem "$URL/key" -H "Authorization: Bearer $GLOBEX_KEY" | jq -c --arg g "$GLOBEX" '{scopes, tenant: (.tenant == $g)}'
 ```
 
 ```text
@@ -136,7 +137,7 @@ UUID=$(cat /proc/sys/kernel/random/uuid)
 printf '{"vcon":"0.4.0","uuid":"%s","created_at":"2026-10-27T12:00:00Z","parties":[{"tel":"+15555550103"}],"dialog":[],"attachments":[],"analysis":[]}' \
   "$UUID" > shared-uuid.vcon
 for key in "$ACME_KEY" "$GLOBEX_KEY"; do
-  curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons" \
+  curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons" \
     -H "Authorization: Bearer $key" -H "Content-Type: application/vcon" --data-binary @shared-uuid.vcon
 done
 ```
@@ -151,7 +152,7 @@ each hold a vCon with the same uuid, and neither can tell. Each tenant's list
 holds only its own vCons:
 
 ```sh
-curl -sS --cacert fullchain.pem "$URL/vcons" -H "Authorization: Bearer $GLOBEX_KEY" | jq '.vcons | length'
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons" -H "Authorization: Bearer $GLOBEX_KEY" | jq '.vcons | length'
 ```
 
 ```text
@@ -165,10 +166,10 @@ tenant or does not exist:
 OTHER=$(cat /proc/sys/kernel/random/uuid)
 printf '{"vcon":"0.4.0","uuid":"%s","created_at":"2026-10-27T12:00:00Z","parties":[],"dialog":[],"attachments":[],"analysis":[]}' \
   "$OTHER" > acme-only.vcon
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons" \
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons" \
   -H "Authorization: Bearer $ACME_KEY" -H "Content-Type: application/vcon" --data-binary @acme-only.vcon
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons/$OTHER" -H "Authorization: Bearer $GLOBEX_KEY"
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons/$OTHER" -H "Authorization: Bearer $ACME_KEY"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons/$OTHER" -H "Authorization: Bearer $GLOBEX_KEY"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons/$OTHER" -H "Authorization: Bearer $ACME_KEY"
 ```
 
 ```text
@@ -184,7 +185,7 @@ when it was stored. `PATCH /admin/tenants/{id}` changes it, at the next purge
 sweep, for every version the tenant keeps:
 
 ```sh
-curl -sS --cacert fullchain.pem -X PATCH "$URL/admin/tenants/$GLOBEX" \
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem -X PATCH "$URL/admin/tenants/$GLOBEX" \
   -H "Authorization: Bearer $OPS" -H "Content-Type: application/json" -d '{"retention": "1y"}' | jq -c '{retention}'
 ```
 
@@ -202,7 +203,7 @@ keeps one, so the server refuses with
 [`holds-vcons`](@/problems/holds-vcons.md):
 
 ```sh
-curl -sS --cacert fullchain.pem -X DELETE "$URL/admin/tenants/$GLOBEX" -H "Authorization: Bearer $OPS"
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem -X DELETE "$URL/admin/tenants/$GLOBEX" -H "Authorization: Bearer $OPS"
 ```
 
 ```text
@@ -214,8 +215,8 @@ step. It refuses a tenant with a vCon under a legal hold, with
 [`under-hold`](@/problems/under-hold.md):
 
 ```sh
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem -X DELETE "$URL/admin/tenants/$GLOBEX?force=true" -H "Authorization: Bearer $OPS"
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons" -H "Authorization: Bearer $GLOBEX_KEY"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem -X DELETE "$URL/admin/tenants/$GLOBEX?force=true" -H "Authorization: Bearer $OPS"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons" -H "Authorization: Bearer $GLOBEX_KEY"
 ```
 
 ```text
@@ -227,7 +228,7 @@ The tenant's key is refused at once. Acme's copy of the shared uuid is
 untouched:
 
 ```sh
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $ACME_KEY"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $ACME_KEY"
 ```
 
 ```text
@@ -241,7 +242,7 @@ Revoke the two keys this page made on the host:
 ```sh
 sudo -u vcon vcon-server key list --config $CONFIG | jq -r 'select(.label | startswith("second-tenant-")) | .id' \
   | while read -r id; do sudo -u vcon vcon-server key revoke "$id" --config $CONFIG; done
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/admin/tenants" -H "Authorization: Bearer $OPS"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/admin/tenants" -H "Authorization: Bearer $OPS"
 ```
 
 ```text

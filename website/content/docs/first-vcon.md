@@ -15,8 +15,8 @@ CI runs every command on this page against a live server, after
 
 - A running server, set up as in [getting started](@/docs/getting-started.md),
   with the tenant `acme`.
-- `fullchain.pem`, the certificate made there, in the current directory.
-  With a certificate from a public authority, leave out `--cacert fullchain.pem`.
+- `/usr/local/share/vcon-server/ca.pem`, the copy of the certificate for clients that it installs.
+  With a certificate from a public authority, leave out `--cacert /usr/local/share/vcon-server/ca.pem`.
 - One shell for every step: later steps use variables that earlier steps set.
 
 ## Make a key for each scope
@@ -71,7 +71,7 @@ Send it with the write key. `-i` prints the answer's status line and
 headers:
 
 ```sh
-curl -sS -i --cacert fullchain.pem "$URL/vcons" \
+curl -sS -i --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons" \
   -H "Authorization: Bearer $WRITER" \
   -H "Content-Type: application/vcon" \
   --data-binary @call.vcon
@@ -95,7 +95,7 @@ A producer that did not see the answer sends the vCon again. The same bytes
 answer `200`, with the same `etag`, and nothing new is stored:
 
 ```sh
-curl -sS -i --cacert fullchain.pem "$URL/vcons" \
+curl -sS -i --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons" \
   -H "Authorization: Bearer $WRITER" \
   -H "Content-Type: application/vcon" \
   --data-binary @call.vcon
@@ -117,7 +117,7 @@ A different body with a uuid already stored is refused with `409`, as the
 
 ```sh
 sed 's/Caller Example/Caller Changed/' call.vcon > changed.vcon
-curl -sS -i --cacert fullchain.pem "$URL/vcons" \
+curl -sS -i --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons" \
   -H "Authorization: Bearer $WRITER" \
   -H "Content-Type: application/vcon" \
   --data-binary @changed.vcon
@@ -142,7 +142,7 @@ Reading needs the `read` scope. The write key is refused with `403`, as
 [`forbidden`](@/problems/forbidden.md):
 
 ```sh
-curl -sS -i --cacert fullchain.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $WRITER"
+curl -sS -i --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $WRITER"
 ```
 
 ```text
@@ -157,7 +157,7 @@ date: <date>
 The read key gets the body as it was stored:
 
 ```sh
-curl -sS -i --cacert fullchain.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $READER"
+curl -sS -i --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $READER"
 ```
 
 ```text
@@ -174,7 +174,7 @@ The server stores a body byte for byte and never rewrites it, so a signed
 vCon keeps its signature. Compare the bytes:
 
 ```sh
-curl -sS --cacert fullchain.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $READER" -o read.vcon
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $READER" -o read.vcon
 cmp read.vcon call.vcon && echo "the same bytes"
 ```
 
@@ -187,7 +187,7 @@ the same bytes
 `GET /vcons` lists the key's tenant's vCons, newest first, a page at a time:
 
 ```sh
-curl -sS --cacert fullchain.pem "$URL/vcons" -H "Authorization: Bearer $READER" | jq .
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons" -H "Authorization: Bearer $READER" | jq .
 ```
 
 ```text
@@ -213,8 +213,8 @@ Deleting needs the `delete` scope. Neither the write key nor the read key
 holds it:
 
 ```sh
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem -X DELETE "$URL/vcons/$UUID" -H "Authorization: Bearer $WRITER"
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem -X DELETE "$URL/vcons/$UUID" -H "Authorization: Bearer $READER"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem -X DELETE "$URL/vcons/$UUID" -H "Authorization: Bearer $WRITER"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem -X DELETE "$URL/vcons/$UUID" -H "Authorization: Bearer $READER"
 ```
 
 ```text
@@ -225,7 +225,7 @@ curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem -X DELETE "$URL
 The delete key deletes it. The answer is `204`, with no body:
 
 ```sh
-curl -sS -i --cacert fullchain.pem -X DELETE "$URL/vcons/$UUID" -H "Authorization: Bearer $DELETER"
+curl -sS -i --cacert /usr/local/share/vcon-server/ca.pem -X DELETE "$URL/vcons/$UUID" -H "Authorization: Bearer $DELETER"
 ```
 
 ```text
@@ -239,7 +239,7 @@ The vCon is hidden at once. A read answers `410`, as
 [`gone`](@/problems/gone.md):
 
 ```sh
-curl -sS -i --cacert fullchain.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $READER"
+curl -sS -i --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $READER"
 ```
 
 ```text
@@ -254,7 +254,7 @@ date: <date>
 The list leaves it out:
 
 ```sh
-curl -sS --cacert fullchain.pem "$URL/vcons" -H "Authorization: Bearer $READER" | jq -c .
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons" -H "Authorization: Bearer $READER" | jq -c .
 ```
 
 ```text
@@ -265,7 +265,7 @@ A deleted uuid stays deleted: storing it again answers `410` too, even with
 the same bytes:
 
 ```sh
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons" \
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons" \
   -H "Authorization: Bearer $WRITER" -H "Content-Type: application/vcon" --data-binary @call.vcon
 ```
 
@@ -284,8 +284,8 @@ Every route needs a key. Without one, or with a token the server does not
 know, the answer is `401`, as [`unauthorized`](@/problems/unauthorized.md):
 
 ```sh
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons"
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons" \
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons" \
   -H "Authorization: Bearer vcs_0000000000000000_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 ```
 
@@ -305,7 +305,7 @@ for label in first-vcon-writer first-vcon-reader first-vcon-deleter; do
     | jq -r --arg l "$label" 'select(.label == $l) | .id')
   sudo -u vcon vcon-server key revoke "$id" --config /etc/vcon-server/vcon-server.toml
 done
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons" -H "Authorization: Bearer $READER"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons" -H "Authorization: Bearer $READER"
 ```
 
 ```text

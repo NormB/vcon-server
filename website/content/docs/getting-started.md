@@ -162,6 +162,8 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 30 \
   -keyout privkey.pem -out fullchain.pem 2>/dev/null
 sudo install -m 0400 -o vcon -g vcon fullchain.pem /etc/vcon-server/cert.pem
 sudo install -m 0400 -o vcon -g vcon privkey.pem /etc/vcon-server/key.pem
+sudo install -d -m 0755 /usr/local/share/vcon-server
+sudo install -m 0644 fullchain.pem /usr/local/share/vcon-server/ca.pem
 openssl x509 -in fullchain.pem -noout -subject -ext subjectAltName,basicConstraints
 ```
 
@@ -173,9 +175,13 @@ X509v3 Basic Constraints: critical
     CA:FALSE
 ```
 
-Clients then need `fullchain.pem` to trust it: the `curl` commands on these
-pages pass it with `--cacert fullchain.pem`. With a certificate from a public
-certificate authority, leave `--cacert fullchain.pem` out.
+Clients then need the certificate to trust it. The server's copy,
+`/etc/vcon-server/cert.pem`, is readable by `vcon` only, so the commands
+above also install a copy for clients at `/usr/local/share/vcon-server/ca.pem`, readable by
+every account. The `curl` commands on these pages pass it with
+`--cacert /usr/local/share/vcon-server/ca.pem`, an absolute path, so they work from any
+directory. With a certificate from a public certificate authority, leave
+`--cacert /usr/local/share/vcon-server/ca.pem` out.
 
 ## Write the configuration
 
@@ -358,7 +364,7 @@ echo '127.0.0.1 vcon.example.com' | sudo tee -a /etc/hosts
 Ask for the server's health with the `monitor` key:
 
 ```sh
-curl -sS --cacert fullchain.pem https://vcon.example.com:8443/health -H "Authorization: Bearer $MONITOR"
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem https://vcon.example.com:8443/health -H "Authorization: Bearer $MONITOR"
 ```
 
 ```text
@@ -368,7 +374,7 @@ curl -sS --cacert fullchain.pem https://vcon.example.com:8443/health -H "Authori
 Without a key, the answer is `401`, as an RFC 9457 problem document:
 
 ```sh
-curl -sS --cacert fullchain.pem https://vcon.example.com:8443/health
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem https://vcon.example.com:8443/health
 ```
 
 ```text
@@ -407,7 +413,7 @@ answers:
 <!-- docs-test: only systemd -->
 ```sh
 sudo systemctl start vcon-server
-timeout 30 sh -c 'until curl -s -o /dev/null --cacert fullchain.pem https://vcon.example.com:8443/health; do sleep 1; done' && echo answering
+timeout 30 sh -c 'until curl -s -o /dev/null --cacert /usr/local/share/vcon-server/ca.pem https://vcon.example.com:8443/health; do sleep 1; done' && echo answering
 ```
 
 ```text
@@ -429,7 +435,7 @@ sudo -u vcon vcon-server serve --config /etc/vcon-server/vcon-server.toml
 The tenant and the keys are still there:
 
 ```sh
-curl -sS --cacert fullchain.pem https://vcon.example.com:8443/health -H "Authorization: Bearer $MONITOR"
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem https://vcon.example.com:8443/health -H "Authorization: Bearer $MONITOR"
 ```
 
 ```text

@@ -101,5 +101,46 @@ class Verdict(unittest.TestCase):
             check_glibc.verdict(V020, "2.x")
 
 
+class DocsFloor(unittest.TestCase):
+    """The pages that tell a reader which glibc the release binary needs
+    name the floor release.yml builds on, so the two cannot drift."""
+
+    WORKFLOW = "env:\n  GLIBC_FLOOR: '2.34'\njobs: {}\n"
+
+    def test_the_floor_is_read_from_the_workflow(self):
+        self.assertEqual(check_glibc.workflow_floor(self.WORKFLOW), "2.34", "the env value")
+        with self.assertRaises(ValueError):
+            check_glibc.workflow_floor("env: {}\n")
+
+    def test_a_page_that_names_another_floor_is_found(self):
+        pages = {"install.md": "For the release binary, glibc 2.38 or later."}
+        self.assertEqual(
+            check_glibc.docs_floor_problems(self.WORKFLOW, pages),
+            ["install.md says glibc 2.38 or later; release.yml builds for 2.34"],
+            "the stale floor is named with its page",
+        )
+
+    def test_pages_that_name_the_floor_are_clean(self):
+        pages = {"install.md": "glibc 2.34 or later.", "_index.md": "need glibc 2.34 or later, such as"}
+        self.assertEqual(check_glibc.docs_floor_problems(self.WORKFLOW, pages), [], "both name 2.34")
+
+    def test_a_page_that_names_no_floor_is_found(self):
+        pages = {"install.md": "Any Linux will do."}
+        self.assertEqual(
+            check_glibc.docs_floor_problems(self.WORKFLOW, pages),
+            ["install.md never says glibc 2.34 or later"],
+            "each page must state the floor",
+        )
+
+    def test_the_real_pages_name_the_real_floor(self):
+        root = HERE.parent
+        workflow = (root / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        pages = {
+            name: (root / "website/content" / name).read_text(encoding="utf-8")
+            for name in check_glibc.FLOOR_PAGES
+        }
+        self.assertEqual(check_glibc.docs_floor_problems(workflow, pages), [], "the pages match release.yml")
+
+
 if __name__ == "__main__":
     unittest.main()

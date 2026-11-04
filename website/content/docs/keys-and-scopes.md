@@ -15,7 +15,8 @@ CI runs every command on this page against a live server, after
 ## Before you start
 
 - A running server, set up as in [getting started](@/docs/getting-started.md),
-  with the tenant `acme`, and `fullchain.pem` in the current directory.
+  with the tenant `acme`, and the certificate's copy for clients at
+  `/usr/local/share/vcon-server/ca.pem`.
 - One shell for every step: later steps use variables that earlier steps set.
 
 ```sh
@@ -51,7 +52,7 @@ KEY_ADMIN=$(sudo -u vcon vcon-server key create --operator --label scopes-admin 
 `GET /key` answers any valid key with its own id, tenant and scopes:
 
 ```sh
-curl -sS --cacert fullchain.pem "$URL/key" -H "Authorization: Bearer $KEY_LEGAL"
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem "$URL/key" -H "Authorization: Bearer $KEY_LEGAL"
 ```
 
 ```text
@@ -61,7 +62,7 @@ curl -sS --cacert fullchain.pem "$URL/key" -H "Authorization: Bearer $KEY_LEGAL"
 An operator key's `tenant` is `null`:
 
 ```sh
-curl -sS --cacert fullchain.pem "$URL/key" -H "Authorization: Bearer $KEY_ADMIN"
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem "$URL/key" -H "Authorization: Bearer $KEY_ADMIN"
 ```
 
 ```text
@@ -76,7 +77,7 @@ The write key stores a vCon:
 UUID=$(cat /proc/sys/kernel/random/uuid)
 printf '{"vcon":"0.4.0","uuid":"%s","created_at":"2026-10-27T12:00:00Z","parties":[{"tel":"+15555550102"}],"dialog":[],"attachments":[],"analysis":[]}' \
   "$UUID" > scopes.vcon
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons" \
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons" \
   -H "Authorization: Bearer $KEY_WRITE" -H "Content-Type: application/vcon" --data-binary @scopes.vcon
 ```
 
@@ -87,7 +88,7 @@ curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons" \
 It cannot read one back:
 
 ```sh
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $KEY_WRITE"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $KEY_WRITE"
 ```
 
 ```text
@@ -99,8 +100,8 @@ curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons/$UU
 The read key reads the vCon and lists the tenant's vCons:
 
 ```sh
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $KEY_READ"
-curl -sS --cacert fullchain.pem "$URL/vcons" -H "Authorization: Bearer $KEY_READ" | jq -r --arg u "$UUID" '.vcons[] | select(.uuid == $u) | .uuid'
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $KEY_READ"
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons" -H "Authorization: Bearer $KEY_READ" | jq -r --arg u "$UUID" '.vcons[] | select(.uuid == $u) | .uuid'
 ```
 
 ```text
@@ -111,7 +112,7 @@ curl -sS --cacert fullchain.pem "$URL/vcons" -H "Authorization: Bearer $KEY_READ
 It cannot store one:
 
 ```sh
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons" \
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons" \
   -H "Authorization: Bearer $KEY_READ" -H "Content-Type: application/vcon" --data-binary @scopes.vcon
 ```
 
@@ -124,8 +125,8 @@ curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons" \
 The read key cannot delete the vCon. The delete key can:
 
 ```sh
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem -X DELETE "$URL/vcons/$UUID" -H "Authorization: Bearer $KEY_READ"
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem -X DELETE "$URL/vcons/$UUID" -H "Authorization: Bearer $KEY_DELETE"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem -X DELETE "$URL/vcons/$UUID" -H "Authorization: Bearer $KEY_READ"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem -X DELETE "$URL/vcons/$UUID" -H "Authorization: Bearer $KEY_DELETE"
 ```
 
 ```text
@@ -136,8 +137,8 @@ curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem -X DELETE "$URL
 The delete key cannot read what it deleted, and neither can the read key:
 
 ```sh
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $KEY_DELETE"
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $KEY_READ"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $KEY_DELETE"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $KEY_READ"
 ```
 
 ```text
@@ -152,7 +153,7 @@ list its versions, hold it, and restore it. The legal key reads the deleted
 vCon. `vcon-state` says it is deleted:
 
 ```sh
-curl -sS -i --cacert fullchain.pem "$URL/legal/vcons/$UUID" -H "Authorization: Bearer $KEY_LEGAL" | grep -i -e '^HTTP' -e '^vcon-state'
+curl -sS -i --cacert /usr/local/share/vcon-server/ca.pem "$URL/legal/vcons/$UUID" -H "Authorization: Bearer $KEY_LEGAL" | grep -i -e '^HTTP' -e '^vcon-state'
 ```
 
 ```text
@@ -163,7 +164,7 @@ vcon-state: deleted
 It lists the vCon's kept versions, oldest first:
 
 ```sh
-curl -sS --cacert fullchain.pem "$URL/legal/vcons/$UUID/versions" -H "Authorization: Bearer $KEY_LEGAL" | jq -c '.[] | {current, hidden: (.hidden_at != null)}'
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem "$URL/legal/vcons/$UUID/versions" -H "Authorization: Bearer $KEY_LEGAL" | jq -c '.[] | {current, hidden: (.hidden_at != null)}'
 ```
 
 ```text
@@ -174,9 +175,9 @@ A legal hold keeps every version of the uuid from being purged, whatever its
 retention period. Hold it, restore it, and release the hold:
 
 ```sh
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem -X PUT "$URL/legal/vcons/$UUID/hold" -H "Authorization: Bearer $KEY_LEGAL"
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem -X POST "$URL/legal/vcons/$UUID/restore" -H "Authorization: Bearer $KEY_LEGAL"
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem -X DELETE "$URL/legal/vcons/$UUID/hold" -H "Authorization: Bearer $KEY_LEGAL"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem -X PUT "$URL/legal/vcons/$UUID/hold" -H "Authorization: Bearer $KEY_LEGAL"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem -X POST "$URL/legal/vcons/$UUID/restore" -H "Authorization: Bearer $KEY_LEGAL"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem -X DELETE "$URL/legal/vcons/$UUID/hold" -H "Authorization: Bearer $KEY_LEGAL"
 ```
 
 ```text
@@ -188,7 +189,7 @@ curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem -X DELETE "$URL
 The restored vCon is live again for the read key:
 
 ```sh
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $KEY_READ"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $KEY_READ"
 ```
 
 ```text
@@ -198,7 +199,7 @@ curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons/$UU
 The read key cannot use the legal routes:
 
 ```sh
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/legal/vcons/$UUID" -H "Authorization: Bearer $KEY_READ"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/legal/vcons/$UUID" -H "Authorization: Bearer $KEY_READ"
 ```
 
 ```text
@@ -215,7 +216,7 @@ first. Each request above is in it, refusals included. The hold, the
 restore and the release are recorded as `hold`, `restore` and `release`:
 
 ```sh
-curl -sS --cacert fullchain.pem "$URL/audit?limit=10000" -H "Authorization: Bearer $KEY_AUDIT" \
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem "$URL/audit?limit=10000" -H "Authorization: Bearer $KEY_AUDIT" \
   | jq -c 'select(.action == "hold" or .action == "restore" or .action == "release") | {action, status}'
 ```
 
@@ -228,7 +229,7 @@ curl -sS --cacert fullchain.pem "$URL/audit?limit=10000" -H "Authorization: Bear
 A key without `audit` is refused:
 
 ```sh
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/audit" -H "Authorization: Bearer $KEY_LEGAL"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/audit" -H "Authorization: Bearer $KEY_LEGAL"
 ```
 
 ```text
@@ -242,7 +243,7 @@ curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/audit" -H
 The operator key lists the tenants:
 
 ```sh
-curl -sS --cacert fullchain.pem "$URL/admin/tenants" -H "Authorization: Bearer $KEY_ADMIN" | jq -r '.[].name'
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem "$URL/admin/tenants" -H "Authorization: Bearer $KEY_ADMIN" | jq -r '.[].name'
 ```
 
 ```text
@@ -252,8 +253,8 @@ acme
 It cannot read a vCon, and a tenant key cannot use the admin routes:
 
 ```sh
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons" -H "Authorization: Bearer $KEY_ADMIN"
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/admin/tenants" -H "Authorization: Bearer $KEY_AUDIT"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons" -H "Authorization: Bearer $KEY_ADMIN"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/admin/tenants" -H "Authorization: Bearer $KEY_AUDIT"
 ```
 
 ```text
@@ -269,7 +270,7 @@ Give `--scope` once for each:
 ```sh
 KEY_RW=$(sudo -u vcon vcon-server key create --tenant "$TENANT" --scope write --scope read --label scopes-rw \
   --config $CONFIG | jq -r .token)
-curl -sS --cacert fullchain.pem "$URL/key" -H "Authorization: Bearer $KEY_RW" | jq -c .scopes
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem "$URL/key" -H "Authorization: Bearer $KEY_RW" | jq -c .scopes
 ```
 
 ```text

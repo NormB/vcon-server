@@ -4,7 +4,7 @@ description = "Which parts of vcon-server work today, and which are being built.
 weight = 5
 +++
 
-vcon-server 0.2.0 is released: the `vcon` and `vcon-server` crates are on
+vcon-server 0.3.0 is released: the `vcon` and `vcon-server` crates are on
 crates.io, and the server for Linux on x86_64 and aarch64 is on
 [GitHub](https://github.com/NormB/vcon-server/releases). It is not yet for
 production. This page says what works today; each other page describes only
@@ -17,7 +17,7 @@ what is built, unless it says otherwise.
   `critical` extension list honoured. These checks are a separate library
   crate, [`vcon`](@/docs/library.md). Both crates, `vcon` and `vcon-server`,
   are published on crates.io.
-- **Writing vCons** in the `vcon` library, on `main` and not yet released:
+- **Writing vCons** in the `vcon` library, released in vcon 0.3.0:
   `vcon::write` builds a vCon from the core draft's object model and writes
   it unsigned or gzipped, refusing what the draft does not allow, or signed
   (a JWS) or encrypted (a JWE) through signers and encrypters the caller
@@ -82,16 +82,16 @@ what is built, unless it says otherwise.
   [fuzz target](@/docs/development.md#fuzzing), run in CI and by
   ClusterFuzzLite.
 - **Releases.** Each release holds the server for Linux on x86_64 and
-  aarch64, a CycloneDX SBOM and checksums, every file with a signed build
-  provenance attestation; the release workflow also publishes both crates to
-  crates.io.
+  aarch64, built to run on glibc 2.34 or later, a CycloneDX SBOM and
+  checksums, every file with a signed build provenance attestation; from
+  0.3.0 also a Sigstore signature over the checksums and the provenance as a
+  file. The release workflow also publishes both crates to crates.io.
 
 ## Being built
 
 - **The draft's recommended algorithms** for `vcon::write` (RS256,
   RSA-OAEP and A256CBC-HS512) as an option of the `vcon` crate, and a check
-  of its output with another JOSE library; released with `vcon::write` in
-  vcon 0.3.0.
+  of its output with another JOSE library, for a release after vcon 0.3.0.
 - **Review:** a review of the code against its design, a review of every
   feature against its tests, and a full fault-injection run.
 

@@ -289,11 +289,19 @@ An HTML comment on the line before a block changes how it runs:
 | Marker | Effect |
 |---|---|
 | `<!-- docs-test: only apt release -->` | runs only in scenarios that have every tag named |
-| `<!-- docs-test: skip <reason> -->` | never runs; the reason is required |
+| `<!-- docs-test: skip <reason> -->` | never runs; the reason is required, and may not name a release |
+| `<!-- docs-test: since 0.3.0 -->` | runs only when the page's `VERSION` is that release or a later one; the text before the block must name the release |
 | `<!-- docs-test: exit 1 -->` | the block must exit 1 |
 | `<!-- docs-test: background serving -->` | runs in the background; the run waits until it prints `serving` |
 | `<!-- docs-test: file <path> -->` | a block, such as TOML or a systemd unit, that the page says to save as `<path>` |
 | `<!-- docs-test: always -->` | runs at the end, even after a failure |
+
+A step that works only from some release on, such as checking a signature
+that older releases do not have, is marked `since`, not `skip`. Until that
+release is published, the runner uses the newest published one, so the step
+does not run and the runner says so; from then on it runs. `lint` refuses a
+`skip` whose reason names a release, and a `since` block whose text does
+not name its release, so a reader on an older release is told to skip it.
 
 A scenario names the pages it runs, the system it runs them on, and its
 tags. The scenarios include Debian 13 and Fedora 44 with the server in the

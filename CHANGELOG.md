@@ -6,8 +6,28 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-04
+
 ### Added
 
+- The MCP server for AI agents: `POST /mcp` on the TLS listener, and
+  `vcon-server mcp --config <client file>`, which speaks MCP on stdin and
+  stdout and forwards to a running server with one key. Every request is
+  authenticated with the bearer key as every route is, and counted in the
+  key's tenant log or the admin log as action `mcp`. 19 tools: `vcon_get`,
+  `vcon_list`, `vcon_store`, `vcon_replace` and `vcon_delete`; `legal_get`,
+  `legal_versions`, `legal_restore`, `legal_hold` and `legal_release`;
+  `audit_read`; and for operator keys `admin_tenant_create`,
+  `admin_tenant_list`, `admin_tenant_retention`, `admin_tenant_remove`,
+  `admin_key_create`, `admin_key_list`, `admin_key_revoke` and
+  `admin_audit_read`. Each tool calls the function its HTTP route calls and
+  leaves the same audit records. Every call passes one gate, in order: the
+  key's rate (`mcp.calls_per_second`), a free slot (`mcp.concurrent`), a
+  known tool, the tool's scope, and arguments that fit the tool. The
+  problems `rate-limited`, `at-capacity`, `unknown-tool` and
+  `invalid-arguments` name the refusals. A result holds at most
+  `mcp.response_bytes` (1 MiB by default), with `next_cursor` to resume, and
+  a vCon's text comes back between untrusted-data markers it cannot close.
 - `vcon::write` in the vcon library: an object model of the vCon core
   draft (parties, dialogs of each type, attachments, analysis, extension
   members) and its unsigned and gzip forms. The output is compact JSON
@@ -33,7 +53,25 @@ All notable changes to this project are recorded here. The format follows
   plaintext can be gzipped first (`Compression`). The input to sign again
   or encrypt is read under the caller's `read::Limits`, and every output
   reads back with `read::inspect`. The draft's recommended algorithms
-  follow as an option; it is all released with vcon 0.3.0.
+  follow as an option in a later release.
+- Each release also holds `SHA256SUMS.txt.sigstore.json`, a keyless cosign
+  signature over `SHA256SUMS.txt`, and `vcon-server-<version>.intoto.jsonl`,
+  the build provenance as a file, both made from the release workflow's
+  OIDC identity with no stored key and verified before they are released.
+  The install page shows how to check the signature with cosign; 0.2.0 and
+  earlier have neither file.
+
+### Changed
+
+- The release binaries are built on glibc 2.34 (AlmaLinux 9), and the
+  release workflow refuses a binary that needs a newer glibc symbol. They
+  run on Debian 12, Ubuntu 22.04 and AlmaLinux 9, where the 0.2.0
+  binaries, which needed glibc 2.38, did not start. Each binary is run
+  on Debian 12, Ubuntu 22.04 and AlmaLinux 9 before a release, and the
+  release build is reproducible: CI builds it twice and compares the bytes.
+- A failure to open `server.sqlite` at start says which step failed, on
+  which file, and the error underneath: a wrong key, an unfinished
+  recovery, or the system's error. It said only `Io` before.
 
 ### Fixed
 
@@ -42,6 +80,12 @@ All notable changes to this project are recorded here. The format follows
   of the process. They followed the umask before: `backup` under umask 0002
   wrote its files `0664` and its `tenants` directory `0775`, inside its own
   `0700` directory, and the catalogs were made `0644`.
+- Storing or replacing a vCon, or creating a tenant, removed the new object
+  file or tenant directory whenever the commit returned an error. When
+  SQLite cannot say whether a failed COMMIT was kept, the file now stays,
+  and start-up recovery removes it only if no row names it. Before, a commit
+  kept after such an error left a row without its object, read back as
+  damage, or a tenant without its catalog.
 
 ## [0.2.0] - 2026-10-27
 
@@ -154,6 +198,7 @@ All notable changes to this project are recorded here. The format follows
   stack and abort the server. `vcon::MAX_SIGNED_LAYERS`,
   `vcon::MAX_JSON_DEPTH` and `vcon::Rejection::TooDeep` name the limits.
 
-[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/NormB/vcon-server/releases/tag/v0.3.0
 [0.2.0]: https://github.com/NormB/vcon-server/releases/tag/v0.2.0
 [0.1.0]: https://github.com/NormB/vcon-server/releases/tag/v0.1.0

@@ -13,7 +13,11 @@ otherwise. A failing command inside a step stops the run there.
 An HTML comment on the line before a block changes how it runs:
 
     <!-- docs-test: only apt release -->   run only in scenarios with every tag
-    <!-- docs-test: skip <reason> -->      never run; the reason is required
+    <!-- docs-test: skip <reason> -->      never run; the reason is required,
+                                           and may not name a release
+    <!-- docs-test: since 0.3.0 -->        run only when the page's VERSION is
+                                           that release or a later one; the
+                                           text before it must name 0.3.0
     <!-- docs-test: exit 1 -->             the step must exit 1
     <!-- docs-test: background serving --> run in the background, and wait
                                            until it prints "serving"
@@ -65,10 +69,15 @@ class Block:
     background: str | None = None
     path: str | None = None
     always: bool = False
+    since: str | None = None
+    # The page's text from the last block or heading to this block: what a
+    # reader sees just before it.
+    prose: str = ""
 
 
 MARKER = re.compile(r"^<!--\s*docs-test:\s*(.*?)\s*-->\s*$")
 FENCE = re.compile(r"^```\s*([A-Za-z0-9_+-]*)")
+RELEASE = re.compile(r"^\d+\.\d+\.\d+$")
 
 
 def parse_marker(text: str, at: str) -> dict:
@@ -98,6 +107,10 @@ def parse_marker(text: str, at: str) -> dict:
             out["path"] = rest
         elif word == "always":
             out["always"] = True
+        elif word == "since":
+            if not RELEASE.match(rest):
+                raise PageError(f"{at}: `since` needs a release version such as 0.3.0")
+            out["since"] = rest
         else:
             raise PageError(f"{at}: unknown docs-test marker `{word}`")
     return out
@@ -111,6 +124,7 @@ def parse(text: str, name: str) -> list[Block]:
     marker_at = ""
     # The last step, while a text block after it may still be its output.
     open_step: Block | None = None
+    prose: list[str] = []
     i = 0
     while i < len(lines):
         line = lines[i]
@@ -137,6 +151,7 @@ def parse(text: str, name: str) -> list[Block]:
             code = "\n".join(body) + "\n"
             given = marker or {}
             marker = None
+            before, prose = "\n".join(prose), []
             if lang == "text" and open_step is not None and not given:
                 open_step.expect = code
                 open_step = None
@@ -145,9 +160,9 @@ def parse(text: str, name: str) -> list[Block]:
             if lang in ("sh", "bash"):
                 if "path" in given:
                     raise PageError(f"{at}: `file` is for blocks that are not commands")
-                block = Block(kind="sh", code=code, at=at, **given)
+                block = Block(kind="sh", code=code, at=at, prose=before, **given)
             elif "path" in given:
-                block = Block(kind="file", code=code, at=at, **given)
+                block = Block(kind="file", code=code, at=at, prose=before, **given)
             elif given:
                 raise PageError(f"{at}: a docs-test marker on a {lang or 'plain'} block without `file`")
             else:
@@ -160,6 +175,8 @@ def parse(text: str, name: str) -> list[Block]:
             raise PageError(f"{marker_at}: a docs-test marker with no block")
         if line.startswith("#"):
             open_step = None
+            prose = []
+        prose.append(line)
         i += 1
     if marker is not None:
         raise PageError(f"{marker_at}: a docs-test marker with no block")
@@ -260,22 +277,22 @@ HOWTO = (
 # docs/upgrading.md installs the binary it names as NEW: the one under test.
 UNDER_TEST = {"NEW": "/docs-test/vcon-server"}
 # The release before this one, which the upgrade scenario upgrades from.
-PREVIOUS = "0.1.0"
+PREVIOUS = "0.2.0"
 
 SCENARIOS = [
     # The how-tos, on a Debian and a Fedora with no systemd: the server runs
     # in the foreground.
-    Scenario("foreground", "debian:trixie-slim", frozenset({"apt", "no-systemd"}), HOWTO, UNDER_TEST, docker=AS_A_HOST),
+    Scenario("foreground", "debian:trixie-slim", frozenset({"debian", "apt", "no-systemd"}), HOWTO, UNDER_TEST, docker=AS_A_HOST),
     Scenario("foreground-fedora", "fedora:44", frozenset({"dnf", "no-systemd"}), HOWTO, UNDER_TEST, docker=AS_A_HOST),
     # The same, under systemd. No memory-lock option: the unit and the
     # limits file are what allow it, as on a host.
-    Scenario("systemd", "systemd", frozenset({"apt", "systemd"}), HOWTO, UNDER_TEST),
+    Scenario("systemd", "systemd", frozenset({"debian", "apt", "systemd"}), HOWTO, UNDER_TEST),
     # An upgrade from the previous release, installed as the install page
     # says, to the server under test, and back.
     Scenario(
         "upgrade",
         "debian:trixie-slim",
-        frozenset({"apt", "no-systemd", "release"}),
+        frozenset({"debian", "apt", "no-systemd", "release"}),
         ("install.md", "getting-started.md", "upgrading.md"),
         {"VERSION": PREVIOUS, **UNDER_TEST},
         install_binary=False,
@@ -285,12 +302,12 @@ SCENARIOS = [
     # the release the page names, and removes what it made at the end.
     Scenario("container", "host", frozenset({"docker"}), ("container.md",), binary=False),
     # Each install path, from a system with nothing installed.
-    Scenario("release-debian", "debian:trixie-slim", frozenset({"apt", "release"}), ("install.md",), binary=False),
-    Scenario("release-ubuntu", "ubuntu:24.04", frozenset({"apt", "release"}), ("install.md",), binary=False),
+    Scenario("release-debian", "debian:trixie-slim", frozenset({"debian", "apt", "release"}), ("install.md",), binary=False),
+    Scenario("release-ubuntu", "ubuntu:24.04", frozenset({"ubuntu", "apt", "release"}), ("install.md",), binary=False),
     Scenario("release-fedora", "fedora:44", frozenset({"dnf", "release"}), ("install.md",), binary=False),
-    Scenario("cargo-debian", "debian:trixie-slim", frozenset({"apt", "cargo"}), ("install.md",), binary=False, timeout=3600),
+    Scenario("cargo-debian", "debian:trixie-slim", frozenset({"debian", "apt", "cargo"}), ("install.md",), binary=False, timeout=3600),
     Scenario("cargo-fedora", "fedora:44", frozenset({"dnf", "cargo"}), ("install.md",), binary=False, timeout=3600),
-    Scenario("source-debian", "debian:trixie-slim", frozenset({"apt", "source"}), ("install.md",), binary=False, timeout=3600),
+    Scenario("source-debian", "debian:trixie-slim", frozenset({"debian", "apt", "source"}), ("install.md",), binary=False, timeout=3600),
     Scenario("source-fedora", "fedora:44", frozenset({"dnf", "source"}), ("install.md",), binary=False, timeout=3600),
 ]
 
@@ -298,6 +315,35 @@ SCENARIOS = [
 def select(blocks: list[Block], scenario: Scenario) -> list[Block]:
     """The blocks a scenario runs, in page order."""
     return [b for b in blocks if b.skip is None and b.only <= scenario.tags]
+
+
+def _release(version: str) -> tuple[int, ...]:
+    return tuple(int(n) for n in version.split("."))
+
+
+def release_steps(steps: list[Block], sets: dict) -> tuple[list[Block], list[Block]]:
+    """The steps that run on the release the scenario runs with, and the
+    `since` steps left out because that release is older than theirs. The
+    release is the scenario's VERSION (set, or put there by release_sets),
+    else the one the page sets."""
+    if not any(b.since for b in steps):
+        return list(steps), []
+    version = sets.get("VERSION")
+    if version is None:
+        for b in steps:
+            m = re.search(r"(?m)^VERSION=(\S+)$", b.code) if b.kind == "sh" else None
+            if m:
+                version = m.group(1)
+                break
+    kept, left_out = [], []
+    for b in steps:
+        if b.since is None:
+            kept.append(b)
+            continue
+        if version is None or not RELEASE.match(version):
+            raise PageError(f"{b.at}: a step from release {b.since} on, and no VERSION that names a release")
+        (kept if _release(version) >= _release(b.since) else left_out).append(b)
+    return kept, left_out
 
 
 def _apply_sets(steps: list[Block], sets: dict) -> list[Block]:
@@ -354,6 +400,16 @@ def _step(n: int, b: Block) -> str:
     )
 
 
+# Run before the first step of each page after the first: a reader comes
+# back to a later page in another shell and directory, so a page that needs
+# a file another page left in the current directory fails here too.
+NEW_PAGE_DIR = 'cd "$(mktemp -d "$DOCS_TEST_WORK/page.XXXXXX")" || exit 102\n'
+
+
+def _page(b: Block) -> str:
+    return b.at.rsplit(":", 1)[0]
+
+
 def script(steps: list[Block], prelude: str, sets: dict | None = None) -> str:
     """The bash script that runs the steps and records each one's output."""
     if sets is None:
@@ -376,7 +432,11 @@ def script(steps: list[Block], prelude: str, sets: dict | None = None) -> str:
     parts.append('cd "$DOCS_TEST_WORK"\n')
     if prelude:
         parts.append("# The runner's own setup, not a page's.\nset -eo pipefail\n" + prelude + "set +eo pipefail\n")
+    page = _page(main[0]) if main else None
     for s in main:
+        if _page(s) != page:
+            page = _page(s)
+            parts.append(f"# {page} starts in a fresh directory.\n" + NEW_PAGE_DIR)
         parts.append(_step(index[id(s)], s))
     return "".join(parts)
 
@@ -386,6 +446,12 @@ def page_blocks(name: str) -> list[Block]:
     with open(path, encoding="utf-8") as f:
         return parse(f.read(), f"docs/{name}")
 
+
+# A skip reason that names a release: a version, or the word.
+SKIP_FOR_A_RELEASE = re.compile(r"\b\d+\.\d+\b|\brelease", re.IGNORECASE)
+
+# --cacert followed by a path that is not absolute and not a variable.
+RELATIVE_CACERT = re.compile(r"--cacert[= ]\s*[\"']?(?![/\"'$])\S")
 
 SERVER_REQUEST = re.compile(r"\bcurl\b[^\n]*https://vcon\.example\.com|https://vcon\.example\.com[^\n]*\bcurl\b")
 
@@ -403,9 +469,23 @@ def lint_page(blocks: list[Block], tag_sets: list[frozenset], host: bool = False
                         )
                     seen.add(name)
         if b.skip is not None:
+            if SKIP_FOR_A_RELEASE.search(b.skip):
+                problems.append(
+                    f"{b.at}: a skip that names a release; mark the step `since <version>`, "
+                    "so it runs once that release is published"
+                )
             continue
+        if b.since is not None and b.since not in b.prose:
+            problems.append(
+                f"{b.at}: the step runs from release {b.since} on; the text before it must name "
+                f"{b.since}, so a reader of an older release knows to skip it"
+            )
         if not any(b.only <= tags for tags in tag_sets):
             problems.append(f"{b.at}: no scenario runs this block (only {' '.join(sorted(b.only))})")
+        if b.kind == "sh" and RELATIVE_CACERT.search(b.code):
+            problems.append(
+                f"{b.at}: --cacert names a relative path, which works only in the directory that made it"
+            )
         if b.kind == "sh" and b.expect is None and b.background is None:
             joined = b.code.replace("\\\n", " ")
             if SERVER_REQUEST.search(joined):
@@ -562,6 +642,24 @@ def release_sets(steps: list[Block], sets: dict, released, latest) -> dict:
     return out
 
 
+def plan(steps: list[Block], scenario_sets: dict, released, latest) -> tuple[list[Block], dict, list[str]]:
+    """The steps a run takes, the variables it sets, and what it tells the
+    reader of its log: the release it runs with in place of one not yet
+    published, and each `since` step that release is too old for."""
+    sets = release_sets(steps, scenario_sets, released, latest)
+    notes = [
+        f"the release a page names is not published yet; running with {name}={value}"
+        for name, value in sets.items()
+        if name not in scenario_sets
+    ]
+    steps, left_out = release_steps(steps, sets)
+    notes += [
+        f"{b.at} is for release {b.since} and later; this run's release is older, so it does not run"
+        for b in left_out
+    ]
+    return steps, sets, notes
+
+
 def report(steps: list[Block], outdir: str) -> int:
     """Compare each step with its page; print one line per step. Returns
     how many steps ran as their page says."""
@@ -608,12 +706,11 @@ def run(scenario: Scenario, binary: str | None, keep: str | None) -> int:
         blocks += page_blocks(p)
     steps = select(blocks, scenario)
     token = os.environ.get("GH_TOKEN") or None
-    sets = release_sets(
+    steps, sets, notes = plan(
         steps, scenario.sets, lambda v: released(v, token), lambda: latest_release(token)
     )
-    for name, value in sets.items():
-        if name not in scenario.sets:
-            print(f"docs-test: the release a page names is not published yet; running with {name}={value}")
+    for note in notes:
+        print(f"docs-test: {note}")
     prelude = ""
     if scenario.binary:
         if not binary:

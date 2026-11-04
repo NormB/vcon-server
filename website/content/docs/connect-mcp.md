@@ -22,7 +22,8 @@ CI runs every command on this page against a live server, after
 ## Before you start
 
 - A running server, set up as in [getting started](@/docs/getting-started.md),
-  with the tenant `acme`, and `fullchain.pem` in the current directory.
+  with the tenant `acme`, and the certificate's copy for clients at
+  `/usr/local/share/vcon-server/ca.pem`.
 - One shell for every step: later steps use variables that earlier steps set.
 
 ```sh
@@ -50,7 +51,7 @@ version the client speaks. The server answers with its own name and
 version:
 
 ```sh
-curl -sS --cacert fullchain.pem "$URL/mcp" \
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem "$URL/mcp" \
   -H "Authorization: Bearer $AGENT" \
   -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"1"}}}' \
@@ -65,7 +66,7 @@ The tool list names the tools this key may call, here the two that need
 only `read`:
 
 ```sh
-curl -sS --cacert fullchain.pem "$URL/mcp" \
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem "$URL/mcp" \
   -H "Authorization: Bearer $AGENT" \
   -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | jq -c '[.result.tools[].name]'
@@ -84,10 +85,10 @@ Without a key, or with a revoked one, the answer is `401`. A request with an
 ```sh
 BODY='{"jsonrpc":"2.0","id":3,"method":"tools/list"}'
 H=(-H "Content-Type: application/json" -H "Accept: application/json, text/event-stream")
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/mcp" "${H[@]}" -d "$BODY"
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/mcp" "${H[@]}" -d "$BODY" \
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/mcp" "${H[@]}" -d "$BODY"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/mcp" "${H[@]}" -d "$BODY" \
   -H "Authorization: Bearer $AGENT" -H "Origin: https://example.com"
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/mcp" -H "Authorization: Bearer $AGENT"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/mcp" -H "Authorization: Bearer $AGENT"
 ```
 
 ```text
@@ -107,7 +108,7 @@ the agent's account only:
 install -d -m 0700 agent
 printf '%s\n' "$AGENT" > agent/agent.token
 chmod 0600 agent/agent.token
-cp fullchain.pem agent/ca.pem
+cp /usr/local/share/vcon-server/ca.pem agent/ca.pem
 cat > agent/mcp.toml <<EOF
 url = "$URL/mcp"
 key_file = "$PWD/agent/agent.token"
@@ -159,7 +160,7 @@ for the request with an `Origin` header:
 ```sh
 AUDITOR=$(sudo -u vcon vcon-server key create --tenant "$TENANT" --scope audit --label agent-audit \
   --config $CONFIG | jq -r .token)
-curl -sS --cacert fullchain.pem "$URL/audit?limit=10000" -H "Authorization: Bearer $AUDITOR" \
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem "$URL/audit?limit=10000" -H "Authorization: Bearer $AUDITOR" \
   | jq -r 'select(.action == "mcp") | .status' | sort -u
 ```
 

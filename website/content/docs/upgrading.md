@@ -46,7 +46,7 @@ Store a vCon to read back after the upgrade:
 UUID=$(cat /proc/sys/kernel/random/uuid)
 printf '{"vcon":"0.4.0","uuid":"%s","created_at":"2026-10-27T12:00:00Z","parties":[{"tel":"+15555550106"}],"dialog":[],"attachments":[],"analysis":[]}' \
   "$UUID" > upgrade.vcon
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons" \
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons" \
   -H "Authorization: Bearer $KEY" -H "Content-Type: application/vcon" --data-binary @upgrade.vcon
 ```
 
@@ -61,7 +61,7 @@ but do not install it yet. The commands use their own variable names, so
 they do not change the ones from install:
 
 ```sh
-NEW_VERSION=0.2.0
+NEW_VERSION=0.3.0
 NEW_ARCHIVE=vcon-server-$NEW_VERSION-$(uname -m)-unknown-linux-gnu.tar.gz
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/$NEW_ARCHIVE
 curl -fsSL -o SHA256SUMS-$NEW_VERSION.txt https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/SHA256SUMS.txt
@@ -164,7 +164,7 @@ Under systemd:
 <!-- docs-test: only systemd -->
 ```sh
 sudo systemctl start vcon-server
-timeout 30 sh -c 'until curl -s -o /dev/null --cacert fullchain.pem https://vcon.example.com:8443/health; do sleep 1; done' && echo answering
+timeout 30 sh -c 'until curl -s -o /dev/null --cacert /usr/local/share/vcon-server/ca.pem https://vcon.example.com:8443/health; do sleep 1; done' && echo answering
 ```
 
 ```text
@@ -186,7 +186,7 @@ sudo -u vcon vcon-server serve --config /etc/vcon-server/vcon-server.toml
 The vCon stored before the upgrade reads back the same:
 
 ```sh
-curl -sS --cacert fullchain.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $KEY" -o upgraded.vcon
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $KEY" -o upgraded.vcon
 cmp upgraded.vcon upgrade.vcon && echo "the same bytes"
 ```
 

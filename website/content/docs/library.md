@@ -1,23 +1,26 @@
 +++
 title = "The vcon library"
-description = "Read and check a vCon in your own Rust code with the vcon crate."
+description = "Read, check and write vCons in your own Rust code with the vcon crate."
 weight = 74
 +++
 
 `vcon` is the Rust library vcon-server uses to check every vCon it receives.
-Its current scope is reading and checking a vCon: which of the three forms it
-is in (unsigned, signed or encrypted), whether it is gzipped, its uuid, and
-whether it needs extensions the caller does not support. It does no I/O and
-returns no bytes. The API may change in any release before 1.0.
+It reads and checks a vCon: which of the three forms it is in (unsigned,
+signed or encrypted), whether it is gzipped, its uuid, and whether it needs
+extensions the caller does not support. Reading does no I/O and returns no
+bytes. The API may change in any release before 1.0.
 
-This page describes vcon 0.2.0. In 0.1.0, the first release,
+This page describes vcon 0.3.0. In 0.1.0, the first release,
 `inspect`, `Inspection`, `Limits`, `Rejection`,
 `MAX_SIGNED_LAYERS` and `MAX_JSON_DEPTH` are at the crate root rather than in
 `vcon::read`, and limits are written `Limits { inflated: 1 << 20 }`.
 
-Writing vCons, in `vcon::write`, is on `main` and not yet released: the
-unsigned, gzip, signed and encrypted forms. It ships in vcon 0.3.0, and this
-page will describe it then.
+New in 0.3.0, `vcon::write` writes vCons: an object model of the vCon core
+draft, written unsigned, gzipped, signed (a JWS) or encrypted (a JWE). The cryptography is the caller's, through the `Signer`,
+`ContentEncrypter` and `KeyEncrypter` traits. What the draft does not allow
+is refused, with the JSON path at fault, and `read::inspect` reads every
+output back. The examples are in the
+[`vcon::write` documentation](https://docs.rs/vcon/latest/vcon/write/).
 
 ## Add it
 

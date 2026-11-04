@@ -8,6 +8,8 @@ Run: python3 -I scripts/test_docs_test.py
 """
 
 import os
+import shutil
+import tempfile
 import subprocess
 import sys
 import unittest
@@ -121,6 +123,33 @@ class Parse(unittest.TestCase):
         self.assertEqual(blocks[0].expect, "Name:\n    value\n")
 
 
+    def test_a_since_marker_names_the_first_release_a_step_runs_on(self):
+        page = "From 0.3.0 on:\n\n<!-- docs-test: only release; since 0.3.0 -->\n```sh\nls\n```\n"
+        blocks = dt.parse(page, "p.md")
+        self.assertEqual(blocks[0].since, "0.3.0", "the marker's version is kept")
+        self.assertEqual(blocks[0].only, {"release"}, "since combines with only")
+
+    def test_a_since_marker_needs_a_version(self):
+        for text in ("since", "since next", "since 0.3"):
+            with self.subTest(text=text), self.assertRaisesRegex(
+                dt.PageError, "p.md:1: `since` needs a release version such as 0.3.0"
+            ):
+                dt.parse(f"<!-- docs-test: {text} -->\n```sh\nls\n```\n", "p.md")
+
+    def test_the_text_before_a_block_is_kept_up_to_the_last_block(self):
+        page = "## Heading\n\nFirst.\n\n```sh\nls\n```\n\nSecond, from 0.3.0.\n\n```sh\npwd\n```\n"
+        blocks = dt.parse(page, "p.md")
+        self.assertIn("First.", blocks[0].prose, "a block's own text is kept")
+        self.assertIn("## Heading", blocks[0].prose, "the heading over it is part of it")
+        self.assertNotIn("First.", blocks[1].prose, "the text of an earlier block is not")
+        self.assertIn("Second, from 0.3.0.", blocks[1].prose, "the text after the last block is")
+
+    def test_a_heading_starts_the_text_again(self):
+        page = "Old text 0.3.0.\n\n## New\n\nNew text.\n\n```sh\nls\n```\n"
+        blocks = dt.parse(page, "p.md")
+        self.assertNotIn("0.3.0", blocks[0].prose, "text above the heading belongs to another section")
+
+
 class Matches(unittest.TestCase):
     def test_exact_lines(self):
         self.assertIsNone(dt.mismatch("HTTP/2 201\n", "HTTP/2 201 \r\n"))
@@ -200,6 +229,38 @@ class Script(unittest.TestCase):
         self.assertIn("set +e", script)
 
 
+class Directories(unittest.TestCase):
+    """A reader comes back to a later page in another shell, in another
+    directory, so each page after the first starts in a fresh one."""
+
+    def steps(self):
+        one = dt.parse("```sh\ntouch made.txt\n```\n\n```sh\nls made.txt\n```\n", "docs/one.md")
+        two = dt.parse("```sh\nls made.txt\n```\n", "docs/two.md")
+        return one + two
+
+    def test_each_page_after_the_first_starts_in_a_fresh_directory(self):
+        script = dt.script(self.steps(), "")
+        first, second, third = (script.index(f"# {n}: ") for n in range(3))
+        self.assertNotIn(dt.NEW_PAGE_DIR, script[:first], "the first page runs where the run starts")
+        self.assertNotIn(dt.NEW_PAGE_DIR, script[first:second], "two steps of one page share a directory")
+        self.assertIn(dt.NEW_PAGE_DIR, script[second:third], "the second page starts in a fresh directory")
+
+    def test_a_later_page_cannot_see_an_earlier_pages_relative_file(self):
+        work = tempfile.mkdtemp()
+        out = os.path.join(work, "out")
+        os.mkdir(out)
+        try:
+            with open(os.path.join(work, "run.sh"), "w", encoding="utf-8") as f:
+                f.write(dt.script(self.steps(), ""))
+            env = dict(os.environ, DOCS_TEST_OUT=out, DOCS_TEST_WORK=work)
+            subprocess.run(["bash", os.path.join(work, "run.sh")], env=env, check=False, timeout=60)
+            rcs = [open(os.path.join(out, f"{n}.rc")).read().strip() if os.path.exists(os.path.join(out, f"{n}.rc")) else None for n in range(3)]
+        finally:
+            shutil.rmtree(work)
+        self.assertEqual(rcs[:2], ["0", "0"], "the first page finds its own file")
+        self.assertNotEqual(rcs[2], "0", "the second page does not find the first page's file")
+
+
 class Releases(unittest.TestCase):
     def blocks(self):
         return dt.parse("```sh\nVERSION=0.3.0\n```\n\n```sh\nNEW_VERSION=0.3.0\n```\n", "p.md")
@@ -218,6 +279,63 @@ class Releases(unittest.TestCase):
     def test_no_newest_release_is_an_error(self):
         with self.assertRaisesRegex(dt.PageError, "cannot learn the newest release"):
             dt.release_sets(self.blocks(), {}, lambda v: False, lambda: None)
+
+
+class Since(unittest.TestCase):
+    PAGE = (
+        "```sh\nVERSION=0.3.0\n```\n\nFrom 0.3.0:\n\n"
+        "<!-- docs-test: since 0.3.0 -->\n```sh\ncosign verify-blob x\n```\n\n"
+        "```sh\nsha256sum -c y\n```\n"
+    )
+
+    def codes(self, steps):
+        return [b.code.strip() for b in steps]
+
+    def test_a_step_runs_on_the_release_it_names(self):
+        kept, left_out = dt.release_steps(dt.parse(self.PAGE, "p.md"), {})
+        self.assertIn("cosign verify-blob x", self.codes(kept), "VERSION=0.3.0 on the page runs it")
+        self.assertEqual(left_out, [], "nothing is left out")
+
+    def test_a_step_does_not_run_on_an_older_release(self):
+        kept, left_out = dt.release_steps(dt.parse(self.PAGE, "p.md"), {"VERSION": "0.2.0"})
+        self.assertNotIn("cosign verify-blob x", self.codes(kept), "0.2.0 is before 0.3.0")
+        self.assertEqual(self.codes(left_out), ["cosign verify-blob x"], "the step is reported as left out")
+        self.assertIn("sha256sum -c y", self.codes(kept), "the other steps still run")
+
+    def test_a_later_release_runs_it_and_versions_compare_as_numbers(self):
+        page = self.PAGE.replace("since 0.3.0", "since 0.9.0")
+        kept, _ = dt.release_steps(dt.parse(page, "p.md"), {"VERSION": "0.10.0"})
+        self.assertIn("cosign verify-blob x", self.codes(kept), "0.10.0 is after 0.9.0, not before")
+        kept, _ = dt.release_steps(dt.parse(page, "p.md"), {"VERSION": "0.8.1"})
+        self.assertNotIn("cosign verify-blob x", self.codes(kept), "0.8.1 is before 0.9.0")
+
+    def test_a_since_step_with_no_release_set_is_an_error(self):
+        page = "<!-- docs-test: since 0.3.0 -->\n```sh\nls\n```\n"
+        with self.assertRaisesRegex(dt.PageError, "p.md:2: a step from release 0.3.0 on, and no VERSION"):
+            dt.release_steps(dt.parse(page, "p.md"), {})
+
+    def test_a_run_before_the_release_leaves_the_step_out_and_says_so(self):
+        steps, sets, notes = dt.plan(dt.parse(self.PAGE, "p.md"), {}, lambda v: v != "0.3.0", lambda: "0.2.0")
+        self.assertEqual(sets, {"VERSION": "0.2.0"}, "the newest published release stands in")
+        self.assertNotIn("cosign verify-blob x", self.codes(steps), "the signature step waits for 0.3.0")
+        self.assertIn("sha256sum -c y", self.codes(steps), "the other steps run")
+        self.assertEqual(
+            notes,
+            [
+                "the release a page names is not published yet; running with VERSION=0.2.0",
+                "p.md:8 is for release 0.3.0 and later; this run's release is older, so it does not run",
+            ],
+            "the run says what it ran with and what it left out",
+        )
+
+    def test_a_run_after_the_release_runs_the_step(self):
+        steps, sets, notes = dt.plan(dt.parse(self.PAGE, "p.md"), {}, lambda v: True, lambda: "0.3.0")
+        self.assertEqual((sets, notes), ({}, []), "the page's own release is published")
+        self.assertIn("cosign verify-blob x", self.codes(steps), "the signature step runs")
+
+    def test_pages_without_since_need_no_release(self):
+        kept, left_out = dt.release_steps(dt.parse("```sh\nls\n```\n", "p.md"), {})
+        self.assertEqual((self.codes(kept), left_out), (["ls"], []), "every step runs")
 
 
 class HomePage(unittest.TestCase):
@@ -307,8 +425,66 @@ class Lint(unittest.TestCase):
             problems, ["p.md:5: VERSION is set again; a scenario that sets it would rewrite both"]
         )
 
+    def test_a_relative_cacert_is_found(self):
+        for arg in ("--cacert fullchain.pem", '--cacert "ca.pem"', "--cacert=./ca.pem"):
+            with self.subTest(arg=arg):
+                page = f"```sh\ncurl -sS {arg} https://example.com/health\n```\n\n```text\nok\n```\n"
+                problems = dt.lint_page(dt.parse(page, "p.md"), [frozenset()])
+                self.assertEqual(
+                    problems,
+                    ["p.md:1: --cacert names a relative path, which works only in the directory that made it"],
+                    "a reader in another directory gets curl error 77",
+                )
+
+    def test_an_absolute_or_variable_cacert_is_clean(self):
+        for arg in ("--cacert /usr/local/share/vcon-server/ca.pem", '--cacert "$CA"'):
+            with self.subTest(arg=arg):
+                page = f"```sh\ncurl -sS {arg} https://example.com/health\n```\n\n```text\nok\n```\n"
+                self.assertEqual(dt.lint_page(dt.parse(page, "p.md"), [frozenset()]), [], arg)
+
     def test_a_good_page_has_no_problems(self):
         self.assertEqual(dt.lint_page(dt.parse(PAGE, "page.md"), [frozenset({"apt"})]), [])
+
+    def test_a_skip_that_names_a_release_is_found(self):
+        for reason in ("no release holds it until the release after 0.2.0", "not until the next release"):
+            with self.subTest(reason=reason):
+                page = f"Text.\n\n<!-- docs-test: skip {reason} -->\n```sh\nls\n```\n"
+                problems = dt.lint_page(dt.parse(page, "p.md"), [frozenset()])
+                self.assertEqual(
+                    problems,
+                    [
+                        "p.md:4: a skip that names a release; mark the step `since <version>`, "
+                        "so it runs once that release is published"
+                    ],
+                    "a release condition must not hide a step for good",
+                )
+
+    def test_a_since_step_the_text_does_not_explain_is_found(self):
+        page = "Check the signature:\n\n<!-- docs-test: since 0.3.0 -->\n```sh\nls\n```\n"
+        problems = dt.lint_page(dt.parse(page, "p.md"), [frozenset()])
+        self.assertEqual(
+            problems,
+            [
+                "p.md:4: the step runs from release 0.3.0 on; the text before it must name 0.3.0, "
+                "so a reader of an older release knows to skip it"
+            ],
+            "a reader must learn which releases the step is for",
+        )
+
+    def test_a_since_step_the_text_explains_is_clean(self):
+        page = (
+            "Releases from 0.3.0 hold the signature. 0.2.0 and earlier have none; skip this step.\n\n"
+            "<!-- docs-test: since 0.3.0 -->\n```sh\nls\n```\n"
+        )
+        self.assertEqual(dt.lint_page(dt.parse(page, "p.md"), [frozenset()]), [], "the text names 0.3.0")
+
+    def test_a_since_step_explained_only_in_another_section_is_found(self):
+        page = (
+            "From 0.3.0 on.\n\n## Other\n\nCheck it:\n\n"
+            "<!-- docs-test: since 0.3.0 -->\n```sh\nls\n```\n"
+        )
+        problems = dt.lint_page(dt.parse(page, "p.md"), [frozenset()])
+        self.assertEqual(len(problems), 1, f"the text above the heading does not count: {problems}")
 
     def test_the_real_pages_are_clean(self):
         self.assertEqual(dt.lint(), [])

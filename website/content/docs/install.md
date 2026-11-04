@@ -18,7 +18,7 @@ page shows.
 | You want | Path |
 |---|---|
 | The binary the project built and signed, checked before you run it | [Download a release](#download-a-release) |
-| A build on a host the release binary does not run on, such as Debian 12 | [Install with cargo](#install-with-cargo) |
+| A build on a host the release binary does not run on, one with glibc older than 2.34 | [Install with cargo](#install-with-cargo) |
 | A build of the newest code, or a build you have changed | [Build from source](#build-from-source) |
 | The server in Docker or another container runtime | [Run it in a container](@/docs/container.md) |
 | A newer version over one you already run | [Upgrade](@/docs/upgrading.md) |
@@ -26,10 +26,11 @@ page shows.
 ## What the host needs
 
 - **Linux on x86_64 or aarch64.** No other system is built or tested.
-- **For the release binary, glibc 2.38 or later.** The binary links only the
+- **For the release binary, glibc 2.34 or later.** The binary links only the
   system's `libc`, `libm` and `libgcc_s`; SQLCipher, OpenSSL and the
-  cryptography are compiled in. Debian 13 (glibc 2.41), Ubuntu 24.04 (2.39)
-  and Fedora 44 (2.43) qualify. Debian 12 (2.36) does not. Check yours:
+  cryptography are compiled in. Debian 12 (glibc 2.36), Debian 13 (2.41),
+  Ubuntu 22.04 (2.35), Ubuntu 24.04 (2.39), AlmaLinux 9 (2.34) and Fedora 44
+  (2.43) qualify. Check yours:
 
   ```sh
   ldd --version | sed -n 1p
@@ -41,7 +42,8 @@ page shows.
 
   The last number is glibc's version.
 
-  The 0.2.0 binaries need glibc 2.38. On an older glibc,
+  The 0.2.0 binaries need glibc 2.38; from 0.3.0 the release binaries need
+  2.34. On an older glibc,
   [install with cargo](#install-with-cargo) or
   [build from source](#build-from-source) instead. Both build against the
   host's own glibc.
@@ -62,9 +64,9 @@ these files:
 - `vcon-server-<version>.cdx.json`: a CycloneDX SBOM listing every crate
   built into the server;
 - `SHA256SUMS.txt`: the SHA-256 of each file;
-- from the release after 0.2.0, `SHA256SUMS.txt.sigstore.json`, a keyless
-  Sigstore signature over `SHA256SUMS.txt`, and
-  `vcon-server-<version>.intoto.jsonl`, the build provenance as a file.
+- from 0.3.0, `SHA256SUMS.txt.sigstore.json`, a keyless Sigstore signature
+  over `SHA256SUMS.txt`, and `vcon-server-<version>.intoto.jsonl`, the build
+  provenance as a file. 0.2.0 and earlier have neither.
 
 Every file also carries a signed build provenance attestation. The attestation
 ties the file to the workflow run and the commit that built it. The binary has
@@ -91,6 +93,37 @@ On Fedora, as root:
 dnf install -y -q sudo curl tar gzip
 ```
 
+To [check the signed checksums](#check-the-signed-checksums) of 0.3.0 or a
+later release, the host also needs [cosign](https://docs.sigstore.dev/cosign/system_config/installation/),
+Sigstore's signing tool. Debian 13 packages cosign 2.5.0
+(`sudo apt install cosign`):
+
+<!-- docs-test: only debian release -->
+```sh
+sudo apt-get install -y -qq cosign >/dev/null
+```
+
+Ubuntu 24.04 and Fedora 44 do not package cosign. Install cosign's own
+package of 3.0.6, the version the release workflow signs with. On Ubuntu:
+
+<!-- docs-test: only ubuntu release -->
+```sh
+COSIGN_DEB=cosign_3.0.6_$(dpkg --print-architecture).deb
+curl -fsSLO https://github.com/sigstore/cosign/releases/download/v3.0.6/$COSIGN_DEB
+sudo apt-get install -y -qq "./$COSIGN_DEB" >/dev/null
+```
+
+On Fedora:
+
+<!-- docs-test: only dnf release -->
+```sh
+sudo dnf install -y -q https://github.com/sigstore/cosign/releases/download/v3.0.6/cosign-3.0.6-1.$(uname -m).rpm
+```
+
+On another system, follow cosign's
+[installation page](https://docs.sigstore.dev/cosign/system_config/installation/).
+Without cosign, the checksum and the attestation below are the checks.
+
 ### Download and check it
 
 Set the version, then download the archive for this host's CPU and the
@@ -99,7 +132,7 @@ archive names:
 
 <!-- docs-test: only release -->
 ```sh
-VERSION=0.2.0
+VERSION=0.3.0
 ARCHIVE=vcon-server-$VERSION-$(uname -m)-unknown-linux-gnu.tar.gz
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$VERSION/$ARCHIVE
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$VERSION/SHA256SUMS.txt
@@ -218,11 +251,16 @@ rm changed.tar.gz
 
 ### Check the signed checksums
 
-Releases after 0.2.0 also hold `SHA256SUMS.txt.sigstore.json`. To check that
-`SHA256SUMS.txt` itself came from this repository's release workflow, with
-[cosign](https://docs.sigstore.dev/cosign/system_config/installation/):
+Releases from 0.3.0 also hold `SHA256SUMS.txt.sigstore.json`, a signature
+over `SHA256SUMS.txt`. **0.2.0 and earlier have no signature:** on those
+versions, skip this step. For them, `sha256sum -c SHA256SUMS.txt --ignore-missing`
+above and the attestation are the checks.
 
-<!-- docs-test: skip no published release holds the signature until the release after 0.2.0 -->
+From 0.3.0, check that `SHA256SUMS.txt` itself came from this repository's
+release workflow, run for a `v` tag, with
+[cosign](#what-to-install-first):
+
+<!-- docs-test: only release; since 0.3.0 -->
 ```sh
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$VERSION/SHA256SUMS.txt.sigstore.json
 cosign verify-blob SHA256SUMS.txt \
@@ -231,7 +269,12 @@ cosign verify-blob SHA256SUMS.txt \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-It prints `Verified OK`. [SECURITY.md](https://github.com/NormB/vcon-server/blob/main/SECURITY.md#verifying-a-release)
+```text
+Verified OK
+```
+
+With the signature checked, the `sha256sum -c` above shows that the
+archive is one the release workflow signed for. [SECURITY.md](https://github.com/NormB/vcon-server/blob/main/SECURITY.md#verifying-a-release)
 also checks the provenance file.
 
 ### When a step fails
@@ -247,8 +290,9 @@ also checks the provenance file.
 - **`sha256sum: SHA256SUMS.txt: no file was verified`, with no `OK` or
   `FAILED` line before it.** The archive is not in the current directory, or
   its name differs from the one in `SHA256SUMS.txt`.
-- **`version 'GLIBC_2.38' not found`.** The host's glibc is older than 2.38.
-  This is the Debian 12 output:
+- **`version 'GLIBC_2.38' not found`.** The host's glibc is older than the
+  binary needs: 2.38 for 0.2.0, 2.34 from 0.3.0. This is the 0.2.0 binary
+  on Debian 12:
 
   ```text
   vcon-server: /lib/aarch64-linux-gnu/libc.so.6: version `GLIBC_2.38' not found (required by vcon-server)
@@ -259,6 +303,18 @@ also checks the provenance file.
   status 4. `gh` is not signed in. Run `gh auth login`, or set `GH_TOKEN`.
 - **`unknown command "attestation" for "gh"`.** This `gh` is too old. Install
   it from GitHub's package repository, as shown above.
+- **`curl: (22) The requested URL returned error: 404`** for
+  `SHA256SUMS.txt.sigstore.json`. The release is 0.2.0 or earlier, which has
+  no signature. Skip the cosign step.
+- **`tuf refresh failed`, with `x509: certificate signed by unknown
+  authority`.** cosign could not reach Sigstore's trust root because the CA
+  certificates are missing. Install `ca-certificates`, as shown above.
+- **`no matching CertificateIdentity found`.** The signature was not made by
+  this repository's release workflow for a `v` tag. Do not run the archive,
+  and report it as a [security problem](@/docs/security.md#reporting-a-vulnerability).
+- **`invalid signature when validating ASN.1 encoded signature`.**
+  `SHA256SUMS.txt` is not the file that was signed. Download it again; if it
+  fails again, report it as a security problem.
 
 ## Install with cargo
 

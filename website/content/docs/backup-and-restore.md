@@ -19,7 +19,8 @@ CI runs every command on this page against a live server, after
 ## Before you start
 
 - A running server, set up as in [getting started](@/docs/getting-started.md),
-  with the tenant `acme`, and `fullchain.pem` in the current directory.
+  with the tenant `acme`, and the certificate's copy for clients at
+  `/usr/local/share/vcon-server/ca.pem`.
 - One shell for every step: later steps use variables that earlier steps set.
 
 ```sh
@@ -36,7 +37,7 @@ Store a vCon, so that the backup holds one this page can look for:
 UUID=$(cat /proc/sys/kernel/random/uuid)
 printf '{"vcon":"0.4.0","uuid":"%s","created_at":"2026-10-27T12:00:00Z","parties":[{"tel":"+15555550105"}],"dialog":[],"attachments":[],"analysis":[]}' \
   "$UUID" > backup.vcon
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons" \
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons" \
   -H "Authorization: Bearer $KEY" -H "Content-Type: application/vcon" --data-binary @backup.vcon
 ```
 
@@ -125,10 +126,10 @@ Delete the vCon, and revoke the key, so the restore has something to bring
 back:
 
 ```sh
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem -X DELETE "$URL/vcons/$UUID" -H "Authorization: Bearer $KEY"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem -X DELETE "$URL/vcons/$UUID" -H "Authorization: Bearer $KEY"
 KEY_ID=$(sudo -u vcon vcon-server key list --tenant "$TENANT" --config $CONFIG | jq -r 'select(.label == "backup-app") | .id')
 sudo -u vcon vcon-server key revoke "$KEY_ID" --config $CONFIG
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $KEY"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $KEY"
 ```
 
 ```text
@@ -178,7 +179,7 @@ Start the server, under systemd:
 <!-- docs-test: only systemd -->
 ```sh
 sudo systemctl start vcon-server
-timeout 30 sh -c 'until curl -s -o /dev/null --cacert fullchain.pem https://vcon.example.com:8443/health; do sleep 1; done' && echo answering
+timeout 30 sh -c 'until curl -s -o /dev/null --cacert /usr/local/share/vcon-server/ca.pem https://vcon.example.com:8443/health; do sleep 1; done' && echo answering
 ```
 
 ```text
@@ -204,7 +205,7 @@ after the backup is back, and **the key revoked after the backup is valid
 again**:
 
 ```sh
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $KEY"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $KEY"
 ```
 
 ```text
@@ -229,7 +230,7 @@ this page revoked:
 
 ```sh
 sudo -u vcon vcon-server key revoke "$KEY_ID" --config $CONFIG
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $KEY"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $KEY"
 ```
 
 ```text

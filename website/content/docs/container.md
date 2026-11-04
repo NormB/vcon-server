@@ -67,7 +67,7 @@ CMD ["serve", "--config", "/etc/vcon-server/vcon-server.toml"]
 Build it, naming the version:
 
 ```sh
-VERSION=0.2.0
+VERSION=0.3.0
 docker build -q --build-arg VERSION=$VERSION -t vcon-server:$VERSION . >/dev/null
 docker run --rm vcon-server:$VERSION --version
 ```
@@ -132,9 +132,15 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 30 \
   -addext basicConstraints=critical,CA:FALSE -addext keyUsage=critical,digitalSignature -addext extendedKeyUsage=serverAuth \
   -keyout privkey.pem -out fullchain.pem 2>/dev/null
 vcs --entrypoint sh vcon-server:$VERSION -c 'cat > /etc/vcon-server/cert.pem' < fullchain.pem
+sudo install -d -m 0755 /usr/local/share/vcon-server
+sudo install -m 0644 fullchain.pem /usr/local/share/vcon-server/container-ca.pem
 vcs --entrypoint sh vcon-server:$VERSION -c 'umask 077; cat > /etc/vcon-server/key.pem' < privkey.pem
 rm privkey.pem
 ```
+
+The copy at `/usr/local/share/vcon-server/container-ca.pem` is for clients on
+this host: the `curl` commands below pass it by its absolute path, so they
+work from any directory. "Remove everything" deletes it.
 
 Write the configuration, the same as on a host, and copy it in:
 
@@ -220,7 +226,7 @@ The certificate names `vcon.example.com`. `--resolve` points that name at
 this host for one request, without a DNS entry:
 
 ```sh
-curl -sS --cacert fullchain.pem --resolve vcon.example.com:8443:127.0.0.1 \
+curl -sS --cacert /usr/local/share/vcon-server/container-ca.pem --resolve vcon.example.com:8443:127.0.0.1 \
   https://vcon.example.com:8443/health -H "Authorization: Bearer $MONITOR"
 ```
 
@@ -283,8 +289,8 @@ The data stays in its volume. Start the same container again:
 
 ```sh
 docker start vcon-server >/dev/null
-timeout 30 sh -c 'until curl -s -o /dev/null --cacert fullchain.pem --resolve vcon.example.com:8443:127.0.0.1 https://vcon.example.com:8443/health; do sleep 1; done'
-curl -sS --cacert fullchain.pem --resolve vcon.example.com:8443:127.0.0.1 \
+timeout 30 sh -c 'until curl -s -o /dev/null --cacert /usr/local/share/vcon-server/container-ca.pem --resolve vcon.example.com:8443:127.0.0.1 https://vcon.example.com:8443/health; do sleep 1; done'
+curl -sS --cacert /usr/local/share/vcon-server/container-ca.pem --resolve vcon.example.com:8443:127.0.0.1 \
   https://vcon.example.com:8443/health -H "Authorization: Bearer $MONITOR"
 ```
 
@@ -327,8 +333,8 @@ Remove the container started by hand, then start the service. Compose reads
 ```sh
 docker rm -f vcon-server >/dev/null
 env VERSION=$VERSION docker compose up -d --quiet-pull 2>/dev/null
-timeout 30 sh -c 'until curl -s -o /dev/null --cacert fullchain.pem --resolve vcon.example.com:8443:127.0.0.1 https://vcon.example.com:8443/health; do sleep 1; done'
-curl -sS --cacert fullchain.pem --resolve vcon.example.com:8443:127.0.0.1 \
+timeout 30 sh -c 'until curl -s -o /dev/null --cacert /usr/local/share/vcon-server/container-ca.pem --resolve vcon.example.com:8443:127.0.0.1 https://vcon.example.com:8443/health; do sleep 1; done'
+curl -sS --cacert /usr/local/share/vcon-server/container-ca.pem --resolve vcon.example.com:8443:127.0.0.1 \
   https://vcon.example.com:8443/health -H "Authorization: Bearer $MONITOR"
 ```
 
@@ -357,5 +363,6 @@ a server you are trying out:
 docker rm -f vcon-server >/dev/null 2>&1
 docker volume rm vcon-etc vcon-data vcon-backup >/dev/null
 docker image rm vcon-server:$VERSION >/dev/null
+sudo rm -f /usr/local/share/vcon-server/container-ca.pem
 cd .. && rm -r vcon-container
 ```

@@ -3,11 +3,19 @@
 A Rust library for [vCons](https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/),
 the IETF conversation-record format.
 
-Its current scope is reading and checking a vCon: which of the three forms it
-is in (unsigned, signed or encrypted), whether it is gzipped, its uuid, and
-whether it needs extensions the caller does not support. If the vCon is
-refused, it says why. It does no I/O and returns no bytes, so the caller can
-keep the body exactly as received.
+It reads and checks a vCon: which of the three forms it is in (unsigned,
+signed or encrypted), whether it is gzipped, its uuid, and whether it needs
+extensions the caller does not support. If the vCon is refused, it says why.
+Reading does no I/O and returns no bytes, so the caller can keep the body
+exactly as received.
+
+From 0.3.0 it also writes vCons, in `vcon::write`: an object model of the
+vCon core draft, written unsigned, gzipped, signed (a JWS) or encrypted (a
+JWE). The cryptography is the caller's, through the `Signer`,
+`ContentEncrypter` and `KeyEncrypter` traits. What the draft does not allow
+is refused, with the JSON path at fault, and `read::inspect` reads every
+output back. The examples are in the
+[`vcon::write` documentation](https://docs.rs/vcon/latest/vcon/write/).
 
 **Status:** in development, not yet for production. The API may change in any
 release before 1.0.

@@ -9,9 +9,8 @@ change. [What is built](@/docs/status.md) says what works today.
 
 - **Storage backends:** keeping vCons in PostgreSQL and in S3-compatible
   object storage, beside today's local data directory.
-- **MCP tools:** the tools an agent calls through the MCP endpoint, which is
-  built and has none yet.
-- **vcon 0.3.0:** the next release of the `vcon` library crate.
+- **The draft's recommended algorithms** for `vcon::write` (RS256,
+  RSA-OAEP and A256CBC-HS512), as an option of the `vcon` crate.
 
 A milestone is listed here before it is built and moves to
 [What is built](@/docs/status.md) when it ships. The

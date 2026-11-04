@@ -20,7 +20,8 @@ CI runs every command on this page against a live server, after
 ## Before you start
 
 - A running server, set up as in [getting started](@/docs/getting-started.md),
-  with the tenant `acme`, and `fullchain.pem` in the current directory.
+  with the tenant `acme`, and the certificate's copy for clients at
+  `/usr/local/share/vcon-server/ca.pem`.
 - One shell for every step: later steps use variables that earlier steps set.
 
 ```sh
@@ -40,7 +41,7 @@ CREATED=$(sudo -u vcon vcon-server key create --tenant "$TENANT" --scope read --
 OLD_ID=$(echo "$CREATED" | jq -r .id)
 OLD_KEY=$(echo "$CREATED" | jq -r .token)
 unset CREATED
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons" -H "Authorization: Bearer $OLD_KEY"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons" -H "Authorization: Bearer $OLD_KEY"
 ```
 
 ```text
@@ -51,7 +52,7 @@ curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons" -H
 `204`:
 
 ```sh
-curl -sS -i --cacert fullchain.pem -X DELETE "$URL/admin/keys/$OLD_ID" -H "Authorization: Bearer $OPS"
+curl -sS -i --cacert /usr/local/share/vcon-server/ca.pem -X DELETE "$URL/admin/keys/$OLD_ID" -H "Authorization: Bearer $OPS"
 ```
 
 ```text
@@ -62,7 +63,7 @@ date: <date>
 Its next request is refused with `401`:
 
 ```sh
-curl -sS --cacert fullchain.pem "$URL/vcons" -H "Authorization: Bearer $OLD_KEY"
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons" -H "Authorization: Bearer $OLD_KEY"
 ```
 
 ```text
@@ -74,7 +75,7 @@ again answers `204` too. The key list keeps the key, with the time it was
 revoked:
 
 ```sh
-curl -sS --cacert fullchain.pem "$URL/admin/tenants/$TENANT/keys" -H "Authorization: Bearer $OPS" \
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem "$URL/admin/tenants/$TENANT/keys" -H "Authorization: Bearer $OPS" \
   | jq -c --arg id "$OLD_ID" '.[] | select(.id == $id) | {label, revoked: (.revoked_at != null)}'
 ```
 
@@ -86,7 +87,7 @@ Only the operator key may revoke. A tenant key gets `403`:
 
 ```sh
 SPARE=$(sudo -u vcon vcon-server key create --tenant "$TENANT" --scope read --label rotate-spare --config $CONFIG | jq -r .token)
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem -X DELETE "$URL/admin/keys/$OLD_ID" -H "Authorization: Bearer $SPARE"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem -X DELETE "$URL/admin/keys/$OLD_ID" -H "Authorization: Bearer $SPARE"
 ```
 
 ```text
@@ -101,7 +102,7 @@ server running or not. `key list` finds a key's id by its label:
 ```sh
 SPARE_ID=$(sudo -u vcon vcon-server key list --tenant "$TENANT" --config $CONFIG | jq -r 'select(.label == "rotate-spare") | .id')
 sudo -u vcon vcon-server key revoke "$SPARE_ID" --config $CONFIG
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons" -H "Authorization: Bearer $SPARE"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons" -H "Authorization: Bearer $SPARE"
 ```
 
 ```text
@@ -128,7 +129,7 @@ before the old one goes:
    `GET /key` shows which key a token is:
 
    ```sh
-   curl -sS --cacert fullchain.pem "$URL/key" -H "Authorization: Bearer $NEXT" | jq -r .scopes[]
+   curl -sS --cacert /usr/local/share/vcon-server/ca.pem "$URL/key" -H "Authorization: Bearer $NEXT" | jq -r .scopes[]
    ```
 
    ```text
@@ -141,9 +142,9 @@ before the old one goes:
 
    ```sh
    CURRENT_ID=$(sudo -u vcon vcon-server key list --tenant "$TENANT" --config $CONFIG | jq -r 'select(.label == "rotate-current-1") | .id')
-   curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem -X DELETE "$URL/admin/keys/$CURRENT_ID" -H "Authorization: Bearer $OPS"
-   curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons" -H "Authorization: Bearer $CURRENT"
-   curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons" -H "Authorization: Bearer $NEXT"
+   curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem -X DELETE "$URL/admin/keys/$CURRENT_ID" -H "Authorization: Bearer $OPS"
+   curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons" -H "Authorization: Bearer $CURRENT"
+   curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons" -H "Authorization: Bearer $NEXT"
    ```
 
    ```text
@@ -168,7 +169,7 @@ WRITER=$(sudo -u vcon vcon-server key create --tenant "$TENANT" --scope write --
 UUID=$(cat /proc/sys/kernel/random/uuid)
 printf '{"vcon":"0.4.0","uuid":"%s","created_at":"2026-10-27T12:00:00Z","parties":[{"tel":"+15555550104"}],"dialog":[],"attachments":[],"analysis":[]}' \
   "$UUID" > rotate.vcon
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons" \
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons" \
   -H "Authorization: Bearer $WRITER" -H "Content-Type: application/vcon" --data-binary @rotate.vcon
 ```
 
@@ -258,7 +259,7 @@ start the server, under systemd:
 <!-- docs-test: only systemd -->
 ```sh
 sudo systemctl start vcon-server
-timeout 30 sh -c 'until curl -s -o /dev/null --cacert fullchain.pem https://vcon.example.com:8443/health; do sleep 1; done' && echo answering
+timeout 30 sh -c 'until curl -s -o /dev/null --cacert /usr/local/share/vcon-server/ca.pem https://vcon.example.com:8443/health; do sleep 1; done' && echo answering
 ```
 
 ```text
@@ -280,7 +281,7 @@ sudo -u vcon vcon-server serve --config /etc/vcon-server/vcon-server.toml
 The vCon stored before the rotation reads back the same:
 
 ```sh
-curl -sS --cacert fullchain.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $WRITER" -o rotated.vcon
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $WRITER" -o rotated.vcon
 cmp rotated.vcon rotate.vcon && echo "the same bytes"
 ```
 
@@ -314,7 +315,7 @@ Revoke the keys this page made:
 ```sh
 sudo -u vcon vcon-server key list --config $CONFIG | jq -r 'select(.label | startswith("rotate-")) | select(.revoked_at == null) | .id' \
   | while read -r id; do sudo -u vcon vcon-server key revoke "$id" --config $CONFIG; done
-curl -sS -o /dev/null -w '%{http_code}\n' --cacert fullchain.pem "$URL/vcons" -H "Authorization: Bearer $NEXT"
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons" -H "Authorization: Bearer $NEXT"
 ```
 
 ```text
