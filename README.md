@@ -12,12 +12,25 @@
 [![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/NormB/badge.svg)](https://hub.xerj.org/contributors/NormB)
 
 A server that stores [vCons](https://datatracker.ietf.org/wg/vcon/about/), the
-IETF conversation-record format, encrypted at rest, and returns them to
-authorised readers.
+IETF conversation-record format, encrypted at rest, and returns them only to
+the keys allowed to see them.
 
-**Status:** in development. It is not ready for production use. The
-documentation, including what is built so far, is at
-[vcon-server.com](https://vcon-server.com/docs/).
+**Status: 0.3.0 released, not yet for production.** The `vcon` and
+`vcon-server` crates are on crates.io, and the server for Linux on x86_64 and
+aarch64 is on [GitHub](https://github.com/NormB/vcon-server/releases).
+[What is built](https://vcon-server.com/docs/status/) says what works today.
+The documentation is at [vcon-server.com](https://vcon-server.com/docs/).
+
+## Install
+
+A release holds the server as a `.tar.gz` archive for each CPU,
+`SHA256SUMS.txt` with the SHA-256 of each file, and
+`SHA256SUMS.txt.sigstore.json`, a keyless Sigstore signature over
+`SHA256SUMS.txt`. Check the archive with `sha256sum` and the checksums with
+`cosign verify-blob`. The
+[install page](https://vcon-server.com/docs/install/#download-a-release) gives
+each command and what it prints, and the other ways to install: cargo, a build
+from source and a container.
 
 ## For AI agents
 
@@ -48,14 +61,26 @@ Enable the repository's git hooks once per clone:
 git config core.hooksPath .githooks
 ```
 
-Before each commit they run `scripts/rustfmt.sh --check`, `scripts/check_style.py`,
-`cargo clippy -D warnings` and `cargo test` on exactly what is staged. They refuse personal data and
-AI-tool attribution in staged changes and commit messages. Before each push,
-every outgoing commit must carry a good signature from an allowed signer and
-the pusher's own configured name and email. Test data uses
-reserved values only: `example.com` addresses, 555-01xx numbers, and RFC 5737
-and RFC 3849 IP addresses. The one exception is the IETF draft's own examples
-in `crates/vcon/tests/fixtures/ietf/`, kept unchanged. `scripts/test-hooks.sh` and `scripts/test-pre-push.sh` test the hooks
+Before each commit, `.githooks/pre-commit` refuses personal data and AI-tool
+attribution in the staged changes (`scripts/scan_forbidden.py`) and checks
+that git ignores every export of the private design documents
+(`scripts/check-ignored-exports.sh`). Then, on a copy of exactly what is
+staged, it runs `scripts/rustfmt.sh --check`, `scripts/check_style.py --walk`,
+`cargo clippy --workspace --all-targets --locked --quiet -- -D warnings` and
+`cargo test --workspace --locked --quiet`, the same for the fuzz package, the
+tests of the scripts, and `scripts/check_package.py`, which checks what each
+crate would publish. `.githooks/commit-msg` runs the same scan over the commit
+message. Before each push, `.githooks/pre-push` refuses any outgoing commit
+that has no good signature from an allowed signer, whose author or committer
+is not the pusher's configured name and email, or whose message
+`scripts/scan-commit-messages.sh` refuses. The
+[development page](https://vcon-server.com/docs/development/#gates) describes
+each gate.
+
+Test data uses reserved values only: `example.com` addresses, 555-01xx
+numbers, and RFC 5737 and RFC 3849 IP addresses. The one exception is the IETF
+draft's own examples in `crates/vcon/tests/fixtures/ietf/`, kept unchanged.
+`scripts/test-hooks.sh` and `scripts/test-pre-push.sh` test the hooks
 themselves.
 
 ## Support the project

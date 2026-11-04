@@ -198,12 +198,17 @@ Enable the repository's hooks once per clone:
 git config core.hooksPath .githooks
 ```
 
-- **pre-commit** runs `scripts/rustfmt.sh --check`, `scripts/check_style.py`,
-  `cargo clippy -D warnings` and the tests on exactly what is staged, then the same for the fuzz package (its
-  format, clippy and its own tests), and refuses personal data and AI-tool
-  attribution in staged changes. It also checks that every path
-  `.bestpractices.json` links to exists (`scripts/check_repo_links.py`), and
-  what each crate would publish to crates.io (`scripts/check_package.py`):
+- **pre-commit** refuses personal data and AI-tool attribution in staged
+  changes (`scripts/scan_forbidden.py`), and checks that git ignores every
+  export of the private design documents
+  (`scripts/check-ignored-exports.sh`). On a copy of exactly what is staged,
+  it runs `scripts/rustfmt.sh --check`, `scripts/check_style.py --walk`,
+  `cargo clippy --workspace --all-targets --locked --quiet -- -D warnings`
+  and `cargo test --workspace --locked --quiet`, then the same for the fuzz
+  package (its format, clippy and its own tests). It also checks that every
+  path `.bestpractices.json` links to exists
+  (`scripts/test_check_repo_links.py`), and what each crate would publish to
+  crates.io (`scripts/check_package.py`):
   it packages each published crate, refuses any file in a `.crate` other
   than the sources, the files they include, the README and the two
   licences, and builds each crate from its `.crate` alone; a missing README or licence; a dependency taken by git or by

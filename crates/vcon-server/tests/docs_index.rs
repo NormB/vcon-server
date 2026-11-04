@@ -6,8 +6,12 @@
 //! `doc`, `docs` or `documentation` folder holding a file of at most
 //! 100,000 bytes that mentions installing, using and security.
 
+mod markdown;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+
+use markdown::{is_relative, link_targets};
 
 /// The repository root, two levels above this crate.
 fn root() -> PathBuf {
@@ -20,29 +24,6 @@ const BEST_PRACTICES_MAX_SIZE: usize = 100_000;
 fn index() -> String {
     let path = root().join("docs/README.md");
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
-}
-
-/// The targets of the inline Markdown links `[text](target)` in `text`.
-fn link_targets(text: &str) -> Vec<String> {
-    let mut targets = Vec::new();
-    let mut rest = text;
-    while let Some(at) = rest.find("](") {
-        rest = &rest[at + 2..];
-        if let Some(end) = rest.find(')') {
-            targets.push(rest[..end].to_string());
-            rest = &rest[end..];
-        }
-    }
-    targets
-}
-
-/// Whether a link target is a path in the repository, not a URL or an anchor.
-fn is_relative(target: &str) -> bool {
-    !(target.is_empty()
-        || target.starts_with('#')
-        || target.starts_with('/')
-        || target.contains("://")
-        || target.starts_with("mailto:"))
 }
 
 #[test]
