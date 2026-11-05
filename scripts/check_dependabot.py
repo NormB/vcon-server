@@ -16,9 +16,17 @@ EXCEPTIONS with the reason it needs none:
 Found in sipnab on 2026-10-27: an npm lockfile no entry covered kept a
 vulnerable qs for two weeks after the fix was released.
 
+A package a Cargo.lock takes from a git source must be ignored, for every
+version, by the cargo entry for that lockfile's directory, and an entry
+may ignore a package for every version only when each lockfile it covers
+takes that package from git. Bumping a crates.io package of the same name
+rewrites the git one's requirement as well: on 2026-11-03 Dependabot's
+update job failed on rusqlite and the fork vcon-server's tests use. The
+git package is then tracked by hand.
+
 Run with: python3 -I scripts/check_dependabot.py
 (from the repository root; needs PyYAML). Exits 1 naming each file not
-covered.
+covered and each break of the rule for git packages.
 """
 
 import fnmatch
@@ -27,6 +35,7 @@ import posixpath
 import re
 import subprocess
 import sys
+import tomllib
 
 # A file listed here needs no Dependabot entry; the reason says why.
 EXCEPTIONS = {}
@@ -98,18 +107,56 @@ def uncovered(paths, config, read, exceptions):
     return problems
 
 
+def git_packages(lock_text):
+    """The names of the packages a Cargo.lock takes from a git source."""
+    packages = tomllib.loads(lock_text).get("package") or []
+    return sorted({p["name"] for p in packages if str(p.get("source", "")).startswith("git+")})
+
+
+def ignores_every_version(update):
+    """The dependency names `update` ignores whatever the version."""
+    return {i.get("dependency-name") for i in update.get("ignore") or [] if not i.get("versions") and not i.get("update-types")}
+
+
+def git_problems(paths, config, read):
+    """One line per Cargo.lock whose git packages and its cargo entry's
+    ignores disagree, in path order. Dependabot's bump of a crates.io
+    package of the same name as a git one rewrites the git one's
+    requirement too (rusqlite and the fork the tests use, found on
+    2026-11-03), so its entry must ignore the name; an entry that ignores a
+    name the lockfile takes from no git source stops that package's
+    updates, so it may not."""
+    problems = []
+    for path, ecosystem, directory in sorted(dependency_files(paths, read)):
+        if ecosystem != "cargo":
+            continue
+        git = set(git_packages(read(path)))
+        for update in (config or {}).get("updates") or []:
+            if not covered({"updates": [update]}, "cargo", directory):
+                continue
+            ignored = ignores_every_version(update)
+            for name in sorted(git - ignored):
+                problems.append(f"{path}: {name} comes from git; the cargo entry for {directory} must ignore it")
+            for name in sorted(ignored - git):
+                problems.append(f"{path}: the cargo entry for {directory} ignores {name}, which comes from no git source there")
+    return problems
+
+
 def main():
     import yaml  # Only the command needs it; the tests pass parsed data.
 
     root = pathlib.Path(subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True).stdout.strip())
     paths = subprocess.run(["git", "ls-files"], cwd=root, capture_output=True, text=True, check=True).stdout.splitlines()
     config = yaml.safe_load((root / ".github/dependabot.yml").read_text(encoding="utf-8"))
-    problems = uncovered(paths, config, lambda p: (root / p).read_text(encoding="utf-8"), EXCEPTIONS)
+    def read(path):
+        return (root / path).read_text(encoding="utf-8")
+
+    problems = uncovered(paths, config, read, EXCEPTIONS) + git_problems(paths, config, read)
     for problem in problems:
         print(f"check_dependabot: {problem}", file=sys.stderr)
     if problems:
         return 1
-    print(f"check_dependabot: ok ({len(dependency_files(paths, lambda p: (root / p).read_text(encoding='utf-8')))} dependency files covered)")
+    print(f"check_dependabot: ok ({len(dependency_files(paths, read))} dependency files covered)")
     return 0
 
 

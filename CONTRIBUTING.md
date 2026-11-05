@@ -37,7 +37,9 @@ see [Reporting a security problem](#reporting-a-security-problem).
 ## Proposing a change
 
 Send it as a pull request against `main`. CI runs the same checks as the
-hooks on every pull request.
+hooks on every pull request. The check `CI success` passes only when every
+job of `.github/workflows/ci.yml` succeeded, and a pull request merges only
+after it passes.
 
 ## Contributor License Agreement
 

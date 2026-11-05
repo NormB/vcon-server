@@ -276,6 +276,11 @@ jobs:
           set -euo pipefail
           python3 -I scripts/test_check_dependabot.py
           python3 -I scripts/check_dependabot.py
+      - name: CI success needs every job of this workflow
+        run: |
+          set -euo pipefail
+          python3 -I scripts/test_ci_success.py
+          python3 -I scripts/ci_success.py check
 
   hooks:
     name: git hooks
@@ -561,3 +566,25 @@ jobs:
           set -euo pipefail
           chmod 0755 "$RUNNER_TEMP/server/vcon-server"
           python3 -I scripts/docs_test.py run "$SCENARIO" --binary "$RUNNER_TEMP/server/vcon-server"
+
+  # The one check of this workflow the main branch's ruleset must name. It
+  # needs every job above, so the how-to scenarios and the fuzz targets,
+  # whose check names change with their matrices and which start only after
+  # docs-binary and fuzz-targets, gate a merge as well. It runs even when a
+  # job failed (a skipped check would pass the ruleset) and passes only when
+  # every job succeeded (scripts/ci_success.py; the scan job checks that
+  # this list names every job).
+  ci-success:
+    name: CI success
+    if: always()
+    needs: [rust, coverage, fuzz-targets, fuzz, clients, scan, hooks, messages, deny, site, brand, console, docs-binary, docs]
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Every job above succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: python3 -I scripts/ci_success.py verdict
