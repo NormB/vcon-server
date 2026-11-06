@@ -112,6 +112,14 @@ All notable changes to this project are recorded here. The format follows
 
 ### Changed
 
+- The tests run under cargo-nextest, pinned to 0.9.148 by
+  `scripts/nextest.sh`, in the commit hook and in CI: a test still running
+  after 60 seconds is reported by name, and after 3 minutes it is ended and
+  fails, where one hung test used to hang the hook. The doc tests still run
+  under `cargo test --doc`. Test builds on aarch64 Linux link with the Rust
+  toolchain's own lld (`scripts/cc-lld.sh`), and fall back to the system
+  linker when the toolchain has none; release binaries link as before.
+
 - Every catalog is at schema version 4: `server.sqlite` has each tenant's
   metadata level, and each tenant's catalog has a place for each version
   in a Parquet pack file and the tables of its pack files, all empty until

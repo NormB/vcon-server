@@ -46,8 +46,23 @@ so tests drive the same code the binary does.
 
 ```sh
 cargo build
-cargo test --workspace
+scripts/nextest.sh install
+scripts/nextest.sh run --workspace
+cargo test --workspace --doc
 ```
+
+The tests run under [cargo-nextest](https://nexte.st/), which runs each test
+in a process of its own and ends a test still running at the deadline in
+`.config/nextest.toml`: a test that runs for more than 60 seconds is
+reported as `SLOW` by name, and after 3 minutes it is ended and fails as
+`TIMEOUT`. `cargo test` has no such deadline, so one hung test would hang the
+run. `scripts/nextest.sh` pins nextest's version; `scripts/nextest.sh install`
+downloads that release for x86_64 or aarch64 Linux, checks it against its
+pinned SHA-256 and puts it in cargo's `bin` directory, and the commit hook
+refuses to run another version. nextest does not run doc tests, so
+`cargo test --doc` runs those. Arguments after `run` are nextest's, which
+takes cargo's package and target options and a test-name filter, as
+`cargo test` does.
 
 The tests that run the real binary (`crates/vcon-server/tests/`) start a
 server on a free port, with a temporary data directory and certificate, and
@@ -85,13 +100,26 @@ docker run -d --rm --name vcon-rustfs -p 127.0.0.1:9000:9000 \
   rustfs/rustfs@sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2
 export VCON_TEST_S3_ENDPOINT=http://127.0.0.1:9000
 export VCON_TEST_S3_ACCESS_KEY=vcontest VCON_TEST_S3_SECRET_KEY=vcon-local-only-secret
-cargo test -p vcon-server --features backend-tests --lib backend::
-cargo test -p vcon-server --features backend-tests --test serve s3::
+scripts/nextest.sh run -p vcon-server --features backend-tests --lib backend::
+scripts/nextest.sh run -p vcon-server --features backend-tests --test serve s3::
 docker stop vcon-rustfs
 ```
 
 Each test makes a bucket of its own, so a run leaves buckets behind;
 `docker stop` removes the container and them.
+
+## Linking
+
+Test and development builds on aarch64 Linux link with the Rust
+toolchain's own lld: `.cargo/config.toml` names `scripts/cc-lld.sh` as the
+linker for `aarch64-unknown-linux-gnu`, and it runs `cc -fuse-ld=lld` with
+the toolchain's `lib/rustlib/<target>/bin/gcc-ld` directory. Measured on
+2026-11-02 on an aarch64 host, the 118 MB `serve` test binary linked in
+2.1 to 2.6 seconds with lld and in 3.6 to 4.4 with GNU ld. A toolchain without that directory (a Linux distribution's own rustc,
+for example) links with plain `cc` and GNU ld, so nothing needs installing.
+On x86_64 Linux rustc links with its own lld already, and the config names
+no linker there. Release builds (`scripts/reproducible-build.sh`) set
+plain `cc` for aarch64, so the binaries released are linked as before.
 
 ## How the code is tested
 
@@ -227,9 +255,13 @@ git config core.hooksPath .githooks
   export of the private design documents
   (`scripts/check-ignored-exports.sh`). On a copy of exactly what is staged,
   it runs `scripts/rustfmt.sh --check`, `scripts/check_style.py --walk`,
-  `cargo clippy --workspace --all-targets --locked --quiet -- -D warnings`
-  and `cargo test --workspace --locked --quiet`, then the same for the fuzz
-  package (its format, clippy and its own tests). It also checks that every
+  `cargo clippy --workspace --all-targets --locked --quiet -- -D warnings`,
+  the tests with `scripts/nextest.sh run --workspace --locked` (each test
+  under the deadline in `.config/nextest.toml`) and the doc tests with
+  `cargo test --workspace --locked --quiet --doc`, then the same for the fuzz
+  package (its format, clippy and its own tests). On aarch64 it links the
+  test builds with the staged `scripts/cc-lld.sh` (see
+  [Linking](#linking)). It also checks that every
   path `.bestpractices.json` links to exists
   (`scripts/test_check_repo_links.py`), and what each crate would publish to
   crates.io (`scripts/check_package.py`):

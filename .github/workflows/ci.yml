@@ -32,6 +32,10 @@ jobs:
         # rust-toolchain.toml names the version and its components.
         run: scripts/retry.sh rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Install the pinned cargo-nextest
+        # The tests run under it, for the per-test deadline in
+        # .config/nextest.toml; scripts/nextest.sh pins it by SHA-256.
+        run: scripts/nextest.sh install
       - name: Format
         # rustfmt.toml's options need the nightly rustfmt the script pins;
         # it checks the fuzz package too, which --all misses.
@@ -52,10 +56,13 @@ jobs:
         run: |
           set -euo pipefail
           sudo prlimit --pid $$ --memlock=unlimited:unlimited
-          # Every failing test binary reported, not only the first. The output
-          # is kept: the home page's test count is derived from it.
-          cargo test --workspace --locked --no-fail-fast 2>&1 | tee test-output.txt
-          cargo test --manifest-path fuzz/Cargo.toml --lib --locked 2>&1 | tee -a test-output.txt
+          # Every failing test reported, not only the first. Each test runs
+          # under nextest's deadline (.config/nextest.toml); nextest does not
+          # run doc tests, so cargo test runs those. The output is kept: the
+          # home page's test count is derived from it.
+          scripts/nextest.sh run --workspace --locked --no-fail-fast 2>&1 | tee test-output.txt
+          cargo test --workspace --locked --no-fail-fast --doc 2>&1 | tee -a test-output.txt
+          scripts/nextest.sh run --manifest-path fuzz/Cargo.toml --lib --locked --no-fail-fast 2>&1 | tee -a test-output.txt
       - name: Count the tests
         # The rule pages.yml publishes by; a run it cannot count fails here.
         run: python3 -I scripts/published_metrics.py --tests test-output.txt
@@ -114,6 +121,10 @@ jobs:
       - name: Install the pinned toolchain
         run: scripts/retry.sh rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Install the pinned cargo-nextest
+        # The tests run under it, for the per-test deadline in
+        # .config/nextest.toml; scripts/nextest.sh pins it by SHA-256.
+        run: scripts/nextest.sh install
       - name: Install the pinned DuckDB CLI
         run: |
           set -euo pipefail
@@ -142,11 +153,11 @@ jobs:
         run: |
           set -euo pipefail
           sudo prlimit --pid $$ --memlock=unlimited:unlimited
-          cargo test -p vcon-server --locked --features backend-tests --no-fail-fast --lib "backend::"
-          cargo test -p vcon-server --locked --features backend-tests --no-fail-fast --lib "export::"
-          cargo test -p vcon-server --locked --features backend-tests --no-fail-fast --lib "store::packed::"
-          cargo test -p vcon-server --locked --features backend-tests --no-fail-fast --lib "commands::"
-          cargo test -p vcon-server --locked --features backend-tests --no-fail-fast --test serve "s3::"
+          scripts/nextest.sh run -p vcon-server --locked --features backend-tests --no-fail-fast --lib "backend::"
+          scripts/nextest.sh run -p vcon-server --locked --features backend-tests --no-fail-fast --lib "export::"
+          scripts/nextest.sh run -p vcon-server --locked --features backend-tests --no-fail-fast --lib "store::packed::"
+          scripts/nextest.sh run -p vcon-server --locked --features backend-tests --no-fail-fast --lib "commands::"
+          scripts/nextest.sh run -p vcon-server --locked --features backend-tests --no-fail-fast --test serve "s3::"
 
   backends-minio:
     # The same tests as `backends`, against MinIO. MinIO's community
@@ -177,6 +188,10 @@ jobs:
       - name: Install the pinned toolchain
         run: scripts/retry.sh rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Install the pinned cargo-nextest
+        # The tests run under it, for the per-test deadline in
+        # .config/nextest.toml; scripts/nextest.sh pins it by SHA-256.
+        run: scripts/nextest.sh install
       - name: Install the pinned DuckDB CLI
         run: |
           set -euo pipefail
@@ -223,9 +238,9 @@ jobs:
         run: |
           set -euo pipefail
           sudo prlimit --pid $$ --memlock=unlimited:unlimited
-          cargo test -p vcon-server --locked --features backend-tests --no-fail-fast --lib "backend::"
-          cargo test -p vcon-server --locked --features backend-tests --no-fail-fast --lib "commands::"
-          cargo test -p vcon-server --locked --features backend-tests --no-fail-fast --test serve "s3::"
+          scripts/nextest.sh run -p vcon-server --locked --features backend-tests --no-fail-fast --lib "backend::"
+          scripts/nextest.sh run -p vcon-server --locked --features backend-tests --no-fail-fast --lib "commands::"
+          scripts/nextest.sh run -p vcon-server --locked --features backend-tests --no-fail-fast --test serve "s3::"
 
   coverage:
     name: coverage
@@ -250,12 +265,19 @@ jobs:
           tar xzf llvm-cov.tar.gz -C "$HOME/.cargo/bin" cargo-llvm-cov
           rm -f llvm-cov.tar.gz
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Install the pinned cargo-nextest
+        # The tests run under it, for the per-test deadline in
+        # .config/nextest.toml; scripts/nextest.sh pins it by SHA-256.
+        run: scripts/nextest.sh install
       - name: Measure
         # The same tests as above, so the same memory-lock limit.
         run: |
           set -euo pipefail
           sudo prlimit --pid $$ --memlock=unlimited:unlimited
-          cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
+          # llvm-cov starts cargo nextest itself, so the version is checked
+          # first; nextest reads .config/nextest.toml from the workspace.
+          scripts/nextest.sh check
+          cargo llvm-cov nextest --workspace --locked --lcov --output-path lcov.info
           cargo llvm-cov report --summary-only
           cargo llvm-cov report --json --summary-only --output-path coverage-summary.json
           python3 -I scripts/published_metrics.py --coverage coverage-summary.json
@@ -425,6 +447,26 @@ jobs:
           set -euo pipefail
           python3 -I scripts/test_check_dependabot.py
           python3 -I scripts/check_dependabot.py
+      - name: Every test run has the per-test deadline
+        run: |
+          set -euo pipefail
+          scripts/test-nextest.sh
+          python3 -I scripts/test_check_test_runner.py
+          python3 -I scripts/check_test_runner.py
+      - name: Test builds on aarch64 link with lld; release builds do not
+        run: scripts/test-cc-lld.sh
+      - name: The required checks are the jobs that run on every pull request
+        # Both ways, against main's rules as GitHub holds them now: a
+        # required check that never reports blocks every merge, and a job
+        # on every pull request that no required check needs lets a red
+        # result merge.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -I scripts/test_check_required_checks.py
+          scripts/retry.sh gh api "repos/$GITHUB_REPOSITORY/rules/branches/main" > "$RUNNER_TEMP/rules.json"
+          python3 -I scripts/check_required_checks.py "$RUNNER_TEMP/rules.json"
       - name: CI success needs every job of this workflow
         run: |
           set -euo pipefail
@@ -446,6 +488,9 @@ jobs:
           set -euo pipefail
           scripts/retry.sh rustup toolchain install
           scripts/rustfmt.sh install
+      - name: Install the pinned cargo-nextest
+        # The commit hook runs the fixture's tests under it.
+        run: scripts/nextest.sh install
       # Each hook in a throwaway repository: every forbidden item staged or
       # written in a message is refused, clean changes pass; the push hook
       # refuses unsigned and foreign commits and forbidden messages.

@@ -87,8 +87,14 @@ The Rust toolchain is pinned in `rust-toolchain.toml`.
 
 ```sh
 cargo build --release
-cargo test --workspace
+scripts/nextest.sh install
+scripts/nextest.sh run --workspace
+cargo test --workspace --doc
 ```
+
+The tests run under the pinned [cargo-nextest](https://nexte.st/), which ends
+a test still running after 3 minutes and fails it by name; it does not run
+doc tests, so `cargo test --doc` runs those.
 
 [S3 object storage](https://vcon-server.com/docs/s3-storage/) is on `main`
 and in no release yet: release 0.3.0 keeps its objects in the data directory
@@ -117,8 +123,10 @@ attribution in the staged changes (`scripts/scan_forbidden.py`) and checks
 that git ignores every export of the private design documents
 (`scripts/check-ignored-exports.sh`). Then, on a copy of exactly what is
 staged, it runs `scripts/rustfmt.sh --check`, `scripts/check_style.py --walk`,
-`cargo clippy --workspace --all-targets --locked --quiet -- -D warnings` and
-`cargo test --workspace --locked --quiet`, the same for the fuzz package, the
+`cargo clippy --workspace --all-targets --locked --quiet -- -D warnings`, the
+tests with `scripts/nextest.sh run --workspace --locked` and the doc tests with
+`cargo test --workspace --locked --quiet --doc` (on aarch64, linked by
+`scripts/cc-lld.sh` with the toolchain's lld), the same for the fuzz package, the
 tests of the scripts, and `scripts/check_package.py`, which checks what each
 crate would publish. `.githooks/commit-msg` runs the same scan over the commit
 message. Before each push, `.githooks/pre-push` refuses any outgoing commit

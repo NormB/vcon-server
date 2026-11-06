@@ -101,6 +101,10 @@ jobs:
           [ -n "$nightly" ] || { echo "::error::no nightly in fuzz/rust-toolchain.toml"; exit 1; }
           echo "NIGHTLY=$nightly" >> "$GITHUB_ENV"
           scripts/retry.sh rustup toolchain install "$nightly" --profile minimal --component rust-src
+      - name: Install the pinned cargo-nextest
+        # The tests run under it, for the per-test deadline in
+        # .config/nextest.toml; scripts/nextest.sh pins it by SHA-256.
+        run: scripts/nextest.sh install
       - name: Run vcon-server's tests under AddressSanitizer
         env:
           # -Zbuild-std rebuilds the standard library instrumented, so a bad
@@ -134,11 +138,14 @@ jobs:
           # tests in the source and the mlock_ tests this build lists, so a
           # prefix that matches nothing, or a name the build does not hold,
           # fails here before anything runs.
-          test=(cargo "+$NIGHTLY" test -Zbuild-std --target x86_64-unknown-linux-gnu
-            --locked -p vcon-server --lib --bins --tests --no-fail-fast)
+          #
+          # The tests run under nextest, as in ci.yml, for the per-test
+          # deadline; its list prints "<binary> <path::name>" per test.
+          build=("+$NIGHTLY" -Zbuild-std --target x86_64-unknown-linux-gnu
+            --locked -p vcon-server --lib --bins --tests)
           defined="$(git grep -hoE '\bfn mlock_[a-z0-9_]+' -- crates | sed 's/^fn //' | sort -u)"
-          listed="$("${test[@]}" -- --list --format terse 2>/dev/null \
-            | sed -n 's/^\([a-z0-9_]*::\)*\(mlock_[a-z0-9_]*\): test$/\2/p' | sort -u)"
+          listed="$(scripts/nextest.sh list "${build[@]}" --message-format oneline 2>/dev/null \
+            | sed -n 's/^[^ ]* \([a-z0-9_]*::\)*\(mlock_[a-z0-9_]*\)$/\2/p' | sort -u)"
           mapfile -t names <<< "$defined"; echo "left out under AddressSanitizer:"; printf '  %s\n' "${names[@]}"
           [ -n "$defined" ] || { echo "::error::no test is named mlock_*; the skip below would leave out nothing"; exit 1; }
           if [ "$defined" != "$listed" ]; then
@@ -146,4 +153,4 @@ jobs:
             diff <(printf '%s\n' "$defined") <(printf '%s\n' "$listed") || true
             exit 1
           fi
-          "${test[@]}" -- --skip mlock_
+          scripts/nextest.sh run "${build[@]}" --no-fail-fast -- --skip mlock_

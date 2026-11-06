@@ -21,10 +21,12 @@ line_coverage = published_metrics.line_coverage
 Refused = published_metrics.Refused
 
 PASSED = """
-     Running unittests src/lib.rs (target/debug/deps/vcon-0a1b)
-test result: ok. 120 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
-     Running tests/serve.rs (target/debug/deps/serve-2c3d)
-test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.02s
+    Starting 136 tests across 2 binaries (5 tests skipped)
+        PASS [   0.031s] (1/136) vcon json::tests::a_key_given_twice_is_refused
+        SLOW [> 60.000s] (135/136) vcon-server::serve a_slow_test
+        PASS [  64.020s] (136/136) vcon-server::serve a_slow_test
+────────────
+     Summary [  64.311s] 136 tests run: 136 passed (1 slow), 5 skipped
    Doc-tests vcon
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
 """
@@ -39,31 +41,67 @@ def summary(count, covered):
 
 
 class Tests(unittest.TestCase):
-    def test_every_result_line_adds_its_passed_count(self):
+    def test_each_nextest_summary_and_each_doc_test_result_adds_its_passed_count(self):
         self.assertEqual(count_tests(PASSED), 137)
 
-    def test_colour_codes_do_not_hide_a_result_line(self):
-        self.assertEqual(count_tests("\x1b[32mtest result: ok.\x1b[0m 5 passed; 0 failed;"), 5)
+    def test_every_nextest_summary_counts(self):
+        fuzz = "     Summary [   0.100s] 9 tests run: 9 passed, 0 skipped\n"
+        self.assertEqual(count_tests(PASSED + fuzz), 146)
+
+    def test_colour_codes_do_not_hide_a_summary_or_a_result_line(self):
+        self.assertEqual(
+            count_tests("\x1b[32;1m     Summary\x1b[0m [   1.000s] 5 tests run: 5 passed, 1 skipped\n"
+                        "\x1b[32mtest result: ok.\x1b[0m 2 passed; 0 failed;"),
+            7,
+        )
 
     def test_a_line_that_merely_mentions_a_result_is_not_one(self):
-        self.assertEqual(count_tests(PASSED + "  see the test result: ok. 999 passed above\n"), 137)
+        noise = "  see the test result: ok. 999 passed above\n  Summary [ 1s] 999 tests run: 999 passed\n"
+        self.assertEqual(count_tests(PASSED + noise), 137)
 
-    def test_a_failed_binary_refuses_the_run(self):
+    def test_a_failed_test_refuses_the_run(self):
+        failed = PASSED + "     Summary [   4.006s] 4 tests run: 3 passed, 1 failed, 1 skipped\n"
+        with self.assertRaisesRegex(Refused, "the run reported 1 failed"):
+            count_tests(failed)
+
+    def test_a_summary_whose_passed_tests_are_not_all_that_ran_is_refused(self):
+        with self.assertRaisesRegex(Refused, "unreadable summary"):
+            count_tests("     Summary [   1.000s] 5 tests run: 4 passed, 1 skipped\n")
+
+    def test_a_test_ended_at_its_deadline_refuses_the_run(self):
+        timed_out = PASSED + "     Summary [ 180.006s] 4 tests run: 3 passed, 1 timed out, 1 skipped\n"
+        with self.assertRaisesRegex(Refused, "the run reported 1 timed out"):
+            count_tests(timed_out)
+
+    def test_a_run_that_stopped_early_refuses_the_run(self):
+        cancelled = PASSED.replace("136 tests run: 136 passed", "3/136 tests run: 3 passed")
+        with self.assertRaisesRegex(Refused, "unreadable summary"):
+            count_tests(cancelled)
+
+    def test_a_failed_doc_test_binary_refuses_the_run(self):
         failed = PASSED + "test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n"
         with self.assertRaisesRegex(Refused, "FAILED"):
             count_tests(failed)
 
-    def test_output_with_no_result_line_is_refused(self):
-        with self.assertRaisesRegex(Refused, "no `test result:` line"):
+    def test_output_with_no_nextest_summary_is_refused(self):
+        with self.assertRaisesRegex(Refused, "no nextest `Summary` line"):
             count_tests("   Compiling vcon v0.1.0\nerror: could not compile\n")
+
+    def test_doc_tests_alone_are_not_a_complete_run(self):
+        with self.assertRaisesRegex(Refused, "no nextest `Summary` line"):
+            count_tests("test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n")
 
     def test_a_run_of_no_tests_is_refused(self):
         with self.assertRaisesRegex(Refused, "0 tests"):
-            count_tests("test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n")
+            count_tests("     Summary [   0.000s] 0 tests run: 0 passed, 5 skipped\n")
 
     def test_an_unreadable_result_line_is_refused(self):
         with self.assertRaisesRegex(Refused, "unreadable"):
-            count_tests("test result: ok. many passed\n")
+            count_tests(PASSED + "test result: ok. many passed\n")
+
+    def test_an_unreadable_summary_is_refused(self):
+        with self.assertRaisesRegex(Refused, "unreadable summary"):
+            count_tests("     Summary [   1.000s] many tests run: many passed\n")
 
 
 class Coverage(unittest.TestCase):

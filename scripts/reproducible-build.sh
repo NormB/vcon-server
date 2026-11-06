@@ -88,6 +88,14 @@ cmd_build() {
   RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }$(rustflags)"
   export RUSTFLAGS
   export CARGO_TARGET_DIR="$TARGET_DIR"
+  # The linker is held fixed: .cargo/config.toml names scripts/cc-lld.sh for
+  # test builds on aarch64, and a release binary is linked by rustc's
+  # default for its target, as before. That default is cc on aarch64; on
+  # x86_64 it is left alone, since naming any linker there would change how
+  # rustc picks its own lld.
+  case "$target" in
+    aarch64-unknown-linux-gnu) export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=cc ;;
+  esac
   cargo build --release --locked -p vcon-server --target "$target" >&2
   printf '%s\n' "$TARGET_DIR/$target/release/vcon-server"
 }

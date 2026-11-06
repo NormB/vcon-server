@@ -1,0 +1,8 @@
+# Test and development builds on aarch64 Linux link with the Rust
+# toolchain's own lld, through scripts/cc-lld.sh, which falls back to the
+# plain cc (GNU ld) when the toolchain has none. On x86_64 Linux rustc
+# already links with its own lld. Release builds set the plain cc instead
+# (scripts/reproducible-build.sh), so the binaries shipped are linked as
+# before. The path is relative to this directory's parent, the checkout.
+[target.aarch64-unknown-linux-gnu]
+linker = "scripts/cc-lld.sh"

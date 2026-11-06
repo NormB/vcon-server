@@ -33,7 +33,9 @@ git config user.name "Test User"
 git config user.email "test@example.com"
 git config commit.gpgsign false
 git config core.hooksPath .githooks
-cp -R "$src/.githooks" "$src/scripts" "$src/.gitignore" "$src/rust-toolchain.toml" .
+# .config holds nextest's deadline, .cargo the linker config and .github the
+# workflows, which the tests of the hook's scripts read.
+cp -R "$src/.githooks" "$src/scripts" "$src/.config" "$src/.cargo" "$src/.github" "$src/.gitignore" "$src/rust-toolchain.toml" .
 # A workspace shaped like the real one: one crate under crates/, ready to
 # publish, so the hook's package check has a package to read.
 cat > Cargo.toml <<'TOML'

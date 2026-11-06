@@ -3,11 +3,16 @@
 
 The one rule for each published number:
 
-- automated tests: every line that starts with `test result` in the output
-  of CI's Tests step (one per test binary: the library, each integration
-  test file, the doc tests) adds its `passed` figure. A binary that reports
-  anything but `ok.`, an output with no result line and a total of zero are
-  refused, so the number always describes a complete passing run.
+- automated tests: CI's Tests step runs the tests with cargo-nextest
+  (scripts/nextest.sh) and the doc tests with `cargo test --doc`, which
+  nextest does not run. Every nextest `Summary` line (one per run: the
+  workspace, the fuzz package) adds its `passed` figure, and every line
+  that starts with `test result` (one per doc-test binary) adds its
+  `passed` figure. A summary that reports anything but passed and skipped
+  tests (a failure, a test ended at its deadline, a run stopped early), a
+  doc-test binary that reports anything but `ok.`, an output with no
+  nextest summary and a total of zero are refused, so the number always
+  describes a complete passing run.
 - line coverage: the totals of `cargo llvm-cov report --json
   --summary-only` from CI's coverage job: lines covered, lines counted, and
   the percent to one decimal, computed from those two integers.
@@ -34,31 +39,62 @@ import sys
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 FIELDS = re.compile(r"[ ;]+")
 SHA = re.compile(r"[0-9a-f]{40}")
+# nextest's last line, its status word right-aligned in 12 columns:
+# "     Summary [   4.006s] 136 tests run: 136 passed (1 slow), 5 skipped".
+SUMMARY_START = "     Summary ["
+SUMMARY = re.compile(r"^     Summary \[[^\]]*\] (\S+) tests? run: (.*)$")
+SUMMARY_COUNT = re.compile(r"^(\d+) ([a-z ]+?)(?: \(\d+ [a-z]+\))?$")
 
 
 class Refused(Exception):
     """The input does not describe a complete, passing run."""
 
 
+def summary_passed(line: str) -> int:
+    """The passed figure of one nextest `Summary` line, refused unless every
+    test that ran passed."""
+    m = SUMMARY.match(line)
+    ran = m.group(1) if m else ""
+    if not ran.isdigit():
+        raise Refused(f"unreadable summary line: {line!r}")
+    counts = {}
+    for part in m.group(2).split(", "):
+        c = SUMMARY_COUNT.match(part.strip())
+        if not c:
+            raise Refused(f"unreadable summary line: {line!r}")
+        counts[c.group(2)] = int(c.group(1))
+    others = {k: v for k, v in counts.items() if k not in ("passed", "skipped") and v}
+    if others:
+        what = ", ".join(f"{v} {k}" for k, v in others.items())
+        raise Refused(f"the run reported {what}: {line!r}")
+    if counts.get("passed") != int(ran):
+        raise Refused(f"unreadable summary line: {line!r}")
+    return int(ran)
+
+
 def count_tests(text: str) -> int:
-    """Sum the passed column of every `test result` line in `text`."""
+    """Sum the passed figure of every nextest `Summary` line and every doc
+    tests' `test result` line in `text`."""
     total = 0
-    lines = 0
+    summaries = 0
     for raw in text.splitlines():
         line = ANSI.sub("", raw)
+        if line.startswith(SUMMARY_START):
+            total += summary_passed(line)
+            summaries += 1
+            continue
         if not line.startswith("test result"):
             continue
         fields = FIELDS.split(line)
         if len(fields) < 4 or not fields[3].isdigit() or fields[4:5] != ["passed"]:
             raise Refused(f"unreadable result line: {line!r}")
         if fields[2] != "ok.":
-            raise Refused(f"a test binary reported {fields[2]!r}: {line!r}")
+            raise Refused(f"a doc-test binary reported {fields[2]!r}: {line!r}")
         total += int(fields[3])
-        lines += 1
-    if lines == 0:
-        raise Refused("no `test result:` line, so this is not a completed `cargo test` run")
+    if summaries == 0:
+        raise Refused("no nextest `Summary` line, so this is not a completed test run")
     if total == 0:
-        raise Refused(f"{lines} result line(s) report 0 tests passed in total")
+        raise Refused(f"{summaries} summary line(s) report 0 tests passed in total")
     return total
 
 
@@ -100,7 +136,7 @@ def write(path: pathlib.Path, tests: int, coverage, commit: str, run: str) -> No
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--tests", help="captured `cargo test` output")
+    ap.add_argument("--tests", help="captured output of the Tests step (nextest and doc tests)")
     ap.add_argument("--coverage", help="`cargo llvm-cov report --json --summary-only` output")
     ap.add_argument("--commit", help="the commit both runs tested")
     ap.add_argument("--run", help="the URL of the CI run")

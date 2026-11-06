@@ -48,22 +48,40 @@ scripts/test-scan-commit-messages.sh
 python3 -I scripts/test_check_site_links.py
 python3 -I scripts/test_check_dependabot.py
 python3 -I scripts/test_ci_success.py
+scripts/test-nextest.sh
+scripts/test-cc-lld.sh
+python3 -I scripts/test_check_test_runner.py
+python3 -I scripts/test_check_required_checks.py
 # Always a directory of its own: a test binary records the directory it was
 # built from, so sharing the caller's target directory would leave binaries
 # there that read files from this deleted copy.
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$root/target}/pre-commit"
+# .cargo/config.toml names scripts/cc-lld.sh, the linker of aarch64 test
+# builds, by a path relative to the checkout, which here is a new temporary
+# copy each run; cargo's fingerprint of every crate holds the linker's path,
+# so every dependency would be rebuilt on every run. The staged script, at a
+# fixed path in the target directory, keeps them built.
+mkdir -p "$CARGO_TARGET_DIR"
+install -m 0755 scripts/cc-lld.sh "$CARGO_TARGET_DIR/cc-lld.sh"
+export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="$CARGO_TARGET_DIR/cc-lld.sh"
 # Formatting with rustfmt.toml on the pinned nightly rustfmt, the fuzz
 # package included, then the style rules rustfmt and clippy do not check.
 scripts/rustfmt.sh --check
 python3 -I scripts/test_check_style.py
 python3 -I scripts/check_style.py --walk
 cargo clippy --workspace --all-targets --locked --quiet -- -D warnings
-cargo test --workspace --locked --quiet
+# The tests run under cargo-nextest (scripts/nextest.sh), which ends a test
+# still running at the deadline in .config/nextest.toml and fails it by
+# name; cargo test has no deadline, so one hung test hung this hook. nextest
+# does not run doc tests, so cargo test runs those.
+nextest_quiet=(--cargo-quiet --status-level slow --final-status-level slow)
+scripts/nextest.sh run --workspace --locked "${nextest_quiet[@]}"
+cargo test --workspace --locked --quiet --doc
 # The fuzz package is a workspace of its own, which --workspace does not
 # reach; it is checked with the same toolchain.
 if [ -f fuzz/Cargo.toml ]; then
   cargo clippy --manifest-path fuzz/Cargo.toml --all-targets --locked --quiet -- -D warnings
-  cargo test --manifest-path fuzz/Cargo.toml --lib --locked --quiet
+  scripts/nextest.sh run --manifest-path fuzz/Cargo.toml --lib --locked "${nextest_quiet[@]}"
 fi
 
 # What each crate would publish: its files, manifest, README links, and the

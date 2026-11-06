@@ -1,0 +1,9 @@
+# cargo-nextest's settings for every test run: the commit hook, CI and a
+# developer all run the tests through scripts/nextest.sh, which passes this
+# file (the fuzz package too, a workspace of its own that would not find it).
+#
+# The deadline. A test still running after 60 s is reported as SLOW, by
+# name; after 3 such periods (3 minutes) it is ended and fails as TIMEOUT.
+# Without it one hung test (a deadlock) hung the commit hook with no end.
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 3 }
