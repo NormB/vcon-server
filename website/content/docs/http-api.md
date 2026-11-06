@@ -148,8 +148,9 @@ goes unnoticed.
 | Route | Takes | Answers |
 |---|---|---|
 | `POST /admin/tenants` | `{"name": "acme", "retention": "10y"}`; `retention` optional, `null` for the server default | `201` `{"id"}` |
-| `GET /admin/tenants` | | `200` `[{"id", "name", "retention"}]` by name; `retention` `null` means the server default |
+| `GET /admin/tenants` | | `200` `[{"id", "name", "retention", "metadata"}]` by name; `retention` `null` means the server default |
 | `PATCH /admin/tenants/{id}` | `{"retention": "90d"}` or `{"retention": null}`; the member is required | `200` `{"id", "retention"}` |
+| `PUT /admin/tenants/{id}/metadata` | `{"metadata": "counts"}`: `none`, `counts` or `full` (see [export to Parquet](@/docs/export-parquet.md#choose-the-metadata-level)) | `200` `{"id", "metadata"}` |
 | `DELETE /admin/tenants/{id}` | optional `?force=true` (or `force=false`) | `204` |
 | `POST /admin/tenants/{id}/keys` | `{"scopes": ["write", "read"], "label": "producer-1"}` | `201` `{"id", "token"}` with `Cache-Control: no-store` |
 | `GET /admin/tenants/{id}/keys` | | `200` `[{"id", "tenant", "scopes", "label", "created_at", "revoked_at"}]`, oldest first; never a token |

@@ -41,6 +41,10 @@ shows. `scripts/docs_test.py` runs them. See
   replace one without a gap, and rotate the tenant key and the master key.
 - [Back up and restore](@/docs/backup-and-restore.md): the master key and
   the data directory, a restore, and what it brings back.
+- [Export to Parquet](@/docs/export-parquet.md): a tenant's vCons as
+  Parquet files in a directory or a bucket, beside a running server, the
+  clear columns each metadata level adds, a read with DuckDB, and what each
+  refusal means.
 - [Run it in a container](@/docs/container.md): an image built from a checked
   release, volumes, the memory-lock limit, Docker and Docker Compose.
 - [Upgrade](@/docs/upgrading.md): a new binary over a running server, the

@@ -2512,6 +2512,135 @@
         ]
       }
     },
+    "/admin/tenants/{id}/metadata": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/tenantId"
+        }
+      ],
+      "put": {
+        "operationId": "setMetadata",
+        "summary": "Set which clear columns a tenant's Parquet exports carry",
+        "description": "Needs a key with the admin scope. `none` writes only the version id, the store time and the sealed body; `counts` adds the form, gzip, size, the vCon's times and its party and dialog counts; `full` adds the uuid, the subject and the parties, which are personal data.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantMetadata"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid bearer key: unauthorized",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key does not allow this: forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found: not-found, unknown-tenant or unknown-key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "The body did not arrive in time: timeout",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is over the size limit: too-large",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body is refused: invalid-body, bad-scopes, path-uuid-mismatch or a format refusal",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed or a version is damaged: damaged or internal",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service cannot answer now: unavailable, audit-failed, limit-reached or master-key-limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewMetadata"
+              }
+            }
+          }
+        }
+      }
+    },
     "/admin/tenants/{id}/keys": {
       "parameters": [
         {
@@ -3193,7 +3322,8 @@
         "required": [
           "id",
           "name",
-          "retention"
+          "retention",
+          "metadata"
         ],
         "properties": {
           "id": {
@@ -3207,6 +3337,14 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "metadata": {
+            "type": "string",
+            "enum": [
+              "none",
+              "counts",
+              "full"
             ]
           }
         }
@@ -3352,6 +3490,44 @@
               "null"
             ],
             "format": "date-time"
+          }
+        }
+      },
+      "NewMetadata": {
+        "type": "object",
+        "required": [
+          "metadata"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "metadata": {
+            "type": "string",
+            "enum": [
+              "none",
+              "counts",
+              "full"
+            ]
+          }
+        }
+      },
+      "TenantMetadata": {
+        "type": "object",
+        "required": [
+          "id",
+          "metadata"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{32}$"
+          },
+          "metadata": {
+            "type": "string",
+            "enum": [
+              "none",
+              "counts",
+              "full"
+            ]
           }
         }
       }

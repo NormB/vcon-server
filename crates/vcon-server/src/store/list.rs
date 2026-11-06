@@ -688,7 +688,11 @@ mod tests {
             .conn_for_test()
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .expect("version");
-        assert_eq!(version, 2);
+        assert_eq!(
+            version,
+            crate::catalog::SCHEMA_VERSION,
+            "the catalog is brought to the current version"
+        );
         assert_eq!(vcon_columns(&f), fresh, "the same table as a new catalog");
         let after = f.store.list(&f.caller, &query(10)).expect("a page");
         assert_eq!(after, before, "the first store times come back");

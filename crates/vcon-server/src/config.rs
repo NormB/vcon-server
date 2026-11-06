@@ -45,6 +45,76 @@ pub struct Config {
     pub mcp: crate::mcp::Limits,
     /// Where the data is kept.
     pub storage: Storage,
+    /// How `export parquet` reaches a bucket: the `[export]` table.
+    pub export: Export,
+}
+
+/// The `[export]` table.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Export {
+    /// How an `s3://` target is reached (`[export.s3]`); None takes
+    /// `[storage.s3]`'s service and keys.
+    pub s3: Option<ExportS3>,
+}
+
+/// How to reach the S3-compatible service an export writes to: every key
+/// of `[storage.s3]` but the bucket and prefix, which `--to` names, and
+/// `allow_versioning`, which only the server's own storage reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportS3 {
+    /// The service's URL; None is AWS S3 for the region.
+    pub endpoint: Option<String>,
+    /// The region, used in request signing.
+    pub region: String,
+    /// The bucket in the path, not in the host name.
+    pub path_style: bool,
+    /// The access key id; None uses the AWS default credential chain.
+    pub access_key_id: Option<String>,
+    /// The file holding the secret access key.
+    pub secret_access_key_file: Option<PathBuf>,
+    /// Accept an `http://` endpoint.
+    pub allow_http: bool,
+    /// PEM certificates of the authorities trusted for the endpoint's TLS
+    /// certificate, in place of the system's.
+    pub ca_file: Option<PathBuf>,
+    /// How long one request may take.
+    pub timeout: Duration,
+}
+
+impl ExportS3 {
+    /// The settings for `bucket` under `prefix` on this service.
+    #[must_use]
+    pub fn for_bucket(&self, bucket: &str, prefix: &str) -> S3Settings {
+        S3Settings {
+            endpoint: self.endpoint.clone(),
+            region: self.region.clone(),
+            bucket: bucket.to_owned(),
+            prefix: prefix.to_owned(),
+            path_style: self.path_style,
+            access_key_id: self.access_key_id.clone(),
+            secret_access_key_file: self.secret_access_key_file.clone(),
+            allow_http: self.allow_http,
+            ca_file: self.ca_file.clone(),
+            allow_versioning: false,
+            timeout: self.timeout,
+        }
+    }
+}
+
+impl From<&S3Settings> for ExportS3 {
+    /// The service and keys of `[storage.s3]`.
+    fn from(s: &S3Settings) -> ExportS3 {
+        ExportS3 {
+            endpoint: s.endpoint.clone(),
+            region: s.region.clone(),
+            path_style: s.path_style,
+            access_key_id: s.access_key_id.clone(),
+            secret_access_key_file: s.secret_access_key_file.clone(),
+            allow_http: s.allow_http,
+            ca_file: s.ca_file.clone(),
+            timeout: s.timeout,
+        }
+    }
 }
 
 /// Why the storage the configuration names cannot be used: the message says
@@ -197,6 +267,9 @@ pub fn parse(text: &str) -> Result<Config, ConfigError> {
         supported_critical: raw.supported_critical.into_iter().collect(),
         mcp: mcp_limits(&raw.mcp)?,
         storage: storage(raw.storage)?,
+        export: Export {
+            s3: raw.export.s3.map(export_s3).transpose()?,
+        },
     })
 }
 
@@ -252,6 +325,71 @@ fn storage(raw: RawStorage) -> Result<Storage, ConfigError> {
     Ok(Storage { objects })
 }
 
+/// `[export.s3]` checked as `[storage.s3]` is, but for its bucket.
+fn export_s3(raw: RawExportS3) -> Result<ExportS3, ConfigError> {
+    check_service(
+        "export.s3",
+        raw.endpoint.as_deref(),
+        raw.allow_http,
+        raw.ca_file.is_some(),
+        raw.access_key_id.is_some(),
+        raw.secret_access_key_file.is_some(),
+    )?;
+    Ok(ExportS3 {
+        endpoint: raw.endpoint,
+        region: raw.region,
+        path_style: raw.path_style,
+        access_key_id: raw.access_key_id,
+        secret_access_key_file: raw.secret_access_key_file,
+        allow_http: raw.allow_http,
+        ca_file: raw.ca_file,
+        timeout: seconds("export.s3.timeout", raw.timeout, S3_TIMEOUT)?,
+    })
+}
+
+/// The rules for how a service is reached, the same for every table that
+/// names one: an `http://` endpoint only when allowed and never with a CA
+/// file, any other endpoint `https://`, and an access key id only with the
+/// file of its secret.
+fn check_service(
+    table: &str,
+    endpoint: Option<&str>,
+    allow_http: bool,
+    ca_file: bool,
+    access_key_id: bool,
+    secret_access_key_file: bool,
+) -> Result<(), ConfigError> {
+    if let Some(endpoint) = endpoint {
+        if endpoint.starts_with("http://") {
+            if ca_file {
+                return Err(ConfigError(format!(
+                    "{table}.ca_file is set, but {table}.endpoint {endpoint:?} is plain \
+                     HTTP, which uses no certificate"
+                )));
+            }
+            if !allow_http {
+                return Err(ConfigError(format!(
+                    "{table}.endpoint {endpoint:?} is plain HTTP; set {table}.allow_http = \
+                     true only for a test service on this host"
+                )));
+            }
+        } else if !endpoint.starts_with("https://") {
+            return Err(ConfigError(format!(
+                "{table}.endpoint {endpoint:?} is not an https:// URL"
+            )));
+        }
+    }
+    match (access_key_id, secret_access_key_file) {
+        (true, false) => Err(ConfigError(format!(
+            "{table}.access_key_id is set without {table}.secret_access_key_file"
+        ))),
+        (false, true) => Err(ConfigError(format!(
+            "{table}.secret_access_key_file is set without {table}.access_key_id"
+        ))),
+        _ => Ok(()),
+    }
+}
+
 fn s3_settings(raw: RawS3) -> Result<S3Settings, ConfigError> {
     if raw.bucket.is_empty() {
         return Err(ConfigError("storage.s3.bucket is empty".to_owned()));
@@ -263,41 +401,14 @@ fn s3_settings(raw: RawS3) -> Result<S3Settings, ConfigError> {
             raw.prefix
         )));
     }
-    if let Some(endpoint) = &raw.endpoint {
-        if endpoint.starts_with("http://") {
-            if raw.ca_file.is_some() {
-                return Err(ConfigError(format!(
-                    "storage.s3.ca_file is set, but storage.s3.endpoint {endpoint:?} is plain \
-                     HTTP, which uses no certificate"
-                )));
-            }
-            if !raw.allow_http {
-                return Err(ConfigError(format!(
-                    "storage.s3.endpoint {endpoint:?} is plain HTTP; set storage.s3.allow_http = \
-                     true only for a test service on this host"
-                )));
-            }
-        } else if !endpoint.starts_with("https://") {
-            return Err(ConfigError(format!(
-                "storage.s3.endpoint {endpoint:?} is not an https:// URL"
-            )));
-        }
-    }
-    match (&raw.access_key_id, &raw.secret_access_key_file) {
-        (Some(_), None) => {
-            return Err(ConfigError(
-                "storage.s3.access_key_id is set without storage.s3.secret_access_key_file"
-                    .to_owned(),
-            ));
-        }
-        (None, Some(_)) => {
-            return Err(ConfigError(
-                "storage.s3.secret_access_key_file is set without storage.s3.access_key_id"
-                    .to_owned(),
-            ));
-        }
-        _ => {}
-    }
+    check_service(
+        "storage.s3",
+        raw.endpoint.as_deref(),
+        raw.allow_http,
+        raw.ca_file.is_some(),
+        raw.access_key_id.is_some(),
+        raw.secret_access_key_file.is_some(),
+    )?;
     Ok(S3Settings {
         endpoint: raw.endpoint,
         region: raw.region,
@@ -347,6 +458,29 @@ struct Raw {
     mcp: RawMcp,
     #[serde(default)]
     storage: RawStorage,
+    #[serde(default)]
+    export: RawExport,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawExport {
+    s3: Option<RawExportS3>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawExportS3 {
+    endpoint: Option<String>,
+    region: String,
+    #[serde(default)]
+    path_style: bool,
+    access_key_id: Option<String>,
+    secret_access_key_file: Option<PathBuf>,
+    #[serde(default)]
+    allow_http: bool,
+    ca_file: Option<PathBuf>,
+    timeout: Option<u64>,
 }
 
 #[derive(Default, Deserialize)]
@@ -450,6 +584,16 @@ allow_http = true
 ca_file = "/etc/vcon-server/s3-ca.pem"
 allow_versioning = true
 timeout = 60
+
+[export.s3]
+endpoint = "https://analytics.example.com"
+region = "eu-west-2"
+path_style = true
+access_key_id = "vcon-export"
+secret_access_key_file = "/etc/vcon-server/export.secret"
+allow_http = true
+ca_file = "/etc/vcon-server/export-ca.pem"
+timeout = 120
 "#;
 
     #[test]
@@ -487,6 +631,18 @@ timeout = 60
                         ca_file: Some("/etc/vcon-server/s3-ca.pem".into()),
                         allow_versioning: true,
                         timeout: Duration::from_secs(60),
+                    }),
+                },
+                export: Export {
+                    s3: Some(ExportS3 {
+                        endpoint: Some("https://analytics.example.com".to_owned()),
+                        region: "eu-west-2".to_owned(),
+                        path_style: true,
+                        access_key_id: Some("vcon-export".to_owned()),
+                        secret_access_key_file: Some("/etc/vcon-server/export.secret".into()),
+                        allow_http: true,
+                        ca_file: Some("/etc/vcon-server/export-ca.pem".into()),
+                        timeout: Duration::from_secs(120),
                     }),
                 },
             }),
@@ -718,6 +874,42 @@ key = "/etc/vcon-server/key.pem"
                 "FULL writes {key} as a value other than its default"
             );
         }
+        let export = full.export.s3.expect("FULL has export.s3");
+        let least_export = parse(&format!("{LEAST}\n[export.s3]\nregion = \"us-east-1\"\n"))
+            .expect("least export")
+            .export
+            .s3
+            .expect("export.s3");
+        for (key, differs) in [
+            (
+                "export.s3.endpoint",
+                export.endpoint != least_export.endpoint,
+            ),
+            ("export.s3.region", export.region != least_export.region),
+            (
+                "export.s3.path_style",
+                export.path_style != least_export.path_style,
+            ),
+            (
+                "export.s3.access_key_id",
+                export.access_key_id != least_export.access_key_id,
+            ),
+            (
+                "export.s3.secret_access_key_file",
+                export.secret_access_key_file != least_export.secret_access_key_file,
+            ),
+            (
+                "export.s3.allow_http",
+                export.allow_http != least_export.allow_http,
+            ),
+            ("export.s3.ca_file", export.ca_file != least_export.ca_file),
+            ("export.s3.timeout", export.timeout != least_export.timeout),
+        ] {
+            assert!(
+                differs,
+                "FULL writes {key} as a value other than its default"
+            );
+        }
     }
 
     /// The S3 settings with only the keys that have no default.
@@ -764,6 +956,110 @@ key = "/etc/vcon-server/key.pem"
                 timeout: Duration::from_secs(30),
             },
             "only region and bucket are required"
+        );
+    }
+
+    /// `[export.s3]` takes `[storage.s3]`'s keys but the bucket, the
+    /// prefix and `allow_versioning`, with the same defaults and rules,
+    /// each refusal naming its own table.
+    #[test]
+    fn export_s3_settings_are_read_and_checked_as_storage_s3_is() {
+        let export = |extra: &str| format!("{LEAST}\n[export.s3]\nregion = \"us-east-1\"\n{extra}");
+        assert_eq!(
+            parse(LEAST).expect("least").export,
+            Export::default(),
+            "no table"
+        );
+        assert_eq!(
+            parse(&export("")).expect("least export").export.s3,
+            Some(ExportS3 {
+                endpoint: None,
+                region: "us-east-1".to_owned(),
+                path_style: false,
+                access_key_id: None,
+                secret_access_key_file: None,
+                allow_http: false,
+                ca_file: None,
+                timeout: S3_TIMEOUT,
+            }),
+            "only region is required"
+        );
+        for (extra, key) in [
+            (
+                "endpoint = \"http://127.0.0.1:9000\"\n",
+                "export.s3.allow_http",
+            ),
+            ("endpoint = \"objects.example.com\"\n", "export.s3.endpoint"),
+            (
+                "access_key_id = \"vcon\"\n",
+                "export.s3.secret_access_key_file",
+            ),
+            (
+                "secret_access_key_file = \"/s\"\n",
+                "export.s3.access_key_id",
+            ),
+            ("timeout = 0\n", "export.s3.timeout"),
+            (
+                "endpoint = \"http://127.0.0.1:9000\"\nallow_http = true\nca_file = \"/c.pem\"\n",
+                "export.s3.ca_file",
+            ),
+            ("bucket = \"vcon\"\n", "bucket"),
+            ("prefix = \"a/\"\n", "prefix"),
+            ("allow_versioning = true\n", "allow_versioning"),
+        ] {
+            let ConfigError(message) = parse(&export(extra)).expect_err(extra);
+            assert!(message.contains(key), "{extra}: {message}");
+        }
+        assert!(
+            parse(&format!("{LEAST}\n[export.s3]\n"))
+                .expect_err("no region")
+                .0
+                .contains("region"),
+            "region is required"
+        );
+    }
+
+    /// The settings an `s3://` target uses: this service, with `--to`'s
+    /// bucket and prefix; from `[storage.s3]`, its service and keys.
+    #[test]
+    fn an_export_service_names_its_bucket_and_prefix() {
+        let full = parse(FULL).expect("full");
+        let export = full.export.s3.expect("export.s3");
+        let s = export.for_bucket("reports", "vcon/");
+        assert_eq!(
+            (s.bucket.as_str(), s.prefix.as_str()),
+            ("reports", "vcon/"),
+            "the target's bucket and prefix"
+        );
+        assert_eq!(s.endpoint, export.endpoint, "the export's endpoint");
+        assert_eq!(s.region, export.region, "the export's region");
+        assert_eq!(
+            s.access_key_id, export.access_key_id,
+            "the export's access key id"
+        );
+        assert_eq!(
+            s.secret_access_key_file, export.secret_access_key_file,
+            "the export's secret file"
+        );
+        assert_eq!(s.ca_file, export.ca_file, "the export's CA file");
+        assert_eq!(
+            (s.path_style, s.allow_http),
+            (true, true),
+            "FULL sets path_style and allow_http"
+        );
+        assert_eq!(s.timeout, Duration::from_secs(120), "the export's timeout");
+        assert!(!s.allow_versioning, "never read for an export");
+        let ObjectStore::S3(storage) = full.storage.objects else {
+            panic!("FULL keeps its objects in S3")
+        };
+        let from = ExportS3::from(&storage).for_bucket(&storage.bucket, &storage.prefix);
+        assert_eq!(
+            from,
+            S3Settings {
+                allow_versioning: false,
+                ..storage
+            },
+            "storage.s3's service and keys, whole"
         );
     }
 
@@ -960,7 +1256,7 @@ key = "/etc/vcon-server/key.pem"
             let defaults = parse(LEAST).expect("least");
             let mut all = Vec::new();
             keys(&FULL.parse::<toml::Table>().expect("toml"), "", &mut all);
-            assert_eq!(all.len(), 27, "{all:?}");
+            assert_eq!(all.len(), 35, "{all:?}");
             for key in all {
                 let default = match key.as_str() {
                     "listen" | "data_dir" | "master_key" | "tls.cert" | "tls.key" => {
@@ -988,6 +1284,14 @@ key = "/etc/vcon-server/key.pem"
                         format!("`{}`", s3_least().allow_versioning)
                     }
                     "storage.s3.timeout" => format!("`{}`", s3_least().timeout.as_secs()),
+                    "export.s3.region" => "required with `export.s3`".to_owned(),
+                    "export.s3.endpoint"
+                    | "export.s3.access_key_id"
+                    | "export.s3.secret_access_key_file"
+                    | "export.s3.ca_file" => "none".to_owned(),
+                    "export.s3.path_style" => format!("`{}`", s3_least().path_style),
+                    "export.s3.allow_http" => format!("`{}`", s3_least().allow_http),
+                    "export.s3.timeout" => format!("`{}`", S3_TIMEOUT.as_secs()),
                     "supported_critical" => {
                         assert!(
                             defaults.supported_critical.is_empty(),

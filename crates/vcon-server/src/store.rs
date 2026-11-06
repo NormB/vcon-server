@@ -26,6 +26,7 @@ use crate::retention::Retention;
 
 mod backup;
 mod examine;
+mod export;
 mod legal;
 mod list;
 mod purge;
@@ -33,6 +34,7 @@ mod rekey;
 
 pub use backup::{BackupError, Copied, TRIES};
 pub use examine::Examination;
+pub use export::KeptVersion;
 pub use legal::{Legal, VersionInfo};
 pub use list::{Cursor, ListQuery, Listed, Listing};
 pub use purge::{Kept, PurgeReport, due};
@@ -824,7 +826,7 @@ pub(crate) mod testing {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::BTreeSet;
 
     use serde_json::Value;
@@ -882,16 +884,16 @@ mod tests {
         pub(super) copied: Mutex<Option<BackupHook>>,
     }
 
-    pub(super) struct Fixture {
-        pub(super) dir: tempfile::TempDir,
-        pub(super) fs: Arc<CrashFs>,
-        pub(super) clock: Arc<ManualClock>,
+    pub(crate) struct Fixture {
+        pub(crate) dir: tempfile::TempDir,
+        pub(crate) fs: Arc<CrashFs>,
+        pub(crate) clock: Arc<ManualClock>,
         /// The tenant key, wrapped under `master`, so a test can open the
         /// store again with the same key.
         master: Key,
         wrapped: Vec<u8>,
-        pub(super) store: Store,
-        pub(super) caller: Caller,
+        pub(crate) store: Store,
+        pub(crate) caller: Caller,
     }
 
     pub(super) const TENANT: TenantId = TenantId([0x11; 16]);
@@ -915,13 +917,18 @@ mod tests {
         }
 
         /// The tenant key the Store was made under.
-        pub(super) fn tenant_key(&self) -> Key {
+        pub(crate) fn tenant_key(&self) -> Key {
             let ctx = Context::Tenant { tenant: TENANT };
             envelope::unwrap(&self.master, &ctx, &self.wrapped).expect("unwraps")
         }
 
-        pub(super) fn tenant(&self) -> TenantId {
+        pub(crate) fn tenant(&self) -> TenantId {
             TENANT
+        }
+
+        /// The directory of the Store's object files.
+        pub(crate) fn store_objects_dir(&self) -> PathBuf {
+            self.store.objects_dir.clone()
         }
 
         /// Opens the store again as a command beside a server would.
@@ -946,7 +953,7 @@ mod tests {
         }
     }
 
-    pub(super) fn fixture() -> Fixture {
+    pub(crate) fn fixture() -> Fixture {
         let dir = tempfile::tempdir().expect("temp dir");
         let fs = Arc::new(CrashFs::new(dir.path()));
         let clock = Arc::new(ManualClock::at(datetime!(2026-10-23 12:00 UTC)));

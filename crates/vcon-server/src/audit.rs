@@ -71,6 +71,12 @@ pub enum Action {
     AuditRead,
     Openapi,
     Backup,
+    /// An export of the tenant's versions, as Parquet files.
+    Export,
+    /// A tenant's metadata level set, in the admin log.
+    TenantMetadata,
+    /// The tenant's metadata level set, in its own log.
+    Metadata,
     /// A request to the MCP server, counted (`count`), not recorded.
     Mcp,
 }
@@ -106,6 +112,9 @@ impl Action {
             Action::AuditRead => "audit_read",
             Action::Openapi => "openapi",
             Action::Backup => "backup",
+            Action::Export => "export",
+            Action::TenantMetadata => "tenant_metadata",
+            Action::Metadata => "metadata",
             Action::Mcp => "mcp",
         }
     }
@@ -495,6 +504,9 @@ mod tests {
             Action::AuditRead => "audit_read",
             Action::Openapi => "openapi",
             Action::Backup => "backup",
+            Action::Export => "export",
+            Action::TenantMetadata => "tenant_metadata",
+            Action::Metadata => "metadata",
             Action::Mcp => "mcp",
         };
         let every = [
@@ -525,6 +537,9 @@ mod tests {
             Action::AuditRead,
             Action::Openapi,
             Action::Backup,
+            Action::Export,
+            Action::TenantMetadata,
+            Action::Metadata,
             Action::Mcp,
         ];
         let mut seen = std::collections::BTreeSet::new();

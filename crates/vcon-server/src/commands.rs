@@ -42,6 +42,20 @@ pub enum Command {
         force: bool,
         override_holds: bool,
     },
+    /// `metadata` is `none`, `counts` or `full`.
+    TenantSetMetadata {
+        id: String,
+        metadata: String,
+    },
+    /// Writes the tenant's kept versions as Parquet files to `to`, a
+    /// directory or an `s3://bucket/prefix`, beside a running server.
+    /// `since` and `until` are RFC 3339 times.
+    ExportParquet {
+        tenant: String,
+        to: String,
+        since: Option<String>,
+        until: Option<String>,
+    },
     KeyCreate {
         owner: Owner,
         label: String,
@@ -95,6 +109,8 @@ impl Command {
             Command::TenantList => Work::TenantList,
             Command::TenantSetRetention { .. } => Work::TenantSetRetention,
             Command::TenantRemove { .. } => Work::TenantRemove,
+            Command::TenantSetMetadata { .. } => Work::TenantSetMetadata,
+            Command::ExportParquet { .. } => Work::ExportParquet,
             Command::KeyCreate { .. } => Work::KeyCreate,
             Command::KeyList { .. } => Work::KeyList,
             Command::KeyRevoke { .. } => Work::KeyRevoke,
@@ -131,6 +147,16 @@ pub enum CommandError {
     Backup(BackupError),
     /// The storage the configuration names cannot be used.
     Storage(StorageError),
+    /// Not `none`, `counts` or `full`.
+    BadLevel(String),
+    /// Not an RFC 3339 time.
+    BadTime(String),
+    /// Neither a directory nor an `s3://bucket/prefix`.
+    BadTarget(String),
+    /// An `s3://` target with no `[export.s3]` or `[storage.s3]` table, or
+    /// in a build without S3.
+    NoS3,
+    Export(crate::export::ExportError),
 }
 
 impl fmt::Display for CommandError {
@@ -157,6 +183,22 @@ impl fmt::Display for CommandError {
             }
             CommandError::CheckFound(n) => write!(f, "check found {n} problem(s); see its report"),
             CommandError::Storage(e) => write!(f, "the storage cannot be used: {e}"),
+            CommandError::BadLevel(text) => write!(
+                f,
+                "{text:?} is not a metadata level: none, counts or full"
+            ),
+            CommandError::BadTime(text) => write!(
+                f,
+                "{text:?} is not an RFC 3339 time such as 2026-11-05T00:00:00Z"
+            ),
+            CommandError::BadTarget(text) => write!(
+                f,
+                "{text:?} is not a directory or an s3://bucket/prefix"
+            ),
+            CommandError::NoS3 => f.write_str(
+                "an s3:// target needs an [export.s3] or [storage.s3] table, in a build with the s3 feature",
+            ),
+            CommandError::Export(e) => write!(f, "{e}"),
             CommandError::Backup(e) => f.write_str(match e {
                 BackupError::Exists => {
                     "the backup's path already exists; a backup is written to a new directory"
@@ -294,6 +336,30 @@ pub fn run(config: &Config, command: &Command, out: &mut dyn Write) -> Result<()
                 other => CommandError::Tenant(other),
             })
         }
+        Command::TenantSetMetadata { id, metadata } => {
+            let level = crate::export::Metadata::parse(metadata)
+                .ok_or_else(|| CommandError::BadLevel(metadata.clone()))?;
+            let id = tenant_id(id)?;
+            tenants.set_metadata(who, id, level)?;
+            line(
+                out,
+                &serde_json::json!({ "id": id.to_string(), "metadata": level.as_str() }),
+            )
+        }
+        Command::ExportParquet {
+            tenant,
+            to,
+            since,
+            until,
+        } => export_parquet(
+            config,
+            &tenants,
+            tenant,
+            to,
+            since.as_deref(),
+            until.as_deref(),
+            out,
+        ),
         Command::RekeyTenant { id } => Ok(tenants.rekey_tenant(who, tenant_id(id)?)?),
         Command::RekeyMaster { .. } => unreachable!("rotated before the registry is opened"),
         Command::Check => check(config, &tenants, out),
@@ -325,6 +391,90 @@ impl From<TenantError> for CommandError {
     fn from(e: TenantError) -> CommandError {
         CommandError::Tenant(e)
     }
+}
+
+/// Exports a tenant's kept versions as Parquet files and prints what was
+/// written. Every argument is checked before anything is written.
+fn export_parquet(
+    config: &Config,
+    tenants: &Tenants,
+    tenant: &str,
+    to: &str,
+    since: Option<&str>,
+    until: Option<&str>,
+    out: &mut dyn Write,
+) -> Result<(), CommandError> {
+    use crate::export::target::Place;
+    use crate::export::{self, Plan};
+    let time = |text: Option<&str>| {
+        text.map(|t| {
+            OffsetDateTime::parse(t, &Rfc3339)
+                .map(crate::clock::nanos)
+                .map_err(|_| CommandError::BadTime(t.to_owned()))
+        })
+        .transpose()
+    };
+    let (since, until) = (time(since)?, time(until)?);
+    let place = Place::parse(to).ok_or_else(|| CommandError::BadTarget(to.to_owned()))?;
+    let id = tenant_id(tenant)?;
+    let level = tenants.metadata(id)?;
+    let target: Box<dyn export::Target> = match place {
+        Place::Dir(dir) => Box::new(export::DirTarget::new(&dir, Arc::new(OsFs))),
+        Place::S3 { bucket, prefix } => s3_target(config, &bucket, &prefix)?,
+    };
+    let store = tenants.store(id)?;
+    let plan = Plan {
+        level,
+        since,
+        until,
+        sizes: export::SIZES,
+        limits: vcon::read::Limits::new(config.inflated_limit),
+    };
+    let done = export::export(&store, &plan, target.as_ref(), SystemClock.now())
+        .map_err(CommandError::Export)?;
+    line(
+        out,
+        &serde_json::json!({
+            "tenant": id.to_string(),
+            "metadata": level.as_str(),
+            "to": target.describe(),
+            "manifest": done.manifest,
+            "seq": done.seq,
+            "files": done.files.len(),
+            "rows": done.rows,
+            "bytes": done.bytes,
+            "skipped": done.skipped,
+            "unread": done.unread,
+        }),
+    )
+}
+
+/// The bucket target `--to` names, reached through `[export.s3]`, else
+/// `[storage.s3]`'s service and keys.
+#[cfg(feature = "s3")]
+fn s3_target(
+    config: &Config,
+    bucket: &str,
+    prefix: &str,
+) -> Result<Box<dyn crate::export::Target>, CommandError> {
+    use crate::config::{ExportS3, ObjectStore};
+    let (service, table) = match (&config.export.s3, &config.storage.objects) {
+        (Some(service), _) => (service.clone(), "export.s3"),
+        (None, ObjectStore::S3(storage)) => (ExportS3::from(storage), "storage.s3"),
+        (None, ObjectStore::Local) => return Err(CommandError::NoS3),
+    };
+    let target = crate::export::s3::S3Target::connect(&service.for_bucket(bucket, prefix), table)
+        .map_err(CommandError::Storage)?;
+    Ok(Box::new(target))
+}
+
+#[cfg(not(feature = "s3"))]
+fn s3_target(
+    _config: &Config,
+    _bucket: &str,
+    _prefix: &str,
+) -> Result<Box<dyn crate::export::Target>, CommandError> {
+    Err(CommandError::NoS3)
 }
 
 /// Rotates the master key and says what the operator does next.
@@ -551,8 +701,8 @@ mod tests {
         assert_eq!(
             s.run(Command::TenantList).expect("listed"),
             [
-                json!({ "id": id, "name": "acme", "retention": "18m" }),
-                json!({ "id": beta, "name": "beta", "retention": null }),
+                json!({ "id": id, "name": "acme", "retention": "18m", "metadata": "none" }),
+                json!({ "id": beta, "name": "beta", "retention": null, "metadata": "none" }),
             ]
         );
     }
@@ -1226,6 +1376,11 @@ mod tests {
             CommandError::SameMasterKey => "already in use",
             CommandError::CheckFound(_) => "check found 2 problem(s)",
             CommandError::Storage(_) => "the storage cannot be used: bucket \"vcon\"",
+            CommandError::BadLevel(_) => "\"most\" is not a metadata level",
+            CommandError::BadTime(_) => "\"yesterday\" is not an RFC 3339 time",
+            CommandError::BadTarget(_) => "\"s3://\" is not a directory or an s3://bucket/prefix",
+            CommandError::NoS3 => "[export.s3] or [storage.s3]",
+            CommandError::Export(_) => "another export wrote",
             CommandError::Backup(e) => match e {
                 BackupError::Exists => "already exists",
                 BackupError::KeptChanging => "try again",
@@ -1249,6 +1404,173 @@ mod tests {
                 TenantError::Io => "could not be read or written",
             },
         }
+    }
+
+    /// One vCon stored in the tenant `id`.
+    fn store_one(s: &Setup, id: &str) {
+        let store = s
+            .tenants()
+            .store(TenantId::parse(id).expect("an id"))
+            .expect("the store");
+        let (found, body) = vcon(UUID, "exported");
+        store
+            .create(&Caller { key: KeyId([7; 8]) }, &found, &body)
+            .expect("stored");
+    }
+
+    #[test]
+    fn tenant_set_metadata_prints_the_level_and_list_shows_it() {
+        let s = setup();
+        let id = s.create("acme");
+        let out = s
+            .run(Command::TenantSetMetadata {
+                id: id.clone(),
+                metadata: "counts".to_owned(),
+            })
+            .expect("set");
+        assert_eq!(
+            out,
+            [json!({ "id": id, "metadata": "counts" })],
+            "the command prints the tenant and its level"
+        );
+        assert_eq!(
+            s.run(Command::TenantList).expect("listed")[0]["metadata"],
+            "counts",
+            "the list shows the level"
+        );
+        assert!(
+            matches!(
+                s.run(Command::TenantSetMetadata {
+                    id: id.clone(),
+                    metadata: "most".to_owned(),
+                }),
+                Err(CommandError::BadLevel(text)) if text == "most"
+            ),
+            "a level that is not one is refused, naming it"
+        );
+        assert_eq!(
+            tenant_error(s.run(Command::TenantSetMetadata {
+                id: TenantId::generate().to_string(),
+                metadata: "full".to_owned(),
+            })),
+            TenantError::NotFound,
+            "a tenant id no tenant has is not found"
+        );
+    }
+
+    /// The export runs beside a server, at the tenant's level, and prints
+    /// one line; it is refused beside a command that runs alone.
+    #[test]
+    fn export_parquet_runs_beside_a_server_and_prints_what_it_wrote() {
+        let s = setup();
+        let id = s.create("acme");
+        store_one(&s, &id);
+        s.run(Command::TenantSetMetadata {
+            id: id.clone(),
+            metadata: "counts".to_owned(),
+        })
+        .expect("set");
+        let to = s._dir.path().join("export");
+        let export = Command::ExportParquet {
+            tenant: id.clone(),
+            to: to.display().to_string(),
+            since: Some("2000-01-01T00:00:00Z".to_owned()),
+            until: None,
+        };
+        let server = datadir::lock(&s.config.data_dir, Sharing::Serve).expect("a server");
+        let out = s.run(export.clone()).expect("exports beside a server");
+        drop(server);
+        assert_eq!(out.len(), 1, "{out:?}");
+        let line = &out[0];
+        let manifest = format!("tenant={id}/manifest/00000000000000000001.json");
+        assert_eq!(line["tenant"], id, "the line names the tenant");
+        assert_eq!(
+            line["metadata"], "counts",
+            "the export is at the tenant's level"
+        );
+        assert_eq!(
+            line["to"],
+            to.display().to_string(),
+            "the line names the target"
+        );
+        assert_eq!(line["manifest"], manifest, "the line names the manifest");
+        assert_eq!(line["seq"], 1, "the first export to the target");
+        assert_eq!(line["files"], 1, "one store date, one file");
+        assert_eq!(line["rows"], 1, "the one vCon stored");
+        assert_eq!(line["skipped"], 0, "nothing was purged during the run");
+        assert_eq!(line["unread"], 0, "every body was read");
+        let m: Value =
+            serde_json::from_slice(&std::fs::read(to.join(&manifest)).expect("the manifest"))
+                .expect("JSON");
+        assert_eq!(m["bytes"], line["bytes"], "the bytes the manifest names");
+        assert_eq!(
+            m["since"], "2000-01-01T00:00:00Z",
+            "the manifest records --since"
+        );
+        let alone = datadir::lock(&s.config.data_dir, Sharing::Alone).expect("alone");
+        assert!(
+            matches!(
+                s.run(export),
+                Err(CommandError::DataDir(LockError::InUse(Sharing::Beside)))
+            ),
+            "an export does not run beside a command that runs alone"
+        );
+        drop(alone);
+    }
+
+    #[test]
+    fn export_parquet_refuses_a_bad_time_target_or_tenant() {
+        let s = setup();
+        let id = s.create("acme");
+        let export = |to: &str, since: Option<&str>, until: Option<&str>| Command::ExportParquet {
+            tenant: id.clone(),
+            to: to.to_owned(),
+            since: since.map(str::to_owned),
+            until: until.map(str::to_owned),
+        };
+        let dir = s._dir.path().join("out").display().to_string();
+        assert!(
+            matches!(
+                s.run(export(&dir, Some("yesterday"), None)),
+                Err(CommandError::BadTime(t)) if t == "yesterday"
+            ),
+            "a word that is not an RFC 3339 time is refused, naming it"
+        );
+        assert!(
+            matches!(
+                s.run(export(&dir, None, Some("2026-13-01T00:00:00Z"))),
+                Err(CommandError::BadTime(_))
+            ),
+            "a month 13 is not a time"
+        );
+        assert!(
+            matches!(
+                s.run(export("s3://", None, None)),
+                Err(CommandError::BadTarget(t)) if t == "s3://"
+            ),
+            "an s3:// URL with no bucket is refused, naming it"
+        );
+        assert!(
+            matches!(
+                s.run(export("s3://reports/vcon", None, None)),
+                Err(CommandError::NoS3)
+            ),
+            "no S3 service is configured"
+        );
+        assert_eq!(
+            tenant_error(s.run(Command::ExportParquet {
+                tenant: TenantId::generate().to_string(),
+                to: dir.clone(),
+                since: None,
+                until: None,
+            })),
+            TenantError::NotFound,
+            "an unknown tenant is not found"
+        );
+        assert!(
+            !std::path::Path::new(&dir).exists(),
+            "a refused export writes nothing"
+        );
     }
 
     #[test]
@@ -1292,6 +1614,11 @@ mod tests {
             CommandError::Storage(StorageError(
                 "bucket \"vcon\" cannot be reached or read".to_owned(),
             )),
+            CommandError::BadLevel("most".to_owned()),
+            CommandError::BadTime("yesterday".to_owned()),
+            CommandError::BadTarget("s3://".to_owned()),
+            CommandError::NoS3,
+            CommandError::Export(crate::export::ExportError::Raced("m".to_owned())),
         ];
         for error in tenant.into_iter().chain(backup).chain(rest) {
             let text = error.to_string();

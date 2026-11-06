@@ -41,6 +41,14 @@ Durations are whole seconds and sizes are bytes; each must be more than zero.
 | `storage.s3.ca_file` | PEM file of the certificate authorities trusted for an `https://` endpoint, in place of the system's, for a service whose certificate a private CA signed | none |
 | `storage.s3.allow_versioning` | Start even though the bucket has versioning on or suspended | `false` |
 | `storage.s3.timeout` | Seconds one request to the bucket may take | `30` |
+| `export.s3.region` | Region of the S3-compatible service that [`export parquet`](@/docs/export-parquet.md) writes an `s3://` target to; without an `export.s3` table the export uses `storage.s3`'s service and keys | required with `export.s3` |
+| `export.s3.endpoint` | As `storage.s3.endpoint`, for the export's service | none |
+| `export.s3.path_style` | As `storage.s3.path_style` | `false` |
+| `export.s3.access_key_id` | As `storage.s3.access_key_id` | none |
+| `export.s3.secret_access_key_file` | As `storage.s3.secret_access_key_file` | none |
+| `export.s3.allow_http` | As `storage.s3.allow_http` | `false` |
+| `export.s3.ca_file` | As `storage.s3.ca_file` | none |
+| `export.s3.timeout` | Seconds one request to the export's service may take | `30` |
 
 At start and then each day, `serve` logs a warning while the oldest purge or
 tenant removal waiting for [key rotation](@/docs/operations.md#key-rotation)

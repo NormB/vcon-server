@@ -16,34 +16,17 @@ use crate::identity::{parse_uuid_text, unsigned_identity};
 use crate::json::parse_object;
 use crate::read::{MAX_SIGNED_LAYERS, Rejection};
 
-/// Returns the uuid of the vCon inside a signed body, opening nested JWS
-/// layers one after another, in a loop, so the stack does not grow with the
-/// depth; past [`MAX_SIGNED_LAYERS`] the body is too deep. `budget` is what
-/// is left of the inflation limit and shrinks with every gzip layer, so all
-/// layers together stay within one limit.
+/// Returns the uuid of the vCon inside a signed body, checked against the
+/// uuid in every layer's headers, once its `critical` is checked against
+/// `supported`.
 pub(crate) fn signed_identity(
     object: &Map<String, Value>,
     budget: &mut u64,
     supported: &BTreeSet<String>,
 ) -> Result<Uuid, Rejection> {
-    let mut header_uuids = Vec::new();
-    let mut inner = open_layer(object, budget, &mut header_uuids)?;
-    let mut layers = 1;
-    let uuid = loop {
-        match form_of(&inner) {
-            Ok(Form::Signed) if layers == MAX_SIGNED_LAYERS => return Err(Rejection::TooDeep),
-            Ok(Form::Signed) => {
-                inner = open_layer(&inner, budget, &mut header_uuids)?;
-                layers += 1;
-            }
-            Ok(Form::Unsigned) => {
-                let uuid = unsigned_identity(&inner)?;
-                check_critical(&inner, supported)?;
-                break uuid;
-            }
-            _ => return Err(Rejection::BadPayload),
-        }
-    };
+    let (inner, header_uuids) = innermost(object, budget)?;
+    let uuid = unsigned_identity(&inner)?;
+    check_critical(&inner, supported)?;
     for header_uuid in &header_uuids {
         match header_uuid {
             Value::String(text) if parse_uuid_text(text) == Ok(uuid) => {}
@@ -51,6 +34,32 @@ pub(crate) fn signed_identity(
         }
     }
     Ok(uuid)
+}
+
+/// Returns the unsigned vCon inside a signed body and the `uuid` of every
+/// layer's headers, opening nested JWS layers one after another, in a
+/// loop, so the stack does not grow with the depth; past
+/// [`MAX_SIGNED_LAYERS`] the body is too deep. `budget` is what is left of
+/// the inflation limit and shrinks with every gzip layer, so all layers
+/// together stay within one limit.
+pub(crate) fn innermost(
+    object: &Map<String, Value>,
+    budget: &mut u64,
+) -> Result<(Map<String, Value>, Vec<Value>), Rejection> {
+    let mut header_uuids = Vec::new();
+    let mut inner = open_layer(object, budget, &mut header_uuids)?;
+    let mut layers = 1;
+    loop {
+        match form_of(&inner) {
+            Ok(Form::Signed) if layers == MAX_SIGNED_LAYERS => return Err(Rejection::TooDeep),
+            Ok(Form::Signed) => {
+                inner = open_layer(&inner, budget, &mut header_uuids)?;
+                layers += 1;
+            }
+            Ok(Form::Unsigned) => return Ok((inner, header_uuids)),
+            _ => return Err(Rejection::BadPayload),
+        }
+    }
 }
 
 /// Opens one JWS layer: adds its header uuids to `header_uuids` and

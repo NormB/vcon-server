@@ -108,6 +108,20 @@ pub struct ExaminedRow {
     pub held: bool,
 }
 
+/// A kept version as the export reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportedRow {
+    pub version: VersionId,
+    pub uuid: Uuid,
+    pub form: String,
+    pub gzip: bool,
+    pub size: i64,
+    pub stored_at: i64,
+    /// Its uuid's current version, and the uuid not deleted.
+    pub live: bool,
+    pub wrapped: Vec<u8>,
+}
+
 /// A data key to rewrap.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WrappedRow {
@@ -229,6 +243,13 @@ pub trait CatalogTx {
     fn count_not_under(&mut self, key: KeyId) -> Result<u64, StoreError>;
     /// Every version row with its uuid's hold, in version order.
     fn examined(&mut self) -> Result<Vec<ExaminedRow>, StoreError>;
+    /// Every kept version stored at or after `since` and before `until`,
+    /// by store time and then version id.
+    fn exported(
+        &mut self,
+        since: Option<i64>,
+        until: Option<i64>,
+    ) -> Result<Vec<ExportedRow>, StoreError>;
     /// The times of every successful purge recorded, as stored.
     fn purge_times(&mut self) -> Result<Vec<String>, StoreError>;
     /// Starts a nested part that `rollback_part` undoes and `release_part`
@@ -304,6 +325,8 @@ pub struct TenantRow {
     pub name: String,
     /// The period as `Retention` writes it; None is the server default.
     pub retention: Option<String>,
+    /// The metadata level as `Metadata` writes it; None is `none`.
+    pub metadata: Option<String>,
     pub created_at: i64,
     pub tenant_key_id: KeyId,
     pub wrapped: Vec<u8>,
@@ -357,6 +380,8 @@ pub trait RegistryTx {
     /// Sets a tenant's retention; false if no tenant has the id.
     fn set_retention(&mut self, id: TenantId, retention: Option<&str>)
     -> Result<bool, TenantError>;
+    /// Sets a tenant's metadata level; false if no tenant has the id.
+    fn set_metadata(&mut self, id: TenantId, level: Option<&str>) -> Result<bool, TenantError>;
     /// Removes a tenant's row and revokes its access keys at `at`.
     fn delete_tenant(&mut self, id: TenantId, at: i64) -> Result<(), TenantError>;
     fn set_pending(&mut self, id: TenantId, pending: &[u8]) -> Result<(), TenantError>;

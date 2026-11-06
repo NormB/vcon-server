@@ -583,7 +583,7 @@ A call and its result, from a test server:
 
 ### `admin_tenant_list`
 
-Returns every tenant, by name: its id, its name between untrusted-vcon-data markers, and its own retention period (null for the server default); from cursor, within max_bytes, with next_cursor when more follow.
+Returns every tenant, by name: its id, its name between untrusted-vcon-data markers, its own retention period (null for the server default) and its metadata level for Parquet exports; from cursor, within max_bytes, with next_cursor when more follow.
 
 Scope: admin. Hints: read-only, idempotent.
 
@@ -608,11 +608,13 @@ A call and its result, from a test server:
   "tenants": [
     {
       "id": "643b6670aea8bd662f1ab8ce2791c5d3",
+      "metadata": "none",
       "name": "⟦untrusted-vcon-data⟧acme⟦/untrusted-vcon-data⟧",
       "retention": null
     },
     {
       "id": "2066d6bdaa5181619164bbad61f2dd0e",
+      "metadata": "none",
       "name": "⟦untrusted-vcon-data⟧beta⟦/untrusted-vcon-data⟧",
       "retention": "18m"
     }

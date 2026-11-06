@@ -9,8 +9,9 @@ use rusqlite::{Connection, ErrorCode};
 use crate::envelope::Key;
 
 /// The schema version this build makes and reads. Version 2 added the
-/// time each uuid was first stored to a tenant catalog's vcon table.
-pub const SCHEMA_VERSION: i64 = 2;
+/// time each uuid was first stored to a tenant catalog's vcon table;
+/// version 3 added each tenant's metadata level to server.sqlite.
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// Brings a version-1 tenant catalog to version 2: each uuid's first store
 /// time, taken from its earliest kept version (the closest record left of
@@ -22,6 +23,10 @@ UPDATE vcon SET stored_at =
     coalesce((SELECT min(stored_at) FROM version WHERE version.uuid = vcon.uuid), 0);
 CREATE INDEX vcon_listed ON vcon (stored_at, uuid);
 ";
+
+/// Brings server.sqlite from version 2 to 3: each tenant's metadata level,
+/// NULL (`none`) for every tenant there is.
+const TENANT_METADATA: &str = "ALTER TABLE tenant ADD COLUMN metadata TEXT;";
 
 /// How long a statement waits for another connection's lock before it
 /// fails busy. It is rusqlite's own default, stated so it is chosen, not
@@ -130,16 +135,23 @@ pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogE
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
         }
-        1 => {
-            // One transaction, so a failed upgrade leaves version 1 whole.
+        from @ (1 | 2) => {
+            // One transaction, so a failed upgrade leaves the old version
+            // whole. A tenant catalog has a vcon table, server.sqlite a
+            // tenant table.
             let tx = conn.unchecked_transaction()?;
-            let tenant: bool = tx.query_row(
-                "SELECT count(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = 'vcon'",
-                [],
-                |r| r.get(0),
-            )?;
-            if tenant {
+            let has = |table: &str| -> rusqlite::Result<bool> {
+                tx.query_row(
+                    "SELECT count(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |r| r.get(0),
+                )
+            };
+            if from < 2 && has("vcon")? {
                 tx.execute_batch(VCON_STORED_AT)?;
+            }
+            if has("tenant")? {
+                tx.execute_batch(TENANT_METADATA)?;
             }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
@@ -614,11 +626,12 @@ pub(crate) mod tests {
         ));
     }
 
-    /// A catalog made at version 1 opens at version 2, its rows kept. One
-    /// with no vCon table, as server.sqlite is, changes only its number;
-    /// the tenant catalog's upgrade is tested with the Store.
+    /// A catalog made at version 1 opens at the current version, its rows
+    /// kept. One with no vCon table and no tenant table changes only its
+    /// number; the tenant catalog's upgrade is tested with the Store, and
+    /// server.sqlite's with the registry.
     #[test]
-    fn a_version_1_catalog_is_upgraded_to_version_2() {
+    fn a_version_1_catalog_is_upgraded_to_the_current_version() {
         let dir = tempfile::tempdir().expect("temp dir");
         let key = Key::generate().expect("key");
         let conn = open(&path(&dir), &key, SCHEMA).expect("opens");
@@ -631,7 +644,10 @@ pub(crate) mod tests {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .expect("version");
-        assert_eq!(version, 2);
+        assert_eq!(
+            version, SCHEMA_VERSION,
+            "the catalog is brought to the current version"
+        );
         assert_eq!(notes(&conn), vec!["kept"]);
     }
 

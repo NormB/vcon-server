@@ -30,6 +30,8 @@ pub enum Work {
     TenantList,
     TenantSetRetention,
     TenantRemove,
+    TenantSetMetadata,
+    ExportParquet,
     KeyCreate,
     KeyList,
     KeyRevoke,
@@ -56,7 +58,9 @@ impl Work {
             | Work::KeyList
             | Work::KeyRevoke
             | Work::AuditExport
-            | Work::Backup => Sharing::Beside,
+            | Work::Backup
+            | Work::TenantSetMetadata
+            | Work::ExportParquet => Sharing::Beside,
         }
     }
 }
@@ -162,6 +166,8 @@ mod tests {
             Work::AuditExport => Sharing::Beside,
             Work::Check => Sharing::Alone,
             Work::Backup => Sharing::Beside,
+            Work::TenantSetMetadata => Sharing::Beside,
+            Work::ExportParquet => Sharing::Beside,
         };
         for work in [
             Work::Serve,
@@ -177,6 +183,8 @@ mod tests {
             Work::AuditExport,
             Work::Check,
             Work::Backup,
+            Work::TenantSetMetadata,
+            Work::ExportParquet,
         ] {
             assert_eq!(work.sharing(), documented(work), "{work:?}");
         }

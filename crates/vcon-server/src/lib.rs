@@ -57,6 +57,7 @@ pub mod console;
 )]
 pub mod datadir;
 pub mod envelope;
+pub(crate) mod export;
 pub mod fs;
 pub mod ids;
 pub mod mcp;

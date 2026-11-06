@@ -50,14 +50,19 @@ key, the data directory, the certificate or the storage cannot be used.
 | Command | Prints | Runs beside `serve` |
 |---|---|---|
 | `tenant create <name> [--retention <period>]` | `{"id"}` | no |
-| `tenant list` | `{"id", "name", "retention"}` per tenant, by name | yes |
+| `tenant list` | `{"id", "name", "retention", "metadata"}` per tenant, by name | yes |
 | `tenant set-retention <id> <period or default>` | `{"id", "retention"}` | yes |
+| `tenant set-metadata <id> <none, counts or full>` | `{"id", "metadata"}` | yes |
 | `tenant remove <id> [--force [--override-holds]]` | nothing | no |
 
 `tenant remove` without `--force` removes only a tenant that keeps no
 version. `--force` also removes one that does, unless a uuid of it is under a
 legal hold. `--override-holds` destroys even held vCons; it exists only here,
 never over HTTP, and only with the server stopped.
+
+`tenant set-metadata` sets which clear columns the tenant's Parquet exports
+carry: `none` (the default), `counts` or `full`. See
+[export to Parquet](@/docs/export-parquet.md#choose-the-metadata-level).
 
 ## Keys
 
@@ -126,6 +131,20 @@ found a problem: the report says what. See
 must not exist yet, while the server runs. See
 [back up and restore](@/docs/operations.md#back-up-and-restore) for what it
 copies, how to restore the copy, and what to keep apart from it.
+
+## Export
+
+| Command | Prints | Runs beside `serve` |
+|---|---|---|
+| `export parquet --tenant <id> --to <dir or s3://bucket/prefix> [--since <time>] [--until <time>]` | `{"tenant", "metadata", "to", "manifest", "seq", "files", "rows", "bytes", "skipped", "unread"}` | yes |
+
+`export parquet` writes a copy of the tenant's kept versions, current and
+hidden, as Parquet files under `tenant=<id>/date=<yyyy-mm-dd>/`, and then a
+manifest, `tenant=<id>/manifest/<seq>.json`, that names them. It reads the
+store and changes nothing in it but one `export` record in the tenant's audit
+log. `--since` and `--until` are RFC 3339 times; a version stored at or after
+`--since` and before `--until` is exported. See
+[export to Parquet](@/docs/export-parquet.md).
 
 ## MCP for an AI agent
 

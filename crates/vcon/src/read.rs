@@ -125,6 +125,62 @@ pub fn inspect(
     Ok(Inspection { form, gzip, uuid })
 }
 
+/// The members of a vCon that an export may copy into clear columns, read
+/// from an unsigned vCon or from the vCon inside a signed one. A member
+/// that is missing, or not of the type the vCon core draft gives it, is
+/// `None`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct Fields {
+    /// `created_at`, as written.
+    pub created_at: Option<String>,
+    /// `updated_at`, as written.
+    pub updated_at: Option<String>,
+    /// `subject`.
+    pub subject: Option<String>,
+    /// Each entry of `parties`, in order; an entry that is not an object
+    /// has no field.
+    pub parties: Option<Vec<Party>>,
+    /// How many entries `dialog` has.
+    pub dialogs: Option<usize>,
+}
+
+/// The members of one party that [`Fields`] copies.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct Party {
+    /// `tel`, a telephone number.
+    pub tel: Option<String>,
+    /// `mailto`, an email address.
+    pub mailto: Option<String>,
+    /// `name`.
+    pub name: Option<String>,
+}
+
+/// Reads the [`Fields`] of `body`, a vCon [`inspect`] has accepted, within
+/// the same `limits`. An encrypted vCon gives `None`: nothing in it can be
+/// read without its key.
+///
+/// # Errors
+///
+/// The [`Rejection`] `inspect` would give for a body that is too large or
+/// too deep, is bad gzip, or is not a vCon of a known form.
+pub fn fields(body: &[u8], limits: &Limits) -> Result<Option<Fields>, Rejection> {
+    let (inflated, gzip) = gzip::inflate(body, None, limits.inflated)?;
+    let mut budget = limits.inflated;
+    if gzip {
+        budget -= inflated.len() as u64;
+    }
+    let object = json::parse_object(&inflated)?;
+    Ok(match form::form_of(&object)? {
+        Form::Unsigned => Some(crate::fields::fields_of(&object)),
+        Form::Signed => Some(crate::fields::fields_of(
+            &signed::innermost(&object, &mut budget)?.0,
+        )),
+        Form::Encrypted => None,
+    })
+}
+
 /// Why a received body cannot be stored as a vCon.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]

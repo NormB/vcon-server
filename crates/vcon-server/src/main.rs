@@ -60,6 +60,33 @@ enum Command {
         /// The directory to write; it must not exist.
         dir: PathBuf,
     },
+    /// Writes a copy of a tenant's data in another format, beside a running
+    /// server.
+    #[command(subcommand)]
+    Export(ExportCommand),
+}
+
+#[derive(Subcommand)]
+enum ExportCommand {
+    /// Writes a tenant's kept versions as Parquet files, one directory per
+    /// store date, and a manifest naming them: each version's sealed body
+    /// byte for byte, and the clear columns of the tenant's metadata level.
+    Parquet {
+        #[command(flatten)]
+        config: ConfigArg,
+        /// The tenant's id.
+        #[arg(long)]
+        tenant: String,
+        /// A directory, or s3://bucket/prefix.
+        #[arg(long)]
+        to: String,
+        /// Only versions stored at or after this RFC 3339 time.
+        #[arg(long)]
+        since: Option<String>,
+        /// Only versions stored before this RFC 3339 time.
+        #[arg(long)]
+        until: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -118,6 +145,15 @@ enum TenantCommand {
         id: String,
         /// A period such as 7y, 18m or 90d, or `default` for the server's.
         retention: String,
+    },
+    /// Sets which clear columns a tenant's Parquet files carry.
+    SetMetadata {
+        #[command(flatten)]
+        config: ConfigArg,
+        /// The tenant's id.
+        id: String,
+        /// none (the default), counts, or full, which holds personal data.
+        metadata: String,
     },
     /// Removes a tenant. Runs only while no server does.
     Remove {
@@ -219,6 +255,21 @@ fn main() -> ExitCode {
         }
         Command::Check { config } => (config, commands::Command::Check),
         Command::Backup { config, dir } => (config, commands::Command::Backup { to: dir }),
+        Command::Export(ExportCommand::Parquet {
+            config,
+            tenant,
+            to,
+            since,
+            until,
+        }) => (
+            config,
+            commands::Command::ExportParquet {
+                tenant,
+                to,
+                since,
+                until,
+            },
+        ),
         Command::Audit(AuditCommand::Export {
             config,
             tenant,
@@ -257,6 +308,14 @@ fn tenant(command: TenantCommand) -> (ConfigArg, commands::Command) {
         } => (
             config,
             commands::Command::TenantSetRetention { id, retention },
+        ),
+        TenantCommand::SetMetadata {
+            config,
+            id,
+            metadata,
+        } => (
+            config,
+            commands::Command::TenantSetMetadata { id, metadata },
         ),
         TenantCommand::Remove {
             config,

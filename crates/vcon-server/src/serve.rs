@@ -387,6 +387,7 @@ mod tests {
                 response_bytes: 5,
             },
             storage: crate::config::Storage::default(),
+            export: crate::config::Export::default(),
         };
         let app = app_from(&config, tenants.clone());
         assert!(Arc::ptr_eq(&app.tenants, &tenants));

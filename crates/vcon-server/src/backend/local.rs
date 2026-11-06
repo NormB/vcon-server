@@ -12,9 +12,9 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::{
-    Catalog, CatalogTx, CommitError, ExaminedRow, HiddenRow, KeptRow, KeyRow, ListedRow,
-    NewVersion, ObjectError, ObjectPlace, Objects, PageQuery, Registry, RegistryTx, TenantRow,
-    TenantSpace, Under, VconRow, VersionRow, WrappedRow,
+    Catalog, CatalogTx, CommitError, ExaminedRow, ExportedRow, HiddenRow, KeptRow, KeyRow,
+    ListedRow, NewVersion, ObjectError, ObjectPlace, Objects, PageQuery, Registry, RegistryTx,
+    TenantRow, TenantSpace, Under, VconRow, VersionRow, WrappedRow,
 };
 use crate::audit::{self, Action, Actor, AuditError, Entry};
 use crate::catalog;
@@ -603,6 +603,38 @@ impl CatalogTx for LocalTx<'_> {
         .collect()
     }
 
+    fn exported(
+        &mut self,
+        since: Option<i64>,
+        until: Option<i64>,
+    ) -> Result<Vec<ExportedRow>, StoreError> {
+        let mut rows = self
+            .conn
+            .prepare(
+                "SELECT v.version, v.uuid, v.form, v.gzip, v.size, v.stored_at,
+                        c.current IS v.version AND c.deleted_at IS NULL, v.wrapped_key
+                 FROM version v JOIN vcon c ON c.uuid = v.uuid
+                 WHERE (?1 IS NULL OR v.stored_at >= ?1) AND (?2 IS NULL OR v.stored_at < ?2)
+                 ORDER BY v.stored_at, v.version",
+            )
+            .map_err(io)?;
+        rows.query_map(params![since, until], |r| {
+            Ok(ExportedRow {
+                version: VersionId(r.get(0)?),
+                uuid: Uuid::from_bytes(r.get(1)?),
+                form: r.get(2)?,
+                gzip: r.get(3)?,
+                size: r.get(4)?,
+                stored_at: r.get(5)?,
+                live: r.get(6)?,
+                wrapped: r.get(7)?,
+            })
+        })
+        .map_err(io)?
+        .map(|row| row.map_err(io))
+        .collect()
+    }
+
     fn purge_times(&mut self) -> Result<Vec<String>, StoreError> {
         let mut rows = self
             .conn
@@ -738,7 +770,8 @@ fn io<E>(_: E) -> StoreError {
 /// The tables of server.sqlite, besides the admin audit log. A key column
 /// says NOT NULL because SQLite lets a PRIMARY KEY other than an INTEGER
 /// one hold NULL. Times are nanoseconds since the epoch. A retention period
-/// is written as `Retention` writes it; NULL means the server default.
+/// is written as `Retention` writes it; NULL means the server default. A
+/// metadata level is written as `Metadata` writes it; NULL means `none`.
 pub(crate) const REGISTRY_TABLES: &str = "
 CREATE TABLE tenant (
     id BLOB PRIMARY KEY NOT NULL,
@@ -748,7 +781,8 @@ CREATE TABLE tenant (
     tenant_key_id BLOB NOT NULL,
     wrapped_tenant_key BLOB NOT NULL,
     pending_wrapped_tenant_key BLOB,
-    key_since INTEGER NOT NULL
+    key_since INTEGER NOT NULL,
+    metadata TEXT
 );
 CREATE TABLE master_key_use (
     master_key_id BLOB PRIMARY KEY NOT NULL,
@@ -864,7 +898,7 @@ impl Drop for LocalRegistryTx<'_> {
 }
 
 const TENANT_COLUMNS: &str = "id, name, retention, created_at, tenant_key_id,
-    wrapped_tenant_key, pending_wrapped_tenant_key, key_since";
+    wrapped_tenant_key, pending_wrapped_tenant_key, key_since, metadata";
 
 fn tenant_row(r: &rusqlite::Row) -> rusqlite::Result<TenantRow> {
     Ok(TenantRow {
@@ -876,6 +910,7 @@ fn tenant_row(r: &rusqlite::Row) -> rusqlite::Result<TenantRow> {
         wrapped: r.get(5)?,
         pending: r.get(6)?,
         key_since: r.get(7)?,
+        metadata: r.get(8)?,
     })
 }
 
@@ -931,8 +966,8 @@ impl RegistryTx for LocalRegistryTx<'_> {
         self.conn
             .execute(
                 "INSERT INTO tenant (id, name, retention, created_at, tenant_key_id,
-                     wrapped_tenant_key, pending_wrapped_tenant_key, key_since)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                     wrapped_tenant_key, pending_wrapped_tenant_key, key_since, metadata)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     row.id.0,
                     row.name,
@@ -942,10 +977,22 @@ impl RegistryTx for LocalRegistryTx<'_> {
                     row.wrapped,
                     row.pending,
                     row.key_since,
+                    row.metadata,
                 ],
             )
             .map_err(tenant_io)?;
         Ok(())
+    }
+
+    fn set_metadata(&mut self, id: TenantId, level: Option<&str>) -> Result<bool, TenantError> {
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE tenant SET metadata = ?2 WHERE id = ?1",
+                params![id.0, level],
+            )
+            .map_err(tenant_io)?;
+        Ok(changed != 0)
     }
 
     fn set_retention(

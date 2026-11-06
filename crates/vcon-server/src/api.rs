@@ -82,6 +82,7 @@ pub fn router(app: Arc<App>) -> Router {
             "/admin/tenants/{id}",
             patch(tenant_retention).delete(tenant_remove),
         )
+        .route("/admin/tenants/{id}/metadata", put(tenant_metadata))
         .route("/admin/tenants/{id}/keys", post(key_create).get(key_list))
         .route("/admin/keys/{id}", axum::routing::delete(key_revoke))
         .merge(crate::console::router())
@@ -739,6 +740,20 @@ struct NewRetention {
     retention: Option<Retention>,
 }
 
+/// The body of `PUT /admin/tenants/{id}/metadata`.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NewMetadata {
+    #[serde(deserialize_with = "level")]
+    metadata: crate::export::Metadata,
+}
+
+/// A metadata level in a body: `none`, `counts` or `full`.
+fn level<'de, D: Deserializer<'de>>(d: D) -> Result<crate::export::Metadata, D::Error> {
+    let text = String::deserialize(d)?;
+    crate::export::Metadata::parse(&text).ok_or_else(|| D::Error::custom("a bad level"))
+}
+
 /// A JSON answer.
 fn json_answer(status: StatusCode, body: &serde_json::Value) -> Response {
     (
@@ -820,6 +835,39 @@ async fn tenant_retention(
                 "id": id.to_string(),
                 "retention": retention.map(|r| r.to_string()),
             }),
+        ),
+        Err(refused) => refused.into_response(),
+    }
+}
+
+/// `PUT /admin/tenants/{id}/metadata`: sets which clear columns the
+/// tenant's Parquet files carry, and answers 200 with it.
+async fn tenant_metadata(
+    State(app): State<Arc<App>>,
+    UriPath(id): UriPath<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let action = Action::TenantMetadata;
+    let changed = async {
+        let (key, body) = admin_admit(&app, &headers, body, action).await?;
+        let Some(id) = TenantId::parse(&id) else {
+            let refused = Problem::Tenant(TenantError::NotFound);
+            return Err(app
+                .refuse(None, refusal(key, action, refused), refused)
+                .await);
+        };
+        let new: NewMetadata = admin_body(&app, key, action, &body).await?;
+        let tenants = app.tenants.clone();
+        blocking(move || tenants.set_metadata(Actor::Key(key), id, new.metadata))
+            .await
+            .map_err(Problem::Tenant)?;
+        Ok((id, new.metadata))
+    };
+    match changed.await {
+        Ok((id, level)) => json_answer(
+            StatusCode::OK,
+            &serde_json::json!({ "id": id.to_string(), "metadata": level.as_str() }),
         ),
         Err(refused) => refused.into_response(),
     }
@@ -2765,6 +2813,7 @@ mod tests {
         use time::format_description::well_known::Rfc3339;
 
         use crate::access;
+        use crate::export::Metadata;
         use crate::ids::{KeyId, TenantId};
         use crate::retention::Retention;
 
@@ -2836,6 +2885,12 @@ mod tests {
                     format!("/admin/tenants/{id}"),
                     Some(r#"{"retention":"5y"}"#),
                     "tenant_retention",
+                ),
+                (
+                    Method::PUT,
+                    format!("/admin/tenants/{id}/metadata"),
+                    Some(r#"{"metadata":"counts"}"#),
+                    "tenant_metadata",
                 ),
                 (
                     Method::DELETE,
@@ -2924,9 +2979,9 @@ mod tests {
             assert_eq!(
                 listed,
                 json!([
-                    { "id": s.tenant.to_string(), "name": "acme", "retention": null },
-                    { "id": id.to_string(), "name": "beta", "retention": "5y" },
-                    { "id": gamma.to_string(), "name": "gamma", "retention": null },
+                    { "id": s.tenant.to_string(), "name": "acme", "retention": null, "metadata": "none" },
+                    { "id": id.to_string(), "name": "beta", "retention": "5y", "metadata": "none" },
+                    { "id": gamma.to_string(), "name": "gamma", "retention": null, "metadata": "none" },
                 ])
             );
             assert_eq!(admin_log(&s, "tenant_list")[0]["status"], 200);
@@ -3056,6 +3111,80 @@ mod tests {
             assert_eq!(refused.len(), bodies.len());
             assert!(refused.iter().all(|r| r["status"] == 422));
             assert_eq!(s.tenants.retention(s.tenant), Ok(None));
+        }
+
+        #[tokio::test]
+        async fn a_metadata_change_answers_200_with_the_level() {
+            let s = server().await;
+            let op = operator(&s);
+            let path = format!("/admin/tenants/{}/metadata", s.tenant);
+            let id = s.tenant.to_string();
+            for (level, kept) in [
+                ("full", Metadata::Full),
+                ("counts", Metadata::Counts),
+                ("none", Metadata::None),
+            ] {
+                let body = format!(r#"{{"metadata":"{level}"}}"#);
+                let answer = call(&s, Method::PUT, &path, Some(&op), Some(&body)).await;
+                assert_eq!(answer.status(), 200, "{body}");
+                assert_eq!(
+                    json(answer).await,
+                    json!({ "id": id, "metadata": level }),
+                    "the answer names the tenant and its new level"
+                );
+                assert_eq!(s.tenants.metadata(s.tenant), Ok(kept), "{body}");
+            }
+            let changed = admin_log(&s, "tenant_metadata");
+            assert_eq!(changed.len(), 3, "one admin record per change");
+            assert!(
+                changed.iter().all(|r| r["status"] == 200),
+                "each change succeeded"
+            );
+            assert_eq!(s.tenant_log("metadata").len(), 3, "the tenant's log too");
+        }
+
+        #[tokio::test]
+        async fn a_metadata_change_it_cannot_take_is_refused_and_recorded() {
+            let s = server().await;
+            let op = operator(&s);
+            let path = format!("/admin/tenants/{}/metadata", s.tenant);
+            let bodies = [
+                "",
+                "{}",
+                r#"{"metadata":null}"#,
+                r#"{"metadata":"most"}"#,
+                r#"{"metadata":"Full"}"#,
+                r#"{"metadata":"full","retention":"5y"}"#,
+            ];
+            for body in bodies {
+                let answer = call(&s, Method::PUT, &path, Some(&op), Some(body)).await;
+                assert_eq!(answer.status(), 422, "{body}");
+                assert_eq!(problem(answer).await, "invalid-body", "{body}");
+            }
+            let unknown = format!("/admin/tenants/{}/metadata", TenantId([7; 16]));
+            let body = Some(r#"{"metadata":"full"}"#);
+            let answer = call(&s, Method::PUT, &unknown, Some(&op), body).await;
+            assert_eq!(
+                answer.status(),
+                404,
+                "a tenant id no tenant has is not found"
+            );
+            assert_eq!(problem(answer).await, "unknown-tenant", "its problem type");
+            let refused = admin_log(&s, "tenant_metadata");
+            assert_eq!(refused.len(), bodies.len() + 1, "every refusal is recorded");
+            assert_eq!(
+                s.tenants.metadata(s.tenant),
+                Ok(Metadata::None),
+                "unchanged"
+            );
+            s.tenants.close(s.tenant);
+            let answer = call(&s, Method::PUT, &path, Some(&op), body).await;
+            assert_eq!(
+                answer.status(),
+                503,
+                "a closing tenant cannot change its level"
+            );
+            assert_eq!(problem(answer).await, "unavailable", "its problem type");
         }
 
         #[tokio::test]

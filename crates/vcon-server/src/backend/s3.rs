@@ -53,14 +53,7 @@ pub(crate) fn place(
     settings: &S3Settings,
     data_dir: &std::path::Path,
 ) -> Result<super::ObjectPlace, StorageError> {
-    let secret = settings
-        .secret_access_key_file
-        .as_deref()
-        .map(read_secret)
-        .transpose()?;
-    let ca = settings.ca_file.as_deref().map(read_ca).transpose()?;
-    let s3 = S3::connect(settings, secret.as_ref().map(|s| s.as_str()), ca.as_deref())
-        .map_err(|e| StorageError(format!("the S3 client cannot start: {e}")))?;
+    let s3 = client_for(settings, "storage.s3")?;
     let versioning = s3.versioning().map_err(|e| {
         StorageError(format!(
             "bucket {:?} cannot be reached or read: {e}",
@@ -78,14 +71,36 @@ pub(crate) fn place(
     Ok(super::ObjectPlace::S3(s3))
 }
 
+/// A client for the bucket `settings` names, with the secret access key
+/// and the CA certificates read from the files `settings` names; an error
+/// names the key of `table` at fault. Nothing is sent to the service.
+///
+/// # Errors
+///
+/// A `StorageError` naming the secret file, the CA file, or the client.
+pub(crate) fn client_for(settings: &S3Settings, table: &str) -> Result<Arc<S3>, StorageError> {
+    let secret = settings
+        .secret_access_key_file
+        .as_deref()
+        .map(|path| read_secret(path, table))
+        .transpose()?;
+    let ca = settings
+        .ca_file
+        .as_deref()
+        .map(|path| read_ca(path, table))
+        .transpose()?;
+    S3::connect(settings, secret.as_ref().map(|s| s.as_str()), ca.as_deref())
+        .map_err(|e| StorageError(format!("the S3 client cannot start: {e}")))
+}
+
 /// The secret access key in `path`: one line, its line ending left out.
 /// It is read into a buffer of the file's size, so no shorter copy is left
 /// behind by a reallocation, and every copy here is zeroed when dropped.
 /// An error names the key and the file, never the text.
-fn read_secret(path: &std::path::Path) -> Result<Zeroizing<String>, StorageError> {
+fn read_secret(path: &std::path::Path, table: &str) -> Result<Zeroizing<String>, StorageError> {
     let refused = |why: &str| {
         StorageError(format!(
-            "storage.s3.secret_access_key_file {}: {why}",
+            "{table}.secret_access_key_file {}: {why}",
             path.display()
         ))
     };
@@ -110,11 +125,11 @@ fn read_secret(path: &std::path::Path) -> Result<Zeroizing<String>, StorageError
 /// and taken as a trust anchor; at least one must be there. The client's
 /// TLS layer panics on a file that fails either step, so it is refused
 /// here, by name.
-fn read_ca(path: &std::path::Path) -> Result<Vec<u8>, StorageError> {
+fn read_ca(path: &std::path::Path, table: &str) -> Result<Vec<u8>, StorageError> {
     use rustls::pki_types::CertificateDer;
     use rustls::pki_types::pem::PemObject;
 
-    let refused = |why: &str| StorageError(format!("storage.s3.ca_file {}: {why}", path.display()));
+    let refused = |why: &str| StorageError(format!("{table}.ca_file {}: {why}", path.display()));
     let pem = std::fs::read(path).map_err(|e| refused(&e.to_string()))?;
     let mut roots = rustls::RootCertStore::empty();
     for cert in CertificateDer::pem_slice_iter(&pem) {
@@ -389,6 +404,60 @@ impl S3 {
         self.wait(call)?.map(drop).map_err(failed)
     }
 
+    /// Writes `bytes` as the object `name` under the prefix, only if there
+    /// is none (`If-None-Match: *`). A refusal for that reason is
+    /// `Ok(false)`, never a write under another name.
+    ///
+    /// # Errors
+    ///
+    /// `ObjectError::Io` if the bucket cannot be reached or written.
+    pub(crate) fn put_new(&self, name: &str, bytes: Vec<u8>) -> Result<bool, ObjectError> {
+        let call = self
+            .client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(format!("{}{name}", self.prefix))
+            .if_none_match("*")
+            .body(ByteStream::from(bytes))
+            .send();
+        match self.wait(call)? {
+            Ok(_) => Ok(true),
+            Err(e) if e.raw_response().map(|r| r.status().as_u16()) == Some(412) => Ok(false),
+            Err(e) => Err(failed(e)),
+        }
+    }
+
+    /// The names directly under `dir` below the prefix, `dir` left out,
+    /// sorted; a name that has more below it ends in `/`.
+    ///
+    /// # Errors
+    ///
+    /// `ObjectError::Io` if the bucket cannot be listed.
+    pub(crate) fn names_under(&self, dir: &str) -> Result<Vec<String>, ObjectError> {
+        self.names(&format!("{}{dir}", self.prefix), Some("/"))
+    }
+
+    /// Removes the object `name` under the prefix; S3 answers success for
+    /// one already gone.
+    ///
+    /// # Errors
+    ///
+    /// `ObjectError::Io` if the bucket cannot be reached.
+    pub(crate) fn remove_named(&self, name: &str) -> Result<(), ObjectError> {
+        let call = self
+            .client
+            .delete_object()
+            .bucket(&self.bucket)
+            .key(format!("{}{name}", self.prefix))
+            .send();
+        self.wait(call)?.map(drop).map_err(failed)
+    }
+
+    /// The bucket and prefix, as `s3://bucket/prefix`.
+    pub(crate) fn url(&self) -> String {
+        format!("s3://{}/{}", self.bucket, self.prefix)
+    }
+
     /// The name before every object of `tenant`.
     pub(crate) fn tenant_dir(&self, tenant: TenantId) -> String {
         tenant_dir(&self.prefix, tenant)
@@ -640,7 +709,7 @@ mod tests {
         ] {
             let (_dir, path) = secret_in(text);
             assert_eq!(
-                read_secret(&path).expect("reads").as_str(),
+                read_secret(&path, "storage.s3").expect("reads").as_str(),
                 "k3y with spaces",
                 "{text:?}"
             );
@@ -651,7 +720,7 @@ mod tests {
     fn a_secret_file_that_is_empty_or_has_two_lines_is_refused_without_its_text() {
         for text in [&b""[..], b"\n", b"id-and\nk3y-in-one-file\n"] {
             let (_dir, path) = secret_in(text);
-            let error = read_secret(&path).expect_err("refused");
+            let error = read_secret(&path, "storage.s3").expect_err("refused");
             assert!(
                 error.0.contains("storage.s3.secret_access_key_file"),
                 "the error names the key: {error}"
@@ -661,7 +730,7 @@ mod tests {
                 "the error shows the secret: {error}"
             );
         }
-        let error = read_secret(std::path::Path::new("/nonexistent/s3.secret"))
+        let error = read_secret(std::path::Path::new("/nonexistent/s3.secret"), "storage.s3")
             .expect_err("a missing file");
         assert!(
             error
@@ -720,14 +789,17 @@ mod tests {
             ),
         ] {
             let (_dir, path) = secret_in(text.as_bytes());
-            let error = read_ca(&path).expect_err(why);
+            let error = read_ca(&path, "storage.s3").expect_err(why);
             assert!(
                 error.0.contains("storage.s3.ca_file"),
                 "{why}: the error names the key: {error}"
             );
         }
         let (_dir, path) = secret_in(made.ca.as_bytes());
-        assert!(read_ca(&path).is_ok(), "a CA certificate is read");
+        assert!(
+            read_ca(&path, "storage.s3").is_ok(),
+            "a CA certificate is read"
+        );
     }
 
     /// An HTTPS service on the loopback address with `pki`'s certificate:
@@ -1454,6 +1526,199 @@ mod remote {
                     "the name {name} shows the vCon"
                 );
             }
+        }
+    }
+
+    /// An export target for the bucket of `settings` under `prefix`, its
+    /// secret read from a file as the command line reads it; the file is
+    /// removed with the directory returned.
+    fn export_target(
+        settings: S3Settings,
+        prefix: &str,
+    ) -> (tempfile::TempDir, crate::export::s3::S3Target) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let secret = dir.path().join("export.secret");
+        std::fs::write(&secret, var("VCON_TEST_S3_SECRET_KEY")).expect("the secret file");
+        let target = crate::export::s3::S3Target::connect(
+            &S3Settings {
+                prefix: prefix.to_owned(),
+                secret_access_key_file: Some(secret),
+                ..settings
+            },
+            "export.s3",
+        )
+        .expect("a target");
+        (dir, target)
+    }
+
+    /// A store with three vCons on the local backend, exported to the
+    /// bucket under `test/` at `level`, through `target`.
+    fn exported_to(
+        target: &dyn crate::export::Target,
+        level: crate::export::Metadata,
+    ) -> (
+        crate::store::tests::Fixture,
+        Result<crate::export::Exported, crate::export::ExportError>,
+    ) {
+        use crate::clock::Clock;
+        let f = crate::store::tests::fixture();
+        for n in 0..3 {
+            let (found, body) = crate::store::testing::vcon(
+                &format!("01a07da8-c2bb-83e5-b9a2-279e0d16bc4{n}"),
+                &format!("export-subject-marker-{n}"),
+            );
+            f.store.create(&f.caller, &found, &body).expect("stored");
+        }
+        let plan = crate::export::Plan {
+            level,
+            since: None,
+            until: None,
+            sizes: crate::export::Sizes {
+                row_group: 1,
+                file: 1,
+            },
+            limits: vcon::read::Limits::new(1 << 20),
+        };
+        let done = crate::export::export(&f.store, &plan, target, f.clock.now());
+        (f, done)
+    }
+
+    /// 3.8 and the bucket's half of the manifest rule: an export to a
+    /// bucket names each file it wrote, byte for byte, and no other; a name
+    /// already there is refused with `If-None-Match: *`, never replaced;
+    /// at level `none` no object holds a uuid or subject.
+    #[test]
+    fn an_export_to_a_bucket_is_whole_and_never_replaces_an_object() {
+        use crate::export::{Metadata, Target, TargetError};
+        let (_, settings) = bucket(false);
+        let (_secret, target) = export_target(settings, "exports/");
+        let (f, done) = exported_to(&target, Metadata::None);
+        let done = done.expect("exports");
+        assert_eq!(done.files.len(), 3, "a file a row");
+        let all: std::collections::BTreeMap<String, Vec<u8>> =
+            everything(target.client()).into_iter().collect();
+        let mut expected: Vec<String> = done
+            .files
+            .iter()
+            .map(|e| format!("exports/{}", e.path))
+            .collect();
+        expected.push(format!("exports/{}", done.manifest));
+        expected.sort();
+        assert_eq!(
+            all.keys().cloned().collect::<Vec<_>>(),
+            expected,
+            "the files and the manifest, under the prefix"
+        );
+        for entry in &done.files {
+            let bytes = &all[&format!("exports/{}", entry.path)];
+            assert_eq!(bytes.len() as u64, entry.bytes, "{}", entry.path);
+            assert!(
+                bytes.starts_with(b"PAR1") && bytes.ends_with(b"PAR1"),
+                "each object is a whole Parquet file"
+            );
+        }
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&all[&format!("exports/{}", done.manifest)]).expect("JSON");
+        assert_eq!(
+            manifest["rows"], 3,
+            "the manifest counts the three versions"
+        );
+        for n in 0..3 {
+            let marker = format!("export-subject-marker-{n}");
+            let uuid: uuid::Uuid = format!("01a07da8-c2bb-83e5-b9a2-279e0d16bc4{n}")
+                .parse()
+                .expect("uuid");
+            for (name, bytes) in &all {
+                for needle in [marker.as_bytes(), &uuid.as_bytes()[..]] {
+                    assert!(
+                        !bytes.windows(needle.len()).any(|w| w == needle),
+                        "{name} holds vCon {n} in clear"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            target.put_new(&done.manifest, b"another"),
+            Err(TargetError::Exists),
+            "a taken name is refused"
+        );
+        assert_eq!(
+            everything(target.client())
+                .into_iter()
+                .find(|(name, _)| name.ends_with(&done.manifest))
+                .map(|(_, bytes)| bytes),
+            Some(all[&format!("exports/{}", done.manifest)].clone()),
+            "and the manifest is unchanged"
+        );
+        let second = exported_to(&target, Metadata::None).1;
+        let _ = f;
+        assert!(
+            second.is_ok(),
+            "a second export of another store: {second:?}"
+        );
+    }
+
+    /// 3.8: an export cut off between its file PUTs and its manifest PUT
+    /// leaves no manifest, so none names a missing file; a run that fails
+    /// removes its files, and one whose process died leaves only files no
+    /// manifest names.
+    #[test]
+    fn an_export_cut_off_before_its_manifest_leaves_no_manifest() {
+        use crate::export::{Metadata, Target, TargetError};
+        /// The target, failing at the manifest, and with `dead` at every
+        /// call after it too, as a killed process would.
+        struct CutOff<'a> {
+            inner: &'a dyn Target,
+            dead: bool,
+            failed: std::cell::Cell<bool>,
+        }
+        impl Target for CutOff<'_> {
+            fn put_new(&self, path: &str, bytes: &[u8]) -> Result<(), TargetError> {
+                if path.contains("/manifest/") {
+                    self.failed.set(true);
+                    return Err(TargetError::Io("the process has died".to_owned()));
+                }
+                self.inner.put_new(path, bytes)
+            }
+            fn list(&self, dir: &str) -> Result<Vec<String>, TargetError> {
+                self.inner.list(dir)
+            }
+            fn remove(&self, path: &str) -> Result<(), TargetError> {
+                if self.dead && self.failed.get() {
+                    return Err(TargetError::Io("the process has died".to_owned()));
+                }
+                self.inner.remove(path)
+            }
+            fn describe(&self) -> String {
+                self.inner.describe()
+            }
+        }
+        for dead in [false, true] {
+            let (_, settings) = bucket(false);
+            let (_secret, target) = export_target(settings, "test/");
+            let cut = CutOff {
+                inner: &target,
+                dead,
+                failed: std::cell::Cell::new(false),
+            };
+            let (_, done) = exported_to(&cut, Metadata::Counts);
+            assert!(
+                matches!(done, Err(crate::export::ExportError::Target(_))),
+                "{done:?}"
+            );
+            let names: Vec<String> = everything(target.client())
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect();
+            assert!(
+                !names.iter().any(|n| n.contains("/manifest/")),
+                "dead {dead}: no manifest: {names:?}"
+            );
+            assert_eq!(
+                names.len(),
+                if dead { 3 } else { 0 },
+                "dead {dead}: files left: {names:?}"
+            );
         }
     }
 }

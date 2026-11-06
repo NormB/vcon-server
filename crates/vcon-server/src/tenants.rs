@@ -16,6 +16,7 @@ use crate::backend::local::{LocalRegistry, LocalTenantSpace};
 use crate::backend::{CommitError, ObjectPlace, Registry, RegistryTx, TenantRow, TenantSpace};
 use crate::clock::{Clock, from_nanos, nanos};
 use crate::envelope::{self, Context, Key, WrapLimit};
+use crate::export::Metadata;
 use crate::fs::Fs;
 use crate::ids::TenantId;
 use crate::retention::Retention;
@@ -33,6 +34,15 @@ pub(crate) use rekey::MasterStep;
 pub use rekey::rekey_master;
 #[cfg(test)]
 pub(crate) use tests::{Fixture, fixture};
+
+/// A tenant's metadata column as read: NULL is `none`, and a level this
+/// build does not know is damage.
+fn stored_metadata(text: Option<String>) -> Result<Metadata, TenantError> {
+    match text {
+        None => Ok(Metadata::None),
+        Some(text) => Metadata::parse(&text).ok_or(TenantError::Io),
+    }
+}
 
 /// A tenant's retention column as read: None is the server default. A
 /// period that does not read back is damage, not the server default.
@@ -218,17 +228,21 @@ pub struct TenantInfo {
     pub name: String,
     /// The tenant's own retention period, if it set one.
     pub retention: Option<Retention>,
+    /// Which clear columns its Parquet files carry.
+    pub metadata: Metadata,
     pub created_at: OffsetDateTime,
 }
 
 impl TenantInfo {
-    /// The tenant as the admin API and the command line show it: id, name
-    /// and its own retention period, null for the server default.
+    /// The tenant as the admin API and the command line show it: id, name,
+    /// its own retention period, null for the server default, and its
+    /// metadata level.
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "id": self.id.to_string(),
             "name": self.name,
             "retention": self.retention.map(|r| r.to_string()),
+            "metadata": self.metadata.as_str(),
         })
     }
 
@@ -463,6 +477,7 @@ impl Tenants {
                 id,
                 name: name.to_owned(),
                 retention: retention.map(|r| r.to_string()),
+                metadata: None,
                 created_at: now,
                 tenant_key_id: key_id,
                 wrapped: wrapped.clone(),
@@ -497,6 +512,7 @@ impl Tenants {
                     id: row.id,
                     name: row.name,
                     retention: stored_retention(row.retention)?,
+                    metadata: stored_metadata(row.metadata)?,
                     created_at: from_nanos(row.created_at).ok_or(TenantError::Io)?,
                 })
             })
@@ -547,6 +563,47 @@ impl Tenants {
             }
         }
         self.copy_to_tenant(id, &entry(Action::Retention, 200))
+    }
+
+    /// Sets which clear columns the tenant's Parquet files carry.
+    pub fn set_metadata(
+        &self,
+        who: Actor,
+        id: TenantId,
+        level: Metadata,
+    ) -> Result<(), TenantError> {
+        let entry = |action, status| Entry {
+            actor: who,
+            action,
+            target: Some(id.to_string()),
+            version: None,
+            status,
+        };
+        let closing = matches!(self.stores().get(&id), Some(Slot::Closing));
+        {
+            let mut tx = self.registry.immediate()?;
+            let text = (level != Metadata::None).then(|| level.as_str());
+            let refused = if closing {
+                Some((503, TenantError::Closing))
+            } else if !tx.set_metadata(id, text)? {
+                Some((404, TenantError::NotFound))
+            } else {
+                None
+            };
+            let status = refused.map_or(200, |(status, _)| status);
+            self.record(&mut tx, &entry(Action::TenantMetadata, status))?;
+            commit(tx)?;
+            if let Some((_, error)) = refused {
+                return Err(error);
+            }
+        }
+        self.copy_to_tenant(id, &entry(Action::Metadata, 200))
+    }
+
+    /// The tenant's metadata level.
+    pub fn metadata(&self, id: TenantId) -> Result<Metadata, TenantError> {
+        let row = self.registry.snapshot()?.tenant(id)?;
+        stored_metadata(row.ok_or(TenantError::NotFound)?.metadata)
     }
 
     /// Writes the copy of an admin record that a tenant's own log keeps
@@ -1886,6 +1943,7 @@ mod tests {
             id: TenantId([1; 16]),
             name: "acme".to_owned(),
             retention,
+            metadata: Metadata::None,
             created_at: datetime!(2026-10-23 12:00 UTC),
         };
         assert_eq!(
@@ -1967,12 +2025,14 @@ mod tests {
                     id: acme,
                     name: "acme".to_owned(),
                     retention: None,
+                    metadata: Metadata::None,
                     created_at: datetime!(2026-10-23 13:00 UTC),
                 },
                 TenantInfo {
                     id: lab,
                     name: "lab".to_owned(),
                     retention: Some(Retention::Days(90)),
+                    metadata: Metadata::None,
                     created_at: datetime!(2026-10-23 12:00 UTC),
                 },
             ])
@@ -2040,6 +2100,141 @@ mod tests {
             assert_eq!(record["actor"], "cli");
             assert_eq!(record["target"], id.to_string());
             assert_eq!(record["status"], 200);
+        }
+    }
+
+    impl Fixture {
+        /// The tenant's metadata level, as its row holds it.
+        fn own_metadata(&self, id: TenantId) -> Option<String> {
+            self.conn()
+                .query_row("SELECT metadata FROM tenant WHERE id = ?1", [id.0], |r| {
+                    r.get(0)
+                })
+                .expect("a row")
+        }
+    }
+
+    /// A tenant's level is `none` until set; a change is kept, shown in
+    /// the list, and recorded in the admin log and the tenant's own.
+    #[test]
+    fn a_metadata_level_is_none_until_set_and_each_change_is_recorded() {
+        let f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        assert_eq!(
+            f.tenants.metadata(id),
+            Ok(Metadata::None),
+            "a new tenant is at none"
+        );
+        assert_eq!(f.own_metadata(id), None, "NULL is none");
+        f.clock.set(datetime!(2026-10-23 13:00 UTC));
+        f.tenants
+            .set_metadata(Actor::Cli, id, Metadata::Full)
+            .expect("set");
+        assert_eq!(f.tenants.metadata(id), Ok(Metadata::Full), "the level set");
+        assert_eq!(
+            f.own_metadata(id).as_deref(),
+            Some("full"),
+            "the row holds the level's name"
+        );
+        let listed = f.tenants.list(Actor::Cli).expect("lists");
+        assert_eq!(listed[0].to_json()["metadata"], "full", "shown in the list");
+        f.tenants
+            .set_metadata(Actor::Cli, id, Metadata::None)
+            .expect("back to none");
+        assert_eq!(f.own_metadata(id), None, "none is NULL again");
+        assert_eq!(f.tenants.metadata(id), Ok(Metadata::None), "back to none");
+
+        let admin = f.admin_records("tenant_metadata");
+        assert_eq!(admin.len(), 2, "one admin record per change");
+        for record in &admin {
+            assert_eq!(record["actor"], "cli", "the command line made the change");
+            assert_eq!(
+                record["target"],
+                id.to_string(),
+                "the record names the tenant"
+            );
+            assert_eq!(record["status"], 200, "the change succeeded");
+            assert_eq!(record["at"], "2026-10-23T13:00:00Z", "at the clock's time");
+        }
+        let copies: Vec<Value> = exported(&f.tenant_catalog(id), None)
+            .into_iter()
+            .filter(|r| r["action"] == "metadata")
+            .collect();
+        assert_eq!(copies.len(), 2, "a copy in the tenant's log for each");
+    }
+
+    #[test]
+    fn a_metadata_change_for_an_unknown_or_closing_tenant_is_refused() {
+        let f = fixture();
+        let unknown = TenantId::generate();
+        assert_eq!(
+            f.tenants
+                .set_metadata(Actor::Cli, unknown, Metadata::Counts),
+            Err(TenantError::NotFound),
+            "no tenant has the id"
+        );
+        assert_eq!(
+            f.tenants.metadata(unknown),
+            Err(TenantError::NotFound),
+            "nor a level"
+        );
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        f.tenants.drain(id).expect("drains");
+        assert_eq!(
+            f.tenants.set_metadata(Actor::Cli, id, Metadata::Counts),
+            Err(TenantError::Closing),
+            "a closing tenant's level does not change"
+        );
+        assert_eq!(f.own_metadata(id), None, "unchanged");
+        let statuses: Vec<Value> = f
+            .admin_records("tenant_metadata")
+            .iter()
+            .map(|r| r["status"].clone())
+            .collect();
+        assert_eq!(
+            statuses,
+            [404, 503],
+            "both refusals are recorded, each with its status"
+        );
+    }
+
+    /// A level this build does not know is damage, never taken as `none`.
+    #[test]
+    fn a_stored_metadata_level_this_build_does_not_know_is_an_error() {
+        let f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        f.conn()
+            .execute("UPDATE tenant SET metadata = 'most' WHERE id = ?1", [id.0])
+            .expect("update");
+        assert_eq!(
+            f.tenants.metadata(id),
+            Err(TenantError::Io),
+            "an unknown level is an error"
+        );
+    }
+
+    /// A registry made at schema version 2 gains the column at version 3,
+    /// every tenant at `none`; one made at version 1 does too.
+    #[test]
+    fn an_older_registry_gains_the_metadata_column() {
+        for from in [1, 2] {
+            let mut f = fixture();
+            let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+            f.conn()
+                .execute_batch(&format!(
+                    "ALTER TABLE tenant DROP COLUMN metadata; PRAGMA user_version = {from};"
+                ))
+                .expect("back to the old schema");
+            f.restart();
+            let version: i64 = f
+                .conn()
+                .pragma_query_value(None, "user_version", |r| r.get(0))
+                .expect("version");
+            assert_eq!(version, catalog::SCHEMA_VERSION, "from {from}");
+            assert_eq!(f.tenants.metadata(id), Ok(Metadata::None), "from {from}");
+            f.tenants
+                .set_metadata(Actor::Cli, id, Metadata::Counts)
+                .expect("the column is there");
         }
     }
 

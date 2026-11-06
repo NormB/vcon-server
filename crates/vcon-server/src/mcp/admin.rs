@@ -38,8 +38,9 @@ pub(super) fn specs() -> Vec<Spec> {
         spec::<PageArgs>(
             "admin_tenant_list",
             "Returns every tenant, by name: its id, its name between untrusted-vcon-data \
-             markers, and its own retention period (null for the server default); from \
-             cursor, within max_bytes, with next_cursor when more follow.",
+             markers, its own retention period (null for the server default) and its \
+             metadata level for Parquet exports; from cursor, within max_bytes, with \
+             next_cursor when more follow.",
             read,
             Action::TenantList,
             tenant_list,

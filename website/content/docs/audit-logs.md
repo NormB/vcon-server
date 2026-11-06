@@ -7,14 +7,16 @@ weight = 60
 ## Two kinds of log
 
 - **Each tenant's log** lives in that tenant's catalog and records every
-  request made with that tenant's keys, refused ones included, and the
-  purges of its versions.
+  request made with that tenant's keys, refused ones included, the purges of
+  its versions, and each [`export parquet`](@/docs/export-parquet.md) run
+  (action `export`, actor `cli`, status 200 or 500).
 - **The admin log** lives in `server.sqlite` and records administration:
   tenants made, listed, changed and removed, keys made, listed and revoked,
   backups, and requests that cannot be tied to a tenant.
 
-A change that concerns a tenant, such as a key made for it or its retention
-changed, is recorded in the admin log and copied to the tenant's own log.
+A change that concerns a tenant, such as a key made for it, its retention
+changed or its metadata level set, is recorded in the admin log and copied to
+the tenant's own log.
 The admin log's record commits with the change, so a failure between the two
 can lose only the copy; the request then answers
 [`audit-failed`](@/problems/audit-failed.md) (503), though the change stands.
@@ -59,6 +61,8 @@ action through MCP is recorded as its HTTP route records it.
 | `release` | a legal hold released | the tenant's |
 | `audit_read` | a page of a log read over HTTPS or MCP (`GET /audit`, `GET /admin/audit`) | the log read |
 | `retention` | the tenant's retention period changed, copied from the admin log's `tenant_retention` | the tenant's |
+| `metadata` | the tenant's metadata level changed, copied from the admin log's `tenant_metadata` | the tenant's |
+| `export` | a run of `vcon-server export parquet`, with its outcome (actor `cli`) | the tenant's |
 | `key_info` | a key reading what it may do (`GET /key`) | the key's |
 | `openapi` | a read of `GET /openapi.json` | the key's |
 | `health` | a health check, [counted](#counted-records) | the key's |
@@ -70,6 +74,7 @@ action through MCP is recorded as its HTTP route records it.
 | `tenant_create` | a tenant made | admin |
 | `tenant_list` | the tenants listed | admin |
 | `tenant_retention` | a tenant's retention period changed | admin |
+| `tenant_metadata` | a tenant's metadata level changed (`PUT /admin/tenants/{id}/metadata`, `vcon-server tenant set-metadata`) | admin |
 | `tenant_remove` | a tenant removed | admin |
 | `rekey_tenant` | a tenant key rotated (`vcon-server rekey tenant`) | admin |
 | `rekey_master` | the master key rotated (`vcon-server rekey master`) | admin |

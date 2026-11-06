@@ -7,6 +7,7 @@ use std::fmt;
 use uuid::Uuid;
 
 mod critical;
+mod fields;
 mod form;
 mod gzip;
 mod identity;

@@ -38,6 +38,14 @@ pub trait Fs: Send + Sync {
     ///
     /// The I/O error that stopped the rename.
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
+    /// Renames a file only if nothing has the name `to`, in one step: of
+    /// two callers renaming onto one name, one is refused.
+    ///
+    /// # Errors
+    ///
+    /// `AlreadyExists` if `to` is taken, or the I/O error that stopped the
+    /// rename.
+    fn rename_new(&self, from: &Path, to: &Path) -> io::Result<()>;
     /// Makes a directory's entries durable: files created, renamed or
     /// removed in it.
     ///
@@ -103,6 +111,30 @@ impl Fs for OsFs {
 
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
         std::fs::rename(from, to)
+    }
+
+    fn rename_new(&self, from: &Path, to: &Path) -> io::Result<()> {
+        use std::os::unix::ffi::OsStrExt;
+        let c = |p: &Path| {
+            std::ffi::CString::new(p.as_os_str().as_bytes())
+                .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
+        };
+        let (from, to) = (c(from)?, c(to)?);
+        // SAFETY: both paths are NUL-terminated strings that live across the
+        // call, and renameat2 reads only them and its flags.
+        let done = unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                from.as_ptr(),
+                libc::AT_FDCWD,
+                to.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        if done != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
 
     fn sync_dir(&self, dir: &Path) -> io::Result<()> {
@@ -342,6 +374,18 @@ mod crash {
             Ok(())
         }
 
+        fn rename_new(&self, from: &Path, to: &Path) -> io::Result<()> {
+            let (to_dir, to_name) = split(to)?;
+            {
+                let mut state = self.state();
+                state.alive()?;
+                if state.dir(&to_dir)?.now.contains_key(&to_name) {
+                    return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+                }
+            }
+            self.rename(from, to)
+        }
+
         fn sync_dir(&self, dir: &Path) -> io::Result<()> {
             let mut state = self.state();
             state.alive()?;
@@ -549,6 +593,23 @@ mod tests {
             fs.list(&root.join("none")).map_err(|e| e.kind()),
             Err(NotFound),
             "no directory has that name"
+        );
+        let (x, y, z) = (dir.join("x"), dir.join("y"), dir.join("z"));
+        fs.write_new(&x, b"five").expect("write x");
+        fs.write_new(&y, b"six").expect("write y");
+        assert_eq!(
+            fs.rename_new(&x, &y).map_err(|e| e.kind()),
+            Err(AlreadyExists),
+            "rename_new never replaces a file"
+        );
+        assert_eq!(fs.read(&x).expect("read x"), b"five", "x is left");
+        assert_eq!(fs.read(&y).expect("read y"), b"six", "y is left");
+        fs.rename_new(&x, &z).expect("rename onto a free name");
+        assert_eq!(fs.read(&z).expect("read z"), b"five", "under its new name");
+        assert_eq!(
+            fs.read(&x).map_err(|e| e.kind()),
+            Err(NotFound),
+            "rename_new moves the file away"
         );
     }
 

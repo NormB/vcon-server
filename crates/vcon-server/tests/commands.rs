@@ -93,7 +93,17 @@ fn tenants_are_made_listed_changed_and_removed() {
     assert_eq!(made.len(), 1);
     assert_eq!(
         s.ok(&["tenant", "list"]),
-        [serde_json::json!({ "id": id, "name": "acme", "retention": "18m" })]
+        [serde_json::json!({ "id": id, "name": "acme", "retention": "18m", "metadata": "none" })]
+    );
+    assert_eq!(
+        s.ok(&["tenant", "set-metadata", &id, "counts"]),
+        [serde_json::json!({ "id": id, "metadata": "counts" })],
+        "the list shows the default level"
+    );
+    assert!(
+        s.refused(&["tenant", "set-metadata", &id, "most"])
+            .contains("not a metadata level"),
+        "a level that is not one is refused"
     );
     assert_eq!(
         s.ok(&["tenant", "set-retention", &id, "default"]),
@@ -215,6 +225,9 @@ fn a_command_line_that_does_not_parse_exits_2() {
             "audit", "export", "--admin", "--tenant", "t", "--config", "c",
         ],
         vec!["tenant", "list"],
+        vec!["export", "parquet", "--tenant", "t", "--config", "c"],
+        vec!["export", "parquet", "--to", "d", "--config", "c"],
+        vec!["tenant", "set-metadata", "t", "--config", "c"],
     ] {
         usage_error(&args);
     }
@@ -235,6 +248,29 @@ fn beside_a_server_only_the_beside_commands_run() {
     s.ok(&["tenant", "list"]);
     s.ok(&["key", "create", "--operator", "--label", "ops"]);
     s.ok(&["audit", "export", "--admin"]);
+    s.ok(&["tenant", "set-metadata", &tenant, "full"]);
+    let to = s.data.with_file_name("export");
+    let exported = s.ok(&[
+        "export",
+        "parquet",
+        "--tenant",
+        &tenant,
+        "--to",
+        to.to_str().expect("a UTF-8 path"),
+    ]);
+    assert_eq!(exported.len(), 1, "one line");
+    assert_eq!(
+        exported[0]["metadata"], "full",
+        "the export runs at the tenant's level"
+    );
+    assert_eq!(exported[0]["rows"], 0, "a tenant with no vCon");
+    assert!(
+        to.join(format!(
+            "tenant={tenant}/manifest/00000000000000000001.json"
+        ))
+        .exists(),
+        "the manifest is written"
+    );
     drop(server);
 }
 

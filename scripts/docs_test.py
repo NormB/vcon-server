@@ -299,9 +299,13 @@ SCENARIOS = [
         docker=AS_A_HOST,
     ),
     # Objects in an S3 bucket: RustFS, or MinIO, and the server, each under
-    # systemd, in one container, after the server is set up.
-    Scenario("s3", "systemd", frozenset({"debian", "apt", "systemd", "rustfs"}), ("getting-started.md", "s3-storage.md")),
+    # systemd, in one container, after the server is set up. The RustFS run
+    # also exports to a bucket of its own (export-parquet.md).
+    Scenario("s3", "systemd", frozenset({"debian", "apt", "systemd", "rustfs"}), ("getting-started.md", "s3-storage.md", "export-parquet.md")),
     Scenario("s3-minio", "systemd", frozenset({"debian", "apt", "systemd", "minio"}), ("getting-started.md", "s3-storage.md")),
+    # The Parquet export to a directory, read with DuckDB, after the server
+    # is set up with its objects in the data directory.
+    Scenario("parquet", "systemd", frozenset({"debian", "apt", "systemd"}), ("getting-started.md", "export-parquet.md")),
     # The container how-to, with this host's Docker: it builds an image from
     # the release the page names, and removes what it made at the end.
     Scenario("container", "host", frozenset({"docker"}), ("container.md",), binary=False),

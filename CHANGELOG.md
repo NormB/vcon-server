@@ -44,6 +44,41 @@ All notable changes to this project are recorded here. The format follows
   read, an admin call and MCP; the library page shows `vcon::write`. Tests
   hold the HTTP API page to the router and the command line page to the
   binary, both ways.
+- `vcon-server export parquet --tenant <id> --to <dir | s3://bucket/prefix>
+  [--since <time>] [--until <time>]` writes a copy of a tenant's kept
+  versions, current and hidden, as Parquet files under
+  `tenant=<id>/date=<yyyy-mm-dd>/`, then a numbered manifest,
+  `tenant=<id>/manifest/<seq>.json`, naming them. It runs beside a serving
+  server and changes nothing in the store but one `export` record in the
+  tenant's audit log. Each row holds the version's sealed object byte for
+  byte. Each file is written whole under its own name (a temporary name and
+  a rename in a directory; one PutObject with `If-None-Match: *` in a
+  bucket), the manifest last, and a run that fails removes its files. A
+  bucket target is reached with the new `[export.s3]` table, or with
+  `[storage.s3]`'s service and keys. Built with the `parquet` crate's
+  column writer, without Arrow and without a compression codec. The how-to
+  [export to Parquet](https://vcon-server.com/docs/export-parquet/) reads
+  an export with DuckDB, from a directory and from a bucket.
+- Each tenant has a metadata level for its Parquet exports: `none` (the
+  default: only the version id, the store time and the sealed body),
+  `counts` (also the form, gzip, size, the vCon's times, and its party and
+  dialog counts) or `full` (also the uuid, the subject and the parties'
+  `tel`, `mailto` and `name`). It is set with `vcon-server tenant
+  set-metadata` or `PUT /admin/tenants/{id}/metadata`, recorded in both
+  logs, and shown by the tenant list (`metadata`). Statistics are written
+  only for the time and count columns, and no column has a dictionary page.
+- The `vcon` crate reads, in `vcon::read::fields`, the members an export
+  copies from an unsigned vCon or the vCon inside a signed one: `created_at`,
+  `updated_at`, `subject`, each party's `tel`, `mailto` and `name`, and the
+  number of dialogs.
+
+### Changed
+
+- `server.sqlite` is at schema version 3, with each tenant's metadata level;
+  a server opens an older one and brings it up to date. Release 0.3.0 does
+  not open a data directory at version 3: go back to it only with the copy
+  taken before the upgrade, as [upgrade](https://vcon-server.com/docs/upgrading/)
+  describes.
 
 ### Fixed
 
