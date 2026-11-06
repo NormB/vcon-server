@@ -146,6 +146,21 @@ log. `--since` and `--until` are RFC 3339 times; a version stored at or after
 `--since` and before `--until` is exported. See
 [export to Parquet](@/docs/export-parquet.md).
 
+## Storage
+
+| Command | Prints | Beside a server |
+|---|---|---|
+| `storage move-objects` | `{"tenant", "moved", "missing"}` per tenant, then `{"moved"}` | no |
+
+`storage move-objects` moves every tenant's sealed objects from the data
+directory to the bucket that `storage.objects = "s3"` names (see
+[keep vCons in an S3 bucket](@/docs/s3-storage.md#move-objects-stored-in-the-data-directory)).
+Each object is written to the bucket, read back and compared byte for byte
+before its file is removed, so a run that stops loses nothing: run it again
+to move the rest. `missing` counts the versions `check` finds without an
+object afterwards. It is refused when the configuration keeps the objects in
+the data directory.
+
 ## MCP for an AI agent
 
 | Command | Prints | Runs beside `serve` |

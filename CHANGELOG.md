@@ -8,6 +8,15 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- `vcon-server storage move-objects` moves every tenant's sealed objects from
+  the data directory to the bucket `storage.objects = "s3"` names, while no
+  server runs: each object is written, read back and compared byte for byte
+  before its file is removed, so a run that stops loses nothing and the
+  next one moves the rest. It prints, per tenant, how many moved and how
+  many versions `check` then finds without an object. A server that kept
+  its objects locally moves to Parquet storage with it, then with
+  `[storage.parquet]`.
+
 - Parquet storage: with `[storage.parquet]` beside `storage.objects = "s3"`,
   the server packs each tenant's objects in the bucket into Parquet files,
   one store date at a time, at

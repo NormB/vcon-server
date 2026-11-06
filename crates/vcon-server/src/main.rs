@@ -64,6 +64,21 @@ enum Command {
     /// server.
     #[command(subcommand)]
     Export(ExportCommand),
+    /// Moves the data to the storage the configuration names.
+    #[command(subcommand)]
+    Storage(StorageCommand),
+}
+
+#[derive(Subcommand)]
+enum StorageCommand {
+    /// Moves every tenant's sealed objects from the data directory to the
+    /// bucket the configuration's [storage] table names: each is written,
+    /// read back and compared before its file is removed. Runs only while
+    /// no server does; run it again to finish a run that stopped.
+    MoveObjects {
+        #[command(flatten)]
+        config: ConfigArg,
+    },
 }
 
 #[derive(Subcommand)]
@@ -254,6 +269,9 @@ fn main() -> ExitCode {
             (config, commands::Command::RekeyMaster { new_master })
         }
         Command::Check { config } => (config, commands::Command::Check),
+        Command::Storage(StorageCommand::MoveObjects { config }) => {
+            (config, commands::Command::StorageMoveObjects)
+        }
         Command::Backup { config, dir } => (config, commands::Command::Backup { to: dir }),
         Command::Export(ExportCommand::Parquet {
             config,

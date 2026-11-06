@@ -28,6 +28,9 @@ use crate::tenants::TenantError;
 #[cfg(test)]
 mod conformance;
 pub mod local;
+// Moving objects into a bucket, so only a build with S3 has it.
+#[cfg(feature = "s3")]
+pub(crate) mod migrate;
 pub(crate) mod pack;
 #[cfg(feature = "s3")]
 pub(crate) mod s3;

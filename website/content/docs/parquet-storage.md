@@ -94,6 +94,15 @@ curl -sS -o /dev/null -w '%{http_code}\n' "${S3[@]}" "https://objects.example.co
 404
 ```
 
+## From objects in the data directory
+
+A server that keeps its objects in the data directory moves to Parquet
+storage in two steps, with one rule each: first to objects in a bucket,
+with `vcon-server storage move-objects` while the server is stopped (see
+[move objects stored in the data directory](@/docs/s3-storage.md#move-objects-stored-in-the-data-directory)),
+then to Parquet storage over that bucket, as below. There is no direct
+step from the data directory to Parquet files.
+
 ## Turn Parquet storage on
 
 The bucket already holds an object for each version stored on the earlier

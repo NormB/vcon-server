@@ -1344,7 +1344,7 @@ mod tests {
 /// only with the `backend-tests` feature; without the addresses every test
 /// fails, so a run that cannot reach the service never passes by skipping.
 #[cfg(all(test, feature = "backend-tests"))]
-mod remote {
+pub(crate) mod remote {
     use std::time::Duration;
 
     use super::*;
@@ -1378,7 +1378,7 @@ mod remote {
     }
 
     /// A new bucket, versioned or not, and the client for it.
-    fn bucket(versioned: bool) -> (Arc<S3>, S3Settings) {
+    pub(crate) fn bucket(versioned: bool) -> (Arc<S3>, S3Settings) {
         let name = format!("vcon-test-{}", TenantId::generate())
             .chars()
             .take(40)
@@ -2203,7 +2203,7 @@ mod remote {
 
     /// The test service's secret in a file, as the configuration names it,
     /// in a directory removed when the first value is dropped.
-    fn secret_file() -> (tempfile::TempDir, std::path::PathBuf) {
+    pub(crate) fn secret_file() -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("s3.secret");
         std::fs::write(&path, format!("{}\n", var("VCON_TEST_S3_SECRET_KEY"))).expect("secret");

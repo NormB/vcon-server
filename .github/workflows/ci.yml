@@ -145,6 +145,7 @@ jobs:
           cargo test -p vcon-server --locked --features backend-tests --no-fail-fast --lib "backend::"
           cargo test -p vcon-server --locked --features backend-tests --no-fail-fast --lib "export::"
           cargo test -p vcon-server --locked --features backend-tests --no-fail-fast --lib "store::packed::"
+          cargo test -p vcon-server --locked --features backend-tests --no-fail-fast --lib "commands::"
           cargo test -p vcon-server --locked --features backend-tests --no-fail-fast --test serve "s3::"
 
   backends-minio:
@@ -223,6 +224,7 @@ jobs:
           set -euo pipefail
           sudo prlimit --pid $$ --memlock=unlimited:unlimited
           cargo test -p vcon-server --locked --features backend-tests --no-fail-fast --lib "backend::"
+          cargo test -p vcon-server --locked --features backend-tests --no-fail-fast --lib "commands::"
           cargo test -p vcon-server --locked --features backend-tests --no-fail-fast --test serve "s3::"
 
   coverage:

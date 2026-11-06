@@ -29,10 +29,13 @@ files and the master key stay on the server's host. Each object in the
 bucket is the same sealed bytes the server would write to a file, so the
 bucket's operator sees random names, sizes and times, and no vCon.
 
-Choose the storage before the first vCon is stored. A server that changes
-its storage later leaves each version it stored where it was: it answers
-`500` for those versions, and `vcon-server check` lists them as damaged.
-vcon-server has no command that moves objects from one storage to another.
+A server that already stored vCons in its data directory moves their
+objects to the bucket with `vcon-server storage move-objects`, run while the
+server is stopped (see
+[move objects stored in the data directory](#move-objects-stored-in-the-data-directory)).
+Started with the storage table and without that step, it answers `500` for
+the versions still in the data directory, and `vcon-server check` lists
+them as damaged.
 
 ## What was tested, and what was not
 
@@ -542,20 +545,35 @@ region. MinIO accepts any region unless `MINIO_SITE_REGION` names one, as
 above, and then only that one. Every key of the table is on the
 [configuration page](@/docs/configuration.md#storage).
 
-Install it and restart the server. At start, the server reads the secret
-file, reaches the bucket and reads its versioning, claims the bucket and
-prefix, and stops with an error naming the setting or the bucket when one
-of these fails:
+## Move objects stored in the data directory
+
+Stop the server, install the configuration, and move the objects already in
+the data directory to the bucket, then start the server again. `storage
+move-objects` writes each object to the bucket, reads it back and compares
+it byte for byte, and only then removes its file, so a run that stops
+(the bucket cannot be reached, a file cannot be read) loses nothing: run it
+again to move the rest. It prints one line per tenant with how many objects
+it moved and how many versions `check` then finds without an object, and a
+total. The server on this page has stored nothing yet, so it moves none:
 
 ```sh
 sudo install -m 0400 -o vcon -g vcon vcon-server.toml /etc/vcon-server/vcon-server.toml
-sudo systemctl restart vcon-server
+sudo systemctl stop vcon-server
+sudo -u vcon vcon-server storage move-objects --config /etc/vcon-server/vcon-server.toml | jq -c 'select(.tenant != null) | {missing}'
+sudo systemctl start vcon-server
 timeout 30 sh -c 'until curl -s -o /dev/null --cacert /usr/local/share/vcon-server/ca.pem https://vcon.example.com:8443/health; do sleep 1; done' && echo answering
 ```
 
 ```text
+{"missing":0}
 answering
 ```
+
+The command claims the bucket and prefix for this data directory, as the
+server does. At start, the server reads the secret file, reaches the bucket
+and reads its versioning, checks that claim, and stops with an error naming
+the setting or the bucket when one of these fails. `missing` above 0 names
+versions whose object is in neither place: `vcon-server check` lists them.
 
 ## Check that the objects go to the bucket
 

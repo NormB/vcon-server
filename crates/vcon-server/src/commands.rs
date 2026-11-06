@@ -47,6 +47,10 @@ pub enum Command {
         id: String,
         metadata: String,
     },
+    /// Moves every tenant's sealed objects from the data directory to the
+    /// bucket `storage.objects = "s3"` names. Runs only while no server
+    /// does.
+    StorageMoveObjects,
     /// Writes the tenant's kept versions as Parquet files to `to`, a
     /// directory or an `s3://bucket/prefix`, beside a running server.
     /// `since` and `until` are RFC 3339 times.
@@ -111,6 +115,7 @@ impl Command {
             Command::TenantRemove { .. } => Work::TenantRemove,
             Command::TenantSetMetadata { .. } => Work::TenantSetMetadata,
             Command::ExportParquet { .. } => Work::ExportParquet,
+            Command::StorageMoveObjects => Work::StorageMoveObjects,
             Command::KeyCreate { .. } => Work::KeyCreate,
             Command::KeyList { .. } => Work::KeyList,
             Command::KeyRevoke { .. } => Work::KeyRevoke,
@@ -157,6 +162,12 @@ pub enum CommandError {
     /// in a build without S3.
     NoS3,
     Export(crate::export::ExportError),
+    /// Moving a tenant's objects to the bucket stopped; what was moved
+    /// stays moved, and running the command again moves the rest.
+    Move {
+        tenant: TenantId,
+        why: String,
+    },
 }
 
 impl fmt::Display for CommandError {
@@ -199,6 +210,11 @@ impl fmt::Display for CommandError {
                 "an s3:// target needs an [export.s3] or [storage.s3] table, in a build with the s3 feature",
             ),
             CommandError::Export(e) => write!(f, "{e}"),
+            CommandError::Move { tenant, why } => write!(
+                f,
+                "moving tenant {tenant}'s objects to the bucket stopped: {why}; what moved stays \
+                 moved, and running storage move-objects again moves the rest"
+            ),
             CommandError::Backup(e) => f.write_str(match e {
                 BackupError::Exists => {
                     "the backup's path already exists; a backup is written to a new directory"
@@ -256,6 +272,12 @@ pub fn run(config: &Config, command: &Command, out: &mut dyn Write) -> Result<()
     };
     let objects =
         backend::objects_for(&config.storage, &config.data_dir).map_err(CommandError::Storage)?;
+    // The bucket the objects move to, for `storage move-objects`.
+    #[cfg(feature = "s3")]
+    let bucket = match &objects {
+        backend::ObjectPlace::S3(s3) => Some(s3.clone()),
+        backend::ObjectPlace::Local => None,
+    };
     let tenants = open(
         &config.data_dir,
         master,
@@ -363,6 +385,13 @@ pub fn run(config: &Config, command: &Command, out: &mut dyn Write) -> Result<()
         Command::RekeyTenant { id } => Ok(tenants.rekey_tenant(who, tenant_id(id)?)?),
         Command::RekeyMaster { .. } => unreachable!("rotated before the registry is opened"),
         Command::Check => check(config, &tenants, out),
+        #[cfg(feature = "s3")]
+        Command::StorageMoveObjects => match bucket {
+            Some(s3) => move_objects(config, &tenants, &s3, out),
+            None => Err(not_a_bucket()),
+        },
+        #[cfg(not(feature = "s3"))]
+        Command::StorageMoveObjects => Err(not_a_bucket()),
         Command::Backup { to } => {
             let done = tenants.backup(who, to).map_err(CommandError::Backup)?;
             line(
@@ -505,6 +534,70 @@ fn rekey_master(
 
 /// Examines every tenant, prints a line for each and a summary, and fails
 /// when anything needs the operator.
+/// The refusal of `storage move-objects` with the objects kept in the data
+/// directory.
+fn not_a_bucket() -> CommandError {
+    CommandError::Storage(StorageError(
+        "storage move-objects moves the objects to the bucket that storage.objects = \"s3\" \
+         names; this configuration keeps them in the data directory"
+            .to_owned(),
+    ))
+}
+
+/// `storage move-objects`: each tenant's object files, under its directory
+/// in the data directory, moved to the bucket, as `backend::migrate` does;
+/// one line per tenant with what moved and what `check` then finds missing,
+/// and a total.
+#[cfg(feature = "s3")]
+fn move_objects(
+    config: &Config,
+    tenants: &Tenants,
+    s3: &Arc<crate::backend::s3::S3>,
+    out: &mut dyn Write,
+) -> Result<(), CommandError> {
+    use crate::backend::migrate::MoveError;
+    let mut total = 0;
+    for id in tenants.ids()? {
+        let dir = config
+            .data_dir
+            .join("tenants")
+            .join(id.to_string())
+            .join("objects");
+        let moved = if dir.exists() {
+            let from = crate::backend::local::LocalObjects::new(dir, Arc::new(OsFs));
+            crate::backend::migrate::move_objects(&from, &s3.tenant(id)).map_err(|e| {
+                let why = match e {
+                    MoveError::From(e) => {
+                        format!("an object file could not be read or removed: {e}")
+                    }
+                    MoveError::To(e) => format!("the bucket could not be written or read: {e}"),
+                    MoveError::Differs(version) => format!(
+                        "version {version} read back from the bucket differs from its file, \
+                         which stays in the data directory"
+                    ),
+                };
+                CommandError::Move { tenant: id, why }
+            })?
+        } else {
+            0
+        };
+        let missing = tenants
+            .store(id)?
+            .check()
+            .map_err(|e| CommandError::Move {
+                tenant: id,
+                why: format!("the objects in the bucket could not be checked: {e:?}"),
+            })?
+            .len();
+        total += moved;
+        line(
+            out,
+            &serde_json::json!({ "tenant": id.to_string(), "moved": moved, "missing": missing }),
+        )?;
+    }
+    line(out, &serde_json::json!({ "moved": total }))
+}
+
 fn check(config: &Config, tenants: &Tenants, out: &mut dyn Write) -> Result<(), CommandError> {
     let now = SystemClock.now();
     let found = tenants.examine(config.retention_default, now)?;
@@ -1381,6 +1474,7 @@ mod tests {
             CommandError::BadTarget(_) => "\"s3://\" is not a directory or an s3://bucket/prefix",
             CommandError::NoS3 => "[export.s3] or [storage.s3]",
             CommandError::Export(_) => "another export wrote",
+            CommandError::Move { .. } => "running storage move-objects again moves the rest",
             CommandError::Backup(e) => match e {
                 BackupError::Exists => "already exists",
                 BackupError::KeptChanging => "try again",
@@ -1404,6 +1498,94 @@ mod tests {
                 TenantError::Io => "could not be read or written",
             },
         }
+    }
+
+    /// With the objects kept in the data directory there is no bucket to
+    /// move them to: the command is refused, naming the setting.
+    #[test]
+    fn storage_move_objects_needs_a_bucket() {
+        let s = setup();
+        s.create("acme");
+        let error = s.run(Command::StorageMoveObjects).expect_err("refused");
+        assert!(
+            error.to_string().contains("storage.objects = \"s3\""),
+            "names the setting: {error}"
+        );
+    }
+
+    /// Against the test service: a data directory's objects move to the
+    /// bucket, byte for byte; the vCon then reads back from the bucket, no
+    /// object file is left, and a second run moves nothing.
+    #[cfg(feature = "backend-tests")]
+    #[test]
+    fn storage_move_objects_moves_each_tenants_objects_to_the_bucket() {
+        use crate::backend::Objects;
+        let s = setup();
+        let id = s.create("acme");
+        store_one(&s, &id);
+        let tenant = TenantId::parse(&id).expect("an id");
+        let local = s.config.data_dir.join("tenants").join(&id).join("objects");
+        let files = || std::fs::read_dir(&local).expect("listed").count();
+        assert_eq!(files(), 1, "one object file");
+        let (bucket, mut settings) = crate::backend::s3::remote::bucket(false);
+        let secret = crate::backend::s3::remote::secret_file();
+        settings.secret_access_key_file = Some(secret.1.clone());
+        let mut config = s.config.clone();
+        config.storage = crate::config::Storage {
+            objects: crate::config::ObjectStore::S3(settings),
+            parquet: None,
+        };
+        let moving = |config: &Config| -> Vec<Value> {
+            let mut out = Vec::new();
+            run(config, &Command::StorageMoveObjects, &mut out).expect("moved");
+            String::from_utf8(out)
+                .expect("text")
+                .lines()
+                .map(|l| serde_json::from_str(l).expect("a JSON line"))
+                .collect()
+        };
+        assert_eq!(
+            moving(&config),
+            [
+                json!({"tenant": id, "moved": 1, "missing": 0}),
+                json!({"moved": 1})
+            ],
+            "one object moved, and nothing missing"
+        );
+        assert_eq!(files(), 0, "no object file is left");
+        assert_eq!(
+            bucket.tenant(tenant).list().expect("listed").len(),
+            1,
+            "the object is in the bucket"
+        );
+        let tenants = Tenants::open_beside_in(
+            &config.data_dir,
+            Key::load_master(&config.master_key).expect("master"),
+            Arc::new(OsFs),
+            Arc::new(SystemClock),
+            crate::backend::ObjectPlace::S3(bucket.clone()),
+        )
+        .expect("opens");
+        let (_, body) = vcon(UUID, "exported");
+        assert_eq!(
+            tenants
+                .store(tenant)
+                .expect("its store")
+                .get(&Caller { key: KeyId([7; 8]) }, UUID.parse().expect("uuid"))
+                .expect("reads")
+                .body,
+            body,
+            "the vCon reads back from the bucket"
+        );
+        drop(tenants);
+        assert_eq!(
+            moving(&config),
+            [
+                json!({"tenant": id, "moved": 0, "missing": 0}),
+                json!({"moved": 0})
+            ],
+            "a second run moves nothing"
+        );
     }
 
     /// One vCon stored in the tenant `id`.
@@ -1619,6 +1801,10 @@ mod tests {
             CommandError::BadTarget("s3://".to_owned()),
             CommandError::NoS3,
             CommandError::Export(crate::export::ExportError::Raced("m".to_owned())),
+            CommandError::Move {
+                tenant: TenantId([1; 16]),
+                why: "the bucket could not be written".to_owned(),
+            },
         ];
         for error in tenant.into_iter().chain(backup).chain(rest) {
             let text = error.to_string();

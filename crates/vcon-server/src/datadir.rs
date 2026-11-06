@@ -40,6 +40,7 @@ pub enum Work {
     AuditExport,
     Check,
     Backup,
+    StorageMoveObjects,
 }
 
 impl Work {
@@ -51,7 +52,8 @@ impl Work {
             | Work::TenantRemove
             | Work::RekeyTenant
             | Work::RekeyMaster
-            | Work::Check => Sharing::Alone,
+            | Work::Check
+            | Work::StorageMoveObjects => Sharing::Alone,
             Work::TenantList
             | Work::TenantSetRetention
             | Work::KeyCreate
@@ -168,6 +170,7 @@ mod tests {
             Work::Backup => Sharing::Beside,
             Work::TenantSetMetadata => Sharing::Beside,
             Work::ExportParquet => Sharing::Beside,
+            Work::StorageMoveObjects => Sharing::Alone,
         };
         for work in [
             Work::Serve,
@@ -185,6 +188,7 @@ mod tests {
             Work::Backup,
             Work::TenantSetMetadata,
             Work::ExportParquet,
+            Work::StorageMoveObjects,
         ] {
             assert_eq!(work.sharing(), documented(work), "{work:?}");
         }
