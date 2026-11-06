@@ -150,7 +150,14 @@ pub struct ParquetSettings {
     /// The largest sealed object packed, in bytes; a larger one stays an
     /// object.
     pub pack_limit: u64,
+    /// How long an older manifest, and a file a compaction stopped naming,
+    /// stays for readers outside the server.
+    pub reader_grace: Duration,
 }
+
+/// How long an older manifest, and a file a compaction stopped naming,
+/// stays for readers outside the server unless configured: 15 minutes.
+pub const READER_GRACE: Duration = Duration::from_secs(900);
 
 /// Time between pack runs unless configured.
 pub const PACK_INTERVAL: Duration = Duration::from_secs(300);
@@ -354,6 +361,7 @@ fn storage(raw: RawStorage) -> Result<Storage, ConfigError> {
                 None => PACK_LIMIT,
                 Some(limit) => positive("storage.parquet.pack_limit", limit)?,
             },
+            reader_grace: seconds("storage.parquet.reader_grace", p.reader_grace, READER_GRACE)?,
         }),
         (ObjectStore::Local, Some(_)) => {
             return Err(ConfigError(
@@ -537,6 +545,7 @@ struct RawStorage {
 struct RawParquet {
     pack_interval: Option<u64>,
     pack_limit: Option<u64>,
+    reader_grace: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -637,6 +646,7 @@ timeout = 60
 [storage.parquet]
 pack_interval = 600
 pack_limit = 8388608
+reader_grace = 1800
 
 [export.s3]
 endpoint = "https://analytics.example.com"
@@ -688,6 +698,7 @@ timeout = 120
                     parquet: Some(ParquetSettings {
                         pack_interval: Duration::from_secs(600),
                         pack_limit: 8_388_608,
+                        reader_grace: Duration::from_secs(1800),
                     }),
                 },
                 export: Export {
@@ -907,6 +918,10 @@ key = "/etc/vcon-server/key.pem"
                 "storage.parquet.pack_limit",
                 parquet.pack_limit != least_parquet.pack_limit,
             ),
+            (
+                "storage.parquet.reader_grace",
+                parquet.reader_grace != least_parquet.reader_grace,
+            ),
         ] {
             assert!(
                 differs,
@@ -1033,9 +1048,11 @@ key = "/etc/vcon-server/key.pem"
             ParquetSettings {
                 pack_interval: PACK_INTERVAL,
                 pack_limit: PACK_LIMIT,
+                reader_grace: READER_GRACE,
             },
             "an empty table takes every default"
         );
+        assert_eq!(READER_GRACE, Duration::from_secs(900), "15 minutes");
         assert_eq!(PACK_INTERVAL, Duration::from_secs(300), "five minutes");
         assert_eq!(PACK_LIMIT, 16 << 20, "16 MiB");
     }
@@ -1234,6 +1251,10 @@ key = "/etc/vcon-server/key.pem"
                 "storage.parquet.pack_limit",
             ),
             (
+                s3("[storage.parquet]\nreader_grace = 0\n"),
+                "storage.parquet.reader_grace",
+            ),
+            (
                 format!(
                     "{LEAST}\n[storage]\nobjects = \"local\"\n[storage.s3]\nregion = \"us-east-1\"\nbucket = \"vcon\"\n"
                 ),
@@ -1371,7 +1392,7 @@ key = "/etc/vcon-server/key.pem"
             let defaults = parse(LEAST).expect("least");
             let mut all = Vec::new();
             keys(&FULL.parse::<toml::Table>().expect("toml"), "", &mut all);
-            assert_eq!(all.len(), 37, "{all:?}");
+            assert_eq!(all.len(), 38, "{all:?}");
             for key in all {
                 let default = match key.as_str() {
                     "listen" | "data_dir" | "master_key" | "tls.cert" | "tls.key" => {
@@ -1403,6 +1424,9 @@ key = "/etc/vcon-server/key.pem"
                         format!("`{}`", parquet_least().pack_interval.as_secs())
                     }
                     "storage.parquet.pack_limit" => format!("`{}`", parquet_least().pack_limit),
+                    "storage.parquet.reader_grace" => {
+                        format!("`{}`", parquet_least().reader_grace.as_secs())
+                    }
                     "export.s3.region" => "required with `export.s3`".to_owned(),
                     "export.s3.endpoint"
                     | "export.s3.access_key_id"

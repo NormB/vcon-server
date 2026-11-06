@@ -30,10 +30,18 @@ that row's bytes with one ranged read. A purge rewrites the file without
 the purged row, deletes the old file, and checks that the bucket no longer
 has it, before the purge is done.
 
-- **The files only grow, for now.** A replaced or deleted version stays in
-  its file, hidden, until retention purges it, and each pack run writes new
-  files. Only a purge rewrites a file. Nothing yet merges small files or
-  rewrites a file whose rows are mostly hidden: that is a later change.
+- **The files hold no clear column.** Each row is a version's id, the time
+  it was stored and its sealed bytes, whatever the tenant's metadata level.
+  For queryable columns (form, times, counts, and at `full` the uuid,
+  subject and parties), use [`export parquet`](@/docs/export-parquet.md),
+  which writes them at the tenant's level into files of their own.
+- **Manifests and compaction.** Each change of which files hold which rows,
+  and each pack run that finds the live versions changed, writes the next
+  numbered manifest, naming the files and the live versions. Each pack run
+  merges a date's small files into one. A file merged away, and an older
+  manifest, stay for `reader_grace` seconds (900 unless set), so a reader on
+  an older manifest can finish; a purge deletes them at once. A replaced or
+  deleted version stays in its file, hidden, until retention purges it.
 - **There is no way back.** No command turns packed versions back into
   objects. A server whose configuration no longer has `[storage.parquet]`
   still reads and purges its packed versions, but packs no more.
@@ -150,11 +158,12 @@ until no object is left under the tenant's name, and note the files:
 <!-- docs-test: only rustfs -->
 ```sh
 LIST="https://objects.example.com:9000/vcon?list-type=2&prefix=tenants/"
+FILES="https://objects.example.com:9000/vcon?list-type=2&prefix=tenants/$TENANT/parquet/"
 for i in $(seq 30); do
   curl -sS --fail-with-body "${S3[@]}" "$LIST" | grep -q '/objects/' || break
   sleep 2
 done
-BEFORE=$(curl -sS --fail-with-body "${S3[@]}" "$LIST" | grep -o '<Key>[^<]*' | cut -c6-)
+BEFORE=$(curl -sS --fail-with-body "${S3[@]}" "$FILES" | grep -o '<Key>[^<]*' | cut -c6-)
 echo "$BEFORE"
 ```
 
@@ -177,9 +186,11 @@ curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/
 201
 ```
 
-Its object is in the bucket until the next pack run takes it. Wait for
-that, then list the tenant's part of the bucket: the file from before, a
-new file for the new version, and no object:
+Its object is in the bucket until the next pack run takes it. That run
+packs it into a file of its own, then merges the date's two small files
+into a third. Wait for it, then list the tenant's files: the file from
+before and the new one, both merged away and kept for the reader grace,
+and the merged file, which the catalog names now:
 
 <!-- docs-test: only rustfs -->
 ```sh
@@ -187,14 +198,12 @@ for i in $(seq 30); do
   curl -sS --fail-with-body "${S3[@]}" "$LIST" | grep -q '/objects/' || break
   sleep 2
 done
-AFTER=$(curl -sS --fail-with-body "${S3[@]}" "$LIST" | grep -o '<Key>[^<]*' | cut -c6-)
-echo "$AFTER"
-NEW=$(comm -13 <(echo "$BEFORE") <(echo "$AFTER"))
+AFTER=$(curl -sS --fail-with-body "${S3[@]}" "$FILES" | grep -o '<Key>[^<]*' | cut -c6-)
+echo "$AFTER" | wc -l
 ```
 
 ```text
-tenants/<tenant id>/parquet/date=<yyyy-mm-dd>/part-<file id>.parquet
-tenants/<tenant id>/parquet/date=<yyyy-mm-dd>/part-<file id>.parquet
+3
 ```
 
 Each pack run is logged with counts only, never a tenant:
@@ -259,9 +268,39 @@ version,date,rows
 UUID,DATE,true
 ```
 
-A glob reads every file in the bucket. While a purge rewrites a file, the
-old file and the new one are both there for a moment, so a glob can count a
-row twice, or read a file just deleted and fail; read again.
+A glob reads every file in the bucket, so it can count a row twice while a
+merged-away file waits out the reader grace. To read exactly what the
+server holds, read through the newest manifest: list `manifest/`, take the
+highest number, and read the files it names, keeping the rows it lists as
+live (the current version of each vCon not deleted). Here DuckDB checks
+that every live version is in those files:
+
+<!-- docs-test: only rustfs -->
+```sh
+MANIFEST=$(curl -sS --fail-with-body "${S3[@]}" "https://objects.example.com:9000/vcon?list-type=2&prefix=tenants/$TENANT/manifest/" \
+  | grep -o '<Key>[^<]*' | cut -c6- | tail -n 1)
+sudo -u vcon duckdb -csv -c "
+  INSTALL httpfs; LOAD httpfs;
+  SET ca_cert_file = '/usr/local/share/vcon-server/s3-ca.pem';
+  CREATE SECRET (TYPE s3, KEY_ID 'vcon-server', SECRET '$S3_SECRET', REGION 'us-east-1',
+    ENDPOINT 'objects.example.com:9000', URL_STYLE 'path');
+  SET VARIABLE files = (SELECT list('s3://vcon/tenants/$TENANT/' || f.path) FROM (SELECT unnest(files) AS f FROM read_json('s3://vcon/$MANIFEST')));
+  SET VARIABLE live = (SELECT live FROM read_json('s3://vcon/$MANIFEST'));
+  SELECT count(*) = len(getvariable('live')) AS every_live_version
+  FROM read_parquet(getvariable('files'))
+  WHERE list_contains(getvariable('live'), replace(version::VARCHAR, '-', ''));"
+```
+
+```text
+Success
+true
+every_live_version
+true
+```
+
+A file a manifest names stays at least `reader_grace` seconds after a newer
+manifest stops naming it, unless a purge deletes it at once; a reader that
+then finds a file gone takes the newest manifest again.
 
 ## Check what a purge removes
 
@@ -269,7 +308,8 @@ A purge removes the row's data key in its own transaction, so from then on
 nobody can open the purged version, even with a copy of the file. Then it
 writes the file again without the row, deletes the old file, and checks
 with HeadObject that the bucket no longer has it. Only then is the purge
-done. The new file holds only the new vCon. With a retention period of
+done. A purge also deletes, at once, every file still kept for the reader
+grace: any of them may hold the purged row. With a retention period of
 `0d`, a delete purges at once:
 
 <!-- docs-test: only rustfs -->
@@ -279,25 +319,30 @@ DELETER=$(sudo -u vcon vcon-server key create --tenant "$TENANT" --scope delete 
 sudo -u vcon vcon-server tenant set-retention "$TENANT" 0d --config /etc/vcon-server/vcon-server.toml | jq -c '{retention}'
 curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem -X DELETE \
   "https://vcon.example.com:8443/vcons/$UUID" -H "Authorization: Bearer $DELETER"
-curl -sS -o /dev/null -w '%{http_code}\n' "${S3[@]}" -I "https://objects.example.com:9000/vcon/$NEW"
 sudo -u vcon vcon-server tenant set-retention "$TENANT" default --config /etc/vcon-server/vcon-server.toml | jq -c '{retention}'
+for key in $AFTER; do
+  curl -sS -o /dev/null -w '%{http_code}\n' "${S3[@]}" -I "https://objects.example.com:9000/vcon/$key"
+done
 ```
 
 ```text
 {"retention":"0d"}
 204
-404
 {"retention":null}
+404
+404
+404
 ```
 
-HeadObject on the new file answers 404: it is gone from the bucket. Since
-it held no other row, no file replaces it; a file with other rows is
-written again with those rows under a new name. The file from before is
-still there, and no object in the bucket holds the purged vCon's uuid:
+HeadObject on each of the three files answers 404: all are gone from the
+bucket. The merged file held the purged row, so its other rows were written
+again into one new file under a new name; the two merged away were deleted
+without waiting for the grace. One file is left, and no object in the
+bucket holds the purged vCon's uuid:
 
 <!-- docs-test: only rustfs -->
 ```sh
-curl -sS --fail-with-body "${S3[@]}" "$LIST" | grep -o '<Key>[^<]*' | cut -c6- | cmp - <(echo "$BEFORE") && echo "the file from before"
+curl -sS --fail-with-body "${S3[@]}" "$FILES" | grep -o '<Key>[^<]*' | cut -c6- | wc -l
 for key in $(curl -sS --fail-with-body "${S3[@]}" "https://objects.example.com:9000/vcon?list-type=2" | grep -o '<Key>[^<]*' | cut -c6-); do
   if curl -sS --fail-with-body "${S3[@]}" "https://objects.example.com:9000/vcon/$key" | grep -q -a "$UUID"; then
     echo "$key holds it"
@@ -307,7 +352,7 @@ echo "scanned"
 ```
 
 ```text
-the file from before
+1
 scanned
 ```
 
@@ -334,7 +379,7 @@ taken there keeps a file after the server deletes it.
 
 ```sh
 rm -f packed.vcon read.vcon vcon-server.toml
-unset S3_SECRET S3 LIST BEFORE AFTER NEW DELETER
+unset S3_SECRET S3 LIST FILES BEFORE AFTER DELETER MANIFEST
 ```
 
 ## When it does not start

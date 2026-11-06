@@ -879,6 +879,16 @@ mod packed_local {
 
     struct PackedLocal(tempfile::TempDir);
 
+    /// A pack run that leaves each version alone in its file, so losing or
+    /// altering one version's file touches no other: no merging, which
+    /// compaction's own tests cover.
+    pub(crate) fn alone() -> PackPlan {
+        PackPlan {
+            merge_below: 0,
+            ..PackPlan::with_limit(1 << 20)
+        }
+    }
+
     impl Harness for PackedLocal {
         fn fresh(&self, clock: Arc<TestClock>) -> Fresh {
             let tenant = TenantId::generate();
@@ -910,7 +920,7 @@ mod packed_local {
                         recover,
                     )
                     .expect("opens");
-                    store.pack_after_every_write(PackPlan::with_limit(1 << 20));
+                    store.pack_after_every_write(alone());
                     store
                 })
             };

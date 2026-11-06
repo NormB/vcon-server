@@ -28,11 +28,13 @@ use crate::ids::{FileId, VersionId};
 /// the same time makes a round find its copy out of date.
 const ROUNDS: usize = 4;
 
-/// A file's kept rows, copied into a new file not yet recorded.
+/// Kept rows of one or more files of one date, copied into a new file not
+/// yet recorded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Copied {
-    from: FileId,
-    /// The versions copied, which `from` must still hold, and no other.
+    from: Vec<FileId>,
+    /// The versions copied, which `from` must still hold together, and no
+    /// other.
     versions: BTreeSet<[u8; 16]>,
     /// The new file and each row's place in it; None when no row was left
     /// to copy.
@@ -48,35 +50,41 @@ struct NewFile {
 }
 
 impl Store {
-    /// Rewrites every file a purge listed, and removes every unnamed file,
-    /// as the module describes. A Store with no pack storage has neither.
+    /// Rewrites every file a purge listed, and deletes every unnamed file
+    /// at once, as the module describes: any unnamed file may hold the
+    /// purged row. With no purge listed it does nothing; unnamed files then
+    /// wait for the reader grace. A Store with no pack storage has neither.
     pub(crate) fn finish_purges(&self) -> Result<(), StoreError> {
         let Some(packs) = self.packs.as_deref() else {
             return Ok(());
         };
         for _ in 0..ROUNDS {
-            let (pending, unnamed) = {
-                let mut tx = self.catalog.snapshot()?;
-                (tx.purge_pending()?, tx.unnamed_files()?)
-            };
-            if pending.is_empty() && unnamed.is_empty() {
-                return Ok(());
+            let pending = self.catalog.snapshot()?.purge_pending()?;
+            if pending.is_empty() {
+                // The manifests the rewrites numbered, and none older:
+                // those name the files just deleted.
+                self.publish()?;
+                return self.prune_manifests(None);
             }
+            let unnamed = self.catalog.snapshot()?.unnamed_files()?;
             for file in unnamed {
                 self.remove_unnamed(packs, file)?;
             }
             for file in pending {
-                match self.copy_file(file)? {
-                    None => {
-                        let mut tx = self.catalog.immediate()?;
-                        tx.delete_purge_pending(file)?;
-                        super::commit(tx)?;
-                    }
-                    Some(copied) => {
-                        if self.swap(&copied)? {
-                            self.remove_unnamed(packs, file)?;
+                let info = self.catalog.snapshot()?.pack_file(file)?;
+                match info {
+                    // Rewritten, then cut off before its deletion: the
+                    // deletion above finished it.
+                    Some(info) if info.unnamed_at.is_some() => {}
+                    None => self.clear_pending(file)?,
+                    Some(_) => match self.copy_files(&[file])? {
+                        None => self.clear_pending(file)?,
+                        Some(copied) => {
+                            if self.swap(&copied)? {
+                                self.remove_unnamed(packs, file)?;
+                            }
                         }
-                    }
+                    },
                 }
             }
         }
@@ -84,27 +92,46 @@ impl Store {
         Err(StoreError::Io)
     }
 
-    /// Copies the kept rows of `from` into a new file, byte for byte. None:
-    /// `from` has no row, or the storage no longer holds it, so no byte of
-    /// it is left to remove (its kept rows are damage, which `check`
+    /// Takes `file` off the purge list: it has no row, or the storage no
+    /// longer holds it, so no byte of it is left to remove.
+    fn clear_pending(&self, file: FileId) -> Result<(), StoreError> {
+        let mut tx = self.catalog.immediate()?;
+        tx.delete_purge_pending(file)?;
+        super::commit(tx)
+    }
+
+    /// Copies the kept rows of the files `from`, all of one date, into one
+    /// new file, byte for byte. None: a file of `from` has no row, or the
+    /// storage no longer holds it (its kept rows are damage, which `check`
     /// reports).
-    pub(crate) fn copy_file(&self, from: FileId) -> Result<Option<Copied>, StoreError> {
+    pub(crate) fn copy_files(&self, from: &[FileId]) -> Result<Option<Copied>, StoreError> {
         let packs = self.packs.as_deref().ok_or(StoreError::Io)?;
-        let (info, rows) = {
-            let mut tx = self.catalog.snapshot()?;
-            (tx.pack_file(from)?, tx.placed_in(from)?)
-        };
-        let Some(info) = info else {
-            return Ok(None);
-        };
-        let name = pack::name(&info.date, from);
-        if packs.size(&name).map_err(read_failed)?.is_none() {
-            return Ok(None);
+        let mut rows = Vec::new();
+        let mut date = None;
+        for &file in from {
+            let (info, placed) = {
+                let mut tx = self.catalog.snapshot()?;
+                (tx.pack_file(file)?, tx.placed_in(file)?)
+            };
+            let Some(info) = info else {
+                return Ok(None);
+            };
+            let name = pack::name(&info.date, file);
+            if packs.size(&name).map_err(read_failed)?.is_none() {
+                return Ok(None);
+            }
+            if date.get_or_insert_with(|| info.date.clone()) != &info.date {
+                return Err(StoreError::Io);
+            }
+            rows.extend(placed);
         }
+        let Some(date) = date else {
+            return Ok(None);
+        };
         let versions = rows.iter().map(|(v, _, _)| v.0).collect();
         if rows.is_empty() {
             return Ok(Some(Copied {
-                from,
+                from: from.to_vec(),
                 versions,
                 to: None,
             }));
@@ -128,29 +155,36 @@ impl Store {
         let bytes = file.finish().map_err(io)?;
         let id = FileId::generate();
         if !packs
-            .put_new(&pack::name(&info.date, id), &bytes)
+            .put_new(&pack::name(&date, id), &bytes)
             .map_err(read_failed)?
         {
             tracing::warn!("a rewritten pack file's new name was already taken");
             return Err(StoreError::Io);
         }
         Ok(Some(Copied {
-            from,
+            from: from.to_vec(),
             versions,
             to: Some(NewFile {
                 file: id,
-                date: info.date,
+                date,
                 bytes: bytes.len() as u64,
                 rows: placed,
             }),
         }))
     }
 
-    /// Moves `copied`'s rows to its new file if `copied.from` still holds
-    /// exactly those rows; if not, removes the new file and answers false.
-    /// The old file is marked unnamed and taken off the purge list. A
-    /// commit rolled back removes the new file; one whose outcome is
-    /// unknown keeps it.
+    /// The copy of one file, as a purge's rewrite makes it.
+    #[cfg(test)]
+    pub(crate) fn copy_file(&self, from: FileId) -> Result<Option<Copied>, StoreError> {
+        self.copy_files(&[from])
+    }
+
+    /// Moves `copied`'s rows to its new file if every file of `copied.from`
+    /// is still named and they still hold exactly those rows; if not,
+    /// removes the new file and answers false. The old files are marked
+    /// unnamed and the next manifest numbered; a purge's listing stays
+    /// until its file is deleted. A commit rolled back removes the new
+    /// file; one whose outcome is unknown keeps it.
     pub(crate) fn swap(&self, copied: &Copied) -> Result<bool, StoreError> {
         let packs = self.packs.as_deref().ok_or(StoreError::Io)?;
         let remove_new = || -> Result<(), StoreError> {
@@ -162,12 +196,13 @@ impl Store {
             }
         };
         let mut tx = self.catalog.immediate()?;
-        let now: BTreeSet<[u8; 16]> = tx
-            .placed_in(copied.from)?
-            .into_iter()
-            .map(|(v, _, _)| v.0)
-            .collect();
-        if now != copied.versions || tx.pack_file(copied.from)?.is_none() {
+        let mut now = BTreeSet::new();
+        let mut named = true;
+        for &file in &copied.from {
+            named &= tx.pack_file(file)?.is_some_and(|f| f.unnamed_at.is_none());
+            now.extend(tx.placed_in(file)?.into_iter().map(|(v, _, _)| v.0));
+        }
+        if !named || now != copied.versions {
             drop(tx);
             remove_new()?;
             return Ok(false);
@@ -184,8 +219,10 @@ impl Store {
                 tx.set_place(*version, to.file, *place)?;
             }
         }
-        tx.unname_pack_file(copied.from, nanos(self.clock.now()))?;
-        tx.delete_purge_pending(copied.from)?;
+        for &file in &copied.from {
+            tx.unname_pack_file(file, nanos(self.clock.now()))?;
+        }
+        tx.allocate_manifest()?;
         match tx.commit() {
             Ok(()) => Ok(true),
             Err(CommitError::RolledBack) => {
@@ -198,7 +235,7 @@ impl Store {
 
     /// Deletes an unnamed file, checks that the storage no longer has it,
     /// and removes its row.
-    fn remove_unnamed(&self, packs: &dyn Packs, file: FileId) -> Result<(), StoreError> {
+    pub(super) fn remove_unnamed(&self, packs: &dyn Packs, file: FileId) -> Result<(), StoreError> {
         let Some(info) = self.catalog.snapshot()?.pack_file(file)? else {
             return Ok(());
         };
@@ -210,6 +247,7 @@ impl Store {
         }
         let mut tx = self.catalog.immediate()?;
         tx.delete_pack_file(file)?;
+        tx.delete_purge_pending(file)?;
         super::commit(tx)
     }
 }
@@ -545,10 +583,13 @@ mod tests {
             let (done, finished) = std::sync::mpsc::channel::<()>();
             *store.hooks.before_read.lock().expect("hook") = Some(Box::new(move || {
                 go.send(()).expect("the purge is told");
-                finished.recv().expect("the purge finishes");
+                finished
+                    .recv_timeout(std::time::Duration::from_secs(30))
+                    .expect("the purge finishes");
             }));
             let purge = scope.spawn(move || {
-                wait.recv().expect("the read is between its steps");
+                wait.recv_timeout(std::time::Duration::from_secs(30))
+                    .expect("the read is between its steps");
                 let swept = store.purge_due(DAY).expect("swept");
                 done.send(()).expect("the read is told");
                 swept

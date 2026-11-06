@@ -10,7 +10,7 @@ use tokio::net::TcpListener;
 use crate::api::{self, App, Limits, TlsError};
 use crate::backend;
 use crate::clock::{Clock, SystemClock};
-use crate::config::{Config, StorageError};
+use crate::config::{Config, ParquetSettings, StorageError};
 use crate::datadir::{self, LockError, Work};
 use crate::envelope::{Key, KeyError};
 use crate::fs::OsFs;
@@ -160,9 +160,7 @@ pub async fn run(config: &Config, shutdown: impl Future<Output = ()>) -> Result<
             move || {
                 let tenants = packed.clone();
                 async move {
-                    let _ =
-                        tokio::task::spawn_blocking(move || pack_all(&tenants, parquet.pack_limit))
-                            .await;
+                    let _ = tokio::task::spawn_blocking(move || pack_all(&tenants, &parquet)).await;
                 }
             },
         ))
@@ -212,13 +210,16 @@ pub struct PackRunReport {
     pub failed: u64,
 }
 
-/// One pack run over every tenant, as `Store::pack` does for one, packing
-/// sealed objects of at most `limit` bytes. A tenant whose run fails is
+/// One pack run over every tenant, as `Store::pack` does for one, with the
+/// configured limit and reader grace. A tenant whose run fails is
 /// counted and left for the next run. Logged with counts only, never a
 /// tenant.
-pub fn pack_all(tenants: &Tenants, limit: u64) -> PackRunReport {
+pub fn pack_all(tenants: &Tenants, settings: &ParquetSettings) -> PackRunReport {
     let mut report = PackRunReport::default();
-    let plan = crate::store::packer::PackPlan::with_limit(limit);
+    let plan = crate::store::packer::PackPlan {
+        grace: settings.reader_grace,
+        ..crate::store::packer::PackPlan::with_limit(settings.pack_limit)
+    };
     match tenants.ids() {
         Ok(ids) => {
             for id in ids {

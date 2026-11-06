@@ -23,8 +23,16 @@ All notable changes to this project are recorded here. The format follows
   storage at start. Start-up recovery removes a pack file no catalog row
   names, and the object of a packed version. A backup writes each packed
   version as an object file, so it restores as before. Removing a tenant
-  removes its pack files. Files only grow for now: nothing merges or
-  compacts them yet. On `main` only. The how-to [keep vCons as Parquet files
+  removes its pack files. Each change of which files hold which rows, and
+  each pack run that finds the live versions changed, writes the next
+  numbered manifest (`<prefix>tenants/<tenant id>/manifest/<20 digits>.json`,
+  `If-None-Match: *`) naming the files and the live versions; start-up
+  recovery writes one left unwritten. Each pack run merges a date's small
+  files into one; a file merged away and an older manifest stay for
+  `reader_grace` seconds (900 unless set), and a purge deletes them at once.
+  The files hold a version's id, store time and sealed bytes only, whatever
+  the tenant's metadata level; queryable columns come from `export
+  parquet`. On `main` only. The how-to [keep vCons as Parquet files
   in a bucket](https://vcon-server.com/docs/parquet-storage/) turns it on
   over an existing bucket, and CI runs the store's conformance suite on it
   against RustFS and MinIO.

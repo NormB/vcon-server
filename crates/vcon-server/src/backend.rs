@@ -287,6 +287,20 @@ pub trait CatalogTx {
     /// Every recorded file marked unnamed.
     fn unnamed_files(&mut self) -> Result<Vec<FileId>, StoreError>;
     fn delete_pack_file(&mut self, file: FileId) -> Result<(), StoreError>;
+    /// Takes the next manifest number, never one given before.
+    fn allocate_manifest(&mut self) -> Result<i64, StoreError>;
+    /// The manifest numbers taken and not yet marked written, in order.
+    fn unpublished_manifests(&mut self) -> Result<Vec<i64>, StoreError>;
+    fn mark_published(&mut self, seq: i64, at: i64) -> Result<(), StoreError>;
+    /// Every manifest marked written, with when, by number.
+    fn published_manifests(&mut self) -> Result<Vec<(i64, i64)>, StoreError>;
+    fn delete_manifest(&mut self, seq: i64) -> Result<(), StoreError>;
+    /// Every pack file the catalog names (not unnamed), with its date, its
+    /// rows and its length, by date and then file id.
+    fn named_files(&mut self) -> Result<Vec<(FileId, PackFileRow, i64)>, StoreError>;
+    /// The versions a read returns: current, of a uuid not deleted, in
+    /// version order.
+    fn live_versions(&mut self) -> Result<Vec<VersionId>, StoreError>;
     /// Every version id with its place, in version order; a place that is
     /// not whole is `Damaged` for that version alone.
     #[expect(clippy::type_complexity, reason = "one result per version")]

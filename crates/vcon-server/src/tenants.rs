@@ -1818,7 +1818,8 @@ mod tests {
         let (go, wait) = std::sync::mpsc::channel::<()>();
         *f.tenants.hooks.opening.lock().expect("hook") = Some(Box::new(move || {
             opening.send(()).expect("send");
-            wait.recv().expect("go");
+            wait.recv_timeout(std::time::Duration::from_secs(30))
+                .expect("go");
         }));
         // Everything the threads wait on is moved into the scope, so a
         // failed assertion drops it and the threads end instead of hanging.
@@ -1842,7 +1843,9 @@ mod tests {
             );
             go.send(()).expect("go");
             let first = first.join().expect("the first returns");
-            let second = second.recv().expect("the second returns");
+            let second = second
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .expect("the second returns");
             assert!(Arc::ptr_eq(&first, &second));
         });
     }
@@ -1889,7 +1892,7 @@ mod tests {
                 .expect("the request in flight finishes");
             drop(held);
             drained
-                .recv()
+                .recv_timeout(std::time::Duration::from_secs(30))
                 .expect("the drain ends once the last handle is dropped");
         });
         assert_eq!(f.tenants.store(id).err(), Some(TenantError::Closing));
@@ -2471,7 +2474,9 @@ mod tests {
             held.create(&caller(), found_ref, body_ref)
                 .expect("the write is acknowledged");
             drop(held);
-            removed.recv().expect("the removal ends")
+            removed
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .expect("the removal ends")
         });
         assert_eq!(result, Err(TenantError::HoldsVcons));
         assert_eq!(

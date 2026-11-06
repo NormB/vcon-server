@@ -27,10 +27,12 @@ use crate::ids::{KeyId, TenantId, VersionId};
 use crate::retention::Retention;
 
 mod backup;
+mod compact;
 mod examine;
 mod export;
 mod legal;
 mod list;
+mod manifest;
 pub(crate) mod packed;
 pub(crate) mod packer;
 mod purge;
@@ -317,6 +319,7 @@ impl Store {
             }
         }
         self.finish_purges()?;
+        self.publish()?;
         if removed > 0 {
             self.objects.sync().map_err(io)?;
             // A count only, as the purge sweep logs, never a tenant or a
@@ -1095,6 +1098,13 @@ pub(crate) mod tests {
         /// The directory of the Store's object files.
         pub(crate) fn store_objects_dir(&self) -> PathBuf {
             self.store.objects_dir.clone()
+        }
+
+        /// A second Store on the same catalog and objects, opened as a
+        /// command beside a server opens one: for a test that must hand a
+        /// Store to another thread.
+        pub(crate) fn open_beside_store(&self) -> Store {
+            self.open_beside().expect("opens beside")
         }
 
         /// Opens the store again as a command beside a server would.

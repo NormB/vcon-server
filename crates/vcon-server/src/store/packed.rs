@@ -161,6 +161,8 @@ pub(crate) mod tests {
         /// `read` and `size` fail with an I/O error, as a storage that
         /// cannot be reached would.
         pub(crate) fail_reads: std::sync::atomic::AtomicBool,
+        /// `put_new` of a manifest fails with an I/O error.
+        pub(crate) fail_manifests: std::sync::atomic::AtomicBool,
     }
 
     impl DirPacks {
@@ -174,6 +176,7 @@ pub(crate) mod tests {
                 fail_removes: std::sync::atomic::AtomicBool::new(false),
                 keep_removed: std::sync::atomic::AtomicBool::new(false),
                 fail_reads: std::sync::atomic::AtomicBool::new(false),
+                fail_manifests: std::sync::atomic::AtomicBool::new(false),
             })
         }
 
@@ -239,6 +242,9 @@ pub(crate) mod tests {
 
         fn put_new(&self, name: &str, bytes: &[u8]) -> Result<bool, ObjectError> {
             self.puts.lock().expect("puts").push(name.to_owned());
+            if name.starts_with("manifest/") && Self::is(&self.fail_manifests) {
+                return Err(ObjectError::Io(std::io::Error::other("the storage failed")));
+            }
             if Self::is(&self.fail_puts) {
                 return Err(ObjectError::Io(std::io::Error::other("the storage failed")));
             }

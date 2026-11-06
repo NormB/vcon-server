@@ -37,7 +37,8 @@ where each item is described in full:
   [Building](#building).
 - **Parquet storage in the bucket:** the objects packed into Parquet files,
   each vCon read back by one ranged read, and a purge that deletes the old
-  file before it is done. Files only grow for now. This is on `main` and in
+  file before it is done, with manifests for outside readers and small
+  files merged. This is on `main` and in
   no release yet; see [Building](#building).
 - **The HTTP API over TLS:** create, read, replace and delete, the legal
   routes, the admin routes and health.

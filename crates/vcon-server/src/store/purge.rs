@@ -783,10 +783,14 @@ mod purge_tests {
                 .query_row("SELECT count(*) FROM version", [], |r| r.get(0))
                 .expect("reads");
             reading.send(()).expect("signal");
-            released.recv().expect("let go");
+            released
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .expect("let go");
             drop(tx);
         });
-        started.recv().expect("the reader started");
+        started
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the reader started");
         let (busy, waiting) = mpsc::channel();
         f.store.catalog.on_checkpoint_wait(busy);
 

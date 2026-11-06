@@ -26,14 +26,23 @@ pub(crate) struct PackPlan {
     /// The largest sealed object packed; a larger one stays an object.
     pub(crate) limit: u64,
     pub(crate) sizes: Sizes,
+    /// How long a manifest, and a file a compaction stopped naming, stays
+    /// after a newer manifest is written, for readers outside the server.
+    pub(crate) grace: std::time::Duration,
+    /// A pack file below this many bytes is small, and merged with the
+    /// other small files of its date; 0 merges nothing.
+    pub(crate) merge_below: u64,
 }
 
 impl PackPlan {
-    /// The plan for the configured limit, with the export's file sizes.
+    /// The plan for the configured limit, with the export's file sizes and
+    /// the default reader grace.
     pub(crate) fn with_limit(limit: u64) -> PackPlan {
         PackPlan {
             limit,
             sizes: SIZES,
+            grace: crate::config::READER_GRACE,
+            merge_below: SIZES.file as u64 / 2,
         }
     }
 }
@@ -45,6 +54,8 @@ pub struct PackReport {
     pub files: u64,
     /// Versions moved into them.
     pub versions: u64,
+    /// Files written by merging small files.
+    pub merged: u64,
 }
 
 /// A file a run will write: versions of one store date, in store order.
@@ -82,6 +93,11 @@ impl Store {
                 report.versions += written.rows.len() as u64;
             }
         }
+        report.merged = self.compact(plan)?;
+        self.refresh_manifest()?;
+        self.publish()?;
+        self.remove_expired(plan)?;
+        self.prune_manifests(Some(plan.grace))?;
         Ok(report)
     }
 
@@ -200,6 +216,7 @@ impl Store {
         for (version, place) in &written.rows {
             tx.set_place(*version, written.file, *place)?;
         }
+        tx.allocate_manifest()?;
         match tx.commit() {
             Ok(()) => Ok(true),
             Err(CommitError::RolledBack) => {
@@ -246,7 +263,11 @@ pub(crate) mod tests {
     };
 
     fn plan(limit: u64, sizes: Sizes) -> PackPlan {
-        PackPlan { limit, sizes }
+        PackPlan {
+            limit,
+            sizes,
+            ..PackPlan::with_limit(limit)
+        }
     }
 
     /// A stored version: its uuid, version id and body.
@@ -372,14 +393,23 @@ pub(crate) mod tests {
             report,
             PackReport {
                 files: 2,
-                versions: 5
+                versions: 5,
+                merged: 0
             },
             "two dates"
         );
-        let dates: Vec<String> = packs
-            .puts
-            .lock()
-            .expect("puts")
+        // The pack files' names; a run writes its manifest too.
+        let files_put = || -> Vec<String> {
+            packs
+                .puts
+                .lock()
+                .expect("puts")
+                .iter()
+                .filter(|n| !n.starts_with("manifest/"))
+                .cloned()
+                .collect()
+        };
+        let dates: Vec<String> = files_put()
             .iter()
             .map(|n| pack::parse_name(n).expect("a pack file's name").0)
             .collect();
@@ -394,7 +424,7 @@ pub(crate) mod tests {
             PackReport::default(),
             "nothing is left to pack"
         );
-        assert_eq!(packs.puts.lock().expect("puts").len(), 2, "no file written");
+        assert_eq!(files_put().len(), 2, "no file written");
     }
 
     /// A file that reaches its size is closed, and the date's next

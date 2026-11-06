@@ -1471,9 +1471,10 @@ mod remote {
                 )
                 .map(|mut store| {
                     if packed {
-                        store.pack_after_every_write(crate::store::packer::PackPlan::with_limit(
-                            1 << 20,
-                        ));
+                        store.pack_after_every_write(crate::store::packer::PackPlan {
+                            merge_below: 0,
+                            ..crate::store::packer::PackPlan::with_limit(1 << 20)
+                        });
                     }
                     store
                 })
@@ -1923,7 +1924,14 @@ mod remote {
             }
             ids.push(id);
         }
-        let report = crate::serve::pack_all(&tenants, 1 << 20);
+        let report = crate::serve::pack_all(
+            &tenants,
+            &crate::config::ParquetSettings {
+                pack_interval: std::time::Duration::from_secs(300),
+                pack_limit: 1 << 20,
+                reader_grace: crate::config::READER_GRACE,
+            },
+        );
         assert_eq!(
             report,
             crate::serve::PackRunReport {
@@ -1939,6 +1947,105 @@ mod remote {
                 "no object left"
             );
         }
+    }
+
+    /// 4.11: DuckDB, with httpfs on the test service, reading the files the
+    /// newest manifest names and keeping the rows it lists as live, sees
+    /// exactly the versions the Store serves, after a create, a replace, a
+    /// delete, a restore and a purge, each followed by a pack run.
+    #[test]
+    fn duckdb_through_the_newest_manifest_sees_exactly_the_live_versions() {
+        use crate::export::tests::duckdb::query;
+        let (s3, settings) = bucket(false);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let tenants = tenants_in(dir.path(), &s3);
+        let id = tenants
+            .create(crate::audit::Actor::Cli, "acme", None)
+            .expect("a tenant");
+        let who = Caller {
+            key: Key::generate().expect("key").id(),
+        };
+        let store = tenants.store(id).expect("its store");
+        let plan = crate::store::packer::PackPlan::with_limit(1 << 20);
+        let uuids = [
+            "01a07da8-c2bb-83e5-b9a2-279e0d16bc51",
+            "01a07da8-c2bb-83e5-b9a2-279e0d16bc52",
+        ];
+        let endpoint = var("VCON_TEST_S3_ENDPOINT");
+        let host = endpoint.trim_start_matches("http://");
+        let root = format!("s3://{}/{}tenants/{id}/", settings.bucket, settings.prefix);
+        let seen = |step: &str| {
+            let names: Vec<String> = everything(&s3)
+                .into_iter()
+                .map(|(n, _)| n)
+                .filter(|n| n.contains(&format!("tenants/{id}/manifest/")))
+                .collect();
+            let newest = names.iter().max().expect("a manifest");
+            let manifest = format!("s3://{}/{newest}", settings.bucket);
+            let sql = format!(
+                "INSTALL httpfs; LOAD httpfs; \
+                 SET s3_region = 'us-east-1'; SET s3_access_key_id = '{key}'; \
+                 SET s3_secret_access_key = '{secret}'; SET s3_endpoint = '{host}'; \
+                 SET s3_url_style = 'path'; SET s3_use_ssl = false; \
+                 SET VARIABLE files = (SELECT list('{root}' || f.path) FROM \
+                   (SELECT unnest(files) AS f FROM read_json('{manifest}'))); \
+                 SET VARIABLE live = (SELECT live FROM read_json('{manifest}')); \
+                 SELECT replace(version::VARCHAR, '-', '') AS v FROM read_parquet(getvariable('files')) \
+                 WHERE list_contains(getvariable('live'), replace(version::VARCHAR, '-', '')) ORDER BY v;",
+                key = var("VCON_TEST_S3_ACCESS_KEY"),
+                secret = var("VCON_TEST_S3_SECRET_KEY"),
+            );
+            let rows = query(&sql);
+            let mut got: Vec<String> = rows
+                .iter()
+                .filter_map(|r| r["v"].as_str().map(str::to_owned))
+                .collect();
+            got.sort();
+            let mut want: Vec<String> = uuids
+                .iter()
+                .filter_map(|u| store.get(&who, u.parse().expect("uuid")).ok())
+                .map(|s| s.version.to_string())
+                .collect();
+            want.sort();
+            assert_eq!(got, want, "{step}: DuckDB sees exactly the live versions");
+        };
+        for (n, u) in uuids.iter().enumerate() {
+            let (found, body) = conformance::vcon(u, &format!("first {n}"));
+            store.create(&who, &found, &body).expect("stored");
+        }
+        store.pack(&plan).expect("packs");
+        seen("created");
+        let current = store
+            .get(&who, uuids[0].parse().expect("uuid"))
+            .expect("reads");
+        let (found, body) = conformance::vcon(uuids[0], "second");
+        store
+            .replace(&who, current.version, &found, &body)
+            .expect("replaced");
+        store.pack(&plan).expect("packs");
+        seen("replaced");
+        store
+            .delete(
+                &who,
+                uuids[1].parse().expect("uuid"),
+                crate::retention::Retention::Years(7),
+            )
+            .expect("deleted");
+        store.pack(&plan).expect("packs");
+        seen("deleted");
+        store
+            .restore(&who, uuids[1].parse().expect("uuid"))
+            .expect("restored");
+        store.pack(&plan).expect("packs");
+        seen("restored");
+        store
+            .delete(
+                &who,
+                uuids[0].parse().expect("uuid"),
+                crate::retention::Retention::Days(0),
+            )
+            .expect("deleted and purged");
+        seen("purged");
     }
 
     /// 4.13: removing a tenant whose versions are packed leaves nothing in

@@ -26,6 +26,41 @@ def rules(text, nonleaf=False):
     return [(f.line, f.rule) for f in check_style.findings(text, nonleaf=nonleaf)]
 
 
+class HeldTransactions(unittest.TestCase):
+    """A catalog or registry transaction holds its connection's lock; one
+    made in a `match`, `if let` or `while let` scrutinee, or a `for` loop's
+    iterator, lives until the block ends, so a call in the block that takes
+    the lock again waits on itself."""
+
+    def test_a_for_loop_over_a_snapshot_temporary_is_refused(self):
+        text = "fn f() {\n    for seq in self.catalog.snapshot()?.unpublished()? {\n        g();\n    }\n}\n"
+        self.assertEqual(rules(text), [(2, "held-transaction")])
+
+    def test_a_match_on_an_immediate_temporary_is_refused(self):
+        text = "fn f() {\n    match self.registry.immediate()?.tenant(id)? {\n        _ => {}\n    }\n}\n"
+        self.assertEqual(rules(text), [(2, "held-transaction")])
+
+    def test_if_let_and_while_let_on_a_temporary_are_refused(self):
+        text = (
+            "fn f() {\n    if let Some(r) = self.catalog.snapshot()?.row(v)? {\n        g(r);\n    }\n"
+            "    while let Some(r) = self.catalog.immediate()?.next()? {\n        g(r);\n    }\n}\n"
+        )
+        self.assertEqual(rules(text), [(2, "held-transaction"), (5, "held-transaction")])
+
+    def test_a_transaction_bound_first_is_allowed(self):
+        text = (
+            "fn f() {\n    let seqs = self.catalog.snapshot()?.unpublished()?;\n"
+            "    for seq in seqs {\n        g(seq);\n    }\n"
+            "    match tx.version_row(v)? {\n        _ => {}\n    }\n"
+            "    if self.catalog.snapshot()?.has(v)? {\n        g(v);\n    }\n}\n"
+        )
+        self.assertEqual(rules(text), [])
+
+    def test_a_snapshot_inside_the_block_is_allowed(self):
+        text = "fn f() {\n    for v in vs {\n        let r = self.catalog.snapshot()?.row(v)?;\n    }\n}\n"
+        self.assertEqual(rules(text), [])
+
+
 class GlobImports(unittest.TestCase):
     def test_a_glob_import_at_file_level_is_refused(self):
         self.assertEqual(rules("use std::io::*;\n"), [(1, "glob-import")])

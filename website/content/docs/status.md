@@ -39,8 +39,11 @@ what is built, unless it says otherwise.
   objects packed into Parquet files by tenant and store date, a read by
   uuid fetching one row with a ranged read, and a purge that rewrites the
   file and deletes the old one, confirmed with HeadObject, before it is
-  done. Versioned and Object Lock buckets are refused. Files only grow for
-  now: nothing merges or compacts them yet. The store's conformance suite
+  done. Versioned and Object Lock buckets are refused. Numbered manifests
+  name the files and the live versions for outside readers, small files are
+  merged, and a merged file stays for a reader grace that a purge overrides.
+  The files hold no clear column; queryable columns come from the export.
+  The store's conformance suite
   runs on it against RustFS and MinIO in CI, and the how-to against RustFS.
   See [keep vCons as Parquet files in a bucket](@/docs/parquet-storage.md).
 - **The HTTP API over TLS.** Create, read, replace and delete; the legal

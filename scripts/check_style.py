@@ -14,6 +14,12 @@ The rules are the Google Rust Style Guide's
   inside a turbofish (`f::<A, B>()`) at the macro's top level are miscounted
   as arguments; write such a call outside the assertion.
 
+- held-transaction: a `match`, `if let` or `while let` scrutinee, or a
+  `for` loop's iterator, does not call `snapshot()` or `immediate()`. A
+  catalog or registry transaction holds its connection's lock, and a
+  temporary made there lives until the block ends, so a call in the block
+  that takes the lock again waits on itself. Bind the result first.
+
 - lint-table: every package holds the lints of [workspace.lints] in
   Cargo.toml, at their level or stricter: with `[lints] workspace = true`,
   or in a table of its own (vcon's adds unsafe_code = "forbid"). The fuzz
@@ -421,6 +427,14 @@ def findings(text, nonleaf=False):
             and _arguments(toks, k + 2) < ASSERTIONS[t.text]
         ):
             out.append(Finding(t.line, "assert-message", f"`{t.text}!` without a message saying why it holds"))
+        if t.kind == "ident" and t.text in ("match", "for", "if", "while") and _held_transaction(toks, k):
+            out.append(
+                Finding(
+                    t.line,
+                    "held-transaction",
+                    f"a transaction made in this `{t.text}` lives until its block ends; bind it first",
+                )
+            )
         words = [h.text for h in header if h.kind != "attr"]
         # A use item starts a statement, after nothing but a visibility;
         # `use<'a>` in an `impl Trait` bound is not one.
@@ -448,6 +462,50 @@ def findings(text, nonleaf=False):
             header.append(t)
         k += 1
     return out
+
+
+TRANSACTIONS = ("snapshot", "immediate")
+
+
+def _held_transaction(toks, k):
+    """Whether the block keyword at `k` (`match`, `for`, or `if`/`while`
+    followed by `let`) has a scrutinee or iterator that calls a
+    transaction, up to the `{` that opens its block."""
+    t = toks[k].text
+    start = k + 1
+    if t in ("if", "while"):
+        if start >= len(toks) or toks[start].text != "let":
+            return False
+    depth = 0
+    seen_in = t != "for"
+    j = start
+    while j < len(toks):
+        x = toks[j]
+        if x.kind == "punct" and x.text in ("(", "["):
+            depth += 1
+        elif x.kind == "punct" and x.text in (")", "]"):
+            depth -= 1
+        elif x.kind == "punct" and x.text in ("{", ";") and depth == 0:
+            return False
+        elif x.kind == "ident" and x.text == "in" and depth == 0:
+            seen_in = True
+        elif (
+            seen_in
+            and x.kind == "ident"
+            and x.text in TRANSACTIONS
+            and j + 2 < len(toks)
+            and toks[j - 1].text == "."
+            and toks[j + 1].text == "("
+            and toks[j + 2].text == ")"
+        ):
+            # The scan stops at the block's `{`, which comes first unless
+            # this call is in the scrutinee or iterator.
+            k2 = j + 3
+            while k2 < len(toks) and not (toks[k2].kind == "punct" and toks[k2].text in ("{", ";")):
+                k2 += 1
+            return k2 < len(toks) and toks[k2].text == "{"
+        j += 1
+    return False
 
 
 def is_nonleaf(path):

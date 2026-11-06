@@ -552,6 +552,93 @@ impl CatalogTx for LocalTx<'_> {
             .map_err(io)
     }
 
+    fn allocate_manifest(&mut self) -> Result<i64, StoreError> {
+        self.conn
+            .execute("INSERT INTO manifest (published_at) VALUES (NULL)", [])
+            .map_err(io)?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    fn unpublished_manifests(&mut self) -> Result<Vec<i64>, StoreError> {
+        let mut rows = self
+            .conn
+            .prepare("SELECT seq FROM manifest WHERE published_at IS NULL ORDER BY seq")
+            .map_err(io)?;
+        rows.query_map([], |r| r.get(0))
+            .map_err(io)?
+            .map(|row| row.map_err(io))
+            .collect()
+    }
+
+    fn mark_published(&mut self, seq: i64, at: i64) -> Result<(), StoreError> {
+        self.conn
+            .execute(
+                "UPDATE manifest SET published_at = ?2 WHERE seq = ?1",
+                params![seq, at],
+            )
+            .map(drop)
+            .map_err(io)
+    }
+
+    fn published_manifests(&mut self) -> Result<Vec<(i64, i64)>, StoreError> {
+        let mut rows = self
+            .conn
+            .prepare(
+                "SELECT seq, published_at FROM manifest WHERE published_at IS NOT NULL
+                 ORDER BY seq",
+            )
+            .map_err(io)?;
+        rows.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(io)?
+            .map(|row| row.map_err(io))
+            .collect()
+    }
+
+    fn delete_manifest(&mut self, seq: i64) -> Result<(), StoreError> {
+        self.conn
+            .execute("DELETE FROM manifest WHERE seq = ?1", [seq])
+            .map(drop)
+            .map_err(io)
+    }
+
+    fn named_files(&mut self) -> Result<Vec<(FileId, PackFileRow, i64)>, StoreError> {
+        let mut rows = self
+            .conn
+            .prepare(
+                "SELECT file_id, date, bytes, rows FROM parquet_file WHERE unnamed_at IS NULL
+                 ORDER BY date, file_id",
+            )
+            .map_err(io)?;
+        rows.query_map([], |r| {
+            Ok((
+                r.get::<_, [u8; 16]>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(io)?
+        .map(|row| {
+            let (file, date, bytes, count) = row.map_err(io)?;
+            let bytes = u64::try_from(bytes).map_err(|_| StoreError::Damaged)?;
+            let info = PackFileRow {
+                date,
+                bytes,
+                unnamed_at: None,
+            };
+            Ok((FileId(file), info, count))
+        })
+        .collect()
+    }
+
+    fn live_versions(&mut self) -> Result<Vec<VersionId>, StoreError> {
+        self.versions(
+            "SELECT current FROM vcon WHERE current IS NOT NULL AND deleted_at IS NULL
+             ORDER BY current",
+            [],
+        )
+    }
+
     fn places(
         &mut self,
     ) -> Result<Vec<(VersionId, Result<Option<Packed>, StoreError>)>, StoreError> {
