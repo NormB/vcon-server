@@ -46,6 +46,31 @@ impl Versioning {
     }
 }
 
+/// Why Parquet storage may not use `bucket`, if it may not: its pack files
+/// are rewritten and deleted, and a purge must remove a deleted file's
+/// bytes, which a versioned bucket keeps as an earlier version and Object
+/// Lock may refuse to delete. A bucket created with Object Lock also
+/// reports versioning on; the lock is named, as the reason.
+pub(crate) fn parquet_refusal(
+    bucket: &str,
+    versioning: Versioning,
+    locked: bool,
+) -> Option<String> {
+    if locked {
+        return Some(format!(
+            "bucket {bucket:?} has Object Lock on, which can refuse to delete a file a \
+             purge rewrote; Parquet storage (storage.parquet) needs a bucket without Object Lock"
+        ));
+    }
+    (versioning != Versioning::Never).then(|| {
+        format!(
+            "bucket {bucket:?} has versioning {versioning:?}, which keeps a deleted file's \
+             bytes as an earlier version; Parquet storage (storage.parquet) needs a bucket \
+             that was never versioned, and storage.s3.allow_versioning does not apply"
+        )
+    })
+}
+
 /// The bucket `settings` names, reached and checked, as `objects_for`
 /// describes.
 ///
@@ -55,16 +80,23 @@ impl Versioning {
 /// setting.
 pub(crate) fn place(
     settings: &S3Settings,
+    parquet: bool,
     data_dir: &std::path::Path,
 ) -> Result<super::ObjectPlace, StorageError> {
     let s3 = client_for(settings, "storage.s3")?;
-    let versioning = s3.versioning().map_err(|e| {
+    let unreadable = |e: ObjectError| {
         StorageError(format!(
             "bucket {:?} cannot be reached or read: {e}",
             settings.bucket
         ))
-    })?;
-    if !versioning.allowed(settings.allow_versioning) {
+    };
+    let versioning = s3.versioning().map_err(unreadable)?;
+    if parquet {
+        let locked = s3.object_lock().map_err(unreadable)?;
+        if let Some(why) = parquet_refusal(&settings.bucket, versioning, locked) {
+            return Err(StorageError(why));
+        }
+    } else if !versioning.allowed(settings.allow_versioning) {
         return Err(StorageError(format!(
             "bucket {:?} has versioning {versioning:?}, which keeps a removed object's \
              earlier versions; turn it off or set storage.s3.allow_versioning = true",
@@ -324,6 +356,29 @@ impl S3 {
         })
     }
 
+    /// Whether the bucket has Object Lock on, as
+    /// GetObjectLockConfiguration reports it; a bucket with no lock
+    /// configuration answers 404.
+    ///
+    /// # Errors
+    ///
+    /// `ObjectError::Io` if the bucket cannot be reached or read.
+    pub(crate) fn object_lock(&self) -> Result<bool, ObjectError> {
+        let call = self
+            .client
+            .get_object_lock_configuration()
+            .bucket(&self.bucket)
+            .send();
+        match self.wait(call)? {
+            Ok(answer) => Ok(answer
+                .object_lock_configuration()
+                .and_then(|c| c.object_lock_enabled())
+                .is_some_and(|e| *e == aws_sdk_s3::types::ObjectLockEnabled::Enabled)),
+            Err(SdkError::ServiceError(e)) if e.raw().status().as_u16() == 404 => Ok(false),
+            Err(e) => Err(sdk_failed(e)),
+        }
+    }
+
     /// Binds the prefix to `data_dir`, as `claim` describes: uses it,
     /// claims it, or refuses.
     ///
@@ -527,14 +582,15 @@ impl S3 {
         Ok(names)
     }
 
-    /// Removes every object of `tenant`, a thousand at a time.
+    /// Removes every object and pack file of `tenant`, a thousand at a
+    /// time.
     ///
     /// # Errors
     ///
     /// `ObjectError::Io` if the bucket cannot be listed or an object not
     /// removed.
     pub(crate) fn remove_tenant(&self, tenant: TenantId) -> Result<(), ObjectError> {
-        let dir = self.tenant_dir(tenant);
+        let dir = tenant_root(&self.prefix, tenant);
         let names = self.names(&dir, None)?;
         for chunk in names.chunks(DELETE_BATCH) {
             let ids = chunk
@@ -780,6 +836,42 @@ impl Packs for S3Packs {
             Err(SdkError::ServiceError(e)) if e.err().is_not_found() => Ok(None),
             Err(e) => Err(sdk_failed(e)),
         }
+    }
+
+    /// A PutObject with `If-None-Match: *`; a 412 is the name taken.
+    fn put_new(&self, name: &str, bytes: &[u8]) -> Result<bool, ObjectError> {
+        let call = self
+            .s3
+            .client
+            .put_object()
+            .bucket(&self.s3.bucket)
+            .key(format!("{}{name}", self.dir))
+            .if_none_match("*")
+            .body(ByteStream::from(bytes.to_vec()))
+            .send();
+        match self.s3.wait(call)? {
+            Ok(_) => Ok(true),
+            Err(e) if e.raw_response().map(|r| r.status().as_u16()) == Some(412) => Ok(false),
+            Err(e) => Err(sdk_failed(e)),
+        }
+    }
+
+    /// A DeleteObject, which S3 answers with success for a name it does
+    /// not hold.
+    fn remove(&self, name: &str) -> Result<(), ObjectError> {
+        let call = self
+            .s3
+            .client
+            .delete_object()
+            .bucket(&self.s3.bucket)
+            .key(format!("{}{name}", self.dir))
+            .send();
+        self.s3.wait(call)?.map(drop).map_err(sdk_failed)
+    }
+
+    fn list(&self) -> Result<Vec<String>, ObjectError> {
+        let names = self.s3.names(&format!("{}parquet/", self.dir), None)?;
+        Ok(names.into_iter().map(|n| format!("parquet/{n}")).collect())
     }
 }
 
@@ -1216,6 +1308,34 @@ mod tests {
             assert!(state.allowed(true), "{state:?} is used when allowed");
         }
     }
+
+    /// Parquet storage takes only a bucket never versioned and without
+    /// Object Lock; each refusal says which, and Object Lock is named even
+    /// though a locked bucket also reports versioning on.
+    #[test]
+    fn parquet_storage_takes_only_a_bucket_that_keeps_no_deleted_bytes() {
+        assert_eq!(
+            parquet_refusal("vcon", Versioning::Never, false),
+            None,
+            "never versioned, not locked"
+        );
+        for state in [Versioning::Enabled, Versioning::Suspended] {
+            let why = parquet_refusal("vcon", state, false).expect("refused");
+            assert!(
+                why.contains(&format!("{state:?}")) && why.contains("versioning"),
+                "names the versioning state: {why}"
+            );
+            assert!(
+                why.contains("storage.s3.allow_versioning does not apply"),
+                "says the override does not apply: {why}"
+            );
+        }
+        for state in [Versioning::Never, Versioning::Enabled] {
+            let why = parquet_refusal("vcon", state, true).expect("refused");
+            assert!(why.contains("Object Lock"), "names Object Lock: {why}");
+            assert!(why.contains("\"vcon\""), "names the bucket: {why}");
+        }
+    }
 }
 
 /// Against a real S3-compatible service, whose address and keys come from
@@ -1303,14 +1423,17 @@ mod remote {
             .collect()
     }
 
-    /// A local catalog with its objects in the bucket.
+    /// A local catalog with its objects in the bucket; `packed`: with
+    /// Parquet storage, a pack run after every write.
     struct LocalAndS3 {
         dir: tempfile::TempDir,
         s3: Arc<S3>,
+        packed: bool,
     }
 
     impl Harness for LocalAndS3 {
         fn fresh(&self, clock: Arc<TestClock>) -> Fresh {
+            let packed = self.packed;
             let tenant = TenantId::generate();
             let dir = self.dir.path().join(tenant.to_string());
             std::fs::create_dir(&dir).expect("tenant directory");
@@ -1346,28 +1469,42 @@ mod remote {
                     clock.clone(),
                     recover,
                 )
+                .map(|mut store| {
+                    if packed {
+                        store.pack_after_every_write(crate::store::packer::PackPlan::with_limit(
+                            1 << 20,
+                        ));
+                    }
+                    store
+                })
                 .expect("opens")
             });
             let reopen = open.clone();
             let unreadable = open.clone();
+            let plant: conformance::SharedPlant = Arc::new(move |name, bytes| {
+                let call = planted
+                    .client
+                    .put_object()
+                    .bucket(&planted.bucket)
+                    .key(format!("{}{name}", planted.tenant_dir(tenant)))
+                    .body(ByteStream::from(bytes.to_vec()))
+                    .send();
+                planted
+                    .wait(call)
+                    .expect("waits")
+                    .expect("plants an object");
+            });
+            let packs: Option<Arc<dyn Packs>> =
+                packed.then(|| Arc::new(self.s3.packs(tenant)) as Arc<dyn Packs>);
+            let (held, lose, alter) = conformance::blobs(objects, packs, plant.clone());
             Fresh {
                 store: open(&s3, true),
                 reopen: Box::new(move || reopen(&s3, true)),
                 unreadable: Box::new(move || unreadable(&silent, false)),
-                objects,
-                plant: Box::new(move |name, bytes| {
-                    let call = planted
-                        .client
-                        .put_object()
-                        .bucket(&planted.bucket)
-                        .key(format!("{}{name}", planted.tenant_dir(tenant)))
-                        .body(ByteStream::from(bytes.to_vec()))
-                        .send();
-                    planted
-                        .wait(call)
-                        .expect("waits")
-                        .expect("plants an object");
-                }),
+                held,
+                lose,
+                alter,
+                plant: Box::new(move |name, bytes| plant(name, bytes)),
             }
         }
     }
@@ -1378,6 +1515,19 @@ mod remote {
         conformance::run(&LocalAndS3 {
             dir: tempfile::tempdir().expect("temp dir"),
             s3,
+            packed: false,
+        });
+    }
+
+    /// 4.1: the same suite on Parquet storage in the bucket, every version
+    /// packed after the write that adds it.
+    #[test]
+    fn a_local_catalog_with_parquet_storage_in_the_bucket_conforms() {
+        let (s3, _) = bucket(false);
+        conformance::run(&LocalAndS3 {
+            dir: tempfile::tempdir().expect("temp dir"),
+            s3,
+            packed: true,
         });
     }
 
@@ -1461,6 +1611,7 @@ mod remote {
         let harness = LocalAndS3 {
             dir: tempfile::tempdir().expect("temp dir"),
             s3: s3.clone(),
+            packed: false,
         };
         let fresh = harness.fresh(TestClock::at(conformance::START));
         let who = Caller {
@@ -1547,6 +1698,7 @@ mod remote {
         let harness = LocalAndS3 {
             dir: tempfile::tempdir().expect("temp dir"),
             s3: s3.clone(),
+            packed: false,
         };
         let fresh = harness.fresh(TestClock::at(conformance::START));
         let caller = Caller {
@@ -1629,6 +1781,211 @@ mod remote {
         );
     }
 
+    /// Every key ListObjectVersions gives for the bucket: each version and
+    /// each delete marker of every key.
+    fn every_version_key(s3: &S3) -> Vec<String> {
+        let client = s3.client.clone();
+        let bucket = s3.bucket.clone();
+        s3.wait(async move {
+            let mut keys = Vec::new();
+            let (mut key_marker, mut version_marker) = (None::<String>, None::<String>);
+            loop {
+                let page = client
+                    .list_object_versions()
+                    .bucket(&bucket)
+                    .set_key_marker(key_marker.take())
+                    .set_version_id_marker(version_marker.take())
+                    .send()
+                    .await
+                    .expect("lists the versions");
+                keys.extend(
+                    page.versions()
+                        .iter()
+                        .filter_map(|v| v.key())
+                        .map(str::to_owned),
+                );
+                keys.extend(
+                    page.delete_markers()
+                        .iter()
+                        .filter_map(|m| m.key())
+                        .map(str::to_owned),
+                );
+                if !page.is_truncated().unwrap_or(false) {
+                    break keys;
+                }
+                key_marker = page.next_key_marker().map(str::to_owned);
+                version_marker = page.next_version_id_marker().map(str::to_owned);
+            }
+        })
+        .expect("waits")
+    }
+
+    /// 4.6: once `purge_due` returns, the bucket holds no key of the file
+    /// that held the purged row, by ListObjectsV2 and by
+    /// ListObjectVersions, HeadObject on it answers 404, and no object in
+    /// the bucket holds the purged vCon's sealed bytes, its uuid (as text
+    /// or its 16 bytes) or its subject. The other versions read back.
+    #[test]
+    fn a_purge_leaves_no_byte_of_the_purged_vcon_in_the_bucket() {
+        let (s3, _) = bucket(false);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let tenants = tenants_in(dir.path(), &s3);
+        let id = tenants
+            .create(crate::audit::Actor::Cli, "acme", None)
+            .expect("a tenant");
+        let who = Caller {
+            key: Key::generate().expect("key").id(),
+        };
+        let store = tenants.store(id).expect("its store");
+        let mut kept = Vec::new();
+        for n in 0..3u8 {
+            let subject = format!("PURGE-SUBJECT-{n}-{}", "y".repeat(30));
+            let (found, body) =
+                conformance::vcon(&format!("01a07da8-c2bb-83e5-b9a2-279e0d16bc2{n}"), &subject);
+            let Ok(crate::store::Created::New(version)) = store.create(&who, &found, &body) else {
+                panic!("a new vCon")
+            };
+            let sealed = s3.tenant(id).get(version).expect("its object");
+            kept.push((found.uuid, body, subject, sealed));
+        }
+        store
+            .pack(&crate::store::packer::PackPlan::with_limit(1 << 20))
+            .expect("packs");
+        let files: Vec<String> = everything(&s3)
+            .into_iter()
+            .map(|(n, _)| n)
+            .filter(|n| n.ends_with(".parquet"))
+            .collect();
+        assert_eq!(files.len(), 1, "one pack file: {files:?}");
+        let old = files[0].clone();
+        let (uuid, _, subject, sealed) = kept[0].clone();
+        store
+            .delete(&who, uuid, crate::retention::Retention::Days(0))
+            .expect("deleted, and purged at once");
+        let names: Vec<String> = everything(&s3).into_iter().map(|(n, _)| n).collect();
+        assert!(
+            !names.contains(&old),
+            "ListObjectsV2 has no key of the old file"
+        );
+        assert!(
+            !every_version_key(&s3).contains(&old),
+            "ListObjectVersions has no version or marker of the old file"
+        );
+        let call = s3.client.head_object().bucket(&s3.bucket).key(&old).send();
+        let head = s3.wait(call).expect("waits");
+        assert_eq!(
+            head.err()
+                .and_then(|e| e.raw_response().map(|r| r.status().as_u16())),
+            Some(404),
+            "HeadObject on the old file answers 404"
+        );
+        for (name, bytes) in everything(&s3) {
+            let holds = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w == needle);
+            assert!(!holds(&sealed), "{name} holds the purged sealed bytes");
+            assert!(!holds(uuid.to_string().as_bytes()), "{name} holds the uuid");
+            assert!(!holds(uuid.as_bytes()), "{name} holds the uuid's bytes");
+            assert!(!holds(subject.as_bytes()), "{name} holds the subject");
+        }
+        for (n, (uuid, body, _, _)) in kept.iter().enumerate().skip(1) {
+            assert_eq!(
+                &store.get(&who, *uuid).expect("reads").body,
+                body,
+                "version {n} reads back"
+            );
+        }
+    }
+
+    /// The server's pack run packs every tenant's objects in the bucket and
+    /// counts what it did.
+    #[test]
+    fn the_servers_pack_run_packs_every_tenant() {
+        let (s3, _) = bucket(false);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let tenants = tenants_in(dir.path(), &s3);
+        let who = Caller {
+            key: Key::generate().expect("key").id(),
+        };
+        let mut ids = Vec::new();
+        for (n, name) in ["acme", "globex"].into_iter().enumerate() {
+            let id = tenants
+                .create(crate::audit::Actor::Cli, name, None)
+                .expect("a tenant");
+            for m in 0..2 {
+                let (found, body) = conformance::vcon(
+                    &format!("01a07da8-c2bb-83e5-b9a2-279e0d16bc3{}", n * 2 + m),
+                    "kept",
+                );
+                tenants
+                    .store(id)
+                    .expect("its store")
+                    .create(&who, &found, &body)
+                    .expect("stored");
+            }
+            ids.push(id);
+        }
+        let report = crate::serve::pack_all(&tenants, 1 << 20);
+        assert_eq!(
+            report,
+            crate::serve::PackRunReport {
+                files: 2,
+                versions: 4,
+                failed: 0
+            },
+            "one file per tenant"
+        );
+        for id in ids {
+            assert!(
+                s3.tenant(id).list().expect("list").is_empty(),
+                "no object left"
+            );
+        }
+    }
+
+    /// 4.13: removing a tenant whose versions are packed leaves nothing in
+    /// the bucket under the tenant's name: no object, no pack file.
+    #[test]
+    fn a_removed_tenant_leaves_no_pack_file_in_the_bucket() {
+        let (s3, _) = bucket(false);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let tenants = tenants_in(dir.path(), &s3);
+        let id = tenants
+            .create(crate::audit::Actor::Cli, "acme", None)
+            .expect("a tenant");
+        let who = Caller {
+            key: Key::generate().expect("key").id(),
+        };
+        let store = tenants.store(id).expect("its store");
+        for n in 0..2u8 {
+            let (found, body) =
+                conformance::vcon(&format!("01a07da8-c2bb-83e5-b9a2-279e0d16bc1{n}"), "kept");
+            store.create(&who, &found, &body).expect("stored");
+        }
+        store
+            .pack(&crate::store::packer::PackPlan::with_limit(1 << 20))
+            .expect("packs");
+        let held = |s3: &S3| -> Vec<String> {
+            everything(s3)
+                .into_iter()
+                .map(|(n, _)| n)
+                .filter(|n| n.contains(&format!("tenants/{id}/")))
+                .collect()
+        };
+        assert!(
+            held(&s3).iter().any(|n| n.ends_with(".parquet")),
+            "a pack file is there: {:?}",
+            held(&s3)
+        );
+        drop(store);
+        tenants
+            .remove(crate::audit::Actor::Cli, id, crate::tenants::Removal::Force)
+            .expect("removed");
+        assert_eq!(held(&s3), Vec::<String>::new(), "nothing under the tenant");
+        assert!(
+            s3.tenants().expect("tenants").is_empty(),
+            "no tenant is listed"
+        );
+    }
+
     #[test]
     fn a_tenant_removed_leaves_no_object() {
         let (s3, _) = bucket(false);
@@ -1664,22 +2021,76 @@ mod remote {
         let (_, mut versioned) = bucket(true);
         versioned.secret_access_key_file = Some(secret.1.clone());
         let data = tempfile::tempdir().expect("temp dir");
-        let refused = place(&versioned, data.path()).expect_err("a versioned bucket is refused");
+        let refused =
+            place(&versioned, false, data.path()).expect_err("a versioned bucket is refused");
         assert!(
             refused.0.contains("storage.s3.allow_versioning"),
             "the refusal names the setting: {refused}"
         );
         versioned.allow_versioning = true;
         assert!(
-            place(&versioned, data.path()).is_ok(),
+            place(&versioned, false, data.path()).is_ok(),
             "allowed, it is used"
         );
         let (_, mut plain) = bucket(false);
         plain.secret_access_key_file = Some(secret.1.clone());
         let other = tempfile::tempdir().expect("temp dir");
         assert!(
-            place(&plain, other.path()).is_ok(),
+            place(&plain, false, other.path()).is_ok(),
             "a bucket never versioned is used"
+        );
+    }
+
+    /// With Parquet storage, a versioned bucket is refused even with
+    /// `allow_versioning`, and a bucket with Object Lock is refused, each
+    /// with its own message; a plain bucket is used. Without Parquet
+    /// storage the versioned bucket is used when allowed, as before.
+    #[test]
+    fn parquet_storage_refuses_a_versioned_or_locked_bucket() {
+        let secret = secret_file();
+        let (_, mut versioned) = bucket(true);
+        versioned.secret_access_key_file = Some(secret.1.clone());
+        versioned.allow_versioning = true;
+        let data = tempfile::tempdir().expect("temp dir");
+        let refused = place(&versioned, true, data.path()).expect_err("refused");
+        assert!(
+            refused.0.contains("versioning Enabled")
+                && refused.0.contains("allow_versioning does not apply"),
+            "the versioning refusal: {refused}"
+        );
+        assert!(
+            place(&versioned, false, data.path()).is_ok(),
+            "without Parquet storage, allowed versioning is used"
+        );
+        let (s3, mut locked) = bucket(false);
+        let name = format!("{}-lock", locked.bucket)
+            .chars()
+            .take(50)
+            .collect::<String>();
+        let call = s3
+            .client
+            .create_bucket()
+            .bucket(&name)
+            .object_lock_enabled_for_bucket(true)
+            .send();
+        s3.wait(call)
+            .expect("waits")
+            .expect("a locked bucket is made");
+        locked.bucket = name;
+        locked.secret_access_key_file = Some(secret.1.clone());
+        locked.allow_versioning = true;
+        let other = tempfile::tempdir().expect("temp dir");
+        let refused = place(&locked, true, other.path()).expect_err("refused");
+        assert!(
+            refused.0.contains("Object Lock"),
+            "the Object Lock refusal: {refused}"
+        );
+        let (_, mut plain) = bucket(false);
+        plain.secret_access_key_file = Some(secret.1.clone());
+        let third = tempfile::tempdir().expect("temp dir");
+        assert!(
+            place(&plain, true, third.path()).is_ok(),
+            "a plain bucket is used"
         );
     }
 
@@ -1762,7 +2173,7 @@ mod remote {
         let (s3, settings, _secret) = bucket_with_secret();
         let dir = tempfile::tempdir().expect("temp dir");
         std::fs::create_dir_all(dir.path().join("data")).expect("a data directory");
-        place(&settings, &dir.path().join("data")).expect("claims the prefix");
+        place(&settings, false, &dir.path().join("data")).expect("claims the prefix");
         let tenants = tenants_in(dir.path(), &s3);
         let id = tenants
             .create(crate::audit::Actor::Cli, "acme", None)
@@ -1832,7 +2243,7 @@ mod remote {
             tempfile::tempdir().expect("dir"),
             tempfile::tempdir().expect("dir"),
         );
-        place(&settings, first.path()).expect("the first data directory claims the prefix");
+        place(&settings, false, first.path()).expect("the first data directory claims the prefix");
         let id = claim::read_file(first.path())
             .expect("reads")
             .expect("the data directory holds its claim");
@@ -1846,8 +2257,8 @@ mod remote {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600, "the claim file is the server's alone");
-        place(&settings, first.path()).expect("the claiming data directory starts again");
-        let refused = place(&settings, second.path()).expect_err("another data directory");
+        place(&settings, false, first.path()).expect("the claiming data directory starts again");
+        let refused = place(&settings, false, second.path()).expect_err("another data directory");
         assert!(
             refused.0.contains("another data directory") && refused.0.contains(&settings.bucket),
             "the refusal says why and names the bucket: {refused}"
@@ -1859,7 +2270,7 @@ mod remote {
         );
         let mut other = settings.clone();
         other.prefix = "other/".to_owned();
-        place(&other, second.path()).expect("a prefix of its own is used");
+        place(&other, false, second.path()).expect("a prefix of its own is used");
         assert_eq!(
             s3.read_claim().expect("reads"),
             Some(id),
@@ -1875,14 +2286,14 @@ mod remote {
             bucket: format!("{}-absent", settings.bucket),
             ..settings.clone()
         };
-        let refused = place(&absent, data.path()).expect_err("no such bucket");
+        let refused = place(&absent, false, data.path()).expect_err("no such bucket");
         assert!(
             refused.0.contains("NoSuchBucket"),
             "the service's error code is given: {refused}"
         );
         let wrong = remote_file(b"not-the-secret\n");
         settings.secret_access_key_file = Some(wrong.1.clone());
-        let refused = place(&settings, data.path()).expect_err("a wrong secret");
+        let refused = place(&settings, false, data.path()).expect_err("a wrong secret");
         assert!(
             refused.0.contains("SignatureDoesNotMatch"),
             "the service's error code is given: {refused}"
@@ -1911,7 +2322,7 @@ mod remote {
             .put(VersionId::generate(), b"another server's object")
             .expect("put");
         let data = tempfile::tempdir().expect("dir");
-        let refused = place(&settings, data.path()).expect_err("unclaimed objects");
+        let refused = place(&settings, false, data.path()).expect_err("unclaimed objects");
         assert!(refused.0.contains("no claim"), "{refused}");
         assert_eq!(
             s3.tenant(tenant).list().expect("list").len(),
@@ -1926,7 +2337,7 @@ mod remote {
         let (s3, settings, _secret) = bucket_with_secret();
         let data = tempfile::tempdir().expect("dir");
         claim::write_file(data.path(), &claim::new_id()).expect("the first step");
-        place(&settings, data.path()).expect("the claim is finished");
+        place(&settings, false, data.path()).expect("the claim is finished");
         assert_eq!(
             s3.read_claim().expect("reads"),
             claim::read_file(data.path()).expect("reads"),
@@ -1956,6 +2367,7 @@ mod remote {
         let harness = LocalAndS3 {
             dir: tempfile::tempdir().expect("temp dir"),
             s3: s3.clone(),
+            packed: false,
         };
         let fresh = harness.fresh(TestClock::at(conformance::START));
         let who = Caller {

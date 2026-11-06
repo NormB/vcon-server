@@ -1045,6 +1045,79 @@ mod s3 {
         }
     }
 
+    /// With `[storage.parquet]`, the server's pack run moves a stored
+    /// version from its object into a Parquet file in the bucket, logs the
+    /// run, and the vCon still reads back byte for byte.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn serve_packs_its_objects_into_parquet_files_in_the_bucket() {
+        let bucket = format!("vcon-pack-{}", &TenantId::generate().to_string()[..12]);
+        signed("PUT", &bucket);
+        let s = setup();
+        in_bucket(&s, &bucket);
+        let mut text = std::fs::read_to_string(&s.config).expect("reads");
+        text.push_str("\n[storage.parquet]\npack_interval = 1\n");
+        std::fs::write(&s.config, text).expect("writes");
+        let mut started = start(serve_with_keys(&s));
+        let client = started.client(&s);
+        let body = std::fs::read(format!(
+            "{}/../vcon/tests/fixtures/ietf/ab_call_ext_rec.vcon",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .expect("A.4");
+        let stored = client
+            .post(started.url("/vcons"))
+            .bearer_auth(&s.token)
+            .header("content-type", "application/vcon")
+            .body(body.clone())
+            .send()
+            .await
+            .expect("an answer");
+        assert_eq!(stored.status(), 201, "the vCon is stored");
+        let objects = format!("tenants/{}/objects/", s.tenant);
+        let files = format!("tenants/{}/parquet/date=", s.tenant);
+        let packed = (0..60).any(|_| {
+            let kept = names(&bucket);
+            let done = kept
+                .iter()
+                .any(|k| k.starts_with(&files) && k.ends_with(".parquet"))
+                && !kept.iter().any(|k| k.starts_with(&objects));
+            if !done {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+            done
+        });
+        assert!(packed, "packed within 30 seconds: {:?}", names(&bucket));
+        let read = client
+            .get(started.url(&format!("/vcons/{UUID}")))
+            .bearer_auth(&s.token)
+            .send()
+            .await
+            .expect("an answer");
+        assert_eq!(read.status(), 200, "the vCon is read");
+        assert_eq!(
+            read.bytes().await.expect("body").as_ref(),
+            body.as_slice(),
+            "it reads back byte for byte from its row"
+        );
+        // The run logs once it has finished, which may be after the bucket
+        // shows its work.
+        let mut logged: Vec<String> = started.early.drain(..).collect();
+        let packed_line = |l: &String| l.contains("pack run") && l.contains("versions=1");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !logged.iter().any(packed_line) && std::time::Instant::now() < deadline {
+            if let Ok(line) = started
+                .lines
+                .recv_timeout(std::time::Duration::from_millis(200))
+            {
+                logged.push(line);
+            }
+        }
+        assert!(
+            logged.iter().any(packed_line),
+            "the run that packed it is logged: {logged:?}"
+        );
+    }
+
     /// An object under the tenant's name in the bucket that no row names,
     /// as a crash between the upload and the commit leaves, is removed at
     /// the next start, and the server logs how many it removed.

@@ -139,6 +139,34 @@ pub struct ExportedRow {
     pub place: Option<Packed>,
 }
 
+/// A version still in its own object, as a pack run plans it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnpackedRow {
+    pub version: VersionId,
+    pub stored_at: i64,
+    /// The body's size in bytes, as received.
+    pub size: i64,
+}
+
+/// A recorded pack file, as its row says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackFileRow {
+    pub date: String,
+    pub bytes: u64,
+    /// When no place named it any more; None while one may.
+    pub unnamed_at: Option<i64>,
+}
+
+/// A new pack file's row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NewPackFile<'a> {
+    pub file: FileId,
+    pub date: &'a str,
+    pub rows: i64,
+    pub bytes: i64,
+    pub created_at: i64,
+}
+
 /// A data key to rewrap.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WrappedRow {
@@ -183,8 +211,12 @@ pub trait Catalog: Send + Sync {
     fn after_purge(&self) -> Result<(), StoreError>;
     /// Copies the catalog, as it is in one transaction, into a local
     /// catalog file at `to` under the same catalog key, and returns the
-    /// version ids that copy holds.
-    fn backup_into(&self, to: &Path) -> Result<Vec<VersionId>, StoreError>;
+    /// version ids that copy holds, each with its place in that copy.
+    fn backup_into(&self, to: &Path) -> Result<Vec<(VersionId, Option<Packed>)>, StoreError>;
+    /// Makes the copy `backup_into` wrote at `copy` say that every version
+    /// is in its own object: no place, no pack file, no purge left to
+    /// finish.
+    fn unpack_copy(&self, copy: &Path) -> Result<(), StoreError>;
     /// Writes every audit record after the seq `after` as JSON lines,
     /// oldest first.
     fn export(&self, after: i64, out: &mut dyn Write) -> Result<(), AuditError>;
@@ -226,6 +258,35 @@ pub trait CatalogTx {
     /// Wraps counted against a tenant key.
     fn wraps(&mut self, key: KeyId) -> Result<u64, StoreError>;
     fn add_wrap(&mut self, key: KeyId) -> Result<(), StoreError>;
+    /// Every version still in its own object, by store time and then
+    /// version id.
+    fn unpacked(&mut self) -> Result<Vec<UnpackedRow>, StoreError>;
+    /// Whether `version` is kept and still in its own object.
+    fn is_unpacked(&mut self, version: VersionId) -> Result<bool, StoreError>;
+    fn insert_pack_file(&mut self, row: &NewPackFile) -> Result<(), StoreError>;
+    /// Moves `version`'s place to `place` in `file`.
+    fn set_place(
+        &mut self,
+        version: VersionId,
+        file: FileId,
+        place: pack::Place,
+    ) -> Result<(), StoreError>;
+    /// Every pack file the catalog records.
+    fn pack_files(&mut self) -> Result<Vec<FileId>, StoreError>;
+    /// A recorded pack file's row; None if it has none.
+    fn pack_file(&mut self, file: FileId) -> Result<Option<PackFileRow>, StoreError>;
+    /// Every kept version packed in `file`, with its store time and place,
+    /// by row group and row.
+    fn placed_in(&mut self, file: FileId) -> Result<Vec<(VersionId, i64, Packed)>, StoreError>;
+    /// Lists `file` for a purge's rewrite; one listed already stays listed.
+    fn add_purge_pending(&mut self, file: FileId) -> Result<(), StoreError>;
+    fn purge_pending(&mut self) -> Result<Vec<FileId>, StoreError>;
+    fn delete_purge_pending(&mut self, file: FileId) -> Result<(), StoreError>;
+    /// Marks `file` as no longer named by any place, at `at`.
+    fn unname_pack_file(&mut self, file: FileId, at: i64) -> Result<(), StoreError>;
+    /// Every recorded file marked unnamed.
+    fn unnamed_files(&mut self) -> Result<Vec<FileId>, StoreError>;
+    fn delete_pack_file(&mut self, file: FileId) -> Result<(), StoreError>;
     /// Every version id with its place, in version order; a place that is
     /// not whole is `Damaged` for that version alone.
     #[expect(clippy::type_complexity, reason = "one result per version")]
@@ -347,6 +408,15 @@ pub trait Packs: Send + Sync + std::fmt::Debug {
     fn read(&self, name: &str, start: u64, len: u64) -> Result<Vec<u8>, ObjectError>;
     /// The file's length; None if no file has the name.
     fn size(&self, name: &str) -> Result<Option<u64>, ObjectError>;
+    /// Writes a new file, durable once this returns, only if no file has
+    /// the name (`If-None-Match: *` on S3). A name already taken is
+    /// `Ok(false)` and writes nothing.
+    fn put_new(&self, name: &str, bytes: &[u8]) -> Result<bool, ObjectError>;
+    /// Removes a file; one already gone is removed too.
+    fn remove(&self, name: &str) -> Result<(), ObjectError>;
+    /// Every file name under the tenant's `parquet/`, as `pack::name`
+    /// writes them and any other, sorted.
+    fn list(&self) -> Result<Vec<String>, ObjectError>;
 }
 
 /// A tenant's row in the registry, as stored.
@@ -505,7 +575,9 @@ pub(crate) fn objects_for(
     match &storage.objects {
         crate::config::ObjectStore::Local => Ok(ObjectPlace::Local),
         #[cfg(feature = "s3")]
-        crate::config::ObjectStore::S3(settings) => s3::place(settings, data_dir),
+        crate::config::ObjectStore::S3(settings) => {
+            s3::place(settings, storage.parquet.is_some(), data_dir)
+        }
         #[cfg(not(feature = "s3"))]
         crate::config::ObjectStore::S3(_) => Err(crate::config::StorageError(
             "storage.objects is \"s3\", but this build has no S3 support (cargo feature s3)"

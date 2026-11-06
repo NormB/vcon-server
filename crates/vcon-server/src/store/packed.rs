@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use super::Store;
+pub(super) use crate::backend::pack::parse_name;
 use crate::backend::pack::{self, Footer, Parsed};
 use crate::backend::{ObjectError, Packed, Packs};
 use crate::ids::{FileId, VersionId};
@@ -140,11 +141,26 @@ pub(crate) mod tests {
     use crate::store::{Created, StoreError};
 
     /// Pack files in a directory, under the names the bucket would give
-    /// them, with every read recorded.
+    /// them, with every read and every new name recorded, and switches that
+    /// make the next calls fail as a storage would.
     #[derive(Debug)]
     pub(crate) struct DirPacks {
         pub(crate) root: tempfile::TempDir,
         pub(crate) reads: Mutex<Vec<(String, u64, u64)>>,
+        /// Every name `put_new` was asked to write, in order.
+        pub(crate) puts: Mutex<Vec<String>>,
+        /// `put_new` answers that the name is taken, and writes nothing.
+        pub(crate) taken: std::sync::atomic::AtomicBool,
+        /// `put_new` fails with an I/O error.
+        pub(crate) fail_puts: std::sync::atomic::AtomicBool,
+        /// `remove` fails with an I/O error.
+        pub(crate) fail_removes: std::sync::atomic::AtomicBool,
+        /// `remove` answers success and keeps the file, as a storage that
+        /// keeps deleted data would.
+        pub(crate) keep_removed: std::sync::atomic::AtomicBool,
+        /// `read` and `size` fail with an I/O error, as a storage that
+        /// cannot be reached would.
+        pub(crate) fail_reads: std::sync::atomic::AtomicBool,
     }
 
     impl DirPacks {
@@ -152,7 +168,29 @@ pub(crate) mod tests {
             Arc::new(DirPacks {
                 root: tempfile::tempdir().expect("temp dir"),
                 reads: Mutex::new(Vec::new()),
+                puts: Mutex::new(Vec::new()),
+                taken: std::sync::atomic::AtomicBool::new(false),
+                fail_puts: std::sync::atomic::AtomicBool::new(false),
+                fail_removes: std::sync::atomic::AtomicBool::new(false),
+                keep_removed: std::sync::atomic::AtomicBool::new(false),
+                fail_reads: std::sync::atomic::AtomicBool::new(false),
             })
+        }
+
+        pub(crate) fn is(flag: &std::sync::atomic::AtomicBool) -> bool {
+            flag.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        /// Every file under `parquet/`, by name, with its bytes.
+        pub(crate) fn files(&self) -> Vec<(String, Vec<u8>)> {
+            self.list()
+                .expect("listed")
+                .into_iter()
+                .map(|n| {
+                    let bytes = std::fs::read(self.path(&n)).expect("read");
+                    (n, bytes)
+                })
+                .collect()
         }
 
         pub(crate) fn path(&self, name: &str) -> PathBuf {
@@ -171,6 +209,9 @@ pub(crate) mod tests {
                 .lock()
                 .expect("reads")
                 .push((name.to_owned(), start, len));
+            if Self::is(&self.fail_reads) {
+                return Err(ObjectError::Io(std::io::Error::other("no answer")));
+            }
             let bytes = match std::fs::read(self.path(name)) {
                 Ok(bytes) => bytes,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -186,11 +227,66 @@ pub(crate) mod tests {
         }
 
         fn size(&self, name: &str) -> Result<Option<u64>, ObjectError> {
+            if Self::is(&self.fail_reads) {
+                return Err(ObjectError::Io(std::io::Error::other("no answer")));
+            }
             match std::fs::metadata(self.path(name)) {
                 Ok(m) => Ok(Some(m.len())),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
                 Err(e) => Err(ObjectError::Io(e)),
             }
+        }
+
+        fn put_new(&self, name: &str, bytes: &[u8]) -> Result<bool, ObjectError> {
+            self.puts.lock().expect("puts").push(name.to_owned());
+            if Self::is(&self.fail_puts) {
+                return Err(ObjectError::Io(std::io::Error::other("the storage failed")));
+            }
+            let path = self.path(name);
+            if Self::is(&self.taken) || path.exists() {
+                return Ok(false);
+            }
+            std::fs::create_dir_all(path.parent().expect("a directory")).expect("made");
+            std::fs::write(&path, bytes).map_err(ObjectError::Io)?;
+            Ok(true)
+        }
+
+        fn remove(&self, name: &str) -> Result<(), ObjectError> {
+            if Self::is(&self.fail_removes) {
+                return Err(ObjectError::Io(std::io::Error::other("the storage failed")));
+            }
+            if Self::is(&self.keep_removed) {
+                return Ok(());
+            }
+            match std::fs::remove_file(self.path(name)) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(ObjectError::Io(e)),
+                _ => Ok(()),
+            }
+        }
+
+        fn list(&self) -> Result<Vec<String>, ObjectError> {
+            let mut names = Vec::new();
+            let mut dirs = vec![self.root.path().join("parquet")];
+            while let Some(dir) = dirs.pop() {
+                let Ok(entries) = std::fs::read_dir(&dir) else {
+                    continue;
+                };
+                for entry in entries {
+                    let path = entry.map_err(ObjectError::Io)?.path();
+                    if path.is_dir() {
+                        dirs.push(path);
+                    } else {
+                        let name = path
+                            .strip_prefix(self.root.path())
+                            .expect("under the root")
+                            .to_string_lossy()
+                            .into_owned();
+                        names.push(name);
+                    }
+                }
+            }
+            names.sort();
+            Ok(names)
         }
     }
 
@@ -325,6 +421,7 @@ pub(crate) mod tests {
 
     fn with_packs(f: &mut Fixture, packs: &Arc<DirPacks>) {
         f.store.packs = Some(packs.clone());
+        f.packs = Some(packs.clone());
     }
 
     /// Every read returns a packed version's body, byte for byte, as it did
@@ -378,7 +475,6 @@ pub(crate) mod tests {
                 "{round}: nothing is missing"
             );
             f.reopen();
-            with_packs(&mut f, &packs);
         }
     }
 

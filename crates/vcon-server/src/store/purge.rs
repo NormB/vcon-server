@@ -75,6 +75,10 @@ impl Store {
                 report.purged += 1;
             }
         }
+        // Every pack file a purge listed, this one's or one cut off before,
+        // is rewritten and the old file deleted and confirmed gone, before
+        // the sweep returns.
+        self.finish_purges()?;
         if report.purged > 0 {
             self.catalog.after_purge()?;
         }
@@ -101,6 +105,16 @@ impl Store {
         if !due(&kept, retention, now) {
             return Ok(false);
         }
+        // A packed version's bytes are in a file with other rows: the file
+        // is listed here, in the same transaction, and rewritten without
+        // them before the sweep returns.
+        let file = tx
+            .version_row(version)?
+            .and_then(|r| r.place)
+            .map(|p| p.file);
+        if let Some(file) = file {
+            tx.add_purge_pending(file)?;
+        }
         tx.delete_version(version)?;
         if row.deleted && tx.versions_of(row.uuid)? == 0 {
             tx.tombstone(row.uuid, nanos(now))?;
@@ -114,6 +128,9 @@ impl Store {
         };
         self.record(&mut tx, &entry)?;
         commit(tx)?;
+        if file.is_some() {
+            return Ok(true);
+        }
         // An object already gone is what the purge wants: it was lost, or
         // removed by a purge cut off after its commit. Some storage (S3)
         // cannot tell such a removal from any other.

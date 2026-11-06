@@ -38,6 +38,28 @@ pub(crate) fn name(date: &str, file: FileId) -> String {
     format!("parquet/date={date}/part-{file}.parquet")
 }
 
+/// The date and file id of a name `name` writes; None for any other name.
+pub(crate) fn parse_name(text: &str) -> Option<(String, FileId)> {
+    let rest = text.strip_prefix("parquet/date=")?;
+    let (date, file) = rest.split_once("/part-")?;
+    let file = FileId::parse(file.strip_suffix(".parquet")?)?;
+    let digits = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_digit());
+    let mut parts = date.split('-');
+    let whole = matches!(
+        (parts.next(), parts.next(), parts.next(), parts.next()),
+        (Some(y), Some(m), Some(d), None) if digits(y, 4) && digits(m, 2) && digits(d, 2)
+    );
+    whole.then(|| (date.to_owned(), file))
+}
+
+/// The UTC date of a store time in nanoseconds, as a pack file's name and
+/// an export's partition write it; None for a time this build cannot hold.
+pub(crate) fn date_of(stored_at: i64) -> Option<String> {
+    let at = crate::clock::from_nanos(stored_at)?;
+    let (year, month, day) = (at.year(), u8::from(at.month()), at.day());
+    Some(format!("{year:04}-{month:02}-{day:02}"))
+}
+
 /// What reading a footer from the end of a file gave.
 #[derive(Debug)]
 pub(crate) enum Parsed {
@@ -219,6 +241,25 @@ pub(crate) mod tests {
             sealed,
             about: About::default(),
         }
+    }
+
+    /// The version id of each row of a pack file, in order.
+    pub(crate) fn versions_in(bytes: &[u8]) -> Vec<VersionId> {
+        crate::export::columns::tests::read(bytes)
+            .into_iter()
+            .map(|row| {
+                let (_, value) = row
+                    .into_iter()
+                    .find(|(name, _)| name == "version")
+                    .expect("a version column");
+                match value {
+                    parquet::record::Field::Bytes(b) => {
+                        VersionId(b.data().try_into().expect("16 bytes"))
+                    }
+                    other => panic!("a version id, not {other:?}"),
+                }
+            })
+            .collect()
     }
 
     /// `rows` written to a file of row groups of about `group` bytes, and
@@ -485,6 +526,36 @@ pub(crate) mod tests {
             footer.page(Place { group: 0, row: 1 }),
             None,
             "the second row shares the first one's page; entry 1 is the page of rows 2 and 3"
+        );
+    }
+
+    /// `parse_name` reads exactly the names `name` writes.
+    #[test]
+    fn only_a_pack_files_own_name_parses() {
+        let file = FileId::generate();
+        let good = name("2026-11-06", file);
+        assert_eq!(
+            parse_name(&good),
+            Some(("2026-11-06".to_owned(), file)),
+            "a name name() writes"
+        );
+        for bad in [
+            good.replace("date=", ""),
+            good.replace(".parquet", ".tmp"),
+            good.replace("2026-11-06", "2026-11-6"),
+            good.replace("2026-11-06", "2026-11-06-01"),
+            good.replace("2026-11-06", "yyyy-mm-dd"),
+            good.replace("part-", "part"),
+            good.replace("parquet/", "objects/"),
+            format!("{good}.x"),
+            "parquet/not-ours.txt".to_owned(),
+        ] {
+            assert_eq!(parse_name(&bad), None, "not a pack file's name: {bad}");
+        }
+        assert_eq!(
+            date_of(1_792_756_800_000_000_000).as_deref(),
+            Some("2026-10-23"),
+            "the UTC date of a store time"
         );
     }
 

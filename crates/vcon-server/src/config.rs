@@ -137,7 +137,27 @@ impl std::error::Error for StorageError {}
 pub struct Storage {
     /// Where the sealed vCon objects are kept.
     pub objects: ObjectStore,
+    /// Parquet storage, `[storage.parquet]`: the objects in the bucket are
+    /// packed into Parquet files. None: they stay objects.
+    pub parquet: Option<ParquetSettings>,
 }
+
+/// The `[storage.parquet]` table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParquetSettings {
+    /// Time from the end of one pack run to the start of the next.
+    pub pack_interval: Duration,
+    /// The largest sealed object packed, in bytes; a larger one stays an
+    /// object.
+    pub pack_limit: u64,
+}
+
+/// Time between pack runs unless configured.
+pub const PACK_INTERVAL: Duration = Duration::from_secs(300);
+
+/// The largest sealed object packed unless configured: 16 MiB, the default
+/// largest request body.
+pub const PACK_LIMIT: u64 = 16 << 20;
 
 /// Where the sealed vCon objects are kept: `storage.objects`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -322,7 +342,28 @@ fn storage(raw: RawStorage) -> Result<Storage, ConfigError> {
             )));
         }
     };
-    Ok(Storage { objects })
+    let parquet = match (&objects, raw.parquet) {
+        (_, None) => None,
+        (ObjectStore::S3(_), Some(p)) => Some(ParquetSettings {
+            pack_interval: seconds(
+                "storage.parquet.pack_interval",
+                p.pack_interval,
+                PACK_INTERVAL,
+            )?,
+            pack_limit: match p.pack_limit {
+                None => PACK_LIMIT,
+                Some(limit) => positive("storage.parquet.pack_limit", limit)?,
+            },
+        }),
+        (ObjectStore::Local, Some(_)) => {
+            return Err(ConfigError(
+                "storage.parquet packs the objects of a bucket, so it needs \
+                 storage.objects = \"s3\""
+                    .to_owned(),
+            ));
+        }
+    };
+    Ok(Storage { objects, parquet })
 }
 
 /// `[export.s3]` checked as `[storage.s3]` is, but for its bucket.
@@ -488,6 +529,14 @@ struct RawExportS3 {
 struct RawStorage {
     objects: Option<String>,
     s3: Option<RawS3>,
+    parquet: Option<RawParquet>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawParquet {
+    pack_interval: Option<u64>,
+    pack_limit: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -585,6 +634,10 @@ ca_file = "/etc/vcon-server/s3-ca.pem"
 allow_versioning = true
 timeout = 60
 
+[storage.parquet]
+pack_interval = 600
+pack_limit = 8388608
+
 [export.s3]
 endpoint = "https://analytics.example.com"
 region = "eu-west-2"
@@ -631,6 +684,10 @@ timeout = 120
                         ca_file: Some("/etc/vcon-server/s3-ca.pem".into()),
                         allow_versioning: true,
                         timeout: Duration::from_secs(60),
+                    }),
+                    parquet: Some(ParquetSettings {
+                        pack_interval: Duration::from_secs(600),
+                        pack_limit: 8_388_608,
                     }),
                 },
                 export: Export {
@@ -839,6 +896,23 @@ key = "/etc/vcon-server/key.pem"
             full.storage, least.storage,
             "FULL writes storage.objects as a value other than its default"
         );
+        let parquet = full.storage.parquet.expect("FULL has storage.parquet");
+        let least_parquet = parquet_least();
+        for (key, differs) in [
+            (
+                "storage.parquet.pack_interval",
+                parquet.pack_interval != least_parquet.pack_interval,
+            ),
+            (
+                "storage.parquet.pack_limit",
+                parquet.pack_limit != least_parquet.pack_limit,
+            ),
+        ] {
+            assert!(
+                differs,
+                "FULL writes {key} as a value other than its default"
+            );
+        }
         let ObjectStore::S3(s3) = full.storage.objects else {
             panic!("FULL keeps its objects in S3")
         };
@@ -932,10 +1006,38 @@ key = "/etc/vcon-server/key.pem"
         assert_eq!(
             parse(LEAST).expect("parses").storage,
             Storage {
-                objects: ObjectStore::Local
+                objects: ObjectStore::Local,
+                parquet: None,
             },
             "a file written before storage backends keeps its meaning"
         );
+    }
+
+    /// The Parquet settings of an empty `[storage.parquet]` table.
+    fn parquet_least() -> ParquetSettings {
+        let text = format!(
+            "{LEAST}\n[storage]\nobjects = \"s3\"\n[storage.s3]\nregion = \"us-east-1\"\n\
+             bucket = \"vcon\"\n[storage.parquet]\n"
+        );
+        parse(&text)
+            .expect("the least Parquet configuration reads")
+            .storage
+            .parquet
+            .expect("an empty [storage.parquet] turns Parquet storage on")
+    }
+
+    #[test]
+    fn parquet_settings_have_defaults() {
+        assert_eq!(
+            parquet_least(),
+            ParquetSettings {
+                pack_interval: PACK_INTERVAL,
+                pack_limit: PACK_LIMIT,
+            },
+            "an empty table takes every default"
+        );
+        assert_eq!(PACK_INTERVAL, Duration::from_secs(300), "five minutes");
+        assert_eq!(PACK_LIMIT, 16 << 20, "16 MiB");
     }
 
     #[test]
@@ -1118,6 +1220,19 @@ key = "/etc/vcon-server/key.pem"
                 format!("{LEAST}\n[storage]\nobjects = \"tape\"\n"),
                 "objects",
             ),
+            (format!("{LEAST}\n[storage.parquet]\n"), "storage.parquet"),
+            (
+                format!("{LEAST}\n[storage]\nobjects = \"local\"\n[storage.parquet]\n"),
+                "storage.parquet",
+            ),
+            (
+                s3("[storage.parquet]\npack_interval = 0\n"),
+                "storage.parquet.pack_interval",
+            ),
+            (
+                s3("[storage.parquet]\npack_limit = 0\n"),
+                "storage.parquet.pack_limit",
+            ),
             (
                 format!(
                     "{LEAST}\n[storage]\nobjects = \"local\"\n[storage.s3]\nregion = \"us-east-1\"\nbucket = \"vcon\"\n"
@@ -1256,7 +1371,7 @@ key = "/etc/vcon-server/key.pem"
             let defaults = parse(LEAST).expect("least");
             let mut all = Vec::new();
             keys(&FULL.parse::<toml::Table>().expect("toml"), "", &mut all);
-            assert_eq!(all.len(), 35, "{all:?}");
+            assert_eq!(all.len(), 37, "{all:?}");
             for key in all {
                 let default = match key.as_str() {
                     "listen" | "data_dir" | "master_key" | "tls.cert" | "tls.key" => {
@@ -1284,6 +1399,10 @@ key = "/etc/vcon-server/key.pem"
                         format!("`{}`", s3_least().allow_versioning)
                     }
                     "storage.s3.timeout" => format!("`{}`", s3_least().timeout.as_secs()),
+                    "storage.parquet.pack_interval" => {
+                        format!("`{}`", parquet_least().pack_interval.as_secs())
+                    }
+                    "storage.parquet.pack_limit" => format!("`{}`", parquet_least().pack_limit),
                     "export.s3.region" => "required with `export.s3`".to_owned(),
                     "export.s3.endpoint"
                     | "export.s3.access_key_id"
@@ -1346,9 +1465,9 @@ key = "/etc/vcon-server/key.pem"
                 }
             }
             assert_eq!(
-                examples, 4,
-                "two on the configuration page, one each on getting started and the container \
-                 page, so a block the split misses is caught"
+                examples, 5,
+                "three on the configuration page, one each on getting started and the \
+                 container page, so a block the split misses is caught"
             );
         }
     }

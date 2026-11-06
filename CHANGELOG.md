@@ -8,6 +8,27 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- Parquet storage: with `[storage.parquet]` beside `storage.objects = "s3"`,
+  the server packs each tenant's objects in the bucket into Parquet files,
+  one store date at a time, at
+  `<prefix>tenants/<tenant id>/parquet/date=<yyyy-mm-dd>/part-<file id>.parquet`,
+  in a pack run at start and every `pack_interval` seconds (300 unless set);
+  a sealed object over `pack_limit` (16 MiB unless set) stays an object. A
+  read fetches a packed version's row with one ranged read. A purge lists
+  the version's file in the purge's own transaction, rewrites the file
+  without the row, deletes the old file and checks with HeadObject that it
+  is gone, before `purge_due` returns; start-up recovery and the next sweep
+  finish one cut off. A bucket with versioning on or suspended, whatever
+  `allow_versioning` says, or with Object Lock on, is refused for Parquet
+  storage at start. Start-up recovery removes a pack file no catalog row
+  names, and the object of a packed version. A backup writes each packed
+  version as an object file, so it restores as before. Removing a tenant
+  removes its pack files. Files only grow for now: nothing merges or
+  compacts them yet. On `main` only. The how-to [keep vCons as Parquet files
+  in a bucket](https://vcon-server.com/docs/parquet-storage/) turns it on
+  over an existing bucket, and CI runs the store's conformance suite on it
+  against RustFS and MinIO.
+
 - vcon-server can keep its sealed vCon objects in a bucket of an
   S3-compatible service (RustFS, MinIO, AWS S3): `storage.objects = "s3"`
   and the `[storage.s3]` table, with the endpoint, region, bucket, prefix,

@@ -268,6 +268,10 @@ impl fmt::Display for OpenError {
 
 impl std::error::Error for OpenError {}
 
+/// How many bytes a sealed blob holds beyond its plaintext: the format
+/// byte, the nonce and the tag.
+pub(crate) const SEALED_OVERHEAD: usize = 1 + NONCE_LEN + TAG_LEN;
+
 /// Encrypts `plaintext` under `data_key`, bound to `ctx`, with a random
 /// nonce. The blob is the format byte, the nonce, the ciphertext and the
 /// tag.
@@ -556,6 +560,21 @@ mod tests {
             expected,
             "a tenant blob: the same layout under the tenant's associated data"
         );
+    }
+
+    #[test]
+    fn a_sealed_blob_is_its_body_and_the_stated_overhead() {
+        let key = Key::generate().expect("key");
+        let ctx = Context::Tenant {
+            tenant: crate::ids::TenantId([7; 16]),
+        };
+        for len in [0, 1, 1000] {
+            assert_eq!(
+                seal(&key, &ctx, &vec![0x5a; len]).len(),
+                len + SEALED_OVERHEAD,
+                "a body of {len} bytes"
+            );
+        }
     }
 
     #[test]

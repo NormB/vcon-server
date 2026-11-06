@@ -313,9 +313,7 @@ fn write_error(e: columns::WriteError) -> ExportError {
 
 /// The UTC date of a store time, as yyyy-mm-dd.
 fn date_of(stored_at: i64) -> Result<String, ExportError> {
-    let at = from_nanos(stored_at).ok_or(ExportError::Store(StoreError::Damaged))?;
-    let (year, month, day) = (at.year(), u8::from(at.month()), at.day());
-    Ok(format!("{year:04}-{month:02}-{day:02}"))
+    crate::backend::pack::date_of(stored_at).ok_or(ExportError::Store(StoreError::Damaged))
 }
 
 /// What the plan's level writes of `k` beside its sealed body. Below

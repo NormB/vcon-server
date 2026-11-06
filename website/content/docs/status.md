@@ -35,6 +35,14 @@ what is built, unless it says otherwise.
   run against RustFS 1.0.4 and MinIO RELEASE.2025-09-07T16-13-09Z in CI;
   AWS S3 is checked against its documented API only. See
   [keep vCons in an S3 bucket](@/docs/s3-storage.md).
+- **Parquet storage in the bucket**, on `main` and in no release yet: the
+  objects packed into Parquet files by tenant and store date, a read by
+  uuid fetching one row with a ranged read, and a purge that rewrites the
+  file and deletes the old one, confirmed with HeadObject, before it is
+  done. Versioned and Object Lock buckets are refused. Files only grow for
+  now: nothing merges or compacts them yet. The store's conformance suite
+  runs on it against RustFS and MinIO in CI, and the how-to against RustFS.
+  See [keep vCons as Parquet files in a bucket](@/docs/parquet-storage.md).
 - **The HTTP API over TLS.** Create, read, replace and delete; the legal
   routes (reads of deleted vCons, version history, restore, legal holds); the
   admin routes (tenants and their keys); health.

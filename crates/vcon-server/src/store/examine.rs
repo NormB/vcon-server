@@ -80,7 +80,14 @@ impl Store {
             found.due += 1;
             found.oldest_due_since = Some(found.oldest_due_since.map_or(since, |o| o.min(since)));
         }
-        let named: BTreeSet<String> = rows.iter().map(|row| row.version.to_string()).collect();
+        // The objects the catalog names, as start-up recovery reads them: a
+        // version's object, unless its row says the version is packed.
+        let named: BTreeSet<String> = tx
+            .places()?
+            .into_iter()
+            .filter(|(_, place)| super::names_its_object(place))
+            .map(|(version, _)| version.to_string())
+            .collect();
         for name in self.objects.list().map_err(io)? {
             let name = name.as_str();
             let (id, temporary) = match name.strip_suffix(".tmp") {

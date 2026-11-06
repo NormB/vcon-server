@@ -147,6 +147,26 @@ pub async fn run(config: &Config, shutdown: impl Future<Output = ()>) -> Result<
             }
         },
     ));
+    // The pack run, with Parquet storage: at start, then pack_interval
+    // after each run ends, until the server stops.
+    let (stop_packing, packing_stopped) = tokio::sync::oneshot::channel::<()>();
+    let packer = config.storage.parquet.map(|parquet| {
+        let packed = tenants.clone();
+        tokio::spawn(every(
+            parquet.pack_interval,
+            async {
+                let _ = packing_stopped.await;
+            },
+            move || {
+                let tenants = packed.clone();
+                async move {
+                    let _ =
+                        tokio::task::spawn_blocking(move || pack_all(&tenants, parquet.pack_limit))
+                            .await;
+                }
+            },
+        ))
+    });
     // The rotation warning: at start, then each day.
     let (stop_warning, warning_stopped) = tokio::sync::oneshot::channel::<()>();
     let (watched, rotation_warn) = (tenants.clone(), config.rotation_warn);
@@ -170,11 +190,56 @@ pub async fn run(config: &Config, shutdown: impl Future<Output = ()>) -> Result<
     let served = api::serve(listener, tls, api::router(Arc::new(app)), shutdown).await;
     let _ = stop.send(());
     let _ = stop_warning.send(());
+    let _ = stop_packing.send(());
     let _ = sweeper.await;
     let _ = warner.await;
+    if let Some(packer) = packer {
+        let _ = packer.await;
+    }
     served.map_err(ServeError::Serve)?;
     tracing::info!("stopped");
     Ok(())
+}
+
+/// What one pack run over every tenant did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PackRunReport {
+    /// Pack files written and recorded, over every tenant.
+    pub files: u64,
+    /// Versions moved into them.
+    pub versions: u64,
+    /// Tenants whose run failed; they wait for the next run.
+    pub failed: u64,
+}
+
+/// One pack run over every tenant, as `Store::pack` does for one, packing
+/// sealed objects of at most `limit` bytes. A tenant whose run fails is
+/// counted and left for the next run. Logged with counts only, never a
+/// tenant.
+pub fn pack_all(tenants: &Tenants, limit: u64) -> PackRunReport {
+    let mut report = PackRunReport::default();
+    let plan = crate::store::packer::PackPlan::with_limit(limit);
+    match tenants.ids() {
+        Ok(ids) => {
+            for id in ids {
+                match tenants.store(id).map(|store| store.pack(&plan)) {
+                    Ok(Ok(done)) => {
+                        report.files += done.files;
+                        report.versions += done.versions;
+                    }
+                    _ => report.failed += 1,
+                }
+            }
+        }
+        Err(_) => report.failed += 1,
+    }
+    tracing::info!(
+        files = report.files,
+        versions = report.versions,
+        failed = report.failed,
+        "pack run"
+    );
+    report
 }
 
 /// What one purge sweep did.

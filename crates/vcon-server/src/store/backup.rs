@@ -2,12 +2,13 @@
 //! to it: the catalog with SQLite's online backup API, then the object file
 //! of every version row that copy holds.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::Path;
 
 use super::Store;
-use crate::backend::ObjectError;
+use super::packed::Unread;
+use crate::backend::{ObjectError, Packed};
 use crate::ids::VersionId;
 
 /// How many times the catalog is copied while versions in each copy are
@@ -55,13 +56,14 @@ impl Store {
             for file in ["catalog.sqlite", "catalog.sqlite-wal", "catalog.sqlite-shm"] {
                 remove_if_there(&dir.join(file)).map_err(fail)?;
             }
-            let versions: BTreeSet<String> = self
+            let places: BTreeMap<String, Option<Packed>> = self
                 .catalog
                 .backup_into(&catalog)
                 .map_err(|_| BackupError::Io)?
                 .into_iter()
-                .map(|v| v.to_string())
+                .map(|(v, place)| (v.to_string(), place))
                 .collect();
+            let versions: BTreeSet<String> = places.keys().cloned().collect();
             #[cfg(test)]
             if let Some(hook) = self.hooks.copied.lock().expect("hook").as_mut() {
                 hook(self);
@@ -81,7 +83,10 @@ impl Store {
                 let Some(version) = VersionId::parse(name) else {
                     return Err(BackupError::Io);
                 };
-                match self.objects.get(version) {
+                // A packed version's blob is read from its row and written
+                // as an object file, as any other version's is.
+                let place = places.get(name).and_then(Option::as_ref);
+                match self.sealed_blob(version, place) {
                     Ok(bytes) => {
                         let tmp = objects.join(format!("{name}.tmp"));
                         if present.contains(&format!("{name}.tmp")) {
@@ -91,13 +96,21 @@ impl Store {
                         self.fs.sync_file(&tmp).map_err(fail)?;
                         self.fs.rename(&tmp, &objects.join(name)).map_err(fail)?;
                     }
-                    Err(ObjectError::Missing) => missing = true,
-                    Err(ObjectError::Io(e)) => return Err(fail(e)),
+                    // Purged since the copy, or its file rewritten since:
+                    // the next try copies the catalog again.
+                    Err(Unread::Object(ObjectError::Missing)) => missing = true,
+                    Err(Unread::Object(ObjectError::Io(e))) => return Err(fail(e)),
+                    Err(Unread::Damaged) => return Err(BackupError::Io),
                 }
             }
             if missing {
                 continue;
             }
+            // The copy is a data directory of objects: every version's blob
+            // was written above as an object file.
+            self.catalog
+                .unpack_copy(&catalog)
+                .map_err(|_| BackupError::Io)?;
             for name in self.fs.list(&objects).map_err(fail)? {
                 let name = name.into_string().unwrap_or_default();
                 if !versions.contains(&name) {
@@ -180,6 +193,76 @@ mod tests {
             .get(&f.caller, uuid.parse().expect("uuid"))
             .expect("reads")
             .body
+    }
+
+    /// A backup of a Store whose versions are packed is a data directory
+    /// like any other: each version's sealed bytes in an object file of its
+    /// own, no place and no pack file in its catalog. It opens with no pack
+    /// storage, and every version reads back.
+    #[test]
+    fn a_backup_of_packed_versions_holds_each_in_an_object_file() {
+        let mut f = fixture();
+        let hidden = stored(&f);
+        let sealed: std::collections::BTreeMap<String, Vec<u8>> = f
+            .store
+            .objects
+            .list()
+            .expect("listed")
+            .into_iter()
+            .map(|name| {
+                let v = VersionId::parse(&name).expect("a version");
+                (name, f.store.objects.get(v).expect("its object"))
+            })
+            .collect();
+        crate::store::packer::tests::with_packs(&mut f);
+        f.store
+            .pack(&crate::store::packer::PackPlan::with_limit(1 << 20))
+            .expect("packs");
+        assert!(
+            f.store.objects.list().expect("listed").is_empty(),
+            "all packed"
+        );
+        let dir = f.dir.path().join("backup");
+        let copied = f.store.backup_to(&dir).expect("backs up");
+        assert_eq!(copied.versions, 3, "every version");
+        for (name, bytes) in &sealed {
+            assert_eq!(
+                &f.fs
+                    .read(&dir.join("objects").join(name))
+                    .expect("an object file"),
+                bytes,
+                "the sealed bytes, byte for byte"
+            );
+        }
+        let (store, found) = examined(&f, &dir);
+        assert!(
+            found.damaged.is_empty(),
+            "nothing damaged: {:?}",
+            found.damaged
+        );
+        assert_eq!(body_of(&store, &f, A), vcon(A, "second").1, "A reads back");
+        assert_eq!(body_of(&store, &f, B), vcon(B, "other").1, "B reads back");
+        assert_eq!(
+            store
+                .legal_get(&f.caller, A.parse().expect("uuid"), Some(hidden))
+                .expect("a legal read")
+                .stored
+                .body,
+            vcon(A, "first").1,
+            "the hidden version reads back"
+        );
+        let conn = store.conn_for_test();
+        let count = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).expect("counted") };
+        assert_eq!(
+            count("SELECT count(*) FROM version WHERE place_file IS NOT NULL"),
+            0,
+            "no place"
+        );
+        assert_eq!(
+            count("SELECT count(*) FROM parquet_file"),
+            0,
+            "no pack file"
+        );
     }
 
     #[test]

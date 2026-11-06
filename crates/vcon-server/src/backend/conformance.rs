@@ -49,13 +49,29 @@ pub(crate) trait Harness {
 /// leave it.
 pub(crate) type Plant = Box<dyn Fn(&str, &[u8])>;
 
-/// A Store from `Harness::fresh`, a way to open it again, and its objects
+/// `Plant`, shared by the closures that need it.
+pub(crate) type SharedPlant = Arc<dyn Fn(&str, &[u8])>;
+
+/// What the storage holds, by name, sorted.
+pub(crate) type Held = Box<dyn Fn() -> Vec<String>>;
+
+/// Something done to one version's sealed bytes around the Store.
+pub(crate) type Touch = Box<dyn Fn(VersionId)>;
+
+/// A Store from `Harness::fresh`, a way to open it again, and its storage
 /// reached around it, so a check can see what is really kept.
 pub(crate) struct Fresh {
     pub(crate) store: Store,
     pub(crate) reopen: Box<dyn Fn() -> Store>,
-    /// The objects the Store reads and writes.
-    pub(crate) objects: Arc<dyn Objects>,
+    /// What the storage holds, by name, sorted: each object's name, and
+    /// with pack storage the version id of each row of each pack file.
+    pub(crate) held: Held,
+    /// Removes a version's sealed bytes around the Store: its object, or
+    /// the pack file that holds its row.
+    pub(crate) lose: Touch,
+    /// Replaces a version's sealed bytes around the Store with bytes that
+    /// are not them: its object, or the pack file that holds its row.
+    pub(crate) alter: Touch,
     /// Plants an object around the Store.
     pub(crate) plant: Plant,
     /// The same Store opened again, without start-up recovery, on objects
@@ -514,9 +530,79 @@ fn reopen_keeps_everything(h: &dyn Harness) {
     );
 }
 
-/// The names the objects hold, as the storage lists them.
-fn kept(objects: &dyn Objects) -> Vec<String> {
-    objects.list().expect("lists the objects")
+/// `Fresh::held`, `lose` and `alter` for `objects` and, if the Store has
+/// them, `packs`. A pack file is read whole for the version ids of its
+/// rows; with every version packed alone (the packer runs after every
+/// write), losing or altering a version's file touches no other version.
+pub(crate) fn blobs(
+    objects: Arc<dyn Objects>,
+    packs: Option<Arc<dyn crate::backend::Packs>>,
+    plant: SharedPlant,
+) -> (Held, Touch, Touch) {
+    let files = {
+        let packs = packs.clone();
+        move || -> Vec<(String, Vec<VersionId>)> {
+            let Some(packs) = &packs else {
+                return Vec::new();
+            };
+            packs
+                .list()
+                .expect("lists the pack files")
+                .into_iter()
+                .filter(|name| crate::backend::pack::parse_name(name).is_some())
+                .map(|name| {
+                    let size = packs.size(&name).expect("a length").expect("there");
+                    let bytes = packs.read(&name, 0, size).expect("reads the file");
+                    let versions = crate::backend::pack::tests::versions_in(&bytes);
+                    (name, versions)
+                })
+                .collect()
+        }
+    };
+    let files = Arc::new(files);
+    let held = {
+        let (objects, files) = (objects.clone(), files.clone());
+        Box::new(move || {
+            let mut names = objects.list().expect("lists the objects");
+            for (_, versions) in files() {
+                names.extend(versions.iter().map(VersionId::to_string));
+            }
+            names.sort();
+            names
+        })
+    };
+    let file_of = {
+        let files = files.clone();
+        move |version: VersionId| {
+            files()
+                .into_iter()
+                .find(|(_, versions)| versions.contains(&version))
+                .map(|(name, versions)| {
+                    assert_eq!(versions.len(), 1, "{name} holds this version alone");
+                    name
+                })
+        }
+    };
+    let lose = {
+        let (objects, packs, file_of) = (objects.clone(), packs.clone(), file_of.clone());
+        Box::new(move |version: VersionId| match (file_of(version), &packs) {
+            (Some(name), Some(packs)) => packs.remove(&name).expect("removes the file"),
+            _ => objects
+                .remove_name(&version.to_string())
+                .expect("removes the object"),
+        })
+    };
+    let alter = Box::new(move |version: VersionId| match (file_of(version), &packs) {
+        (Some(name), Some(packs)) => {
+            packs.remove(&name).expect("removes the file");
+            assert!(
+                packs.put_new(&name, b"not a pack file").expect("writes"),
+                "the name is free again"
+            );
+        }
+        _ => plant(&version.to_string(), b"not a sealed body"),
+    });
+    (held, lose, alter)
 }
 
 /// A purged version's object is gone from the storage, not only from the
@@ -531,11 +617,7 @@ fn purge_removes_the_object(h: &dyn Harness) {
     let (live, _) = new_version(&f.store, &who, &uuid(3), "third");
     let mut all = vec![swept.to_string(), erased.to_string(), live.to_string()];
     all.sort();
-    assert_eq!(
-        kept(&*f.objects),
-        all,
-        "purge_removes_the_object: one object each"
-    );
+    assert_eq!((f.held)(), all, "purge_removes_the_object: one object each");
     let first = Uuid::parse_str(&uuid(1)).expect("uuid");
     f.store.delete(&who, first, days).expect("deletes");
     clock.set(START + time::Duration::days(2));
@@ -549,7 +631,7 @@ fn purge_removes_the_object(h: &dyn Harness) {
         .delete(&who, second, Retention::Days(0))
         .expect("deletes");
     assert_eq!(
-        kept(&*f.objects),
+        (f.held)(),
         [live.to_string()],
         "purge_removes_the_object: only the live version's object is kept"
     );
@@ -573,7 +655,7 @@ fn recovery_removes_only_garbage(h: &dyn Harness) {
     let mut expected = vec![version.to_string(), foreign.to_owned()];
     expected.sort();
     assert_eq!(
-        kept(&*f.objects),
+        (f.held)(),
         expected,
         "recovery_removes_only_garbage: the objects left after recovery"
     );
@@ -601,9 +683,7 @@ fn purge_of_a_lost_object_finishes(h: &dyn Harness) {
         let id = Uuid::parse_str(&uuid(n)).expect("uuid");
         f.store.delete(&who, id, days).expect("deletes");
     }
-    f.objects
-        .remove_name(&lost.to_string())
-        .expect("removes the object around the Store");
+    (f.lose)(lost);
     clock.set(START + time::Duration::days(2));
     assert_eq!(
         f.store.purge_due(days).map(|r| r.purged),
@@ -616,7 +696,7 @@ fn purge_of_a_lost_object_finishes(h: &dyn Harness) {
         "purge_of_a_lost_object_finishes: f.store.check()"
     );
     assert!(
-        kept(&*f.objects).is_empty(),
+        (f.held)().is_empty(),
         "purge_of_a_lost_object_finishes: no object is left"
     );
 }
@@ -658,10 +738,8 @@ fn a_lost_or_altered_object_is_damage(h: &dyn Harness) {
     let (lost, _) = new_version(&f.store, &who, &uuid(1), "first");
     let (altered, _) = new_version(&f.store, &who, &uuid(2), "first");
     new_version(&f.store, &who, &uuid(3), "first");
-    f.objects
-        .remove_name(&lost.to_string())
-        .expect("removes the object around the Store");
-    (f.plant)(&altered.to_string(), b"not a sealed body");
+    (f.lose)(lost);
+    (f.alter)(altered);
     let check = "a_lost_or_altered_object_is_damage";
     reads_answer(&f.store, &who, 1, lost, StoreError::Damaged, check);
     reads_answer(&f.store, &who, 2, altered, StoreError::Damaged, check);
@@ -737,6 +815,14 @@ mod local {
             });
             let store = open();
             let plant_dir = objects_dir.clone();
+            let plant: SharedPlant = Arc::new(move |name, bytes| {
+                std::fs::write(plant_dir.join(name), bytes).expect("plants an object file");
+            });
+            let (held, lose, alter) = blobs(
+                Arc::new(LocalObjects::new(objects_dir.clone(), Arc::new(OsFs))),
+                None,
+                plant.clone(),
+            );
             let unreadable_dir = objects_dir.clone();
             let reopen = open.clone();
             let readable_dir = objects_dir.clone();
@@ -763,10 +849,10 @@ mod local {
                     }
                     store
                 }),
-                objects: Arc::new(LocalObjects::new(objects_dir, Arc::new(OsFs))),
-                plant: Box::new(move |name, bytes| {
-                    std::fs::write(plant_dir.join(name), bytes).expect("plants an object file");
-                }),
+                held,
+                lose,
+                alter,
+                plant: Box::new(move |name, bytes| plant(name, bytes)),
             }
         }
     }
@@ -774,5 +860,90 @@ mod local {
     #[test]
     fn the_local_backend_conforms() {
         run(&Local(tempfile::tempdir().expect("temp dir")));
+    }
+}
+
+/// The local catalog and objects with Parquet storage in a directory, a
+/// pack run after every write that adds a version.
+#[cfg(all(test, feature = "s3"))]
+mod packed_local {
+    use std::sync::atomic::Ordering;
+
+    use super::*;
+    use crate::backend::local::{LocalCatalog, LocalObjects};
+    use crate::envelope;
+    use crate::fs::OsFs;
+    use crate::ids::TenantId;
+    use crate::store::packed::tests::DirPacks;
+    use crate::store::packer::PackPlan;
+
+    struct PackedLocal(tempfile::TempDir);
+
+    impl Harness for PackedLocal {
+        fn fresh(&self, clock: Arc<TestClock>) -> Fresh {
+            let tenant = TenantId::generate();
+            let dir = self.0.path().join(tenant.to_string());
+            let objects_dir = dir.join("objects");
+            std::fs::create_dir_all(&objects_dir).expect("tenant directory");
+            let key = Key::generate().expect("key");
+            let master = Key::generate().expect("master");
+            let ctx = envelope::Context::Tenant { tenant };
+            let wrapped = envelope::wrap(&master, &ctx, &key);
+            let packs = DirPacks::new();
+            let objects: Arc<dyn Objects> =
+                Arc::new(LocalObjects::new(objects_dir.clone(), Arc::new(OsFs)));
+            let open = {
+                let (packs, objects) = (packs.clone(), objects.clone());
+                std::rc::Rc::new(move |recover: bool| {
+                    let key = envelope::unwrap(&master, &ctx, &wrapped).expect("unwraps");
+                    let catalog_key = envelope::catalog_key(&key).expect("catalog key");
+                    let catalog = LocalCatalog::open(&dir.join("catalog.sqlite"), catalog_key)
+                        .expect("catalog");
+                    let mut store = Store::open_on(
+                        tenant,
+                        key,
+                        Box::new(catalog),
+                        objects.clone(),
+                        Some(packs.clone()),
+                        Arc::new(OsFs),
+                        clock.clone(),
+                        recover,
+                    )
+                    .expect("opens");
+                    store.pack_after_every_write(PackPlan::with_limit(1 << 20));
+                    store
+                })
+            };
+            let plant_dir = objects_dir.clone();
+            let plant: SharedPlant = Arc::new(move |name, bytes| {
+                std::fs::write(plant_dir.join(name), bytes).expect("plants an object file");
+            });
+            let (held, lose, alter) = blobs(objects, Some(packs.clone()), plant.clone());
+            let (reopen, unreadable) = (open.clone(), open.clone());
+            let (readable, unreachable) = (packs.clone(), packs);
+            Fresh {
+                store: open(true),
+                reopen: Box::new(move || {
+                    readable.fail_reads.store(false, Ordering::SeqCst);
+                    reopen(true)
+                }),
+                unreadable: Box::new(move || {
+                    let store = unreadable(false);
+                    unreachable.fail_reads.store(true, Ordering::SeqCst);
+                    store
+                }),
+                held,
+                lose,
+                alter,
+                plant: Box::new(move |name, bytes| plant(name, bytes)),
+            }
+        }
+    }
+
+    /// 4.1, without a service: the suite on Parquet storage in a
+    /// directory.
+    #[test]
+    fn the_local_catalog_with_parquet_storage_conforms() {
+        run(&PackedLocal(tempfile::tempdir().expect("temp dir")));
     }
 }

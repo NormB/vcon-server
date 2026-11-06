@@ -13,8 +13,9 @@ use uuid::Uuid;
 
 use super::{
     Catalog, CatalogTx, CommitError, ExaminedRow, ExportedRow, HiddenRow, KeptRow, KeyRow,
-    ListedRow, NewVersion, ObjectError, ObjectPlace, Objects, Packed, PageQuery, Registry,
-    RegistryTx, TenantRow, TenantSpace, Under, VconRow, VersionRow, WrappedRow,
+    ListedRow, NewPackFile, NewVersion, ObjectError, ObjectPlace, Objects, PackFileRow, Packed,
+    PageQuery, Registry, RegistryTx, TenantRow, TenantSpace, Under, UnpackedRow, VconRow,
+    VersionRow, WrappedRow,
 };
 use crate::audit::{self, Action, Actor, AuditError, Entry};
 use crate::catalog;
@@ -157,14 +158,34 @@ impl Catalog for LocalCatalog {
         }
     }
 
-    fn backup_into(&self, to: &Path) -> Result<Vec<VersionId>, StoreError> {
+    fn backup_into(&self, to: &Path) -> Result<Vec<(VersionId, Option<Packed>)>, StoreError> {
         catalog::backup(&self.conn(), to, &self.catalog_key).map_err(io)?;
         let copy = catalog::open(to, &self.catalog_key, "").map_err(io)?;
-        let mut rows = copy.prepare("SELECT version FROM version").map_err(io)?;
-        rows.query_map([], |r| r.get::<_, [u8; 16]>(0))
+        let mut rows = copy
+            .prepare(&format!(
+                "SELECT v.version, {PLACE} FROM version v {PLACE_JOIN}"
+            ))
+            .map_err(io)?;
+        rows.query_map([], |r| Ok((VersionId(r.get(0)?), raw_place(r, 1)?)))
             .map_err(io)?
-            .map(|row| row.map(VersionId).map_err(io))
+            .map(|row| {
+                let (version, place) = row.map_err(io)?;
+                Ok((version, packed(place)?))
+            })
             .collect()
+    }
+
+    fn unpack_copy(&self, copy: &Path) -> Result<(), StoreError> {
+        let copy = catalog::open(copy, &self.catalog_key, "").map_err(io)?;
+        copy.execute_batch(
+            "BEGIN IMMEDIATE;
+             UPDATE version SET place_file = NULL, place_group = NULL, place_row = NULL;
+             DELETE FROM parquet_file;
+             DELETE FROM purge_pending;
+             DELETE FROM manifest;
+             COMMIT;",
+        )
+        .map_err(io)
     }
 
     fn export(&self, after: i64, out: &mut dyn Write) -> Result<(), AuditError> {
@@ -217,6 +238,15 @@ impl LocalTx<'_> {
             .optional()
             .map_err(io)?
             .is_some())
+    }
+
+    /// The file ids `sql` selects, in its order.
+    fn file_ids(&self, sql: &str) -> Result<Vec<FileId>, StoreError> {
+        let mut rows = self.conn.prepare(sql).map_err(io)?;
+        rows.query_map([], |r| r.get::<_, [u8; 16]>(0))
+            .map_err(io)?
+            .map(|row| row.map(FileId).map_err(io))
+            .collect()
     }
 
     fn versions(
@@ -378,6 +408,148 @@ impl CatalogTx for LocalTx<'_> {
             )
             .map_err(io)?;
         Ok(())
+    }
+
+    fn unpacked(&mut self) -> Result<Vec<UnpackedRow>, StoreError> {
+        let mut rows = self
+            .conn
+            .prepare(
+                "SELECT version, stored_at, size FROM version WHERE place_file IS NULL
+                 ORDER BY stored_at, version",
+            )
+            .map_err(io)?;
+        rows.query_map([], |r| {
+            Ok(UnpackedRow {
+                version: VersionId(r.get(0)?),
+                stored_at: r.get(1)?,
+                size: r.get(2)?,
+            })
+        })
+        .map_err(io)?
+        .map(|row| row.map_err(io))
+        .collect()
+    }
+
+    fn is_unpacked(&mut self, version: VersionId) -> Result<bool, StoreError> {
+        self.exists(
+            "SELECT 1 FROM version WHERE version = ?1 AND place_file IS NULL",
+            [version.0],
+        )
+    }
+
+    fn insert_pack_file(&mut self, row: &NewPackFile) -> Result<(), StoreError> {
+        self.conn
+            .execute(
+                "INSERT INTO parquet_file (file_id, date, rows, live_rows, bytes, created_at)
+                 VALUES (?1, ?2, ?3, ?3, ?4, ?5)",
+                params![row.file.0, row.date, row.rows, row.bytes, row.created_at],
+            )
+            .map(drop)
+            .map_err(io)
+    }
+
+    fn set_place(
+        &mut self,
+        version: VersionId,
+        file: FileId,
+        place: super::pack::Place,
+    ) -> Result<(), StoreError> {
+        self.conn
+            .execute(
+                "UPDATE version SET place_file = ?1, place_group = ?2, place_row = ?3
+                 WHERE version = ?4",
+                params![file.0, place.group, place.row, version.0],
+            )
+            .map(drop)
+            .map_err(io)
+    }
+
+    fn pack_files(&mut self) -> Result<Vec<FileId>, StoreError> {
+        self.file_ids("SELECT file_id FROM parquet_file ORDER BY file_id")
+    }
+
+    fn pack_file(&mut self, file: FileId) -> Result<Option<PackFileRow>, StoreError> {
+        let row: Option<(String, i64, Option<i64>)> = self
+            .conn
+            .query_row(
+                "SELECT date, bytes, unnamed_at FROM parquet_file WHERE file_id = ?1",
+                [file.0],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(io)?;
+        row.map(|(date, bytes, unnamed_at)| {
+            Ok(PackFileRow {
+                date,
+                bytes: u64::try_from(bytes).map_err(|_| StoreError::Damaged)?,
+                unnamed_at,
+            })
+        })
+        .transpose()
+    }
+
+    fn placed_in(&mut self, file: FileId) -> Result<Vec<(VersionId, i64, Packed)>, StoreError> {
+        let mut rows = self
+            .conn
+            .prepare(&format!(
+                "SELECT v.version, v.stored_at, {PLACE} FROM version v {PLACE_JOIN}
+                 WHERE v.place_file = ?1 ORDER BY v.place_group, v.place_row"
+            ))
+            .map_err(io)?;
+        rows.query_map([file.0], |r| {
+            Ok((VersionId(r.get(0)?), r.get(1)?, raw_place(r, 2)?))
+        })
+        .map_err(io)?
+        .map(|row| {
+            let (version, stored_at, place) = row.map_err(io)?;
+            let packed = packed(place)?.ok_or(StoreError::Damaged)?;
+            Ok((version, stored_at, packed))
+        })
+        .collect()
+    }
+
+    fn add_purge_pending(&mut self, file: FileId) -> Result<(), StoreError> {
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO purge_pending (file_id) VALUES (?1)",
+                [file.0],
+            )
+            .map(drop)
+            .map_err(io)
+    }
+
+    fn purge_pending(&mut self) -> Result<Vec<FileId>, StoreError> {
+        self.file_ids("SELECT file_id FROM purge_pending ORDER BY file_id")
+    }
+
+    fn delete_purge_pending(&mut self, file: FileId) -> Result<(), StoreError> {
+        self.conn
+            .execute("DELETE FROM purge_pending WHERE file_id = ?1", [file.0])
+            .map(drop)
+            .map_err(io)
+    }
+
+    fn unname_pack_file(&mut self, file: FileId, at: i64) -> Result<(), StoreError> {
+        self.conn
+            .execute(
+                "UPDATE parquet_file SET unnamed_at = ?2, live_rows = 0 WHERE file_id = ?1",
+                params![file.0, at],
+            )
+            .map(drop)
+            .map_err(io)
+    }
+
+    fn unnamed_files(&mut self) -> Result<Vec<FileId>, StoreError> {
+        self.file_ids(
+            "SELECT file_id FROM parquet_file WHERE unnamed_at IS NOT NULL ORDER BY file_id",
+        )
+    }
+
+    fn delete_pack_file(&mut self, file: FileId) -> Result<(), StoreError> {
+        self.conn
+            .execute("DELETE FROM parquet_file WHERE file_id = ?1", [file.0])
+            .map(drop)
+            .map_err(io)
     }
 
     fn places(

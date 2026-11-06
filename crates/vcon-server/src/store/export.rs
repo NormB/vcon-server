@@ -68,19 +68,24 @@ impl Store {
     /// purged since: its row is gone and its blob with it. A blob missing
     /// while its row is still there is damage.
     pub fn sealed_of(&self, kept: &KeptVersion) -> Result<Option<Vec<u8>>, StoreError> {
-        match self.sealed_blob(kept.version, kept.place.as_ref()) {
-            Ok(sealed) => Ok(Some(sealed)),
-            Err(Unread::Damaged) => Err(StoreError::Damaged),
-            Err(Unread::Object(ObjectError::Missing)) => {
-                // A purge removes the row first, then the object.
-                let mut tx = self.catalog.snapshot()?;
-                if tx.has_version(kept.version, kept.uuid)? {
-                    Err(StoreError::Damaged)
-                } else {
-                    Ok(None)
+        let mut place = kept.place.clone();
+        loop {
+            match self.sealed_blob(kept.version, place.as_ref()) {
+                Ok(sealed) => return Ok(Some(sealed)),
+                Err(Unread::Damaged) => return Err(StoreError::Damaged),
+                Err(Unread::Object(ObjectError::Missing)) => {
+                    // A purge removes the row first, then the object; a
+                    // purge's rewrite moves a packed row to a new file
+                    // first, then deletes the old one.
+                    let row = self.catalog.snapshot()?.version_row(kept.version)?;
+                    match row {
+                        None => return Ok(None),
+                        Some(row) if row.place != place => place = row.place,
+                        Some(_) => return Err(StoreError::Damaged),
+                    }
                 }
+                Err(Unread::Object(e @ ObjectError::Io(_))) => return Err(read_failed(e)),
             }
-            Err(Unread::Object(e @ ObjectError::Io(_))) => Err(read_failed(e)),
         }
     }
 

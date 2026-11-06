@@ -41,6 +41,8 @@ Durations are whole seconds and sizes are bytes; each must be more than zero.
 | `storage.s3.ca_file` | PEM file of the certificate authorities trusted for an `https://` endpoint, in place of the system's, for a service whose certificate a private CA signed | none |
 | `storage.s3.allow_versioning` | Start even though the bucket has versioning on or suspended | `false` |
 | `storage.s3.timeout` | Seconds one request to the bucket may take | `30` |
+| `storage.parquet.pack_interval` | Seconds from the end of one pack run to the start of the next; the table `[storage.parquet]` turns [Parquet storage](#parquet-storage) on | `300` (5 minutes) |
+| `storage.parquet.pack_limit` | Largest sealed object packed into a Parquet file, in bytes; a larger one stays an object | `16777216` (16 MiB) |
 | `export.s3.region` | Region of the S3-compatible service that [`export parquet`](@/docs/export-parquet.md) writes an `s3://` target to; without an `export.s3` table the export uses `storage.s3`'s service and keys | required with `export.s3` |
 | `export.s3.endpoint` | As `storage.s3.endpoint`, for the export's service | none |
 | `export.s3.path_style` | As `storage.s3.path_style` | `false` |
@@ -150,6 +152,58 @@ ca_file = "/usr/local/share/vcon-server/s3-ca.pem"
   objects but no claim, because start-up recovery removes every object no
   catalog of its own names. Two servers can share a bucket with a `prefix`
   each.
+
+### Parquet storage
+
+With a `[storage.parquet]` table as well (it needs `storage.objects =
+"s3"`), the server packs the objects in the bucket into Parquet files, one
+date of one tenant at a time, at
+`<prefix>tenants/<tenant id>/parquet/date=<yyyy-mm-dd>/part-<file id>.parquet`.
+Each new version is still written first as its own object, then packed by
+the next pack run, which removes the object. Reads by uuid fetch one row of
+a file with a ranged read. A purge rewrites the file without the purged
+row, deletes the old file and checks that the bucket no longer has it,
+before the purge returns. Parquet storage is on `main` only, in no release.
+The file above, with Parquet storage on:
+
+```toml
+listen = "0.0.0.0:8443"
+data_dir = "/var/lib/vcon-server"
+master_key = "/etc/vcon-server/master.key"
+
+[tls]
+cert = "/etc/vcon-server/cert.pem"
+key = "/etc/vcon-server/key.pem"
+
+[storage]
+objects = "s3"
+
+[storage.s3]
+endpoint = "https://objects.example.com:9000"
+region = "us-east-1"
+bucket = "vcon"
+path_style = true
+access_key_id = "vcon-server"
+secret_access_key_file = "/etc/vcon-server/s3.secret"
+ca_file = "/usr/local/share/vcon-server/s3-ca.pem"
+
+[storage.parquet]
+pack_interval = 300
+pack_limit = 16777216
+```
+
+- **The bucket.** The server refuses to start with `[storage.parquet]` on
+  a bucket with versioning on or suspended, whatever `allow_versioning`
+  says, or with Object Lock on: either keeps a deleted file's bytes,
+  so a purge could not remove them.
+- **Files only grow.** A replaced or deleted version stays in its file,
+  hidden, until retention purges it, and each pack run writes new files.
+  Nothing yet merges small files or rewrites a file whose rows are mostly
+  hidden; only a purge rewrites a file. Compaction is a later change.
+- **No way back.** Once versions are packed, keep `[storage.parquet]`:
+  there is no command that turns packed versions back into objects. Without
+  the table the server still reads and purges packed versions, but packs
+  no more.
 
 ## Where the defaults come from
 

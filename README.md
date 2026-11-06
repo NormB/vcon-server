@@ -35,6 +35,10 @@ where each item is described in full:
 - **Objects in an S3-compatible bucket:** RustFS, MinIO or AWS S3 keeps the
   sealed objects. This is on `main` and in no release yet; see
   [Building](#building).
+- **Parquet storage in the bucket:** the objects packed into Parquet files,
+  each vCon read back by one ranged read, and a purge that deletes the old
+  file before it is done. Files only grow for now. This is on `main` and in
+  no release yet; see [Building](#building).
 - **The HTTP API over TLS:** create, read, replace and delete, the legal
   routes, the admin routes and health.
 - **The client API:** paged lists, the audit logs over HTTPS, the OpenAPI
@@ -91,6 +95,9 @@ only. Until the next release, build the server from `main` to use it, as
 [build from source](https://vcon-server.com/docs/install/#build-from-source)
 shows. On `main` it is the `s3` cargo feature, which is on by default;
 `cargo build --release -p vcon-server --no-default-features` leaves it out.
+[Parquet storage](https://vcon-server.com/docs/parquet-storage/), which packs
+those objects into Parquet files in the same bucket, is on `main` too and in
+no release yet.
 
 ## Contributing
 

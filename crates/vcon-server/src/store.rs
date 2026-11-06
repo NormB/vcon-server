@@ -32,8 +32,10 @@ mod export;
 mod legal;
 mod list;
 pub(crate) mod packed;
+pub(crate) mod packer;
 mod purge;
 mod rekey;
+mod rewrite;
 
 pub use backup::{BackupError, Copied, TRIES};
 pub use examine::Examination;
@@ -270,6 +272,16 @@ impl Store {
     /// not ours and is left alone.
     fn recover(&self) -> Result<(), StoreError> {
         self.catalog.recover()?;
+        let (places, files) = {
+            let mut tx = self.catalog.snapshot()?;
+            let places: std::collections::HashMap<VersionId, bool> = tx
+                .places()?
+                .into_iter()
+                .map(|(version, place)| (version, names_its_object(&place)))
+                .collect();
+            let files: std::collections::HashSet<_> = tx.pack_files()?.into_iter().collect();
+            (places, files)
+        };
         let mut removed: u64 = 0;
         for name in self.objects.list().map_err(io)? {
             let (id, temporary) = match name.strip_suffix(".tmp") {
@@ -279,15 +291,32 @@ impl Store {
             let Some(version) = VersionId::parse(id) else {
                 continue;
             };
-            let has_row = {
-                let mut tx = self.catalog.snapshot()?;
-                tx.version_row(version)?.is_some()
-            };
-            if temporary || !has_row {
+            if temporary || !places.get(&version).copied().unwrap_or(false) {
                 self.objects.remove_name(&name).map_err(io)?;
                 removed += 1;
             }
         }
+        if let Some(packs) = &self.packs {
+            let mut unnamed: u64 = 0;
+            // A file a rewrite wrote but did not record is removed below; a
+            // purge whose file side was cut off is finished after.
+            for name in packs.list().map_err(io)? {
+                let Some((_, file)) = packed::parse_name(&name) else {
+                    continue;
+                };
+                if !files.contains(&file) {
+                    packs.remove(&name).map_err(io)?;
+                    unnamed += 1;
+                }
+            }
+            if unnamed > 0 {
+                tracing::info!(
+                    removed = unnamed,
+                    "start-up recovery removed pack files that no catalog row names"
+                );
+            }
+        }
+        self.finish_purges()?;
         if removed > 0 {
             self.objects.sync().map_err(io)?;
             // A count only, as the purge sweep logs, never a tenant or a
@@ -388,6 +417,10 @@ impl Store {
             Ok(Created::New(version))
         })();
         self.drop_unless_kept(committed.is_err(), unknown.get(), version);
+        #[cfg(test)]
+        if committed.is_ok() {
+            self.forced_pack();
+        }
         committed
     }
 
@@ -420,6 +453,14 @@ impl Store {
                     other => return refuse(tx, other),
                 }
             };
+            let place = row.as_ref().ok().and_then(|r| r.place.clone());
+            #[cfg(test)]
+            {
+                let hook = self.hooks.before_read.lock().expect("hook").take();
+                if let Some(hook) = hook {
+                    hook();
+                }
+            }
             let opened = row.and_then(|row| {
                 let body = self.open_version(uuid, version, &row)?;
                 Ok(Stored {
@@ -432,6 +473,17 @@ impl Store {
             self.pause();
             let mut tx = self.catalog.immediate()?;
             match state(&mut tx, uuid)? {
+                // A packed version's file may have been rewritten and
+                // deleted after its place was read: read again at the new
+                // place. The same place still failing is the answer.
+                State::Live(now)
+                    if now == version
+                        && opened.is_err()
+                        && place.is_some()
+                        && version_row(&mut tx, version).ok().map(|r| r.place) != Some(place) =>
+                {
+                    continue;
+                }
                 State::Live(now) if now == version => {
                     let status = if opened.is_ok() { 200 } else { 500 };
                     self.record(&mut tx, &entry(status, Some(version)))?;
@@ -526,6 +578,10 @@ impl Store {
             Ok(version)
         })();
         self.drop_unless_kept(committed.is_err(), unknown.get(), version);
+        #[cfg(test)]
+        if committed.is_ok() {
+            self.forced_pack();
+        }
         committed
     }
 
@@ -737,6 +793,22 @@ impl Store {
             .expect("trigger");
     }
 
+    /// For tests: after every write that adds a version, a pack run with
+    /// `plan`, so each version is packed before the next step. Pack
+    /// storage is S3's, so only an S3 build's harnesses call it.
+    #[cfg(all(test, feature = "s3"))]
+    pub(crate) fn pack_after_every_write(&mut self, plan: packer::PackPlan) {
+        *self.hooks.pack_always.lock().expect("hook") = Some(plan);
+    }
+
+    #[cfg(test)]
+    fn forced_pack(&self) {
+        let plan = *self.hooks.pack_always.lock().expect("hook");
+        if let Some(plan) = plan {
+            self.pack(&plan).expect("the forced pack run");
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn on_backup_copied(&self, hook: tests::BackupHook) {
         *self.hooks.copied.lock().expect("hook") = Some(hook);
@@ -792,6 +864,14 @@ fn state(tx: &mut Tx, uuid: Uuid) -> Result<State, StoreError> {
         Some(row) if row.deleted_at.is_some() => Ok(State::Gone),
         Some(row) => row.current.map(State::Live).ok_or(StoreError::Damaged),
     }
+}
+
+/// Whether a version row, with `place` as its place, names the version's
+/// object: unless the row says the version is packed. A row whose place is
+/// broken names its object, which is kept, since damage is reported and
+/// never removed.
+fn names_its_object(place: &Result<Option<Packed>, StoreError>) -> bool {
+    !matches!(place, Ok(Some(_)))
 }
 
 struct VersionRow {
@@ -955,6 +1035,11 @@ pub(crate) mod tests {
         /// Runs at each try of a backup, after the catalog is copied and
         /// before its versions' files are.
         pub(super) copied: Mutex<Option<BackupHook>>,
+        /// Runs once, in a read, between the transaction that finds the
+        /// version's place and the read of its blob.
+        pub(super) before_read: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+        /// A pack run after every write that adds a version.
+        pub(super) pack_always: Mutex<Option<super::packer::PackPlan>>,
     }
 
     pub(crate) struct Fixture {
@@ -967,6 +1052,9 @@ pub(crate) mod tests {
         wrapped: Vec<u8>,
         pub(crate) store: Store,
         pub(crate) caller: Caller,
+        /// The pack storage the Store is opened with, as an S3 store is;
+        /// None, as a local one is.
+        pub(crate) packs: Option<Arc<dyn Packs>>,
     }
 
     pub(super) const TENANT: TenantId = TenantId([0x11; 16]);
@@ -980,13 +1068,18 @@ pub(crate) mod tests {
         pub(super) fn open_or_why(&self) -> Result<Store, OpenError> {
             let ctx = Context::Tenant { tenant: TENANT };
             let tenant_key = envelope::unwrap(&self.master, &ctx, &self.wrapped).expect("unwraps");
-            Store::open(
+            // As `Store::open` does, with the fixture's pack storage given
+            // before recovery runs.
+            let mut store = Store::open_beside(
                 self.dir.path(),
                 TENANT,
                 tenant_key,
                 self.fs.clone(),
                 self.clock.clone(),
-            )
+            )?;
+            store.packs = self.packs.clone();
+            store.recover()?;
+            Ok(store)
         }
 
         /// The tenant key the Store was made under.
@@ -1046,6 +1139,7 @@ pub(crate) mod tests {
             wrapped,
             store,
             caller,
+            packs: None,
         }
     }
 
