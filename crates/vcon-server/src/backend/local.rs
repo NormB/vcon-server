@@ -1437,3 +1437,67 @@ fn injected(
         None => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+    use crate::fs::OsFs;
+
+    /// Only an absent file is a missing object; every other error the
+    /// system gives is a failure of the storage, as S3's are.
+    #[test]
+    fn only_an_absent_file_is_a_missing_object() {
+        assert!(
+            matches!(
+                object_error(std::io::Error::from_raw_os_error(libc::ENOENT)),
+                ObjectError::Missing
+            ),
+            "ENOENT is a missing object"
+        );
+        for errno in [libc::EIO, libc::EACCES, libc::EISDIR, libc::ENOSPC] {
+            match object_error(std::io::Error::from_raw_os_error(errno)) {
+                ObjectError::Io(e) => {
+                    assert_eq!(e.raw_os_error(), Some(errno), "errno {errno} is kept");
+                }
+                ObjectError::Missing => panic!("errno {errno} is not a missing object"),
+            }
+        }
+    }
+
+    /// An object file the process may not read is a storage failure, with
+    /// the system's error, not a missing object.
+    #[test]
+    fn an_object_file_the_process_may_not_read_is_a_failure_not_missing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let objects = LocalObjects::new(dir.path().to_owned(), Arc::new(OsFs));
+        let version = VersionId::generate();
+        objects.put(version, b"sealed bytes").expect("put");
+        let file = dir.path().join(version.to_string());
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+        let read = objects.get(version);
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+        match read {
+            Err(ObjectError::Io(e)) => {
+                assert_eq!(
+                    e.kind(),
+                    std::io::ErrorKind::PermissionDenied,
+                    "the system's error: {e}"
+                );
+            }
+            Err(ObjectError::Missing) => panic!("a file that is there is not missing"),
+            Ok(_) => panic!("read a file without permission: is the test run as root?"),
+        }
+        assert_eq!(
+            objects.get(version).expect("reads once allowed"),
+            b"sealed bytes",
+            "the file reads back once it may be read"
+        );
+        std::fs::remove_file(&file).expect("remove");
+        assert!(
+            matches!(objects.get(version), Err(ObjectError::Missing)),
+            "a removed file is a missing object"
+        );
+    }
+}

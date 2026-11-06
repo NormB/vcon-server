@@ -9,10 +9,12 @@ use std::io::Read;
 use std::sync::{Arc, mpsc};
 
 use aws_sdk_s3::Client;
+use aws_sdk_s3::config::http::HttpResponse;
 use aws_sdk_s3::config::timeout::TimeoutConfig;
 use aws_sdk_s3::config::{
     BehaviorVersion, Credentials, Region, RequestChecksumCalculation, ResponseChecksumValidation,
 };
+use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::types::{BucketVersioningStatus, Delete, ObjectIdentifier};
 use aws_smithy_http_client::tls;
@@ -312,7 +314,7 @@ impl S3 {
             .get_bucket_versioning()
             .bucket(&self.bucket)
             .send();
-        let answer = self.wait(call)?.map_err(failed)?;
+        let answer = self.wait(call)?.map_err(sdk_failed)?;
         Ok(match answer.status() {
             Some(BucketVersioningStatus::Enabled) => Versioning::Enabled,
             Some(BucketVersioningStatus::Suspended) => Versioning::Suspended,
@@ -369,10 +371,8 @@ impl S3 {
                     .await
                     .map(|bytes| Some(bytes.to_vec()))
                     .map_err(failed),
-                Err(e) => match e.into_service_error() {
-                    e if e.is_no_such_key() => Ok(None),
-                    e => Err(failed(e)),
-                },
+                Err(SdkError::ServiceError(e)) if e.err().is_no_such_key() => Ok(None),
+                Err(e) => Err(sdk_failed(e)),
             }
         })??;
         let Some(bytes) = bytes else {
@@ -401,7 +401,7 @@ impl S3 {
             .if_none_match("*")
             .body(ByteStream::from(format!("{id}\n").into_bytes()))
             .send();
-        self.wait(call)?.map(drop).map_err(failed)
+        self.wait(call)?.map(drop).map_err(sdk_failed)
     }
 
     /// Writes `bytes` as the object `name` under the prefix, only if there
@@ -502,7 +502,7 @@ impl S3 {
                 .into_paginator()
                 .send();
             while let Some(page) = pages.next().await {
-                let page = page.map_err(failed)?;
+                let page = page.map_err(sdk_failed)?;
                 let keys = page.contents().iter().filter_map(|o| o.key());
                 let common = page.common_prefixes().iter().filter_map(|p| p.prefix());
                 for key in keys.chain(common) {
@@ -546,7 +546,7 @@ impl S3 {
                 .bucket(&self.bucket)
                 .delete(delete)
                 .send();
-            let answer = self.wait(call)?.map_err(failed)?;
+            let answer = self.wait(call)?.map_err(sdk_failed)?;
             if let Some(error) = answer.errors().first() {
                 return Err(ObjectError::Io(std::io::Error::other(format!(
                     "an object was not removed: {}",
@@ -567,8 +567,49 @@ fn tenant_dir(prefix: &str, tenant: TenantId) -> String {
 /// SDK's own text names only the step ("service error", "dispatch
 /// failure"), and the cause (the service's error code, a refused
 /// connection, an untrusted certificate) is in its sources. None of them
-/// holds a credential.
+/// holds a credential. Its kind is that of the first I/O error in the
+/// chain, or `Other`.
 fn failed<E: std::error::Error + Send + Sync + 'static>(e: E) -> ObjectError {
+    failed_as(cause_kind(&e), &e)
+}
+
+/// `failed` for a request the SDK sent, with the kind of failure it was,
+/// named as the system names a file's, so that both backends report a
+/// failure alike: no answer in time is `TimedOut`, a refused key (401 or
+/// 403: `AccessDenied`, `InvalidAccessKeyId`, `SignatureDoesNotMatch`)
+/// `PermissionDenied`, an answer that does not parse `InvalidData`, and a
+/// connection that failed the system's own kind, such as
+/// `ConnectionRefused`.
+fn sdk_failed<E: std::error::Error + Send + Sync + 'static>(
+    e: SdkError<E, HttpResponse>,
+) -> ObjectError {
+    use std::io::ErrorKind;
+    let kind = match &e {
+        SdkError::TimeoutError(_) => ErrorKind::TimedOut,
+        SdkError::DispatchFailure(failure) if failure.is_timeout() => ErrorKind::TimedOut,
+        SdkError::ServiceError(answer) if matches!(answer.raw().status().as_u16(), 401 | 403) => {
+            ErrorKind::PermissionDenied
+        }
+        SdkError::ResponseError(_) => ErrorKind::InvalidData,
+        _ => cause_kind(&e),
+    };
+    failed_as(kind, &e)
+}
+
+/// The kind of the first I/O error in `e`'s chain of causes, or `Other`.
+fn cause_kind(e: &(dyn std::error::Error + 'static)) -> std::io::ErrorKind {
+    let mut cause = Some(e);
+    while let Some(next) = cause {
+        if let Some(io) = next.downcast_ref::<std::io::Error>() {
+            return io.kind();
+        }
+        cause = next.source();
+    }
+    std::io::ErrorKind::Other
+}
+
+/// An object error of `kind`, whose text is `e`'s whole chain of causes.
+fn failed_as(kind: std::io::ErrorKind, e: &(dyn std::error::Error + 'static)) -> ObjectError {
     let mut text = e.to_string();
     let mut cause = e.source();
     while let Some(next) = cause {
@@ -580,7 +621,7 @@ fn failed<E: std::error::Error + Send + Sync + 'static>(e: E) -> ObjectError {
         }
         cause = next.source();
     }
-    ObjectError::Io(std::io::Error::other(text))
+    ObjectError::Io(std::io::Error::new(kind, text))
 }
 
 /// One tenant's objects, under its own name in the bucket.
@@ -606,7 +647,7 @@ impl Objects for S3Objects {
             .key(self.key(version))
             .body(ByteStream::from(blob.to_vec()))
             .send();
-        self.s3.wait(call)?.map(drop).map_err(failed)
+        self.s3.wait(call)?.map(drop).map_err(sdk_failed)
     }
 
     fn get(&self, version: VersionId) -> Result<Vec<u8>, ObjectError> {
@@ -625,10 +666,10 @@ impl Objects for S3Objects {
                     .await
                     .map(|bytes| bytes.to_vec())
                     .map_err(failed),
-                Err(e) => match e.into_service_error() {
-                    e if e.is_no_such_key() => Err(ObjectError::Missing),
-                    e => Err(failed(e)),
-                },
+                Err(SdkError::ServiceError(e)) if e.err().is_no_such_key() => {
+                    Err(ObjectError::Missing)
+                }
+                Err(e) => Err(sdk_failed(e)),
             }
         })?
     }
@@ -651,7 +692,7 @@ impl Objects for S3Objects {
             .bucket(&self.s3.bucket)
             .key(format!("{}{name}", self.dir))
             .send();
-        self.s3.wait(call)?.map(drop).map_err(failed)
+        self.s3.wait(call)?.map(drop).map_err(sdk_failed)
     }
 
     /// A DeleteObject is durable once it returns.
@@ -682,6 +723,133 @@ mod tests {
             allow_versioning: false,
             timeout: Duration::from_secs(1),
         }
+    }
+
+    /// A plain-HTTP service on the loopback address: to every request it
+    /// gives `answer`, or with None it never answers and holds the
+    /// connection open.
+    pub(super) fn http_service(answer: Option<&'static str>) -> std::net::SocketAddr {
+        use std::io::{BufRead, BufReader, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("binds");
+        let address = listener.local_addr().expect("address");
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { return };
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+                    let mut writer = stream;
+                    loop {
+                        // A GET has no body: the request ends at its blank line.
+                        let mut line = String::new();
+                        loop {
+                            line.clear();
+                            match reader.read_line(&mut line) {
+                                Ok(0) | Err(_) => return,
+                                Ok(_) if line == "\r\n" => break,
+                                Ok(_) => {}
+                            }
+                        }
+                        let Some(answer) = answer else {
+                            std::thread::sleep(Duration::from_secs(60));
+                            return;
+                        };
+                        if writer.write_all(answer.as_bytes()).is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        address
+    }
+
+    /// RustFS 1.0.1's answer to a GetObject by a key that may not get
+    /// objects, as captured from it.
+    const ACCESS_DENIED: &str = "HTTP/1.1 403 Forbidden\r\ncontent-type: application/xml\r\n\
+        content-length: 110\r\n\r\n<?xml version=\"1.0\" encoding=\"UTF-8\"?><Error>\
+        <Code>AccessDenied</Code><Message>Access Denied</Message></Error>";
+
+    /// S3's answer for a key the bucket does not hold.
+    const NO_SUCH_KEY: &str = "HTTP/1.1 404 Not Found\r\ncontent-type: application/xml\r\n\
+        content-length: 127\r\n\r\n<?xml version=\"1.0\" encoding=\"UTF-8\"?><Error>\
+        <Code>NoSuchKey</Code><Message>The specified key does not exist.</Message></Error>";
+
+    /// The example key pair of the AWS documentation.
+    const KEY_ID: &str = "AKIAIOSFODNN7EXAMPLE";
+    const SECRET: &str = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+
+    /// A tenant's objects at `endpoint`, with the example keys, each call
+    /// given `timeout` including its retries.
+    fn objects_at(endpoint: String, timeout: Duration, tenant: TenantId) -> S3Objects {
+        let settings = S3Settings {
+            endpoint: Some(endpoint),
+            access_key_id: Some(KEY_ID.to_owned()),
+            timeout,
+            ..unreachable()
+        };
+        S3::connect(&settings, Some(SECRET), None)
+            .expect("a client")
+            .tenant(tenant)
+    }
+
+    /// A read the service does not answer, or answers with a refusal, is a
+    /// storage failure of the kind the system would give for a file: never
+    /// a missing object, which is damage. Its text holds no credential.
+    #[test]
+    fn a_read_the_service_fails_is_a_failure_by_kind_never_missing() {
+        // A refused connection is retried, so it is reported once every
+        // try has failed, well within its 30 seconds.
+        let cases = [
+            (
+                "http://127.0.0.1:9".to_owned(),
+                Duration::from_secs(30),
+                std::io::ErrorKind::ConnectionRefused,
+                "nothing listens",
+            ),
+            (
+                format!("http://{}", http_service(None)),
+                Duration::from_secs(1),
+                std::io::ErrorKind::TimedOut,
+                "no answer within the timeout",
+            ),
+            (
+                format!("http://{}", http_service(Some(ACCESS_DENIED))),
+                Duration::from_secs(30),
+                std::io::ErrorKind::PermissionDenied,
+                "the key may not get objects",
+            ),
+        ];
+        for (endpoint, timeout, kind, why) in cases {
+            let objects = objects_at(endpoint, timeout, TenantId::generate());
+            match objects.get(VersionId::generate()) {
+                Err(ObjectError::Io(e)) => {
+                    assert_eq!(e.kind(), kind, "{why}: {e}");
+                    let text = e.to_string();
+                    for secret in [KEY_ID, SECRET] {
+                        assert!(!text.contains(secret), "{why}: {secret} in {text}");
+                    }
+                }
+                Err(ObjectError::Missing) => panic!("{why}: missing"),
+                Ok(_) => panic!("{why}: read"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_key_the_bucket_does_not_hold_is_missing() {
+        let objects = objects_at(
+            format!("http://{}", http_service(Some(NO_SUCH_KEY))),
+            Duration::from_secs(30),
+            TenantId::generate(),
+        );
+        assert!(
+            matches!(
+                objects.get(VersionId::generate()),
+                Err(ObjectError::Missing)
+            ),
+            "NoSuchKey is a missing object"
+        );
     }
 
     /// `serve` makes the client inside its own runtime, where a second
@@ -1065,7 +1233,18 @@ mod remote {
             let s3 = self.s3.clone();
             let objects = Arc::new(s3.tenant(tenant));
             let planted = self.s3.clone();
-            let open = move || {
+            // A client of a service that never answers, for `unreadable`.
+            let silent = S3::connect(
+                &S3Settings {
+                    endpoint: Some(format!("http://{}", super::tests::http_service(None))),
+                    timeout: Duration::from_secs(1),
+                    ..settings("unanswered")
+                },
+                Some(&var("VCON_TEST_S3_SECRET_KEY")),
+                None,
+            )
+            .expect("a client");
+            let open = std::rc::Rc::new(move |s3: &Arc<S3>, recover: bool| {
                 let key = envelope::unwrap(&master, &ctx, &wrapped).expect("unwraps");
                 let catalog_key = envelope::catalog_key(&key).expect("catalog key");
                 let catalog =
@@ -1077,13 +1256,16 @@ mod remote {
                     Arc::new(s3.tenant(tenant)),
                     Arc::new(OsFs),
                     clock.clone(),
-                    true,
+                    recover,
                 )
                 .expect("opens")
-            };
+            });
+            let reopen = open.clone();
+            let unreadable = open.clone();
             Fresh {
-                store: open(),
-                reopen: Box::new(open),
+                store: open(&s3, true),
+                reopen: Box::new(move || reopen(&s3, true)),
+                unreadable: Box::new(move || unreadable(&silent, false)),
                 objects,
                 plant: Box::new(move |name, bytes| {
                     let call = planted
@@ -1133,6 +1315,52 @@ mod remote {
             "a removed object is missing, not an I/O failure"
         );
         assert!(objects.list().expect("list").is_empty(), "nothing is left");
+    }
+
+    /// A read with a key the service refuses (one it does not know, or the
+    /// right one signed with a wrong secret) is a refused read, the kind a
+    /// file the process may not read gives, not a missing object; its
+    /// text holds neither credential.
+    #[test]
+    fn a_read_with_a_refused_key_is_a_failure_not_missing() {
+        let (s3, settings) = bucket(false);
+        let tenant = TenantId::generate();
+        let version = VersionId::generate();
+        s3.tenant(tenant)
+            .put(version, b"sealed bytes")
+            .expect("put");
+        let known = var("VCON_TEST_S3_ACCESS_KEY");
+        for (id, secret, why) in [
+            (
+                "vcon-test-unknown-key",
+                "an-unknown-secret",
+                "a key it does not know",
+            ),
+            (known.as_str(), "not-the-secret", "a wrong secret"),
+        ] {
+            let refused = S3::connect(
+                &S3Settings {
+                    access_key_id: Some(id.to_owned()),
+                    ..settings.clone()
+                },
+                Some(secret),
+                None,
+            )
+            .expect("a client");
+            match refused.tenant(tenant).get(version) {
+                Err(ObjectError::Io(e)) => {
+                    assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied, "{why}: {e}");
+                    let text = e.to_string();
+                    assert!(!text.contains(secret), "{why}: the secret in {text}");
+                    assert!(
+                        !text.contains(&var("VCON_TEST_S3_SECRET_KEY")),
+                        "{why}: {text}"
+                    );
+                }
+                Err(ObjectError::Missing) => panic!("{why}: missing"),
+                Ok(_) => panic!("{why}: read"),
+            }
+        }
     }
 
     #[test]

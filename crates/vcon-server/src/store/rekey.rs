@@ -2,7 +2,7 @@
 //! key, wrapped under the old tenant key, is rewrapped under the new one.
 //! Bodies are never re-encrypted.
 
-use super::{Store, StoreError, commit};
+use super::{Store, StoreError, commit, key_failed};
 use crate::envelope::{self, Context, Key, WrapLimit};
 
 impl Store {
@@ -24,8 +24,8 @@ impl Store {
                 uuid: row.uuid,
                 version: row.version,
             };
-            let rewrapped = envelope::rewrap(&self.tenant_key, new, &ctx, &row.wrapped)
-                .map_err(|_| StoreError::Damaged)?;
+            let rewrapped =
+                envelope::rewrap(&self.tenant_key, new, &ctx, &row.wrapped).map_err(key_failed)?;
             tx.set_wrapped(row.version, new.id(), &rewrapped)?;
             tx.add_wrap(new.id())?;
         }

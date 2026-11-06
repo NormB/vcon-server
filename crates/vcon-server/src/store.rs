@@ -602,7 +602,7 @@ impl Store {
     }
 
     /// The plaintext of a stored version. A missing row or object, or one
-    /// that does not open, is damage.
+    /// that does not open, is damage; a read the storage fails is Io.
     fn read_version(
         &self,
         tx: &mut Tx,
@@ -625,9 +625,8 @@ impl Store {
             uuid,
             version,
         };
-        let data_key =
-            envelope::unwrap(&self.tenant_key, &ctx, wrapped).map_err(|_| StoreError::Damaged)?;
-        let blob = self.objects.get(version).map_err(|_| StoreError::Damaged)?;
+        let data_key = envelope::unwrap(&self.tenant_key, &ctx, wrapped).map_err(key_failed)?;
+        let blob = self.objects.get(version).map_err(read_failed)?;
         envelope::open(&data_key, &ctx, &blob).map_err(|_| StoreError::Damaged)
     }
 
@@ -788,6 +787,34 @@ fn kept(
         unknown.set(e == CommitError::Unknown);
         StoreError::Io
     })
+}
+
+/// A wrapped data key that did not open: damage if it does not open under
+/// the tenant key, and Io if its memory could not be locked.
+fn key_failed(e: envelope::KeyError) -> StoreError {
+    match e {
+        envelope::KeyError::Damaged => StoreError::Damaged,
+        _ => StoreError::Io,
+    }
+}
+
+/// A read of the object a version row names that failed: an object the
+/// storage does not hold is damage; any other failure (a disk error, a
+/// refused key, no answer in time) says nothing about the stored data, so
+/// it is Io and is logged by its kind. Its text is not logged: a service's
+/// message may name the object's key.
+fn read_failed(e: ObjectError) -> StoreError {
+    match e {
+        ObjectError::Missing => StoreError::Damaged,
+        ObjectError::Io(e) => {
+            tracing::warn!(
+                kind = %e.kind(),
+                os_error = e.raw_os_error(),
+                "a stored version's object could not be read"
+            );
+            StoreError::Io
+        }
+    }
 }
 
 fn io<E>(_: E) -> StoreError {
@@ -1506,6 +1533,232 @@ pub(crate) mod tests {
             f.store.get(&f.caller, found.uuid),
             Err(StoreError::Damaged),
             "tampered"
+        );
+    }
+
+    /// Makes the failure a read gives.
+    type Fail = fn() -> ObjectError;
+
+    /// Objects whose every read fails as `fail` makes the failure, and
+    /// whose other calls reach `inner`.
+    struct ReadsFail {
+        inner: Arc<dyn Objects>,
+        fail: Fail,
+    }
+
+    impl Objects for ReadsFail {
+        fn put(&self, version: VersionId, blob: &[u8]) -> Result<(), ObjectError> {
+            self.inner.put(version, blob)
+        }
+
+        fn get(&self, _: VersionId) -> Result<Vec<u8>, ObjectError> {
+            Err((self.fail)())
+        }
+
+        fn remove(&self, version: VersionId) -> Result<(), ObjectError> {
+            self.inner.remove(version)
+        }
+
+        fn list(&self) -> Result<Vec<String>, ObjectError> {
+            self.inner.list()
+        }
+
+        fn remove_name(&self, name: &str) -> Result<(), ObjectError> {
+            self.inner.remove_name(name)
+        }
+
+        fn sync(&self) -> Result<(), ObjectError> {
+            self.inner.sync()
+        }
+    }
+
+    /// A storage failure, of the kind the system or the S3 backend gives.
+    fn storage_failed(kind: std::io::ErrorKind) -> ObjectError {
+        ObjectError::Io(std::io::Error::from(kind))
+    }
+
+    /// Only an object the storage says is not there is damage: a read the
+    /// storage fails (a disk error, a refused key, no answer in time) is
+    /// a failure of the server, in every read that opens a version.
+    #[test]
+    fn a_read_the_storage_fails_is_io_and_only_a_missing_object_is_damage() {
+        let cases: [(Fail, StoreError, &str); 5] = [
+            (|| ObjectError::Missing, StoreError::Damaged, "missing"),
+            (
+                || ObjectError::Io(std::io::Error::from_raw_os_error(libc::EIO)),
+                StoreError::Io,
+                "EIO",
+            ),
+            (
+                || storage_failed(std::io::ErrorKind::PermissionDenied),
+                StoreError::Io,
+                "permission denied",
+            ),
+            (
+                || storage_failed(std::io::ErrorKind::ConnectionRefused),
+                StoreError::Io,
+                "connection refused",
+            ),
+            (
+                || storage_failed(std::io::ErrorKind::TimedOut),
+                StoreError::Io,
+                "timed out",
+            ),
+        ];
+        for (fail, expected, why) in cases {
+            let mut f = fixture();
+            let (found, body) = vcon(UUID, "first");
+            let Ok(Created::New(version)) = f.store.create(&f.caller, &found, &body) else {
+                panic!("a new vCon")
+            };
+            f.store.objects = Arc::new(ReadsFail {
+                inner: f.store.objects.clone(),
+                fail,
+            });
+            assert_eq!(
+                f.store.get(&f.caller, found.uuid),
+                Err(expected),
+                "{why}: get"
+            );
+            assert_eq!(get_entry_status(&f), 500, "{why}: get is recorded");
+            assert_eq!(
+                f.store.create(&f.caller, &found, &body),
+                Err(expected),
+                "{why}: create of the same body"
+            );
+            for asked in [None, Some(version)] {
+                assert_eq!(
+                    f.store.legal_get(&f.caller, found.uuid, asked).err(),
+                    Some(expected),
+                    "{why}: legal_get {asked:?}"
+                );
+            }
+            let examined = f.store.examine(
+                Retention::Years(7),
+                datetime!(2026-10-23 12:00 UTC),
+                datetime!(2026-10-23 12:00 UTC),
+            );
+            match expected {
+                StoreError::Damaged => assert_eq!(
+                    examined.map(|e| e.damaged),
+                    Ok(vec![version]),
+                    "{why}: examine lists the version"
+                ),
+                _ => assert_eq!(
+                    examined.err(),
+                    Some(expected),
+                    "{why}: examine fails, listing nothing as damaged"
+                ),
+            }
+        }
+    }
+
+    /// Collects what the log writes.
+    #[derive(Clone, Default)]
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("lock").extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+        type Writer = Capture;
+
+        fn make_writer(&'a self) -> Capture {
+            self.clone()
+        }
+    }
+
+    /// The text of a storage failure that names the object's key and a
+    /// credential, as a service's message might.
+    const LEAKY: &str = "tenants/1111/objects/0e0e AKIAIOSFODNN7EXAMPLE wJalrXUtnFEMI";
+
+    /// A failed read is logged with the failure's kind, and nothing of its
+    /// text, the tenant, the uuid or the version, which may name an
+    /// object's key or a credential.
+    #[test]
+    fn a_failed_read_is_logged_by_its_kind_only() {
+        let mut f = fixture();
+        let (found, body) = vcon(UUID, "first");
+        let Ok(Created::New(version)) = f.store.create(&f.caller, &found, &body) else {
+            panic!("a new vCon")
+        };
+        f.store.objects = Arc::new(ReadsFail {
+            inner: f.store.objects.clone(),
+            fail: || {
+                ObjectError::Io(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    LEAKY,
+                ))
+            },
+        });
+        let capture = Capture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(capture.clone())
+            .with_ansi(false)
+            .finish();
+        let read =
+            tracing::subscriber::with_default(subscriber, || f.store.get(&f.caller, found.uuid));
+        assert_eq!(read, Err(StoreError::Io), "the read fails as Io");
+        let log = String::from_utf8(capture.0.lock().expect("lock").clone()).expect("UTF-8");
+        assert!(log.contains("WARN"), "a warning: {log}");
+        assert!(
+            log.contains("kind=permission denied"),
+            "the kind is logged: {log}"
+        );
+        for secret in [
+            LEAKY,
+            "tenants/1111",
+            "AKIAIOSFODNN7EXAMPLE",
+            "wJalrXUtnFEMI",
+            UUID,
+            &version.to_string(),
+            &TENANT.to_string(),
+        ] {
+            assert!(!log.contains(secret), "{secret:?} is not logged: {log}");
+        }
+
+        // A file's failure carries the system's error number too.
+        f.store.objects = Arc::new(ReadsFail {
+            inner: f.store.objects.clone(),
+            fail: || ObjectError::Io(std::io::Error::from_raw_os_error(libc::EIO)),
+        });
+        let capture = Capture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(capture.clone())
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || f.store.get(&f.caller, found.uuid))
+            .expect_err("fails");
+        let log = String::from_utf8(capture.0.lock().expect("lock").clone()).expect("UTF-8");
+        assert!(
+            log.contains(&format!("os_error={}", libc::EIO)),
+            "the error number is logged: {log}"
+        );
+    }
+
+    /// A data key that does not open is damage; a key page the system will
+    /// not lock is a failure of the server, not of the stored data.
+    #[test]
+    fn only_a_wrapped_key_that_does_not_open_is_damage() {
+        assert_eq!(
+            key_failed(envelope::KeyError::Damaged),
+            StoreError::Damaged,
+            "a key that does not open"
+        );
+        assert_eq!(
+            key_failed(envelope::KeyError::Memory(
+                std::io::Error::from_raw_os_error(libc::ENOMEM)
+            )),
+            StoreError::Io,
+            "a key page that cannot be locked"
         );
     }
 

@@ -58,6 +58,11 @@ pub(crate) struct Fresh {
     pub(crate) objects: Arc<dyn Objects>,
     /// Plants an object around the Store.
     pub(crate) plant: Plant,
+    /// The same Store opened again, without start-up recovery, on objects
+    /// it cannot read: every read fails, and not as an absent object
+    /// (local: files the process may not read; S3: a service that does not
+    /// answer).
+    pub(crate) unreadable: Box<dyn Fn() -> Store>,
 }
 
 /// The moment every check starts at: 2026-10-23 12:00 UTC.
@@ -71,7 +76,7 @@ type Check = (&'static str, fn(&dyn Harness));
 
 /// Every check, in order; each panics with its name on failure.
 pub(crate) fn run(harness: &dyn Harness) {
-    let checks: [Check; 15] = [
+    let checks: [Check; 17] = [
         ("create_then_get", create_then_get),
         ("create_same_conflict_gone", create_same_conflict_gone),
         ("forms_read_back", forms_read_back),
@@ -92,6 +97,14 @@ pub(crate) fn run(harness: &dyn Harness) {
         (
             "purge_of_a_lost_object_finishes",
             purge_of_a_lost_object_finishes,
+        ),
+        (
+            "a_lost_or_altered_object_is_damage",
+            a_lost_or_altered_object_is_damage,
+        ),
+        (
+            "an_object_the_storage_cannot_read_is_a_failure",
+            an_object_the_storage_cannot_read_is_a_failure,
         ),
     ];
     for (name, check) in checks {
@@ -608,6 +621,87 @@ fn purge_of_a_lost_object_finishes(h: &dyn Harness) {
     );
 }
 
+/// Every read that opens a version answers `expected` for `uuid(n)`,
+/// whose current version is `version`: get, a create of the same body,
+/// and the legal reads of its current version and of `version` by id.
+fn reads_answer(
+    store: &Store,
+    who: &Caller,
+    n: u8,
+    version: VersionId,
+    expected: StoreError,
+    check: &str,
+) {
+    let (found, body) = vcon(&uuid(n), "first");
+    let id = found.uuid;
+    assert_eq!(store.get(who, id).err(), Some(expected), "{check}: get");
+    assert_eq!(
+        store.create(who, &found, &body).err(),
+        Some(expected),
+        "{check}: create of the same body"
+    );
+    for asked in [None, Some(version)] {
+        assert_eq!(
+            store.legal_get(who, id, asked).err(),
+            Some(expected),
+            "{check}: legal_get {asked:?}"
+        );
+    }
+}
+
+/// Damage is the stored data itself gone bad: an object a row names that
+/// the storage no longer holds, or one that does not open. Each read
+/// answers Damaged, and `examine` lists exactly those versions.
+fn a_lost_or_altered_object_is_damage(h: &dyn Harness) {
+    let f = h.fresh(TestClock::at(START));
+    let who = caller();
+    let (lost, _) = new_version(&f.store, &who, &uuid(1), "first");
+    let (altered, _) = new_version(&f.store, &who, &uuid(2), "first");
+    new_version(&f.store, &who, &uuid(3), "first");
+    f.objects
+        .remove_name(&lost.to_string())
+        .expect("removes the object around the Store");
+    (f.plant)(&altered.to_string(), b"not a sealed body");
+    let check = "a_lost_or_altered_object_is_damage";
+    reads_answer(&f.store, &who, 1, lost, StoreError::Damaged, check);
+    reads_answer(&f.store, &who, 2, altered, StoreError::Damaged, check);
+    let mut expected = vec![lost, altered];
+    expected.sort_by_key(|v| v.0);
+    assert_eq!(
+        f.store
+            .examine(Retention::Years(7), START, START)
+            .map(|e| e.damaged),
+        Ok(expected),
+        "{check}: examine lists the lost and the altered version"
+    );
+}
+
+/// A read the storage fails (it cannot be reached, refuses, or does not
+/// answer) says nothing about the stored data: each read answers Io, not
+/// Damaged, and `examine` fails rather than list a sound version as
+/// damaged.
+fn an_object_the_storage_cannot_read_is_a_failure(h: &dyn Harness) {
+    let f = h.fresh(TestClock::at(START));
+    let who = caller();
+    let (version, _) = new_version(&f.store, &who, &uuid(1), "first");
+    drop(f.store);
+    let store = (f.unreadable)();
+    let check = "an_object_the_storage_cannot_read_is_a_failure";
+    reads_answer(&store, &who, 1, version, StoreError::Io, check);
+    assert_eq!(
+        store.examine(Retention::Years(7), START, START).err(),
+        Some(StoreError::Io),
+        "{check}: examine"
+    );
+    drop(store);
+    let (found, body) = vcon(&uuid(1), "first");
+    assert_eq!(
+        (f.reopen)().create(&who, &found, &body),
+        Ok(Created::Same(version)),
+        "{check}: the version reads again once the storage does"
+    );
+}
+
 /// The local backend on a temporary directory.
 #[cfg(test)]
 mod local {
@@ -630,7 +724,7 @@ mod local {
             };
             let wrapped = envelope::wrap(&master, &ctx, &key);
             let objects_dir = dir.join("objects");
-            let open = move || {
+            let open = std::rc::Rc::new(move || {
                 let key = envelope::unwrap(&master, &ctx, &wrapped).expect("unwraps");
                 Store::open(
                     &dir,
@@ -640,12 +734,35 @@ mod local {
                     clock.clone(),
                 )
                 .expect("opens")
-            };
+            });
             let store = open();
             let plant_dir = objects_dir.clone();
+            let unreadable_dir = objects_dir.clone();
+            let reopen = open.clone();
+            let readable_dir = objects_dir.clone();
             Fresh {
                 store,
-                reopen: Box::new(open),
+                reopen: Box::new(move || {
+                    // Readable again, if `unreadable` made them not.
+                    use std::os::unix::fs::PermissionsExt;
+                    for entry in std::fs::read_dir(&readable_dir).expect("objects") {
+                        let path = entry.expect("an entry").path();
+                        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                            .expect("chmod");
+                    }
+                    reopen()
+                }),
+                unreadable: Box::new(move || {
+                    // Each object file mode 000 until the next open.
+                    use std::os::unix::fs::PermissionsExt;
+                    let store = open();
+                    for entry in std::fs::read_dir(&unreadable_dir).expect("objects") {
+                        let path = entry.expect("an entry").path();
+                        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000))
+                            .expect("chmod");
+                    }
+                    store
+                }),
                 objects: Arc::new(LocalObjects::new(objects_dir, Arc::new(OsFs))),
                 plant: Box::new(move |name, bytes| {
                     std::fs::write(plant_dir.join(name), bytes).expect("plants an object file");

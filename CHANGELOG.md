@@ -87,6 +87,16 @@ All notable changes to this project are recorded here. The format follows
   after deleting the version's row, so the rest of the sweep and the WAL
   checkpoint that follows it did not run. A missing object now counts as
   removed.
+- A read whose object the storage failed to give answered `500 damaged`,
+  and `vcon-server check` listed the version as damaged, though the stored
+  data may be sound: an object file the process may not read or that the
+  disk fails to read, a key page the system would not lock, and with the
+  objects in an S3 bucket a service that cannot be reached, refuses the key
+  or does not answer in time. These now answer `500 internal`, and the
+  server logs `a stored version's object could not be read` with the
+  failure's `kind` (such as `permission denied` or `timed out`), never its
+  text, a key or an id. `damaged` is now only an object that is missing
+  while its row is kept, or one that does not decrypt and authenticate.
 
 ## [0.3.0] - 2026-11-04
 

@@ -126,6 +126,17 @@ take them:
   2026-11-06T03:25:31.882438Z  INFO vcon_server::store: start-up recovery removed objects that no catalog row names removed=2
   ```
 
+- `a stored version's object could not be read`, a `WARN` line with the
+  failure's `kind` and, for a file, `os_error`, the system's error number,
+  when a read's object file or S3 object could not be read for a reason
+  other than its absence; the request answers
+  [internal](@/problems/internal.md). The line holds no text of the error,
+  since a service's message may name the object:
+
+  ```text
+  2026-11-06T04:36:06.578959Z  WARN vcon_server::store: a stored version's object could not be read kind=permission denied
+  ```
+
 - a `WARN` line, at start and then daily, while key rotation is overdue,
   with counts only: `tenants_with_purges`, the tenants with purges since
   their key was last rotated; `purges`, those purges; and `removals`, the
