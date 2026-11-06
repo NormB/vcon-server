@@ -673,14 +673,17 @@ mod tests {
             .replace(&f.caller, v1, &found, &body)
             .expect("replaced");
         let before = f.store.list(&f.caller, &query(10)).expect("a page");
-        // Back to version 1: no stored_at column and no index.
+        // Back to version 1: no stored_at column and no index, and none of
+        // version 4's places and pack tables.
         f.store
             .conn_for_test()
-            .execute_batch(
-                "DROP INDEX vcon_listed;
+            .execute_batch(&format!(
+                "{}
+                 DROP INDEX vcon_listed;
                  ALTER TABLE vcon DROP COLUMN stored_at;
                  PRAGMA user_version = 1;",
-            )
+                crate::store::packed::tests::BEFORE_PACKS
+            ))
             .expect("made version 1");
         f.reopen();
         let version: i64 = f

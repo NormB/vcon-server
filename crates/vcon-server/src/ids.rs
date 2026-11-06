@@ -65,6 +65,24 @@ impl VersionId {
     }
 }
 
+/// A Parquet file of packed versions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FileId(pub [u8; 16]);
+
+impl FileId {
+    /// A new random file id.
+    #[must_use]
+    pub fn generate() -> FileId {
+        FileId(random())
+    }
+
+    /// Reads a file id written by `Display`: exactly 32 lowercase hex
+    /// digits.
+    pub fn parse(text: &str) -> Option<FileId> {
+        unhex(text).map(FileId)
+    }
+}
+
 fn random<const N: usize>() -> [u8; N] {
     let mut bytes = [0; N];
     // AWS-LC's RAND_bytes aborts the process when it cannot get enough
@@ -109,6 +127,12 @@ impl fmt::Display for TenantId {
 }
 
 impl fmt::Display for VersionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        hex(&self.0, f)
+    }
+}
+
+impl fmt::Display for FileId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         hex(&self.0, f)
     }
@@ -180,6 +204,37 @@ mod tests {
     fn ids_are_random() {
         varies(&(0..8).map(|_| VersionId::generate().0).collect::<Vec<_>>());
         varies(&(0..8).map(|_| TenantId::generate().0).collect::<Vec<_>>());
+        varies(&(0..8).map(|_| FileId::generate().0).collect::<Vec<_>>());
+    }
+
+    /// A file id is written and read as a version id is, and only from its
+    /// own spelling.
+    #[test]
+    fn a_file_id_parses_only_from_its_own_spelling() {
+        let mut bytes = [0; 16];
+        bytes[0] = 0x0a;
+        bytes[15] = 0xff;
+        assert_eq!(
+            FileId(bytes).to_string(),
+            format!("0a{}ff", "00".repeat(14)),
+            "two lower-case hex digits per byte, in order, zeros kept"
+        );
+        let file = FileId::generate();
+        assert_eq!(
+            FileId::parse(&file.to_string()),
+            Some(file),
+            "parse reads the spelling Display writes"
+        );
+        let text = file.to_string();
+        for bad in misspelled(&text) {
+            if bad != text {
+                assert_eq!(
+                    FileId::parse(&bad),
+                    None,
+                    "not a file id's spelling: {bad:?}"
+                );
+            }
+        }
     }
 
     /// The spellings parse refuses, given one id's own spelling `text`.

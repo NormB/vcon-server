@@ -34,13 +34,17 @@ aws-sdk-s3 = { version = "1.157.0", default-features = false, features = ["defau
 aws-smithy-http-client = { version = "1.5.2", default-features = false, features = ["rustls-aws-lc"], optional = true }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "http2", "matched-path"] }
 base64 = "0.23.1"
+# The buffer type parquet's readers take: a pack file's footer and pages are
+# read into it. Already in the build through parquet and the S3 client.
+bytes = "1.12.1"
 clap = { version = "4.6.7", features = ["derive"] }
 flate2 = "1.1.10"
 form_urlencoded = "1.2.2"
 http-body-util = "0.1.5"
 hyper-util = { version = "0.1.21", features = ["server-auto", "tokio", "service", "http1", "http2"] }
 libc = "0.2.191"
-# Parquet files for `export parquet`: the column writer only. No Arrow, and
+# Parquet files for `export parquet` and the pack files of Parquet storage:
+# the column writer and the page reader only. No Arrow, and
 # no compression codec: a sealed body is AES-GCM ciphertext, which does not
 # compress, and the metadata columns are small.
 parquet = { version = "=60.0.0", default-features = false }

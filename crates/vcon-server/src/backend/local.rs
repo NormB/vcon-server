@@ -13,15 +13,15 @@ use uuid::Uuid;
 
 use super::{
     Catalog, CatalogTx, CommitError, ExaminedRow, ExportedRow, HiddenRow, KeptRow, KeyRow,
-    ListedRow, NewVersion, ObjectError, ObjectPlace, Objects, PageQuery, Registry, RegistryTx,
-    TenantRow, TenantSpace, Under, VconRow, VersionRow, WrappedRow,
+    ListedRow, NewVersion, ObjectError, ObjectPlace, Objects, Packed, PageQuery, Registry,
+    RegistryTx, TenantRow, TenantSpace, Under, VconRow, VersionRow, WrappedRow,
 };
 use crate::audit::{self, Action, Actor, AuditError, Entry};
 use crate::catalog;
 use crate::clock::{Clock, nanos};
 use crate::envelope::{self, Context, Key};
 use crate::fs::Fs;
-use crate::ids::{KeyId, TenantId, VersionId};
+use crate::ids::{FileId, KeyId, TenantId, VersionId};
 use crate::store::{OpenError, Store, StoreError};
 use crate::tenants::{OpenStep, RegistryError, TenantError};
 
@@ -50,7 +50,10 @@ CREATE TABLE version (
     stored_at INTEGER NOT NULL,
     hidden_at INTEGER,
     tenant_key_id BLOB NOT NULL,
-    wrapped_key BLOB NOT NULL
+    wrapped_key BLOB NOT NULL,
+    place_file BLOB,
+    place_group INTEGER,
+    place_row INTEGER
 );
 CREATE INDEX version_uuid ON version (uuid);
 CREATE TABLE tombstone (
@@ -80,7 +83,7 @@ pub struct LocalCatalog {
 impl LocalCatalog {
     /// Opens the catalog at `path` under `catalog_key`, making it if new.
     pub fn open(path: &Path, catalog_key: Key) -> Result<LocalCatalog, catalog::CatalogError> {
-        let schema = format!("{TABLES}{}", audit::SCHEMA);
+        let schema = format!("{TABLES}{}{}", catalog::PACK_TABLES, audit::SCHEMA);
         let conn = catalog::open(path, &catalog_key, &schema)?;
         Ok(LocalCatalog {
             conn: Mutex::new(conn),
@@ -251,20 +254,27 @@ impl CatalogTx for LocalTx<'_> {
     }
 
     fn version_row(&mut self, version: VersionId) -> Result<Option<VersionRow>, StoreError> {
-        let row: Option<(String, bool, Vec<u8>)> = self
+        let row: Option<(String, bool, Vec<u8>, RawPlace)> = self
             .conn
             .query_row(
-                "SELECT form, gzip, wrapped_key FROM version WHERE version = ?1",
+                &format!(
+                    "SELECT v.form, v.gzip, v.wrapped_key, {PLACE} FROM version v {PLACE_JOIN}
+                     WHERE v.version = ?1"
+                ),
                 [version.0],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, raw_place(r, 3)?)),
             )
             .optional()
             .map_err(io)?;
-        Ok(row.map(|(form, gzip, wrapped)| VersionRow {
-            form,
-            gzip,
-            wrapped,
-        }))
+        row.map(|(form, gzip, wrapped, place)| {
+            Ok(VersionRow {
+                form,
+                gzip,
+                wrapped,
+                place: packed(place)?,
+            })
+        })
+        .transpose()
     }
 
     fn has_version(&mut self, version: VersionId, uuid: Uuid) -> Result<bool, StoreError> {
@@ -370,8 +380,22 @@ impl CatalogTx for LocalTx<'_> {
         Ok(())
     }
 
-    fn version_ids(&mut self) -> Result<Vec<VersionId>, StoreError> {
-        self.versions("SELECT version FROM version ORDER BY version", [])
+    fn places(
+        &mut self,
+    ) -> Result<Vec<(VersionId, Result<Option<Packed>, StoreError>)>, StoreError> {
+        let mut rows = self
+            .conn
+            .prepare(&format!(
+                "SELECT v.version, {PLACE} FROM version v {PLACE_JOIN} ORDER BY v.version"
+            ))
+            .map_err(io)?;
+        rows.query_map([], |r| Ok((VersionId(r.get(0)?), raw_place(r, 1)?)))
+            .map_err(io)?
+            .map(|row| {
+                let (version, place) = row.map_err(io)?;
+                Ok((version, packed(place)))
+            })
+            .collect()
     }
 
     fn count_versions(&mut self) -> Result<u64, StoreError> {
@@ -610,28 +634,39 @@ impl CatalogTx for LocalTx<'_> {
     ) -> Result<Vec<ExportedRow>, StoreError> {
         let mut rows = self
             .conn
-            .prepare(
+            .prepare(&format!(
                 "SELECT v.version, v.uuid, v.form, v.gzip, v.size, v.stored_at,
-                        c.current IS v.version AND c.deleted_at IS NULL, v.wrapped_key
-                 FROM version v JOIN vcon c ON c.uuid = v.uuid
-                 WHERE (?1 IS NULL OR v.stored_at >= ?1) AND (?2 IS NULL OR v.stored_at < ?2)
-                 ORDER BY v.stored_at, v.version",
-            )
+                            c.current IS v.version AND c.deleted_at IS NULL, v.wrapped_key,
+                            {PLACE}
+                     FROM version v JOIN vcon c ON c.uuid = v.uuid {PLACE_JOIN}
+                     WHERE (?1 IS NULL OR v.stored_at >= ?1) AND (?2 IS NULL OR v.stored_at < ?2)
+                     ORDER BY v.stored_at, v.version"
+            ))
             .map_err(io)?;
         rows.query_map(params![since, until], |r| {
-            Ok(ExportedRow {
-                version: VersionId(r.get(0)?),
-                uuid: Uuid::from_bytes(r.get(1)?),
-                form: r.get(2)?,
-                gzip: r.get(3)?,
-                size: r.get(4)?,
-                stored_at: r.get(5)?,
-                live: r.get(6)?,
-                wrapped: r.get(7)?,
-            })
+            Ok((
+                ExportedRow {
+                    version: VersionId(r.get(0)?),
+                    uuid: Uuid::from_bytes(r.get(1)?),
+                    form: r.get(2)?,
+                    gzip: r.get(3)?,
+                    size: r.get(4)?,
+                    stored_at: r.get(5)?,
+                    live: r.get(6)?,
+                    wrapped: r.get(7)?,
+                    place: None,
+                },
+                raw_place(r, 8)?,
+            ))
         })
         .map_err(io)?
-        .map(|row| row.map_err(io))
+        .map(|row| {
+            let (row, place) = row.map_err(io)?;
+            Ok(ExportedRow {
+                place: packed(place)?,
+                ..row
+            })
+        })
         .collect()
     }
 
@@ -760,6 +795,55 @@ impl Objects for LocalObjects {
 
     fn sync(&self) -> Result<(), ObjectError> {
         self.fs.sync_dir(&self.dir).map_err(ObjectError::Io)
+    }
+}
+
+/// A version's place as selected by `PLACE`: its file, row group and
+/// row, and the file's date and length from its row.
+type RawPlace = (
+    Option<[u8; 16]>,
+    Option<i64>,
+    Option<i64>,
+    Option<String>,
+    Option<i64>,
+);
+
+/// The columns of a version's place, `v` being its version row and `f` its
+/// file's, which `PLACE_JOIN` joins.
+const PLACE: &str = "v.place_file, v.place_group, v.place_row, f.date, f.bytes";
+
+/// Joins a version row `v` to its pack file's row, if it has one.
+const PLACE_JOIN: &str = "LEFT JOIN parquet_file f ON f.file_id = v.place_file";
+
+/// The `PLACE` columns of `r`, starting at column `at`.
+fn raw_place(r: &rusqlite::Row, at: usize) -> rusqlite::Result<RawPlace> {
+    Ok((
+        r.get(at)?,
+        r.get(at + 1)?,
+        r.get(at + 2)?,
+        r.get(at + 3)?,
+        r.get(at + 4)?,
+    ))
+}
+
+/// A version's place: None with no file; a file with no row of its own,
+/// or a part of the place missing or out of range, is damage.
+fn packed(raw: RawPlace) -> Result<Option<Packed>, StoreError> {
+    match raw {
+        (None, None, None, _, _) => Ok(None),
+        (Some(file), Some(group), Some(row), Some(date), Some(bytes)) => {
+            let damaged = |_| StoreError::Damaged;
+            Ok(Some(Packed {
+                file: FileId(file),
+                date,
+                bytes: u64::try_from(bytes).map_err(damaged)?,
+                place: super::pack::Place {
+                    group: u32::try_from(group).map_err(damaged)?,
+                    row: u32::try_from(row).map_err(damaged)?,
+                },
+            }))
+        }
+        _ => Err(StoreError::Damaged),
     }
 }
 
@@ -1253,6 +1337,7 @@ impl TenantSpace for LocalTenantSpace {
                     key,
                     Box::new(catalog),
                     Arc::new(s3.tenant(id)),
+                    Some(Arc::new(s3.packs(id))),
                     self.fs.clone(),
                     clock,
                     recover,

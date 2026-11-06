@@ -3306,6 +3306,7 @@ dependencies = [
  "aws-smithy-http-client",
  "axum",
  "base64",
+ "bytes",
  "clap",
  "flate2",
  "form_urlencoded",

@@ -5,6 +5,7 @@
 
 use uuid::Uuid;
 
+use super::packed::Unread;
 use super::{Store, StoreError, key_failed, read_failed};
 use crate::backend::ObjectError;
 use crate::envelope::{self, Context};
@@ -27,6 +28,8 @@ pub struct KeptVersion {
     pub live: bool,
     /// The data key, wrapped under the tenant key.
     pub wrapped: Vec<u8>,
+    /// Where its sealed blob is when it is packed; None: in its object.
+    pub(crate) place: Option<crate::backend::Packed>,
 }
 
 impl Store {
@@ -55,18 +58,20 @@ impl Store {
                 stored_at: row.stored_at,
                 live: row.live,
                 wrapped: row.wrapped,
+                place: row.place,
             })
             .collect())
     }
 
-    /// The object of a version `kept_versions` listed, byte for byte. None
-    /// when the version has been purged since: its row is gone and its
-    /// object with it. An object missing while its row is still there is
-    /// damage.
+    /// The sealed blob of a version `kept_versions` listed, from its object
+    /// or its pack file, byte for byte. None when the version has been
+    /// purged since: its row is gone and its blob with it. A blob missing
+    /// while its row is still there is damage.
     pub fn sealed_of(&self, kept: &KeptVersion) -> Result<Option<Vec<u8>>, StoreError> {
-        match self.objects.get(kept.version) {
+        match self.sealed_blob(kept.version, kept.place.as_ref()) {
             Ok(sealed) => Ok(Some(sealed)),
-            Err(ObjectError::Missing) => {
+            Err(Unread::Damaged) => Err(StoreError::Damaged),
+            Err(Unread::Object(ObjectError::Missing)) => {
                 // A purge removes the row first, then the object.
                 let mut tx = self.catalog.snapshot()?;
                 if tx.has_version(kept.version, kept.uuid)? {
@@ -75,7 +80,7 @@ impl Store {
                     Ok(None)
                 }
             }
-            Err(e @ ObjectError::Io(_)) => Err(read_failed(e)),
+            Err(Unread::Object(e @ ObjectError::Io(_))) => Err(read_failed(e)),
         }
     }
 

@@ -216,13 +216,15 @@ fn write_all(
             open = Some((date, file));
         }
         let (_, file) = open.as_mut().expect("made above");
-        file.push(columns::Row {
-            version: k.version,
-            stored_at: k.stored_at,
-            sealed,
-            about,
-        })
-        .map_err(write_error)?;
+        // An export's reader finds a row by its columns, not its place.
+        let _place = file
+            .push(columns::Row {
+                version: k.version,
+                stored_at: k.stored_at,
+                sealed,
+                about,
+            })
+            .map_err(write_error)?;
         if k.live {
             live.push(k.version.to_string());
         }
@@ -378,7 +380,7 @@ fn about(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::io::Write as _;
     use std::path::{Path, PathBuf};
@@ -1187,11 +1189,11 @@ mod tests {
     /// `backend-tests` feature; without the variable every test fails, so
     /// a run without DuckDB never passes by skipping.
     #[cfg(feature = "backend-tests")]
-    mod duckdb {
+    pub(crate) mod duckdb {
         use super::*;
 
         /// Runs `sql` in DuckDB's CLI, in memory, and parses its JSON rows.
-        fn query(sql: &str) -> Vec<Value> {
+        pub(crate) fn query(sql: &str) -> Vec<Value> {
             let duckdb = std::env::var("VCON_TEST_DUCKDB").unwrap_or_else(|_| {
                 panic!("VCON_TEST_DUCKDB is not set: these tests need the DuckDB CLI")
             });

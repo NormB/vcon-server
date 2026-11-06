@@ -16,7 +16,9 @@ use vcon::read::Inspection;
 
 use crate::audit::{self, Action, Actor, Entry};
 use crate::backend::local::{LocalCatalog, LocalObjects};
-use crate::backend::{Catalog, CatalogTx, CommitError, NewVersion, ObjectError, Objects};
+use crate::backend::{
+    Catalog, CatalogTx, CommitError, NewVersion, ObjectError, Objects, Packed, Packs,
+};
 use crate::catalog;
 use crate::clock::{Clock, nanos};
 use crate::envelope::{self, Context, Key, WrapLimit};
@@ -29,6 +31,7 @@ mod examine;
 mod export;
 mod legal;
 mod list;
+pub(crate) mod packed;
 mod purge;
 mod rekey;
 
@@ -140,6 +143,11 @@ pub struct Store {
     tenant_key: Key,
     catalog: Box<dyn Catalog>,
     objects: Arc<dyn Objects>,
+    /// The pack files of packed versions; None where the storage keeps
+    /// none.
+    packs: Option<Arc<dyn Packs>>,
+    /// The footers of the pack files read.
+    footers: packed::Footers,
     /// The filesystem a backup is written to.
     fs: Arc<dyn Fs>,
     clock: Arc<dyn Clock>,
@@ -194,6 +202,7 @@ impl Store {
             tenant_key,
             Box::new(catalog),
             Arc::new(LocalObjects::new(objects.clone(), fs.clone())),
+            None,
             fs,
             clock,
         );
@@ -204,32 +213,38 @@ impl Store {
         Ok(store)
     }
 
-    /// A Store over the given catalog and objects; with `recover`, start-up
-    /// recovery runs, as `open` runs it.
+    /// A Store over the given catalog, objects and pack files; with
+    /// `recover`, start-up recovery runs, as `open` runs it.
     #[cfg(feature = "s3")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each backend is its own argument"
+    )]
     pub(crate) fn open_on(
         tenant: TenantId,
         tenant_key: Key,
         catalog: Box<dyn Catalog>,
         objects: Arc<dyn Objects>,
+        packs: Option<Arc<dyn Packs>>,
         fs: Arc<dyn Fs>,
         clock: Arc<dyn Clock>,
         recover: bool,
     ) -> Result<Store, OpenError> {
-        let store = Store::with_backends(tenant, tenant_key, catalog, objects, fs, clock);
+        let store = Store::with_backends(tenant, tenant_key, catalog, objects, packs, fs, clock);
         if recover {
             store.recover()?;
         }
         Ok(store)
     }
 
-    /// A Store over the given catalog and objects, opened as `open_beside`
-    /// opens one: without start-up recovery.
+    /// A Store over the given catalog, objects and pack files, opened as
+    /// `open_beside` opens one: without start-up recovery.
     pub(crate) fn with_backends(
         tenant: TenantId,
         tenant_key: Key,
         catalog: Box<dyn Catalog>,
         objects: Arc<dyn Objects>,
+        packs: Option<Arc<dyn Packs>>,
         fs: Arc<dyn Fs>,
         clock: Arc<dyn Clock>,
     ) -> Store {
@@ -238,6 +253,8 @@ impl Store {
             tenant_key,
             catalog,
             objects,
+            packs,
+            footers: packed::Footers::new(packed::FOOTERS),
             fs,
             clock,
             #[cfg(test)]
@@ -404,7 +421,7 @@ impl Store {
                 }
             };
             let opened = row.and_then(|row| {
-                let body = self.open_version(uuid, version, &row.wrapped)?;
+                let body = self.open_version(uuid, version, &row)?;
                 Ok(Stored {
                     version,
                     form: row.form,
@@ -548,16 +565,39 @@ impl Store {
         Ok(())
     }
 
-    /// Every version whose object is missing. Such a version answers 500
-    /// when read; it is reported, never dropped.
+    /// Every version whose object is missing, or, for a packed version,
+    /// whose pack file is missing or not the length its row says. Such a
+    /// version answers 500 when read; it is reported, never dropped.
     pub fn check(&self) -> Result<Vec<VersionId>, StoreError> {
-        let versions = self.catalog.snapshot()?.version_ids()?;
+        let versions = self.catalog.snapshot()?.places()?;
         let present: std::collections::BTreeSet<String> =
             self.objects.list().map_err(io)?.into_iter().collect();
-        Ok(versions
-            .into_iter()
-            .filter(|v| !present.contains(&v.to_string()))
-            .collect())
+        let mut whole = std::collections::HashMap::new();
+        let mut missing = Vec::new();
+        for (version, place) in versions {
+            let kept = match place {
+                Err(_) => false,
+                Ok(None) => present.contains(&version.to_string()),
+                Ok(Some(packed)) => match whole.get(&packed.file) {
+                    Some(&kept) => kept,
+                    None => {
+                        let kept = match &self.packs {
+                            None => false,
+                            Some(packs) => {
+                                let name = crate::backend::pack::name(&packed.date, packed.file);
+                                packs.size(&name).map_err(io)? == Some(packed.bytes)
+                            }
+                        };
+                        whole.insert(packed.file, kept);
+                        kept
+                    }
+                },
+            };
+            if !kept {
+                missing.push(version);
+            }
+        }
+        Ok(missing)
     }
 
     /// Seals `body` as a new version of `uuid` under a new data key, wraps
@@ -610,23 +650,27 @@ impl Store {
         version: VersionId,
     ) -> Result<Vec<u8>, StoreError> {
         let row = version_row(tx, version)?;
-        self.open_version(uuid, version, &row.wrapped)
+        self.open_version(uuid, version, &row)
     }
 
-    /// Opens a version's object with its wrapped data key.
+    /// Opens a version's sealed blob, from its object or its pack file,
+    /// with its wrapped data key.
     fn open_version(
         &self,
         uuid: Uuid,
         version: VersionId,
-        wrapped: &[u8],
+        row: &VersionRow,
     ) -> Result<Vec<u8>, StoreError> {
         let ctx = Context::Version {
             tenant: self.tenant,
             uuid,
             version,
         };
-        let data_key = envelope::unwrap(&self.tenant_key, &ctx, wrapped).map_err(key_failed)?;
-        let blob = self.objects.get(version).map_err(read_failed)?;
+        let data_key =
+            envelope::unwrap(&self.tenant_key, &ctx, &row.wrapped).map_err(key_failed)?;
+        let blob = self
+            .sealed_blob(version, row.place.as_ref())
+            .map_err(packed::Unread::into_store)?;
         envelope::open(&data_key, &ctx, &blob).map_err(|_| StoreError::Damaged)
     }
 
@@ -754,6 +798,7 @@ struct VersionRow {
     form: vcon::Form,
     gzip: bool,
     wrapped: Vec<u8>,
+    place: Option<Packed>,
 }
 
 /// A version's row; one missing, or with a form this build does not
@@ -770,6 +815,7 @@ fn version_row(tx: &mut Tx, version: VersionId) -> Result<VersionRow, StoreError
         form,
         gzip: row.gzip,
         wrapped: row.wrapped,
+        place: row.place,
     })
 }
 
@@ -2260,7 +2306,7 @@ pub(crate) mod tests {
     fn only_the_optional_catalog_columns_may_be_empty() {
         let f = fixture();
         let conn = f.store.conn();
-        let tables: [(&str, &[(&str, &str)]); 5] = [
+        let tables: [(&str, &[(&str, &str)]); 8] = [
             (
                 "vcon",
                 &[
@@ -2282,8 +2328,25 @@ pub(crate) mod tests {
                     ("hidden_at", "1"),
                     ("tenant_key_id", "x'03'"),
                     ("wrapped_key", "x'04'"),
+                    ("place_file", "x'05'"),
+                    ("place_group", "0"),
+                    ("place_row", "0"),
                 ],
             ),
+            (
+                "parquet_file",
+                &[
+                    ("file_id", "x'05'"),
+                    ("date", "'2026-10-23'"),
+                    ("rows", "1"),
+                    ("live_rows", "1"),
+                    ("bytes", "1"),
+                    ("created_at", "1"),
+                    ("unnamed_at", "1"),
+                ],
+            ),
+            ("purge_pending", &[("file_id", "x'05'")]),
+            ("manifest", &[("seq", "1"), ("published_at", "1")]),
             ("tombstone", &[("uuid", "x'01'"), ("purged_at", "1")]),
             ("key_use", &[("tenant_key_id", "x'03'"), ("wraps", "1")]),
             (
@@ -2309,6 +2372,13 @@ pub(crate) mod tests {
                 "vcon.current",
                 "vcon.deleted_at",
                 "version.hidden_at",
+                "version.place_file",
+                "version.place_group",
+                "version.place_row",
+                "parquet_file.unnamed_at",
+                // A rowid: NULL takes the next number, never a used one.
+                "manifest.seq",
+                "manifest.published_at",
                 "audit.target",
                 "audit.version"
             ]

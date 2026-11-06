@@ -80,7 +80,8 @@ jobs:
 
   backends:
     # The store conformance suite, the S3 backend's own tests, the Parquet
-    # export's tests (to a bucket, and read back with DuckDB) and `serve`
+    # export's tests (to a bucket, and read back with DuckDB), the pack
+    # files' tests (read back with DuckDB) and `serve`
     # with its objects in a bucket, against a real S3-compatible service:
     # RustFS 1.0.4, pinned by the digest of its multi-platform index, as a
     # service container that only this job reaches. Each test makes a
@@ -143,6 +144,7 @@ jobs:
           sudo prlimit --pid $$ --memlock=unlimited:unlimited
           cargo test -p vcon-server --locked --features backend-tests --no-fail-fast --lib "backend::"
           cargo test -p vcon-server --locked --features backend-tests --no-fail-fast --lib "export::"
+          cargo test -p vcon-server --locked --features backend-tests --no-fail-fast --lib "store::packed::"
           cargo test -p vcon-server --locked --features backend-tests --no-fail-fast --test serve "s3::"
 
   backends-minio:

@@ -21,13 +21,14 @@ use uuid::Uuid;
 use crate::audit::{Action, AuditError, Entry};
 use crate::clock::Clock;
 use crate::envelope::Key;
-use crate::ids::{KeyId, TenantId, VersionId};
+use crate::ids::{FileId, KeyId, TenantId, VersionId};
 use crate::store::{OpenError, Store, StoreError};
 use crate::tenants::TenantError;
 
 #[cfg(test)]
 mod conformance;
 pub mod local;
+pub(crate) mod pack;
 #[cfg(feature = "s3")]
 pub(crate) mod s3;
 
@@ -45,6 +46,20 @@ pub struct VersionRow {
     pub form: String,
     pub gzip: bool,
     pub wrapped: Vec<u8>,
+    /// Where its sealed blob is when it is packed; None: in its object.
+    pub place: Option<Packed>,
+}
+
+/// A packed version's row in its pack file, and the file as its catalog
+/// row records it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Packed {
+    pub file: FileId,
+    /// The UTC store date of the file's rows, as its name writes it.
+    pub date: String,
+    /// The file's length in bytes.
+    pub bytes: u64,
+    pub place: pack::Place,
 }
 
 /// A version row to add.
@@ -120,6 +135,8 @@ pub struct ExportedRow {
     /// Its uuid's current version, and the uuid not deleted.
     pub live: bool,
     pub wrapped: Vec<u8>,
+    /// Where its sealed blob is when it is packed; None: in its object.
+    pub place: Option<Packed>,
 }
 
 /// A data key to rewrap.
@@ -209,8 +226,12 @@ pub trait CatalogTx {
     /// Wraps counted against a tenant key.
     fn wraps(&mut self, key: KeyId) -> Result<u64, StoreError>;
     fn add_wrap(&mut self, key: KeyId) -> Result<(), StoreError>;
-    /// Every version id, in order.
-    fn version_ids(&mut self) -> Result<Vec<VersionId>, StoreError>;
+    /// Every version id with its place, in version order; a place that is
+    /// not whole is `Damaged` for that version alone.
+    #[expect(clippy::type_complexity, reason = "one result per version")]
+    fn places(
+        &mut self,
+    ) -> Result<Vec<(VersionId, Result<Option<Packed>, StoreError>)>, StoreError>;
     fn count_versions(&mut self) -> Result<u64, StoreError>;
     fn count_held(&mut self) -> Result<u64, StoreError>;
     /// The hidden versions, of one uuid or of all.
@@ -316,6 +337,16 @@ pub trait Objects: Send + Sync {
     fn remove_name(&self, name: &str) -> Result<(), ObjectError>;
     /// Makes removals durable.
     fn sync(&self) -> Result<(), ObjectError>;
+}
+
+/// One tenant's pack files, each named by `pack::name` under the tenant's
+/// own directory. A file never changes once written.
+pub trait Packs: Send + Sync + std::fmt::Debug {
+    /// `len` bytes of the file `name` from byte `start`; fewer if the file
+    /// ends sooner. `Missing` if no file has the name.
+    fn read(&self, name: &str, start: u64, len: u64) -> Result<Vec<u8>, ObjectError>;
+    /// The file's length; None if no file has the name.
+    fn size(&self, name: &str) -> Result<Option<u64>, ObjectError>;
 }
 
 /// A tenant's row in the registry, as stored.

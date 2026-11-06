@@ -2,7 +2,9 @@
 //! blob of each version, byte for byte as the local backend writes it, at
 //! `<prefix>tenants/<tenant id>/objects/<version id>`. A PUT that returns
 //! success is the durable write, and no partial object is ever visible,
-//! so there are no temporary names.
+//! so there are no temporary names. A tenant's pack files are under the
+//! same tenant name, at `<prefix>tenants/<tenant id>/` and the name
+//! `pack::name` gives, and are read by ranges.
 
 use std::future::Future;
 use std::io::Read;
@@ -22,7 +24,7 @@ use zeroize::Zeroizing;
 
 mod claim;
 
-use super::{ObjectError, Objects};
+use super::{ObjectError, Objects, Packs};
 use crate::config::{S3Settings, StorageError};
 use crate::ids::{TenantId, VersionId};
 
@@ -463,6 +465,14 @@ impl S3 {
         tenant_dir(&self.prefix, tenant)
     }
 
+    /// One tenant's pack files.
+    pub(crate) fn packs(self: &Arc<S3>, tenant: TenantId) -> S3Packs {
+        S3Packs {
+            s3: self.clone(),
+            dir: tenant_root(&self.prefix, tenant),
+        }
+    }
+
     /// One tenant's objects.
     pub(crate) fn tenant(self: &Arc<S3>, tenant: TenantId) -> S3Objects {
         S3Objects {
@@ -558,9 +568,15 @@ impl S3 {
     }
 }
 
+/// The name before every object and pack file of `tenant`, under
+/// `prefix`.
+fn tenant_root(prefix: &str, tenant: TenantId) -> String {
+    format!("{prefix}tenants/{tenant}/")
+}
+
 /// The name before every object of `tenant`, under `prefix`.
 fn tenant_dir(prefix: &str, tenant: TenantId) -> String {
-    format!("{prefix}tenants/{tenant}/objects/")
+    format!("{}objects/", tenant_root(prefix, tenant))
 }
 
 /// `e` as an object error whose text holds its whole chain of causes: the
@@ -698,6 +714,72 @@ impl Objects for S3Objects {
     /// A DeleteObject is durable once it returns.
     fn sync(&self) -> Result<(), ObjectError> {
         Ok(())
+    }
+}
+
+/// One tenant's pack files, under its own name in the bucket.
+#[derive(Debug)]
+pub(crate) struct S3Packs {
+    s3: Arc<S3>,
+    dir: String,
+}
+
+impl Packs for S3Packs {
+    /// A ranged GetObject. A range that starts at or past the end of the
+    /// file (416) reads as no bytes: the file ends sooner.
+    fn read(&self, name: &str, start: u64, len: u64) -> Result<Vec<u8>, ObjectError> {
+        let Some(last) = len.checked_sub(1).and_then(|n| start.checked_add(n)) else {
+            return Ok(Vec::new());
+        };
+        let call = self
+            .s3
+            .client
+            .get_object()
+            .bucket(&self.s3.bucket)
+            .key(format!("{}{name}", self.dir))
+            .range(format!("bytes={start}-{last}"))
+            .send();
+        self.s3.wait(async move {
+            match call.await {
+                Ok(out) => out
+                    .body
+                    .collect()
+                    .await
+                    .map(|bytes| bytes.to_vec())
+                    .map_err(failed),
+                Err(SdkError::ServiceError(e)) if e.err().is_no_such_key() => {
+                    Err(ObjectError::Missing)
+                }
+                Err(SdkError::ServiceError(e)) if e.raw().status().as_u16() == 416 => {
+                    Ok(Vec::new())
+                }
+                Err(e) => Err(sdk_failed(e)),
+            }
+        })?
+    }
+
+    /// A HeadObject.
+    fn size(&self, name: &str) -> Result<Option<u64>, ObjectError> {
+        let call = self
+            .s3
+            .client
+            .head_object()
+            .bucket(&self.s3.bucket)
+            .key(format!("{}{name}", self.dir))
+            .send();
+        match self.s3.wait(call)? {
+            Ok(out) => {
+                let length = out.content_length().unwrap_or(0);
+                u64::try_from(length).map(Some).map_err(|_| {
+                    ObjectError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "a negative length",
+                    ))
+                })
+            }
+            Err(SdkError::ServiceError(e)) if e.err().is_not_found() => Ok(None),
+            Err(e) => Err(sdk_failed(e)),
+        }
     }
 }
 
@@ -1259,6 +1341,7 @@ mod remote {
                     key,
                     Box::new(catalog),
                     Arc::new(s3.tenant(tenant)),
+                    Some(Arc::new(s3.packs(tenant))),
                     Arc::new(OsFs),
                     clock.clone(),
                     recover,
@@ -1410,6 +1493,139 @@ mod remote {
             store.get(&who, found.uuid).expect("reads").body,
             body,
             "the stored vCon is kept"
+        );
+    }
+
+    /// A pack file is read by byte ranges and its length by HeadObject. A
+    /// range past its end reads what there is, one from its end reads no
+    /// bytes, and a name the bucket does not hold is Missing for a read and
+    /// no length for HeadObject. The file is under its tenant's name.
+    #[test]
+    fn a_pack_file_is_read_by_ranges_and_its_length_by_head() {
+        let (s3, _) = bucket(false);
+        let tenant = TenantId::generate();
+        let packs = s3.packs(tenant);
+        let bytes: Vec<u8> = (0..=255u8).cycle().take(5000).collect();
+        let name = crate::backend::pack::name("2026-11-06", crate::ids::FileId::generate());
+        assert!(
+            s3.put_new(&format!("tenants/{tenant}/{name}"), bytes.clone())
+                .expect("written"),
+            "a new name"
+        );
+        let read = |start, len| packs.read(&name, start, len).expect("reads");
+        assert_eq!(read(0, 10), bytes[..10], "the first bytes");
+        assert_eq!(read(2048, 300), bytes[2048..2348], "bytes inside");
+        assert_eq!(read(4990, 10), bytes[4990..], "the last bytes");
+        assert_eq!(read(4995, 10), bytes[4995..], "past the end: what there is");
+        assert_eq!(read(5000, 10), Vec::<u8>::new(), "from the end: none");
+        assert_eq!(read(7, 0), Vec::<u8>::new(), "no bytes asked");
+        assert_eq!(
+            packs.size(&name).expect("a length"),
+            Some(5000),
+            "HeadObject gives the file's length"
+        );
+        let absent = crate::backend::pack::name("2026-11-06", crate::ids::FileId::generate());
+        assert!(
+            matches!(packs.read(&absent, 0, 8), Err(ObjectError::Missing)),
+            "a name not held is Missing"
+        );
+        assert_eq!(packs.size(&absent).expect("answers"), None, "no length");
+        let names: Vec<String> = everything(&s3).into_iter().map(|(n, _)| n).collect();
+        assert_eq!(
+            names,
+            [format!("test/tenants/{tenant}/{name}")],
+            "where it is"
+        );
+    }
+
+    /// A Store over the bucket reads each packed version from its row in a
+    /// pack file in the bucket, byte for byte, and `check` finds nothing
+    /// missing; no object is left.
+    #[test]
+    fn a_packed_version_reads_back_from_the_bucket() {
+        let (s3, _) = bucket(false);
+        let harness = LocalAndS3 {
+            dir: tempfile::tempdir().expect("temp dir"),
+            s3: s3.clone(),
+        };
+        let fresh = harness.fresh(TestClock::at(conformance::START));
+        let caller = Caller {
+            key: crate::ids::KeyId::generate(),
+        };
+        let mut kept = Vec::new();
+        for n in 0..5u8 {
+            let uuid = format!("01a07da8-c2bb-83e5-b9a2-279e0d16bc4{n}");
+            let (found, body) = conformance::vcon(&uuid, &"subject ".repeat(usize::from(n) * 9));
+            let Ok(crate::store::Created::New(version)) =
+                fresh.store.create(&caller, &found, &body)
+            else {
+                panic!("a new vCon")
+            };
+            kept.push((found.uuid, version, body));
+        }
+        let tenant = fresh.store.tenant();
+        let put = |name: &str, bytes: &[u8]| {
+            assert!(
+                s3.put_new(&format!("tenants/{tenant}/{name}"), bytes.to_vec())
+                    .expect("written"),
+                "a new name"
+            );
+        };
+        let versions: Vec<_> = kept.iter().map(|(_, v, _)| *v).collect();
+        let (_, _, places) =
+            crate::store::packed::tests::pack_with(&fresh.store, &put, &versions, 600);
+        assert!(places.iter().any(|p| p.group > 0), "several row groups");
+        for store in [&fresh.store, &(fresh.reopen)()] {
+            for (uuid, version, body) in &kept {
+                let got = store.get(&caller, *uuid).expect("reads");
+                assert_eq!(got.version, *version, "the current version");
+                assert_eq!(&got.body, body, "byte for byte");
+            }
+            assert_eq!(store.check().expect("checked"), [], "nothing missing");
+        }
+        let names: Vec<String> = everything(&s3).into_iter().map(|(n, _)| n).collect();
+        assert!(
+            names.iter().all(|n| !n.contains("/objects/")),
+            "no object is left: {names:?}"
+        );
+        assert_eq!(
+            names.iter().filter(|n| n.ends_with(".parquet")).count(),
+            1,
+            "one pack file: {names:?}"
+        );
+    }
+
+    /// A tenant's Store, opened by the registry as a server opens it, reads
+    /// its packed versions from the bucket.
+    #[test]
+    fn a_tenants_store_reads_its_packed_versions_from_the_bucket() {
+        let (s3, _) = bucket(false);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let tenants = tenants_in(dir.path(), &s3);
+        let id = tenants
+            .create(crate::audit::Actor::Cli, "acme", None)
+            .expect("a tenant");
+        let who = Caller {
+            key: Key::generate().expect("key").id(),
+        };
+        let (found, body) = conformance::vcon("01a07da8-c2bb-83e5-b9a2-279e0d16bc03", "packed");
+        let store = tenants.store(id).expect("its store");
+        let Ok(crate::store::Created::New(version)) = store.create(&who, &found, &body) else {
+            panic!("a new vCon")
+        };
+        let put = |name: &str, bytes: &[u8]| {
+            assert!(
+                s3.put_new(&format!("tenants/{id}/{name}"), bytes.to_vec())
+                    .expect("written"),
+                "a new name"
+            );
+        };
+        crate::store::packed::tests::pack_with(&store, &put, &[version], usize::MAX);
+        assert!(s3.tenant(id).list().expect("list").is_empty(), "no object");
+        assert_eq!(
+            store.get(&who, found.uuid).expect("reads").body,
+            body,
+            "read from the pack file, byte for byte"
         );
     }
 

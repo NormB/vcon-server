@@ -110,6 +110,14 @@ pub struct About {
     pub parties: Option<String>,
 }
 
+/// Where a row is in its file: its row group, and its row in that group,
+/// both counted from 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Place {
+    pub group: u32,
+    pub row: u32,
+}
+
 /// How large a row group and a file may grow before the next is begun.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sizes {
@@ -146,6 +154,8 @@ pub struct File {
     pending_bytes: usize,
     sizes: Sizes,
     rows: u64,
+    /// Row groups written out.
+    groups: u32,
 }
 
 impl std::fmt::Debug for File {
@@ -182,18 +192,29 @@ impl File {
             pending_bytes: 0,
             sizes,
             rows: 0,
+            groups: 0,
         })
     }
 
-    /// Adds a row; a full row group is written out.
-    pub fn push(&mut self, row: Row) -> Result<(), WriteError> {
+    /// Adds a row, and says where it is in the file; a full row group is
+    /// written out.
+    pub fn push(&mut self, row: Row) -> Result<Place, WriteError> {
+        let too_many = || {
+            WriteError(parquet::errors::ParquetError::General(
+                "too many rows for one file".to_owned(),
+            ))
+        };
+        let place = Place {
+            group: self.groups,
+            row: u32::try_from(self.pending.len()).map_err(|_| too_many())?,
+        };
         self.pending_bytes += row.sealed.len();
         self.pending.push(row);
         self.rows += 1;
         if self.pending_bytes >= self.sizes.row_group {
             self.flush()?;
         }
-        Ok(())
+        Ok(place)
     }
 
     /// Writes the buffered rows as one row group.
@@ -210,6 +231,7 @@ impl File {
             column.close()?;
         }
         group.close()?;
+        self.groups += 1;
         Ok(())
     }
 

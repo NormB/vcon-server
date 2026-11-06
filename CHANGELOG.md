@@ -74,11 +74,13 @@ All notable changes to this project are recorded here. The format follows
 
 ### Changed
 
-- `server.sqlite` is at schema version 3, with each tenant's metadata level;
-  a server opens an older one and brings it up to date. Release 0.3.0 does
-  not open a data directory at version 3: go back to it only with the copy
-  taken before the upgrade, as [upgrade](https://vcon-server.com/docs/upgrading/)
-  describes.
+- Every catalog is at schema version 4: `server.sqlite` has each tenant's
+  metadata level, and each tenant's catalog has a place for each version
+  in a Parquet pack file and the tables of its pack files, all empty until
+  a later change packs versions. A server opens an older catalog and brings
+  it up to date. Release 0.3.0 does not open a data directory at version 3
+  or 4: go back to it only with the copy taken before the upgrade, as
+  [upgrade](https://vcon-server.com/docs/upgrading/) describes.
 
 ### Fixed
 

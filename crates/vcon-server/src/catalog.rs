@@ -10,8 +10,10 @@ use crate::envelope::Key;
 
 /// The schema version this build makes and reads. Version 2 added the
 /// time each uuid was first stored to a tenant catalog's vcon table;
-/// version 3 added each tenant's metadata level to server.sqlite.
-pub const SCHEMA_VERSION: i64 = 3;
+/// version 3 added each tenant's metadata level to server.sqlite; version
+/// 4 added the places of packed versions and the pack tables to a tenant
+/// catalog.
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// Brings a version-1 tenant catalog to version 2: each uuid's first store
 /// time, taken from its earliest kept version (the closest record left of
@@ -27,6 +29,43 @@ CREATE INDEX vcon_listed ON vcon (stored_at, uuid);
 /// Brings server.sqlite from version 2 to 3: each tenant's metadata level,
 /// NULL (`none`) for every tenant there is.
 const TENANT_METADATA: &str = "ALTER TABLE tenant ADD COLUMN metadata TEXT;";
+
+/// The tables of a tenant catalog's pack files, as a new catalog and an
+/// upgraded one both make them. A pack file's row records its UTC store
+/// date (its name holds it), its rows and the rows still kept, its length,
+/// when it was made and when the catalog stopped naming it. A purge that
+/// must still rewrite a file lists it in purge_pending, and each change of
+/// which files hold which rows takes the next manifest number, which
+/// AUTOINCREMENT never gives twice, even after a row is removed: a manifest
+/// is written once under its number's name.
+pub(crate) const PACK_TABLES: &str = "
+CREATE INDEX version_place ON version (place_file);
+CREATE TABLE parquet_file (
+    file_id BLOB PRIMARY KEY NOT NULL,
+    date TEXT NOT NULL,
+    rows INTEGER NOT NULL,
+    live_rows INTEGER NOT NULL,
+    bytes INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    unnamed_at INTEGER
+);
+CREATE TABLE purge_pending (
+    file_id BLOB PRIMARY KEY NOT NULL
+);
+CREATE TABLE manifest (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    published_at INTEGER
+);
+";
+
+/// Brings a version-3 tenant catalog to version 4: every version is in its
+/// object (no place), and no pack file is recorded. The columns are
+/// declared as a new catalog's version table declares them, last.
+const VERSION_PLACES: &str = "
+ALTER TABLE version ADD COLUMN place_file BLOB;
+ALTER TABLE version ADD COLUMN place_group INTEGER;
+ALTER TABLE version ADD COLUMN place_row INTEGER;
+";
 
 /// How long a statement waits for another connection's lock before it
 /// fails busy. It is rusqlite's own default, stated so it is chosen, not
@@ -135,7 +174,7 @@ pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogE
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
         }
-        from @ (1 | 2) => {
+        from @ 1..=3 => {
             // One transaction, so a failed upgrade leaves the old version
             // whole. A tenant catalog has a vcon table, server.sqlite a
             // tenant table.
@@ -150,8 +189,12 @@ pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogE
             if from < 2 && has("vcon")? {
                 tx.execute_batch(VCON_STORED_AT)?;
             }
-            if has("tenant")? {
+            if from < 3 && has("tenant")? {
                 tx.execute_batch(TENANT_METADATA)?;
+            }
+            if from < 4 && has("version")? {
+                tx.execute_batch(VERSION_PLACES)?;
+                tx.execute_batch(PACK_TABLES)?;
             }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;

@@ -110,7 +110,7 @@ impl Store {
             (None, None) => latest(tx, uuid)?,
         };
         let row = version_row(tx, version)?;
-        let body = self.open_version(uuid, version, &row.wrapped)?;
+        let body = self.open_version(uuid, version, &row)?;
         Ok(Legal {
             stored: Stored {
                 version,
