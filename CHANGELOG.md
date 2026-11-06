@@ -6,6 +6,37 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- vcon-server can keep its sealed vCon objects in a bucket of an
+  S3-compatible service (RustFS, MinIO, AWS S3): `storage.objects = "s3"`
+  and the `[storage.s3]` table, with the endpoint, region, bucket, prefix,
+  path style (RustFS, MinIO) or virtual-hosted style (AWS S3), an access
+  key id with its secret in a file or the AWS default credential chain,
+  `ca_file` for a service whose certificate a private certificate authority
+  signed, and a request timeout. Each object holds the same sealed bytes as
+  the local file, at `<prefix>tenants/<tenant id>/objects/<version id>`;
+  the catalogs, `server.sqlite`, the locks and the master key stay in
+  `data_dir`. A purge removes the object from the bucket. A bucket with
+  versioning on is refused unless `allow_versioning` is set. The first data
+  directory to start on an empty bucket and prefix claims it
+  (`storage.claim`, `<prefix>vcon-server.claim`), and any other is refused
+  there, since start-up recovery removes every object no catalog of its own
+  names. A start that cannot use the bucket names the cause: the service's
+  error code, a refused connection or an untrusted certificate. Without a
+  `[storage]` table nothing changes. Built with the `s3` cargo feature, on
+  by default. The how-to [keep vCons in an S3
+  bucket](https://vcon-server.com/docs/s3-storage/) sets up RustFS step by
+  step, and CI runs the store's conformance suite against RustFS.
+
+### Fixed
+
+- A purge sweep whose version had already lost its object file (removed by
+  hand, or by a purge cut off after its commit) stopped with an I/O error
+  after deleting the version's row, so the rest of the sweep and the WAL
+  checkpoint that follows it did not run. A missing object now counts as
+  removed.
+
 ## [0.3.0] - 2026-11-04
 
 ### Added

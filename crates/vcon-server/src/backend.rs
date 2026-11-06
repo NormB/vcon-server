@@ -28,6 +28,8 @@ use crate::tenants::TenantError;
 #[cfg(test)]
 mod conformance;
 pub mod local;
+#[cfg(feature = "s3")]
+pub(crate) mod s3;
 
 /// A tenant's catalog row for a uuid, as stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,7 +285,9 @@ pub trait Objects: Send + Sync {
     /// error nothing of it is left that `list` would call a version.
     fn put(&self, version: VersionId, blob: &[u8]) -> Result<(), ObjectError>;
     fn get(&self, version: VersionId) -> Result<Vec<u8>, ObjectError>;
-    /// Removes an object; one already absent is `Missing`.
+    /// Removes an object. One already absent is `Missing`, or Ok where the
+    /// storage cannot tell (S3 answers success either way); callers treat
+    /// both as removed.
     fn remove(&self, version: VersionId) -> Result<(), ObjectError>;
     /// Every name held, sorted, leftovers included.
     fn list(&self) -> Result<Vec<String>, ObjectError>;
@@ -411,4 +415,45 @@ pub trait TenantSpace: Send + Sync {
 pub enum Under {
     Old,
     New,
+}
+
+/// Where each tenant's sealed objects are kept, as the configuration says.
+#[derive(Debug, Clone, Default)]
+pub(crate) enum ObjectPlace {
+    /// Files in each tenant's directory.
+    #[default]
+    Local,
+    /// An S3-compatible bucket, under each tenant's own name.
+    #[cfg(feature = "s3")]
+    S3(Arc<s3::S3>),
+}
+
+/// The object place `storage` names, reached and checked: for a bucket,
+/// the secret key is read from its file, the client made, and the bucket's
+/// versioning read, which also shows that the bucket can be reached.
+///
+/// # Errors
+///
+/// A `StorageError` that says which setting or step failed.
+pub(crate) fn objects_for(
+    storage: &crate::config::Storage,
+    #[cfg_attr(
+        not(feature = "s3"),
+        expect(
+            unused_variables,
+            reason = "only a bucket is bound to a data directory"
+        )
+    )]
+    data_dir: &Path,
+) -> Result<ObjectPlace, crate::config::StorageError> {
+    match &storage.objects {
+        crate::config::ObjectStore::Local => Ok(ObjectPlace::Local),
+        #[cfg(feature = "s3")]
+        crate::config::ObjectStore::S3(settings) => s3::place(settings, data_dir),
+        #[cfg(not(feature = "s3"))]
+        crate::config::ObjectStore::S3(_) => Err(crate::config::StorageError(
+            "storage.objects is \"s3\", but this build has no S3 support (cargo feature s3)"
+                .to_owned(),
+        )),
+    }
 }

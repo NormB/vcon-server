@@ -202,6 +202,25 @@ impl Store {
         Ok(store)
     }
 
+    /// A Store over the given catalog and objects; with `recover`, start-up
+    /// recovery runs, as `open` runs it.
+    #[cfg(feature = "s3")]
+    pub(crate) fn open_on(
+        tenant: TenantId,
+        tenant_key: Key,
+        catalog: Box<dyn Catalog>,
+        objects: Arc<dyn Objects>,
+        fs: Arc<dyn Fs>,
+        clock: Arc<dyn Clock>,
+        recover: bool,
+    ) -> Result<Store, OpenError> {
+        let store = Store::with_backends(tenant, tenant_key, catalog, objects, fs, clock);
+        if recover {
+            store.recover()?;
+        }
+        Ok(store)
+    }
+
     /// A Store over the given catalog and objects, opened as `open_beside`
     /// opens one: without start-up recovery.
     pub(crate) fn with_backends(

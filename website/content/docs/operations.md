@@ -24,6 +24,49 @@ without the master key. Do not edit or move files by hand: start-up recovery
 treats an object file with no catalog row as a crash's leftover and removes
 it.
 
+## Objects in an S3 bucket
+
+With `storage.objects = "s3"` (see [configuration](@/docs/configuration.md#storage)
+and the how-to [keep vCons in an S3 bucket](@/docs/s3-storage.md)), each
+tenant's `objects/` directory is replaced by names in the bucket, under the
+configured prefix:
+
+```text
+<prefix>tenants/<tenant id>/objects/<version id>
+<prefix>vcon-server.claim
+```
+
+Each object holds the same sealed bytes the local file would. The
+catalogs, `server.sqlite`, the lock files, `storage.claim` and the master
+key stay in `data_dir`. At start, `serve` and every command read the secret
+key file, reach the bucket, read its versioning, and check the claim; a
+bucket with versioning on or suspended is refused unless
+`storage.s3.allow_versioning` is set, because it keeps a removed object's
+earlier version.
+
+- Start-up recovery removes an object no catalog row names, and the objects
+  of a tenant that has no row in `server.sqlite`. It does so only under a
+  prefix this data directory claimed: a prefix that another data directory
+  claimed, or that holds objects and no claim, is refused at start.
+- A purge removes the version's object from the bucket after its row is
+  deleted. An object already missing does not stop the purge.
+- `tenant remove` removes the tenant's objects from the bucket, a thousand
+  at a time, then its directory.
+- `check` reads every object, as it reads every local file: one request
+  for each version.
+- `backup` writes the local layout: it copies each object from the bucket
+  into the backup's `objects/` directories. A server restored from it with
+  no `[storage]` table keeps its objects as files. The backup holds no
+  `storage.claim`, so a server restored from it with the same `[storage]`
+  table refuses the prefix; its recovery would otherwise remove the objects
+  of versions stored after the backup.
+
+The bucket's operator sees object names (random ids), sizes and times; no
+object can be opened without the tenant key, which stays wrapped under the
+master key in `server.sqlite`. The account the server uses needs to get,
+put, delete and list objects in the bucket and read its versioning;
+nothing else.
+
 ## One server per directory
 
 `serve` takes `lock` exclusively and holds it while it runs. A second server

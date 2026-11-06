@@ -26,6 +26,8 @@ Who the server defends against:
   reason to read a vCon;
 - someone who obtains the data directory, a backup of it, or the request log,
   without the master key;
+- with [S3 storage](@/docs/s3-storage.md), someone who reads the bucket or
+  holds the server's S3 key;
 - crafted input: a malformed vCon, an oversized or deeply nested body, or a
   hostile request.
 
@@ -42,6 +44,7 @@ each stolen part gives.
 | Tenant to tenant | nothing | each key belongs to one tenant; each tenant has its own tenant key and catalog |
 | Operator key to vCons | nothing | an operator key holds only `admin` and can never reach a vCon |
 | Server to disk | sealed bodies, wrapped keys, catalogs | AES-256-GCM bound to tenant, uuid and version; SQLCipher catalogs; the master key is never stored by the server |
+| Server to an S3 bucket | sealed bodies only, named by random ids; no key and no uuid | TLS, with the certificate checked against the system's authorities or `storage.s3.ca_file`; the same AES-256-GCM sealing; a claim that keeps each bucket prefix to one data directory |
 | Server to swap and core dumps | nothing | all memory locked (`mlockall`), core dumps off, each key in its own locked page |
 | Server to browser | the console's pages and the data it shows | a content-security policy allowing only the console's own script; data shown as text |
 | Host operator to data | commands run as the service account | the master key file (mode 0400) and the data directory (mode 0700), owned by that account, as [Getting started](@/docs/getting-started.md) sets them up |

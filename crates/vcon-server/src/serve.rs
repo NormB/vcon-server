@@ -8,8 +8,9 @@ use std::{fmt, io};
 use tokio::net::TcpListener;
 
 use crate::api::{self, App, Limits, TlsError};
+use crate::backend;
 use crate::clock::{Clock, SystemClock};
-use crate::config::Config;
+use crate::config::{Config, StorageError};
 use crate::datadir::{self, LockError, Work};
 use crate::envelope::{Key, KeyError};
 use crate::fs::OsFs;
@@ -30,6 +31,8 @@ pub enum ServeError {
     Open(RegistryError),
     /// server.sqlite could not be read.
     Registry(TenantError),
+    /// The storage the configuration names cannot be used.
+    Storage(StorageError),
     /// Some tenant's data is not under its current key.
     KeysOutOfOrder(KeyOrder),
     /// The certificate or key could not be used.
@@ -92,6 +95,7 @@ impl fmt::Display for ServeError {
             ServeError::Tls(e) => write!(f, "the TLS certificate or key cannot be used: {e:?}"),
             ServeError::Listen(e) => write!(f, "the listening address cannot be bound: {e}"),
             ServeError::Serve(e) => write!(f, "serving failed: {e}"),
+            ServeError::Storage(e) => write!(f, "the storage cannot be used: {e}"),
         }
     }
 }
@@ -102,11 +106,14 @@ pub async fn run(config: &Config, shutdown: impl Future<Output = ()>) -> Result<
     let _lock =
         datadir::lock(&config.data_dir, Work::Serve.sharing()).map_err(ServeError::DataDir)?;
     let master = Key::load_master(&config.master_key).map_err(ServeError::MasterKey)?;
-    let tenants = Tenants::open(
+    let objects =
+        backend::objects_for(&config.storage, &config.data_dir).map_err(ServeError::Storage)?;
+    let tenants = Tenants::open_in(
         &config.data_dir,
         master,
         Arc::new(OsFs),
         Arc::new(SystemClock),
+        objects,
     )
     .map_err(|e| match e {
         RegistryError::WrongKey => ServeError::WrongMasterKey,
@@ -379,6 +386,7 @@ mod tests {
                 concurrent: 4,
                 response_bytes: 5,
             },
+            storage: crate::config::Storage::default(),
         };
         let app = app_from(&config, tenants.clone());
         assert!(Arc::ptr_eq(&app.tenants, &tenants));

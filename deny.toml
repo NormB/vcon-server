@@ -52,8 +52,10 @@ allow = [
 confidence-threshold = 0.93
 
 [bans]
-# Two versions of one crate are allowed (core-foundation, hashbrown, syn
-# and untrusted have two today), and shown.
+# Two versions of one crate are allowed (core-foundation, crypto-common,
+# digest, hashbrown, syn and untrusted have two today; crypto-common and
+# digest come in with the S3 client: its checksums and its request
+# signing use different versions), and shown.
 multiple-versions = "warn"
 # A dependency without a version is refused, except a path dependency
 # inside this repository (the workspace crates and the fuzz package).

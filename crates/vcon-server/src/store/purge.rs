@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use super::{Store, StoreError, commit, io};
 use crate::audit::{Action, Actor, Entry};
+use crate::backend::ObjectError;
 use crate::clock::{from_nanos, nanos};
 use crate::ids::VersionId;
 use crate::retention::Retention;
@@ -113,8 +114,13 @@ impl Store {
         };
         self.record(&mut tx, &entry)?;
         commit(tx)?;
-        self.objects.remove(version).map_err(io)?;
-        Ok(true)
+        // An object already gone is what the purge wants: it was lost, or
+        // removed by a purge cut off after its commit. Some storage (S3)
+        // cannot tell such a removal from any other.
+        match self.objects.remove(version) {
+            Ok(()) | Err(ObjectError::Missing) => Ok(true),
+            Err(e) => Err(io(e)),
+        }
     }
 }
 

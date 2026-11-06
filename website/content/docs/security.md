@@ -41,7 +41,10 @@ master key (32-byte file, never stored by the server)
 
 TLS only, via rustls with its safe default protocol versions (TLS 1.2 and
 1.3), HTTP/2 and HTTP/1.1. Tokens are compared by their SHA-256; the server
-never stores a token.
+never stores a token. With its objects in an
+[S3 bucket](@/docs/s3-storage.md), the server reaches the bucket over TLS
+too, with the certificate checked against the system's authorities or
+those in `storage.s3.ca_file`.
 
 ## In the browser
 
@@ -61,6 +64,8 @@ no framing.
 | A tenant key | its scopes, for its tenant, until revoked |
 | An operator key | tenant and key management over HTTP; never any vCon, and never a new operator key |
 | The request log | method, route template, status and timing only |
+| The bucket of [S3 storage](@/docs/s3-storage.md) | sealed objects only, named by random ids: no vCon, no uuid, and no key that opens one |
+| The S3 secret key | the same objects, and the power to delete them: no vCon, but a deleted object is a version lost, so keep the key as a secret and give it access to one bucket |
 
 [Key rotation](@/docs/operations.md#key-rotation) shortens "as of when they
 were taken": after it, old copies of the data cannot be opened with the new

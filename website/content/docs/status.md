@@ -26,6 +26,13 @@ what is built, unless it says otherwise.
 - **Encrypted storage.** AES-256-GCM per version under a per-version data key,
   tenant keys wrapped by the master key, SQLCipher catalogs, crash-safe writes
   and start-up recovery.
+- **Objects in an S3-compatible bucket**, after release 0.3.0: RustFS, MinIO
+  or AWS S3 keeps each version's sealed object, with path-style or
+  virtual-hosted addressing, a key from a file or from the AWS credential
+  chain, a private certificate authority, versioned buckets refused, and one
+  data directory for each bucket and prefix. The store's conformance suite
+  runs against RustFS in CI. See
+  [keep vCons in an S3 bucket](@/docs/s3-storage.md).
 - **The HTTP API over TLS.** Create, read, replace and delete; the legal
   routes (reads of deleted vCons, version history, restore, legal holds); the
   admin routes (tenants and their keys); health.

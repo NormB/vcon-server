@@ -13,7 +13,7 @@ use crate::audit::{self, Action, Actor, Entry};
 #[cfg(test)]
 use crate::backend::local::LocalConn;
 use crate::backend::local::{LocalRegistry, LocalTenantSpace};
-use crate::backend::{CommitError, Registry, RegistryTx, TenantRow, TenantSpace};
+use crate::backend::{CommitError, ObjectPlace, Registry, RegistryTx, TenantRow, TenantSpace};
 use crate::clock::{Clock, from_nanos, nanos};
 use crate::envelope::{self, Context, Key, WrapLimit};
 use crate::fs::Fs;
@@ -289,7 +289,19 @@ impl Tenants {
         fs: Arc<dyn Fs>,
         clock: Arc<dyn Clock>,
     ) -> Result<Tenants, RegistryError> {
-        let registry = Tenants::opened(dir, master, fs, clock, false)?;
+        Tenants::open_in(dir, master, fs, clock, ObjectPlace::Local)
+    }
+
+    /// Opens the registry as `open` does, with each tenant's objects kept
+    /// in `objects`.
+    pub(crate) fn open_in(
+        dir: &Path,
+        master: Key,
+        fs: Arc<dyn Fs>,
+        clock: Arc<dyn Clock>,
+        objects: ObjectPlace,
+    ) -> Result<Tenants, RegistryError> {
+        let registry = Tenants::opened(dir, master, fs, clock, false, objects)?;
         registry.recover().map_err(RegistryError::Recovery)?;
         Ok(registry)
     }
@@ -304,7 +316,19 @@ impl Tenants {
         fs: Arc<dyn Fs>,
         clock: Arc<dyn Clock>,
     ) -> Result<Tenants, RegistryError> {
-        Tenants::opened(dir, master, fs, clock, true)
+        Tenants::opened(dir, master, fs, clock, true, ObjectPlace::Local)
+    }
+
+    /// Opens the registry as `open_beside` does, with each tenant's objects
+    /// kept in `objects`.
+    pub(crate) fn open_beside_in(
+        dir: &Path,
+        master: Key,
+        fs: Arc<dyn Fs>,
+        clock: Arc<dyn Clock>,
+        objects: ObjectPlace,
+    ) -> Result<Tenants, RegistryError> {
+        Tenants::opened(dir, master, fs, clock, true, objects)
     }
 
     fn opened(
@@ -313,12 +337,13 @@ impl Tenants {
         fs: Arc<dyn Fs>,
         clock: Arc<dyn Clock>,
         beside: bool,
+        objects: ObjectPlace,
     ) -> Result<Tenants, RegistryError> {
         let catalog_key = envelope::catalog_key(&master).map_err(|e| {
             RegistryError::failed(OpenStep::CatalogKey, dir.join("server.sqlite"), e)
         })?;
         let registry = LocalRegistry::open(dir, catalog_key)?;
-        let space = LocalTenantSpace::open(dir, fs.clone())?;
+        let space = LocalTenantSpace::open(dir, fs.clone(), objects)?;
         Ok(Tenants::with_backends(
             Box::new(registry),
             Box::new(space),

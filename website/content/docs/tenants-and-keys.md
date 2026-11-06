@@ -12,7 +12,9 @@ apart from everyone else's. Each tenant has:
 - its own **tenant key**, wrapped by the master key, which wraps the data key
   of each of its stored versions and keys its catalog;
 - its own **directory** under `data_dir/tenants/`, holding its catalog
-  (`catalog.sqlite`) and its sealed object files;
+  (`catalog.sqlite`) and its sealed object files, or, with
+  [S3 storage](@/docs/s3-storage.md), its catalog only, with its objects
+  under `tenants/<tenant id>/objects/` in the bucket;
 - its own **retention period**, or the server default;
 - its own **audit log**, inside its catalog.
 

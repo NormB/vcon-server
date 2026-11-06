@@ -69,6 +69,28 @@ scripts/test-console.sh
 Each test makes its own tenant and keys through the admin API, and fails on
 any content-security violation in the page.
 
+The store's conformance suite runs on every backend. With the
+`backend-tests` feature it runs against a real S3-compatible service as
+well, with the S3 backend's own tests and `serve` keeping its objects in a
+bucket; CI's "storage backends (RustFS)" job runs them against RustFS. The
+tests fail, never skip, when the service is not there. Start a RustFS that
+listens on the loopback address only, and give the tests its address and
+keys:
+
+```sh
+docker run -d --rm --name vcon-rustfs -p 127.0.0.1:9000:9000 \
+  -e RUSTFS_ACCESS_KEY=vcontest -e RUSTFS_SECRET_KEY=vcon-local-only-secret \
+  rustfs/rustfs@sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2
+export VCON_TEST_S3_ENDPOINT=http://127.0.0.1:9000
+export VCON_TEST_S3_ACCESS_KEY=vcontest VCON_TEST_S3_SECRET_KEY=vcon-local-only-secret
+cargo test -p vcon-server --features backend-tests --lib backend::
+cargo test -p vcon-server --features backend-tests --test serve s3::
+docker stop vcon-rustfs
+```
+
+Each test makes a bucket of its own, so a run leaves buckets behind;
+`docker stop` removes the container and them.
+
 ## How the code is tested
 
 - **Test first.** Each behaviour's test is written before the code and seen to

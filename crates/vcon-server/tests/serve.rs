@@ -855,3 +855,156 @@ async fn a_backup_taken_under_write_load_checks_whole_and_serves() {
     assert_eq!(read.status(), 200);
     assert_eq!(read.bytes().await.expect("body").to_vec(), first);
 }
+
+/// Against the S3-compatible service the `VCON_TEST_S3_*` variables name
+/// (see src/backend/s3.rs), with its keys given only in the AWS
+/// environment variables, as the AWS default credential chain reads them.
+#[cfg(feature = "backend-tests")]
+mod s3 {
+    use super::*;
+
+    fn var(name: &str) -> String {
+        std::env::var(name).unwrap_or_else(|_| {
+            panic!("{name} is not set: these tests need a real S3-compatible service")
+        })
+    }
+
+    /// curl, signing its request for S3 with the test service's keys.
+    fn signed(method: &str, path: &str) -> String {
+        let output = Command::new("curl")
+            .args(["-sS", "--fail-with-body", "-X", method])
+            .args(["--aws-sigv4", "aws:amz:us-east-1:s3", "--user"])
+            .arg(format!(
+                "{}:{}",
+                var("VCON_TEST_S3_ACCESS_KEY"),
+                var("VCON_TEST_S3_SECRET_KEY")
+            ))
+            .arg(format!("{}/{path}", var("VCON_TEST_S3_ENDPOINT")))
+            .output()
+            .expect("runs curl");
+        assert!(output.status.success(), "{method} {path}: {output:?}");
+        String::from_utf8(output.stdout).expect("UTF-8")
+    }
+
+    /// Every object name in `bucket`.
+    fn names(bucket: &str) -> Vec<String> {
+        signed("GET", &format!("{bucket}?list-type=2"))
+            .split("<Key>")
+            .skip(1)
+            .filter_map(|rest| rest.split_once("</Key>").map(|(key, _)| key.to_owned()))
+            .collect()
+    }
+
+    /// `s`'s configuration with its objects in `bucket`, and no keys.
+    fn in_bucket(s: &Setup, bucket: &str) {
+        let mut text = std::fs::read_to_string(&s.config).expect("reads");
+        text.push_str(&format!(
+            "\n[storage]\nobjects = \"s3\"\n\n[storage.s3]\nendpoint = \"{}\"\nregion = \
+             \"us-east-1\"\nbucket = \"{bucket}\"\npath_style = true\nallow_http = true\n",
+            var("VCON_TEST_S3_ENDPOINT")
+        ));
+        std::fs::write(&s.config, text).expect("writes");
+    }
+
+    /// `serve`, with the test service's keys in the environment only.
+    fn serve_with_keys(s: &Setup) -> Command {
+        let mut command = serve(s);
+        for name in ["AWS_PROFILE", "AWS_SESSION_TOKEN", "AWS_CONFIG_FILE"] {
+            command.env_remove(name);
+        }
+        command
+            .env("AWS_ACCESS_KEY_ID", var("VCON_TEST_S3_ACCESS_KEY"))
+            .env("AWS_SECRET_ACCESS_KEY", var("VCON_TEST_S3_SECRET_KEY"))
+            .env("AWS_SHARED_CREDENTIALS_FILE", "/nonexistent")
+            .env("AWS_EC2_METADATA_DISABLED", "true");
+        command
+    }
+
+    // No mlock_ prefix, though serve locks its memory: the prefix keeps a
+    // test out of the AddressSanitizer job, which checks that each mlock_
+    // test in the source is in its build, and that build never has the
+    // backend-tests feature this test needs.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn serve_keeps_its_objects_in_the_bucket_with_keys_from_the_environment() {
+        let bucket = format!("vcon-serve-{}", &TenantId::generate().to_string()[..12]);
+        signed("PUT", &bucket);
+        let s = setup();
+        in_bucket(&s, &bucket);
+        let mut started = start(serve_with_keys(&s));
+        let pid = started.running.0.id();
+        let client = started.client(&s);
+        let body = std::fs::read(format!(
+            "{}/../vcon/tests/fixtures/ietf/ab_call_ext_rec.vcon",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .expect("A.4");
+        let stored = client
+            .post(started.url("/vcons"))
+            .bearer_auth(&s.token)
+            .header("content-type", "application/vcon")
+            .body(body.clone())
+            .send()
+            .await
+            .expect("an answer");
+        assert_eq!(stored.status(), 201, "the vCon is stored");
+        let read = client
+            .get(started.url(&format!("/vcons/{UUID}")))
+            .bearer_auth(&s.token)
+            .send()
+            .await
+            .expect("an answer");
+        assert_eq!(read.status(), 200, "the vCon is read");
+        assert_eq!(
+            read.bytes().await.expect("body").as_ref(),
+            body.as_slice(),
+            "it reads back byte for byte"
+        );
+
+        let mut kept = names(&bucket);
+        kept.sort();
+        let objects = format!("tenants/{}/objects/", s.tenant);
+        assert_eq!(kept.len(), 2, "the claim and one version: {kept:?}");
+        assert!(kept.iter().any(|k| k == "vcon-server.claim"), "{kept:?}");
+        assert!(
+            kept.iter().any(|k| k.starts_with(&objects)),
+            "the version is under its tenant's name: {kept:?}"
+        );
+        let local = s
+            .data
+            .join("tenants")
+            .join(s.tenant.to_string())
+            .join("objects");
+        let files = std::fs::read_dir(&local).map_or(0, Iterator::count);
+        assert_eq!(files, 0, "no object file is written in the data directory");
+
+        let other = setup();
+        in_bucket(&other, &bucket);
+        let refused = refused(serve_with_keys(&other));
+        assert!(
+            stderr(&refused).contains("another data directory"),
+            "a second data directory on the same bucket and prefix: {}",
+            stderr(&refused)
+        );
+        assert_eq!(
+            names(&bucket).len(),
+            2,
+            "and nothing of the first is removed"
+        );
+
+        assert_eq!(
+            // SAFETY: the pid is our running child's.
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) },
+            0,
+            "the signal is sent"
+        );
+        let status = started.running.0.wait().expect("waits");
+        assert!(status.success(), "it stopped cleanly: {status:?}");
+        let mut logged: Vec<String> = started.early.drain(..).collect();
+        logged.extend(started.lines.try_iter());
+        let secret = var("VCON_TEST_S3_SECRET_KEY");
+        assert!(!logged.is_empty(), "the server logged its start");
+        for line in logged.iter().chain(std::iter::once(&stderr(&refused))) {
+            assert!(!line.contains(&secret), "the secret is logged: {line}");
+        }
+    }
+}

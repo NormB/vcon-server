@@ -19,6 +19,11 @@ shows. `scripts/docs_test.py` runs them. See
   master key, a certificate, the configuration and the first keys. Then the
   server is started under systemd or in the foreground.
 
+- [Keep vCons in an S3 bucket](@/docs/s3-storage.md): RustFS, MinIO or AWS
+  S3 for the sealed objects, the bucket and its key on the storage side, a
+  check that the objects go there and that a purge removes them, and what
+  each refusal at start means.
+
 ## Use it
 
 - [Store your first vCon](@/docs/first-vcon.md): store, store again, see a

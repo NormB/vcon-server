@@ -10,8 +10,9 @@ use std::sync::Arc;
 
 use crate::access::{Scope, Scopes};
 use crate::audit::{Actor, AuditError};
+use crate::backend;
 use crate::clock::{Clock, SystemClock};
-use crate::config::Config;
+use crate::config::{Config, StorageError};
 use crate::datadir::{self, LockError, Sharing, Work};
 use crate::envelope::{Key, KeyError};
 use crate::fs::OsFs;
@@ -128,6 +129,8 @@ pub enum CommandError {
     /// `check` found this many problems; its report says which.
     CheckFound(usize),
     Backup(BackupError),
+    /// The storage the configuration names cannot be used.
+    Storage(StorageError),
 }
 
 impl fmt::Display for CommandError {
@@ -153,6 +156,7 @@ impl fmt::Display for CommandError {
                 f.write_str("the new master key is the one already in use")
             }
             CommandError::CheckFound(n) => write!(f, "check found {n} problem(s); see its report"),
+            CommandError::Storage(e) => write!(f, "the storage cannot be used: {e}"),
             CommandError::Backup(e) => f.write_str(match e {
                 BackupError::Exists => {
                     "the backup's path already exists; a backup is written to a new directory"
@@ -204,15 +208,18 @@ pub fn run(config: &Config, command: &Command, out: &mut dyn Write) -> Result<()
     // would take the server's work in progress for a crash's leftovers. Nor
     // does `check`, which reports what recovery would remove.
     let open = if sharing == Sharing::Beside || matches!(command, Command::Check) {
-        Tenants::open_beside
+        Tenants::open_beside_in
     } else {
-        Tenants::open
+        Tenants::open_in
     };
+    let objects =
+        backend::objects_for(&config.storage, &config.data_dir).map_err(CommandError::Storage)?;
     let tenants = open(
         &config.data_dir,
         master,
         Arc::new(OsFs),
         Arc::new(SystemClock),
+        objects,
     )
     .map_err(|e| match e {
         RegistryError::WrongKey => CommandError::WrongMasterKey,
@@ -1218,6 +1225,7 @@ mod tests {
             CommandError::Output(_) => "the output could not be written",
             CommandError::SameMasterKey => "already in use",
             CommandError::CheckFound(_) => "check found 2 problem(s)",
+            CommandError::Storage(_) => "the storage cannot be used: bucket \"vcon\"",
             CommandError::Backup(e) => match e {
                 BackupError::Exists => "already exists",
                 BackupError::KeptChanging => "try again",
@@ -1281,6 +1289,9 @@ mod tests {
             CommandError::Output(io::Error::other("closed")),
             CommandError::SameMasterKey,
             CommandError::CheckFound(2),
+            CommandError::Storage(StorageError(
+                "bucket \"vcon\" cannot be reached or read".to_owned(),
+            )),
         ];
         for error in tenant.into_iter().chain(backup).chain(rest) {
             let text = error.to_string();

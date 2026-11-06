@@ -49,6 +49,10 @@ cargo build --release
 cargo test --workspace
 ```
 
+The `s3` cargo feature, on by default, adds the
+[S3 object storage](https://vcon-server.com/docs/s3-storage/);
+`cargo build --release -p vcon-server --no-default-features` leaves it out.
+
 ## Contributing
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) first. Every contributor signs the

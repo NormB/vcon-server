@@ -13,8 +13,8 @@ use uuid::Uuid;
 
 use super::{
     Catalog, CatalogTx, CommitError, ExaminedRow, HiddenRow, KeptRow, KeyRow, ListedRow,
-    NewVersion, ObjectError, Objects, PageQuery, Registry, RegistryTx, TenantRow, TenantSpace,
-    Under, VconRow, VersionRow, WrappedRow,
+    NewVersion, ObjectError, ObjectPlace, Objects, PageQuery, Registry, RegistryTx, TenantRow,
+    TenantSpace, Under, VconRow, VersionRow, WrappedRow,
 };
 use crate::audit::{self, Action, Actor, AuditError, Entry};
 use crate::catalog;
@@ -1136,17 +1136,27 @@ impl RegistryTx for LocalRegistryTx<'_> {
 pub struct LocalTenantSpace {
     tenants: PathBuf,
     fs: Arc<dyn Fs>,
+    objects: ObjectPlace,
 }
 
 impl LocalTenantSpace {
-    /// The space under `<data>/tenants`, made if new and made durable.
-    pub fn open(data: &Path, fs: Arc<dyn Fs>) -> Result<LocalTenantSpace, RegistryError> {
+    /// The space under `<data>/tenants`, made if new and made durable,
+    /// with each tenant's objects kept in `objects`.
+    pub(crate) fn open(
+        data: &Path,
+        fs: Arc<dyn Fs>,
+        objects: ObjectPlace,
+    ) -> Result<LocalTenantSpace, RegistryError> {
         let tenants = data.join("tenants");
         fs.create_dir_all(&tenants)
             .map_err(|e| RegistryError::failed(OpenStep::MakeTenantsDir, tenants.clone(), e))?;
         fs.sync_dir(data)
             .map_err(|e| RegistryError::failed(OpenStep::SyncDataDir, data.to_path_buf(), e))?;
-        Ok(LocalTenantSpace { tenants, fs })
+        Ok(LocalTenantSpace {
+            tenants,
+            fs,
+            objects,
+        })
     }
 
     fn dir(&self, id: TenantId) -> PathBuf {
@@ -1164,7 +1174,7 @@ impl TenantSpace for LocalTenantSpace {
     fn make(&self, id: TenantId, key: Key, clock: Arc<dyn Clock>) -> Result<(), OpenError> {
         let dir = self.dir(id);
         self.fs.create_dir_all(&dir).map_err(|_| StoreError::Io)?;
-        drop(Store::open(&dir, id, key, self.fs.clone(), clock)?);
+        drop(self.open(id, key, true, clock)?);
         self.fs
             .sync_dir(&self.tenants)
             .map_err(|_| StoreError::Io)?;
@@ -1178,27 +1188,67 @@ impl TenantSpace for LocalTenantSpace {
         recover: bool,
         clock: Arc<dyn Clock>,
     ) -> Result<Store, OpenError> {
-        let open = if recover {
-            Store::open
-        } else {
-            Store::open_beside
-        };
-        open(&self.dir(id), id, key, self.fs.clone(), clock)
+        match &self.objects {
+            ObjectPlace::Local => {
+                let open = if recover {
+                    Store::open
+                } else {
+                    Store::open_beside
+                };
+                open(&self.dir(id), id, key, self.fs.clone(), clock)
+            }
+            #[cfg(feature = "s3")]
+            ObjectPlace::S3(s3) => {
+                let catalog_key = envelope::catalog_key(&key).map_err(|_| StoreError::Io)?;
+                let catalog = LocalCatalog::open(&self.catalog(id), catalog_key)?;
+                Store::open_on(
+                    id,
+                    key,
+                    Box::new(catalog),
+                    Arc::new(s3.tenant(id)),
+                    self.fs.clone(),
+                    clock,
+                    recover,
+                )
+            }
+        }
     }
 
-    /// A name that is not a tenant id is not ours and is left out.
+    /// A name that is not a tenant id is not ours and is left out. With
+    /// a bucket, a tenant that has objects there but no directory here is
+    /// present too: a create or removal cut off part way leaves one.
     fn present(&self) -> Result<Vec<TenantId>, TenantError> {
-        Ok(self
+        let mut ids: Vec<TenantId> = self
             .fs
             .list(&self.tenants)
             .map_err(tenant_io)?
             .iter()
             .filter_map(|name| name.to_str().and_then(TenantId::parse))
-            .collect())
+            .collect();
+        #[cfg(feature = "s3")]
+        if let ObjectPlace::S3(s3) = &self.objects {
+            ids.extend(s3.tenants().map_err(tenant_io)?);
+        }
+        ids.sort_by_key(|id| id.0);
+        ids.dedup();
+        Ok(ids)
     }
 
+    /// The bucket's objects go first: a directory left behind is found and
+    /// removed at the next start, as is a tenant with objects but no
+    /// directory.
     fn remove(&self, id: TenantId) -> Result<(), TenantError> {
-        self.fs.remove_dir_all(&self.dir(id)).map_err(tenant_io)
+        match &self.objects {
+            ObjectPlace::Local => self.fs.remove_dir_all(&self.dir(id)).map_err(tenant_io),
+            #[cfg(feature = "s3")]
+            ObjectPlace::S3(s3) => {
+                s3.remove_tenant(id).map_err(tenant_io)?;
+                match self.fs.remove_dir_all(&self.dir(id)) {
+                    Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(tenant_io(e)),
+                    _ => Ok(()),
+                }
+            }
+        }
     }
 
     fn catalog_under(&self, id: TenantId, old: &Key, new: &Key) -> Result<Under, TenantError> {

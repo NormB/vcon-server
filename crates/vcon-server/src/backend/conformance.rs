@@ -12,6 +12,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 use vcon::read::{Inspection, Limits, inspect};
 
+use crate::backend::Objects;
 use crate::clock::Clock;
 use crate::envelope::Key;
 use crate::ids::VersionId;
@@ -44,10 +45,19 @@ pub(crate) trait Harness {
     fn fresh(&self, clock: Arc<TestClock>) -> Fresh;
 }
 
-/// A Store from `Harness::fresh`, and a way to open it again.
+/// Writes an object under any name, as a crash or another program would
+/// leave it.
+pub(crate) type Plant = Box<dyn Fn(&str, &[u8])>;
+
+/// A Store from `Harness::fresh`, a way to open it again, and its objects
+/// reached around it, so a check can see what is really kept.
 pub(crate) struct Fresh {
     pub(crate) store: Store,
     pub(crate) reopen: Box<dyn Fn() -> Store>,
+    /// The objects the Store reads and writes.
+    pub(crate) objects: Arc<dyn Objects>,
+    /// Plants an object around the Store.
+    pub(crate) plant: Plant,
 }
 
 /// The moment every check starts at: 2026-10-23 12:00 UTC.
@@ -61,7 +71,7 @@ type Check = (&'static str, fn(&dyn Harness));
 
 /// Every check, in order; each panics with its name on failure.
 pub(crate) fn run(harness: &dyn Harness) {
-    let checks: [Check; 12] = [
+    let checks: [Check; 15] = [
         ("create_then_get", create_then_get),
         ("create_same_conflict_gone", create_same_conflict_gone),
         ("forms_read_back", forms_read_back),
@@ -74,6 +84,15 @@ pub(crate) fn run(harness: &dyn Harness) {
         ("rewrap_moves_every_key", rewrap_moves_every_key),
         ("check_and_counts", check_and_counts),
         ("reopen_keeps_everything", reopen_keeps_everything),
+        ("purge_removes_the_object", purge_removes_the_object),
+        (
+            "recovery_removes_only_garbage",
+            recovery_removes_only_garbage,
+        ),
+        (
+            "purge_of_a_lost_object_finishes",
+            purge_of_a_lost_object_finishes,
+        ),
     ];
     for (name, check) in checks {
         eprintln!("conformance: {name}");
@@ -482,10 +501,118 @@ fn reopen_keeps_everything(h: &dyn Harness) {
     );
 }
 
+/// The names the objects hold, as the storage lists them.
+fn kept(objects: &dyn Objects) -> Vec<String> {
+    objects.list().expect("lists the objects")
+}
+
+/// A purged version's object is gone from the storage, not only from the
+/// catalog: after a sweep, and when retention zero erases in the delete.
+fn purge_removes_the_object(h: &dyn Harness) {
+    let clock = TestClock::at(START);
+    let f = h.fresh(clock.clone());
+    let who = caller();
+    let days = Retention::Days(1);
+    let (swept, _) = new_version(&f.store, &who, &uuid(1), "first");
+    let (erased, _) = new_version(&f.store, &who, &uuid(2), "second");
+    let (live, _) = new_version(&f.store, &who, &uuid(3), "third");
+    let mut all = vec![swept.to_string(), erased.to_string(), live.to_string()];
+    all.sort();
+    assert_eq!(
+        kept(&*f.objects),
+        all,
+        "purge_removes_the_object: one object each"
+    );
+    let first = Uuid::parse_str(&uuid(1)).expect("uuid");
+    f.store.delete(&who, first, days).expect("deletes");
+    clock.set(START + time::Duration::days(2));
+    assert_eq!(
+        f.store.purge_due(days).expect("sweeps").purged,
+        1,
+        "purge_removes_the_object: the sweep purges the deleted version"
+    );
+    let second = Uuid::parse_str(&uuid(2)).expect("uuid");
+    f.store
+        .delete(&who, second, Retention::Days(0))
+        .expect("deletes");
+    assert_eq!(
+        kept(&*f.objects),
+        [live.to_string()],
+        "purge_removes_the_object: only the live version's object is kept"
+    );
+}
+
+/// Start-up recovery applies the catalog rule: an object with no row, and
+/// a temporary one, is garbage and removed; a version with a row keeps its
+/// object; a name that is not a version id is not the server's and stays.
+fn recovery_removes_only_garbage(h: &dyn Harness) {
+    let f = h.fresh(TestClock::at(START));
+    let who = caller();
+    let (version, body) = new_version(&f.store, &who, &uuid(1), "first");
+    let garbage = VersionId::generate().to_string();
+    let temporary = format!("{}.tmp", VersionId::generate());
+    let foreign = "not-a-version";
+    for name in [garbage.as_str(), temporary.as_str(), foreign] {
+        (f.plant)(name, b"no row names this");
+    }
+    drop(f.store);
+    let store = (f.reopen)();
+    let mut expected = vec![version.to_string(), foreign.to_owned()];
+    expected.sort();
+    assert_eq!(
+        kept(&*f.objects),
+        expected,
+        "recovery_removes_only_garbage: the objects left after recovery"
+    );
+    assert_eq!(
+        store
+            .get(&who, Uuid::parse_str(&uuid(1)).expect("uuid"))
+            .expect("reads")
+            .body,
+        body,
+        "recovery_removes_only_garbage: the stored vCon reads back"
+    );
+}
+
+/// A purge whose object was already lost (removed by hand, or by a purge
+/// cut off after its commit) still purges: the row goes, the sweep goes
+/// on, and nothing is left for `check` to report.
+fn purge_of_a_lost_object_finishes(h: &dyn Harness) {
+    let clock = TestClock::at(START);
+    let f = h.fresh(clock.clone());
+    let who = caller();
+    let days = Retention::Days(1);
+    let (lost, _) = new_version(&f.store, &who, &uuid(1), "first");
+    new_version(&f.store, &who, &uuid(2), "second");
+    for n in [1, 2] {
+        let id = Uuid::parse_str(&uuid(n)).expect("uuid");
+        f.store.delete(&who, id, days).expect("deletes");
+    }
+    f.objects
+        .remove_name(&lost.to_string())
+        .expect("removes the object around the Store");
+    clock.set(START + time::Duration::days(2));
+    assert_eq!(
+        f.store.purge_due(days).map(|r| r.purged),
+        Ok(2),
+        "purge_of_a_lost_object_finishes: both versions are purged"
+    );
+    assert_eq!(
+        f.store.check(),
+        Ok(Vec::new()),
+        "purge_of_a_lost_object_finishes: f.store.check()"
+    );
+    assert!(
+        kept(&*f.objects).is_empty(),
+        "purge_of_a_lost_object_finishes: no object is left"
+    );
+}
+
 /// The local backend on a temporary directory.
 #[cfg(test)]
 mod local {
     use super::*;
+    use crate::backend::local::LocalObjects;
     use crate::envelope;
     use crate::fs::OsFs;
     use crate::ids::TenantId;
@@ -502,6 +629,7 @@ mod local {
                 tenant: TenantId([0x11; 16]),
             };
             let wrapped = envelope::wrap(&master, &ctx, &key);
+            let objects_dir = dir.join("objects");
             let open = move || {
                 let key = envelope::unwrap(&master, &ctx, &wrapped).expect("unwraps");
                 Store::open(
@@ -513,9 +641,15 @@ mod local {
                 )
                 .expect("opens")
             };
+            let store = open();
+            let plant_dir = objects_dir.clone();
             Fresh {
-                store: open(),
+                store,
                 reopen: Box::new(open),
+                objects: Arc::new(LocalObjects::new(objects_dir, Arc::new(OsFs))),
+                plant: Box::new(move |name, bytes| {
+                    std::fs::write(plant_dir.join(name), bytes).expect("plants an object file");
+                }),
             }
         }
     }

@@ -29,6 +29,18 @@ Durations are whole seconds and sizes are bytes; each must be more than zero.
 | `mcp.calls_per_second` | MCP tool calls one key may make in each one-second window | `100` |
 | `mcp.concurrent` | MCP tool calls running at once on the server | `100` |
 | `mcp.response_bytes` | Largest MCP tool result, in bytes; a longer list or vCon comes in pages | `1048576` (1 MiB) |
+| `storage.objects` | Where the sealed vCon objects are kept: `local`, beside each tenant's catalog in `data_dir`, or `s3`, in an S3-compatible bucket (see [Storage](#storage)) | `local` |
+| `storage.s3.endpoint` | URL of the S3-compatible service, `https://`; absent means AWS S3 for the region | none |
+| `storage.s3.region` | Region name, used in request signing | required with `s3` |
+| `storage.s3.bucket` | Bucket the objects go in; it must exist | required with `s3` |
+| `storage.s3.prefix` | Written before `tenants/` in every object's name, so one bucket can hold more than one server's objects; empty, or ending in `/` and not starting with one | empty |
+| `storage.s3.path_style` | Name the bucket in the request path, not in the host name, as RustFS and MinIO are usually set up | `false` |
+| `storage.s3.access_key_id` | Access key id; absent means the AWS default credential chain (environment, profile, instance or web identity) | none |
+| `storage.s3.secret_access_key_file` | File holding the secret access key; required with `access_key_id` | none |
+| `storage.s3.allow_http` | Accept an `http://` endpoint, for a test service on the same host | `false` |
+| `storage.s3.ca_file` | PEM file of the certificate authorities trusted for an `https://` endpoint, in place of the system's, for a service whose certificate a private CA signed | none |
+| `storage.s3.allow_versioning` | Start even though the bucket has versioning on or suspended | `false` |
+| `storage.s3.timeout` | Seconds one request to the bucket may take | `30` |
 
 At start and then each day, `serve` logs a warning while the oldest purge or
 tenant removal waiting for [key rotation](@/docs/operations.md#key-rotation)
@@ -64,6 +76,69 @@ response_bytes = 1048576
 
 A key left out of a table that is present takes its default; the others keep
 their written values.
+
+## Storage
+
+Without a `[storage]` table, everything is kept in `data_dir`, as before.
+With `storage.objects = "s3"`, each version's sealed object goes to a
+bucket in an S3-compatible service (RustFS, MinIO or AWS S3) instead, at
+`<prefix>tenants/<tenant id>/objects/<version id>`; the catalogs, the
+registry, the lock files and the master key stay on the host. An object is
+the same sealed bytes the server writes to a file: the bucket's operator
+sees random names, sizes and times, and no vCon. The how-to
+[keep vCons in an S3 bucket](@/docs/s3-storage.md) sets one up step by
+step. A file for a server keeping its objects in a RustFS or MinIO bucket:
+
+```toml
+listen = "0.0.0.0:8443"
+data_dir = "/var/lib/vcon-server"
+master_key = "/etc/vcon-server/master.key"
+
+[tls]
+cert = "/etc/vcon-server/cert.pem"
+key = "/etc/vcon-server/key.pem"
+
+[storage]
+objects = "s3"
+
+[storage.s3]
+endpoint = "https://objects.example.com:9000"
+region = "us-east-1"
+bucket = "vcon"
+path_style = true
+access_key_id = "vcon-server"
+secret_access_key_file = "/etc/vcon-server/s3.secret"
+ca_file = "/usr/local/share/vcon-server/s3-ca.pem"
+```
+
+- **Addressing.** RustFS and MinIO name the bucket in the request path, so
+  they need `path_style = true`. AWS S3 names it in the host name
+  (virtual-hosted style), which is the default; with AWS S3, leave
+  `endpoint` out and set `region` to the bucket's region.
+- **Keys.** With `access_key_id`, the secret is read from
+  `secret_access_key_file` at start: one line, its line ending left out. An
+  empty file, or one of more than one line, is refused. Without
+  `access_key_id`, the keys come from the AWS default credential chain: the
+  `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` variables, the shared
+  credentials file, web identity, or the instance's or task's role. No
+  secret is logged or put in an error.
+- **TLS.** The endpoint must be `https://`. Its certificate is checked
+  against the system's certificate authorities, or, with `ca_file`, against
+  those in that file only. `allow_http = true` lets an `http://` endpoint
+  through, for a test service on the same host; `ca_file` is refused with
+  one.
+- **Versioning.** The server refuses to start on a bucket with versioning on
+  or suspended unless `allow_versioning` is set: such a bucket keeps a
+  purged object's earlier version. That version cannot be opened once its
+  row is purged, since the key that opens it was kept only in that row, but
+  it stays in the bucket until the bucket's own rules remove it.
+- **One server per prefix.** The first server to start on an empty bucket
+  and prefix claims it, in `storage.claim` in its data directory and
+  `<prefix>vcon-server.claim` in the bucket. Another data directory is
+  refused on that prefix, as is any data directory on a prefix that holds
+  objects but no claim, because start-up recovery removes every object no
+  catalog of its own names. Two servers can share a bucket with a `prefix`
+  each.
 
 ## Where the defaults come from
 

@@ -47,7 +47,8 @@ tokio = { version = "1.54.1", features = ["rt"] }
 tower = { version = "0.5.3", default-features = false, features = ["util"] }
 uuid = "1.29.0"
 vcon = { path = "../crates/vcon" }
-vcon-server = { path = "../crates/vcon-server" }
+# The fuzz targets read no bucket, so the S3 client is left out.
+vcon-server = { path = "../crates/vcon-server", default-features = false }
 
 [[bin]]
 name = "inspect"

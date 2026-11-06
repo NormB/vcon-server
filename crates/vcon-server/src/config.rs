@@ -43,6 +43,68 @@ pub struct Config {
     pub supported_critical: BTreeSet<String>,
     /// The MCP server's limits.
     pub mcp: crate::mcp::Limits,
+    /// Where the data is kept.
+    pub storage: Storage,
+}
+
+/// Why the storage the configuration names cannot be used: the message says
+/// which setting or step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use]
+pub struct StorageError(pub String);
+
+impl fmt::Display for StorageError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for StorageError {}
+
+/// Where the server keeps its data: the `[storage]` table. A file without
+/// it keeps everything in `data_dir`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Storage {
+    /// Where the sealed vCon objects are kept.
+    pub objects: ObjectStore,
+}
+
+/// Where the sealed vCon objects are kept: `storage.objects`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ObjectStore {
+    /// Files under `data_dir`, beside each tenant's catalog.
+    #[default]
+    Local,
+    /// An S3-compatible bucket.
+    S3(S3Settings),
+}
+
+/// How to reach the bucket: the `[storage.s3]` table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct S3Settings {
+    /// The service's URL; None is AWS S3 for the region.
+    pub endpoint: Option<String>,
+    /// The region, used in request signing.
+    pub region: String,
+    /// The bucket, which must exist.
+    pub bucket: String,
+    /// Written before `tenants/` in every object's name.
+    pub prefix: String,
+    /// The bucket in the path, not in the host name.
+    pub path_style: bool,
+    /// The access key id; None uses the AWS default credential chain.
+    pub access_key_id: Option<String>,
+    /// The file holding the secret access key.
+    pub secret_access_key_file: Option<PathBuf>,
+    /// Accept an `http://` endpoint.
+    pub allow_http: bool,
+    /// PEM certificates of the authorities trusted for the endpoint's
+    /// TLS certificate, in place of the system's; None trusts the system's.
+    pub ca_file: Option<PathBuf>,
+    /// Start even though the bucket has versioning on.
+    pub allow_versioning: bool,
+    /// How long one request may take.
+    pub timeout: Duration,
 }
 
 /// Time between purge sweeps unless configured: a version is purged
@@ -134,6 +196,7 @@ pub fn parse(text: &str) -> Result<Config, ConfigError> {
         )?,
         supported_critical: raw.supported_critical.into_iter().collect(),
         mcp: mcp_limits(&raw.mcp)?,
+        storage: storage(raw.storage)?,
     })
 }
 
@@ -157,6 +220,96 @@ fn mcp_limits(raw: &RawMcp) -> Result<crate::mcp::Limits, ConfigError> {
             Some(value) => usize::try_from(positive("mcp.response_bytes", value)?)
                 .map_err(|_| ConfigError("mcp.response_bytes is too large".to_owned()))?,
         },
+    })
+}
+
+/// How long one S3 request may take unless configured.
+pub const S3_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The `[storage]` table checked: an S3 table only with `objects = "s3"`,
+/// an `http://` endpoint only when allowed, and an access key id only with
+/// the file of its secret.
+fn storage(raw: RawStorage) -> Result<Storage, ConfigError> {
+    let objects = match (raw.objects.as_deref(), raw.s3) {
+        (None | Some("local"), None) => ObjectStore::Local,
+        (None | Some("local"), Some(_)) => {
+            return Err(ConfigError(
+                "storage.s3 is set but storage.objects is not \"s3\"".to_owned(),
+            ));
+        }
+        (Some("s3"), None) => {
+            return Err(ConfigError(
+                "storage.objects is \"s3\" but there is no storage.s3 table".to_owned(),
+            ));
+        }
+        (Some("s3"), Some(s3)) => ObjectStore::S3(s3_settings(s3)?),
+        (Some(other), _) => {
+            return Err(ConfigError(format!(
+                "storage.objects: {other:?} is not \"local\" or \"s3\""
+            )));
+        }
+    };
+    Ok(Storage { objects })
+}
+
+fn s3_settings(raw: RawS3) -> Result<S3Settings, ConfigError> {
+    if raw.bucket.is_empty() {
+        return Err(ConfigError("storage.s3.bucket is empty".to_owned()));
+    }
+    if !raw.prefix.is_empty() && (raw.prefix.starts_with('/') || !raw.prefix.ends_with('/')) {
+        return Err(ConfigError(format!(
+            "storage.s3.prefix {:?} must not start with / and must end with /, \
+             such as \"server-a/\"",
+            raw.prefix
+        )));
+    }
+    if let Some(endpoint) = &raw.endpoint {
+        if endpoint.starts_with("http://") {
+            if raw.ca_file.is_some() {
+                return Err(ConfigError(format!(
+                    "storage.s3.ca_file is set, but storage.s3.endpoint {endpoint:?} is plain \
+                     HTTP, which uses no certificate"
+                )));
+            }
+            if !raw.allow_http {
+                return Err(ConfigError(format!(
+                    "storage.s3.endpoint {endpoint:?} is plain HTTP; set storage.s3.allow_http = \
+                     true only for a test service on this host"
+                )));
+            }
+        } else if !endpoint.starts_with("https://") {
+            return Err(ConfigError(format!(
+                "storage.s3.endpoint {endpoint:?} is not an https:// URL"
+            )));
+        }
+    }
+    match (&raw.access_key_id, &raw.secret_access_key_file) {
+        (Some(_), None) => {
+            return Err(ConfigError(
+                "storage.s3.access_key_id is set without storage.s3.secret_access_key_file"
+                    .to_owned(),
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(ConfigError(
+                "storage.s3.secret_access_key_file is set without storage.s3.access_key_id"
+                    .to_owned(),
+            ));
+        }
+        _ => {}
+    }
+    Ok(S3Settings {
+        endpoint: raw.endpoint,
+        region: raw.region,
+        bucket: raw.bucket,
+        prefix: raw.prefix,
+        path_style: raw.path_style,
+        access_key_id: raw.access_key_id,
+        secret_access_key_file: raw.secret_access_key_file,
+        allow_http: raw.allow_http,
+        ca_file: raw.ca_file,
+        allow_versioning: raw.allow_versioning,
+        timeout: seconds("storage.s3.timeout", raw.timeout, S3_TIMEOUT)?,
     })
 }
 
@@ -192,6 +345,35 @@ struct Raw {
     supported_critical: Vec<String>,
     #[serde(default)]
     mcp: RawMcp,
+    #[serde(default)]
+    storage: RawStorage,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawStorage {
+    objects: Option<String>,
+    s3: Option<RawS3>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawS3 {
+    endpoint: Option<String>,
+    region: String,
+    bucket: String,
+    #[serde(default)]
+    prefix: String,
+    #[serde(default)]
+    path_style: bool,
+    access_key_id: Option<String>,
+    secret_access_key_file: Option<PathBuf>,
+    #[serde(default)]
+    allow_http: bool,
+    ca_file: Option<PathBuf>,
+    #[serde(default)]
+    allow_versioning: bool,
+    timeout: Option<u64>,
 }
 
 #[derive(Default, Deserialize)]
@@ -252,6 +434,22 @@ read = 30
 calls_per_second = 20
 concurrent = 8
 response_bytes = 262144
+
+[storage]
+objects = "s3"
+
+[storage.s3]
+endpoint = "https://objects.example.com:9000"
+region = "eu-west-1"
+bucket = "vcon"
+prefix = "server-a/"
+path_style = true
+access_key_id = "vcon-server"
+secret_access_key_file = "/etc/vcon-server/s3.secret"
+allow_http = true
+ca_file = "/etc/vcon-server/s3-ca.pem"
+allow_versioning = true
+timeout = 60
 "#;
 
     #[test]
@@ -275,6 +473,21 @@ response_bytes = 262144
                     calls_per_second: 20,
                     concurrent: 8,
                     response_bytes: 262_144,
+                },
+                storage: Storage {
+                    objects: ObjectStore::S3(S3Settings {
+                        endpoint: Some("https://objects.example.com:9000".to_owned()),
+                        region: "eu-west-1".to_owned(),
+                        bucket: "vcon".to_owned(),
+                        prefix: "server-a/".to_owned(),
+                        path_style: true,
+                        access_key_id: Some("vcon-server".to_owned()),
+                        secret_access_key_file: Some("/etc/vcon-server/s3.secret".into()),
+                        allow_http: true,
+                        ca_file: Some("/etc/vcon-server/s3-ca.pem".into()),
+                        allow_versioning: true,
+                        timeout: Duration::from_secs(60),
+                    }),
                 },
             }),
             "every key the file writes is read into its field"
@@ -466,6 +679,170 @@ key = "/etc/vcon-server/key.pem"
             full.mcp.response_bytes, least.mcp.response_bytes,
             "FULL writes mcp.response_bytes as a value other than its default"
         );
+        assert_ne!(
+            full.storage, least.storage,
+            "FULL writes storage.objects as a value other than its default"
+        );
+        let ObjectStore::S3(s3) = full.storage.objects else {
+            panic!("FULL keeps its objects in S3")
+        };
+        let least_s3 = s3_least();
+        for (key, differs) in [
+            ("storage.s3.endpoint", s3.endpoint != least_s3.endpoint),
+            ("storage.s3.prefix", s3.prefix != least_s3.prefix),
+            (
+                "storage.s3.path_style",
+                s3.path_style != least_s3.path_style,
+            ),
+            (
+                "storage.s3.access_key_id",
+                s3.access_key_id != least_s3.access_key_id,
+            ),
+            (
+                "storage.s3.secret_access_key_file",
+                s3.secret_access_key_file != least_s3.secret_access_key_file,
+            ),
+            (
+                "storage.s3.allow_http",
+                s3.allow_http != least_s3.allow_http,
+            ),
+            ("storage.s3.ca_file", s3.ca_file != least_s3.ca_file),
+            (
+                "storage.s3.allow_versioning",
+                s3.allow_versioning != least_s3.allow_versioning,
+            ),
+            ("storage.s3.timeout", s3.timeout != least_s3.timeout),
+        ] {
+            assert!(
+                differs,
+                "FULL writes {key} as a value other than its default"
+            );
+        }
+    }
+
+    /// The S3 settings with only the keys that have no default.
+    fn s3_least() -> S3Settings {
+        let text = format!(
+            "{LEAST}\n[storage]\nobjects = \"s3\"\n[storage.s3]\nregion = \"us-east-1\"\nbucket = \"vcon\"\n"
+        );
+        match parse(&text)
+            .expect("the least S3 configuration reads")
+            .storage
+            .objects
+        {
+            ObjectStore::S3(s3) => s3,
+            ObjectStore::Local => panic!("objects = \"s3\" keeps the objects in S3"),
+        }
+    }
+
+    #[test]
+    fn without_a_storage_table_everything_is_local() {
+        assert_eq!(
+            parse(LEAST).expect("parses").storage,
+            Storage {
+                objects: ObjectStore::Local
+            },
+            "a file written before storage backends keeps its meaning"
+        );
+    }
+
+    #[test]
+    fn s3_settings_have_defaults() {
+        assert_eq!(
+            s3_least(),
+            S3Settings {
+                endpoint: None,
+                region: "us-east-1".to_owned(),
+                bucket: "vcon".to_owned(),
+                prefix: String::new(),
+                path_style: false,
+                access_key_id: None,
+                secret_access_key_file: None,
+                allow_http: false,
+                ca_file: None,
+                allow_versioning: false,
+                timeout: Duration::from_secs(30),
+            },
+            "only region and bucket are required"
+        );
+    }
+
+    #[test]
+    fn s3_settings_that_do_not_hold_together_are_named() {
+        let s3 = |extra: &str| {
+            format!(
+                "{LEAST}\n[storage]\nobjects = \"s3\"\n[storage.s3]\nregion = \"us-east-1\"\nbucket = \"vcon\"\n{extra}"
+            )
+        };
+        for (text, key) in [
+            (
+                format!("{LEAST}\n[storage]\nobjects = \"s3\"\n"),
+                "storage.s3",
+            ),
+            (
+                format!("{LEAST}\n[storage]\nobjects = \"s3\"\n[storage.s3]\nbucket = \"vcon\"\n"),
+                "region",
+            ),
+            (
+                format!(
+                    "{LEAST}\n[storage]\nobjects = \"s3\"\n[storage.s3]\nregion = \"us-east-1\"\n"
+                ),
+                "bucket",
+            ),
+            (
+                s3("endpoint = \"http://127.0.0.1:9000\"\n"),
+                "storage.s3.allow_http",
+            ),
+            (
+                s3("endpoint = \"objects.example.com\"\n"),
+                "storage.s3.endpoint",
+            ),
+            (
+                s3("access_key_id = \"vcon-server\"\n"),
+                "storage.s3.secret_access_key_file",
+            ),
+            (
+                s3("secret_access_key_file = \"/etc/vcon-server/s3.secret\"\n"),
+                "storage.s3.access_key_id",
+            ),
+            (s3("timeout = 0\n"), "storage.s3.timeout"),
+            (
+                s3(
+                    "endpoint = \"http://127.0.0.1:9000\"\nallow_http = true\nca_file = \"/etc/vcon-server/s3-ca.pem\"\n",
+                ),
+                "storage.s3.ca_file",
+            ),
+            (s3("prefix = \"/server-a/\"\n"), "storage.s3.prefix"),
+            (s3("prefix = \"server-a\"\n"), "storage.s3.prefix"),
+            (
+                s3("bucket = \"\"\n").replace("bucket = \"vcon\"\n", ""),
+                "storage.s3.bucket",
+            ),
+            (
+                format!("{LEAST}\n[storage]\nobjects = \"tape\"\n"),
+                "objects",
+            ),
+            (
+                format!(
+                    "{LEAST}\n[storage]\nobjects = \"local\"\n[storage.s3]\nregion = \"us-east-1\"\nbucket = \"vcon\"\n"
+                ),
+                "storage.s3",
+            ),
+        ] {
+            let error = parse(&text).expect_err(key);
+            assert!(error.0.contains(key), "the error names {key}: {error}");
+        }
+    }
+
+    #[test]
+    fn an_http_endpoint_reads_when_allowed() {
+        let text = format!(
+            "{LEAST}\n[storage]\nobjects = \"s3\"\n[storage.s3]\nregion = \"us-east-1\"\nbucket = \"vcon\"\nendpoint = \"http://127.0.0.1:9000\"\nallow_http = true\n"
+        );
+        assert!(
+            parse(&text).is_ok(),
+            "allow_http lets a test container's plain endpoint through"
+        );
     }
 
     /// Each error names its key.
@@ -583,7 +960,7 @@ key = "/etc/vcon-server/key.pem"
             let defaults = parse(LEAST).expect("least");
             let mut all = Vec::new();
             keys(&FULL.parse::<toml::Table>().expect("toml"), "", &mut all);
-            assert_eq!(all.len(), 15, "{all:?}");
+            assert_eq!(all.len(), 27, "{all:?}");
             for key in all {
                 let default = match key.as_str() {
                     "listen" | "data_dir" | "master_key" | "tls.cert" | "tls.key" => {
@@ -598,6 +975,19 @@ key = "/etc/vcon-server/key.pem"
                     "mcp.calls_per_second" => format!("`{}`", defaults.mcp.calls_per_second),
                     "mcp.concurrent" => format!("`{}`", defaults.mcp.concurrent),
                     "mcp.response_bytes" => format!("`{}`", defaults.mcp.response_bytes),
+                    "storage.objects" => "`local`".to_owned(),
+                    "storage.s3.region" | "storage.s3.bucket" => "required with `s3`".to_owned(),
+                    "storage.s3.endpoint"
+                    | "storage.s3.access_key_id"
+                    | "storage.s3.secret_access_key_file"
+                    | "storage.s3.ca_file" => "none".to_owned(),
+                    "storage.s3.prefix" => "empty".to_owned(),
+                    "storage.s3.path_style" => format!("`{}`", s3_least().path_style),
+                    "storage.s3.allow_http" => format!("`{}`", s3_least().allow_http),
+                    "storage.s3.allow_versioning" => {
+                        format!("`{}`", s3_least().allow_versioning)
+                    }
+                    "storage.s3.timeout" => format!("`{}`", s3_least().timeout.as_secs()),
                     "supported_critical" => {
                         assert!(
                             defaults.supported_critical.is_empty(),
@@ -652,8 +1042,9 @@ key = "/etc/vcon-server/key.pem"
                 }
             }
             assert_eq!(
-                examples, 3,
-                "one example file on each page, so a block the split misses is caught"
+                examples, 4,
+                "two on the configuration page, one each on getting started and the container \
+                 page, so a block the split misses is caught"
             );
         }
     }
