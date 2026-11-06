@@ -388,6 +388,7 @@ vcon-server: "yesterday" is not an RFC 3339 time such as 2026-11-05T00:00:00Z
 | `the target could not be written: …` | The directory cannot be written by the service account, or the bucket refused a call; the rest of the message is the system's or the service's reason, such as `AccessDenied`. The files the export wrote are removed. |
 | `another export wrote tenant=<id>/manifest/<seq>.json first; run this export again` | Two exports to one target ran at once and took one number. The refused one removed its files; run it again for the next number. |
 | `a version's object is missing or does not open; run vcon-server check` | The store is damaged. [Check](@/docs/operations.md#checking-the-data) it. |
+| `the tenant's data could not be read: Io` | The catalog or a version's object could not be read, which says nothing about the stored data: a disk error, a file the service account may not read, or a bucket that cannot be reached, refuses the key or does not answer within `storage.s3.timeout`. Fix the cause and run the export again. |
 | `the export is written, but its audit record could not be; the manifest names its files` | The export is whole; its record in the tenant's log was lost. |
 | `the data directory is in use by a command that runs alone` | A key rotation, `check` or a tenant removal is running. Run the export after it. |
 

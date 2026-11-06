@@ -1537,13 +1537,13 @@ pub(crate) mod tests {
     }
 
     /// Makes the failure a read gives.
-    type Fail = fn() -> ObjectError;
+    pub(super) type Fail = fn() -> ObjectError;
 
     /// Objects whose every read fails as `fail` makes the failure, and
     /// whose other calls reach `inner`.
-    struct ReadsFail {
-        inner: Arc<dyn Objects>,
-        fail: Fail,
+    pub(super) struct ReadsFail {
+        pub(super) inner: Arc<dyn Objects>,
+        pub(super) fail: Fail,
     }
 
     impl Objects for ReadsFail {
@@ -1655,7 +1655,7 @@ pub(crate) mod tests {
 
     /// Collects what the log writes.
     #[derive(Clone, Default)]
-    struct Capture(Arc<Mutex<Vec<u8>>>);
+    pub(super) struct Capture(pub(super) Arc<Mutex<Vec<u8>>>);
 
     impl std::io::Write for Capture {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {

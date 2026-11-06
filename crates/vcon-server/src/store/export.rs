@@ -5,7 +5,7 @@
 
 use uuid::Uuid;
 
-use super::{Store, StoreError, io};
+use super::{Store, StoreError, key_failed, read_failed};
 use crate::backend::ObjectError;
 use crate::envelope::{self, Context};
 use crate::ids::{TenantId, VersionId};
@@ -75,7 +75,7 @@ impl Store {
                     Ok(None)
                 }
             }
-            Err(ObjectError::Io(e)) => Err(io(e)),
+            Err(e @ ObjectError::Io(_)) => Err(read_failed(e)),
         }
     }
 
@@ -86,8 +86,8 @@ impl Store {
             uuid: kept.uuid,
             version: kept.version,
         };
-        let data_key = envelope::unwrap(&self.tenant_key, &ctx, &kept.wrapped)
-            .map_err(|_| StoreError::Damaged)?;
+        let data_key =
+            envelope::unwrap(&self.tenant_key, &ctx, &kept.wrapped).map_err(key_failed)?;
         envelope::open(&data_key, &ctx, sealed).map_err(|_| StoreError::Damaged)
     }
 }
@@ -103,7 +103,7 @@ mod tests {
     use crate::retention::Retention;
     use crate::store::Created;
     use crate::store::testing::vcon;
-    use crate::store::tests::{Fixture, fixture};
+    use crate::store::tests::{Capture, Fixture, ReadsFail, fixture};
 
     const A: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bc46";
     const B: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bc47";
@@ -229,6 +229,32 @@ mod tests {
                 "bound to its version"
             );
         }
+    }
+
+    /// An object the storage fails to give is Io, logged by its kind as
+    /// every read is: the export stops, and calls no version damaged.
+    #[test]
+    fn an_object_the_storage_fails_to_give_is_io_and_logged() {
+        let mut f = fixture();
+        stored(&f);
+        let kept = f.store.kept_versions(None, None).expect("lists");
+        f.store.objects = std::sync::Arc::new(ReadsFail {
+            inner: f.store.objects.clone(),
+            fail: || ObjectError::Io(std::io::Error::from_raw_os_error(libc::EIO)),
+        });
+        let capture = Capture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(capture.clone())
+            .with_ansi(false)
+            .finish();
+        let read = tracing::subscriber::with_default(subscriber, || f.store.sealed_of(&kept[0]));
+        assert_eq!(read, Err(StoreError::Io), "a storage failure is Io");
+        let log = String::from_utf8(capture.0.lock().expect("lock").clone()).expect("UTF-8");
+        assert!(
+            log.contains("a stored version's object could not be read")
+                && log.contains(&format!("os_error={}", libc::EIO)),
+            "the failure is logged by its kind: {log}"
+        );
     }
 
     /// A version purged after the listing is left out; an object lost
