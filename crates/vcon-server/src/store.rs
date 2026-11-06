@@ -1713,16 +1713,19 @@ pub(crate) mod tests {
             log.contains("kind=permission denied"),
             "the kind is logged: {log}"
         );
-        for secret in [
-            LEAKY,
-            "tenants/1111",
-            "AKIAIOSFODNN7EXAMPLE",
-            "wJalrXUtnFEMI",
-            UUID,
-            &version.to_string(),
-            &TENANT.to_string(),
+        // Each value is named by what it is, so a failure prints no value.
+        let version = version.to_string();
+        let tenant = TENANT.to_string();
+        for (what, value) in [
+            ("the error's text", LEAKY),
+            ("the object's key", "tenants/1111"),
+            ("the access key id", "AKIAIOSFODNN7EXAMPLE"),
+            ("the secret key", "wJalrXUtnFEMI"),
+            ("the uuid", UUID),
+            ("the version id", version.as_str()),
+            ("the tenant id", tenant.as_str()),
         ] {
-            assert!(!log.contains(secret), "{secret:?} is not logged: {log}");
+            assert!(!log.contains(value), "{what} is logged");
         }
 
         // A file's failure carries the system's error number too.

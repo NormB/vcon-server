@@ -826,8 +826,13 @@ mod tests {
                 Err(ObjectError::Io(e)) => {
                     assert_eq!(e.kind(), kind, "{why}: {e}");
                     let text = e.to_string();
-                    for secret in [KEY_ID, SECRET] {
-                        assert!(!text.contains(secret), "{why}: {secret} in {text}");
+                    // Named by what each is, so a failure prints neither.
+                    for (what, value) in [("the access key id", KEY_ID), ("the secret key", SECRET)]
+                    {
+                        assert!(
+                            !text.contains(value),
+                            "{why}: {what} is in the error's text"
+                        );
                     }
                 }
                 Err(ObjectError::Missing) => panic!("{why}: missing"),
@@ -1351,10 +1356,14 @@ mod remote {
                 Err(ObjectError::Io(e)) => {
                     assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied, "{why}: {e}");
                     let text = e.to_string();
-                    assert!(!text.contains(secret), "{why}: the secret in {text}");
+                    // A failure names the credential, never its value.
+                    assert!(
+                        !text.contains(secret),
+                        "{why}: the refused secret is in the text"
+                    );
                     assert!(
                         !text.contains(&var("VCON_TEST_S3_SECRET_KEY")),
-                        "{why}: {text}"
+                        "{why}: the service's secret is in the text"
                     );
                 }
                 Err(ObjectError::Missing) => panic!("{why}: missing"),
