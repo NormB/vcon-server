@@ -97,6 +97,8 @@ each stolen part gives.
   ClusterFuzzLite
   ([`fuzz/fuzz_targets`](https://github.com/NormB/vcon-server/tree/main/fuzz/fuzz_targets)).
 - CodeQL's security queries and clippy with warnings as errors, on every
-  push and pull request.
+  push and pull request. Code scanning's `CodeQL` check is required on
+  `main`: a pull request with a new CodeQL alert in the code it changes
+  does not merge until the alert is fixed or dismissed with its reason.
 - The [security policy](https://github.com/NormB/vcon-server/blob/main/SECURITY.md)
   for reporting what this page has missed.

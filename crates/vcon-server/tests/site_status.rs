@@ -68,6 +68,16 @@ fn has_unreleased_entries(changelog: &str) -> bool {
         .any(|line| line.starts_with("- "))
 }
 
+/// The changelog's released sections: every `## [<version>]` section after
+/// `[Unreleased]`, each with its heading.
+fn released_sections(changelog: &str) -> Vec<&str> {
+    changelog
+        .split("\n## [")
+        .skip(1)
+        .filter(|section| !section.starts_with("Unreleased]"))
+        .collect()
+}
+
 /// Every Markdown file under `dir`.
 fn markdown_under(dir: &std::path::Path, found: &mut Vec<PathBuf>) {
     let entries = std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
@@ -120,6 +130,56 @@ fn the_changelog_reader_sees_only_the_unreleased_section() {
     assert!(
         has_unreleased_entries(open),
         "an entry under [Unreleased] counts"
+    );
+}
+
+#[test]
+fn the_released_sections_reader_skips_the_preamble_and_unreleased() {
+    let changelog = "# Changelog\n\nOn `main` only.\n\n## [Unreleased]\n\n- On `main` only.\n\n\
+                     ## [0.4.0] - 2026-11-06\n\n- A.\n\n## [0.3.0] - 2026-11-04\n\n- B.\n";
+    let sections = released_sections(changelog);
+    assert_eq!(sections.len(), 2, "two released sections: {sections:#?}");
+    assert!(
+        sections[0].starts_with("0.4.0] - 2026-11-06"),
+        "{sections:#?}"
+    );
+    assert!(
+        sections[1].starts_with("0.3.0] - 2026-11-04"),
+        "{sections:#?}"
+    );
+    assert!(
+        sections.iter().all(|s| unreleased_phrases(s).is_empty()),
+        "the preamble and [Unreleased] are not part of a released section"
+    );
+}
+
+/// A released section describes what a published release holds, so it can
+/// never call one of its own entries unreleased, whatever `[Unreleased]`
+/// holds. Found after 0.4.0: its Parquet-storage entry still ended "On
+/// `main` only.", and the page test above reads pages, not the changelog.
+#[test]
+fn no_released_changelog_section_calls_an_entry_unreleased() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let changelog = std::fs::read_to_string(root.join("CHANGELOG.md")).expect("read CHANGELOG.md");
+    let sections = released_sections(&changelog);
+    assert!(
+        sections
+            .iter()
+            .any(|s| s.starts_with(&format!("{}]", env!("CARGO_PKG_VERSION")))),
+        "the changelog has a section for this build's version"
+    );
+    let found: Vec<String> = sections
+        .iter()
+        .flat_map(|section| {
+            let heading = section.lines().next().unwrap_or_default();
+            unreleased_phrases(section)
+                .into_iter()
+                .map(move |phrase| format!("[{heading}: {phrase:?}"))
+        })
+        .collect();
+    assert!(
+        found.is_empty(),
+        "released changelog sections call an entry unreleased: {found:#?}"
     );
 }
 

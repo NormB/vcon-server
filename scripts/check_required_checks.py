@@ -13,7 +13,13 @@
    CodeQL and OSV jobs ran on every PR without being required.
 
 Contexts that no workflow reports (the CLA assistant's "license/cla") are
-named in EXTERNAL.
+named in EXTERNAL. "CodeQL" is code scanning's own check-run (app
+github-advanced-security), not a job: it reports on a pull request once a
+CodeQL analysis of it is uploaded, and fails on a new alert in the code the
+pull request changes, while the "Analyze (...)" jobs pass whatever they
+find. It counts as reported when a workflow that runs on every pull request
+uploads a CodeQL analysis, and it must then be required: on 2026-11-06 the
+rust analysis of #131 found 6 new alerts and "Analyze (rust)" passed.
 
 Run with: python3 -I scripts/check_required_checks.py RULES.json
 where RULES.json is `gh api repos/<owner>/<repo>/rules/branches/main` (or
@@ -28,6 +34,9 @@ import re
 import sys
 
 EXTERNAL = {"license/cla"}
+CODE_SCANNING = "CodeQL"
+ANALYZE = "github/codeql-action/analyze@"
+NO_UPLOAD = {"never", "false"}
 MATRIX = re.compile(r"\$\{\{\s*matrix\.([A-Za-z0-9_-]+)\s*\}\}")
 FILTERS = ("paths", "paths-ignore", "branches-ignore")
 
@@ -82,6 +91,19 @@ def as_list(v):
     return [v] if isinstance(v, str) else list(v)
 
 
+def uploads_codeql(workflow):
+    """Whether a job of the workflow uploads a CodeQL analysis: a
+    github/codeql-action/analyze step whose `upload` is not turned off."""
+    for job in ((workflow or {}).get("jobs") or {}).values():
+        for step in (job or {}).get("steps") or []:
+            if not str((step or {}).get("uses", "")).startswith(ANALYZE):
+                continue
+            upload = ((step or {}).get("with") or {}).get("upload", "always")
+            if str(upload).lower() not in NO_UPLOAD:
+                return True
+    return False
+
+
 def every_pr_jobs(workflows):
     """(file, job id, names or None) for each job of a workflow that runs
     on every pull request."""
@@ -102,13 +124,21 @@ def problems(workflows, required):
         if not on_every_pr(wf or {}):
             for job_id, job in ((wf or {}).get("jobs") or {}).items():
                 elsewhere.update(names(job_id, job or {}) or [])
+    scanned = any(on_every_pr(wf or {}) and uploads_codeql(wf) for wf in workflows.values())
     for context in required:
         if context in EXTERNAL or context in reported:
+            continue
+        if context == CODE_SCANNING:
+            if not scanned:
+                found.append(f"the ruleset requires '{context}', which code scanning reports only on a pull request whose CodeQL analysis is uploaded, and no workflow that runs on every pull request uploads one")
             continue
         if context in elsewhere:
             found.append(f"the ruleset requires '{context}', whose workflow does not run on every pull request (it is not on every pull request, so it never reports on some and blocks their merge)")
         else:
             found.append(f"the ruleset requires '{context}', which no workflow job reports")
+
+    if scanned and CODE_SCANNING not in required:
+        found.append(f"a workflow that runs on every pull request uploads a CodeQL analysis, but the ruleset does not require '{CODE_SCANNING}', the check that fails on a new alert")
 
     required_set = set(required)
     for file, wf in sorted(workflows.items()):

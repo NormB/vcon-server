@@ -43,10 +43,10 @@ All notable changes to this project are recorded here. The format follows
   `reader_grace` seconds (900 unless set), and a purge deletes them at once.
   The files hold a version's id, store time and sealed bytes only, whatever
   the tenant's metadata level; queryable columns come from `export
-  parquet`. On `main` only. The how-to [keep vCons as Parquet files
-  in a bucket](https://vcon-server.com/docs/parquet-storage/) turns it on
-  over an existing bucket, and CI runs the store's conformance suite on it
-  against RustFS and MinIO.
+  parquet`. The how-to [keep vCons as Parquet files in a
+  bucket](https://vcon-server.com/docs/parquet-storage/) turns it on over an
+  existing bucket, and CI runs the store's conformance suite on it against
+  RustFS and MinIO.
 
 - vcon-server can keep its sealed vCon objects in a bucket of an
   S3-compatible service (RustFS, MinIO, AWS S3): `storage.objects = "s3"`

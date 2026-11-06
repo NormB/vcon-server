@@ -33,7 +33,10 @@ def workflows(**changes):
             "ci-success": job("CI success", needs=["rust", "fuzz-targets", "fuzz"]),
         }},
         "codeql.yml": {True: {"pull_request": {"branches": ["main"]}}, "jobs": {
-            "analyze": job("Analyze (${{ matrix.language }})", strategy={"matrix": {"language": ["actions", "rust"]}}),
+            "analyze": job("Analyze (${{ matrix.language }})", strategy={"matrix": {"language": ["actions", "rust"]}},
+                           steps=[{"uses": "github/codeql-action/init@0000000000000000000000000000000000000000"},
+                                  {"uses": "github/codeql-action/analyze@0000000000000000000000000000000000000000",
+                                   "with": {"category": "/language:${{ matrix.language }}"}}]),
         }},
         "osv-scanner.yml": {True: {"pull_request": None, "workflow_dispatch": None}, "jobs": {"scan": job("OSV (all lockfiles)")}},
         "sanitizers.yml": {True: {"pull_request": {"paths": ["crates/**"]}}, "jobs": {"asan": job("AddressSanitizer (vcon-server)")}},
@@ -42,7 +45,8 @@ def workflows(**changes):
     return out
 
 
-REQUIRED = ["fmt, clippy, tests", "CI success", "license/cla", "Analyze (actions)", "Analyze (rust)", "OSV (all lockfiles)"]
+REQUIRED = ["fmt, clippy, tests", "CI success", "license/cla", "Analyze (actions)", "Analyze (rust)", "OSV (all lockfiles)", "CodeQL"]
+UNSCANNED = "the ruleset requires 'CodeQL', which code scanning reports only on a pull request whose CodeQL analysis is uploaded, and no workflow that runs on every pull request uploads one"
 
 
 class Required(unittest.TestCase):
@@ -89,7 +93,9 @@ class Required(unittest.TestCase):
         codeql = workflows()["codeql.yml"]
         codeql[True]["pull_request"]["branches"] = ["release/*"]
         found = check.problems(workflows(**{"codeql.yml": codeql}), REQUIRED)
-        self.assertTrue(all("not on every pull request" in f for f in found) and len(found) == 2, found)
+        self.assertEqual(len(found), 3, found)
+        self.assertTrue(all("not on every pull request" in f for f in found[:2]), found)
+        self.assertEqual(found[2], UNSCANNED)
 
     def test_paths_ignore_is_a_filter_too(self):
         osv = workflows()["osv-scanner.yml"]
@@ -113,6 +119,49 @@ class Required(unittest.TestCase):
         self.assertEqual(check.problems(workflows(**{"osv-scanner.yml": osv}), REQUIRED), [])
 
 
+class CodeScanning(unittest.TestCase):
+    """"CodeQL" is the code-scanning check-run (app github-advanced-security),
+    not a job: it reports on a pull request once a CodeQL analysis of it is
+    uploaded, and fails on a new alert in code the pull request changes."""
+
+    def test_codeql_is_reported_when_a_workflow_on_every_pr_uploads_an_analysis(self):
+        self.assertEqual(check.problems(workflows(), REQUIRED), [])
+
+    def test_codeql_from_a_path_filtered_workflow_is_refused(self):
+        codeql = workflows()["codeql.yml"]
+        codeql[True]["pull_request"]["paths"] = ["crates/**"]
+        found = [f for f in check.problems(workflows(**{"codeql.yml": codeql}), REQUIRED) if "'CodeQL'" in f]
+        self.assertEqual(found, [UNSCANNED])
+
+    def test_codeql_with_the_upload_turned_off_is_refused(self):
+        codeql = workflows()["codeql.yml"]
+        codeql["jobs"]["analyze"]["steps"][1]["with"]["upload"] = "never"
+        found = check.problems(workflows(**{"codeql.yml": codeql}), REQUIRED)
+        self.assertEqual(found, [UNSCANNED])
+
+    def test_codeql_with_no_codeql_workflow_is_refused(self):
+        wfs = workflows()
+        wfs["codeql.yml"]["jobs"]["analyze"]["steps"] = [{"run": "true"}]
+        found = check.problems(wfs, REQUIRED)
+        self.assertEqual(found, [UNSCANNED])
+
+    def test_an_uploaded_analysis_whose_check_is_not_required_is_named(self):
+        # On #131 the rust analysis found 6 new alerts and "Analyze (rust)"
+        # still passed: only the CodeQL check-run fails on them.
+        found = check.problems(workflows(), [r for r in REQUIRED if r != "CodeQL"])
+        self.assertEqual(found, ["a workflow that runs on every pull request uploads a CodeQL analysis, but the ruleset does not require 'CodeQL', the check that fails on a new alert"])
+
+    def test_upload_values_that_still_upload(self):
+        for value in (None, "always", "failure-only", True):
+            step = {"uses": "github/codeql-action/analyze@v4"}
+            if value is not None:
+                step["with"] = {"upload": value}
+            self.assertTrue(check.uploads_codeql({"jobs": {"a": {"steps": [step]}}}), value)
+        for value in ("never", False, "false"):
+            step = {"uses": "github/codeql-action/analyze@v4", "with": {"upload": value}}
+            self.assertFalse(check.uploads_codeql({"jobs": {"a": {"steps": [step]}}}), value)
+
+
 class Contexts(unittest.TestCase):
     def test_the_contexts_come_from_the_branch_rules(self):
         rules = [
@@ -134,6 +183,10 @@ class Repository(unittest.TestCase):
     def test_this_repository_s_workflows_parse(self):
         names = check.every_pr_jobs(check.read_workflows(HERE.parent))
         self.assertIn("CI success", {n for _, _, ns in names for n in (ns or [])})
+
+    def test_this_repository_s_codeql_workflow_uploads_on_every_pr(self):
+        found = check.problems(check.read_workflows(HERE.parent), ["CodeQL"])
+        self.assertEqual([f for f in found if "'CodeQL'" in f], [])
 
 
 if __name__ == "__main__":
