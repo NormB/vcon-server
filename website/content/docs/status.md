@@ -26,12 +26,14 @@ what is built, unless it says otherwise.
 - **Encrypted storage.** AES-256-GCM per version under a per-version data key,
   tenant keys wrapped by the master key, SQLCipher catalogs, crash-safe writes
   and start-up recovery.
-- **Objects in an S3-compatible bucket**, after release 0.3.0: RustFS, MinIO
-  or AWS S3 keeps each version's sealed object, with path-style or
-  virtual-hosted addressing, a key from a file or from the AWS credential
-  chain, a private certificate authority, versioned buckets refused, and one
-  data directory for each bucket and prefix. The store's conformance suite
-  runs against RustFS in CI. See
+- **Objects in an S3-compatible bucket**, on `main` and in no release yet
+  (build it from source until the next release): RustFS, MinIO or AWS S3
+  keeps each version's sealed object, with path-style or virtual-hosted
+  addressing, a key from a file or from the AWS credential chain, a private
+  certificate authority, versioned buckets refused, and one data directory
+  for each bucket and prefix. The store's conformance suite and the how-to
+  run against RustFS 1.0.4 and MinIO RELEASE.2025-09-07T16-13-09Z in CI;
+  AWS S3 is checked against its documented API only. See
   [keep vCons in an S3 bucket](@/docs/s3-storage.md).
 - **The HTTP API over TLS.** Create, read, replace and delete; the legal
   routes (reads of deleted vCons, version history, restore, legal holds); the
@@ -70,21 +72,18 @@ what is built, unless it says otherwise.
 - **`check`:** every stored version opened, leftover files listed, versions
   past due and work waiting for key rotation reported; exit 1 when anything
   needs the operator.
-- **MCP for AI agents:** `POST /mcp` on the TLS listener, authenticated by
-  API key, and `vcon-server mcp`, which forwards stdio to a running server
-  with one key; tools that store, read, list and delete vCons, read the
-  legal record and the audit logs, and manage tenants and keys, each through
-  the same gate, scopes and audit records as its HTTP route. See
-  [MCP](@/docs/mcp.md).
 - **Start-up refusals** for a tenant key wrapped under another key, a key
   rotation stopped part way, data under another key, or a tenant catalog
-  the server may not open, with the system's error; and the daily warning
-  while key rotation is overdue.
+  the server may not open, with the system's error; the daily warning
+  while key rotation is overdue; and, on `main`, a log line with the number
+  of objects start-up recovery removed.
 - **The operator guide.** [Getting started](@/docs/getting-started.md) takes
   a fresh host to a running server under systemd, from a release, from
   crates.io or from source; [operations](@/docs/operations.md) covers
-  backups, restores and key rotation. Every step was run on a fresh
-  Debian 13 host from the 0.1.0 release.
+  backups, restores and key rotation. CI runs every step of the
+  [how-to guides](@/docs/how-to.md) on each change, in fresh Debian 13 and
+  Fedora 44 containers with the server in the foreground, and on Debian 13
+  under systemd.
 - **Fuzzing.** Every parser of outside input has a
   [fuzz target](@/docs/development.md#fuzzing), run in CI and by
   ClusterFuzzLite.

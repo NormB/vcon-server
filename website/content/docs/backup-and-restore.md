@@ -246,3 +246,39 @@ Once the restored server is checked, remove the old data directory:
 ```sh
 sudo rm -rf /var/lib/vcon-server.old
 ```
+
+## Objects in an S3 bucket
+
+This section applies to a server whose objects are in an S3 bucket, which
+is on `main` and in no release yet (see
+[keep vCons in an S3 bucket](@/docs/s3-storage.md)). CI runs the steps above
+with the objects in the data directory only.
+
+- **`backup` copies the objects out of the bucket.** It writes the same
+  layout as for local objects: each object a copied catalog names is read
+  from the bucket and written as a file in the backup's `objects/`
+  directories, one request for each version. The bucket must be reachable
+  from the host where `backup` runs, and its key must be able to get
+  objects; any other error from the bucket stops `backup` with exit 1. A
+  version whose object is missing from the bucket makes `backup` copy that
+  tenant again, as a purge during the copy does.
+- **The backup holds no `storage.claim`.** A server started from a restored
+  backup with the same `[storage]` table refuses the prefix, with
+  [the prefix holds objects but no claim](@/docs/s3-storage.md#the-prefix-holds-objects-but-no-claim)
+  or [another server holds the prefix](@/docs/s3-storage.md#another-server-holds-the-prefix).
+  This is on purpose: its start-up recovery would remove every object of a
+  version stored after the backup.
+- **Restore it with the objects in the data directory.** Restore the backup
+  as above, and leave the `[storage]` table out of the configuration: the
+  restored server reads its objects from the files the backup wrote. Moving
+  them into a bucket again is a change of storage, which vcon-server has no
+  command for.
+- **A copy of the bucket made by the storage service** (replication, a
+  snapshot, versioning) is not a vcon-server backup: it has no catalog, so
+  nothing in it opens without one. It also keeps the bytes of every version
+  purged after the copy, so destroy it on the same schedule as old catalog
+  backups, as [what a key rotation does to backups](@/docs/operations.md#what-a-key-rotation-does-to-backups)
+  explains.
+
+[Operations](@/docs/operations.md#objects-in-an-s3-bucket) describes what
+else the server does with the bucket.

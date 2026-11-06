@@ -26,8 +26,10 @@ it.
 
 ## Objects in an S3 bucket
 
-With `storage.objects = "s3"` (see [configuration](@/docs/configuration.md#storage)
-and the how-to [keep vCons in an S3 bucket](@/docs/s3-storage.md)), each
+With `storage.objects = "s3"`, on `main` and in no release yet (see
+[configuration](@/docs/configuration.md#storage) and the how-to
+[keep vCons in an S3 bucket](@/docs/s3-storage.md), which says how to build
+it), each
 tenant's `objects/` directory is replaced by names in the bucket, under the
 configured prefix:
 
@@ -38,8 +40,9 @@ configured prefix:
 
 Each object holds the same sealed bytes the local file would. The
 catalogs, `server.sqlite`, the lock files, `storage.claim` and the master
-key stay in `data_dir`. At start, `serve` and every command read the secret
-key file, reach the bucket, read its versioning, and check the claim; a
+key stay in `data_dir`. At start, `serve` and every command but `mcp` and
+`rekey master` read the secret key file, reach the bucket, read its
+versioning, and check the claim; a
 bucket with versioning on or suspended is refused unless
 `storage.s3.allow_versioning` is set, because it keeps a removed object's
 earlier version.
@@ -47,7 +50,8 @@ earlier version.
 - Start-up recovery removes an object no catalog row names, and the objects
   of a tenant that has no row in `server.sqlite`. It does so only under a
   prefix this data directory claimed: a prefix that another data directory
-  claimed, or that holds objects and no claim, is refused at start.
+  claimed, or that holds objects and no claim, is refused at start. It logs
+  how many objects it removed (see [logs](#logs)).
 - A purge removes the version's object from the bucket after its row is
   deleted. An object already missing does not stop the purge.
 - `tenant remove` removes the tenant's objects from the bucket, a thousand
@@ -59,7 +63,8 @@ earlier version.
   no `[storage]` table keeps its objects as files. The backup holds no
   `storage.claim`, so a server restored from it with the same `[storage]`
   table refuses the prefix; its recovery would otherwise remove the objects
-  of versions stored after the backup.
+  of versions stored after the backup. See
+  [back up and restore](@/docs/backup-and-restore.md#objects-in-an-s3-bucket).
 
 The bucket's operator sees object names (random ids), sizes and times; no
 object can be opened without the tenant key, which stays wrapped under the
@@ -93,9 +98,15 @@ sweep logs one line with counts only:
 2026-10-25T15:44:58.372109Z  INFO vcon_server::serve: purge sweep purged=0 failed=0
 ```
 
-`failed` counts tenants that could not be swept, such as one being removed;
-they are tried again at the next sweep. A `failed` that stays above zero
-needs a look.
+- `purged` is the number of versions purged by this sweep, over every
+  tenant. Each one is also in its tenant's audit log, as `purge` by actor
+  `sweep`.
+- `failed` counts tenants that could not be swept, such as one being removed,
+  one whose retention period does not read back, or one whose purge failed
+  part way; a failure to list the tenants counts as one. They are tried
+  again at the next sweep. A `failed` that stays above zero needs a look:
+  with the objects in an S3 bucket, a bucket that cannot be reached is one
+  cause.
 
 ## Logs
 
@@ -106,9 +117,30 @@ take them:
   `listen`, this names the port the system chose;
 - one `request` line per request: `request_id`, `method`, `route` (the route
   template, never the path), `status`, `duration_ms`;
-- `purge sweep` lines;
+- `purge sweep` lines (see [the purge sweep](#the-purge-sweep));
+- `start-up recovery removed objects that no catalog row names`, with
+  `removed`, the number of objects removed, when a tenant's start-up
+  recovery removed any (a crash's leftovers; see [stopping](#stopping)):
+
+  ```text
+  2026-11-06T03:25:31.882438Z  INFO vcon_server::store: start-up recovery removed objects that no catalog row names removed=2
+  ```
+
 - a `WARN` line, at start and then daily, while key rotation is overdue,
-  with counts only (`tenants_with_purges`, `purges`, `removals`);
+  with counts only: `tenants_with_purges`, the tenants with purges since
+  their key was last rotated; `purges`, those purges; and `removals`, the
+  tenants removed since the master key was last rotated. It is overdue
+  when the oldest of those is older than `rotation_warn`
+  ([configuration](@/docs/configuration.md)). [Key rotation](#key-rotation)
+  ends it:
+
+  ```text
+  2026-11-06T03:25:00.132913Z  WARN vcon_server::serve: key rotation overdue: purged vCons and removed tenants stay readable on old copies until it tenants_with_purges=1 purges=1 removals=0
+  ```
+
+  When the backlog cannot be read, the line is
+  `WARN vcon_server::serve: the key rotation backlog could not be read`;
+  run `vcon-server check` with the server stopped to see why;
 - `stopped` after SIGTERM or SIGINT.
 
 A server started, asked for its health with no key, and stopped:

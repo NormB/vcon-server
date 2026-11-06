@@ -3165,6 +3165,7 @@ dependencies = [
 name = "vcon-client"
 version = "0.0.0"
 dependencies = [
+ "flate2",
  "reqwest",
  "serde_json",
 ]

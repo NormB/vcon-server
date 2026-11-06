@@ -246,11 +246,12 @@ impl Store {
     }
 
     /// Start-up recovery: the catalog recovers itself, and temporary
-    /// objects and objects with no row are removed. A name that is not a
-    /// version id, with or without `.tmp`, is not ours and is left alone.
+    /// objects and objects with no row are removed, and how many is
+    /// logged. A name that is not a version id, with or without `.tmp`, is
+    /// not ours and is left alone.
     fn recover(&self) -> Result<(), StoreError> {
         self.catalog.recover()?;
-        let mut removed = false;
+        let mut removed: u64 = 0;
         for name in self.objects.list().map_err(io)? {
             let (id, temporary) = match name.strip_suffix(".tmp") {
                 Some(id) => (id, true),
@@ -265,11 +266,17 @@ impl Store {
             };
             if temporary || !has_row {
                 self.objects.remove_name(&name).map_err(io)?;
-                removed = true;
+                removed += 1;
             }
         }
-        if removed {
+        if removed > 0 {
             self.objects.sync().map_err(io)?;
+            // A count only, as the purge sweep logs, never a tenant or a
+            // name.
+            tracing::info!(
+                removed,
+                "start-up recovery removed objects that no catalog row names"
+            );
         }
         Ok(())
     }

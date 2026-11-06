@@ -353,6 +353,28 @@ docker volume inspect vcon-data | jq -r '.[].Name'
 vcon-data
 ```
 
+## With the objects in an S3 bucket
+
+S3 storage is on `main` and in no release yet, so the image above, built
+from release 0.3.0, cannot keep its objects in a bucket. To try it before
+the next release, build the binary from `main` (see
+[build from source](@/docs/install.md#build-from-source)) and replace the
+first stage of the `Dockerfile` with a `COPY` of that binary. Then:
+
+- put the secret key file and the storage service's certificate authority
+  in the `vcon-etc` volume, owned by `vcon` with mode `0400`, and name them
+  in `storage.s3.secret_access_key_file` and `storage.s3.ca_file` by their
+  paths in the container, such as `/etc/vcon-server/s3.secret`;
+- make sure the container can reach the service's address and port: with
+  `objects.example.com` resolved by the host's DNS, or with
+  `--add-host objects.example.com:<address>` on each `docker run`;
+- run every command the same way: each one, `backup` and `check`
+  included, reaches the bucket at start (see the
+  [command line](@/docs/command-line.md)).
+
+[Keep vCons in an S3 bucket](@/docs/s3-storage.md) sets up the bucket, its
+key and the configuration. This container path was not run by CI.
+
 ## Remove everything
 
 This deletes the data and the master key with their volumes. Do it only for

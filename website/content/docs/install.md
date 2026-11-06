@@ -400,7 +400,10 @@ vcon-server <version>
 ## Build from source
 
 A build from the repository builds the newest code on `main`. It needs what
-[cargo install](#install-with-cargo) needs, and `git`.
+[cargo install](#install-with-cargo) needs, and `git`. Until the next
+release, it is the only path to the features on `main` and in no release
+yet, such as [keeping the objects in an S3 bucket](@/docs/s3-storage.md):
+the release archives, `cargo install` and the container image are 0.3.0.
 
 ### What to install first
 

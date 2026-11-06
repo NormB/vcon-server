@@ -72,8 +72,10 @@ any content-security violation in the page.
 The store's conformance suite runs on every backend. With the
 `backend-tests` feature it runs against a real S3-compatible service as
 well, with the S3 backend's own tests and `serve` keeping its objects in a
-bucket; CI's "storage backends (RustFS)" job runs them against RustFS. The
-tests fail, never skip, when the service is not there. Start a RustFS that
+bucket; CI's "storage backends (RustFS)" job runs them against RustFS, and
+"storage backends (MinIO)" against MinIO, whose binary it checks against a
+pinned SHA-256 (MinIO publishes no container image any more). The tests
+fail, never skip, when the service is not there. Start a RustFS that
 listens on the loopback address only, and give the tests its address and
 keys:
 

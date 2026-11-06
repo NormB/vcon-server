@@ -3,6 +3,9 @@
 //! subcommand's `--help`. A command in a shell block is one the reader
 //! pastes, so it also carries `--config`, which every command but
 //! `--version` and `--help` requires.
+//!
+//! And the other way: every command the binary has is shown on the
+//! command line page, with every flag its `--help` lists.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -444,4 +447,133 @@ fn the_release_each_page_downloads_is_this_version() {
              tagged"
         );
     }
+}
+
+/// Every command of the binary that has no subcommands of its own, as its
+/// words after `vcon-server`, found by walking `--help`.
+fn leaves(path: Vec<String>, cache: &mut HashMap<Vec<String>, Help>) -> Vec<Vec<String>> {
+    let h = help(&path, cache).unwrap_or_else(|e| panic!("{e}"));
+    let subcommands: Vec<&String> = h.subcommands.iter().filter(|s| *s != "help").collect();
+    if subcommands.is_empty() {
+        return vec![path];
+    }
+    subcommands
+        .into_iter()
+        .flat_map(|sub| {
+            let mut next = path.clone();
+            next.push(sub.clone());
+            leaves(next, cache)
+        })
+        .collect()
+}
+
+/// The command a documented command runs, as its words after
+/// `vcon-server`, and the flags it is shown with.
+fn resolved(
+    command: &Documented,
+    cache: &mut HashMap<Vec<String>, Help>,
+) -> (Vec<String>, Vec<String>) {
+    let mut path: Vec<String> = Vec::new();
+    for word in &command.words {
+        match help(&path, cache) {
+            Ok(h) if h.subcommands.contains(word) => path.push(word.clone()),
+            _ => break,
+        }
+    }
+    let shown = command.words.iter().flat_map(|w| flags(w)).collect();
+    (path, shown)
+}
+
+/// Each command of the binary the command line page never shows, and each
+/// flag of a command it never shows that command with. A flag in
+/// `every`, which the page says every command takes, counts as shown.
+fn undocumented(
+    page: &[Documented],
+    every: &[String],
+    cache: &mut HashMap<Vec<String>, Help>,
+) -> Vec<String> {
+    let mut shown: HashMap<Vec<String>, Vec<String>> = HashMap::new();
+    for command in page {
+        let (path, flags) = resolved(command, cache);
+        shown.entry(path).or_default().extend(flags);
+    }
+    let mut missing = Vec::new();
+    for leaf in leaves(Vec::new(), cache) {
+        let name = leaf.join(" ");
+        let Some(flags) = shown.get(&leaf) else {
+            missing.push(format!("`vcon-server {name}` is not on the page"));
+            continue;
+        };
+        let h = help(&leaf, cache).unwrap_or_else(|e| panic!("{e}"));
+        for flag in h
+            .flags
+            .iter()
+            .filter(|f| *f != "--help" && *f != "--version")
+        {
+            if !flags.contains(flag) && !every.contains(flag) {
+                missing.push(format!("`vcon-server {name}` is never shown with `{flag}`"));
+            }
+        }
+    }
+    missing.sort();
+    missing.dedup();
+    missing
+}
+
+#[test]
+fn every_command_and_flag_is_on_the_command_line_page() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = root.join("website/content/docs/command-line.md");
+    let page = documented(&path);
+    // The flags the page's opening paragraph says every command takes.
+    let text = std::fs::read_to_string(&path).expect("the page");
+    let opening = text.split("\n## ").next().expect("text");
+    let every = flags(opening);
+    assert!(
+        every.iter().any(|f| f == "--config"),
+        "the page's opening no longer says which commands take --config"
+    );
+    let mut cache = HashMap::new();
+    let missing = undocumented(&page, &every, &mut cache);
+    assert!(
+        missing.is_empty(),
+        "command-line.md leaves out:\n{}",
+        missing.join("\n")
+    );
+}
+
+/// The reverse reader on made-up pages: a command left out, and a flag
+/// left out, are each named.
+#[test]
+fn a_command_or_flag_left_off_the_page_is_found() {
+    let mut cache = HashMap::new();
+    let row = |words: &str| Documented {
+        at: "test".into(),
+        words: words.split_whitespace().map(str::to_owned).collect(),
+        pasted: false,
+    };
+    let missing = undocumented(&[row("check --config c.toml")], &[], &mut cache);
+    assert!(
+        missing
+            .iter()
+            .any(|m| m == "`vcon-server serve` is not on the page"),
+        "a command left out is named: {missing:?}"
+    );
+    assert!(
+        !missing.iter().any(|m| m.starts_with("`vcon-server check`")),
+        "a command shown with its one flag is complete: {missing:?}"
+    );
+    let missing = undocumented(&[row("tenant remove <id>")], &[], &mut cache);
+    assert!(
+        missing
+            .iter()
+            .any(|m| m == "`vcon-server tenant remove` is never shown with `--config`"),
+        "a flag left out is named: {missing:?}"
+    );
+    let every = ["--config".to_owned()];
+    let missing = undocumented(&[row("tenant remove <id>")], &every, &mut cache);
+    assert!(
+        !missing.iter().any(|m| m.ends_with("`--config`")),
+        "a flag the page says every command takes counts as shown: {missing:?}"
+    );
 }

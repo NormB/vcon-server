@@ -8,7 +8,8 @@ hidden, until its tenant's retention period has passed since it was stored,
 and then erased, unless a legal hold keeps it. Every request is recorded in
 an audit log.
 
-**Status:** in development, not yet for production.
+**Status: 0.3.0 released, not yet for production.** What works today is on
+[what is built](https://vcon-server.com/docs/status/).
 
 This crate is the `vcon-server` program. Its library exists so the tests can
 drive the same code the binary runs; it is not a stable API.
@@ -56,6 +57,23 @@ vcon-server serve --config /etc/vcon-server/vcon-server.toml
 It locks all its memory at start and refuses to start if it cannot. The
 [getting started guide](https://vcon-server.com/docs/getting-started/) covers
 each step, the systemd unit, and making the first tenant and its keys.
+
+## For AI agents
+
+The server serves MCP at `/mcp` on its TLS listener, and through
+`vcon-server mcp` for an agent that starts its servers as commands. Each
+tool does the work of one HTTP route, with the same API keys, scopes and
+audit records. The [MCP page](https://vcon-server.com/docs/mcp/) lists every
+tool with its parameters and an example.
+
+## Objects in an S3 bucket
+
+On `main`, and in no release yet, the server can keep each version's sealed
+object in an S3-compatible bucket (RustFS, MinIO or AWS S3) instead of the
+data directory. Release 0.3.0, the one on crates.io, does not have it. Until
+the next release, build the server from the repository's `main` branch to
+use it; [keep vCons in an S3 bucket](https://vcon-server.com/docs/s3-storage/)
+gives the build steps and sets up the bucket.
 
 ## Links
 

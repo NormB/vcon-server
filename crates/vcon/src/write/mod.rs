@@ -37,6 +37,14 @@
 //!     json.starts_with(br#"{"uuid":""#),
 //!     "the uuid is the first member"
 //! );
+//!
+//! // The same vCon gzipped, read back as vcon-server reads it.
+//! let gzipped = v.to_gzip().expect("the vCon is valid");
+//! let limits = vcon::read::Limits::new(1 << 20);
+//! let found = vcon::read::inspect(&gzipped, None, &limits, &Default::default())
+//!     .expect("what vcon::write writes, vcon::read reads");
+//! assert!(found.gzip, "the body is gzipped");
+//! assert_eq!(found.uuid, uuid, "with the uuid it was written with");
 //! ```
 
 use std::fmt;

@@ -19,10 +19,11 @@ shows. `scripts/docs_test.py` runs them. See
   master key, a certificate, the configuration and the first keys. Then the
   server is started under systemd or in the foreground.
 
-- [Keep vCons in an S3 bucket](@/docs/s3-storage.md): RustFS, MinIO or AWS
-  S3 for the sealed objects, the bucket and its key on the storage side, a
-  check that the objects go there and that a purge removes them, and what
-  each refusal at start means.
+- [Keep vCons in an S3 bucket](@/docs/s3-storage.md), on `main` and in no
+  release yet: RustFS, MinIO or AWS S3 for the sealed objects, the bucket
+  and its key on the storage side, a check that the objects go there and
+  that a purge removes them, what each refusal at start means, and the
+  clean-up. CI runs it with RustFS and with MinIO.
 
 ## Use it
 
@@ -49,6 +50,8 @@ shows. `scripts/docs_test.py` runs them. See
 
 - [Connect an AI agent over MCP](@/docs/connect-mcp.md): a key for the
   agent, the handshake and the tool list over HTTPS and through
-  `vcon-server mcp`, and the refusals. The server has no MCP tools yet.
-- [MCP](@/docs/mcp.md): the endpoint, the stdio command, and the
-  configuration an agent's client reads.
+  `vcon-server mcp`, and the refusals. The tool list holds the tools the
+  key's scopes allow.
+- [MCP](@/docs/mcp.md): the endpoint, the stdio command, the configuration
+  an agent's client reads, and every tool with its parameters and an
+  example.

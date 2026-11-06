@@ -21,6 +21,42 @@ aarch64 is on [GitHub](https://github.com/NormB/vcon-server/releases).
 [What is built](https://vcon-server.com/docs/status/) says what works today.
 The documentation is at [vcon-server.com](https://vcon-server.com/docs/).
 
+## What is built
+
+The same list as [what is built](https://vcon-server.com/docs/status/),
+where each item is described in full:
+
+- **Input checks:** the three vCon forms, plain or gzipped, checked by the
+  `vcon` library crate.
+- **Writing vCons:** `vcon::write` builds a vCon and writes it unsigned,
+  gzipped, signed or encrypted.
+- **Encrypted storage:** AES-256-GCM per version, tenant keys wrapped by the
+  master key, SQLCipher catalogs, crash-safe writes and start-up recovery.
+- **Objects in an S3-compatible bucket:** RustFS, MinIO or AWS S3 keeps the
+  sealed objects. This is on `main` and in no release yet; see
+  [Building](#building).
+- **The HTTP API over TLS:** create, read, replace and delete, the legal
+  routes, the admin routes and health.
+- **The client API:** paged lists, the audit logs over HTTPS, the OpenAPI
+  description, and client examples in five languages.
+- **The console:** a web page at `/console/`.
+- **The MCP server:** tools for AI agents, at `/mcp` and through
+  `vcon-server mcp`.
+- **Tenants and keys:** scoped bearer keys, revocation and tenant removal.
+- **Retention:** periods per tenant or server-wide, and the purge sweep.
+- **Audit logs:** one per tenant and one for administration.
+- **Hardening:** memory locked, core dumps off, one server per data
+  directory.
+- **Configuration:** one TOML file, unknown keys refused.
+- **The command line:** tenants, keys, audit export, backup and `check`.
+- **Key rotation:** `rekey tenant` and `rekey master`.
+- **`check`:** every stored version opened and every problem reported.
+- **Start-up refusals:** for keys, rotations and catalogs that do not hold
+  together.
+- **The operator guide:** how-to guides that CI runs on each change.
+- **Fuzzing:** every parser of outside input.
+- **Releases:** signed Linux binaries, an SBOM and build provenance.
+
 ## Install
 
 A release holds the server as a `.tar.gz` archive for each CPU,
@@ -49,8 +85,11 @@ cargo build --release
 cargo test --workspace
 ```
 
-The `s3` cargo feature, on by default, adds the
-[S3 object storage](https://vcon-server.com/docs/s3-storage/);
+[S3 object storage](https://vcon-server.com/docs/s3-storage/) is on `main`
+and in no release yet: release 0.3.0 keeps its objects in the data directory
+only. Until the next release, build the server from `main` to use it, as
+[build from source](https://vcon-server.com/docs/install/#build-from-source)
+shows. On `main` it is the `s3` cargo feature, which is on by default;
 `cargo build --release -p vcon-server --no-default-features` leaves it out.
 
 ## Contributing

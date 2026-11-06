@@ -1,15 +1,29 @@
 #!/usr/bin/env bash
 # Runs every client example in clients/ against a live vcon-server: a new
 # data directory, master key, certificate and tenant, a server on a
-# loopback port the kernel picks, and one key with the write, read and
-# delete scopes. Each client must store a vCon, find it in the list, read
-# it back byte for byte, delete it, and print exactly these four lines, one
-# uuid in all:
+# loopback port the kernel picks, and four keys: one with the write, read
+# and delete scopes (VCON_KEY), one with legal (VCON_LEGAL_KEY), one with
+# audit (VCON_AUDIT_KEY), and an operator key (VCON_OPERATOR_KEY). Each
+# client must store a vCon, find it in the list, read it back byte for
+# byte, store and read back a gzipped vCon, page through both with a
+# cursor, replace the first under If-Match and see a stale If-Match
+# refused, place and release a legal hold, find its own create in the
+# audit log, find its tenant in the admin tenant list, read the vCon over
+# MCP, delete both, and print exactly these lines, with <uuid> the first
+# vCon, <gzip uuid> the second, <key id> the id of VCON_KEY and <tenant>
+# its tenant's id:
 #
 #   stored <uuid>
 #   listed <uuid>
 #   read <uuid> 123 bytes
-#   deleted <uuid>
+#   gzip <gzip uuid> read back as application/vcon+gzip
+#   paged 2 vCons in 2 pages of 1
+#   replaced <uuid>, a stale If-Match refused with 412
+#   held <uuid> and released
+#   audit create <uuid> by <key id>
+#   admin tenant <tenant> listed
+#   mcp vcon_get <uuid> from vcon-server, 5 tools listed
+#   deleted <uuid> <gzip uuid>
 #
 # Each must then exit non-zero with a key the server does not know, and
 # say "POST /vcons: 401 <problem type>" on standard error.
@@ -69,8 +83,16 @@ key = "$work/key.pem"
 TOML
 config=(--config "$work/vcon-server.toml")
 tenant="$("$server" tenant create clients "${config[@]}" | jq -r .id)"
-key="$("$server" key create --tenant "$tenant" --scope write --scope read --scope delete \
-  --label clients "${config[@]}" | jq -r .token)"
+made="$("$server" key create --tenant "$tenant" --scope write --scope read --scope delete \
+  --label clients "${config[@]}")"
+key="$(jq -r .token <<< "$made")"
+key_id="$(jq -r .id <<< "$made")"
+legal_key="$("$server" key create --tenant "$tenant" --scope legal --label clients-legal \
+  "${config[@]}" | jq -r .token)"
+audit_key="$("$server" key create --tenant "$tenant" --scope audit --label clients-audit \
+  "${config[@]}" | jq -r .token)"
+operator_key="$("$server" key create --operator --label clients-operator "${config[@]}" \
+  | jq -r .token)"
 
 "$server" serve "${config[@]}" 2> "$work/server.log" &
 pid=$!
@@ -90,6 +112,7 @@ export VCON_URL="https://localhost:$port"
 export VCON_CA="$work/ca.pem"
 # Node reads extra roots only from this variable, at start.
 export NODE_EXTRA_CA_CERTS="$VCON_CA"
+export VCON_LEGAL_KEY="$legal_key" VCON_AUDIT_KEY="$audit_key" VCON_OPERATOR_KEY="$operator_key"
 
 uuid='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
 # Each client, as a user runs it, from the repository root.
@@ -115,10 +138,21 @@ for entry in "${clients[@]}"; do
   first="$(printf '%s\n' "$out" | head -n 1)"
   id="${first#stored }"
   [[ "$id" =~ ^$uuid$ ]] || fail "$name: the first line is not 'stored <uuid>': $first"
+  gzip_line="$(printf '%s\n' "$out" | sed -n 4p)"
+  gzip_id="${gzip_line#gzip }"
+  gzip_id="${gzip_id%% *}"
+  [[ "$gzip_id" =~ ^$uuid$ ]] || fail "$name: the fourth line is not 'gzip <uuid> ...': $gzip_line"
   pattern="^stored $id
 listed $id
 read $id 123 bytes
-deleted $id$"
+gzip $gzip_id read back as application/vcon\+gzip
+paged 2 vCons in 2 pages of 1
+replaced $id, a stale If-Match refused with 412
+held $id and released
+audit create $id by $key_id
+admin tenant $tenant listed
+mcp vcon_get $id from vcon-server, 5 tools listed
+deleted $id $gzip_id$"
   [[ "$out" =~ $pattern ]] || fail "$name: printed something else:
 $out"
   if VCON_KEY="vcs_0000000000000000_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" $command \

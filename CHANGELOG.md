@@ -28,6 +28,22 @@ All notable changes to this project are recorded here. The format follows
   by default. The how-to [keep vCons in an S3
   bucket](https://vcon-server.com/docs/s3-storage/) sets up RustFS step by
   step, and CI runs the store's conformance suite against RustFS.
+- CI runs the store's conformance suite, the S3 backend's tests and `serve`
+  against MinIO RELEASE.2025-09-07T16-13-09Z as well (job "storage backends
+  (MinIO)"), including a check that the service refuses a second write with
+  `If-None-Match: *`, and runs the S3 how-to with MinIO as well as RustFS.
+- Start-up recovery logs how many objects it removed (`start-up recovery
+  removed objects that no catalog row names removed=<n>`), for local files
+  and for objects in a bucket. Before, it removed them without a word.
+- Documentation: the S3 how-to gives MinIO and AWS S3 their own setup,
+  checks and troubleshooting, the services' required support for
+  conditional writes, every start-up refusal with the server's message, and
+  a clean-up; a test reads its AWS configuration and IAM policies. The
+  audit-logs page lists every action; the command line page has `serve`;
+  the client examples show gzip, `If-Match`, paging, a legal hold, an audit
+  read, an admin call and MCP; the library page shows `vcon::write`. Tests
+  hold the HTTP API page to the router and the command line page to the
+  binary, both ways.
 
 ### Fixed
 

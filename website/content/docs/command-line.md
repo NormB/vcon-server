@@ -10,6 +10,29 @@ locks its memory before it reads a key, so it needs the same memory-lock
 allowance (see [getting started](@/docs/getting-started.md#allow-it-to-lock-its-memory)).
 Run each as the service account that owns the data directory, never as root.
 
+With the objects in an S3 bucket (`storage.objects = "s3"`, on `main` and
+in no release yet; see [keep vCons in an S3 bucket](@/docs/s3-storage.md)),
+every command but `mcp` and `rekey master` (which touches only
+`server.sqlite`) also reads the secret key file, reaches the bucket,
+reads its versioning and checks the claim on its prefix before it does
+anything else, and exits 1 with `the storage cannot be used:` and the reason
+when one of these fails. So the bucket must be reachable from the host
+where the commands run, as from the server. `check` reads every object, one
+request for each version, and `backup` copies every object from the bucket
+into files.
+
+## Serving
+
+| Command | Prints | Runs beside `serve` |
+|---|---|---|
+| `serve --config <file>` | log lines on standard error; nothing on standard output | no |
+
+`serve` runs the server until SIGTERM or SIGINT, then exits 0. It refuses to
+start, with exit code 1 and the reason, when the configuration, the master
+key, the data directory, the certificate or the storage cannot be used.
+[Getting started](@/docs/getting-started.md) runs it under systemd, and
+[operations](@/docs/operations.md#logs) lists the lines it logs.
+
 ## Output and exit codes
 
 - Each command prints what the matching [admin route](@/docs/http-api.md#admin)

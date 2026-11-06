@@ -19,7 +19,7 @@ use vcon_server::audit::Actor;
 use vcon_server::clock::{Clock, SystemClock};
 use vcon_server::envelope::Key;
 use vcon_server::fs::OsFs;
-use vcon_server::ids::{KeyId, TenantId};
+use vcon_server::ids::{KeyId, TenantId, VersionId};
 use vcon_server::retention::Retention;
 use vcon_server::store::Caller;
 use vcon_server::tenants::Tenants;
@@ -553,6 +553,43 @@ fn registry_on(s: &Setup, clock: Arc<dyn Clock>) -> Tenants {
     .expect("opens")
 }
 
+/// The objects a crash leaves (a temporary file, and an object no row
+/// names) are removed at start, and the server logs how many, with no
+/// tenant and no name, so an operator can see that recovery removed
+/// something.
+#[test]
+fn serve_logs_how_many_objects_start_up_recovery_removes() {
+    let s = setup();
+    let objects = s
+        .data
+        .join("tenants")
+        .join(s.tenant.to_string())
+        .join("objects");
+    std::fs::create_dir_all(&objects).expect("the objects directory");
+    let orphan = VersionId::generate().to_string();
+    let temporary = format!("{}.tmp", VersionId::generate());
+    for name in [&orphan, &temporary] {
+        std::fs::write(objects.join(name), b"left by a crash").expect("plants a leftover");
+    }
+    let mut started = start(serve(&s));
+    let line = started
+        .line_with("start-up recovery removed", Duration::from_secs(20))
+        .expect("serve logged no start-up recovery removal");
+    assert!(
+        line.contains("removed=2"),
+        "both leftovers are counted: {line}"
+    );
+    assert!(
+        !line.contains(&s.tenant.to_string()) && !line.contains(&orphan),
+        "the line names no tenant and no object: {line}"
+    );
+    let left: Vec<_> = std::fs::read_dir(&objects)
+        .expect("reads")
+        .map(|e| e.expect("entry").file_name())
+        .collect();
+    assert!(left.is_empty(), "the leftovers are gone: {left:?}");
+}
+
 #[test]
 fn serve_purges_what_is_due_when_it_starts() {
     let s = setup();
@@ -1006,5 +1043,39 @@ mod s3 {
         for line in logged.iter().chain(std::iter::once(&stderr(&refused))) {
             assert!(!line.contains(&secret), "the secret is logged: {line}");
         }
+    }
+
+    /// An object under the tenant's name in the bucket that no row names,
+    /// as a crash between the upload and the commit leaves, is removed at
+    /// the next start, and the server logs how many it removed.
+    #[test]
+    fn serve_logs_how_many_bucket_objects_start_up_recovery_removes() {
+        let bucket = format!("vcon-recover-{}", &TenantId::generate().to_string()[..12]);
+        signed("PUT", &bucket);
+        let s = setup();
+        in_bucket(&s, &bucket);
+        // The first start claims the bucket; the leftover is planted after.
+        let first = start(serve_with_keys(&s));
+        drop(first);
+        let orphan = format!("tenants/{}/objects/{}", s.tenant, VersionId::generate());
+        signed("PUT", &format!("{bucket}/{orphan}"));
+        assert!(names(&bucket).contains(&orphan), "the leftover is planted");
+        let mut started = start(serve_with_keys(&s));
+        let line = started
+            .line_with("start-up recovery removed", Duration::from_secs(20))
+            .expect("serve logged no start-up recovery removal");
+        assert!(
+            line.contains("removed=1"),
+            "the leftover is counted: {line}"
+        );
+        assert!(
+            !line.contains(&s.tenant.to_string()),
+            "the line names no tenant: {line}"
+        );
+        assert_eq!(
+            names(&bucket),
+            ["vcon-server.claim"],
+            "only the claim is left in the bucket"
+        );
     }
 }

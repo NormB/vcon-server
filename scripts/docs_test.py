@@ -298,9 +298,10 @@ SCENARIOS = [
         install_binary=False,
         docker=AS_A_HOST,
     ),
-    # Objects in an S3 bucket: RustFS and the server, each under systemd, in
-    # one container, after the server is set up.
-    Scenario("s3", "systemd", frozenset({"debian", "apt", "systemd"}), ("getting-started.md", "s3-storage.md")),
+    # Objects in an S3 bucket: RustFS, or MinIO, and the server, each under
+    # systemd, in one container, after the server is set up.
+    Scenario("s3", "systemd", frozenset({"debian", "apt", "systemd", "rustfs"}), ("getting-started.md", "s3-storage.md")),
+    Scenario("s3-minio", "systemd", frozenset({"debian", "apt", "systemd", "minio"}), ("getting-started.md", "s3-storage.md")),
     # The container how-to, with this host's Docker: it builds an image from
     # the release the page names, and removes what it made at the end.
     Scenario("container", "host", frozenset({"docker"}), ("container.md",), binary=False),

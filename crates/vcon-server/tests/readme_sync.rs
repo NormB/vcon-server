@@ -10,7 +10,13 @@
 //! - every path it names exists in the tree;
 //! - every command it says the hooks run is a command in `.githooks/`, and it
 //!   names every check script the hooks run. The site's development page
-//!   describes the same hooks and is held to the same rule.
+//!   describes the same hooks and is held to the same rule;
+//! - its "What is built" list names the same items, in the same order, as
+//!   the "Built and tested" list of the status page.
+//!
+//! The crates' own READMEs, which crates.io shows, keep the same status
+//! sentence, name only this release, link only pages the site has, and use
+//! US spelling; the server crate's README links the MCP and S3 pages.
 
 mod markdown;
 
@@ -613,4 +619,105 @@ fn the_readme_uses_us_spelling() {
         found.is_empty(),
         "README.md spells {found:?} other than in US English"
     );
+}
+
+// The README's list against the status page.
+
+/// The bold labels of the list items in `text`: each line starting
+/// `- **`, the text up to the closing `**`, without a trailing `.` or `:`.
+fn bold_labels(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| line.strip_prefix("- **"))
+        .filter_map(|rest| rest.split_once("**"))
+        .map(|(label, _)| label.trim_end_matches(['.', ':']).to_string())
+        .collect()
+}
+
+#[test]
+fn the_label_reader_takes_each_bold_item() {
+    assert_eq!(
+        bold_labels("- **One.** a\n- **`two`:** b\n  - **not** nested\n- plain\n- **Three** c\n"),
+        ["One", "`two`", "Three"],
+        "top-level bold items, punctuation off"
+    );
+}
+
+#[test]
+fn the_readme_lists_what_the_status_page_lists() {
+    let status = read("website/content/docs/status.md");
+    let site = bold_labels(section(&status, "Built and tested"));
+    assert!(site.len() >= 10, "the status page's list: {site:?}");
+    let ours = bold_labels(section(&readme(), "What is built"));
+    assert_eq!(
+        ours, site,
+        "README.md's What is built is not the status page's Built and tested"
+    );
+}
+
+// The crates' READMEs.
+
+/// The crates' READMEs, by path.
+const CRATE_READMES: [&str; 2] = ["crates/vcon-server/README.md", "crates/vcon/README.md"];
+
+#[test]
+fn each_crate_readme_has_the_home_page_status() {
+    let home = read("website/content/_index.md");
+    let note = home
+        .lines()
+        .find(|line| line.starts_with("> **Status:"))
+        .expect("the home page has a status note");
+    let site = status_sentence(note).expect("the note has a bold sentence");
+    for path in CRATE_READMES {
+        assert_eq!(
+            status_sentence(&read(path)).as_deref(),
+            Some(site.as_str()),
+            "{path}'s status is not the home page's"
+        );
+    }
+}
+
+#[test]
+fn each_crate_readme_names_only_this_release_and_links_real_pages() {
+    let version = env!("CARGO_PKG_VERSION");
+    for path in CRATE_READMES {
+        let text = read(path);
+        let others: Vec<String> = release_numbers(&text)
+            .into_iter()
+            .filter(|number| number != version)
+            .collect();
+        assert!(
+            others.is_empty(),
+            "{path} names {others:?}; the release is {version}"
+        );
+        let missing = site_link_findings(&text);
+        assert!(
+            missing.is_empty(),
+            "{path} links what the site lacks: {missing:?}"
+        );
+        let lower = text.to_lowercase();
+        let found: Vec<&str> = NON_US_SPELLINGS
+            .iter()
+            .copied()
+            .filter(|word| lower.contains(word))
+            .collect();
+        assert!(
+            found.is_empty(),
+            "{path} spells {found:?} other than in US English"
+        );
+    }
+}
+
+#[test]
+fn the_server_crate_readme_links_the_mcp_and_s3_pages() {
+    let text = read("crates/vcon-server/README.md");
+    let targets = link_targets(&text);
+    for page in [
+        "https://vcon-server.com/docs/mcp/",
+        "https://vcon-server.com/docs/s3-storage/",
+    ] {
+        assert!(
+            targets.iter().any(|t| t.starts_with(page)),
+            "crates/vcon-server/README.md does not link {page}"
+        );
+    }
 }

@@ -164,7 +164,9 @@ summary = "Every how-to guide, with the install and getting-started pages."
 > with its client routes and OpenAPI description, tenants and their keys,
 > retention and the purge sweep, legal holds, the audit logs, the console, the
 > command line, key rotation, `check` and the MCP server with its tools are
-> built and tested. See [what is built](@/docs/status.md).
+> built and tested. Keeping the sealed objects in an S3 bucket (RustFS, MinIO
+> or AWS S3) is on `main`, for the next release. See
+> [what is built](@/docs/status.md).
 
 ## What it is for
 

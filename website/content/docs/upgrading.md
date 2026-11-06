@@ -246,6 +246,29 @@ docker run -d --name vcon-server --restart unless-stopped --ulimit memlock=-1 -p
   vcon-server:$NEW_VERSION
 ```
 
+## With the objects in an S3 bucket
+
+S3 storage is on `main` and in no release yet (see
+[keep vCons in an S3 bucket](@/docs/s3-storage.md)). For a server that keeps
+its objects in a bucket:
+
+- **An upgrade does not move objects.** Adding a `[storage]` table to a
+  server that has stored vCons is a change of storage, not an upgrade: its
+  stored versions stay in the data directory and answer `500`. Add the
+  table only to a server that has stored nothing.
+- **The copy of the data directory does not hold the objects.** The copy
+  taken before the upgrade holds the catalogs and `storage.claim`; the
+  objects stay in the bucket. Going back to that copy keeps the claim, so
+  the old binary starts on the same prefix. Its start-up recovery then
+  removes every object stored after the copy, since no row of the copy
+  names it, and logs how many it removed.
+- **Release 0.3.0 cannot go back to a bucket.** It refuses the `[storage]`
+  table (see [the build has no S3 support](@/docs/s3-storage.md#the-build-has-no-s3-support)),
+  so the way back from an S3 server is a build of an earlier commit of
+  `main` that has S3 support.
+
+CI runs this page with the objects in the data directory only.
+
 ## Clean up
 
 Revoke the key this page made:

@@ -20,7 +20,7 @@ below open each page's source in the repository.
 - [Store your first vCon](../website/content/docs/first-vcon.md): A first vCon end to end: store it, store it again, see a conflict refused, read it back byte for byte, list it, and delete it, each with a key that holds only the scope it needs, and every answer shown.
 - [Storing vCons](../website/content/docs/storing-vcons.md): What vcon-server accepts, what it checks, how versions, deletes and replaces work, and what it never does to a vCon.
 - [Producers](../website/content/docs/producers.md): Sending vCons to vcon-server from a recorder, a conserver or any other producer: keys, retries, and what each answer means.
-- [Client examples](../website/content/docs/clients.md): Programs in curl, Python, TypeScript, Go and Rust that store, list, read and delete a vCon.
+- [Client examples](../website/content/docs/clients.md): Programs in curl, Python, TypeScript, Go and Rust that work through the HTTP API and MCP: store, gzip, list with a cursor, replace, legal hold, audit, admin and MCP calls, and delete.
 - [HTTP API](../website/content/docs/http-api.md): Every route: the scope it needs, what it takes, and what it answers.
 - [Console](../website/content/docs/console.md): Open the web console the server serves, sign in with an API key, and what the console does and does not keep.
 - [MCP](../website/content/docs/mcp.md): Connecting an AI agent to vcon-server over MCP, and every tool with its parameters and an example.
@@ -34,7 +34,7 @@ below open each page's source in the repository.
 
 - [Operations](../website/content/docs/operations.md): Running vcon-server day to day: the data directory, what may run beside the server, the purge sweep, logs, health checks and backups.
 - [Back up and restore](../website/content/docs/backup-and-restore.md): Back up the master key and the data directory while the server runs, restore the data directory, check it, and see what a restore brings back, revoked keys included.
-- [Keep vCons in an S3 bucket](../website/content/docs/s3-storage.md): Keep each version's sealed object in an S3-compatible bucket (RustFS, MinIO or AWS S3) instead of the data directory: the bucket and its keys on the storage side, the configuration, a check that the objects go there and that a purge removes them, and what each refusal means.
+- [Keep vCons in an S3 bucket](../website/content/docs/s3-storage.md): Keep each version's sealed object in an S3-compatible bucket (RustFS, MinIO or AWS S3) instead of the data directory: the bucket and its keys on the storage side, the configuration, a check that the objects go there and that a purge removes them, what each refusal means, and how to clean up.
 - [Revoke and rotate keys](../website/content/docs/rotate-keys.md): Revoke an API key over HTTP or on the host, replace a key without a gap, and rotate a tenant's key and the master key, with every command and its output.
 - [Tenants and keys](../website/content/docs/tenants-and-keys.md): How tenants keep their data apart, what each key scope allows, and how keys are made and revoked.
 - [Retention and legal holds](../website/content/docs/retention-and-holds.md): How long a deleted vCon is kept, when it is erased, how a legal hold stops that, and what the legal routes can read and restore.

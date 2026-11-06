@@ -78,3 +78,19 @@ A purge erases the version from the live system. Copies made before it
 key, readable with the tenant key and master key of that time.
 [Key rotation](@/docs/operations.md#key-rotation) closes that: after a rotation, the keys that
 could open those copies are destroyed.
+
+### On an S3 bucket
+
+With the objects in an S3 bucket (on `main` and in no release yet; see
+[keep vCons in an S3 bucket](@/docs/s3-storage.md)), a purge deletes the
+version's row and wrapped data key from the catalog, then sends
+`DeleteObject` for its object. What happens to the object's bytes after
+that is up to the storage service: it may keep them on its disks, in its
+replicas or in its own backups for a time the server cannot see or change.
+The server refuses a bucket whose versioning is on or suspended unless
+`storage.s3.allow_versioning` is set, because such a bucket keeps the
+deleted object as a noncurrent version. Without the catalog row the object
+cannot be opened, since its data key was kept only in that row, so a copy
+the service keeps is in the same place as an old disk: key rotation makes
+it unreadable. An object that is already missing when the purge runs does
+not stop the purge.

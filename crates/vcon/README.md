@@ -17,8 +17,8 @@ is refused, with the JSON path at fault, and `read::inspect` reads every
 output back. The examples are in the
 [`vcon::write` documentation](https://docs.rs/vcon/latest/vcon/write/).
 
-**Status:** in development, not yet for production. The API may change in any
-release before 1.0.
+**Status: 0.3.0 released, not yet for production.** The API may change in
+any release before 1.0.
 
 [vcon-server](https://crates.io/crates/vcon-server) uses this crate to check
 every vCon it receives.

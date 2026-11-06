@@ -8,9 +8,11 @@ These are the next milestones. They have no dates, and their order may
 change. [What is built](@/docs/status.md) says what works today.
 
 - **A PostgreSQL catalog:** keeping the catalogs and the registry in
-  PostgreSQL, beside today's SQLCipher files in the data directory. The
-  sealed objects can already go to an
-  [S3-compatible bucket](@/docs/s3-storage.md).
+  PostgreSQL, beside today's SQLCipher files in the data directory. On
+  `main`, the sealed objects can already go to an
+  [S3-compatible bucket](@/docs/s3-storage.md); that is in no release yet,
+  so it needs a [build from source](@/docs/install.md#build-from-source)
+  until the next release.
 - **The draft's recommended algorithms** for `vcon::write` (RS256,
   RSA-OAEP and A256CBC-HS512), as an option of the `vcon` crate.
 

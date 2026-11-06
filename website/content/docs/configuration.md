@@ -80,7 +80,10 @@ their written values.
 ## Storage
 
 Without a `[storage]` table, everything is kept in `data_dir`, as before.
-With `storage.objects = "s3"`, each version's sealed object goes to a
+The `[storage]` table is on `main` and in no release yet: release 0.3.0
+refuses it as an unknown key, so it needs a
+[build from source](@/docs/install.md#build-from-source) until the next
+release. With `storage.objects = "s3"`, each version's sealed object goes to a
 bucket in an S3-compatible service (RustFS, MinIO or AWS S3) instead, at
 `<prefix>tenants/<tenant id>/objects/<version id>`; the catalogs, the
 registry, the lock files and the master key stay on the host. An object is
