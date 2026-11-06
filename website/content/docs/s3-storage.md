@@ -4,21 +4,15 @@ description = "Keep each version's sealed object in an S3-compatible bucket (Rus
 weight = 11
 +++
 
-**S3 storage is on `main` and in no release yet.** Release 0.3.0 keeps its
-objects in the data directory only, and its server refuses a `[storage]`
-table. Until the next release, build the server from `main`, as
-[build from source](@/docs/install.md#build-from-source) shows:
+**S3 storage is in release 0.4.0 and later.** Release 0.3.0 and earlier
+keep their objects in the data directory only, and their server refuses a
+`[storage]` table. Install 0.4.0 or later from a release, with cargo or from
+source, as [install](@/docs/install.md) shows; `vcon-server --version` names
+the release a host runs.
 
-<!-- docs-test: skip the run uses the server built from the commit under test -->
-```sh
-git clone -q https://github.com/NormB/vcon-server.git
-cd vcon-server
-cargo build --release --locked -p vcon-server
-sudo install -m 0755 target/release/vcon-server /usr/local/bin/vcon-server
-```
-
-The build includes S3 support through the `s3` cargo feature, which is on by
-default; `--no-default-features` leaves it out.
+The release binaries, `cargo install` and a build from source include S3
+support through the `s3` cargo feature, which is on by default;
+`--no-default-features` leaves it out.
 
 By default the server keeps every stored version as a sealed object file in
 its data directory. This page moves those objects to a bucket in an
@@ -76,8 +70,8 @@ were not tested.
 ## Before you start
 
 - **A server set up as [getting started](@/docs/getting-started.md) shows,**
-  that has stored no vCon yet, running a build from `main` (see the top of
-  this page). The steps below use its shell variables (`$TENANT`,
+  that has stored no vCon yet, running 0.4.0 or later (see the top of this
+  page). The steps below use its shell variables (`$TENANT`,
   `$RECORDER`, `$OPS`) and its files in `/etc/vcon-server`.
 - **An S3-compatible service and a bucket in it** whose versioning has never
   been turned on. The next sections set up RustFS or MinIO; for AWS S3, see
@@ -840,8 +834,8 @@ vcon-server: configuration: TOML parse error at line 8, column 2
 unknown field `storage`, expected one of `listen`, `tls`, `data_dir`, `master_key`, `retention_default`, `purge_interval`, `rotation_warn`, `limits`, `supported_critical`, `mcp`
 ```
 
-Build the server from `main` with the default features, as the top of this
-page shows.
+Install 0.4.0 or later from a release, or build it with the default
+features, as the top of this page shows.
 
 ### The storage table does not hold together
 

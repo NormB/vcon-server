@@ -21,9 +21,9 @@ opened, because the purge destroys its data key, but its clear columns stay
 readable. Remove old exports on the tenant's retention schedule, and keep
 them where only the people who may read the tenant's records can reach them.
 
-**The export is on `main` and in no release yet.** Release 0.3.0 has no
-`export` command. Until the next release, build the server from `main`, as
-[build from source](@/docs/install.md#build-from-source) shows.
+**The export is in release 0.4.0 and later.** Release 0.3.0 has no
+`export` command. Install 0.4.0 or later as [install](@/docs/install.md)
+shows.
 
 CI runs this page from top to bottom on each change: after
 [getting started](@/docs/getting-started.md) in a Debian 13 container under

@@ -10,7 +10,7 @@ problem_title = "A stored version is damaged"
 
 A stored version's data is bad: its row is kept but its file is missing, or
 the file, or its wrapped key, does not decrypt and authenticate. With the
-objects in an S3 bucket (on `main` and in no release yet; see
+objects in an S3 bucket (see
 [keep vCons in an S3 bucket](@/docs/s3-storage.md)), its object is not in
 the bucket, or does not decrypt and authenticate.
 

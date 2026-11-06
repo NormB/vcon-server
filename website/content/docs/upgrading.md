@@ -15,6 +15,28 @@ CI runs every command on this page on each change. It installs the previous
 release, sets it up as [getting started](@/docs/getting-started.md) does,
 upgrades it to the server built from the change, and goes back again.
 
+## From 0.3.0 to 0.4.0
+
+0.4.0 brings every catalog, `server.sqlite` and each tenant's, from schema
+version 2 to schema version 4 the first time it opens it. 0.3.0 refuses a
+catalog at schema version 3 or 4. So once 0.4.0 has opened a data directory,
+as `serve` and `check` do, 0.3.0 cannot open that directory again: there is
+no downgrade. 0.3.0's `check` and `tenant list`, for example, stop with
+`vcon-server: the registry cannot be opened: opening
+/var/lib/vcon-server/server.sqlite failed: schema version 4 is not one this
+build knows`. The only way back to 0.3.0 is the copy of the data directory
+taken before the upgrade, as in [go back to the old
+version](#go-back-to-the-old-version); everything stored after the copy is
+lost.
+
+Before you install 0.4.0, keep:
+
+- a copy of the data directory, taken with the server stopped, as in
+  [copy the data directory](#copy-the-data-directory);
+- the master key, apart from that copy;
+- the configuration file, and the TLS certificate and its key;
+- the 0.3.0 binary, to go back to.
+
 ## Before you upgrade
 
 - Read the [changelog](https://github.com/NormB/vcon-server/blob/main/CHANGELOG.md)
@@ -61,7 +83,7 @@ but do not install it yet. The commands use their own variable names, so
 they do not change the ones from install:
 
 ```sh
-NEW_VERSION=0.3.0
+NEW_VERSION=0.4.0
 NEW_ARCHIVE=vcon-server-$NEW_VERSION-$(uname -m)-unknown-linux-gnu.tar.gz
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/$NEW_ARCHIVE
 curl -fsSL -o SHA256SUMS-$NEW_VERSION.txt https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/SHA256SUMS.txt
@@ -248,14 +270,15 @@ docker run -d --name vcon-server --restart unless-stopped --ulimit memlock=-1 -p
 
 ## With the objects in an S3 bucket
 
-S3 storage is on `main` and in no release yet (see
+S3 storage is in release 0.4.0 and later (see
 [keep vCons in an S3 bucket](@/docs/s3-storage.md)). For a server that keeps
 its objects in a bucket:
 
 - **An upgrade does not move objects.** Adding a `[storage]` table to a
   server that has stored vCons is a change of storage, not an upgrade: its
-  stored versions stay in the data directory and answer `500`. Add the
-  table only to a server that has stored nothing.
+  stored versions stay in the data directory and answer `500` until
+  `vcon-server storage move-objects`, run with the server stopped, moves
+  them (see [move objects stored in the data directory](@/docs/s3-storage.md#move-objects-stored-in-the-data-directory)).
 - **The copy of the data directory does not hold the objects.** The copy
   taken before the upgrade holds the catalogs and `storage.claim`; the
   objects stay in the bucket. Going back to that copy keeps the claim, so
@@ -264,8 +287,7 @@ its objects in a bucket:
   names it, and logs how many it removed.
 - **Release 0.3.0 cannot go back to a bucket.** It refuses the `[storage]`
   table (see [the build has no S3 support](@/docs/s3-storage.md#the-build-has-no-s3-support)),
-  so the way back from an S3 server is a build of an earlier commit of
-  `main` that has S3 support.
+  so a server whose objects are in a bucket cannot go back to 0.3.0.
 
 CI runs this page with the objects in the data directory only.
 

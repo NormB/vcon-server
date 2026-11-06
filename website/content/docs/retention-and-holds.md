@@ -81,7 +81,7 @@ could open those copies are destroyed.
 
 ### On an S3 bucket
 
-With the objects in an S3 bucket (on `main` and in no release yet; see
+With the objects in an S3 bucket (see
 [keep vCons in an S3 bucket](@/docs/s3-storage.md)), a purge deletes the
 version's row and wrapped data key from the catalog, then sends
 `DeleteObject` for its object. What happens to the object's bytes after

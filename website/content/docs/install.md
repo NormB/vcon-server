@@ -132,7 +132,7 @@ archive names:
 
 <!-- docs-test: only release -->
 ```sh
-VERSION=0.3.0
+VERSION=0.4.0
 ARCHIVE=vcon-server-$VERSION-$(uname -m)-unknown-linux-gnu.tar.gz
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$VERSION/$ARCHIVE
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$VERSION/SHA256SUMS.txt
@@ -400,10 +400,7 @@ vcon-server <version>
 ## Build from source
 
 A build from the repository builds the newest code on `main`. It needs what
-[cargo install](#install-with-cargo) needs, and `git`. Until the next
-release, it is the only path to the features on `main` and in no release
-yet, such as [keeping the objects in an S3 bucket](@/docs/s3-storage.md):
-the release archives, `cargo install` and the container image are 0.3.0.
+[cargo install](#install-with-cargo) needs, and `git`.
 
 ### What to install first
 

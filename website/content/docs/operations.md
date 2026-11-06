@@ -26,10 +26,9 @@ it.
 
 ## Objects in an S3 bucket
 
-With `storage.objects = "s3"`, on `main` and in no release yet (see
+With `storage.objects = "s3"` (see
 [configuration](@/docs/configuration.md#storage) and the how-to
-[keep vCons in an S3 bucket](@/docs/s3-storage.md), which says how to build
-it), each
+[keep vCons in an S3 bucket](@/docs/s3-storage.md)), each
 tenant's `objects/` directory is replaced by names in the bucket, under the
 configured prefix:
 

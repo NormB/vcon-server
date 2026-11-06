@@ -449,6 +449,75 @@ fn the_release_each_page_downloads_is_this_version() {
     }
 }
 
+/// The release the changelog lists just below `version`'s own section: the
+/// one before it. `None` when `version` has no section, or none is older.
+fn release_before(changelog: &str, version: &str) -> Option<String> {
+    let mut releases = changelog
+        .lines()
+        .filter_map(|l| l.strip_prefix("## ["))
+        .filter_map(|l| l.split_once(']'))
+        .map(|(name, _)| name)
+        .filter(|name| *name != "Unreleased");
+    releases.find(|name| *name == version)?;
+    releases.next().map(str::to_owned)
+}
+
+/// The value of `PREVIOUS = "<version>"` in `scripts/docs_test.py`.
+fn docs_test_previous(script: &str) -> Option<&str> {
+    script
+        .lines()
+        .find_map(|l| l.strip_prefix("PREVIOUS = \""))
+        .and_then(|rest| rest.strip_suffix('"'))
+}
+
+#[test]
+fn the_release_before_is_the_next_section_down() {
+    let changelog = "## [Unreleased]\n\n## [0.4.0] - 2026-11-06\n\n- A.\n\n## [0.3.0] - 2026-11-04\n\n## [0.2.0]\n";
+    assert_eq!(
+        release_before(changelog, "0.4.0").as_deref(),
+        Some("0.3.0"),
+        "the section below 0.4.0's is 0.3.0"
+    );
+    assert_eq!(
+        release_before(changelog, "0.2.0"),
+        None,
+        "the oldest release has none before it"
+    );
+    assert_eq!(
+        release_before(changelog, "0.5.0"),
+        None,
+        "a version with no section has none"
+    );
+    assert_eq!(
+        docs_test_previous("x = 1\nPREVIOUS = \"0.3.0\"\n"),
+        Some("0.3.0"),
+        "the runner's previous release is read from its assignment"
+    );
+}
+
+/// The upgrade scenario of `scripts/docs_test.py` installs `PREVIOUS` and
+/// upgrades it to the server under test, so it must be the release before
+/// this one. Found on 0.4.0: `PREVIOUS` was still 0.2.0, two releases back,
+/// so no run tested an upgrade from 0.3.0.
+#[test]
+fn the_upgrade_scenario_starts_from_the_release_before_this_one() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let changelog = std::fs::read_to_string(root.join("CHANGELOG.md")).expect("CHANGELOG.md");
+    let script = std::fs::read_to_string(root.join("scripts/docs_test.py")).expect("docs_test.py");
+    let before = release_before(&changelog, env!("CARGO_PKG_VERSION"));
+    assert!(
+        before.is_some(),
+        "CHANGELOG.md has a section for {} and one below it",
+        env!("CARGO_PKG_VERSION")
+    );
+    assert_eq!(
+        docs_test_previous(&script),
+        before.as_deref(),
+        "scripts/docs_test.py's PREVIOUS is the release before {}",
+        env!("CARGO_PKG_VERSION")
+    );
+}
+
 /// Every command of the binary that has no subcommands of its own, as its
 /// words after `vcon-server`, found by walking `--help`.
 fn leaves(path: Vec<String>, cache: &mut HashMap<Vec<String>, Help>) -> Vec<Vec<String>> {

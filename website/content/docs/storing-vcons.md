@@ -99,7 +99,7 @@ file, is synced, renamed and the directory synced, before the catalog row
 commits; a crash at any point leaves either the whole version or nothing that
 start-up recovery does not remove. See [security](@/docs/security.md).
 
-With the objects in an S3 bucket (on `main` and in no release yet; see
+With the objects in an S3 bucket (see
 [keep vCons in an S3 bucket](@/docs/s3-storage.md)), each version is an
 object named `<prefix>tenants/<tenant id>/objects/<version id>` instead,
 holding the same sealed bytes. The object is written with one `PutObject`

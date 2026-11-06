@@ -4,15 +4,9 @@ description = "Turn on Parquet storage over an S3 bucket: what the bucket must b
 weight = 11
 +++
 
-<!-- docs-test: skip the run uses the server built from the commit under test -->
-```sh
-sudo install -m 0755 target/release/vcon-server /usr/local/bin/vcon-server
-```
-
-Parquet storage is on `main` and in no release yet: release 0.3.0 refuses
-the `[storage.parquet]` table as an unknown key. Until the next release,
-build the server from `main` to use it, as
-[build from source](@/docs/install.md#build-from-source) shows.
+Parquet storage is in release 0.4.0 and later; release 0.3.0 refuses a
+`[storage]` table as an unknown key. Install 0.4.0 or later as
+[install](@/docs/install.md) shows.
 
 With [S3 object storage](@/docs/s3-storage.md), the server keeps one sealed
 object per stored version in a bucket. With Parquet storage on as well, it

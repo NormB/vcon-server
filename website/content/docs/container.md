@@ -67,7 +67,7 @@ CMD ["serve", "--config", "/etc/vcon-server/vcon-server.toml"]
 Build it, naming the version:
 
 ```sh
-VERSION=0.3.0
+VERSION=0.4.0
 docker build -q --build-arg VERSION=$VERSION -t vcon-server:$VERSION . >/dev/null
 docker run --rm vcon-server:$VERSION --version
 ```
@@ -355,11 +355,9 @@ vcon-data
 
 ## With the objects in an S3 bucket
 
-S3 storage is on `main` and in no release yet, so the image above, built
-from release 0.3.0, cannot keep its objects in a bucket. To try it before
-the next release, build the binary from `main` (see
-[build from source](@/docs/install.md#build-from-source)) and replace the
-first stage of the `Dockerfile` with a `COPY` of that binary. Then:
+The image above, built from release 0.4.0 or later, can keep its objects
+in an S3 bucket (see [keep vCons in an S3 bucket](@/docs/s3-storage.md));
+release 0.3.0 cannot. For a bucket:
 
 - put the secret key file and the storage service's certificate authority
   in the `vcon-etc` volume, owned by `vcon` with mode `0400`, and name them

@@ -19,16 +19,16 @@ shows. `scripts/docs_test.py` runs them. See
   master key, a certificate, the configuration and the first keys. Then the
   server is started under systemd or in the foreground.
 
-- [Keep vCons in an S3 bucket](@/docs/s3-storage.md), on `main` and in no
-  release yet: RustFS, MinIO or AWS S3 for the sealed objects, the bucket
-  and its key on the storage side, a check that the objects go there and
-  that a purge removes them, what each refusal at start means, and the
-  clean-up. CI runs it with RustFS and with MinIO.
-- [Keep vCons as Parquet files in a bucket](@/docs/parquet-storage.md), on
-  `main` and in no release yet: the objects in the bucket packed into
-  Parquet files, a check that each vCon still reads back, a read with
-  DuckDB, what a purge removes from the bucket and from the storage's
-  disks, and what each refusal means. CI runs it with RustFS.
+- [Keep vCons in an S3 bucket](@/docs/s3-storage.md): RustFS, MinIO or AWS
+  S3 for the sealed objects, the bucket and its key on the storage side, a
+  check that the objects go there and that a purge removes them, what each
+  refusal at start means, and the clean-up. CI runs it with RustFS and with
+  MinIO.
+- [Keep vCons as Parquet files in a bucket](@/docs/parquet-storage.md): the
+  objects in the bucket packed into Parquet files, a check that each vCon
+  still reads back, a read with DuckDB, what a purge removes from the bucket
+  and from the storage's disks, and what each refusal means. CI runs it with
+  RustFS.
 
 ## Use it
 

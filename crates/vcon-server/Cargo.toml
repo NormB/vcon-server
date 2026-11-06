@@ -1,6 +1,6 @@
 [package]
 name = "vcon-server"
-description = "Stores vCons encrypted at rest and returns them to authorized readers."
+description = "Stores vCons encrypted at rest, on local disk or in an S3 bucket (as objects or Parquet files), and returns them to authorized readers."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -69,7 +69,7 @@ toml = "1.1.8"
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
 uuid = "1.29.0"
-vcon = { path = "../vcon", version = "0.3.0" }
+vcon = { path = "../vcon", version = "0.4.0" }
 zeroize = "1.9.1"
 
 [features]

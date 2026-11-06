@@ -4,7 +4,7 @@ description = "Which parts of vcon-server work today, and which are being built.
 weight = 5
 +++
 
-vcon-server 0.3.0 is released: the `vcon` and `vcon-server` crates are on
+vcon-server 0.4.0 is released: the `vcon` and `vcon-server` crates are on
 crates.io, and the server for Linux on x86_64 and aarch64 is on
 [GitHub](https://github.com/NormB/vcon-server/releases). It is not yet for
 production. This page says what works today; each other page describes only
@@ -26,8 +26,7 @@ what is built, unless it says otherwise.
 - **Encrypted storage.** AES-256-GCM per version under a per-version data key,
   tenant keys wrapped by the master key, SQLCipher catalogs, crash-safe writes
   and start-up recovery.
-- **Objects in an S3-compatible bucket**, on `main` and in no release yet
-  (build it from source until the next release): RustFS, MinIO or AWS S3
+- **Objects in an S3-compatible bucket**, from 0.4.0: RustFS, MinIO or AWS S3
   keeps each version's sealed object, with path-style or virtual-hosted
   addressing, a key from a file or from the AWS credential chain, a private
   certificate authority, versioned buckets refused, and one data directory
@@ -35,7 +34,7 @@ what is built, unless it says otherwise.
   run against RustFS 1.0.4 and MinIO RELEASE.2025-09-07T16-13-09Z in CI;
   AWS S3 is checked against its documented API only. See
   [keep vCons in an S3 bucket](@/docs/s3-storage.md).
-- **Parquet storage in the bucket**, on `main` and in no release yet: the
+- **Parquet storage in the bucket**, from 0.4.0: the
   objects packed into Parquet files by tenant and store date, a read by
   uuid fetching one row with a ranged read, and a purge that rewrites the
   file and deletes the old one, confirmed with HeadObject, before it is
@@ -46,6 +45,10 @@ what is built, unless it says otherwise.
   The store's conformance suite
   runs on it against RustFS and MinIO in CI, and the how-to against RustFS.
   See [keep vCons as Parquet files in a bucket](@/docs/parquet-storage.md).
+- **Parquet export**, from 0.4.0: `vcon-server export parquet` writes a
+  copy of a tenant's kept versions as Parquet files, to a directory or a
+  bucket, beside a running server, with the clear columns the tenant's
+  metadata level allows. See [export to Parquet](@/docs/export-parquet.md).
 - **The HTTP API over TLS.** Create, read, replace and delete; the legal
   routes (reads of deleted vCons, version history, restore, legal holds); the
   admin routes (tenants and their keys); health.
@@ -86,8 +89,8 @@ what is built, unless it says otherwise.
 - **Start-up refusals** for a tenant key wrapped under another key, a key
   rotation stopped part way, data under another key, or a tenant catalog
   the server may not open, with the system's error; the daily warning
-  while key rotation is overdue; and, on `main`, a log line with the number
-  of objects start-up recovery removed.
+  while key rotation is overdue; and a log line with the number of objects
+  start-up recovery removed.
 - **The operator guide.** [Getting started](@/docs/getting-started.md) takes
   a fresh host to a running server under systemd, from a release, from
   crates.io or from source; [operations](@/docs/operations.md) covers
@@ -108,7 +111,7 @@ what is built, unless it says otherwise.
 
 - **The draft's recommended algorithms** for `vcon::write` (RS256,
   RSA-OAEP and A256CBC-HS512) as an option of the `vcon` crate, and a check
-  of its output with another JOSE library, for a release after vcon 0.3.0.
+  of its output with another JOSE library, for a release after vcon 0.4.0.
 - **Review:** a review of the code against its design, a review of every
   feature against its tests, and a full fault-injection run.
 

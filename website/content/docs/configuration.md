@@ -91,17 +91,15 @@ their written values.
 ## Storage
 
 Without a `[storage]` table, everything is kept in `data_dir`, as before.
-The `[storage]` table is on `main` and in no release yet: release 0.3.0
-refuses it as an unknown key, so it needs a
-[build from source](@/docs/install.md#build-from-source) until the next
-release. With `storage.objects = "s3"`, each version's sealed object goes to a
-bucket in an S3-compatible service (RustFS, MinIO or AWS S3) instead, at
-`<prefix>tenants/<tenant id>/objects/<version id>`; the catalogs, the
-registry, the lock files and the master key stay on the host. An object is
-the same sealed bytes the server writes to a file: the bucket's operator
-sees random names, sizes and times, and no vCon. The how-to
-[keep vCons in an S3 bucket](@/docs/s3-storage.md) sets one up step by
-step. A file for a server keeping its objects in a RustFS or MinIO bucket:
+The `[storage]` table is in release 0.4.0 and later; release 0.3.0 refuses
+it as an unknown key. With `storage.objects = "s3"`, each version's sealed
+object goes to a bucket in an S3-compatible service (RustFS, MinIO or AWS
+S3) instead, at `<prefix>tenants/<tenant id>/objects/<version id>`; the
+catalogs, the registry, the lock files and the master key stay on the host.
+An object is the same sealed bytes the server writes to a file: the bucket's
+operator sees random names, sizes and times, and no vCon. The how-to [keep
+vCons in an S3 bucket](@/docs/s3-storage.md) sets one up step by step. A
+file for a server keeping its objects in a RustFS or MinIO bucket:
 
 ```toml
 listen = "0.0.0.0:8443"
@@ -164,7 +162,7 @@ Each new version is still written first as its own object, then packed by
 the next pack run, which removes the object. Reads by uuid fetch one row of
 a file with a ranged read. A purge rewrites the file without the purged
 row, deletes the old file and checks that the bucket no longer has it,
-before the purge returns. Parquet storage is on `main` only, in no release.
+before the purge returns. Parquet storage is in release 0.4.0 and later.
 The file above, with Parquet storage on:
 
 ```toml

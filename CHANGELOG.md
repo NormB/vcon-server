@@ -6,6 +6,8 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-06
+
 ### Added
 
 - `vcon-server storage move-objects` moves every tenant's sealed objects from
@@ -358,7 +360,8 @@ All notable changes to this project are recorded here. The format follows
   stack and abort the server. `vcon::MAX_SIGNED_LAYERS`,
   `vcon::MAX_JSON_DEPTH` and `vcon::Rejection::TooDeep` name the limits.
 
-[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/NormB/vcon-server/releases/tag/v0.4.0
 [0.3.0]: https://github.com/NormB/vcon-server/releases/tag/v0.3.0
 [0.2.0]: https://github.com/NormB/vcon-server/releases/tag/v0.2.0
 [0.1.0]: https://github.com/NormB/vcon-server/releases/tag/v0.1.0

@@ -15,7 +15,7 @@ A server that stores [vCons](https://datatracker.ietf.org/wg/vcon/about/), the
 IETF conversation-record format, encrypted at rest, and returns them only to
 the keys allowed to see them.
 
-**Status: 0.3.0 released, not yet for production.** The `vcon` and
+**Status: 0.4.0 released, not yet for production.** The `vcon` and
 `vcon-server` crates are on crates.io, and the server for Linux on x86_64 and
 aarch64 is on [GitHub](https://github.com/NormB/vcon-server/releases).
 [What is built](https://vcon-server.com/docs/status/) says what works today.
@@ -33,13 +33,15 @@ where each item is described in full:
 - **Encrypted storage:** AES-256-GCM per version, tenant keys wrapped by the
   master key, SQLCipher catalogs, crash-safe writes and start-up recovery.
 - **Objects in an S3-compatible bucket:** RustFS, MinIO or AWS S3 keeps the
-  sealed objects. This is on `main` and in no release yet; see
-  [Building](#building).
+  sealed objects; see
+  [keep vCons in an S3 bucket](https://vcon-server.com/docs/s3-storage/).
 - **Parquet storage in the bucket:** the objects packed into Parquet files,
   each vCon read back by one ranged read, and a purge that deletes the old
   file before it is done, with manifests for outside readers and small
-  files merged. This is on `main` and in
-  no release yet; see [Building](#building).
+  files merged; see
+  [keep vCons as Parquet files in a bucket](https://vcon-server.com/docs/parquet-storage/).
+- **Parquet export:** a copy of a tenant's vCons as Parquet files, in a
+  directory or a bucket, written beside a running server.
 - **The HTTP API over TLS:** create, read, replace and delete, the legal
   routes, the admin routes and health.
 - **The client API:** paged lists, the audit logs over HTTPS, the OpenAPI
@@ -96,15 +98,12 @@ The tests run under the pinned [cargo-nextest](https://nexte.st/), which ends
 a test still running after 3 minutes and fails it by name; it does not run
 doc tests, so `cargo test --doc` runs those.
 
-[S3 object storage](https://vcon-server.com/docs/s3-storage/) is on `main`
-and in no release yet: release 0.3.0 keeps its objects in the data directory
-only. Until the next release, build the server from `main` to use it, as
-[build from source](https://vcon-server.com/docs/install/#build-from-source)
-shows. On `main` it is the `s3` cargo feature, which is on by default;
-`cargo build --release -p vcon-server --no-default-features` leaves it out.
+[S3 object storage](https://vcon-server.com/docs/s3-storage/) and
 [Parquet storage](https://vcon-server.com/docs/parquet-storage/), which packs
-those objects into Parquet files in the same bucket, is on `main` too and in
-no release yet.
+those objects into Parquet files in the same bucket, are in the release
+binaries and in `cargo install`. Both need the `s3` cargo feature, which is
+on by default; `cargo build --release -p vcon-server --no-default-features`
+leaves it out.
 
 ## Contributing
 

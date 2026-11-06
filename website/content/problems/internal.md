@@ -11,8 +11,8 @@ problem_title = "The server failed"
 An unexpected failure, such as a disk error. A read whose stored file the
 storage fails to give answers this too, such as a file the server may not
 read; the server logs `a stored version's object could not be read` with
-the failure's `kind`. With the objects in an S3 bucket (on `main` and in no
-release yet; see [keep vCons in an S3 bucket](@/docs/s3-storage.md)), a
+the failure's `kind`. With the objects in an S3 bucket (see
+[keep vCons in an S3 bucket](@/docs/s3-storage.md)), a
 store, replace or read whose object cannot be written to or read from the
 bucket answers this: the service cannot be reached, refuses the key
 (`AccessDenied`), or does not answer within `storage.s3.timeout`. A store

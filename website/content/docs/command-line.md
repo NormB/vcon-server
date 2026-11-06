@@ -10,8 +10,8 @@ locks its memory before it reads a key, so it needs the same memory-lock
 allowance (see [getting started](@/docs/getting-started.md#allow-it-to-lock-its-memory)).
 Run each as the service account that owns the data directory, never as root.
 
-With the objects in an S3 bucket (`storage.objects = "s3"`, on `main` and
-in no release yet; see [keep vCons in an S3 bucket](@/docs/s3-storage.md)),
+With the objects in an S3 bucket (`storage.objects = "s3"`; see
+[keep vCons in an S3 bucket](@/docs/s3-storage.md)),
 every command but `mcp` and `rekey master` (which touches only
 `server.sqlite`) also reads the secret key file, reaches the bucket,
 reads its versioning and checks the claim on its prefix before it does

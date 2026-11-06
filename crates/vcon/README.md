@@ -9,7 +9,7 @@ extensions the caller does not support. If the vCon is refused, it says why.
 Reading does no I/O and returns no bytes, so the caller can keep the body
 exactly as received.
 
-From 0.3.0 it also writes vCons, in `vcon::write`: an object model of the
+It also writes vCons, in `vcon::write`: an object model of the
 vCon core draft, written unsigned, gzipped, signed (a JWS) or encrypted (a
 JWE). The cryptography is the caller's, through the `Signer`,
 `ContentEncrypter` and `KeyEncrypter` traits. What the draft does not allow
@@ -17,7 +17,11 @@ is refused, with the JSON path at fault, and `read::inspect` reads every
 output back. The examples are in the
 [`vcon::write` documentation](https://docs.rs/vcon/latest/vcon/write/).
 
-**Status: 0.3.0 released, not yet for production.** The API may change in
+`read::fields` reads the members a Parquet export copies into clear columns:
+`created_at`, `updated_at`, `subject`, each party's `tel`, `mailto` and
+`name`, and the number of dialogs.
+
+**Status: 0.4.0 released, not yet for production.** The API may change in
 any release before 1.0.
 
 [vcon-server](https://crates.io/crates/vcon-server) uses this crate to check

@@ -249,8 +249,7 @@ sudo rm -rf /var/lib/vcon-server.old
 
 ## Objects in an S3 bucket
 
-This section applies to a server whose objects are in an S3 bucket, which
-is on `main` and in no release yet (see
+This section applies to a server whose objects are in an S3 bucket (see
 [keep vCons in an S3 bucket](@/docs/s3-storage.md)). CI runs the steps above
 with the objects in the data directory only.
 

@@ -8,7 +8,7 @@ hidden, until its tenant's retention period has passed since it was stored,
 and then erased, unless a legal hold keeps it. Every request is recorded in
 an audit log.
 
-**Status: 0.3.0 released, not yet for production.** What works today is on
+**Status: 0.4.0 released, not yet for production.** What works today is on
 [what is built](https://vcon-server.com/docs/status/).
 
 This crate is the `vcon-server` program. Its library exists so the tests can
@@ -68,12 +68,15 @@ tool with its parameters and an example.
 
 ## Objects in an S3 bucket
 
-On `main`, and in no release yet, the server can keep each version's sealed
-object in an S3-compatible bucket (RustFS, MinIO or AWS S3) instead of the
-data directory. Release 0.3.0, the one on crates.io, does not have it. Until
-the next release, build the server from the repository's `main` branch to
-use it; [keep vCons in an S3 bucket](https://vcon-server.com/docs/s3-storage/)
-gives the build steps and sets up the bucket.
+The server can keep each version's sealed object in an S3-compatible bucket
+(RustFS, MinIO or AWS S3) instead of the data directory, and can pack those
+objects into Parquet files in the same bucket.
+[Keep vCons in an S3 bucket](https://vcon-server.com/docs/s3-storage/) sets
+up the bucket, and
+[keep vCons as Parquet files in a bucket](https://vcon-server.com/docs/parquet-storage/)
+turns on Parquet storage. `vcon-server export parquet` writes a copy of a
+tenant's vCons as Parquet files; see
+[export to Parquet](https://vcon-server.com/docs/export-parquet/).
 
 ## Links
 

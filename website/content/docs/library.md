@@ -10,7 +10,7 @@ signed or encrypted), whether it is gzipped, its uuid, and whether it needs
 extensions the caller does not support. Reading does no I/O and returns no
 bytes. The API may change in any release before 1.0.
 
-This page describes vcon 0.3.0. In 0.1.0, the first release,
+This page describes vcon 0.4.0. In 0.1.0, the first release,
 `inspect`, `Inspection`, `Limits`, `Rejection`,
 `MAX_SIGNED_LAYERS` and `MAX_JSON_DEPTH` are at the crate root rather than in
 `vcon::read`, and limits are written `Limits { inflated: 1 << 20 }`.
@@ -21,6 +21,12 @@ draft, written unsigned, gzipped, signed (a JWS) or encrypted (a JWE). The crypt
 is refused, with the JSON path at fault, and `read::inspect` reads every
 output back. The examples are in the
 [`vcon::write` documentation](https://docs.rs/vcon/latest/vcon/write/).
+
+New in 0.4.0, `vcon::read::fields` reads the members a
+[Parquet export](@/docs/export-parquet.md) copies into clear columns, from
+an unsigned vCon or the vCon inside a signed one: `created_at`,
+`updated_at`, `subject`, each party's `tel`, `mailto` and `name`, and the
+number of dialogs. An encrypted vCon gives `None`.
 
 ## Add it
 
