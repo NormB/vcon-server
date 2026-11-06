@@ -40,7 +40,7 @@ mod rekey;
 mod rewrite;
 
 pub use backup::{BackupError, Copied, TRIES};
-pub use examine::Examination;
+pub use examine::{Examination, ExamineError};
 pub use export::KeptVersion;
 pub use legal::{Legal, VersionInfo};
 pub use list::{Cursor, ListQuery, Listed, Listing};
@@ -708,8 +708,19 @@ impl Store {
         uuid: Uuid,
         version: VersionId,
     ) -> Result<Vec<u8>, StoreError> {
+        self.read_or_why(tx, uuid, version)
+            .map_err(Unopened::into_store)
+    }
+
+    /// `read_version`, keeping a storage failure as the storage's error.
+    fn read_or_why(
+        &self,
+        tx: &mut Tx,
+        uuid: Uuid,
+        version: VersionId,
+    ) -> Result<Vec<u8>, Unopened> {
         let row = version_row(tx, version)?;
-        self.open_version(uuid, version, &row)
+        self.open_or_why(uuid, version, &row)
     }
 
     /// Opens a version's sealed blob, from its object or its pack file,
@@ -720,6 +731,18 @@ impl Store {
         version: VersionId,
         row: &VersionRow,
     ) -> Result<Vec<u8>, StoreError> {
+        self.open_or_why(uuid, version, row)
+            .map_err(Unopened::into_store)
+    }
+
+    /// `open_version`, keeping a storage failure as the storage's error,
+    /// for `examine`, which reports its kind.
+    fn open_or_why(
+        &self,
+        uuid: Uuid,
+        version: VersionId,
+        row: &VersionRow,
+    ) -> Result<Vec<u8>, Unopened> {
         let ctx = Context::Version {
             tenant: self.tenant,
             uuid,
@@ -727,10 +750,19 @@ impl Store {
         };
         let data_key =
             envelope::unwrap(&self.tenant_key, &ctx, &row.wrapped).map_err(key_failed)?;
-        let blob = self
-            .sealed_blob(version, row.place.as_ref())
-            .map_err(packed::Unread::into_store)?;
-        envelope::open(&data_key, &ctx, &blob).map_err(|_| StoreError::Damaged)
+        let blob = match self.sealed_blob(version, row.place.as_ref()) {
+            Ok(blob) => blob,
+            Err(packed::Unread::Object(ObjectError::Io(e))) => return Err(Unopened::Storage(e)),
+            Err(other) => return Err(Unopened::Store(other.into_store())),
+        };
+        Ok(envelope::open(&data_key, &ctx, &blob).map_err(|_| StoreError::Damaged)?)
+    }
+
+    /// How many versions are packed into pack files: once there are any,
+    /// the storage must keep Parquet storage on, since nothing turns them
+    /// back into objects.
+    pub fn packed_versions(&self) -> Result<u64, StoreError> {
+        self.catalog.snapshot()?.count_packed()
     }
 
     /// How many versions the Store keeps and how many uuids are held.
@@ -936,13 +968,45 @@ fn read_failed(e: ObjectError) -> StoreError {
     match e {
         ObjectError::Missing => StoreError::Damaged,
         ObjectError::Io(e) => {
-            tracing::warn!(
-                kind = %e.kind(),
-                os_error = e.raw_os_error(),
-                "a stored version's object could not be read"
-            );
+            storage_failed(&e);
             StoreError::Io
         }
+    }
+}
+
+/// Logs a read the storage failed by the error's kind and system error
+/// number only: its text is not logged, since a service's message may name
+/// the object's key.
+fn storage_failed(e: &std::io::Error) {
+    tracing::warn!(
+        kind = %e.kind(),
+        os_error = e.raw_os_error(),
+        "a stored version's object could not be read"
+    );
+}
+
+/// Why a version's blob did not open: as a read answers it, or a failure
+/// of the storage itself, kept so `examine` can report its kind.
+#[derive(Debug)]
+enum Unopened {
+    Store(StoreError),
+    Storage(std::io::Error),
+}
+
+impl Unopened {
+    /// How a read answers: a storage failure is logged by its kind and is
+    /// Io, as `read_failed` has it.
+    fn into_store(self) -> StoreError {
+        match self {
+            Unopened::Store(e) => e,
+            Unopened::Storage(e) => read_failed(ObjectError::Io(e)),
+        }
+    }
+}
+
+impl From<StoreError> for Unopened {
+    fn from(e: StoreError) -> Unopened {
+        Unopened::Store(e)
     }
 }
 
@@ -1722,6 +1786,79 @@ pub(crate) mod tests {
         }
     }
 
+    /// Objects that are read as stored, and a listing that fails.
+    struct ListFails {
+        inner: Arc<dyn Objects>,
+        fail: Fail,
+    }
+
+    impl Objects for ListFails {
+        fn put(&self, version: VersionId, blob: &[u8]) -> Result<(), ObjectError> {
+            self.inner.put(version, blob)
+        }
+
+        fn get(&self, version: VersionId) -> Result<Vec<u8>, ObjectError> {
+            self.inner.get(version)
+        }
+
+        fn remove(&self, version: VersionId) -> Result<(), ObjectError> {
+            self.inner.remove(version)
+        }
+
+        fn list(&self) -> Result<Vec<String>, ObjectError> {
+            Err((self.fail)())
+        }
+
+        fn remove_name(&self, name: &str) -> Result<(), ObjectError> {
+            self.inner.remove_name(name)
+        }
+
+        fn sync(&self) -> Result<(), ObjectError> {
+            self.inner.sync()
+        }
+    }
+
+    /// A listing of the objects that the storage fails is the storage's
+    /// failure, with its kind, as a read's is; a listing that says no
+    /// object has the name, which no listing means, is a failed
+    /// examination, not a storage error.
+    #[test]
+    fn a_listing_the_storage_fails_is_reported_with_its_kind() {
+        let cases: [(Fail, ExamineError); 2] = [
+            (
+                || storage_failed(std::io::ErrorKind::PermissionDenied),
+                ExamineError::Objects {
+                    kind: std::io::ErrorKind::PermissionDenied,
+                    os_error: None,
+                },
+            ),
+            (
+                || ObjectError::Missing,
+                ExamineError::Failed(StoreError::Io),
+            ),
+        ];
+        for (fail, expected) in cases {
+            let mut f = fixture();
+            let (found, body) = vcon(UUID, "first");
+            f.store.create(&f.caller, &found, &body).expect("stored");
+            f.store.objects = Arc::new(ListFails {
+                inner: f.store.objects.clone(),
+                fail,
+            });
+            assert_eq!(
+                f.store
+                    .examine(
+                        Retention::Years(7),
+                        datetime!(2026-10-23 12:00 UTC),
+                        datetime!(2026-10-23 12:00 UTC),
+                    )
+                    .err(),
+                Some(expected),
+                "examine fails with the listing's failure"
+            );
+        }
+    }
+
     /// A storage failure, of the kind the system or the S3 backend gives.
     fn storage_failed(kind: std::io::ErrorKind) -> ObjectError {
         ObjectError::Io(std::io::Error::from(kind))
@@ -1794,11 +1931,19 @@ pub(crate) mod tests {
                     Ok(vec![version]),
                     "{why}: examine lists the version"
                 ),
-                _ => assert_eq!(
-                    examined.err(),
-                    Some(expected),
-                    "{why}: examine fails, listing nothing as damaged"
-                ),
+                _ => {
+                    let ObjectError::Io(failed) = fail() else {
+                        panic!("{why}: a storage failure")
+                    };
+                    assert_eq!(
+                        examined.err(),
+                        Some(ExamineError::Objects {
+                            kind: failed.kind(),
+                            os_error: failed.raw_os_error(),
+                        }),
+                        "{why}: examine fails with the storage's error kind, listing nothing as damaged"
+                    );
+                }
             }
         }
     }

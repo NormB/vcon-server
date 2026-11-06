@@ -14,7 +14,7 @@ what is built, unless it says otherwise.
 
 - **Input checks.** The three vCon forms (unsigned, signed, encrypted), plain
   or gzipped, with bounded inflation, duplicate JSON members refused, and the
-  `critical` extension list honoured. These checks are a separate library
+  `critical` extension list honored. These checks are a separate library
   crate, [`vcon`](@/docs/library.md). Both crates, `vcon` and `vcon-server`,
   are published on crates.io.
 - **Writing vCons** in the `vcon` library, released in vcon 0.3.0:

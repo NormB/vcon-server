@@ -429,7 +429,7 @@ mod tests {
         store.packs = Some(packs.clone());
         let store = std::sync::Arc::new(store);
         let (done, finished) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
+        let publisher = std::thread::spawn(move || {
             let _ = done.send(store.publish());
         });
         match finished.recv_timeout(std::time::Duration::from_secs(5)) {
@@ -438,6 +438,11 @@ mod tests {
                 panic!("publish did not end within 5 seconds: it waits on the catalog it holds")
             }
         }
+        // The thread still holds the Store and closes its catalog as it
+        // ends. Wait for that: a test process that exits while SQLCipher is
+        // still in use on another thread can crash (SIGSEGV) after the test
+        // passed, as it did under coverage in CI.
+        publisher.join().expect("the publishing thread ends");
         assert!(!manifests(&packs).is_empty(), "written");
     }
 

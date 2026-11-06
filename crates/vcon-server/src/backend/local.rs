@@ -661,6 +661,13 @@ impl CatalogTx for LocalTx<'_> {
         self.count_of("SELECT count(*) FROM version", [])
     }
 
+    fn count_packed(&mut self) -> Result<u64, StoreError> {
+        self.count_of(
+            "SELECT count(*) FROM version WHERE place_file IS NOT NULL",
+            [],
+        )
+    }
+
     fn count_held(&mut self) -> Result<u64, StoreError> {
         self.count_of("SELECT count(*) FROM vcon WHERE hold != 0", [])
     }

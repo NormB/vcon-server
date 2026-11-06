@@ -17,7 +17,7 @@ use crate::clock::Clock;
 use crate::envelope::Key;
 use crate::ids::VersionId;
 use crate::retention::Retention;
-use crate::store::{Caller, Created, Cursor, ListQuery, Store, StoreError};
+use crate::store::{Caller, Created, Cursor, ExamineError, ListQuery, Store, StoreError};
 
 /// A clock a test moves by hand.
 pub(crate) struct TestClock(Mutex<OffsetDateTime>);
@@ -766,10 +766,10 @@ fn an_object_the_storage_cannot_read_is_a_failure(h: &dyn Harness) {
     let store = (f.unreadable)();
     let check = "an_object_the_storage_cannot_read_is_a_failure";
     reads_answer(&store, &who, 1, version, StoreError::Io, check);
-    assert_eq!(
-        store.examine(Retention::Years(7), START, START).err(),
-        Some(StoreError::Io),
-        "{check}: examine"
+    let examined = store.examine(Retention::Years(7), START, START).err();
+    assert!(
+        matches!(examined, Some(ExamineError::Objects { .. })),
+        "{check}: examine fails as the storage's, not the catalog's: {examined:?}"
     );
     drop(store);
     let (found, body) = vcon(&uuid(1), "first");

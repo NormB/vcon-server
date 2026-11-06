@@ -127,6 +127,13 @@ All notable changes to this project are recorded here. The format follows
   it up to date. Release 0.3.0 does not open a data directory at version 3
   or 4: go back to it only with the copy taken before the upgrade, as
   [upgrade](https://vcon-server.com/docs/upgrading/) describes.
+- Once a tenant has a version packed into a Parquet file, `serve` refuses
+  to start with a configuration that has no `[storage.parquet]`, naming the
+  table: without it the server packed no more, and its start no longer
+  refused a bucket with Object Lock or versioning, either of which keeps the
+  bytes of a pack file that a purge rewrote. `vcon-server check` gives each
+  tenant's `packed` versions and reports packed versions without the table
+  as a problem; the other commands run as before.
 
 ### Fixed
 
@@ -145,6 +152,19 @@ All notable changes to this project are recorded here. The format follows
   failure's `kind` (such as `permission denied` or `timed out`), never its
   text, a key or an id. `damaged` is now only an object that is missing
   while its row is kept, or one that does not decrypt and authenticate.
+- For a tenant whose objects the storage did not read, `vcon-server check`
+  reported `its catalog cannot be opened: Io`, though the catalog had
+  opened. It now reports `its objects cannot be read:` with the failure's
+  kind and, when the system gives one, its error number, such as
+  `permission denied (os error 13)`, as the server's log line gives them,
+  never an object's key; any other failure of the examination is
+  `it could not be examined:` with its error.
+- The vcon-server crate's description and the OpenAPI description spelled
+  "authorised", and four site pages and llms.txt spelled "behaviour",
+  "licence" and "honour(ed)"; each is now in US spelling, and a test holds
+  every `Cargo.toml` description, every site page, llms.txt and the OpenAPI
+  description to the README's US spelling. The development page's
+  "Licence" heading is now "License".
 
 ## [0.3.0] - 2026-11-04
 

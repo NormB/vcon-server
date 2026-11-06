@@ -212,8 +212,11 @@ pack_limit = 16777216
   until retention purges it.
 - **No way back.** Once versions are packed, keep `[storage.parquet]`:
   there is no command that turns packed versions back into objects. Without
-  the table the server still reads and purges packed versions, but packs
-  no more.
+  the table, `serve` refuses to start while any tenant has a packed version,
+  since it would pack no more and its start would no longer refuse a bucket
+  with Object Lock or versioning; `check` names each such tenant as a
+  problem. See
+  [packed versions without the table](@/docs/parquet-storage.md#packed-versions-without-the-table).
 
 ## Where the defaults come from
 

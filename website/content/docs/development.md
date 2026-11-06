@@ -123,7 +123,7 @@ plain `cc` for aarch64, so the binaries released are linked as before.
 
 ## How the code is tested
 
-- **Test first.** Each behaviour's test is written before the code and seen to
+- **Test first.** Each behavior's test is written before the code and seen to
   fail for the right reason.
 - **Faults injected.** After a change passes, its code is broken on purpose,
   one fault at a time (a condition inverted, a step skipped, a limit moved),
@@ -267,7 +267,7 @@ git config core.hooksPath .githooks
   crates.io (`scripts/check_package.py`):
   it packages each published crate, refuses any file in a `.crate` other
   than the sources, the files they include, the README and the two
-  licences, and builds each crate from its `.crate` alone; a missing README or licence; a dependency taken by git or by
+  licenses, and builds each crate from its `.crate` alone; a missing README or license; a dependency taken by git or by
   path, in the manifest or the lock file; a relative link in the README; and
   anything the scan above refuses.
 - **commit-msg** refuses the same in the message, every line of it,
@@ -422,6 +422,6 @@ each downloaded tool is pinned by commit or by sha256.
 - **A security problem:** report it privately, never in an issue; see
   [reporting a vulnerability](@/docs/security.md#reporting-a-vulnerability).
 
-## Licence
+## License
 
 MIT OR Apache-2.0, at your option.

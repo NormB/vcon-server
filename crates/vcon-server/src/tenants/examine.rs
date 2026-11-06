@@ -11,7 +11,7 @@ use crate::clock::from_nanos;
 use crate::envelope::{self, Context};
 use crate::ids::TenantId;
 use crate::retention::Retention;
-use crate::store::Examination;
+use crate::store::{Examination, ExamineError};
 
 /// One tenant as `check` found it.
 #[derive(Debug)]
@@ -20,8 +20,18 @@ pub struct TenantExamination {
     pub name: String,
     /// A key rotation of this tenant was stopped part way.
     pub rotation_stopped: bool,
-    /// Its Store examined, or why its catalog did not open.
-    pub store: Result<Examination, OpenFailure>,
+    /// Its Store examined, or why it was not.
+    pub store: Result<Examination, Unexamined>,
+}
+
+/// Why a tenant's Store was not examined: it did not open, or it opened
+/// and the examination failed, as when the objects cannot be read.
+#[derive(Debug)]
+pub enum Unexamined {
+    /// The Store did not open.
+    Open(OpenFailure),
+    /// The Store opened, and examining it failed.
+    Examine(ExamineError),
 }
 
 /// The registry as `check` found it.
@@ -105,6 +115,19 @@ impl Tenants {
         Ok(order)
     }
 
+    /// How many tenants have a version packed into a pack file: with any,
+    /// `serve` needs `[storage.parquet]`.
+    pub fn tenants_with_packed_versions(&self) -> Result<u64, TenantError> {
+        let rows = self.registry.snapshot()?.tenants()?;
+        let mut count = 0;
+        for row in rows {
+            if self.store(row.id)?.packed_versions().map_err(io)? > 0 {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
     /// The rotation backlog: purges per tenant since its key's rotation,
     /// and removals since the master key's.
     pub fn rotation_backlog(&self) -> Result<RotationBacklog, TenantError> {
@@ -160,11 +183,14 @@ impl Tenants {
             let rotation_stopped = row.pending.is_some();
             let retention = super::kept_for(stored_retention(retention)?, default);
             let key_since = time(key_since)?;
-            let store = self.store_or_why(id).and_then(|store| {
-                store
-                    .examine(retention, key_since, now)
-                    .map_err(|e| OpenFailure::Refused(io(e)))
-            });
+            let store = self
+                .store_or_why(id)
+                .map_err(Unexamined::Open)
+                .and_then(|store| {
+                    store
+                        .examine(retention, key_since, now)
+                        .map_err(Unexamined::Examine)
+                });
             tenants.push(TenantExamination {
                 id,
                 name,
@@ -250,7 +276,7 @@ mod examine_tests {
         let acme = &found.tenants[0];
         assert!(acme.rotation_stopped);
         assert!(
-            matches!(acme.store, Err(OpenFailure::WrongKey)),
+            matches!(acme.store, Err(Unexamined::Open(OpenFailure::WrongKey))),
             "its catalog is under the pending key: {:?}",
             acme.store
         );
@@ -284,7 +310,7 @@ mod examine_tests {
         );
         assert!(!order.is_sound());
         match &found.expect("examined").tenants[0].store {
-            Err(OpenFailure::Access { path, error }) => {
+            Err(Unexamined::Open(OpenFailure::Access { path, error })) => {
                 assert_eq!(path, &dir);
                 assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
             }
@@ -293,6 +319,47 @@ mod examine_tests {
         assert!(
             f.tenants.key_order().expect("read").is_sound(),
             "once allowed"
+        );
+    }
+
+    /// The tenants with a version whose catalog row names a pack file, as
+    /// a pack run leaves them: counted per tenant, not per version, and
+    /// none while every version is in its object.
+    #[test]
+    fn tenants_with_packed_versions_are_counted() {
+        let f = fixture();
+        let mut ids = Vec::new();
+        for name in ["acme", "beta", "gamma"] {
+            let id = f.tenants.create(Actor::Cli, name, None).expect("made");
+            let store = f.tenants.store(id).expect("store");
+            for n in 0..2 {
+                let (found, body) = vcon(&format!("01a07da8-c2bb-83e5-b9a2-279e0d16bc4{n}"), "k");
+                store.create(&CALLER, &found, &body).expect("stored");
+            }
+            ids.push(id);
+        }
+        assert_eq!(
+            f.tenants.tenants_with_packed_versions(),
+            Ok(0),
+            "every version in its object"
+        );
+        // Both versions of the first tenant, and one of the second.
+        for (id, limit) in [(ids[0], 2_i64), (ids[1], 1)] {
+            let store = f.tenants.store(id).expect("store");
+            let changed = store
+                .conn_for_test()
+                .execute(
+                    "UPDATE version SET place_file = randomblob(16), place_group = 0, place_row = 0
+                     WHERE version IN (SELECT version FROM version ORDER BY version LIMIT ?1)",
+                    [limit],
+                )
+                .expect("placed in a pack file");
+            assert_eq!(i64::try_from(changed), Ok(limit), "placed");
+        }
+        assert_eq!(
+            f.tenants.tenants_with_packed_versions(),
+            Ok(2),
+            "two tenants, one with a single packed version"
         );
     }
 

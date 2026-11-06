@@ -585,6 +585,28 @@ pub(crate) mod tests {
         );
     }
 
+    /// `packed_versions` counts the versions whose row names a pack file:
+    /// none before a pack run, each one it moved after, and `examine`
+    /// reports the same count.
+    #[test]
+    fn the_versions_a_pack_run_moved_are_counted_as_packed() {
+        let mut f = fixture();
+        for n in 0..3u8 {
+            created(&f, n, "kept");
+        }
+        assert_eq!(f.store.packed_versions(), Ok(0), "all objects");
+        with_packs(&mut f);
+        f.store.pack(&PackPlan::with_limit(1 << 20)).expect("packs");
+        assert_eq!(packed_versions(&f).len(), 3, "the run packed every version");
+        assert_eq!(f.store.packed_versions(), Ok(3), "each packed one counted");
+        let now = f.clock.now();
+        let found = f
+            .store
+            .examine(Retention::Years(7), now, now)
+            .expect("examined");
+        assert_eq!(found.packed, 3, "examine counts them too");
+    }
+
     /// `examine`, which runs alone, lists the object of a packed version as
     /// a leftover, as start-up recovery would remove it, and finds nothing
     /// damaged.

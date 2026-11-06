@@ -18,8 +18,10 @@ use crate::envelope::{Key, KeyError};
 use crate::fs::OsFs;
 use crate::ids::{KeyId, TenantId};
 use crate::retention::Retention;
+use crate::store::ExamineError;
 use crate::tenants::{
-    self, BackupError, OpenFailure, RegistryError, Removal, TenantError, TenantExamination, Tenants,
+    self, BackupError, OpenFailure, RegistryError, Removal, TenantError, TenantExamination,
+    Tenants, Unexamined,
 };
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -604,7 +606,12 @@ fn check(config: &Config, tenants: &Tenants, out: &mut dyn Write) -> Result<(), 
     let time = |at: Option<OffsetDateTime>| at.and_then(|at| at.format(&Rfc3339).ok());
     let mut total = 0;
     for tenant in &found.tenants {
-        let named = problems(tenant, config.purge_interval, now);
+        let named = problems(
+            tenant,
+            config.purge_interval,
+            now,
+            config.storage.parquet.is_some(),
+        );
         total += named.len();
         let store = tenant.store.as_ref().ok();
         line(
@@ -613,6 +620,7 @@ fn check(config: &Config, tenants: &Tenants, out: &mut dyn Write) -> Result<(), 
                 "tenant": tenant.id.to_string(),
                 "name": tenant.name,
                 "versions": store.map(|s| s.versions),
+                "packed": store.map(|s| s.packed),
                 "damaged": store.map(|s| s.damaged.iter().map(ToString::to_string).collect::<Vec<_>>()),
                 "leftovers": store.map(|s| &s.leftovers),
                 "past_due": store.map(|s| s.due),
@@ -641,31 +649,50 @@ fn check(config: &Config, tenants: &Tenants, out: &mut dyn Write) -> Result<(), 
 
 /// What in one tenant's examination needs the operator. A stalled sweep is
 /// one whose oldest due version has waited longer than `purge_interval`;
-/// a shorter wait is the next sweep's work. Leftover files and work waiting
+/// a shorter wait is the next sweep's work. Packed versions are a problem
+/// when the configuration has no `[storage.parquet]` (`parquet` false),
+/// since `serve` then refuses to start. Leftover files and work waiting
 /// for rotation are reported but are not problems.
 pub fn problems(
     tenant: &TenantExamination,
     purge_interval: std::time::Duration,
     now: OffsetDateTime,
+    parquet: bool,
 ) -> Vec<String> {
     let mut found = Vec::new();
     if tenant.rotation_stopped {
         found.push("a key rotation was stopped part way; run rekey tenant again".to_owned());
     }
     match &tenant.store {
-        Err(OpenFailure::WrongKey) => {
+        Err(Unexamined::Open(OpenFailure::WrongKey)) => {
             found.push("its catalog does not open under its tenant key".to_owned());
         }
-        Err(OpenFailure::Access { path, error }) => {
+        Err(Unexamined::Open(OpenFailure::Access { path, error })) => {
             found.push(format!(
                 "its catalog cannot be opened: {}: {error}",
                 path.display()
             ));
         }
-        Err(OpenFailure::Refused(e)) => {
+        Err(Unexamined::Open(OpenFailure::Refused(e))) => {
             found.push(format!("its catalog cannot be opened: {e:?}"));
         }
+        Err(Unexamined::Examine(ExamineError::Objects { kind, os_error })) => {
+            let number = os_error
+                .map(|n| format!(" (os error {n})"))
+                .unwrap_or_default();
+            found.push(format!("its objects cannot be read: {kind}{number}"));
+        }
+        Err(Unexamined::Examine(ExamineError::Failed(e))) => {
+            found.push(format!("it could not be examined: {e:?}"));
+        }
         Ok(store) => {
+            if store.packed > 0 && !parquet {
+                found.push(format!(
+                    "{} version(s) are packed into Parquet files, and the configuration has no \
+                     [storage.parquet]: serve refuses to start until the table is put back",
+                    store.packed
+                ));
+            }
             for version in &store.damaged {
                 found.push(format!("version {version} is missing or does not open"));
             }
@@ -1163,7 +1190,7 @@ mod tests {
 
         use super::*;
         use crate::ids::VersionId;
-        use crate::store::Examination;
+        use crate::store::{Examination, StoreError};
 
         const NOW: OffsetDateTime = datetime!(2026-10-25 12:00 UTC);
         const HOUR: std::time::Duration = std::time::Duration::from_secs(3600);
@@ -1171,6 +1198,7 @@ mod tests {
         fn sound() -> Examination {
             Examination {
                 versions: 3,
+                packed: 0,
                 damaged: vec![],
                 leftovers: vec!["a.tmp".to_owned()],
                 due: 0,
@@ -1180,7 +1208,7 @@ mod tests {
             }
         }
 
-        fn tenant(store: Result<Examination, OpenFailure>, stopped: bool) -> TenantExamination {
+        fn tenant(store: Result<Examination, Unexamined>, stopped: bool) -> TenantExamination {
             TenantExamination {
                 id: TenantId([1; 16]),
                 name: "acme".to_owned(),
@@ -1192,7 +1220,7 @@ mod tests {
         #[test]
         fn leftovers_and_work_waiting_for_rotation_are_not_problems() {
             assert_eq!(
-                problems(&tenant(Ok(sound()), false), HOUR, NOW),
+                problems(&tenant(Ok(sound()), false), HOUR, NOW, true),
                 Vec::<String>::new()
             );
         }
@@ -1204,7 +1232,7 @@ mod tests {
                 ..sound()
             };
             assert_eq!(
-                problems(&tenant(Ok(damaged), false), HOUR, NOW),
+                problems(&tenant(Ok(damaged), false), HOUR, NOW, true),
                 [
                     "version 02020202020202020202020202020202 is missing or does not open",
                     "version 03030303030303030303030303030303 is missing or does not open",
@@ -1212,15 +1240,19 @@ mod tests {
                 "one line per damaged version, in its order"
             );
             assert_eq!(
-                problems(&tenant(Ok(sound()), true), HOUR, NOW),
+                problems(&tenant(Ok(sound()), true), HOUR, NOW, true),
                 ["a key rotation was stopped part way; run rekey tenant again"],
                 "a stopped rotation is named with the command that finishes it"
             );
             assert_eq!(
                 problems(
-                    &tenant(Err(OpenFailure::Refused(TenantError::Io)), false),
+                    &tenant(
+                        Err(Unexamined::Open(OpenFailure::Refused(TenantError::Io))),
+                        false
+                    ),
                     HOUR,
                     NOW,
+                    true,
                 ),
                 ["its catalog cannot be opened: Io"],
                 "a refused catalog names the refusal, not a key"
@@ -1232,17 +1264,100 @@ mod tests {
         /// error.
         #[test]
         fn a_key_problem_and_an_access_problem_are_told_apart() {
-            let key = problems(&tenant(Err(OpenFailure::WrongKey), false), HOUR, NOW);
+            let key = problems(
+                &tenant(Err(Unexamined::Open(OpenFailure::WrongKey)), false),
+                HOUR,
+                NOW,
+                true,
+            );
             assert_eq!(key, ["its catalog does not open under its tenant key"]);
             let access = OpenFailure::Access {
                 path: std::path::PathBuf::from("/srv/data/tenants/01/catalog.sqlite"),
                 error: std::io::Error::from_raw_os_error(libc::EACCES),
             };
             assert_eq!(
-                problems(&tenant(Err(access), false), HOUR, NOW),
+                problems(
+                    &tenant(Err(Unexamined::Open(access)), false),
+                    HOUR,
+                    NOW,
+                    true
+                ),
                 [
                     "its catalog cannot be opened: /srv/data/tenants/01/catalog.sqlite: Permission denied (os error 13)"
                 ]
+            );
+        }
+
+        /// Packed versions with no `[storage.parquet]` in the
+        /// configuration are a problem, named with the setting; with the
+        /// table, or with nothing packed, they are not.
+        #[test]
+        fn packed_versions_without_storage_parquet_are_a_problem() {
+            let packed = Examination {
+                packed: 2,
+                ..sound()
+            };
+            assert_eq!(
+                problems(&tenant(Ok(packed.clone()), false), HOUR, NOW, false),
+                [
+                    "2 version(s) are packed into Parquet files, and the configuration has no [storage.parquet]: serve refuses to start until the table is put back"
+                ],
+                "without the table"
+            );
+            assert_eq!(
+                problems(&tenant(Ok(packed), false), HOUR, NOW, true),
+                Vec::<String>::new(),
+                "with the table"
+            );
+            assert_eq!(
+                problems(&tenant(Ok(sound()), false), HOUR, NOW, false),
+                Vec::<String>::new(),
+                "nothing packed"
+            );
+        }
+
+        /// A Store that opened and whose objects the storage did not read
+        /// is named as that, with the error's kind and the system's error
+        /// number when there is one, and never as a catalog that does not
+        /// open; any other failed examination says so with its error.
+        #[test]
+        fn objects_that_cannot_be_read_are_told_apart_from_a_catalog() {
+            let unread = |kind, os_error| {
+                problems(
+                    &tenant(
+                        Err(Unexamined::Examine(ExamineError::Objects {
+                            kind,
+                            os_error,
+                        })),
+                        false,
+                    ),
+                    HOUR,
+                    NOW,
+                    true,
+                )
+            };
+            assert_eq!(
+                unread(std::io::ErrorKind::PermissionDenied, Some(libc::EACCES)),
+                ["its objects cannot be read: permission denied (os error 13)"],
+                "a file the process may not read"
+            );
+            assert_eq!(
+                unread(std::io::ErrorKind::TimedOut, None),
+                ["its objects cannot be read: timed out"],
+                "a service's failure has a kind and no system error number"
+            );
+            assert_eq!(
+                problems(
+                    &tenant(
+                        Err(Unexamined::Examine(ExamineError::Failed(StoreError::Io))),
+                        false
+                    ),
+                    HOUR,
+                    NOW,
+                    true,
+                ),
+                ["it could not be examined: Io"],
+                "any other failure, with its error"
             );
         }
 
@@ -1255,12 +1370,12 @@ mod tests {
             };
             let ok = waited(datetime!(2026-10-25 11:00 UTC));
             assert_eq!(
-                problems(&tenant(Ok(ok), false), HOUR, NOW),
+                problems(&tenant(Ok(ok), false), HOUR, NOW, true),
                 Vec::<String>::new()
             );
             let stalled = waited(datetime!(2026-10-25 10:59:59 UTC));
             assert_eq!(
-                problems(&tenant(Ok(stalled), false), HOUR, NOW),
+                problems(&tenant(Ok(stalled), false), HOUR, NOW, true),
                 [
                     "1 version(s) due for purge, the oldest longer than purge_interval: the sweep is not keeping up"
                 ],

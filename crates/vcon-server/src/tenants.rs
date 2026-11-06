@@ -28,7 +28,7 @@ mod keys;
 mod rekey;
 
 pub use backup::{Backup, BackupError};
-pub use examine::{KeyOrder, RegistryExamination, RotationBacklog, TenantExamination};
+pub use examine::{KeyOrder, RegistryExamination, RotationBacklog, TenantExamination, Unexamined};
 pub use keys::{KeyInfo, NewKey};
 pub(crate) use rekey::MasterStep;
 pub use rekey::rekey_master;

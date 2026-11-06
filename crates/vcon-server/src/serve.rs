@@ -35,6 +35,12 @@ pub enum ServeError {
     Storage(StorageError),
     /// Some tenant's data is not under its current key.
     KeysOutOfOrder(KeyOrder),
+    /// `tenants` tenants have packed versions, and the configuration has no
+    /// `[storage.parquet]`.
+    ParquetRemoved {
+        /// How many tenants have packed versions.
+        tenants: u64,
+    },
     /// The certificate or key could not be used.
     Tls(TlsError),
     /// The listening address could not be bound.
@@ -92,6 +98,15 @@ impl fmt::Display for ServeError {
                     parts.join("; ")
                 )
             }
+            ServeError::ParquetRemoved { tenants } => write!(
+                f,
+                "{tenants} tenant(s) have versions packed into Parquet files, and the \
+                 configuration has no [storage.parquet]: without it the server packs no more, \
+                 and the start no longer refuses a bucket with Object Lock or versioning, either \
+                 of which keeps the bytes of a pack file that a purge rewrote; put the \
+                 [storage.parquet] table back, since packed versions cannot be turned back into \
+                 objects; vcon-server check names the tenants"
+            ),
             ServeError::Tls(e) => write!(f, "the TLS certificate or key cannot be used: {e:?}"),
             ServeError::Listen(e) => write!(f, "the listening address cannot be bound: {e}"),
             ServeError::Serve(e) => write!(f, "serving failed: {e}"),
@@ -122,6 +137,17 @@ pub async fn run(config: &Config, shutdown: impl Future<Output = ()>) -> Result<
     let order = tenants.key_order().map_err(ServeError::Registry)?;
     if !order.is_sound() {
         return Err(ServeError::KeysOutOfOrder(order));
+    }
+    // Packed versions need Parquet storage kept on: nothing turns them
+    // back into objects, and only with it is the bucket checked for what
+    // would keep a purged row's bytes.
+    if config.storage.parquet.is_none() {
+        let tenants = tenants
+            .tenants_with_packed_versions()
+            .map_err(ServeError::Registry)?;
+        if tenants > 0 {
+            return Err(ServeError::ParquetRemoved { tenants });
+        }
     }
     let tls = api::tls_config(&config.tls_cert, &config.tls_key).map_err(ServeError::Tls)?;
     let listener = TcpListener::bind(config.listen)
@@ -360,6 +386,21 @@ mod tests {
         use time::macros::datetime;
 
         use super::*;
+
+        /// The refusal names the table that was taken out, says what goes
+        /// wrong without it, and where the tenants are named.
+        #[test]
+        fn a_start_without_storage_parquet_over_packed_versions_names_the_table() {
+            assert_eq!(
+                ServeError::ParquetRemoved { tenants: 2 }.to_string(),
+                "2 tenant(s) have versions packed into Parquet files, and the configuration has no \
+                 [storage.parquet]: without it the server packs no more, and the start no longer \
+                 refuses a bucket with Object Lock or versioning, either of which keeps the bytes of \
+                 a pack file that a purge rewrote; put the [storage.parquet] table back, since packed \
+                 versions cannot be turned back into objects; vcon-server check names the tenants",
+                "the refusal's text"
+            );
+        }
 
         const NOW: OffsetDateTime = datetime!(2026-10-25 12:00 UTC);
         const DAY: Duration = Duration::from_secs(86_400);

@@ -7,7 +7,8 @@ use std::collections::BTreeSet;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use super::{Kept, Store, StoreError, due, io};
+use super::{Kept, Store, StoreError, Unopened, due, storage_failed};
+use crate::backend::ObjectError;
 use crate::clock::from_nanos;
 use crate::ids::VersionId;
 use crate::retention::Retention;
@@ -17,6 +18,8 @@ use crate::retention::Retention;
 pub struct Examination {
     /// Every kept version, live or hidden.
     pub versions: u64,
+    /// Those packed into pack files.
+    pub packed: u64,
     /// Versions whose object file is missing or does not open.
     pub damaged: Vec<VersionId>,
     /// Files under `objects/` that are a version's, or its temporary, and
@@ -33,6 +36,47 @@ pub struct Examination {
     pub oldest_purge_since_key: Option<OffsetDateTime>,
 }
 
+/// Why a Store could not be examined.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExamineError {
+    /// The storage failed to read a version's object or pack file, or to
+    /// list the objects: the error's kind and the system's error number,
+    /// as the server logs them. The error's text is not kept, since a
+    /// service's message may name an object's key.
+    Objects {
+        kind: std::io::ErrorKind,
+        os_error: Option<i32>,
+    },
+    /// Anything else, such as a catalog read that failed.
+    Failed(StoreError),
+}
+
+impl From<StoreError> for ExamineError {
+    fn from(e: StoreError) -> ExamineError {
+        ExamineError::Failed(e)
+    }
+}
+
+impl ExamineError {
+    /// A failure of the storage, logged as a read's is.
+    fn storage(e: &std::io::Error) -> ExamineError {
+        storage_failed(e);
+        ExamineError::Objects {
+            kind: e.kind(),
+            os_error: e.raw_os_error(),
+        }
+    }
+}
+
+/// A listing of the objects that failed: the storage's failure, unless it
+/// says there is nothing of the name, which a listing never means.
+fn unlisted(e: ObjectError) -> ExamineError {
+    match e {
+        ObjectError::Io(e) => ExamineError::storage(&e),
+        ObjectError::Missing => ExamineError::Failed(StoreError::Io),
+    }
+}
+
 impl Store {
     /// Examines the Store under `retention` at `now`, counting purges made
     /// since `key_since`.
@@ -41,12 +85,13 @@ impl Store {
         retention: Retention,
         key_since: OffsetDateTime,
         now: OffsetDateTime,
-    ) -> Result<Examination, StoreError> {
+    ) -> Result<Examination, ExamineError> {
         let mut tx = self.catalog.snapshot()?;
         let rows = tx.examined()?;
         let time = |nanos| from_nanos(nanos).ok_or(StoreError::Damaged);
         let mut found = Examination {
             versions: rows.len() as u64,
+            packed: tx.count_packed()?,
             damaged: Vec::new(),
             leftovers: Vec::new(),
             due: 0,
@@ -56,10 +101,11 @@ impl Store {
         };
         for row in &rows {
             let (version, stored_at, held) = (row.version, row.stored_at, row.held);
-            match self.read_version(&mut tx, row.uuid, version) {
+            match self.read_or_why(&mut tx, row.uuid, version) {
                 Ok(_) => {}
-                Err(StoreError::Damaged) => found.damaged.push(version),
-                Err(e) => return Err(e),
+                Err(Unopened::Store(StoreError::Damaged)) => found.damaged.push(version),
+                Err(Unopened::Store(e)) => return Err(e.into()),
+                Err(Unopened::Storage(e)) => return Err(ExamineError::storage(&e)),
             }
             let Some(hidden_at) = row.hidden_at else {
                 continue;
@@ -88,7 +134,7 @@ impl Store {
             .filter(|(_, place)| super::names_its_object(place))
             .map(|(version, _)| version.to_string())
             .collect();
-        for name in self.objects.list().map_err(io)? {
+        for name in self.objects.list().map_err(unlisted)? {
             let name = name.as_str();
             let (id, temporary) = match name.strip_suffix(".tmp") {
                 Some(id) => (id, true),
@@ -156,6 +202,7 @@ mod examine_tests {
             examine(&f, Retention::Years(7), START),
             Examination {
                 versions: 2,
+                packed: 0,
                 damaged: vec![],
                 leftovers: vec![],
                 due: 0,

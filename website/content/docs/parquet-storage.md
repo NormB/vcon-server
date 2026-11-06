@@ -43,8 +43,12 @@ has it, before the purge is done.
   an older manifest can finish; a purge deletes them at once. A replaced or
   deleted version stays in its file, hidden, until retention purges it.
 - **There is no way back.** No command turns packed versions back into
-  objects. A server whose configuration no longer has `[storage.parquet]`
-  still reads and purges its packed versions, but packs no more.
+  objects, so once a tenant has a packed version, keep `[storage.parquet]`.
+  A start without it is refused, naming the table (see
+  [packed versions without the table](#packed-versions-without-the-table)):
+  without it the server would pack no more, and its start would no longer
+  refuse a bucket with Object Lock or versioning, either of which keeps the
+  bytes of a pack file that a purge rewrote.
 
 This page was run on Debian 13 under systemd, after
 [keep vCons in an S3 bucket](@/docs/s3-storage.md) with RustFS 1.0.4 and
@@ -423,6 +427,29 @@ vcon-server: the storage cannot be used: bucket "vcon" has Object Lock on, which
 Object Lock can only be set when a bucket is made. Use a bucket made
 without it. A legal hold on a vCon is kept in the catalog, not with Object
 Lock: see [retention and holds](@/docs/retention-and-holds.md).
+
+### Packed versions without the table
+
+Once a tenant has a packed version, a configuration without
+`[storage.parquet]` is refused at start:
+
+```text
+vcon-server: 1 tenant(s) have versions packed into Parquet files, and the configuration has no [storage.parquet]: without it the server packs no more, and the start no longer refuses a bucket with Object Lock or versioning, either of which keeps the bytes of a pack file that a purge rewrote; put the [storage.parquet] table back, since packed versions cannot be turned back into objects; vcon-server check names the tenants
+```
+
+Put the `[storage.parquet]` table back, over the same bucket and prefix,
+and start the server again. To see which tenants have packed versions, run
+`vcon-server check` with the server stopped: each such tenant's line gives
+`packed` above 0 and the problem
+`<n> version(s) are packed into Parquet files, and the configuration has no [storage.parquet]: serve refuses to start until the table is put back`,
+and `check` exits 1.
+
+Only `serve` refuses. `check` reports the problem and goes on, since its
+report is how an operator finds the tenants. The other commands neither
+refuse nor warn: none of them runs a pack run or a purge sweep, and with
+`storage.objects = "s3"` they read packed versions from the bucket as the
+server does, so a backup or a key rotation can still be
+made while the configuration is put right.
 
 ## When a pack run or a purge fails
 

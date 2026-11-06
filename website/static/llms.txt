@@ -1,6 +1,6 @@
 # vcon-server
 
-> vcon-server stores vCons (the IETF conversation-record format, draft-ietf-vcon-vcon-core) encrypted at rest under per-tenant keys, keeps each for its tenant's retention period, erases it after, honours legal holds, and records every request in an audit log. It is written in Rust, licensed MIT OR Apache-2.0, and in development (not yet for production).
+> vcon-server stores vCons (the IETF conversation-record format, draft-ietf-vcon-vcon-core) encrypted at rest under per-tenant keys, keeps each for its tenant's retention period, erases it after, honors legal holds, and records every request in an audit log. It is written in Rust, licensed MIT OR Apache-2.0, and in development (not yet for production).
 
 ## Docs
 

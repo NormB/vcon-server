@@ -16,7 +16,10 @@
 //!
 //! The crates' own READMEs, which crates.io shows, keep the same status
 //! sentence, name only this release, link only pages the site has, and use
-//! US spelling; the server crate's README links the MCP and S3 pages.
+//! US spelling; the server crate's README links the MCP and S3 pages. The
+//! `description` of every `Cargo.toml` in the tree, which crates.io shows
+//! too, the site's pages, its llms.txt and the OpenAPI description use US
+//! spelling.
 
 mod markdown;
 
@@ -42,6 +45,16 @@ const NON_US_SPELLINGS: [&str; 8] = [
     "organisation",
     "recognise",
 ];
+
+/// The words of `NON_US_SPELLINGS` that `text` holds, in any case.
+fn non_us_spellings(text: &str) -> Vec<&'static str> {
+    let lower = text.to_lowercase();
+    NON_US_SPELLINGS
+        .iter()
+        .copied()
+        .filter(|word| lower.contains(word))
+        .collect()
+}
 
 /// The repository root, two levels above this crate.
 fn root() -> PathBuf {
@@ -609,15 +622,148 @@ fn the_readme_points_to_the_release_install_and_its_checks() {
 
 #[test]
 fn the_readme_uses_us_spelling() {
-    let lower = readme().to_lowercase();
-    let found: Vec<&str> = NON_US_SPELLINGS
-        .iter()
-        .copied()
-        .filter(|word| lower.contains(word))
-        .collect();
+    let found = non_us_spellings(&readme());
     assert!(
         found.is_empty(),
         "README.md spells {found:?} other than in US English"
+    );
+}
+
+#[test]
+fn the_spelling_reader_finds_each_word_in_any_case() {
+    assert_eq!(
+        non_us_spellings("Returns them to Authorised readers, in colour."),
+        ["authorised", "colour"],
+        "each listed word, in the list's order, whatever its case"
+    );
+    assert!(
+        non_us_spellings("Returns them to authorized readers.").is_empty(),
+        "US spelling is not reported"
+    );
+}
+
+/// Every file under `dir` whose name ends with `suffix`.
+fn files_under(dir: &Path, suffix: &str, found: &mut Vec<PathBuf>) {
+    let entries = std::fs::read_dir(dir).unwrap_or_else(|e| panic!("read {}: {e}", dir.display()));
+    for entry in entries {
+        let path = entry
+            .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+            .path();
+        if path.is_dir() {
+            files_under(&path, suffix, found);
+        } else if path.to_string_lossy().ends_with(suffix) {
+            found.push(path);
+        }
+    }
+}
+
+/// The site's pages, its llms.txt and the OpenAPI description the server
+/// serves are read by the same people as the README, in the same
+/// language. The walk is checked to reach the pages the README links.
+#[test]
+fn the_site_and_the_openapi_description_use_us_spelling() {
+    let mut pages = Vec::new();
+    files_under(&root().join("website/content"), ".md", &mut pages);
+    assert!(
+        pages
+            .iter()
+            .any(|p| p.ends_with("website/content/docs/install.md")),
+        "the walk reached the docs pages: {pages:?}"
+    );
+    pages.push(root().join("website/static/llms.txt"));
+    pages.push(root().join("crates/vcon-server/openapi.json"));
+    pages.push(root().join("website/static/openapi.json"));
+    let mut wrong = Vec::new();
+    for path in &pages {
+        let text = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let found = non_us_spellings(&text);
+        if !found.is_empty() {
+            wrong.push(format!("{}: {found:?}", path.display()));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "spelled other than in US English: {wrong:#?}"
+    );
+}
+
+/// Every `Cargo.toml` under `dir`, outside build output, hidden
+/// directories and `node_modules`.
+fn manifests_under(dir: &Path, found: &mut Vec<PathBuf>) {
+    let entries = std::fs::read_dir(dir).unwrap_or_else(|e| panic!("read {}: {e}", dir.display()));
+    for entry in entries {
+        let entry = entry.unwrap_or_else(|e| panic!("read {}: {e}", dir.display()));
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let kind = entry
+            .file_type()
+            .unwrap_or_else(|e| panic!("stat {}: {e}", path.display()));
+        if kind.is_dir() {
+            if !(name.starts_with('.') || name == "target" || name == "node_modules") {
+                manifests_under(&path, found);
+            }
+        } else if name == "Cargo.toml" {
+            found.push(path);
+        }
+    }
+}
+
+/// Each package's `description`, which crates.io shows beside its
+/// README, is held to the README's spelling rule. The walk is checked to
+/// reach every workspace member, so a member it skipped would fail here
+/// rather than go unread.
+#[test]
+fn each_package_description_uses_us_spelling() {
+    let mut manifests = Vec::new();
+    manifests_under(&root(), &mut manifests);
+    let workspace: toml::Table = read("Cargo.toml").parse().expect("Cargo.toml parses");
+    let members = workspace["workspace"]["members"]
+        .as_array()
+        .expect("the workspace lists its members");
+    let read_paths: BTreeSet<PathBuf> = manifests
+        .iter()
+        .map(|p| p.canonicalize().expect("a manifest path"))
+        .collect();
+    for member in members {
+        let member = member.as_str().expect("a member is a path");
+        let path = root()
+            .join(member)
+            .join("Cargo.toml")
+            .canonicalize()
+            .expect("a member's manifest");
+        assert!(
+            read_paths.contains(&path),
+            "the walk did not reach {member}/Cargo.toml"
+        );
+    }
+    let mut described = 0;
+    for path in &manifests {
+        let text = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let manifest: toml::Table = text
+            .parse()
+            .unwrap_or_else(|e| panic!("{} parses: {e}", path.display()));
+        let Some(description) = manifest
+            .get("package")
+            .and_then(|p| p.get("description"))
+            .and_then(toml::Value::as_str)
+        else {
+            continue;
+        };
+        described += 1;
+        let found = non_us_spellings(description);
+        assert!(
+            found.is_empty(),
+            "{}'s description spells {found:?} other than in US English",
+            path.display()
+        );
+    }
+    assert!(
+        described >= members.len(),
+        "{described} descriptions read, fewer than the {} workspace members",
+        members.len()
     );
 }
 
@@ -694,12 +840,7 @@ fn each_crate_readme_names_only_this_release_and_links_real_pages() {
             missing.is_empty(),
             "{path} links what the site lacks: {missing:?}"
         );
-        let lower = text.to_lowercase();
-        let found: Vec<&str> = NON_US_SPELLINGS
-            .iter()
-            .copied()
-            .filter(|word| lower.contains(word))
-            .collect();
+        let found = non_us_spellings(&text);
         assert!(
             found.is_empty(),
             "{path} spells {found:?} other than in US English"

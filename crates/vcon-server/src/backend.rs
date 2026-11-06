@@ -311,6 +311,8 @@ pub trait CatalogTx {
         &mut self,
     ) -> Result<Vec<(VersionId, Result<Option<Packed>, StoreError>)>, StoreError>;
     fn count_versions(&mut self) -> Result<u64, StoreError>;
+    /// The versions whose row names a pack file.
+    fn count_packed(&mut self) -> Result<u64, StoreError>;
     fn count_held(&mut self) -> Result<u64, StoreError>;
     /// The hidden versions, of one uuid or of all.
     fn hidden_versions(&mut self, uuid: Option<Uuid>) -> Result<Vec<VersionId>, StoreError>;

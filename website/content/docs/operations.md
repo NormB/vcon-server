@@ -187,6 +187,8 @@ prints one JSON line per tenant and a summary line. A tenant's line gives:
 
 - `versions` kept, and `damaged`: the versions whose sealed file is missing or
   does not open;
+- `packed`: the versions packed into Parquet files (see
+  [Parquet storage](@/docs/parquet-storage.md));
 - `leftovers`: files a crash left that no row names (the next start removes
   them; `check` only reports them);
 - `past_due` and `oldest_past_due`: versions due for purge, and since when;
@@ -198,9 +200,24 @@ prints one JSON line per tenant and a summary line. A tenant's line gives:
 The summary gives `removed_tenants_awaiting_master_rotation` and the total
 `problems`. A problem is damage, a catalog that does not open (under its
 tenant key, or at all, with the path and the system's error, such as
-`Permission denied (os error 13)`), a stopped rotation, or a version that has waited longer than `purge_interval` (a sweep
-that is not keeping up). Leftovers and work waiting for rotation are reported
-but are not problems. `check` exits 1, after printing its report, when it
+`Permission denied (os error 13)`), objects that the storage did not read,
+packed versions with no `[storage.parquet]` in the configuration (`serve`
+refuses to start then), a stopped rotation, or a version that has waited
+longer than `purge_interval` (a sweep that is not keeping up). Leftovers and work waiting for rotation are
+reported but are not problems.
+
+Objects that cannot be read, such as files the service account may not read
+or a bucket key refused `s3:GetObject`, are reported with the error's kind
+and, when the system gives one, its error number, as the server's
+`a stored version's object could not be read` log line gives them, and
+never with an object's key:
+
+```text
+its objects cannot be read: permission denied (os error 13)
+```
+
+A service that does not answer gives a kind alone, such as
+`its objects cannot be read: timed out`. `check` exits 1, after printing its report, when it
 found a problem.
 
 ## Key rotation

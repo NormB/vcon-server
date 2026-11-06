@@ -1,6 +1,6 @@
 [package]
 name = "vcon-server"
-description = "Stores vCons encrypted at rest and returns them to authorised readers."
+description = "Stores vCons encrypted at rest and returns them to authorized readers."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

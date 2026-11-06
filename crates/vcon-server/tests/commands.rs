@@ -396,6 +396,87 @@ fn check_exits_0_when_sound_and_1_with_its_report_when_not() {
     );
 }
 
+/// A tenant whose catalog opens but whose objects the process may not
+/// read: `check` says that the objects cannot be read, with the error's
+/// kind and the system's error number, as the server's log line does, and
+/// not that the catalog cannot be opened. Nothing it prints names an
+/// object's key.
+#[test]
+fn a_tenant_whose_objects_cannot_be_read_is_named_as_that_by_check() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = setup();
+    let tenant = s.ok(&["tenant", "create", "acme"])[0]["id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let version = stored(&s, &tenant);
+    let object = s
+        .data
+        .join("tenants")
+        .join(&tenant)
+        .join("objects")
+        .join(version.to_string());
+    let mode =
+        |m| std::fs::set_permissions(&object, std::fs::Permissions::from_mode(m)).expect("chmod");
+    mode(0o000);
+    let check = s.run(&["check"]);
+    mode(0o600);
+    assert_eq!(check.status.code(), Some(1), "{}", stderr(&check));
+    let said = stderr(&check);
+    let printed = String::from_utf8(check.stdout).expect("text");
+    let report: Vec<Value> = printed
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("a JSON line"))
+        .collect();
+    assert_eq!(
+        report[0]["problems"],
+        serde_json::json!(["its objects cannot be read: permission denied (os error 13)"]),
+        "{printed}"
+    );
+    assert!(
+        !printed.contains(&version.to_string()) && !said.contains(&version.to_string()),
+        "the object's key is not printed: {printed}{said}"
+    );
+    assert_eq!(
+        s.ok(&["check"]).last().expect("summary")["problems"],
+        0,
+        "once readable"
+    );
+}
+
+/// Stores one vCon in `tenant` through the library, as a running server
+/// would, and returns its version.
+fn stored(s: &Setup, tenant: &str) -> vcon_server::ids::VersionId {
+    let tenants = vcon_server::tenants::Tenants::open(
+        &s.data,
+        vcon_server::envelope::Key::load_master(&s.data.with_file_name("master.key"))
+            .expect("master"),
+        std::sync::Arc::new(vcon_server::fs::OsFs),
+        std::sync::Arc::new(vcon_server::clock::SystemClock),
+    )
+    .expect("opens");
+    let id = vcon_server::ids::TenantId::parse(tenant).expect("id");
+    let body = br#"{"uuid": "01a07da8-c2bb-83e5-b9a2-279e0d16bc46", "created_at": "2026-10-25T12:00:00Z", "parties": []}"#;
+    let found = vcon::read::inspect(
+        body,
+        None,
+        &vcon::read::Limits::new(1 << 20),
+        &Default::default(),
+    )
+    .expect("a vCon");
+    let caller = vcon_server::store::Caller {
+        key: vcon_server::ids::KeyId([1; 8]),
+    };
+    match tenants
+        .store(id)
+        .expect("store")
+        .create(&caller, &found, body)
+    {
+        Ok(vcon_server::store::Created::New(v)) => v,
+        other => panic!("{other:?}"),
+    }
+}
+
 #[test]
 fn a_wrong_or_missing_configuration_exits_1() {
     let s = setup();

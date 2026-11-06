@@ -945,7 +945,11 @@ mod s3 {
 
     /// `serve`, with the test service's keys in the environment only.
     fn serve_with_keys(s: &Setup) -> Command {
-        let mut command = serve(s);
+        with_keys(serve(s))
+    }
+
+    /// `command`, with the test service's keys in the environment only.
+    fn with_keys(mut command: Command) -> Command {
         for name in ["AWS_PROFILE", "AWS_SESSION_TOKEN", "AWS_CONFIG_FILE"] {
             command.env_remove(name);
         }
@@ -1073,20 +1077,7 @@ mod s3 {
             .await
             .expect("an answer");
         assert_eq!(stored.status(), 201, "the vCon is stored");
-        let objects = format!("tenants/{}/objects/", s.tenant);
-        let files = format!("tenants/{}/parquet/date=", s.tenant);
-        let packed = (0..60).any(|_| {
-            let kept = names(&bucket);
-            let done = kept
-                .iter()
-                .any(|k| k.starts_with(&files) && k.ends_with(".parquet"))
-                && !kept.iter().any(|k| k.starts_with(&objects));
-            if !done {
-                std::thread::sleep(std::time::Duration::from_millis(500));
-            }
-            done
-        });
-        assert!(packed, "packed within 30 seconds: {:?}", names(&bucket));
+        wait_until_packed(&s, &bucket);
         let read = client
             .get(started.url(&format!("/vcons/{UUID}")))
             .bearer_auth(&s.token)
@@ -1115,6 +1106,115 @@ mod s3 {
         assert!(
             logged.iter().any(packed_line),
             "the run that packed it is logged: {logged:?}"
+        );
+    }
+
+    /// Waits until the tenant's objects are all packed into Parquet files
+    /// in `bucket`, for at most 30 seconds.
+    fn wait_until_packed(s: &Setup, bucket: &str) {
+        let objects = format!("tenants/{}/objects/", s.tenant);
+        let files = format!("tenants/{}/parquet/date=", s.tenant);
+        let packed = (0..60).any(|_| {
+            let kept = names(bucket);
+            let done = kept
+                .iter()
+                .any(|k| k.starts_with(&files) && k.ends_with(".parquet"))
+                && !kept.iter().any(|k| k.starts_with(&objects));
+            if !done {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+            done
+        });
+        assert!(packed, "packed within 30 seconds: {:?}", names(bucket));
+    }
+
+    /// Once a version is packed, a start whose configuration no longer has
+    /// `[storage.parquet]` is refused, naming the table and why; `check`
+    /// names the problem for the tenant without refusing; with the table
+    /// back the server starts and the vCon reads back from its row.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn serve_refuses_to_start_without_storage_parquet_once_versions_are_packed() {
+        let bucket = format!("vcon-unpack-{}", &TenantId::generate().to_string()[..12]);
+        signed("PUT", &bucket);
+        let s = setup();
+        in_bucket(&s, &bucket);
+        let without = std::fs::read_to_string(&s.config).expect("reads");
+        let with = format!("{without}\n[storage.parquet]\npack_interval = 1\n");
+        std::fs::write(&s.config, &with).expect("writes");
+        let started = start(serve_with_keys(&s));
+        let client = started.client(&s);
+        let body = std::fs::read(format!(
+            "{}/../vcon/tests/fixtures/ietf/ab_call_ext_rec.vcon",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .expect("A.4");
+        let stored = client
+            .post(started.url("/vcons"))
+            .bearer_auth(&s.token)
+            .header("content-type", "application/vcon")
+            .body(body.clone())
+            .send()
+            .await
+            .expect("an answer");
+        assert_eq!(stored.status(), 201, "the vCon is stored");
+        wait_until_packed(&s, &bucket);
+        drop(started);
+
+        std::fs::write(&s.config, &without).expect("the table taken out");
+        let refusal = refused(serve_with_keys(&s));
+        assert_eq!(refusal.status.code(), Some(1), "{}", stderr(&refusal));
+        // The last line: the S3 client may warn first about the
+        // credentials file the test points at nothing.
+        let said = stderr(&refusal);
+        assert_eq!(
+            said.lines().last(),
+            Some(
+                "vcon-server: 1 tenant(s) have versions packed into Parquet files, and the \
+             configuration has no [storage.parquet]: without it the server packs no more, and the \
+             start no longer refuses a bucket with Object Lock or versioning, either of which keeps \
+             the bytes of a pack file that a purge rewrote; put the [storage.parquet] table back, \
+             since packed versions cannot be turned back into objects; vcon-server check names \
+             the tenants"
+            ),
+            "{said}"
+        );
+        let mut check = Command::new(env!("CARGO_BIN_EXE_vcon-server"));
+        check.arg("check").arg("--config").arg(&s.config);
+        let checked = with_keys(check).output().expect("check runs");
+        assert_eq!(checked.status.code(), Some(1), "{}", stderr(&checked));
+        let report: Vec<serde_json::Value> = String::from_utf8(checked.stdout)
+            .expect("text")
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("a JSON line"))
+            .collect();
+        let tenant = report
+            .iter()
+            .find(|line| line["tenant"] == s.tenant.to_string())
+            .expect("the tenant's line");
+        assert_eq!(tenant["packed"], 1, "{tenant}");
+        assert_eq!(
+            tenant["problems"],
+            serde_json::json!([
+                "1 version(s) are packed into Parquet files, and the configuration has no \
+                 [storage.parquet]: serve refuses to start until the table is put back"
+            ]),
+            "{tenant}"
+        );
+
+        std::fs::write(&s.config, &with).expect("the table put back");
+        let started = start(serve_with_keys(&s));
+        let read = started
+            .client(&s)
+            .get(started.url(&format!("/vcons/{UUID}")))
+            .bearer_auth(&s.token)
+            .send()
+            .await
+            .expect("an answer");
+        assert_eq!(read.status(), 200, "the vCon is read");
+        assert_eq!(
+            read.bytes().await.expect("body").as_ref(),
+            body.as_slice(),
+            "it reads back byte for byte from its row"
         );
     }
 
