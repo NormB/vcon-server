@@ -419,6 +419,10 @@ each downloaded tool is pinned by commit or by sha256.
   [CONTRIBUTING.md](https://github.com/NormB/vcon-server/blob/main/CONTRIBUTING.md)
   first, and sign the [Contributor License Agreement](@/cla.md) before
   your first pull request merges.
+- **A new dependency or version:** take it only once that version has been
+  public for 14 days. Dependabot waits the same 14 days (`cooldown` in
+  `.github/dependabot.yml`), and `scripts/check_dependabot.py` fails on an
+  entry that waits less.
 - **A security problem:** report it privately, never in an issue; see
   [reporting a vulnerability](@/docs/security.md#reporting-a-vulnerability).
 

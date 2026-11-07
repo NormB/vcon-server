@@ -41,6 +41,17 @@ hooks on every pull request. The check `CI success` passes only when every
 job of `.github/workflows/ci.yml` succeeded, and a pull request merges only
 after it passes.
 
+## Dependency versions
+
+A new dependency, or a new version of one, is taken only once that version
+has been public for at least 14 days, so that a regression or a compromised
+release has time to come to light first. The rule covers every ecosystem the
+repository uses: crates, npm and pip packages, GitHub Actions and container
+images. Dependabot waits the same 14 days (`cooldown` in
+`.github/dependabot.yml`), and `scripts/check_dependabot.py` fails on an
+entry that waits less. Dependabot applies no cooldown to its security
+updates.
+
 ## Contributor License Agreement
 
 Sign the vcon-server [Contributor License Agreement](CLA.md) before your first

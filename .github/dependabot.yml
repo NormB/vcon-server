@@ -1,41 +1,43 @@
 # Dependabot proposes dependency updates as pull requests, once a week.
 # Each pull request runs CI like any other. scripts/check_dependabot.py,
 # run in CI, fails when a dependency file in the tree has no entry here.
+#
+# Every entry waits 14 days after a version is released before it proposes
+# it (cooldown; CONTRIBUTING.md, "Dependency versions"), and
+# check_dependabot.py fails on an entry with less. Security updates are not
+# delayed: Dependabot applies no cooldown to them.
 version: 2
 updates:
-  # The Cargo workspace at the repository root (both crates, one Cargo.lock).
+  # The Cargo workspace at the repository root (both crates, one Cargo.lock)
+  # and the fuzz package, a workspace of its own with its own Cargo.lock.
+  # One entry for both: the fuzz package takes both crates by path, so a
+  # bump of a requirement in crates/vcon-server/Cargo.toml (the =60.0.0
+  # parquet pin, or any major bump) must update both lockfiles in one pull
+  # request. With an entry each, #142 and #143 each updated one lockfile and
+  # left the other behind, so every --locked build failed (2026-11-07).
+  # check_dependabot.py fails when the two are split again.
   - package-ecosystem: "cargo"
-    directory: "/"
+    directories:
+      - "/"
+      - "/fuzz"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 14
     open-pull-requests-limit: 10
     ignore:
       # vcon-server's tests use a git fork of rusqlite that keeps the name
       # rusqlite (rusqlite_fork in crates/vcon-server/Cargo.toml). Bumping
       # crates.io rusqlite rewrote the fork's requirement too, so the update
-      # job failed (2026-11-03). Both are updated by hand, after a dated
-      # check of upstream rusqlite releases and the SQLCipher and RustSec
-      # advisories. scripts/check_dependabot.py fails while a git package is
-      # not ignored here, or after the fork is gone.
+      # job failed (2026-11-03). The fork and crates.io rusqlite, in both
+      # lockfiles, are updated by hand, after a dated check of upstream
+      # rusqlite releases and the SQLCipher and RustSec advisories.
+      # scripts/check_dependabot.py fails while a git package is not ignored
+      # here, or after the fork is gone.
       - dependency-name: "rusqlite"
     groups:
       # Minor and patch bumps in one pull request; a major bump gets its own.
       cargo-minor-patch:
-        update-types:
-          - "minor"
-          - "patch"
-    commit-message:
-      prefix: "deps"
-
-  # The fuzz package, a workspace of its own with its own Cargo.lock. It
-  # takes rusqlite from crates.io only, so it keeps rusqlite's updates.
-  - package-ecosystem: "cargo"
-    directory: "/fuzz"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 10
-    groups:
-      cargo-fuzz-minor-patch:
         update-types:
           - "minor"
           - "patch"
@@ -51,6 +53,8 @@ updates:
       - "/.github/actions/fuzz-setup"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 14
     open-pull-requests-limit: 5
     groups:
       # Every action bump in one pull request.
@@ -69,6 +73,8 @@ updates:
       - "/site-tests"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 14
     open-pull-requests-limit: 5
     ignore:
       # @types/node describes one Node major's API. The TypeScript client
@@ -92,6 +98,8 @@ updates:
     directory: "/scripts"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 14
     open-pull-requests-limit: 5
     groups:
       pip-minor-patch:
@@ -106,6 +114,8 @@ updates:
     directory: "/.clusterfuzzlite"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 14
     open-pull-requests-limit: 2
     commit-message:
       prefix: "ci"

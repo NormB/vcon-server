@@ -6,8 +6,11 @@ Run with: python3 -I scripts/test_check_dependabot.py
 """
 
 import importlib.util
+import os
 import pathlib
+import subprocess
 import sys
+import tempfile
 import unittest
 
 # Loading a script by path would otherwise leave a __pycache__ beside it.
@@ -166,24 +169,39 @@ name = "vcon-server"
 version = "0.3.0"
 """
 
-# fuzz/Cargo.lock on 2026-11-05, shortened: no git source.
+# fuzz/Cargo.lock on 2026-11-05, shortened: no git source, and the server
+# crate by path, from the same crates/vcon-server/Cargo.toml.
 FUZZ_LOCK = """version = 4
 
 [[package]]
 name = "rusqlite"
 version = "0.41.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "vcon-fuzz"
+version = "0.0.0"
+
+[[package]]
+name = "vcon-server"
+version = "0.3.0"
 """
 
 LOCKS = {"Cargo.lock": ROOT_LOCK, "fuzz/Cargo.lock": FUZZ_LOCK}
 RUSQLITE = [{"dependency-name": "rusqlite"}]
+
+# One entry for both lockfiles that ignores the fork, in both.
+JOINED = {"updates": [{"package-ecosystem": "cargo", "directories": ["/", "/fuzz"], "ignore": RUSQLITE}]}
 
 # The cargo entry of 2026-11-05, which ignores nothing: Dependabot's update
 # job failed on rewriting the fork's requirement.
 ONE_ENTRY = {"updates": [{"package-ecosystem": "cargo", "directories": ["/", "/fuzz"]}]}
 
 # The root on an entry of its own that ignores rusqlite; the fuzz package,
-# which takes rusqlite from crates.io only, keeps its updates.
+# which takes rusqlite from crates.io only, keeps its updates. On 2026-11-07
+# this split made #142 and #143: each bumped the server's =60.0.0 parquet pin
+# in crates/vcon-server/Cargo.toml and only its own lockfile, so the other
+# lockfile no longer matched and every --locked build failed.
 SPLIT = {
     "updates": [
         {"package-ecosystem": "cargo", "directory": "/", "ignore": RUSQLITE},
@@ -211,18 +229,21 @@ class GitSources(unittest.TestCase):
     def test_the_root_ignoring_rusqlite_on_an_entry_of_its_own_passes(self):
         self.assertEqual(git_problems(SPLIT), [])
 
-    def test_an_ignore_shared_with_the_fuzz_package_stops_its_crates_io_updates(self):
-        config = {"updates": [{"package-ecosystem": "cargo", "directories": ["/", "/fuzz"], "ignore": RUSQLITE}]}
-        self.assertEqual(
-            git_problems(config),
-            ["fuzz/Cargo.lock: the cargo entry for /fuzz ignores rusqlite, which comes from no git source there"],
-        )
+    def test_one_entry_for_both_lockfiles_may_ignore_the_fork_in_both(self):
+        # The fuzz package's crates.io rusqlite is then updated by hand with
+        # the fork, which keeps both lockfiles on one entry (SharedManifests).
+        self.assertEqual(git_problems(JOINED), [])
 
     def test_an_ignore_kept_after_the_fork_is_gone_is_found(self):
         without_fork = ROOT_LOCK.replace('version = "0.41.0-sqlcipher.1"\nsource = "git+', 'version = "0.41.0-sqlcipher.1"\nsource = "registry+')
+        locks = {"Cargo.lock": without_fork, "fuzz/Cargo.lock": FUZZ_LOCK}
         self.assertEqual(
-            git_problems(SPLIT, {"Cargo.lock": without_fork, "fuzz/Cargo.lock": FUZZ_LOCK}),
-            ["Cargo.lock: the cargo entry for / ignores rusqlite, which comes from no git source there"],
+            git_problems(SPLIT, locks),
+            ["Cargo.lock: the cargo entry for / ignores rusqlite, which no lockfile it covers takes from git"],
+        )
+        self.assertEqual(
+            git_problems(JOINED, locks),
+            ["Cargo.lock, fuzz/Cargo.lock: the cargo entry for /, /fuzz ignores rusqlite, which no lockfile it covers takes from git"],
         )
 
     def test_ignoring_only_some_updates_does_not_cover_a_git_package(self):
@@ -261,6 +282,175 @@ class GitSources(unittest.TestCase):
 
     def test_a_lockfile_no_entry_covers_is_left_to_the_coverage_rule(self):
         self.assertEqual(git_problems({"updates": []}), [])
+
+
+
+def shared_problems(config, locks=None):
+    locks = LOCKS if locks is None else locks
+    return check_dependabot.shared_problems(sorted(locks), config, locks.__getitem__)
+
+
+class SharedManifests(unittest.TestCase):
+    """Two lockfiles that take a package by path share its Cargo.toml, so one
+    cargo entry must cover both: Dependabot then bumps a requirement there in
+    one pull request with both lockfiles, not in two that each leave the other
+    lockfile behind (#142 and #143, 2026-11-07)."""
+
+    def test_the_packages_a_lockfile_takes_by_path_are_named(self):
+        self.assertEqual(check_dependabot.path_packages(ROOT_LOCK), ["vcon-server"])
+        self.assertEqual(check_dependabot.path_packages(FUZZ_LOCK), ["vcon-fuzz", "vcon-server"])
+
+    def test_the_split_entries_of_2026_11_06_are_found(self):
+        self.assertEqual(
+            shared_problems(SPLIT),
+            ["Cargo.lock and fuzz/Cargo.lock both take vcon-server by path; one cargo entry must cover / and /fuzz"],
+        )
+
+    def test_one_entry_for_both_lockfiles_passes(self):
+        self.assertEqual(shared_problems(JOINED), [])
+
+    def test_a_glob_that_covers_both_directories_passes(self):
+        config = {"updates": [{"package-ecosystem": "cargo", "directories": ["/", "/f*"]}]}
+        self.assertEqual(shared_problems(config), [])
+
+    def test_lockfiles_with_no_path_package_in_common_may_have_entries_of_their_own(self):
+        other = FUZZ_LOCK.replace('name = "vcon-server"', 'name = "vcon-other"')
+        self.assertEqual(shared_problems(SPLIT, {"Cargo.lock": ROOT_LOCK, "fuzz/Cargo.lock": other}), [])
+
+    def test_a_package_both_take_from_crates_io_is_not_shared(self):
+        self.assertNotIn("rusqlite", check_dependabot.path_packages(ROOT_LOCK))
+        self.assertNotIn("rusqlite", check_dependabot.path_packages(FUZZ_LOCK))
+
+    def test_an_entry_of_another_ecosystem_does_not_count(self):
+        config = {
+            "updates": SPLIT["updates"] + [{"package-ecosystem": "npm", "directories": ["/", "/fuzz"]}],
+        }
+        self.assertEqual(len(shared_problems(config)), 1)
+
+    def test_a_lockfile_no_entry_covers_is_left_to_the_coverage_rule(self):
+        self.assertEqual(shared_problems({"updates": [{"package-ecosystem": "cargo", "directory": "/"}]}), [])
+
+
+def cooldown(**days):
+    return {"updates": [{"package-ecosystem": "cargo", "directory": "/", "cooldown": days}]}
+
+
+class Cooldown(unittest.TestCase):
+    """A new version is proposed only once it is at least 14 days old
+    (CONTRIBUTING.md, "Dependency versions"); Dependabot's own default
+    cooldown is 3 days. #142 and #143 proposed parquet 60.1.0 on day 10."""
+
+    def test_the_rule_is_14_days(self):
+        self.assertEqual(check_dependabot.MIN_AGE_DAYS, 14)
+
+    def test_14_days_for_every_version_passes(self):
+        self.assertEqual(check_dependabot.cooldown_problems(cooldown(**{"default-days": 14})), [])
+
+    def test_a_longer_wait_for_some_updates_passes(self):
+        config = cooldown(**{"default-days": 14, "semver-major-days": 30})
+        self.assertEqual(check_dependabot.cooldown_problems(config), [])
+
+    def test_an_entry_without_a_cooldown_is_found(self):
+        config = {"updates": [{"package-ecosystem": "cargo", "directories": ["/", "/fuzz"]}]}
+        self.assertEqual(
+            check_dependabot.cooldown_problems(config),
+            ["cargo entry for /, /fuzz: no cooldown; a new version must wait 14 days"],
+        )
+
+    def test_a_short_default_is_found(self):
+        self.assertEqual(
+            check_dependabot.cooldown_problems(cooldown(**{"default-days": 13})),
+            ["cargo entry for /: cooldown default-days is 13, under 14"],
+        )
+
+    def test_a_missing_default_is_found_even_with_every_semver_wait(self):
+        # Without default-days Dependabot waits 3 days for versions that are
+        # not SemVer, and Docker and GitHub Actions take no semver-*-days.
+        config = cooldown(**{"semver-major-days": 14, "semver-minor-days": 14, "semver-patch-days": 14})
+        self.assertEqual(
+            check_dependabot.cooldown_problems(config),
+            ["cargo entry for /: cooldown default-days is missing, under 14"],
+        )
+
+    def test_a_short_semver_wait_is_found(self):
+        for key in ("semver-major-days", "semver-minor-days", "semver-patch-days"):
+            with self.subTest(key=key):
+                self.assertEqual(
+                    check_dependabot.cooldown_problems(cooldown(**{"default-days": 14, key: 3})),
+                    [f"cargo entry for /: cooldown {key} is 3, under 14"],
+                )
+
+    def test_a_wait_that_is_not_a_whole_number_is_found(self):
+        for value in ("14", 14.5, True, None):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    check_dependabot.cooldown_problems(cooldown(**{"default-days": value})),
+                    [f"cargo entry for /: cooldown default-days is {value!r}, under 14"],
+                )
+
+    def test_limiting_the_cooldown_to_some_dependencies_is_found(self):
+        for key in ("include", "exclude"):
+            with self.subTest(key=key):
+                self.assertEqual(
+                    check_dependabot.cooldown_problems(cooldown(**{"default-days": 14, key: ["parquet"]})),
+                    [f"cargo entry for /: cooldown {key} exempts some dependencies from the 14 days"],
+                )
+
+    def test_every_entry_is_checked(self):
+        config = {
+            "updates": [
+                {"package-ecosystem": "cargo", "directory": "/", "cooldown": {"default-days": 14}},
+                {"package-ecosystem": "docker", "directory": "/.clusterfuzzlite"},
+            ]
+        }
+        self.assertEqual(
+            check_dependabot.cooldown_problems(config),
+            ["docker entry for /.clusterfuzzlite: no cooldown; a new version must wait 14 days"],
+        )
+
+
+
+class Problems(unittest.TestCase):
+    """The command reports every rule's problems, through one function."""
+
+    def test_each_rule_reaches_the_command(self):
+        config = {
+            "updates": [
+                {"package-ecosystem": "cargo", "directory": "/", "ignore": RUSQLITE, "cooldown": {"default-days": 14}},
+                {"package-ecosystem": "cargo", "directory": "/fuzz", "ignore": RUSQLITE},
+            ]
+        }
+        paths = sorted(LOCKS) + ["clients/typescript/package-lock.json"]
+        found = check_dependabot.problems(paths, config, LOCKS.get, {})
+        self.assertEqual(
+            found,
+            [
+                "clients/typescript/package-lock.json: no npm entry for /clients/typescript",
+                "fuzz/Cargo.lock: the cargo entry for /fuzz ignores rusqlite, which no lockfile it covers takes from git",
+                "Cargo.lock and fuzz/Cargo.lock both take vcon-server by path; one cargo entry must cover / and /fuzz",
+                "cargo entry for /fuzz: no cooldown; a new version must wait 14 days",
+            ],
+        )
+
+
+    def test_the_command_fails_on_an_entry_without_a_cooldown(self):
+        # In a repository of its own, with git's variables cleared, so a
+        # hook's GIT_DIR or GIT_INDEX_FILE cannot point git elsewhere.
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / ".github").mkdir()
+            (root / ".github/dependabot.yml").write_text(
+                'version: 2\nupdates:\n  - package-ecosystem: "cargo"\n    directory: "/"\n'
+                '    schedule:\n      interval: "weekly"\n',
+                encoding="utf-8",
+            )
+            (root / "Cargo.lock").write_text('version = 4\n\n[[package]]\nname = "x"\nversion = "0.1.0"\n', encoding="utf-8")
+            subprocess.run(["git", "init", "-q"], cwd=root, env=env, check=True)
+            subprocess.run(["git", "add", "."], cwd=root, env=env, check=True)
+            run = subprocess.run([sys.executable, "-I", str(HERE / "check_dependabot.py")], cwd=root, env=env, capture_output=True, text=True)
+        self.assertEqual(run.returncode, 1, run.stderr)
+        self.assertEqual(run.stderr, "check_dependabot: cargo entry for /: no cooldown; a new version must wait 14 days\n")
 
 
 if __name__ == "__main__":
