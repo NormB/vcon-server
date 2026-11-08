@@ -10,6 +10,11 @@
 //! The audit-logs page lists every action the code records, and only those.
 //! The HTTP API page has a row for every route the API's router serves, and
 //! only those, and `openapi.json` describes each of them.
+//!
+//! The Development page's how-to on adding a GitHub Action names the check
+//! that enforces the pin and the two forms it accepts. It is checked here,
+//! not in `scripts/test_check_action_pins.py`, because the hook tests run
+//! that script in a repository with no website.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -415,4 +420,20 @@ fn the_route_readers_read_calls_and_rows() {
         BTreeSet::from([pair("GET", "/a")]),
         "route rows only"
     );
+}
+
+#[test]
+fn the_development_page_says_how_to_add_an_action() {
+    let page = read("website/content/docs/development.md");
+    let how_to = section(&page, "Adding a GitHub Action");
+    for says in [
+        "`scripts/check_action_pins.py`",
+        "owner/repo@<40-hex commit> # v<version>",
+        "./.github/actions/",
+    ] {
+        assert!(
+            how_to.contains(says),
+            "the how-to on adding an action says {says}"
+        );
+    }
 }

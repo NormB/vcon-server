@@ -5,7 +5,9 @@ comment.
 
 The classes group the cases as the pull request counts them: Success
 (accepted), Failure (refused) and Edge (where the reading of the YAML
-decides).
+decides). The Development page's how-to is checked by
+crates/vcon-server/tests/docs_pages.rs: the hook tests run this file in a
+repository with no website.
 
 Run with: python3 -I scripts/test_check_action_pins.py
 """
@@ -132,13 +134,6 @@ class Success(Repo):
         hook = (REPO / ".githooks/pre-commit").read_text(encoding="utf-8")
         self.assertIn("python3 -I scripts/test_check_action_pins.py\n", hook)
         self.assertIn("python3 -I scripts/check_action_pins.py\n", hook)
-
-    def test_the_development_page_says_how_to_add_an_action(self):
-        page = (REPO / "website/content/docs/development.md").read_text(encoding="utf-8")
-        section = next(s for s in page.split("\n## ") if s.startswith("Adding a GitHub Action\n"))
-        self.assertIn("`scripts/check_action_pins.py`", section)
-        self.assertIn("owner/repo@<40-hex commit> # v<version>", section)
-        self.assertIn("./.github/actions/", section)
 
 
 class Failure(Repo):
