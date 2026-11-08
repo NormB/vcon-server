@@ -6,6 +6,14 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `scripts/check_action_pins.py`, run by CI's scan job and the commit hook,
+  refuses a `uses:` in `.github/workflows/` or `.github/actions/` that is not
+  a local path in the repository or `owner/repo@<40-hex commit> # v<version>`:
+  a tag, a branch, a short commit id, a `docker://` image or a commit without
+  its version comment. The Development page says how to add an action.
+
 ## [0.4.0] - 2026-11-06
 
 ### Added

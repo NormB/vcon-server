@@ -254,7 +254,10 @@ git config core.hooksPath .githooks
   changes (`scripts/scan_forbidden.py`), and checks that git ignores every
   export of the private design documents
   (`scripts/check-ignored-exports.sh`). On a copy of exactly what is staged,
-  it runs `scripts/rustfmt.sh --check`, `scripts/check_style.py --walk`,
+  it checks that every action is pinned by commit
+  (`scripts/check_action_pins.py`, see
+  [adding a GitHub Action](#adding-a-github-action)) and runs
+  `scripts/rustfmt.sh --check`, `scripts/check_style.py --walk`,
   `cargo clippy --workspace --all-targets --locked --quiet -- -D warnings`,
   the tests with `scripts/nextest.sh run --workspace --locked` (each test
   under the deadline in `.config/nextest.toml`) and the doc tests with
@@ -407,7 +410,66 @@ targets in its own image (`.clusterfuzzlite/`) and runs them when a pull
 request or a push to `main` changes `crates/` or `fuzz/` (five and ten
 minutes), and for an hour in all each Monday
 (`.github/workflows/clusterfuzzlite.yml`). Each action and
-each downloaded tool is pinned by commit or by sha256.
+each downloaded tool is pinned by commit or by sha256; for actions, the scan
+job and the commit hook check it (see
+[adding a GitHub Action](#adding-a-github-action)).
+
+## Adding a GitHub Action
+
+A tag or a branch is a name its owner can move to other code at any time; a
+commit id is not. So every `uses:` in `.github/workflows/` and in the
+composite actions under `.github/actions/` is one of two forms, and
+`scripts/check_action_pins.py` refuses any other:
+
+- `./.github/actions/<name>` or `./.github/workflows/<file>.yml`: an action
+  or reusable workflow in this repository, with no `@ref`. The path must
+  exist.
+- `owner/repo@<40-hex commit> # v<version>` (or
+  `owner/repo/<path>@<40-hex commit> # v<version>` for an action in a
+  subdirectory, or a reusable workflow): the full commit id, in lower case,
+  and the tag it was taken at as a comment. Dependabot updates the two
+  together.
+
+It refuses a tag, a branch, a short commit id, a `docker://` image (by tag
+or by digest), a commit without the `# v<version>` comment, a YAML alias in
+place of the value, a value not on the `uses:` line, and `uses:` in a flow
+mapping (`{ ... }`). It does not read comment lines or the contents of a
+block such as `run: |`.
+
+To add an action:
+
+1. Choose a release at least 14 days old (see
+   [Contributing](#contributing)) and find the commit its tag names:
+
+   ```sh
+   gh api repos/actions/checkout/commits/v7 --jq .sha
+   ```
+
+   For an annotated tag this gives the commit the tag points to, which is
+   the one to pin.
+2. Write the step with that commit and the tag as a comment:
+
+   ```yaml
+   - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+   ```
+
+3. Check it, and run the check's own tests:
+
+   ```sh
+   python3 -I scripts/check_action_pins.py
+   python3 -I scripts/test_check_action_pins.py
+   ```
+
+   The check prints `check_action_pins: ok (<n> uses in <m> files)`, or one
+   line per refused `uses:` as `<file>:<line>: <reason>`, and exits 1.
+
+If the check refuses a line: `@<ref> is not a commit` means a tag, a branch
+or a short id (look up the full id as in step 1), or a `#` with no space
+before it, or inside the quotes, which YAML reads as part of the value;
+`no # v<version> comment` means the comment is missing or is not of the
+form `v1`, `v1.2` or `v1.2.3` (a pre-release such as `v1.2.3-rc.1` is
+accepted); `is not an action or workflow file in the repository` means a
+local path that does not exist or leaves the repository.
 
 ## Contributing
 

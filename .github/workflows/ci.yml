@@ -436,6 +436,13 @@ jobs:
           set -euo pipefail
           scripts/test-retry.sh
           python3 -I scripts/test_workflow_downloads.py
+      # A tag or a branch can be moved to other code; a commit id cannot
+      # (scripts/check_action_pins.py).
+      - name: Every action is pinned by commit
+        run: |
+          set -euo pipefail
+          python3 -I scripts/test_check_action_pins.py
+          python3 -I scripts/check_action_pins.py
       - name: Paths the Best Practices answers link to
         run: python3 -I scripts/test_check_repo_links.py
       - name: The rule for the home page's numbers

@@ -121,7 +121,9 @@ Before each commit, `.githooks/pre-commit` refuses personal data and AI-tool
 attribution in the staged changes (`scripts/scan_forbidden.py`) and checks
 that git ignores every export of the private design documents
 (`scripts/check-ignored-exports.sh`). Then, on a copy of exactly what is
-staged, it runs `scripts/rustfmt.sh --check`, `scripts/check_style.py --walk`,
+staged, it checks that every GitHub Action is pinned by commit
+(`scripts/check_action_pins.py`) and runs `scripts/rustfmt.sh --check`,
+`scripts/check_style.py --walk`,
 `cargo clippy --workspace --all-targets --locked --quiet -- -D warnings`, the
 tests with `scripts/nextest.sh run --workspace --locked` and the doc tests with
 `cargo test --workspace --locked --quiet --doc` (on aarch64, linked by
