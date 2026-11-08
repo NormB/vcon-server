@@ -186,6 +186,8 @@ why='crates/x/tests/fixtures/ietf/d.vcon: phone number:' expect refuse "other E.
 why='crates/x/tests/fixtures/c.json: phone number:' expect refuse "IETF example number in other fixtures" crates/x/tests/fixtures/c.json "tel $ietf_tel"
 expect accept "ids allowed in fixtures" crates/x/tests/fixtures/a.json '{"k": "D''40 FMT''-3"}'
 why='pre-commit: refused: private document export staged: vcon-server — Notes.md' expect refuse "export staged by force" "vcon-server — Notes.md" "words"
+why='TRACKED PRIVATE FILE: docs/plan.local.md' expect refuse "plan staged by force" docs/plan.local.md "words"
+why='TRACKED PRIVATE FILE: spec.local.md' expect refuse "spec at the root staged by force" spec.local.md "words"
 why='<commit message>: AI tool name:' expect refuse "AI trailer in message" notes.txt "message case one" "Fix it
 
 Co-Authored-By: ${ai_word^} <noreply@${ai_co}.com>"

@@ -13,6 +13,9 @@ All notable changes to this project are recorded here. The format follows
   a local path in the repository or `owner/repo@<40-hex commit> # v<version>`:
   a tag, a branch, a short commit id, a `docker://` image or a commit without
   its version comment. The Development page says how to add an action.
+- `.gitignore` ignores `*.local.md` (private spec and plan files) in any
+  directory, and `scripts/check-ignored-exports.sh`, run by the commit hook,
+  refuses a tracked or staged one, including one added with `--force`.
 
 ## [0.4.0] - 2026-11-06
 

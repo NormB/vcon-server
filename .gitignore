@@ -5,6 +5,10 @@
 vcon-server — *
 ARCHIVED — *
 
+# The private spec and plan files, in any directory; never committed
+# (scripts/check-ignored-exports.sh also refuses one staged with --force).
+*.local.md
+
 # Zola build output
 /website/public/
 
