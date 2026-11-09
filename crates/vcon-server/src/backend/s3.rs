@@ -2275,6 +2275,11 @@ pub(crate) mod remote {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("s3.secret");
         std::fs::write(&path, format!("{}\n", var("VCON_TEST_S3_SECRET_KEY"))).expect("secret");
+        std::fs::set_permissions(
+            &path,
+            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+        )
+        .expect("chmod 0600");
         (dir, path)
     }
 
@@ -2491,6 +2496,11 @@ pub(crate) mod remote {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("s3.secret");
         std::fs::write(&path, text).expect("writes the file");
+        std::fs::set_permissions(
+            &path,
+            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+        )
+        .expect("chmod 0600");
         (dir, path)
     }
 
@@ -2584,6 +2594,11 @@ pub(crate) mod remote {
         let dir = tempfile::tempdir().expect("temp dir");
         let secret = dir.path().join("export.secret");
         std::fs::write(&secret, var("VCON_TEST_S3_SECRET_KEY")).expect("the secret file");
+        std::fs::set_permissions(
+            &secret,
+            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+        )
+        .expect("chmod 0600");
         let target = crate::export::s3::S3Target::connect(
             &S3Settings {
                 prefix: prefix.to_owned(),

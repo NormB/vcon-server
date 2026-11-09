@@ -392,7 +392,10 @@ mod tests {
     #[test]
     fn a_setuid_mode_is_shown_with_its_special_bits() {
         let text = describe("k", Path::new("/f"), Refusal::Mode { mode: 0o4644 });
-        assert!(text.contains("(mode 4644)"), "{text}");
+        assert!(
+            text.contains("(mode 4644)"),
+            "the mode is shown with its special bits"
+        );
     }
 
     // Real files.

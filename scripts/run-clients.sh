@@ -68,6 +68,8 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 \
   -keyout "$work/ca.key" -out "$work/ca.pem" 2>/dev/null
 openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
   -subj /CN=localhost -keyout "$work/key.pem" -out "$work/server.csr" 2>/dev/null
+# The server refuses a secret file other users may read (secret_file.rs).
+chmod 0600 "$work/key.pem"
 printf 'subjectAltName=DNS:localhost\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\n' \
   > "$work/server.ext"
 openssl x509 -req -in "$work/server.csr" -CA "$work/ca.pem" -CAkey "$work/ca.key" \

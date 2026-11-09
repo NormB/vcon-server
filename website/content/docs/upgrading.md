@@ -27,16 +27,17 @@ used such a file without a word. **This is a breaking change:** a host whose
 master key is `0644` starts under 0.4.0 and does not start after it.
 
 Before you install the new binary, list the mode and the owner of each
-secret file the configuration names. With the files of
-[getting started](@/docs/getting-started.md):
+secret file the configuration names. The master key and the TLS key, as the
+configuration of [getting started](@/docs/getting-started.md) names them:
 
 ```sh
-sudo stat -c '%a %U %n' /etc/vcon-server/master.key /etc/vcon-server/key.pem
+SECRET_FILES=$(sudo sed -n -e 's/^master_key = "\(.*\)"$/\1/p' -e 's/^key = "\(.*\)"$/\1/p' /etc/vcon-server/vcon-server.toml)
+sudo stat -c '%a %U' $SECRET_FILES
 ```
 
 ```text
-400 vcon /etc/vcon-server/master.key
-400 vcon /etc/vcon-server/key.pem
+400 vcon
+400 vcon
 ```
 
 Add each `secret_access_key_file`, `password_file` and `client_key_file`

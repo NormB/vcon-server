@@ -29,6 +29,8 @@ head -c 32 /dev/urandom >"$work/master.key"
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 \
   -subj /CN=localhost -addext subjectAltName=DNS:localhost \
   -keyout "$work/key.pem" -out "$work/cert.pem" 2>/dev/null
+# The server refuses a secret file other users may read (secret_file.rs).
+chmod 0600 "$work/master.key" "$work/key.pem"
 cat >"$work/vcon-server.toml" <<TOML
 listen = "127.0.0.1:0"
 data_dir = "$work/data"
