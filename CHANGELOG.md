@@ -6,6 +6,21 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- rmcp goes from 3.8.0 to 3.9.0 (RUSTSEC-2026-0462, GHSA-c9f9-cp8h-jcj5).
+  Before 3.9.0, rmcp's Streamable HTTP client read a JSON answer, and an
+  error answer, whole and with no size limit. `vcon-server mcp`, the stdio
+  bridge, uses that client, so a malicious or broken server at its `url`
+  could answer the handshake with a body that never ends, and the bridge
+  would buffer it until its host ran out of memory. 3.9.0 stops at 16 MiB
+  for a JSON answer and 64 KiB for an error answer, and the bridge then
+  stops with an error. The crate now requires rmcp 3.9.0 or later. 3.9.0
+  was published on 2026-11-05, less than the 14 days CONTRIBUTING.md asks
+  of a new version; it is taken now because it is a security update, which
+  Dependabot also takes with no cooldown. A test serves the bridge an
+  endless JSON answer and checks that it gives up near the limit.
+
 ### Added
 
 - A preview of the PostgreSQL catalog, behind the `postgres` cargo feature

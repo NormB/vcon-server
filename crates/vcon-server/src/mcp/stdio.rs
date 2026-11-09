@@ -363,4 +363,104 @@ mod tests {
             Err(StdioError::KeyFile(_))
         ));
     }
+
+    /// A TLS server for one test: to each request, after its headers, it
+    /// answers 200 with a chunked `application/json` body of spaces that
+    /// never ends, until the client closes or `cap` bytes are sent. It
+    /// returns how many body bytes it sent, over every connection.
+    fn endless_json_server(
+        cert: &rcgen::CertifiedKey<rcgen::KeyPair>,
+        cap: usize,
+    ) -> (u16, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::io::{Read, Write};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let chain = vec![cert.cert.der().clone()];
+        let key = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let mut config = rustls::ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .expect("versions")
+            .with_no_client_auth()
+            .with_single_cert(chain, key)
+            .expect("a server config");
+        config.alpn_protocols = vec![b"http/1.1".to_vec()];
+        let config = Arc::new(config);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("binds");
+        let port = listener.local_addr().expect("an address").port();
+        let sent = Arc::new(AtomicUsize::new(0));
+        let counter = sent.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(tcp) = stream else { return };
+                let conn = rustls::ServerConnection::new(config.clone()).expect("a connection");
+                let mut tls = rustls::StreamOwned::new(conn, tcp);
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    match tls.read(&mut byte) {
+                        Ok(1) => head.push(byte[0]),
+                        _ => break,
+                    }
+                }
+                let reply = b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\n\r\n";
+                if tls.write_all(reply).is_err() {
+                    continue;
+                }
+                let chunk = vec![b' '; 64 * 1024];
+                let framed = [
+                    format!("{:x}\r\n", chunk.len()).into_bytes(),
+                    chunk,
+                    b"\r\n".to_vec(),
+                ]
+                .concat();
+                while counter.load(Ordering::SeqCst) < cap {
+                    if tls.write_all(&framed).is_err() {
+                        break;
+                    }
+                    counter.fetch_add(64 * 1024, Ordering::SeqCst);
+                }
+            }
+        });
+        (port, sent)
+    }
+
+    /// RUSTSEC-2026-0462: before rmcp 3.9.0 its Streamable HTTP client read
+    /// a JSON answer whole, with no limit, so an endless one from a
+    /// malicious or broken server held the bridge, and its host's memory,
+    /// until the process ran out. The bridge must give up on it instead.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_endless_json_answer_to_the_handshake_is_given_up_not_buffered() {
+        use std::sync::atomic::Ordering;
+        const CAP: usize = 128 * 1024 * 1024;
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()])
+            .expect("a certificate");
+        let (port, sent) = endless_json_server(&cert, CAP);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ca = dir.path().join("ca.pem");
+        std::fs::write(&ca, cert.cert.pem()).expect("write the CA");
+        let key_file = dir.path().join("agent.token");
+        std::fs::write(&key_file, "vcs_0011223344556677_secret\n").expect("write the key file");
+        std::fs::set_permissions(
+            &key_file,
+            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+        )
+        .expect("chmod 0600");
+        let config = parse_client(&format!(
+            "url = \"https://localhost:{port}/mcp\"\nkey_file = {key_file:?}\nca = {ca:?}\n"
+        ))
+        .expect("a client configuration");
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(120), stdio(&config))
+            .await
+            .expect("the bridge gives up within two minutes");
+        assert!(
+            matches!(outcome, Err(StdioError::Server(_))),
+            "the handshake fails: {outcome:?}"
+        );
+        let bytes = sent.load(Ordering::SeqCst);
+        assert!(
+            bytes < 32 * 1024 * 1024,
+            "the bridge stopped reading near rmcp's 16 MiB limit, not after {bytes} bytes"
+        );
+    }
 }
