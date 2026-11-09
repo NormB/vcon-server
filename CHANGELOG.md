@@ -42,6 +42,25 @@ All notable changes to this project are recorded here. The format follows
 
 ### Fixed
 
+- CI no longer fails when github.com answers a release download with HTTP
+  504 for a few minutes. On 2026-11-08, and on 2026-11-09 from about 05:15Z,
+  it did so for most of an hour, and main's CI on 2cb225a went red at every
+  job that fetched cargo-nextest, DuckDB, MinIO, cargo-fuzz, cosign or a
+  vcon-server release, while the code was green: each fetch was one `curl`
+  with about 25 seconds of retries. Every release download in the workflows
+  now goes through `scripts/fetch-pinned.sh`, through the new
+  `.github/actions/pinned-download` (cached by name, version and sha256,
+  saved only on main) or `.github/actions/nextest`. The script checks the
+  sha256 of every download and every restored file, retries an outage with
+  a doubling delay for up to five minutes, and exits 1 for an outage, 3 for
+  bytes that are not the pin and 4 for a permanent refusal.
+  `scripts/check_workflow_downloads.py` refuses a step or script that
+  fetches a release asset another way, and an `actions/cache` save that is
+  not main-only. The how-to scenarios get each release asset a page
+  downloads through a mirror in `scripts/docs_test.py` that fetches it the
+  same way, against `scripts/docs-test-pins.txt`; their images are pinned
+  by digest and pulled with retries, and apt in their containers retries
+  each download. The Development page says how to bump a pin.
 - The how-to "Keep vCons in an S3 bucket" waited for RustFS or MinIO to
   give any answer, then expected `403`; a service still starting answers
   `503`, which ended the wait and failed the next step (CI's s3 scenario,

@@ -94,6 +94,35 @@ class Nextest(unittest.TestCase):
         found = problems(rust=job("scripts/nextest.sh run --workspace", install=False))
         self.assertTrue(any("rust" in p and "install" in p for p in found), found)
 
+    def test_a_job_that_installs_through_the_nextest_action_passes(self):
+        steps = [{"uses": "./.github/actions/nextest"}, {"run": "scripts/nextest.sh run --workspace --locked\ncargo test --workspace --locked --doc"}]
+        self.assertEqual(problems(rust={"steps": steps}), [])
+
+    def test_the_nextest_action_after_the_run_does_not_count(self):
+        steps = [{"run": "scripts/nextest.sh run --workspace --locked\ncargo test --workspace --locked --doc"}, {"uses": "./.github/actions/nextest"}]
+        self.assertTrue(any("install" in p for p in problems(rust={"steps": steps})))
+
+    def test_a_nextest_action_that_never_installs_is_refused(self):
+        text = "runs:\n  using: composite\n  steps:\n    - shell: bash\n      run: bash scripts/nextest.sh pin\n"
+        self.assertEqual(check.nextest_action_problems(text), [".github/actions/nextest/action.yml: no step runs `scripts/nextest.sh install`"])
+
+    def test_the_real_nextest_action_installs(self):
+        text = (HERE.parent / ".github/actions/nextest/action.yml").read_text(encoding="utf-8")
+        self.assertEqual(check.nextest_action_problems(text), [])
+
+    def test_a_tree_that_uses_a_missing_nextest_action_is_refused(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            (root / ".github/workflows").mkdir(parents=True)
+            (root / ".config").mkdir()
+            (root / ".githooks").mkdir()
+            (root / ".config/nextest.toml").write_text(CONFIG)
+            (root / ".githooks/pre-commit").write_text("scripts/nextest.sh run --workspace --locked\ncargo test --workspace --doc --locked\n")
+            (root / ".github/workflows/ci.yml").write_text("jobs:\n  t:\n    steps:\n      - uses: ./.github/actions/nextest\n      - run: scripts/nextest.sh run --lib\n")
+            found = check.repository_problems(root)
+        self.assertIn(".github/actions/nextest/action.yml is missing, and a job uses it", found)
+
     def test_llvm_cov_nextest_needs_the_version_check(self):
         found = problems(coverage=job("cargo llvm-cov nextest --workspace"))
         self.assertTrue(any("coverage" in p and "check" in p for p in found), found)

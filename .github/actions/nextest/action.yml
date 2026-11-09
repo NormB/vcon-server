@@ -1,0 +1,32 @@
+name: Install the pinned cargo-nextest
+description: >-
+  Installs the cargo-nextest that scripts/nextest.sh pins, through
+  .github/actions/pinned-download: from the actions cache when main has
+  saved it, else from its release, its sha256 checked either way.
+
+# The tests run under cargo-nextest for the per-test deadline in
+# .config/nextest.toml. Its version and sha256 are pinned in
+# scripts/nextest.sh and nowhere else: `nextest.sh pin` prints them for this
+# CPU, and `nextest.sh install` checks the archive again with
+# scripts/fetch-pinned.sh before it unpacks it.
+runs:
+  using: composite
+  steps:
+    - name: Read the pin
+      id: pick
+      shell: bash
+      run: bash "$GITHUB_WORKSPACE/scripts/nextest.sh" pin >> "$GITHUB_OUTPUT"
+    - name: Get the pinned archive
+      id: archive
+      uses: ./.github/actions/pinned-download
+      with:
+        name: cargo-nextest
+        version: ${{ steps.pick.outputs.version }}
+        sha256: ${{ steps.pick.outputs.sha256 }}
+        url: ${{ steps.pick.outputs.url }}
+        file: ${{ steps.pick.outputs.file }}
+    - name: Install it
+      shell: bash
+      env:
+        ARCHIVE: ${{ steps.archive.outputs.path }}
+      run: NEXTEST_ARCHIVE_DIR="$(dirname "$ARCHIVE")" bash "$GITHUB_WORKSPACE/scripts/nextest.sh" install

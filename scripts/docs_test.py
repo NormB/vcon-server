@@ -31,6 +31,25 @@ A scenario names the pages it runs, in order, where (a container image, a
 container with systemd as its init, or this host), and its tags. The
 container scenarios get the binary under test as /docs-test/vcon-server.
 
+What the runner does around the pages, so that an outage elsewhere does not
+fail a page whose commands are right:
+
+- A GitHub release asset a step downloads (a vcon-server release, cosign,
+  RustFS, MinIO, DuckDB) comes through the runner's mirror, an HTTP server
+  on Docker's bridge address. The step's https://github.com/<owner>/<repo>/
+  releases/download/ URL is rewritten to the mirror's, and the mirror fetches
+  that exact github.com URL with scripts/fetch-pinned.sh: checked against its
+  sha256 in scripts/docs-test-pins.txt, retried through an outage for up to
+  five minutes, and kept in a cache (DOCS_TEST_PINNED, which CI restores and
+  saves on main). A URL the release does not have still fails the step: the
+  mirror answers 404, as github.com does. On 2026-11-09 github.com answered
+  504 for most of an hour, and the release, upgrade and container scenarios
+  failed at those downloads.
+- Each image is pinned by digest (IMAGES) and pulled with retries; an image
+  a page builds FROM is pulled the same way, then tagged with the name the
+  page uses.
+- In a container with apt, apt retries each download (Acquire::Retries).
+
 Usage:
   python3 -I scripts/docs_test.py list               the scenario names, as JSON
   python3 -I scripts/docs_test.py lint               the rules every tested page keeps
@@ -40,6 +59,7 @@ Usage:
 from __future__ import annotations
 
 import dataclasses
+import ipaddress
 import json
 import os
 import re
@@ -47,6 +67,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -239,11 +260,30 @@ class Scenario:
     docker: tuple = ()  # extra `docker run` options
 
 
+# Each image a scenario runs in, or a page builds FROM, by the digest of its
+# multi-platform index (amd64 and arm64 both), read with
+# `docker buildx imagetools inspect <image>` on 2026-11-09. A tag is a name
+# its owner moves; a digest is not. The development page says how to bump one.
+IMAGES = {
+    "debian:trixie-slim": "sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2",
+    "fedora:44": "sha256:15da97ed9aa94dd3d92c3925eb89520f6c80e07ea7ee24cba848d1f8b6912b3e",
+    "ubuntu:24.04": "sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852",
+}
+
+
+def pinned_image(name: str) -> str:
+    """name@digest for an image IMAGES pins."""
+    if name not in IMAGES:
+        raise PageError(f"no digest pinned for {name} in IMAGES (scripts/docs_test.py)")
+    return f"{name}@{IMAGES[name]}"
+
+
 # The image of the systemd scenario: Debian with systemd as its init, and
 # nothing else the pages would install.
 SYSTEMD_IMAGE = "docs-test-systemd:trixie"
-SYSTEMD_DOCKERFILE = """FROM debian:trixie-slim
-RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends systemd systemd-sysv dbus >/dev/null \\
+SYSTEMD_DOCKERFILE = f"""FROM {pinned_image("debian:trixie-slim")}
+RUN apt-get update -qq -o Acquire::Retries=10 \\
+ && apt-get install -y -qq -o Acquire::Retries=10 --no-install-recommends systemd systemd-sysv dbus >/dev/null \\
  && rm -rf /var/lib/apt/lists/*
 STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]
@@ -456,6 +496,257 @@ def page_blocks(name: str) -> list[Block]:
         return parse(f.read(), f"docs/{name}")
 
 
+PINS_NAME = "scripts/docs-test-pins.txt"
+PINS_PATH = os.path.join(ROOT, PINS_NAME)
+FETCH_PINNED = os.path.join(ROOT, "scripts", "fetch-pinned.sh")
+GITHUB = "https://github.com"
+# A pin names one release asset exactly.
+RELEASE_ASSET_URL = re.compile(r"^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/releases/download/[^/\s]+/[^/\s]+$")
+# A release asset URL on a page, with the shell expansions it holds.
+# A $( ... ) expansion is taken whole, spaces and all.
+PAGE_RELEASE_URL = re.compile(r"https://github\.com/[^/\s\"']+/[^/\s\"']+/releases/download/(?:\$\([^)]*\)|[^\s\"'])+")
+RELEASE_PREFIX = re.compile(r"https://github\.com/(?=[^/\s\"']+/[^/\s\"']+/releases/download/)")
+EXPANSION = re.compile(r"\$\([^)]*\)|\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*")
+HEX64 = re.compile(r"(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])")
+
+
+def load_pins(text: str, where: str = PINS_NAME) -> dict:
+    """URL -> sha256 from lines of `<sha256>  <url>`; # starts a comment."""
+    pins: dict = {}
+    for n, line in enumerate(text.splitlines(), 1):
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        parts = s.split()
+        if len(parts) != 2 or not re.fullmatch(r"[0-9a-f]{64}", parts[0]):
+            raise PageError(f"{where}:{n}: a pin is a sha256 of 64 lowercase hex digits, spaces, and a URL: {s!r}")
+        sha, url = parts
+        if not RELEASE_ASSET_URL.match(url):
+            raise PageError(f"{where}:{n}: {url} is not a GitHub release asset")
+        if url in pins:
+            raise PageError(f"{where}:{n}: {url} is pinned twice")
+        pins[url] = sha
+    return pins
+
+
+def read_pins() -> dict:
+    with open(PINS_PATH, encoding="utf-8") as f:
+        return load_pins(f.read())
+
+
+def rewrite_releases(code: str, base: str) -> str:
+    """The code with each GitHub release asset URL sent to the mirror at base."""
+    return RELEASE_PREFIX.sub(base.rstrip("/") + "/", code)
+
+
+def _template(url: str):
+    """A page URL as a pattern: each shell expansion stands for one path part."""
+    out, at = [], 0
+    for m in EXPANSION.finditer(url):
+        out.append(re.escape(url[at:m.start()]))
+        out.append("[^/]+")
+        at = m.end()
+    out.append(re.escape(url[at:]))
+    return re.compile("^" + "".join(out) + "$")
+
+
+def pin_problems(blocks: list[Block], pins: dict) -> list[str]:
+    """Each release asset a block downloads has a pin, and each sha256 written
+    in such a block is one of the pins: the page and the pins name one file."""
+    problems = []
+    shas = set(pins.values())
+    for b in blocks:
+        urls = PAGE_RELEASE_URL.findall(b.code)
+        if not urls:
+            continue
+        for url in urls:
+            pattern = _template(url)
+            if not any(pattern.match(p) for p in pins):
+                problems.append(f"{b.at}: no pin in {PINS_NAME} matches {url}")
+        for h in HEX64.findall(b.code):
+            if h not in shas:
+                problems.append(f"{b.at}: sha256 {h} on the page is not in {PINS_NAME}; the page and the pins name one file")
+    return problems
+
+
+def release_versions(steps: list[Block], sets: dict) -> dict:
+    """The release each release variable names in this run: the scenario's,
+    else the page's."""
+    out = {}
+    for name in RELEASE_VARIABLES:
+        if name in sets:
+            out[name] = sets[name]
+            continue
+        for b in steps:
+            m = re.search(rf"(?m)^{name}=(\S+)$", b.code) if b.kind == "sh" else None
+            if m:
+                out[name] = m.group(1)
+                break
+    return out
+
+
+def release_pin_problems(versions: dict, pins: dict) -> list[str]:
+    """A vcon-server release a run downloads has its assets pinned."""
+    out = []
+    for name in RELEASE_VARIABLES:
+        v = versions.get(name)
+        if v is None or not RELEASE.match(v):
+            continue
+        if f"{GITHUB}/{REPO}/releases/download/v{v}/SHA256SUMS.txt" not in pins:
+            out.append(f'{name}={v} has no pins in {PINS_NAME}; add its assets as the development page says under "Pinned tool downloads"')
+    return out
+
+
+def fetch_pinned_with(extra: list):
+    """A fetch for the mirror: scripts/fetch-pinned.sh with extra options.
+    Its messages go to this process's standard error, so the job's log shows
+    every retry."""
+    def fetch(url: str, sha: str, dest: str) -> int:
+        cmd = ["bash", FETCH_PINNED, "--url", url, "--sha256", sha, "--dest", dest, *extra]
+        out = subprocess.run(cmd, capture_output=True, text=True)
+        sys.stderr.write(out.stdout + out.stderr)
+        return out.returncode
+    return fetch
+
+
+class Mirror:
+    """An HTTP server that serves the pinned release assets the pages
+    download: each GET of /<owner>/<repo>/releases/download/<tag>/<file> is
+    fetched from upstream + that path with scripts/fetch-pinned.sh into the
+    cache, then served. A path with no pin answers 404 and is never fetched.
+    fetch-pinned.sh's exit status maps to an answer: 0 the file, 4 (a
+    permanent refusal) 404, 3 (bytes not the pin) 502, else 504."""
+
+    PATH = re.compile(r"^/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/releases/download/([^/]+)/([^/]+)$")
+    ANSWER = {4: 404, 3: 502}
+
+    def __init__(self, pins: dict, cache: str, host: str, upstream: str = GITHUB, fetch=None):
+        self.pins, self.cache, self.host, self.upstream = pins, cache, host, upstream.rstrip("/")
+        self.fetch = fetch or fetch_pinned_with([])
+        self.httpd = None
+        self.locks: dict = {}
+        self.lock = threading.Lock()
+
+    def answer(self, path: str) -> tuple[int, bytes]:
+        path = path.split("?", 1)[0]
+        if any(part in (".", "..") for part in path.split("/")):
+            return 400, b"docs-test mirror: a path may not hold . or .. parts\n"
+        m = self.PATH.match(path)
+        if not m:
+            return 404, b"docs-test mirror: not a GitHub release asset\n"
+        url = GITHUB + path
+        sha = self.pins.get(url)
+        if sha is None:
+            return 404, f"docs-test mirror: no pin for {url} in {PINS_NAME}\n".encode()
+        dest = os.path.join(self.cache, *m.groups())
+        with self.lock:
+            lock = self.locks.setdefault(url, threading.Lock())
+        with lock:
+            rc = self.fetch(self.upstream + path, sha, dest)
+            if rc == 0:
+                with open(dest, "rb") as f:
+                    return 200, f.read()
+        print(f"docs-test: the mirror could not fetch {url}: scripts/fetch-pinned.sh exited {rc}", file=sys.stderr)
+        return self.ANSWER.get(rc, 504), f"docs-test mirror: {url}: scripts/fetch-pinned.sh exited {rc}\n".encode()
+
+    def start(self) -> str:
+        import http.server
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                status, body = outer.answer(self.path)
+                self.send_response(status)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        self.httpd = http.server.ThreadingHTTPServer((self.host, 0), Handler)
+        self.httpd.daemon_threads = True
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        return f"http://{self.host}:{self.httpd.server_address[1]}"
+
+    def stop(self) -> None:
+        if self.httpd is not None:
+            self.httpd.shutdown()
+            self.httpd.server_close()
+            self.httpd = None
+
+
+def mirror_host(inspect_output: str) -> str:
+    """The address `docker network inspect bridge` reports for its gateway:
+    the host as the containers, and a build's RUN steps, reach it."""
+    s = inspect_output.strip()
+    try:
+        ipaddress.ip_address(s)
+    except ValueError:
+        raise PageError(f"docker reports no address for its bridge network (got {s!r}); the mirror needs one") from None
+    return s
+
+
+FROM_LINE = re.compile(r"(?im)^\s*FROM\s+(\S+)(?:\s+AS\s+(\S+))?")
+
+
+def base_images(blocks: list[Block]) -> list[str]:
+    """Each image a file block (a Dockerfile) builds FROM, once, in order;
+    not an earlier stage of the same file."""
+    out = []
+    for b in blocks:
+        if b.kind != "file":
+            continue
+        stages = set()
+        for m in FROM_LINE.finditer(b.code):
+            image, stage = m.group(1), m.group(2)
+            if image not in stages and image not in out:
+                out.append(image)
+            if stage:
+                stages.add(stage)
+    return out
+
+
+# The waits between pulls: as scripts/fetch-pinned.sh's, 255 s in all.
+PULL_DELAYS = (5, 10, 20, 40, 60, 60, 60)
+
+
+def _docker_quiet(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["docker", *args], capture_output=True, text=True, timeout=600)
+
+
+def pull_with_retry(name: str, run=_docker_quiet, sleep=time.sleep) -> str:
+    """Pull an image by its pinned digest, retrying a registry that fails,
+    then tag it with its name, so a page that builds FROM the name gets
+    the pinned image. Returns name@digest."""
+    ref = pinned_image(name)
+    last = ""
+    for attempt in range(len(PULL_DELAYS) + 1):
+        out = run("pull", "-q", ref)
+        if out.returncode == 0:
+            run("tag", ref, name)
+            return ref
+        last = (out.stderr or out.stdout or "").strip()
+        if attempt < len(PULL_DELAYS):
+            print(f"docs-test: pulling {ref} failed ({last}); again in {PULL_DELAYS[attempt]} s", file=sys.stderr)
+            sleep(PULL_DELAYS[attempt])
+    raise PageError(f"{ref} could not be pulled after {len(PULL_DELAYS) + 1} attempts: {last}")
+
+
+APT_RETRIES = """cat > /etc/apt/apt.conf.d/80docs-test-retries <<'DOCS_TEST_EOF'
+Acquire::Retries "10";
+DOCS_TEST_EOF
+"""
+
+
+def runner_prelude(scenario: Scenario) -> str:
+    """The runner's own setup inside a scenario's container: apt retries each
+    download, with apt's own growing delay between tries. Nothing on a host."""
+    if scenario.where != "host" and "apt" in scenario.tags:
+        return APT_RETRIES
+    return ""
+
+
 # A skip reason that names a release: a version, or the word.
 SKIP_FOR_A_RELEASE = re.compile(r"\b\d+\.\d+\b|\brelease", re.IGNORECASE)
 
@@ -544,6 +835,11 @@ def lint() -> list[str]:
     """Every rule, over every page a scenario runs, and the home page's
     install steps."""
     problems: list[str] = []
+    pins: dict = {}
+    try:
+        pins = read_pins()
+    except (OSError, PageError) as e:
+        problems.append(str(e))
     try:
         problems += home_install_problems(
             _front_matter(os.path.join(ROOT, "website", "content", "_index.md")), page_blocks("install.md")
@@ -563,6 +859,7 @@ def lint() -> list[str]:
         problems += lint_page(
             blocks, [s.tags for s in scenarios], host=any(s.where == "host" for s in scenarios)
         )
+        problems += pin_problems(blocks, pins)
     for s in SCENARIOS:
         if not s.sets:
             continue
@@ -720,16 +1017,32 @@ def run(scenario: Scenario, binary: str | None, keep: str | None) -> int:
     )
     for note in notes:
         print(f"docs-test: {note}")
-    prelude = ""
+    pins = read_pins()
+    missing = release_pin_problems(release_versions(steps, sets), pins)
+    if missing:
+        raise PageError("; ".join(missing))
+    prelude = runner_prelude(scenario)
     if scenario.binary:
         if not binary:
             print(f"docs-test: {scenario.name} needs --binary", file=sys.stderr)
             return 2
         if scenario.where != "host" and scenario.install_binary:
-            prelude = "install -m 0755 /docs-test/vcon-server /usr/local/bin/vcon-server\n"
-    text = script(steps, prelude, sets)
+            prelude += "install -m 0755 /docs-test/vcon-server /usr/local/bin/vcon-server\n"
     work = tempfile.mkdtemp(prefix=f"docs-test-{scenario.name}-")
+    mirror = None
     try:
+        if any(PAGE_RELEASE_URL.search(b.code) for b in steps):
+            gateway = _docker("network", "inspect", "bridge", "--format", "{{(index .IPAM.Config 0).Gateway}}",
+                              capture_output=True, text=True).stdout
+            cache = os.environ.get("DOCS_TEST_PINNED") or os.path.join(work, "pinned")
+            mirror = Mirror(pins, cache, mirror_host(gateway))
+            base = mirror.start()
+            print(f"docs-test: release assets come through the mirror at {base}, each fetched from github.com "
+                  f"with scripts/fetch-pinned.sh and checked against {PINS_NAME}")
+            steps = [dataclasses.replace(b, code=rewrite_releases(b.code, base)) for b in steps]
+        for image in base_images(steps):
+            pull_with_retry(image)
+        text = script(steps, prelude, sets)
         with open(os.path.join(work, "run.sh"), "w", encoding="utf-8") as f:
             f.write(text)
         outdir = os.path.join(work, "out")
@@ -752,16 +1065,19 @@ def run(scenario: Scenario, binary: str | None, keep: str | None) -> int:
         print(f"docs-test: {scenario.name}: {passed} of {len(steps)} steps ran as the pages say")
         return 0 if steps and passed == len(steps) else 1
     finally:
+        if mirror is not None:
+            mirror.stop()
         shutil.rmtree(work, ignore_errors=True)
 
 
 def _run_in_container(scenario: Scenario, binary: str | None, work: str, outdir: str) -> None:
     name = f"docs-test-{scenario.name}-{os.getpid()}"
     if scenario.where == "systemd":
+        pull_with_retry("debian:trixie-slim")
         _docker("build", "-q", "-t", SYSTEMD_IMAGE, "-", input=SYSTEMD_DOCKERFILE.encode(), stdout=subprocess.DEVNULL)
         start = ["run", "-d", "--name", name, *SYSTEMD_RUN, *scenario.docker, SYSTEMD_IMAGE]
     else:
-        start = ["run", "-d", "--name", name, *scenario.docker, scenario.where, "sleep", "infinity"]
+        start = ["run", "-d", "--name", name, *scenario.docker, pull_with_retry(scenario.where), "sleep", "infinity"]
     _docker(*start, stdout=subprocess.DEVNULL)
     try:
         if scenario.where == "systemd":

@@ -4,19 +4,24 @@ description: Installs the nightly toolchain fuzz/rust-toolchain.toml names and c
 runs:
   using: composite
   steps:
+    # cargo-fuzz's version and sha256 are pinned here and nowhere else.
+    - name: Get the pinned cargo-fuzz
+      id: cargo-fuzz
+      uses: ./.github/actions/pinned-download
+      with:
+        name: cargo-fuzz
+        version: '0.13.2'
+        sha256: 'b5b704018b63e0f151c17a057ac53b5111e1db545d1b9f72fee79f08a545931c'
+        url: https://github.com/rust-fuzz/cargo-fuzz/releases/download/0.13.2/cargo-fuzz-0.13.2-x86_64-unknown-linux-musl.tar.gz
+        file: cargo-fuzz.tar.gz
     - name: Install the fuzz toolchain and cargo-fuzz
       shell: bash
       env:
-        CARGO_FUZZ_VERSION: '0.13.2'
-        CARGO_FUZZ_SHA256: 'b5b704018b63e0f151c17a057ac53b5111e1db545d1b9f72fee79f08a545931c'
+        ARCHIVE: ${{ steps.cargo-fuzz.outputs.path }}
       run: |
         set -euo pipefail
         (cd fuzz && ../scripts/retry.sh rustup toolchain install)
-        curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o cargo-fuzz.tar.gz \
-          "https://github.com/rust-fuzz/cargo-fuzz/releases/download/${CARGO_FUZZ_VERSION}/cargo-fuzz-${CARGO_FUZZ_VERSION}-x86_64-unknown-linux-musl.tar.gz"
-        echo "${CARGO_FUZZ_SHA256}  cargo-fuzz.tar.gz" | sha256sum -c -
-        tar xzf cargo-fuzz.tar.gz -C "$HOME/.cargo/bin" cargo-fuzz
-        rm -f cargo-fuzz.tar.gz
+        tar xzf "$ARCHIVE" -C "$HOME/.cargo/bin" cargo-fuzz
     - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       with:
         workspaces: fuzz -> target

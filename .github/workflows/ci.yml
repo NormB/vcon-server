@@ -34,8 +34,9 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Install the pinned cargo-nextest
         # The tests run under it, for the per-test deadline in
-        # .config/nextest.toml; scripts/nextest.sh pins it by SHA-256.
-        run: scripts/nextest.sh install
+        # .config/nextest.toml; scripts/nextest.sh pins it by SHA-256, and
+        # the action fetches it through the one pinned-download rule.
+        uses: ./.github/actions/nextest
       - name: Format
         # rustfmt.toml's options need the nightly rustfmt the script pins;
         # it checks the fuzz package too, which --all misses.
@@ -123,17 +124,25 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Install the pinned cargo-nextest
         # The tests run under it, for the per-test deadline in
-        # .config/nextest.toml; scripts/nextest.sh pins it by SHA-256.
-        run: scripts/nextest.sh install
+        # .config/nextest.toml; scripts/nextest.sh pins it by SHA-256, and
+        # the action fetches it through the one pinned-download rule.
+        uses: ./.github/actions/nextest
+      - name: Get the pinned DuckDB CLI
+        id: duckdb
+        uses: ./.github/actions/pinned-download
+        with:
+          name: duckdb
+          version: ${{ env.DUCKDB_VERSION }}
+          sha256: ${{ env.DUCKDB_SHA256 }}
+          url: https://github.com/duckdb/duckdb/releases/download/v${{ env.DUCKDB_VERSION }}/duckdb_cli-linux-amd64.zip
+          file: duckdb_cli-linux-amd64.zip
       - name: Install the pinned DuckDB CLI
+        env:
+          ARCHIVE: ${{ steps.duckdb.outputs.path }}
         run: |
           set -euo pipefail
           mkdir -p .duckdb
-          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o .duckdb/duckdb.zip \
-            "https://github.com/duckdb/duckdb/releases/download/v${DUCKDB_VERSION}/duckdb_cli-linux-amd64.zip"
-          echo "${DUCKDB_SHA256}  .duckdb/duckdb.zip" | sha256sum -c -
-          unzip -q .duckdb/duckdb.zip -d .duckdb
-          rm -f .duckdb/duckdb.zip
+          unzip -q "$ARCHIVE" -d .duckdb
           "$VCON_TEST_DUCKDB" --version
       - name: Wait for RustFS
         # It answers 403 to a request without a signature once it listens.
@@ -190,26 +199,42 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Install the pinned cargo-nextest
         # The tests run under it, for the per-test deadline in
-        # .config/nextest.toml; scripts/nextest.sh pins it by SHA-256.
-        run: scripts/nextest.sh install
+        # .config/nextest.toml; scripts/nextest.sh pins it by SHA-256, and
+        # the action fetches it through the one pinned-download rule.
+        uses: ./.github/actions/nextest
+      - name: Get the pinned DuckDB CLI
+        id: duckdb
+        uses: ./.github/actions/pinned-download
+        with:
+          name: duckdb
+          version: ${{ env.DUCKDB_VERSION }}
+          sha256: ${{ env.DUCKDB_SHA256 }}
+          url: https://github.com/duckdb/duckdb/releases/download/v${{ env.DUCKDB_VERSION }}/duckdb_cli-linux-amd64.zip
+          file: duckdb_cli-linux-amd64.zip
       - name: Install the pinned DuckDB CLI
+        env:
+          ARCHIVE: ${{ steps.duckdb.outputs.path }}
         run: |
           set -euo pipefail
           mkdir -p .duckdb
-          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o .duckdb/duckdb.zip \
-            "https://github.com/duckdb/duckdb/releases/download/v${DUCKDB_VERSION}/duckdb_cli-linux-amd64.zip"
-          echo "${DUCKDB_SHA256}  .duckdb/duckdb.zip" | sha256sum -c -
-          unzip -q .duckdb/duckdb.zip -d .duckdb
-          rm -f .duckdb/duckdb.zip
+          unzip -q "$ARCHIVE" -d .duckdb
           "$VCON_TEST_DUCKDB" --version
+      - name: Get the pinned MinIO server
+        id: minio
+        uses: ./.github/actions/pinned-download
+        with:
+          name: minio
+          version: ${{ env.MINIO_RELEASE }}
+          sha256: ${{ env.MINIO_SHA256 }}
+          url: https://github.com/minio/minio/releases/download/${{ env.MINIO_RELEASE }}/minio.linux-amd64.${{ env.MINIO_RELEASE }}
+          file: minio
       - name: Start MinIO
         # It answers 403 to a request without a signature once it listens.
+        env:
+          MINIO_BINARY: ${{ steps.minio.outputs.path }}
         run: |
           set -euo pipefail
-          curl -fsSL --retry 5 --retry-all-errors -o "$RUNNER_TEMP/minio" \
-            "https://github.com/minio/minio/releases/download/$MINIO_RELEASE/minio.linux-amd64.$MINIO_RELEASE"
-          echo "$MINIO_SHA256  $RUNNER_TEMP/minio" | sha256sum -c
-          chmod 0755 "$RUNNER_TEMP/minio"
+          install -m 0755 "$MINIO_BINARY" "$RUNNER_TEMP/minio"
           "$RUNNER_TEMP/minio" --version
           mkdir "$RUNNER_TEMP/minio-data"
           MINIO_ROOT_USER="$VCON_TEST_S3_ACCESS_KEY" MINIO_ROOT_PASSWORD="$VCON_TEST_S3_SECRET_KEY" \
@@ -286,8 +311,9 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Install the pinned cargo-nextest
         # The tests run under it, for the per-test deadline in
-        # .config/nextest.toml; scripts/nextest.sh pins it by SHA-256.
-        run: scripts/nextest.sh install
+        # .config/nextest.toml; scripts/nextest.sh pins it by SHA-256, and
+        # the action fetches it through the one pinned-download rule.
+        uses: ./.github/actions/nextest
       - name: Wait for RustFS
         # It answers 403 to a request without a signature once it listens.
         run: |
@@ -339,21 +365,29 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      - name: Get the pinned cargo-llvm-cov
+        id: llvm-cov
+        uses: ./.github/actions/pinned-download
+        with:
+          name: cargo-llvm-cov
+          version: ${{ env.LLVM_COV_VERSION }}
+          sha256: ${{ env.LLVM_COV_SHA256 }}
+          url: https://github.com/taiki-e/cargo-llvm-cov/releases/download/v${{ env.LLVM_COV_VERSION }}/cargo-llvm-cov-x86_64-unknown-linux-gnu.tar.gz
+          file: cargo-llvm-cov.tar.gz
       - name: Install the pinned toolchain and cargo-llvm-cov
+        env:
+          ARCHIVE: ${{ steps.llvm-cov.outputs.path }}
         run: |
           set -euo pipefail
           scripts/retry.sh rustup toolchain install
           scripts/retry.sh rustup component add llvm-tools
-          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o llvm-cov.tar.gz \
-            "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v${LLVM_COV_VERSION}/cargo-llvm-cov-x86_64-unknown-linux-gnu.tar.gz"
-          echo "${LLVM_COV_SHA256}  llvm-cov.tar.gz" | sha256sum -c -
-          tar xzf llvm-cov.tar.gz -C "$HOME/.cargo/bin" cargo-llvm-cov
-          rm -f llvm-cov.tar.gz
+          tar xzf "$ARCHIVE" -C "$HOME/.cargo/bin" cargo-llvm-cov
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Install the pinned cargo-nextest
         # The tests run under it, for the per-test deadline in
-        # .config/nextest.toml; scripts/nextest.sh pins it by SHA-256.
-        run: scripts/nextest.sh install
+        # .config/nextest.toml; scripts/nextest.sh pins it by SHA-256, and
+        # the action fetches it through the one pinned-download rule.
+        uses: ./.github/actions/nextest
       - name: Measure
         # The same tests as above, so the same memory-lock limit.
         run: |
@@ -515,12 +549,14 @@ jobs:
       - name: The rule for AI attribution and personal data
         run: python3 -I scripts/test_scan_forbidden.py
       # A toolchain or tool download retries, so a runner's dropped
-      # connection does not fail a job (scripts/check_workflow_downloads.py).
+      # connection does not fail a job, and a release asset goes through
+      # scripts/fetch-pinned.sh (scripts/check_workflow_downloads.py).
       - name: Every download retries
         run: |
           set -euo pipefail
           scripts/test-retry.sh
           python3 -I scripts/test_workflow_downloads.py
+          python3 -I scripts/test_fetch_pinned.py
       # A tag or a branch can be moved to other code; a commit id cannot
       # (scripts/check_action_pins.py).
       - name: Every action is pinned by commit
@@ -582,7 +618,7 @@ jobs:
           scripts/rustfmt.sh install
       - name: Install the pinned cargo-nextest
         # The commit hook runs the fixture's tests under it.
-        run: scripts/nextest.sh install
+        uses: ./.github/actions/nextest
       # Each hook in a throwaway repository: every forbidden item staged or
       # written in a message is refused, clean changes pass; the push hook
       # refuses unsigned and foreign commits and forbidden messages.
@@ -657,17 +693,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      - name: Get the pinned cargo-deny
+        id: cargo-deny
+        uses: ./.github/actions/pinned-download
+        with:
+          name: cargo-deny
+          version: ${{ env.CARGO_DENY_VERSION }}
+          sha256: ${{ env.CARGO_DENY_SHA256 }}
+          url: https://github.com/EmbarkStudios/cargo-deny/releases/download/${{ env.CARGO_DENY_VERSION }}/cargo-deny-${{ env.CARGO_DENY_VERSION }}-x86_64-unknown-linux-musl.tar.gz
+          file: cargo-deny.tar.gz
       - name: Install the pinned toolchain and cargo-deny
+        env:
+          ARCHIVE: ${{ steps.cargo-deny.outputs.path }}
         run: |
           set -euo pipefail
           scripts/retry.sh rustup toolchain install
           name="cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl"
-          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o cargo-deny.tar.gz \
-            "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/${name}.tar.gz"
-          echo "${CARGO_DENY_SHA256}  cargo-deny.tar.gz" | sha256sum -c -
-          tar xzf cargo-deny.tar.gz --strip-components=1 "${name}/cargo-deny"
+          tar xzf "$ARCHIVE" --strip-components=1 "${name}/cargo-deny"
           sudo install -m 0755 cargo-deny /usr/local/bin/cargo-deny
-          rm -f cargo-deny cargo-deny.tar.gz
+          rm -f cargo-deny
           cargo-deny --version
       # deny.toml's rules, on the workspace and on the fuzz package, which
       # has its own Cargo.lock. Advisories are osv-scanner.yml's job.
@@ -688,15 +732,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      - name: Get the pinned Zola
+        id: zola
+        uses: ./.github/actions/pinned-download
+        with:
+          name: zola
+          version: ${{ env.ZOLA_VERSION }}
+          sha256: ${{ env.ZOLA_SHA256 }}
+          url: https://github.com/getzola/zola/releases/download/v${{ env.ZOLA_VERSION }}/zola-v${{ env.ZOLA_VERSION }}-x86_64-unknown-linux-gnu.tar.gz
+          file: zola.tar.gz
       - name: Install Zola
+        env:
+          ARCHIVE: ${{ steps.zola.outputs.path }}
         run: |
           set -euo pipefail
-          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o zola.tar.gz \
-            "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
-          echo "${ZOLA_SHA256}  zola.tar.gz" | sha256sum -c -
-          tar xzf zola.tar.gz zola
+          tar xzf "$ARCHIVE" zola
           sudo install -m 0755 zola /usr/local/bin/zola
-          rm -f zola zola.tar.gz
+          rm -f zola
       - name: Check the site
         run: scripts/check-site.sh
       # The same Node as the console job, checked by hash.
@@ -735,15 +787,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      - name: Get the pinned resvg
+        id: resvg
+        uses: ./.github/actions/pinned-download
+        with:
+          name: resvg
+          version: ${{ env.RESVG_VERSION }}
+          sha256: ${{ env.RESVG_SHA256 }}
+          url: https://github.com/linebender/resvg/releases/download/v${{ env.RESVG_VERSION }}/resvg-linux-x86_64.tar.gz
+          file: resvg.tar.gz
       - name: Install resvg and fontTools
+        env:
+          ARCHIVE: ${{ steps.resvg.outputs.path }}
         run: |
           set -euo pipefail
-          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o resvg.tar.gz \
-            "https://github.com/linebender/resvg/releases/download/v${RESVG_VERSION}/resvg-linux-x86_64.tar.gz"
-          echo "${RESVG_SHA256}  resvg.tar.gz" | sha256sum -c -
-          tar xzf resvg.tar.gz resvg
+          tar xzf "$ARCHIVE" resvg
           sudo install -m 0755 resvg /usr/local/bin/resvg
-          rm -f resvg resvg.tar.gz
+          rm -f resvg
           python3 -m venv "$RUNNER_TEMP/icons"
           "$RUNNER_TEMP/icons/bin/pip" install --require-hashes --no-deps --only-binary :all: \
             -r scripts/icons-requirements.txt
@@ -841,6 +901,15 @@ jobs:
         with:
           name: docs-vcon-server
           path: ${{ runner.temp }}/server
+      # The release assets the pages download (scripts/docs-test-pins.txt),
+      # as main last fetched them. docs_test.py's mirror checks each file's
+      # sha256 before it serves it, hit or miss.
+      - name: Restore the pinned release assets
+        id: pinned
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ runner.temp }}/docs-pinned
+          key: pinned-docs-${{ matrix.scenario }}-${{ hashFiles('scripts/docs-test-pins.txt') }}
       - name: Run the pages' commands and compare what each prints
         # Each scenario runs in a fresh container (see scripts/docs_test.py).
         # GH_TOKEN lets the install page's `gh attestation verify` read the
@@ -848,10 +917,27 @@ jobs:
         env:
           SCENARIO: ${{ matrix.scenario }}
           GH_TOKEN: ${{ github.token }}
+          DOCS_TEST_PINNED: ${{ runner.temp }}/docs-pinned
         run: |
           set -euo pipefail
           chmod 0755 "$RUNNER_TEMP/server/vcon-server"
+          mkdir -p "$DOCS_TEST_PINNED"
           python3 -I scripts/docs_test.py run "$SCENARIO" --binary "$RUNNER_TEMP/server/vcon-server"
+      - name: Note whether the scenario downloaded anything
+        id: kept
+        if: always()
+        run: |
+          if [ -n "$(find "$RUNNER_TEMP/docs-pinned" -type f 2>/dev/null | head -1)" ]; then
+            echo "any=true" >> "$GITHUB_OUTPUT"
+          fi
+      # Only verified bytes are in the directory, so a run whose pages
+      # failed may still save what it fetched.
+      - name: Save the pinned release assets
+        if: always() && steps.kept.outputs.any == 'true' && steps.pinned.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ runner.temp }}/docs-pinned
+          key: pinned-docs-${{ matrix.scenario }}-${{ hashFiles('scripts/docs-test-pins.txt') }}
 
   # The one check of this workflow the main branch's ruleset must name. It
   # needs every job above, so the how-to scenarios and the fuzz targets,

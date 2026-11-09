@@ -14,6 +14,9 @@ deadline in .config/nextest.toml and fails it by name. The rule:
   cargo nextest          only through scripts/nextest.sh, which pins the
                          version and passes the config; a job that runs it
                          installs it first with `scripts/nextest.sh install`
+                         or with the .github/actions/nextest step, which
+                         runs that install after fetching the archive
+                         through .github/actions/pinned-download
   cargo llvm-cov         only as `llvm-cov nextest` (or `report`), after
                          `scripts/nextest.sh check` in the same job, since
                          llvm-cov starts cargo nextest itself
@@ -36,6 +39,16 @@ DEADLINE = {"period": "60s", "terminate-after": 3}
 CARGO = re.compile(r"""\bcargo\s+(?:["']?\+\S+?["']?\s+)?([a-z][a-z-]*)""")
 SCRIPT = re.compile(r"\bscripts/nextest\.sh\s+(install|check|run|list)\b")
 LLVM_COV_ALLOWED = {"nextest", "report"}
+NEXTEST_ACTION = "./.github/actions/nextest"
+# The install as the action runs it: the script's path may be quoted.
+ACTION_INSTALL = re.compile(r"\bscripts/nextest\.sh[\"']?\s+install\b")
+
+
+def nextest_action_problems(text):
+    """.github/actions/nextest installs nextest with scripts/nextest.sh."""
+    if ACTION_INSTALL.search("\n".join(l for l in text.splitlines() if not l.strip().startswith("#"))):
+        return []
+    return [".github/actions/nextest/action.yml: no step runs `scripts/nextest.sh install`"]
 
 
 def commands(text):
@@ -107,6 +120,8 @@ def problems(config_text, hook_text, workflows):
             where = f"{file} job {job_id}"
             installed = checked = False
             for step in (job or {}).get("steps") or []:
+                if str(step.get("uses", "")) == NEXTEST_ACTION:
+                    installed = True
                 # Line by line, so an install or a check counts only for
                 # what runs after it.
                 for line in commands(str(step.get("run", ""))):
@@ -130,11 +145,16 @@ def repository_problems(root):
     root = pathlib.Path(root)
     workflows = {p.name: yaml.safe_load(p.read_text(encoding="utf-8")) for p in sorted((root / ".github/workflows").glob("*.yml"))}
     config = root / ".config/nextest.toml"
-    return problems(
+    found = problems(
         config.read_text(encoding="utf-8") if config.exists() else "",
         (root / ".githooks/pre-commit").read_text(encoding="utf-8"),
         workflows,
     )
+    action = root / ".github/actions/nextest/action.yml"
+    uses = any(str(s.get("uses", "")) == NEXTEST_ACTION for w in workflows.values() for j in ((w or {}).get("jobs") or {}).values() for s in (j or {}).get("steps") or [])
+    if uses:
+        found += nextest_action_problems(action.read_text(encoding="utf-8")) if action.is_file() else [".github/actions/nextest/action.yml is missing, and a job uses it"]
+    return found
 
 
 def main():

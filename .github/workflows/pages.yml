@@ -60,17 +60,25 @@ jobs:
         with:
           ref: ${{ steps.ci.outputs.sha }}
           persist-credentials: false
+      - name: Get the pinned Zola
+        id: zola
+        uses: ./.github/actions/pinned-download
+        with:
+          name: zola
+          version: ${{ env.ZOLA_VERSION }}
+          sha256: ${{ env.ZOLA_SHA256 }}
+          url: https://github.com/getzola/zola/releases/download/v${{ env.ZOLA_VERSION }}/zola-v${{ env.ZOLA_VERSION }}-x86_64-unknown-linux-gnu.tar.gz
+          file: zola.tar.gz
       - name: Install Zola
+        env:
+          ARCHIVE: ${{ steps.zola.outputs.path }}
         run: |
           set -euo pipefail
-          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o zola.tar.gz \
-            "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
-          echo "${ZOLA_SHA256}  zola.tar.gz" | sha256sum -c -
           # The tarball also carries LICENSE, LICENSE-MIT and man pages; take only
           # the binary, so the repository's own LICENSE-MIT is not overwritten.
-          tar xzf zola.tar.gz zola
+          tar xzf "$ARCHIVE" zola
           sudo install -m 0755 zola /usr/local/bin/zola
-          rm -f zola zola.tar.gz
+          rm -f zola
           zola --version
       - name: Download the test output of CI's run
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2

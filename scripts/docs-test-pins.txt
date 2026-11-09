@@ -1,0 +1,46 @@
+# The GitHub release assets the how-to pages download, each with its sha256.
+#
+# scripts/docs_test.py serves these to the scenarios through its mirror,
+# fetching each from github.com with scripts/fetch-pinned.sh, which checks
+# the hash on every download and every cache hit and retries an outage for
+# up to five minutes. `docs_test.py lint` fails a page that downloads a
+# release asset no pin here matches, or that writes a sha256 not here.
+#
+# Each hash is the digest GitHub reports for the asset
+# (gh api repos/<owner>/<repo>/releases/tags/<tag> --jq '.assets[] | .name + " " + .digest').
+# The vcon-server archives' hashes are also the release's own SHA256SUMS.txt
+# lines. To add a release or bump a tool, see the development page,
+# website/content/docs/development.md, under "Pinned tool downloads".
+# One line per asset: <sha256>, two spaces, <URL>.
+
+# vcon-server 0.3.0: PREVIOUS in scripts/docs_test.py, the upgrade's start.
+79090b3003b03426a229d30c3a638f64c04b83cdd115e3d69c1c512c5d98f1b6  https://github.com/NormB/vcon-server/releases/download/v0.3.0/SHA256SUMS.txt
+ef8643869013286a832def8b5b1e2da9d976335beb4efc82c6e00cad19907ca5  https://github.com/NormB/vcon-server/releases/download/v0.3.0/SHA256SUMS.txt.sigstore.json
+caa7824d7cec86b5b2d230bfe761aac0c7b0b97c3085ffb8cc08a8112e250962  https://github.com/NormB/vcon-server/releases/download/v0.3.0/vcon-server-0.3.0-x86_64-unknown-linux-gnu.tar.gz
+f0d536074c368743072b45fa8685efc3b3eb08c2464d32c898d8dc98d5b8c8af  https://github.com/NormB/vcon-server/releases/download/v0.3.0/vcon-server-0.3.0-aarch64-unknown-linux-gnu.tar.gz
+
+# vcon-server 0.4.0: VERSION in install.md and container.md, NEW_VERSION in upgrading.md.
+4b326ca007574fdd8710b0b758eedd14dbf17492cf0dd4955eb860ffbe2ccf83  https://github.com/NormB/vcon-server/releases/download/v0.4.0/SHA256SUMS.txt
+53934ea97cc21d91f7e8a0b48f283c4fb1c3f19c86bfac53cd32fea4d0468631  https://github.com/NormB/vcon-server/releases/download/v0.4.0/SHA256SUMS.txt.sigstore.json
+446e04d8df93501d7a82cc850aa5d49b2c9b68e98669e1c2db911e0617100703  https://github.com/NormB/vcon-server/releases/download/v0.4.0/vcon-server-0.4.0-x86_64-unknown-linux-gnu.tar.gz
+71b830269c548fdfac2b6ac83ed636f97ae9cdbad9f20280c0988ec1c1d8a041  https://github.com/NormB/vcon-server/releases/download/v0.4.0/vcon-server-0.4.0-aarch64-unknown-linux-gnu.tar.gz
+
+# cosign 3.0.6 (install.md, Ubuntu and Fedora).
+e16e8eb815f8b1b3cee3e678874393c286f19dd59e9ac5da95e428f970ef00f3  https://github.com/sigstore/cosign/releases/download/v3.0.6/cosign_3.0.6_amd64.deb
+93f382c7476e3effabff8a2c3561239381d55dc2b21b2ccbeaf70e460acfeaaa  https://github.com/sigstore/cosign/releases/download/v3.0.6/cosign_3.0.6_arm64.deb
+0efcd1a282138eefc8d762222dd45b5fe7c0adcee822a7164482480239f2bb92  https://github.com/sigstore/cosign/releases/download/v3.0.6/cosign-3.0.6-1.x86_64.rpm
+df8d6ab3d82bd3210c827bbe29f21c15988e0365f57111ced37190119e72ad78  https://github.com/sigstore/cosign/releases/download/v3.0.6/cosign-3.0.6-1.aarch64.rpm
+
+# RustFS 1.0.4 (s3-storage.md).
+4924ad4b699b9f59943051efedae2d1eb6d4cac503a1b0384c4b25f7c2c31b5c  https://github.com/rustfs/rustfs/releases/download/1.0.4/rustfs-linux-x86_64-musl-v1.0.4.zip
+81414fd0e41969f4f5c2e0555951cee76d3f224c112c269c80f52b31276f187a  https://github.com/rustfs/rustfs/releases/download/1.0.4/rustfs-linux-aarch64-musl-v1.0.4.zip
+
+# MinIO and mc (s3-storage.md).
+7c5bd8512c6e966455b1d198209358b2d191c77a83ab377c4073281065fb855f  https://github.com/minio/minio/releases/download/RELEASE.2025-09-07T16-13-09Z/minio.linux-amd64.RELEASE.2025-09-07T16-13-09Z
+5c83cd2cf151717ba0243f73e1c7802ff36e272b67144bdd7f1f7d684fd6f03d  https://github.com/minio/minio/releases/download/RELEASE.2025-09-07T16-13-09Z/minio.linux-arm64.RELEASE.2025-09-07T16-13-09Z
+01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891  https://github.com/minio/mc/releases/download/RELEASE.2025-08-13T08-35-41Z/mc.linux-amd64.RELEASE.2025-08-13T08-35-41Z
+14c8c9616cfce4636add161304353244e8de383b2e2752c0e9dad01d4c27c12c  https://github.com/minio/mc/releases/download/RELEASE.2025-08-13T08-35-41Z/mc.linux-arm64.RELEASE.2025-08-13T08-35-41Z
+
+# DuckDB 1.5.6 (export-parquet.md).
+6e89deac1ebbc36eed0291caf8b567b030c7b86ac35998f71854e22b3c5d5e2f  https://github.com/duckdb/duckdb/releases/download/v1.5.6/duckdb_cli-linux-amd64.zip
+c544e92c9b7c31fc53c2139802cabd8e2d1b2b3e3f933117f31611239c1402db  https://github.com/duckdb/duckdb/releases/download/v1.5.6/duckdb_cli-linux-arm64.zip

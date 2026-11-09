@@ -4,6 +4,10 @@
 # the commit hook, CI and a developer run the tests the same way.
 #
 #   scripts/nextest.sh version            print the pinned version
+#   scripts/nextest.sh pin                the version, sha256, URL and file
+#                                         name of this CPU's release asset, as
+#                                         key=value lines (.github/actions/nextest
+#                                         reads them)
 #   scripts/nextest.sh install [DIR]      install that version's release binary
 #                                         into DIR (default: cargo's bin
 #                                         directory), checked by its SHA-256
@@ -22,6 +26,12 @@
 #
 # The version and the two hashes are pinned here and nowhere else. The
 # hashes are those GitHub lists for the release's assets.
+#
+# The download goes through scripts/fetch-pinned.sh, the one rule for a
+# release asset: it checks the SHA-256 of what it downloads and of an
+# archive already in NEXTEST_ARCHIVE_DIR (CI's restored cache entry), and
+# retries an outage for up to five minutes. Its exit status is kept: 1 an
+# outage (re-run), 3 bytes that are not the pin, 4 a missing asset.
 set -euo pipefail
 version="0.9.148"
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -36,25 +46,34 @@ check() {
   fi
 }
 
+# This CPU's release asset: its name and pinned SHA-256.
+asset() {
+  case "$(uname -m)" in
+    x86_64) sha=223ba936714cc861a9cdedad5a8eb664dfdd69d6fbdf6cea6aa8184f523290dc ;;
+    aarch64) sha=81469eb963ef883fd590e60189e77d6aba3d91b418591d3391f50fe3e9480d2b ;;
+    *) echo "nextest.sh: no pinned cargo-nextest for $(uname -m)" >&2; exit 1 ;;
+  esac
+  name="cargo-nextest-$version-$(uname -m)-unknown-linux-gnu.tar.gz"
+}
+
 toolchain=""
 case "${1:-}" in
   version)
     echo "$version"
     exit 0 ;;
+  pin)
+    asset
+    printf 'version=%s\nsha256=%s\nurl=%s\nfile=%s\n' "$version" "$sha" "$download/cargo-nextest-$version/$name" "$name"
+    exit 0 ;;
   install)
-    case "$(uname -m)" in
-      x86_64) sha=223ba936714cc861a9cdedad5a8eb664dfdd69d6fbdf6cea6aa8184f523290dc ;;
-      aarch64) sha=81469eb963ef883fd590e60189e77d6aba3d91b418591d3391f50fe3e9480d2b ;;
-      *) echo "nextest.sh: no pinned cargo-nextest for $(uname -m)" >&2; exit 1 ;;
-    esac
+    asset
     dest="${2:-${CARGO_HOME:-$HOME/.cargo}/bin}"
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' EXIT
-    name="cargo-nextest-$version-$(uname -m)-unknown-linux-gnu.tar.gz"
-    curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o "$tmp/$name" \
-      "$download/cargo-nextest-$version/$name"
-    echo "$sha  $tmp/$name" | sha256sum -c --quiet - >&2 || { echo "nextest.sh: $name is not the pinned download" >&2; exit 1; }
-    tar xzf "$tmp/$name" -C "$tmp" cargo-nextest
+    archive="${NEXTEST_ARCHIVE_DIR:-$tmp}/$name"
+    bash "$root/scripts/fetch-pinned.sh" --url "$download/cargo-nextest-$version/$name" --sha256 "$sha" --dest "$archive" >&2 \
+      || { rc=$?; echo "nextest.sh: $name is not installed (fetch-pinned.sh exit $rc)" >&2; exit "$rc"; }
+    tar xzf "$archive" -C "$tmp" cargo-nextest
     mkdir -p "$dest"
     install -m 0755 "$tmp/cargo-nextest" "$dest/cargo-nextest"
     "$dest/cargo-nextest" nextest --version | sed -n 1p
@@ -71,6 +90,6 @@ case "${1:-}" in
     exec cargo ${toolchain:+"$toolchain"} nextest "$command" \
       --config-file "$root/.config/nextest.toml" --user-config-file none "$@" ;;
   *)
-    echo "usage: scripts/nextest.sh version | install [DIR] | check | run|list [+TOOLCHAIN] [ARGS...]" >&2
+    echo "usage: scripts/nextest.sh version | pin | install [DIR] | check | run|list [+TOOLCHAIN] [ARGS...]" >&2
     exit 2 ;;
 esac

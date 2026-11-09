@@ -103,8 +103,9 @@ jobs:
           scripts/retry.sh rustup toolchain install "$nightly" --profile minimal --component rust-src
       - name: Install the pinned cargo-nextest
         # The tests run under it, for the per-test deadline in
-        # .config/nextest.toml; scripts/nextest.sh pins it by SHA-256.
-        run: scripts/nextest.sh install
+        # .config/nextest.toml; scripts/nextest.sh pins it by SHA-256, and
+        # the action fetches it through the one pinned-download rule.
+        uses: ./.github/actions/nextest
       - name: Run vcon-server's tests under AddressSanitizer
         env:
           # -Zbuild-std rebuilds the standard library instrumented, so a bad

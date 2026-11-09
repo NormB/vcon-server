@@ -490,5 +490,346 @@ class Lint(unittest.TestCase):
         self.assertEqual(dt.lint(), [])
 
 
+
+# ---------------------------------------------------------------------------
+# Release assets through the runner's pinned mirror. On 2026-11-09 the
+# release-*, upgrade and container scenarios failed at the pages' own
+# downloads of cosign and of a vcon-server release: github.com answered 504.
+# ---------------------------------------------------------------------------
+
+SHA_A = "a" * 64
+SHA_B = "b" * 64
+REL = "https://github.com/NormB/vcon-server/releases/download"
+
+
+def pins_text(*lines):
+    return "# a comment\n\n" + "".join(f"{l}\n" for l in lines)
+
+
+class Pins(unittest.TestCase):
+    def test_lines_of_a_hash_and_a_url_are_read(self):
+        pins = dt.load_pins(pins_text(f"{SHA_A}  {REL}/v0.4.0/SHA256SUMS.txt", f"{SHA_B}  {REL}/v0.4.0/x.tar.gz"))
+        self.assertEqual(pins, {f"{REL}/v0.4.0/SHA256SUMS.txt": SHA_A, f"{REL}/v0.4.0/x.tar.gz": SHA_B})
+
+    def test_a_short_hash_is_refused_with_its_line(self):
+        with self.assertRaisesRegex(dt.PageError, r"pins.txt:3: .*64 lowercase hex"):
+            dt.load_pins(pins_text(f"{SHA_A[:60]}  {REL}/v0.4.0/x"), "pins.txt")
+
+    def test_a_url_that_is_not_a_release_asset_is_refused(self):
+        with self.assertRaisesRegex(dt.PageError, "not a GitHub release asset"):
+            dt.load_pins(pins_text(f"{SHA_A}  https://example.com/x.tar.gz"))
+
+    def test_one_url_pinned_twice_is_refused(self):
+        with self.assertRaisesRegex(dt.PageError, "pinned twice"):
+            dt.load_pins(pins_text(f"{SHA_A}  {REL}/v1/x", f"{SHA_B}  {REL}/v1/x"))
+
+    def test_the_repository_pin_file_loads(self):
+        with open(dt.PINS_PATH, encoding="utf-8") as f:
+            pins = dt.load_pins(f.read())
+        self.assertIn(f"{REL}/v{dt.PREVIOUS}/SHA256SUMS.txt", pins)
+
+
+class Rewrite(unittest.TestCase):
+    BASE = "http://192.0.2.1:4242"
+
+    def test_a_release_url_in_a_curl_line_goes_to_the_mirror(self):
+        code = 'curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$VERSION/$ARCHIVE\n'
+        self.assertEqual(dt.rewrite_releases(code, self.BASE), f'curl -fsSLO {self.BASE}/NormB/vcon-server/releases/download/v$VERSION/$ARCHIVE\n')
+
+    def test_a_quoted_url_in_a_dockerfile_goes_to_the_mirror(self):
+        code = ' && curl -fsSLO "https://github.com/NormB/vcon-server/releases/download/v${VERSION}/${archive}" \\\n'
+        self.assertIn(f'"{self.BASE}/NormB/vcon-server/releases/download/v${{VERSION}}/${{archive}}"', dt.rewrite_releases(code, self.BASE))
+
+    def test_two_urls_on_one_line_both_go(self):
+        code = f"a {REL}/v1/x b {REL}/v1/y\n"
+        self.assertEqual(dt.rewrite_releases(code, self.BASE).count(self.BASE), 2)
+
+    def test_a_github_url_that_is_not_a_release_asset_is_kept(self):
+        code = "see https://github.com/NormB/vcon-server/blob/main/SECURITY.md and https://github.com/NormB/vcon-server/releases/latest\n"
+        self.assertEqual(dt.rewrite_releases(code, self.BASE), code)
+
+    def test_the_api_host_is_kept(self):
+        code = "curl https://api.github.com/repos/o/r/releases/download/x\n"
+        self.assertEqual(dt.rewrite_releases(code, self.BASE), code)
+
+
+def page_with(code):
+    return dt.parse(f"Download it:\n\n```sh\n{code}```\n", "docs/p.md")
+
+
+class PinLint(unittest.TestCase):
+    PINS = {f"{REL}/v0.4.0/vcon-server-0.4.0-x86_64-unknown-linux-gnu.tar.gz": SHA_A,
+            "https://github.com/o/t/releases/download/1.0/t-linux-amd64.zip": SHA_B}
+
+    def test_a_templated_url_with_a_matching_pin_passes(self):
+        blocks = page_with("curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$VERSION/vcon-server-$VERSION-$(uname -m)-unknown-linux-gnu.tar.gz\n")
+        self.assertEqual(dt.pin_problems(blocks, self.PINS), [])
+
+    def test_a_release_url_with_no_pin_is_found_with_its_place(self):
+        blocks = page_with("curl -fsSLO https://github.com/o/other/releases/download/v1/x.zip\n")
+        self.assertEqual(dt.pin_problems(blocks, self.PINS), ["docs/p.md:3: no pin in scripts/docs-test-pins.txt matches https://github.com/o/other/releases/download/v1/x.zip"])
+
+    def test_a_variable_does_not_stand_for_a_slash(self):
+        pins = {"https://github.com/o/t/releases/download/1.0/sub/t.zip": SHA_A}
+        blocks = page_with('curl -fsSL -O "https://github.com/o/t/releases/download/$V/t.zip"\n')
+        self.assertEqual(len(dt.pin_problems(blocks, pins)), 1)
+
+    def test_a_hash_on_the_page_that_is_not_a_pin_is_found(self):
+        blocks = page_with(f'T_SHA256={"c" * 64}\ncurl -fsSL -O "https://github.com/o/t/releases/download/$V/t-linux-$ARCH.zip"\n')
+        self.assertEqual(dt.pin_problems(blocks, self.PINS), [f"docs/p.md:3: sha256 {'c' * 64} on the page is not in scripts/docs-test-pins.txt; the page and the pins name one file"])
+
+    def test_a_hash_on_the_page_that_is_a_pin_passes(self):
+        blocks = page_with(f'T_SHA256={SHA_B}\ncurl -fsSL -O "https://github.com/o/t/releases/download/$V/t-linux-$ARCH.zip"\n')
+        self.assertEqual(dt.pin_problems(blocks, self.PINS), [])
+
+
+class LintHoldsThePins(unittest.TestCase):
+    def test_lint_finds_the_pages_downloads_when_nothing_is_pinned(self):
+        saved = dt.read_pins
+        dt.read_pins = lambda: {}
+        try:
+            problems = dt.lint()
+        finally:
+            dt.read_pins = saved
+        self.assertTrue(any("docs/install.md" in p and "no pin in scripts/docs-test-pins.txt matches" in p for p in problems), problems)
+
+
+class ReleasePins(unittest.TestCase):
+    PINS = {f"{REL}/v0.4.0/SHA256SUMS.txt": SHA_A}
+
+    def test_a_pinned_release_passes(self):
+        self.assertEqual(dt.release_pin_problems({"VERSION": "0.4.0"}, self.PINS), [])
+
+    def test_a_release_with_no_pins_is_named_with_the_fix(self):
+        self.assertEqual(dt.release_pin_problems({"NEW_VERSION": "0.4.1"}, self.PINS),
+                         ["NEW_VERSION=0.4.1 has no pins in scripts/docs-test-pins.txt; add its assets as the development page says under \"Pinned tool downloads\""])
+
+    def test_a_binary_under_test_is_not_a_release(self):
+        self.assertEqual(dt.release_pin_problems({"NEW": "/docs-test/vcon-server", "VERSION": "0.4.0"}, self.PINS), [])
+
+
+class Upstream:
+    """A local stand-in for github.com that answers each path from a list."""
+
+    def __init__(self):
+        import http.server
+        import threading
+        self.plans, self.hits = {}, []
+        outer = self
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                outer.hits.append(self.path)
+                plan = outer.plans.get(self.path, [(404, b"")])
+                status, body = plan.pop(0) if len(plan) > 1 else plan[0]
+                self.send_response(status)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+
+    def stop(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+def get(url):
+    import urllib.error
+    import urllib.request
+    try:
+        with urllib.request.urlopen(url, timeout=30) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+
+
+ASSET = "/o/t/releases/download/v1/t.zip"
+BYTES = b"the pinned asset\n" * 32
+
+
+class Mirror(unittest.TestCase):
+    def setUp(self):
+        import hashlib
+        self.cache = tempfile.mkdtemp(prefix="docs-test-mirror-")
+        self.sha = hashlib.sha256(BYTES).hexdigest()
+        self.calls = []
+        self.rc = 0
+
+    def tearDown(self):
+        if getattr(self, "mirror", None):
+            self.mirror.stop()
+        shutil.rmtree(self.cache, ignore_errors=True)
+
+    def fake_fetch(self, url, sha, dest):
+        self.calls.append((url, sha, dest))
+        if self.rc == 0:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "wb") as f:
+                f.write(BYTES)
+        return self.rc
+
+    def start(self, fetch=None, upstream="https://github.com"):
+        pins = {f"https://github.com{ASSET}": self.sha}
+        self.mirror = dt.Mirror(pins, self.cache, host="127.0.0.1", upstream=upstream, fetch=fetch or self.fake_fetch)
+        return self.mirror.start()
+
+    def test_a_pinned_asset_is_fetched_from_its_github_url_and_served(self):
+        base = self.start()
+        self.assertEqual(get(base + ASSET), (200, BYTES))
+        url, sha, dest = self.calls[0]
+        self.assertEqual((url, sha), (f"https://github.com{ASSET}", self.sha))
+        self.assertTrue(dest.startswith(self.cache + os.sep))
+
+    def test_an_unpinned_asset_answers_404_naming_the_pin_file(self):
+        base = self.start()
+        code, body = get(base + "/o/t/releases/download/v1/other.zip")
+        self.assertEqual(code, 404)
+        self.assertIn(b"scripts/docs-test-pins.txt", body)
+        self.assertEqual(self.calls, [])
+
+    def test_a_permanent_refusal_upstream_answers_404(self):
+        self.rc = 4
+        self.assertEqual(get(self.start() + ASSET)[0], 404)
+
+    def test_an_outage_upstream_answers_504(self):
+        self.rc = 1
+        self.assertEqual(get(self.start() + ASSET)[0], 504)
+
+    def test_bytes_that_are_not_the_pin_answer_502(self):
+        self.rc = 3
+        self.assertEqual(get(self.start() + ASSET)[0], 502)
+
+    def test_a_path_that_climbs_out_is_refused_without_a_fetch(self):
+        base = self.start()
+        import http.client
+        c = http.client.HTTPConnection(base.removeprefix("http://"), timeout=10)
+        c.request("GET", "/o/t/releases/download/../../../../etc/passwd")
+        self.assertEqual(c.getresponse().status, 400)
+        self.assertEqual(self.calls, [])
+
+    def test_a_path_that_is_not_a_release_asset_is_refused_without_a_fetch(self):
+        self.assertEqual(get(self.start() + "/o/t/blob/main/x")[0], 404)
+        self.assertEqual(self.calls, [])
+
+    def test_each_request_checks_the_cache_again(self):
+        base = self.start()
+        get(base + ASSET)
+        get(base + ASSET)
+        self.assertEqual(len(self.calls), 2)
+
+    def test_through_fetch_pinned_an_outage_of_two_504s_is_ridden_out(self):
+        up = Upstream()
+        try:
+            up.plans[ASSET] = [(504, b""), (504, b""), (200, BYTES)]
+            fetch = dt.fetch_pinned_with(["--first-delay", "0.01", "--max-delay", "0.02", "--budget", "5"])
+            base = self.start(fetch=fetch, upstream=up.base)
+            self.assertEqual(get(base + ASSET), (200, BYTES))
+            self.assertEqual(up.hits.count(ASSET), 3)
+        finally:
+            up.stop()
+
+    def test_through_fetch_pinned_a_cached_asset_needs_no_upstream(self):
+        up = Upstream()
+        up.plans[ASSET] = [(200, BYTES)]
+        fetch = dt.fetch_pinned_with(["--first-delay", "0.01", "--max-delay", "0.02", "--budget", "0.05"])
+        base = self.start(fetch=fetch, upstream=up.base)
+        self.assertEqual(get(base + ASSET)[0], 200)
+        up.stop()
+        self.assertEqual(get(base + ASSET), (200, BYTES))
+
+    def test_through_fetch_pinned_substituted_bytes_answer_502(self):
+        up = Upstream()
+        try:
+            up.plans[ASSET] = [(200, b"not it")]
+            base = self.start(fetch=dt.fetch_pinned_with([]), upstream=up.base)
+            self.assertEqual(get(base + ASSET)[0], 502)
+        finally:
+            up.stop()
+
+
+class Bridge(unittest.TestCase):
+    def test_the_gateway_docker_reports_is_the_mirror_host(self):
+        self.assertEqual(dt.mirror_host("192.0.2.1\n"), "192.0.2.1")
+
+    def test_no_gateway_is_an_error(self):
+        with self.assertRaisesRegex(dt.PageError, "bridge network"):
+            dt.mirror_host("\n")
+
+    def test_a_gateway_that_is_not_an_address_is_an_error(self):
+        with self.assertRaisesRegex(dt.PageError, "bridge network"):
+            dt.mirror_host("<no value>\n")
+
+
+class Images(unittest.TestCase):
+    def test_a_scenario_image_resolves_to_its_digest(self):
+        self.assertRegex(dt.pinned_image("debian:trixie-slim"), r"^debian:trixie-slim@sha256:[0-9a-f]{64}$")
+
+    def test_an_image_with_no_pin_is_an_error(self):
+        with self.assertRaisesRegex(dt.PageError, "no digest pinned for alpine:3"):
+            dt.pinned_image("alpine:3")
+
+    def test_every_scenario_image_is_pinned(self):
+        for s in dt.SCENARIOS:
+            if s.where not in ("host", "systemd"):
+                dt.pinned_image(s.where)
+
+    def test_the_systemd_image_builds_from_a_pinned_digest(self):
+        self.assertIn(f"FROM {dt.pinned_image('debian:trixie-slim')}\n", dt.SYSTEMD_DOCKERFILE)
+
+    def test_the_images_a_page_builds_from_are_named(self):
+        blocks = dt.parse("Save it:\n\n<!-- docs-test: file Dockerfile -->\n```dockerfile\nFROM debian:trixie-slim AS download\nRUN x\nFROM download AS check\nFROM debian:trixie-slim\n```\n", "p.md")
+        self.assertEqual(dt.base_images(blocks), ["debian:trixie-slim"])
+
+
+class Pull(unittest.TestCase):
+    def runner(self, fails):
+        calls = []
+
+        def run(*args, **kw):
+            calls.append(args)
+            ok = not (args[0] == "pull" and sum(1 for c in calls if c[0] == "pull") <= fails)
+            return subprocess.CompletedProcess(args, 0 if ok else 1, "", "" if ok else "toomanyrequests")
+        return run, calls
+
+    def test_a_pull_that_fails_twice_then_works_is_retried_and_tagged(self):
+        run, calls = self.runner(2)
+        slept = []
+        dt.pull_with_retry("debian:trixie-slim", run=run, sleep=slept.append)
+        self.assertEqual([c[0] for c in calls], ["pull", "pull", "pull", "tag"])
+        self.assertEqual(calls[-1], ("tag", dt.pinned_image("debian:trixie-slim"), "debian:trixie-slim"))
+        self.assertEqual(slept, [5, 10])
+
+    def test_a_pull_that_never_works_is_an_error_naming_the_image(self):
+        run, calls = self.runner(99)
+        with self.assertRaisesRegex(dt.PageError, r"debian:trixie-slim@sha256:\S+ could not be pulled after 8 attempts: toomanyrequests"):
+            dt.pull_with_retry("debian:trixie-slim", run=run, sleep=lambda s: None)
+
+    def test_a_first_pull_that_works_does_not_wait(self):
+        run, calls = self.runner(0)
+        slept = []
+        dt.pull_with_retry("fedora:44", run=run, sleep=slept.append)
+        self.assertEqual(slept, [])
+
+
+class Prelude(unittest.TestCase):
+    def scenario(self, where, tags):
+        return dt.Scenario("x", where, frozenset(tags), ("install.md",), binary=False)
+
+    def test_an_apt_scenario_in_a_container_retries_apt_downloads(self):
+        self.assertIn('Acquire::Retries "10";', dt.runner_prelude(self.scenario("debian:trixie-slim", {"apt"})))
+
+    def test_a_host_scenario_changes_nothing_on_the_host(self):
+        self.assertEqual(dt.runner_prelude(self.scenario("host", {"docker"})), "")
+
+    def test_a_dnf_scenario_gets_no_apt_setting(self):
+        self.assertEqual(dt.runner_prelude(self.scenario("fedora:44", {"dnf"})), "")
+
+
 if __name__ == "__main__":
     unittest.main()

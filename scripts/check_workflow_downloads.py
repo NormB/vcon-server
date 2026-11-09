@@ -13,6 +13,21 @@ workflow, composite action and shell script:
 
   dnf / yum / microdnf install                             retried, with dnf clean metadata between tries
 
+A release asset (a github.com/<owner>/<repo>/releases/download/ URL) is
+more than a download: it is a pinned tool. Each one goes through ONE rule,
+.github/actions/pinned-download (cached by name, version and sha256) or
+scripts/fetch-pinned.sh (which checks the sha256 of every download and every
+restored file, and retries an outage for up to five minutes). On 2026-11-08
+and 2026-11-09 github.com answered release downloads with HTTP 504 for most
+of an hour, and main's CI went red at every job with a one-curl install.
+So a step that names a release asset and runs curl or wget, or names it
+without that action or that script, is refused; a shell script that names
+one may not run curl or wget and must call fetch-pinned.sh. A cache entry
+is saved only on main (actions/cache/save with a main-only `if:`; never the
+combined actions/cache), and the action keeps its one-rule shape. Fewer
+than MIN_RELEASE_DOWNLOADS release downloads through the rule fails too, so
+a reading that lost the steps cannot pass.
+
 dnf's own retries cover a failed download, not a mirror that serves an
 empty repomd.xml (a parse error, seen on 2026-10-28 in Release's
 almalinux:9 job), so a retry must start again from fresh metadata.
@@ -89,6 +104,152 @@ def unretried(path, text):
     return problems
 
 
+RELEASE_ASSET = re.compile(r"/releases/download(?:/|\b)")
+FETCHER = re.compile(r"\b(?:curl|wget)\b")
+# In a shell script, curl or wget as a command: at the start, after a
+# separator or "$(", or after a shell keyword. Not a word in a pattern.
+FETCH_COMMAND = re.compile(r"(?:^|[;&|(]\s*|\$\(\s*|\b(?:then|do|else|exec|time)\s+)(?:curl|wget)\s")
+PINNED_ACTION = re.compile(r"^\s*(?:-\s+)?uses:\s*\./\.github/actions/pinned-download\s*(?:#.*)?$")
+STEP_KEY = re.compile(r"^(?P<indent>\s*)-\s+\S")
+STEPS_KEY = re.compile(r"^(?P<indent>\s*)steps\s*:\s*$")
+# The workflows' release downloads when this rule was written: DuckDB twice,
+# MinIO, cargo-llvm-cov, cargo-deny, Zola twice, resvg, cargo-fuzz and
+# cargo-cyclonedx. cargo-nextest goes through .github/actions/nextest,
+# whose URL scripts/nextest.sh builds, so no step names it.
+MIN_RELEASE_DOWNLOADS = 10
+
+
+def _code(line):
+    """A line that is a command or a key, not a comment or a step's name."""
+    s = line.strip()
+    return bool(s) and not s.startswith("#") and not re.match(r"-?\s*name\s*:", s)
+
+
+def steps(text):
+    """(first line number, lines) for each item of every `steps:` list."""
+    out = []
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        m = STEPS_KEY.match(lines[i])
+        i += 1
+        if not m:
+            continue
+        item = None  # the column of this list's "-"
+        current = None
+        while i < len(lines):
+            line = lines[i]
+            if not line.strip() or line.strip().startswith("#"):
+                if current is not None:
+                    current[1].append(line)
+                i += 1
+                continue
+            indent = len(line) - len(line.lstrip(" "))
+            d = STEP_KEY.match(line)
+            if item is None and d:
+                item = len(d.group("indent"))
+            if item is None or indent < item:
+                break
+            if indent == item and d:
+                current = (i + 1, [line])
+                out.append(current)
+            elif current is not None:
+                current[1].append(line)
+            i += 1
+    return out
+
+
+def release_problems(path, text):
+    """(problems, how many steps fetch a release asset through the rule)."""
+    problems, ok = [], 0
+    for n, body in steps(text):
+        code = [l for l in body if _code(l)]
+        if not any(RELEASE_ASSET.search(l) for l in code):
+            continue
+        if any(FETCHER.search(l) for l in code):
+            problems.append(f"{path}:{n}: a release asset fetched with curl or wget, not through .github/actions/pinned-download or scripts/fetch-pinned.sh")
+        elif any(PINNED_ACTION.match(l) for l in code) or any("fetch-pinned.sh" in l for l in code):
+            ok += 1
+        else:
+            problems.append(f"{path}:{n}: a release asset named outside .github/actions/pinned-download and scripts/fetch-pinned.sh")
+    return problems, ok
+
+
+def script_release_problems(path, text):
+    """A shell script that names a release asset fetches it only through
+    scripts/fetch-pinned.sh."""
+    code = [(n, l) for n, l in logical_lines(text) if _code(l)]
+    if not any(RELEASE_ASSET.search(l) for _, l in code):
+        return []
+    problems = [
+        f"{path}:{n}: curl or wget in a script that names a release asset; fetch it with scripts/fetch-pinned.sh"
+        for n, l in code
+        if FETCH_COMMAND.search(l.strip()) and "fetch-pinned.sh" not in l
+    ]
+    if not any("fetch-pinned.sh" in l for _, l in code):
+        problems.append(f"{path}: names a release asset and never calls scripts/fetch-pinned.sh")
+    return problems
+
+
+MAIN_ONLY = "github.ref == 'refs/heads/main'"
+
+
+def cache_problems(path, text):
+    """actions/cache entries are saved only on main."""
+    problems = []
+    for n, body in steps(text):
+        code = [l for l in body if _code(l)]
+        if any(re.search(r"\buses:\s*actions/cache@", l) for l in code):
+            problems.append(f"{path}:{n}: actions/cache saves on every branch; restore with actions/cache/restore, and save with actions/cache/save only on main")
+        if any(re.search(r"\buses:\s*actions/cache/save@", l) for l in code):
+            cond = [l for l in code if re.match(r"\s*(?:-\s+)?if\s*:", l)]
+            if not any(MAIN_ONLY in l for l in cond):
+                problems.append(f"{path}:{n}: actions/cache/save without `if: ... {MAIN_ONLY}`")
+    return problems
+
+
+def _value(body, key):
+    for l in body:
+        m = re.match(rf"\s*(?:-\s+)?{key}\s*:\s*(.*?)\s*$", l)
+        if m:
+            return m.group(1)
+    return None
+
+
+def pinned_action_problems(text):
+    """.github/actions/pinned-download keeps its one-rule shape."""
+    problems = []
+    found = steps(text)
+
+    def using(name):
+        return [b for _, b in found if any(re.search(rf"\buses:\s*actions/cache/{name}@", l) for l in b if _code(l))]
+
+    restore, save = using("restore"), using("save")
+    fetch = [b for _, b in found if any("fetch-pinned.sh" in l for l in b if _code(l))]
+    if len(restore) != 1 or len(save) != 1:
+        problems.append("the action needs exactly one actions/cache/restore step and one actions/cache/save step")
+    if not fetch:
+        problems.append("no step runs scripts/fetch-pinned.sh")
+    if problems:
+        return problems
+    key = _value(restore[0], "key") or ""
+    if not all(f"${{{{ inputs.{k} }}}}" in key for k in ("name", "version", "sha256")):
+        problems.append("the cache key does not name inputs.name, inputs.version and inputs.sha256")
+    if key != (_value(save[0], "key") or "") or _value(restore[0], "path") != _value(save[0], "path"):
+        problems.append("the restore and save steps use different keys")
+    if _value(fetch[0], "if") is not None:
+        problems.append("the fetch-pinned.sh step has an if:, so a restored file could go unchecked")
+    if "cache-hit != 'true'" not in (_value(save[0], "if") or ""):
+        problems.append("the save runs after a cache hit too; an entry is never overwritten")
+    return problems
+
+
+def release_downloads(root):
+    """How many workflow and action steps fetch a release asset through the rule."""
+    root = pathlib.Path(root)
+    return sum(release_problems("", p.read_text(encoding="utf-8"))[1] for p in files(root) if p.suffix in (".yml", ".yaml"))
+
+
 def files(root):
     root = pathlib.Path(root)
     found = sorted((root / ".github/workflows").glob("*.y*ml"))
@@ -101,7 +262,24 @@ def check(root):
     root = pathlib.Path(root)
     problems = []
     for path in files(root):
-        problems += unretried(path.relative_to(root).as_posix(), path.read_text(encoding="utf-8"))
+        rel, text = path.relative_to(root).as_posix(), path.read_text(encoding="utf-8")
+        problems += unretried(rel, text)
+        if path.suffix == ".sh":
+            # A test script drives a script against file:// fixtures: it
+            # names a release URL to check one, and fetches none.
+            if not path.name.startswith("test-"):
+                problems += script_release_problems(rel, text)
+        else:
+            problems += release_problems(rel, text)[0]
+            problems += cache_problems(rel, text)
+    action = root / ".github/actions/pinned-download/action.yml"
+    if action.is_file():
+        problems += [f"{action.relative_to(root).as_posix()}: {p}" for p in pinned_action_problems(action.read_text(encoding="utf-8"))]
+    else:
+        problems.append(".github/actions/pinned-download/action.yml is missing: every release asset goes through it or scripts/fetch-pinned.sh")
+    count = release_downloads(root)
+    if count < MIN_RELEASE_DOWNLOADS:
+        problems.append(f"found {count} release downloads through the one rule; expected at least {MIN_RELEASE_DOWNLOADS}. A reading that lost the steps cannot pass")
     return problems
 
 

@@ -57,9 +57,10 @@ in a process of its own and ends a test still running at the deadline in
 reported as `SLOW` by name, and after 3 minutes it is ended and fails as
 `TIMEOUT`. `cargo test` has no such deadline, so one hung test would hang the
 run. `scripts/nextest.sh` pins nextest's version; `scripts/nextest.sh install`
-downloads that release for x86_64 or aarch64 Linux, checks it against its
-pinned SHA-256 and puts it in cargo's `bin` directory, and the commit hook
-refuses to run another version. nextest does not run doc tests, so
+downloads that release for x86_64 or aarch64 Linux through
+`scripts/fetch-pinned.sh` (see [pinned tool downloads](#pinned-tool-downloads)),
+which checks it against its pinned SHA-256, and puts it in cargo's `bin`
+directory, and the commit hook refuses to run another version. nextest does not run doc tests, so
 `cargo test --doc` runs those. Arguments after `run` are nextest's, which
 takes cargo's package and target options and a test-name filter, as
 `cargo test` does.
@@ -400,6 +401,31 @@ under test. The release scenarios download the release that the install page
 names. Until that release is published, they download the newest published
 release and say so.
 
+The runner keeps an outage elsewhere from failing a page whose commands are
+right:
+
+- A GitHub release asset a step downloads, such as a vcon-server release,
+  cosign, RustFS, MinIO or DuckDB, comes through the runner's mirror. The
+  mirror is an HTTP server on Docker's bridge address
+  (`docker network inspect bridge`). The runner rewrites the step's
+  `https://github.com/<owner>/<repo>/releases/download/` URL to the
+  mirror's, and the mirror fetches that exact github.com URL with
+  `scripts/fetch-pinned.sh`, checked against its sha256 in
+  `scripts/docs-test-pins.txt`. A URL that the release does not have still
+  fails the step, because the mirror answers `404` as github.com does.
+  `DOCS_TEST_PINNED` names the directory the mirror keeps the files in; CI
+  restores it from the actions cache and saves it on `main`.
+- Each image a scenario runs in, and each image a page builds `FROM`, is
+  pinned by digest in `IMAGES` in `scripts/docs_test.py` and pulled with
+  retries; an image a page builds from is then tagged with the name the page
+  uses.
+- In a container with apt, the runner sets `Acquire::Retries "10"` before
+  the first page, so apt retries each download with its own growing delay.
+
+`lint` also fails on a page that downloads a release asset no line of
+`scripts/docs-test-pins.txt` matches, and on a sha256 written on such a page
+that is not one of the pins.
+
 ```sh
 python3 -I scripts/test_docs_test.py                    # the runner's own tests
 python3 -I scripts/docs_test.py lint                    # the rules every tested page keeps
@@ -436,7 +462,122 @@ minutes), and for an hour in all each Monday
 (`.github/workflows/clusterfuzzlite.yml`). Each action and
 each downloaded tool is pinned by commit or by sha256; for actions, the scan
 job and the commit hook check it (see
-[adding a GitHub Action](#adding-a-github-action)).
+[adding a GitHub Action](#adding-a-github-action)), and for release assets,
+`scripts/check_workflow_downloads.py` (see
+[pinned tool downloads](#pinned-tool-downloads)).
+
+## Pinned tool downloads
+
+CI installs cargo-nextest, DuckDB, MinIO, cargo-llvm-cov, cargo-deny, Zola,
+resvg, cargo-fuzz and cargo-cyclonedx from GitHub release assets, and the
+how-to scenarios download vcon-server releases, cosign, RustFS, MinIO, mc and
+DuckDB. Each one is pinned by version and by sha256.
+
+On 2026-11-08, and again on 2026-11-09 from about 05:15Z, github.com
+answered release downloads with HTTP 504 for most of an hour. Each install
+step was one `curl` with about 25 seconds of retries, so main's CI on
+`2cb225a` failed at every job that fetched one of them, while the code was
+green.
+
+Every such download now goes through one rule:
+
+- `scripts/fetch-pinned.sh` puts the pinned bytes of one file at a destination.
+  - It hashes a file already at the destination first. On a match it uses
+    that file and fetches nothing. On a mismatch it deletes the file with a
+    warning, then fetches it again.
+  - It retries HTTP 408, 429 and 5xx, timeouts, refused or reset connections
+    and transfers cut short. The delay starts at 5 seconds and doubles up to
+    60. It retries only while the time spent plus the next delay stays within
+    300 seconds, and curl's time limit bounds each attempt.
+  - Its exit status names the kind of failure: `1` is an outage, so a re-run
+    can pass; `3` is bytes that do not match the pin, so a re-run cannot; `4`
+    is a permanent refusal such as HTTP 404, so the URL or the version is
+    wrong; `2` is wrong arguments. Each error names the URL and the last HTTP
+    status or curl error.
+- `.github/actions/pinned-download` runs that script between an `actions/cache` restore and save. The key is
+  the tool's name, its version and its sha256. The script runs on every run,
+  so it hashes a restored file before anything uses it. The save runs only
+  after a miss, and only on `main`. The directory is the job's own
+  `runner.temp`.
+- `.github/actions/nextest` reads the version, sha256 and URL that
+  `scripts/nextest.sh pin` prints, gets the archive through
+  `pinned-download`, and runs `scripts/nextest.sh install`, which checks it
+  again.
+- `release.yml` runs the script for cargo-cyclonedx without the cache: a
+  release runs on a tag, and a cache entry a tag run saves is readable only
+  by that tag.
+- The how-to runner's mirror fetches each asset a page downloads with the
+  same script (see [the how-to pages are tested](#the-how-to-pages-are-tested)).
+- `scripts/check_workflow_downloads.py`, run by CI's scan job and the commit
+  hook, fails a workflow or action step that names a `releases/download/`
+  URL and does not go through the action or the script, a step that also
+  runs `curl` or `wget` on one, and a script (other than a `scripts/test-*.sh`
+  test) that names one and runs `curl` or `wget`. It also fails the combined
+  `actions/cache` (which saves on every branch), an `actions/cache/save`
+  whose `if:` is not main-only, a `pinned-download` action whose key or
+  steps break the shape above, and a reading that finds fewer than 10
+  release downloads through the rule.
+- `scripts/test_fetch_pinned.py` drives the script against a local HTTP
+  server (504s, stalls, cut-short transfers, redirects, substituted bytes)
+  and `file://` fixtures.
+
+To bump a tool in a workflow:
+
+1. Change its `_VERSION` value. cargo-nextest's version and hashes are in
+   `scripts/nextest.sh`; cargo-fuzz's are in
+   `.github/actions/fuzz-setup/action.yml`.
+2. Read the new asset's sha256 from GitHub, which computes one for every
+   release asset:
+
+   ```sh
+   gh api repos/<owner>/<repo>/releases/tags/<tag> --jq '.assets[] | .name + " " + .digest'
+   ```
+
+   Where the release publishes a checksum file, compare the two.
+3. Put the hash in the matching `_SHA256` value. The new version and hash
+   are a new cache key, so the first run on `main` fetches and saves the
+   asset.
+
+To add a vcon-server release the how-to pages download, once it is
+published (before then the scenarios use the newest published release), add
+its four assets to `scripts/docs-test-pins.txt`: `SHA256SUMS.txt`,
+`SHA256SUMS.txt.sigstore.json` and the x86_64 and aarch64 archives. Read the
+hashes as in step 2, with `NormB/vcon-server` and the `v` tag, and check the
+archives' against the release's `SHA256SUMS.txt`:
+
+```sh
+gh release download v<version> --repo NormB/vcon-server -p SHA256SUMS.txt -O -
+```
+
+A run for a release with no pins stops before its first page and names the
+file. A third-party tool a page downloads takes the same steps, and the
+page's own hash for it must be the pin's, or `lint` fails.
+
+To bump an image the how-to scenarios use, read the digest of its
+multi-platform index, the `Digest:` line, and put it in `IMAGES` in
+`scripts/docs_test.py`:
+
+```sh
+docker buildx imagetools inspect debian:trixie-slim
+```
+
+During a download outage:
+
+- A step that fails with exit 1 from `fetch-pinned.sh` failed on the
+  network. Re-run it once a manual `curl` of the URL succeeds:
+
+  ```sh
+  curl -sS -o /dev/null -w '%{http_code}\n' -L "<the URL in the error>"
+  ```
+
+- A job whose asset is in the cache does not reach github.com, so an outage
+  reaches only pins that `main` has not yet saved.
+- An exit 3 means the bytes served differ from the pin. Do not re-run.
+  Download the asset and compare its hash with the release's own checksum
+  file before changing the pin.
+- A warning that a cached file does not match its pin names the entry.
+  Delete it with `gh cache delete <key>`, because an entry is never
+  overwritten.
 
 ## Adding a GitHub Action
 

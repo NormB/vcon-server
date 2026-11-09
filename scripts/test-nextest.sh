@@ -80,6 +80,40 @@ else ok; fi
 n=$(grep -cE '^ *(x86_64|aarch64)\) sha=[0-9a-f]{64} ;;$' "$here/nextest.sh" || true)
 [ "$n" = 2 ] && ok || bad "one SHA-256 for each of x86_64 and aarch64, found $n"
 
+# `pin` prints what .github/actions/nextest hands to the pinned-download
+# action: the version, the sha256, the URL and the file name, for this CPU.
+if bash "$here/nextest.sh" pin > "$work/pin" 2> "$work/err"; then
+  grep -qx "version=$pin" "$work/pin" && grep -qE '^sha256=[0-9a-f]{64}$' "$work/pin" \
+    && grep -qx "file=cargo-nextest-$pin-$(uname -m)-unknown-linux-gnu.tar.gz" "$work/pin" \
+    && [ "$(wc -l < "$work/pin")" = 4 ] && ok || bad "pin prints version=, sha256=, url= and file= lines, got: $(tr '\n' ' ' < "$work/pin")"
+  file=$(sed -n 's/^file=//p' "$work/pin")
+  grep -qx "url=https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-$pin/$file" "$work/pin" \
+    && ok || bad "pin's url is the release asset of the pinned version"
+  sha=$(sed -n 's/^sha256=//p' "$work/pin")
+  grep -qE "^ *$(uname -m)\) sha=$sha ;;$" "$here/nextest.sh" && ok || bad "pin's sha256 is the one pinned for $(uname -m)"
+else bad "pin succeeds"; bad "pin's url"; bad "pin's sha256"; fi
+
+# install goes through scripts/fetch-pinned.sh: a download that does not
+# match the pin exits 3 (do not re-run), a missing asset exits 4 (fix the
+# pin), and each says so.
+rc=0; NEXTEST_DOWNLOAD="file://$work/dl" bash "$here/nextest.sh" install "$work/dest" > /dev/null 2> "$work/err" || rc=$?
+[ "$rc" = 3 ] && grep -q "do NOT re-run" "$work/err" && ok || bad "a download with another SHA-256 exits 3 and says not to re-run (exit $rc)"
+rc=0; NEXTEST_DOWNLOAD="file://$work/absent" bash "$here/nextest.sh" install "$work/dest" > /dev/null 2> "$work/err" || rc=$?
+[ "$rc" = 4 ] && ok || bad "a missing release asset exits 4 (exit $rc)"
+
+# A file already in NEXTEST_ARCHIVE_DIR (a restored cache entry) that does
+# not match the pin is deleted, not installed.
+mkdir -p "$work/cache"
+cp "$work/dl/cargo-nextest-$pin/cargo-nextest-$pin-$(uname -m)-unknown-linux-gnu.tar.gz" "$work/cache/"
+rc=0; NEXTEST_ARCHIVE_DIR="$work/cache" NEXTEST_DOWNLOAD="file://$work/absent" bash "$here/nextest.sh" install "$work/dest" > /dev/null 2> "$work/err" || rc=$?
+if [ "$rc" = 0 ]; then bad "a cached archive with another SHA-256 is refused"
+elif [ -e "$work/cache/cargo-nextest-$pin-$(uname -m)-unknown-linux-gnu.tar.gz" ]; then bad "the mismatched cached archive is deleted"
+elif [ -e "$work/dest/cargo-nextest" ]; then bad "nothing is installed from a mismatched cache"
+else ok; fi
+
+# Nothing in this script fetches a release asset except fetch-pinned.sh.
+if grep -vE '^\s*#' "$here/nextest.sh" | grep -qE '\b(curl|wget)\b'; then bad "nextest.sh runs curl or wget itself"; else ok; fi
+
 if bash "$here/nextest.sh" frobnicate > /dev/null 2>&1; then bad "an unknown command is refused"; else ok; fi
 
 rm -f "$work/err"
