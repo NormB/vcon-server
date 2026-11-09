@@ -413,6 +413,10 @@ right:
   `scripts/fetch-pinned.sh`, checked against its sha256 in
   `scripts/docs-test-pins.txt`. A URL that the release does not have still
   fails the step, because the mirror answers `404` as github.com does.
+  Before the first step the runner fetches every pinned asset the steps can
+  name on this CPU, so the mirror answers each step at once: dnf gives up on
+  a server that sends less than 1000 bytes a second for 30 seconds, and
+  `fetch-pinned.sh` may wait out an outage for five minutes.
   `DOCS_TEST_PINNED` names the directory the mirror keeps the files in; CI
   restores it from the actions cache and saves it on `main`.
 - Each image a scenario runs in, and each image a page builds `FROM`, is

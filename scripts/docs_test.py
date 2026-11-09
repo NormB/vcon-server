@@ -42,7 +42,9 @@ fail a page whose commands are right:
   sha256 in scripts/docs-test-pins.txt, retried through an outage for up to
   five minutes, and kept in a cache (DOCS_TEST_PINNED, which CI restores and
   saves on main). A URL the release does not have still fails the step: the
-  mirror answers 404, as github.com does. On 2026-11-09 github.com answered
+  mirror answers 404, as github.com does. Each asset the steps can name is
+  fetched before the first step (prefetch), so the mirror answers a step at
+  once; dnf gives up on a server that sends nothing for 30 s. On 2026-11-09 github.com answered
   504 for most of an hour, and the release, upgrade and container scenarios
   failed at those downloads.
 - Each image is pinned by digest (IMAGES) and pulled with retries; an image
@@ -62,6 +64,7 @@ import dataclasses
 import ipaddress
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -676,6 +679,74 @@ class Mirror:
             self.httpd = None
 
 
+# dpkg's name for each CPU uname -m names.
+DPKG_ARCH = {"x86_64": "amd64", "aarch64": "arm64"}
+# NAME=value alone on its line, and NAME=value anywhere in a case arm.
+# A $( ... ) expansion in a value is taken whole, spaces and all.
+ASSIGNMENT = re.compile(r"(?m)^\s*([A-Z_][A-Z0-9_]*)=((?:\$\([^)]*\)|\S)+)\s*$")
+ARM_ASSIGNMENT = re.compile(r"\b([A-Z_][A-Z0-9_]*)=([^\s;]+)")
+NAMED = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _known_values(steps: list[Block], sets: dict, machine: str) -> dict:
+    """The values the steps give their variables, as far as reading them
+    shows: the arm of a case for this CPU first, then each NAME=value line,
+    the first one winning; the scenario's settings over both."""
+    values: dict = {}
+    for b in steps:
+        if b.kind != "sh":
+            continue
+        for arm in re.finditer(rf"(?ms)^\s*{re.escape(machine)}\)(.*?);;", b.code):
+            for name, value in ARM_ASSIGNMENT.findall(arm.group(1)):
+                values.setdefault(name, value.strip("\"'"))
+        for name, value in ASSIGNMENT.findall(b.code):
+            values.setdefault(name, value.strip("\"'"))
+    values.update(sets)
+    return values
+
+
+def _resolve(text: str, values: dict, machine: str) -> str:
+    """text with $(uname -m), $(dpkg --print-architecture) and each known
+    $NAME or ${NAME} put in; an unknown one is left as it is."""
+    for _ in range(5):
+        new = text.replace("$(uname -m)", machine).replace("$(dpkg --print-architecture)", DPKG_ARCH.get(machine, machine))
+        new = NAMED.sub(lambda m: values.get(m.group(1) or m.group(2), m.group(0)), new)
+        if new == text:
+            break
+        text = new
+    return text
+
+
+def prefetch_urls(steps: list[Block], sets: dict, pins: dict, machine: str) -> list[str]:
+    """The pinned assets the steps can download on this CPU: each step URL
+    with what is known put in, and each pin it then matches. What stays
+    unknown matches any pin, so nothing a step needs is left out."""
+    values = _known_values(steps, sets, machine)
+    found = set()
+    for b in steps:
+        for url in PAGE_RELEASE_URL.findall(b.code):
+            pattern = _template(_resolve(url, values, machine))
+            found.update(p for p in pins if pattern.match(p))
+    return sorted(found)
+
+
+def prefetch(mirror: "Mirror", urls: list[str]) -> list[tuple[str, int]]:
+    """Fetch each asset into the mirror's cache before the first step, four
+    at a time, so the mirror answers a step at once. A client such as dnf
+    gives up on a server that sends nothing for 30 s; fetch-pinned.sh may
+    wait out an outage for five minutes. A failure here is reported, not
+    fatal: the step that needs the asset asks again."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(url: str) -> tuple[str, int]:
+        status, _ = mirror.answer(url[len(GITHUB):])
+        print(f"docs-test: prefetched {url}: {'ok' if status == 200 else f'answer {status}'}", file=sys.stderr)
+        return url, status
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        return list(pool.map(one, urls))
+
+
 def mirror_host(inspect_output: str) -> str:
     """The address `docker network inspect bridge` reports for its gateway:
     the host as the containers, and a build's RUN steps, reach it."""
@@ -1037,6 +1108,7 @@ def run(scenario: Scenario, binary: str | None, keep: str | None) -> int:
             cache = os.environ.get("DOCS_TEST_PINNED") or os.path.join(work, "pinned")
             mirror = Mirror(pins, cache, mirror_host(gateway))
             base = mirror.start()
+            prefetch(mirror, prefetch_urls(steps, sets, pins, platform.machine()))
             print(f"docs-test: release assets come through the mirror at {base}, each fetched from github.com "
                   f"with scripts/fetch-pinned.sh and checked against {PINS_NAME}")
             steps = [dataclasses.replace(b, code=rewrite_releases(b.code, base)) for b in steps]

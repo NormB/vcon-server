@@ -753,6 +753,70 @@ class Mirror(unittest.TestCase):
             up.stop()
 
 
+PREFETCH_PINS = {
+    f"{REL}/v0.3.0/SHA256SUMS.txt": SHA_A,
+    f"{REL}/v0.4.0/SHA256SUMS.txt": SHA_A,
+    f"{REL}/v0.4.0/vcon-server-0.4.0-x86_64-unknown-linux-gnu.tar.gz": SHA_A,
+    f"{REL}/v0.4.0/vcon-server-0.4.0-aarch64-unknown-linux-gnu.tar.gz": SHA_A,
+    "https://github.com/sigstore/cosign/releases/download/v3.0.6/cosign_3.0.6_amd64.deb": SHA_B,
+    "https://github.com/sigstore/cosign/releases/download/v3.0.6/cosign_3.0.6_arm64.deb": SHA_B,
+    "https://github.com/minio/minio/releases/download/R1/minio.linux-amd64.R1": SHA_B,
+    "https://github.com/minio/minio/releases/download/R1/minio.linux-arm64.R1": SHA_B,
+}
+INSTALL_STEP = (
+    "VERSION=0.4.0\nARCHIVE=vcon-server-$VERSION-$(uname -m)-unknown-linux-gnu.tar.gz\n"
+    "curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$VERSION/$ARCHIVE\n"
+    "curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$VERSION/SHA256SUMS.txt\n"
+)
+
+
+class Prefetch(unittest.TestCase):
+    """Before the first step, the runner fetches each pinned asset a step
+    can name, so the mirror answers a step at once: on 2026-11-09 dnf gave
+    up on the mirror after 30 s under 1000 bytes/s while github.com was
+    slow (release-fedora, run of 18ff594)."""
+
+    def test_the_release_and_cpu_a_step_names_are_resolved(self):
+        urls = dt.prefetch_urls(page_with(INSTALL_STEP), {}, PREFETCH_PINS, "x86_64")
+        self.assertEqual(urls, [f"{REL}/v0.4.0/SHA256SUMS.txt", f"{REL}/v0.4.0/vcon-server-0.4.0-x86_64-unknown-linux-gnu.tar.gz"])
+
+    def test_the_scenario_s_release_wins_over_the_page_s(self):
+        urls = dt.prefetch_urls(page_with(INSTALL_STEP), {"VERSION": "0.3.0"}, PREFETCH_PINS, "x86_64")
+        self.assertEqual(urls, [f"{REL}/v0.3.0/SHA256SUMS.txt"])
+
+    def test_dpkg_s_architecture_name_is_resolved(self):
+        step = "COSIGN_DEB=cosign_3.0.6_$(dpkg --print-architecture).deb\ncurl -fsSLO https://github.com/sigstore/cosign/releases/download/v3.0.6/$COSIGN_DEB\n"
+        self.assertEqual(dt.prefetch_urls(page_with(step), {}, PREFETCH_PINS, "aarch64"),
+                         ["https://github.com/sigstore/cosign/releases/download/v3.0.6/cosign_3.0.6_arm64.deb"])
+
+    def test_a_case_arm_for_this_cpu_sets_its_variables(self):
+        step = ('MINIO_RELEASE=R1\ncase "$(uname -m)" in\n  x86_64) MINIO_ARCH=amd64\n    X=1 ;;\n  aarch64) MINIO_ARCH=arm64 ;;\nesac\n'
+                'curl -fsSL -o minio "https://github.com/minio/minio/releases/download/$MINIO_RELEASE/minio.linux-$MINIO_ARCH.$MINIO_RELEASE"\n')
+        self.assertEqual(dt.prefetch_urls(page_with(step), {}, PREFETCH_PINS, "x86_64"),
+                         ["https://github.com/minio/minio/releases/download/R1/minio.linux-amd64.R1"])
+
+    def test_a_variable_no_step_sets_matches_every_pin(self):
+        step = 'curl -fsSL -o minio "https://github.com/minio/minio/releases/download/R1/minio.linux-$ARCH.R1"\n'
+        self.assertEqual(len(dt.prefetch_urls(page_with(step), {}, PREFETCH_PINS, "x86_64")), 2)
+
+    def test_steps_with_no_release_url_prefetch_nothing(self):
+        self.assertEqual(dt.prefetch_urls(page_with("echo hello\n"), {}, PREFETCH_PINS, "x86_64"), [])
+
+    def test_a_failed_prefetch_is_reported_and_does_not_stop_the_run(self):
+        calls = []
+
+        def fetch(url, sha, dest):
+            calls.append(url)
+            return 1
+        m = dt.Mirror(PREFETCH_PINS, tempfile.mkdtemp(prefix="docs-test-prefetch-"), host="127.0.0.1", fetch=fetch)
+        try:
+            results = dt.prefetch(m, [f"{REL}/v0.4.0/SHA256SUMS.txt"])
+        finally:
+            shutil.rmtree(m.cache, ignore_errors=True)
+        self.assertEqual(results, [(f"{REL}/v0.4.0/SHA256SUMS.txt", 504)])
+        self.assertEqual(calls, [f"https://github.com/NormB/vcon-server/releases/download/v0.4.0/SHA256SUMS.txt"])
+
+
 class Bridge(unittest.TestCase):
     def test_the_gateway_docker_reports_is_the_mirror_host(self):
         self.assertEqual(dt.mirror_host("192.0.2.1\n"), "192.0.2.1")
