@@ -458,8 +458,12 @@ class Edge(Case):
         took = time.monotonic() - start
         self.assertEqual(r.returncode, 1, r.stderr)
         self.assertLess(took, 1.7 + 5)
-        # 0.2 + 0.4 + 0.4 + 0.4 = 1.4, and another 0.4 would pass 1.7: 5 attempts.
-        self.assertEqual(self.server.hits("/a"), 5)
+        # The delays are 0.2, 0.4, 0.4, 0.4 (1.4 s), and another 0.4 would
+        # pass 1.7, so at most 5 attempts. The budget counts the time the
+        # attempts take too, so a loaded machine fits fewer (CI's hooks job
+        # made 3 or 4 on 2026-11-09): the count is a bound, not a number.
+        self.assertGreaterEqual(self.server.hits("/a"), 2)
+        self.assertLessEqual(self.server.hits("/a"), 5)
 
     def test_a_destination_path_with_spaces_works(self):
         dest = self.dir / "a dir" / "the tool.tar.gz"

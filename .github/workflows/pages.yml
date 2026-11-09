@@ -60,25 +60,22 @@ jobs:
         with:
           ref: ${{ steps.ci.outputs.sha }}
           persist-credentials: false
-      - name: Get the pinned Zola
-        id: zola
-        uses: ./.github/actions/pinned-download
-        with:
-          name: zola
-          version: ${{ env.ZOLA_VERSION }}
-          sha256: ${{ env.ZOLA_SHA256 }}
-          url: https://github.com/getzola/zola/releases/download/v${{ env.ZOLA_VERSION }}/zola-v${{ env.ZOLA_VERSION }}-x86_64-unknown-linux-gnu.tar.gz
-          file: zola.tar.gz
       - name: Install Zola
-        env:
-          ARCHIVE: ${{ steps.zola.outputs.path }}
+        # This workflow runs on workflow_run, in main's context with main's
+        # cache scope, so it uses no actions cache: code it checks out must
+        # not write an entry main's jobs restore (CodeQL
+        # actions/cache-poisoning). fetch-pinned.sh still checks the sha256
+        # and rides out an outage.
         run: |
           set -euo pipefail
+          zola_archive="$RUNNER_TEMP/zola.tar.gz"
+          scripts/fetch-pinned.sh --sha256 "$ZOLA_SHA256" --dest "$zola_archive" \
+            --url "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
           # The tarball also carries LICENSE, LICENSE-MIT and man pages; take only
           # the binary, so the repository's own LICENSE-MIT is not overwritten.
-          tar xzf "$ARCHIVE" zola
+          tar xzf "$zola_archive" zola
           sudo install -m 0755 zola /usr/local/bin/zola
-          rm -f zola
+          rm -f zola "$zola_archive"
           zola --version
       - name: Download the test output of CI's run
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2

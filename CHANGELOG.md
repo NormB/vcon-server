@@ -55,8 +55,8 @@ All notable changes to this project are recorded here. The format follows
   a doubling delay for up to five minutes, and exits 1 for an outage, 3 for
   bytes that are not the pin and 4 for a permanent refusal.
   `scripts/check_workflow_downloads.py` refuses a step or script that
-  fetches a release asset another way, and an `actions/cache` save that is
-  not main-only. The how-to scenarios get each release asset a page
+  fetches a release asset another way, an `actions/cache` save that is
+  not main-only, and any cache in a workflow run by `workflow_run`. The how-to scenarios get each release asset a page
   downloads through a mirror in `scripts/docs_test.py` that fetches it the
   same way, against `scripts/docs-test-pins.txt`; their images are pinned
   by digest and pulled with retries, and apt in their containers retries

@@ -506,6 +506,10 @@ Every such download now goes through one rule:
 - `release.yml` runs the script for cargo-cyclonedx without the cache: a
   release runs on a tag, and a cache entry a tag run saves is readable only
   by that tag.
+- `pages.yml` runs the script for Zola without the cache. It runs on
+  `workflow_run`, in `main`'s context with `main`'s cache scope, so code it
+  checks out must not write an entry that `main`'s jobs restore (CodeQL's
+  `actions/cache-poisoning`).
 - The how-to runner's mirror fetches each asset a page downloads with the
   same script (see [the how-to pages are tested](#the-how-to-pages-are-tested)).
 - `scripts/check_workflow_downloads.py`, run by CI's scan job and the commit
@@ -514,7 +518,8 @@ Every such download now goes through one rule:
   runs `curl` or `wget` on one, and a script (other than a `scripts/test-*.sh`
   test) that names one and runs `curl` or `wget`. It also fails the combined
   `actions/cache` (which saves on every branch), an `actions/cache/save`
-  whose `if:` is not main-only, a `pinned-download` action whose key or
+  whose `if:` is not main-only, any cache in a workflow run by
+  `workflow_run`, a `pinned-download` action whose key or
   steps break the shape above, and a reading that finds fewer than 10
   release downloads through the rule.
 - `scripts/test_fetch_pinned.py` drives the script against a local HTTP

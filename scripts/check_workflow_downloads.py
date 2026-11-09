@@ -24,7 +24,8 @@ So a step that names a release asset and runs curl or wget, or names it
 without that action or that script, is refused; a shell script that names
 one may not run curl or wget and must call fetch-pinned.sh. A cache entry
 is saved only on main (actions/cache/save with a main-only `if:`; never the
-combined actions/cache), and the action keeps its one-rule shape. Fewer
+combined actions/cache), a workflow run by workflow_run uses no cache, and
+the action keeps its one-rule shape. Fewer
 than MIN_RELEASE_DOWNLOADS release downloads through the rule fails too, so
 a reading that lost the steps cannot pass.
 
@@ -194,11 +195,20 @@ def script_release_problems(path, text):
 MAIN_ONLY = "github.ref == 'refs/heads/main'"
 
 
+WORKFLOW_RUN = re.compile(r"^\s*workflow_run\s*:")
+
+
 def cache_problems(path, text):
-    """actions/cache entries are saved only on main."""
+    """actions/cache entries are saved only on main, and a workflow run by
+    workflow_run, which runs in main's context with main's cache scope, uses
+    no cache at all: code it checks out could write an entry that main's
+    jobs then restore (CodeQL actions/cache-poisoning)."""
     problems = []
+    privileged = any(WORKFLOW_RUN.match(l) for l in text.splitlines() if _code(l))
     for n, body in steps(text):
         code = [l for l in body if _code(l)]
+        if privileged and any(re.search(r"\buses:\s*(?:actions/cache(?:/restore|/save)?@|\./\.github/actions/(?:pinned-download|nextest)\b)", l) for l in code):
+            problems.append(f"{path}:{n}: a workflow run by workflow_run shares main's cache; fetch with scripts/fetch-pinned.sh, without the cache")
         if any(re.search(r"\buses:\s*actions/cache@", l) for l in code):
             problems.append(f"{path}:{n}: actions/cache saves on every branch; restore with actions/cache/restore, and save with actions/cache/save only on main")
         if any(re.search(r"\buses:\s*actions/cache/save@", l) for l in code):

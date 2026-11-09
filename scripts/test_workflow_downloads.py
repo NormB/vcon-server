@@ -251,6 +251,30 @@ class CachePolicy(unittest.TestCase):
         self.assertEqual(cache(step(f"- uses: {RESTORE}", "  with:", "    path: x")), [])
 
 
+WORKFLOW_RUN = "on:\n  workflow_run:\n    workflows: [CI]\n    types: [completed]\njobs:\n  build:\n"
+
+
+class PrivilegedCache(unittest.TestCase):
+    """A workflow_run workflow runs in main's context with main's cache
+    scope; code it checks out must not write an entry main's jobs restore
+    (CodeQL actions/cache-poisoning, pages.yml, 2026-11-09)."""
+
+    def test_pinned_download_in_a_workflow_run_workflow_is_found(self):
+        text = WORKFLOW_RUN + step("- uses: ./.github/actions/pinned-download", "  with:", f"    url: {URL}")
+        self.assertEqual(cache(text, ".github/workflows/pages.yml"), [".github/workflows/pages.yml:8: a workflow run by workflow_run shares main's cache; fetch with scripts/fetch-pinned.sh, without the cache"])
+
+    def test_a_cache_restore_in_a_workflow_run_workflow_is_found(self):
+        self.assertEqual(len(cache(WORKFLOW_RUN + step(f"- uses: {RESTORE}", "  with:", "    path: x"))), 1)
+
+    def test_fetch_pinned_in_a_workflow_run_workflow_passes(self):
+        text = WORKFLOW_RUN + step("- name: Zola", f"  run: scripts/fetch-pinned.sh --url {URL} --sha256 x --dest z")
+        self.assertEqual(cache(text), [])
+
+    def test_workflow_run_named_in_a_comment_does_not_count(self):
+        text = "on:\n  # workflow_run:\n  push:\njobs:\n  b:\n" + step("- uses: ./.github/actions/pinned-download")
+        self.assertEqual(cache(text), [])
+
+
 ACTION = """runs:
   using: composite
   steps:
