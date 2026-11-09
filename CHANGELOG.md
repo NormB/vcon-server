@@ -40,6 +40,13 @@ All notable changes to this project are recorded here. The format follows
   directory, and `scripts/check-ignored-exports.sh`, run by the commit hook,
   refuses a tracked or staged one, including one added with `--force`.
 
+### Fixed
+
+- The how-to "Keep vCons in an S3 bucket" waited for RustFS or MinIO to
+  give any answer, then expected `403`; a service still starting answers
+  `503`, which ended the wait and failed the next step (CI's s3 scenario,
+  2026-11-09). Each wait now ends on the `403`.
+
 ## [0.4.0] - 2026-11-06
 
 ### Added

@@ -225,13 +225,14 @@ WantedBy=multi-user.target
 ```
 
 Start it, now and at each boot. RustFS answers a request without a
-signature with `403`, which shows that it listens:
+signature with `403` once it is ready; while it starts it can answer
+`503`, so the loop waits for the `403`:
 
 <!-- docs-test: only rustfs -->
 ```sh
 sudo systemctl daemon-reload
 sudo systemctl enable --now rustfs
-timeout 60 sh -c 'until curl -s -o /dev/null --cacert /usr/local/share/vcon-server/s3-ca.pem https://objects.example.com:9000/; do sleep 1; done'
+timeout 60 sh -c 'until [ "$(curl -s -o /dev/null -w "%{http_code}" --cacert /usr/local/share/vcon-server/s3-ca.pem https://objects.example.com:9000/)" = 403 ]; do sleep 1; done'
 curl -s -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/s3-ca.pem https://objects.example.com:9000/
 ```
 
@@ -347,13 +348,14 @@ WantedBy=multi-user.target
 ```
 
 Start it, now and at each boot. MinIO answers a request without a
-signature with `403`, which shows that it listens:
+signature with `403` once it is ready; while it starts it can answer
+`503`, so the loop waits for the `403`:
 
 <!-- docs-test: only minio -->
 ```sh
 sudo systemctl daemon-reload
 sudo systemctl enable --now minio
-timeout 60 sh -c 'until curl -s -o /dev/null --cacert /usr/local/share/vcon-server/s3-ca.pem https://objects.example.com:9000/; do sleep 1; done'
+timeout 60 sh -c 'until [ "$(curl -s -o /dev/null -w "%{http_code}" --cacert /usr/local/share/vcon-server/s3-ca.pem https://objects.example.com:9000/)" = 403 ]; do sleep 1; done'
 curl -s -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/s3-ca.pem https://objects.example.com:9000/
 ```
 
