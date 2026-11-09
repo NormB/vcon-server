@@ -15,16 +15,16 @@ CI runs every command on this page on each change. It installs the previous
 release, sets it up as [getting started](@/docs/getting-started.md) does,
 upgrades it to the server built from the change, and goes back again.
 
-## From 0.4.0: the secret-file rule
+## From 0.4.0 to 0.4.1: the secret-file rule
 
-After 0.4.0, every file that holds a secret is held to one rule: the master
+From 0.4.1, every file that holds a secret is held to one rule: the master
 key, the TLS key, the S3 and export secret access key files, the PostgreSQL
 password and client key, and the MCP stdio key file (see
 [secret files](@/docs/configuration.md#secret-files)). A file that other
 users may read, or that its group may change, or that another user owns, now
 stops the server at start, and stops each command that reads it. 0.4.0
 used such a file without a word. **This is a breaking change:** a host whose
-master key is `0644` starts under 0.4.0 and does not start after it.
+master key is `0644` starts under 0.4.0 and does not start under 0.4.1.
 
 Before you install the new binary, list the mode and the owner of each
 secret file the configuration names. The master key and the TLS key, as the
@@ -117,7 +117,7 @@ but do not install it yet. The commands use their own variable names, so
 they do not change the ones from install:
 
 ```sh
-NEW_VERSION=0.4.0
+NEW_VERSION=0.4.1
 NEW_ARCHIVE=vcon-server-$NEW_VERSION-$(uname -m)-unknown-linux-gnu.tar.gz
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/$NEW_ARCHIVE
 curl -fsSL -o SHA256SUMS-$NEW_VERSION.txt https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/SHA256SUMS.txt

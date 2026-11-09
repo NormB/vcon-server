@@ -6,6 +6,8 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-09
+
 ### Security
 
 - rmcp goes from 3.8.0 to 3.9.0 (RUSTSEC-2026-0462, GHSA-c9f9-cp8h-jcj5).
@@ -39,7 +41,7 @@ All notable changes to this project are recorded here. The format follows
   reader. **Upgrade note:** before installing, run
   `stat -c '%a %U %n'` on each secret file the configuration names, and
   `chmod 600` (or `chown` to the server's account) any that would be
-  refused; the Upgrade page's "From 0.4.0: the secret-file rule" has the
+  refused; the Upgrade page's "From 0.4.0 to 0.4.1: the secret-file rule" has the
   steps. For the `vcon-server` library, `KeyError` gains `Refused(String)`,
   and `TlsError` gains `KeyFile(String)`; neither enum is
   `#[non_exhaustive]`, so a `match` on either needs the new arm. A directory
@@ -459,7 +461,8 @@ All notable changes to this project are recorded here. The format follows
   stack and abort the server. `vcon::MAX_SIGNED_LAYERS`,
   `vcon::MAX_JSON_DEPTH` and `vcon::Rejection::TooDeep` name the limits.
 
-[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/NormB/vcon-server/releases/tag/v0.4.1
 [0.4.0]: https://github.com/NormB/vcon-server/releases/tag/v0.4.0
 [0.3.0]: https://github.com/NormB/vcon-server/releases/tag/v0.3.0
 [0.2.0]: https://github.com/NormB/vcon-server/releases/tag/v0.2.0

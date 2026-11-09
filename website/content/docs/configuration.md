@@ -38,7 +38,7 @@ vcon-server: the TLS certificate or key cannot be used: tls.key /etc/vcon-server
 
 Releases up to 0.4.0 checked only the two `catalog.postgres` files, and
 allowed a group to write them. To check a host before an upgrade, see
-[upgrade](@/docs/upgrading.md#from-0-4-0-the-secret-file-rule).
+[upgrade](@/docs/upgrading.md#from-0-4-0-to-0-4-1-the-secret-file-rule).
 
 ## Keys
 
