@@ -106,8 +106,11 @@ fn the_associated_data_is_written_out_field_by_field() {
 
 #[test]
 fn a_sealed_value_matches_the_vector_computed_independently() {
+    let nonce: [u8; 12] = hex("555555555555555555555555")
+        .try_into()
+        .expect("12 bytes");
     let blob =
-        seal_column_with_nonce(&keys(), &CTX, [0x55; 12], b"application/vcon+json").expect("seals");
+        seal_column_with_nonce(&keys(), &CTX, nonce, b"application/vcon+json").expect("seals");
     assert_eq!(
         blob,
         hex(concat!(
@@ -397,8 +400,9 @@ fn the_subkey_differs_for_each_of_table_column_and_row() {
 /// one field changed, the key held fixed: this checks the associated data
 /// by itself.
 fn assert_ad_binds(other: &ColumnContext<'_>) {
-    let key = [0x42; 32];
-    let nonce = [0x24; 12];
+    let random = aws_lc_rs::rand::SystemRandom::new();
+    let key: [u8; 32] = aws_lc_rs::rand::generate(&random).expect("random").expose();
+    let nonce: [u8; 12] = aws_lc_rs::rand::generate(&random).expect("random").expose();
     let mut text = b"value".to_vec();
     let tag = gcm_seal(&key, nonce, &associated_data(&CTX, FORMAT), &mut text);
     text.extend(tag);
