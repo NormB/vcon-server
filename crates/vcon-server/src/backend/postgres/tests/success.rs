@@ -255,7 +255,8 @@ mod live {
 
     #[tokio::test]
     async fn the_preview_names_the_server_it_reached_and_refuses_to_go_on() {
-        let (_tmp, s) = as_user("vcon_app");
+        let db = super::super::schema_tests::live::Db::migrated().await;
+        let (_tmp, s) = db.settings("vcon_app");
         let refused = super::super::super::preview(&s).await;
         assert!(
             refused

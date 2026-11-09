@@ -86,7 +86,7 @@ allowed a group to write them. To check a host before an upgrade, see
 | `catalog.postgres.hosts` | Host names or IP addresses of the PostgreSQL servers, tried in order; a DNS name in ASCII (an internationalized name in its `xn--` form) or an address, never a Unix socket | required with `postgres` |
 | `catalog.postgres.port` | TCP port of every host | `5432` |
 | `catalog.postgres.dbname` | Database name, at most 63 bytes | required with `postgres` |
-| `catalog.postgres.user` | Role the server logs in as, at most 63 bytes; not a superuser and without `BYPASSRLS` | required with `postgres` |
+| `catalog.postgres.user` | Role the server logs in as, at most 63 bytes; not a superuser, without `BYPASSRLS`, not the catalog's owner or a member of it, and a member of `vcon_app` or `vcon_app` itself. `vcon-server migrate` logs in with a copy of the configuration whose role may act as `vcon_owner` | required with `postgres` |
 | `catalog.postgres.ca_file` | PEM file of the certificate authorities trusted for the servers' certificates, in place of the system's | none |
 | `catalog.postgres.password_file` | File holding the role's password, used only with SCRAM-SHA-256 and channel binding; one line | none |
 | `catalog.postgres.client_cert_file` | PEM client certificate chain; required with `client_key_file` | none |
@@ -264,8 +264,9 @@ pack_limit = 16777216
 Preview: with `catalog.backend = "postgres"`, `serve` and every command
 read the `[catalog.postgres]` secret files, connect to PostgreSQL over TLS,
 check the server, and then stop with exit code 1, because this release
-does not yet keep the catalogs there. The catalogs and the registry stay
-in `data_dir`. It needs the `postgres` cargo feature, which the release
+does not yet keep the catalogs there. Run `vcon-server migrate` first, with
+a role that may act as `vcon_owner`, or a connection refuses the missing
+schema. The catalogs and the registry stay in `data_dir`. It needs the `postgres` cargo feature, which the release
 binaries do not have yet. The how-to
 [keep the catalogs in PostgreSQL](@/docs/postgres-catalog.md) gives the
 database's side, each refusal and what it means.

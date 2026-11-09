@@ -161,6 +161,18 @@ to move the rest. `missing` counts the versions `check` finds without an
 object afterwards. It is refused when the configuration keeps the objects in
 the data directory.
 
+| Command | Prints | Beside a server |
+|---|---|---|
+| `migrate` | `{"from", "message", "migrated", "to"}` | no |
+
+`migrate` applies the migrations a PostgreSQL catalog's database has not
+yet, as `vcon_owner`, one transaction per schema version (see
+[keep the catalogs in PostgreSQL](@/docs/postgres-catalog.md#make-the-schema)).
+It needs no data directory or master key, and takes a configuration whose
+`[catalog.postgres]` names a role that may act as `vcon_owner`. A server
+never migrates at start; every new connection refuses a schema other than
+the binary's. It is refused when the catalog is local.
+
 ## MCP for an AI agent
 
 | Command | Prints | Runs beside `serve` |

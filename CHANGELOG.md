@@ -6,6 +6,20 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `vcon-server migrate`, for the PostgreSQL catalog preview: it makes the
+  catalog's schema as `vcon_owner`, one transaction per schema version,
+  alone (it takes the advisory locks every server and command shares). A
+  connection refuses a schema of any other version than the binary's, and a
+  server refuses a role that owns the catalog or can act as its owner.
+  Every table is under `FORCE ROW LEVEL SECURITY` with a policy that raises
+  when no tenant is set, so a query that forgets the tenant is refused. The
+  column codec the catalog will use is in `envelope::column`: AES-256-GCM
+  under a per-row key derived from the catalog key, with associated data
+  binding the tenant, table, column and row, and HMAC-SHA256 under an index
+  key for the values SQL must find.
+
 ## [0.4.1] - 2026-11-09
 
 ### Security

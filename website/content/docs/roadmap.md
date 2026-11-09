@@ -11,7 +11,7 @@ change. [What is built](@/docs/status.md) says what works today.
   PostgreSQL, beside today's SQLCipher files in the data directory. From
   0.4.0, the sealed objects can already go to an
   [S3-compatible bucket](@/docs/s3-storage.md). The connection to
-  PostgreSQL is built, as a preview (see
+  PostgreSQL, the schema and `migrate` are built, as a preview (see
   [what is built](@/docs/status.md#being-built)).
 - **The draft's recommended algorithms** for `vcon::write` (RS256,
   RSA-OAEP and A256CBC-HS512), as an option of the `vcon` crate.

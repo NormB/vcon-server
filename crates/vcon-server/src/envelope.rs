@@ -12,8 +12,12 @@ use zeroize::Zeroizing;
 
 use crate::ids::{KeyId, TenantId, VersionId};
 
+mod column;
 mod locked;
 
+pub use column::{
+    ColumnContext, ColumnKeys, REGISTRY, SEALED_COLUMN_OVERHEAD, mac, open_column, seal_column,
+};
 use locked::LockedPage;
 
 /// The length of every key, in bytes.

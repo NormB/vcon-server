@@ -258,6 +258,19 @@ impl fmt::Display for CommandError {
 
 /// Runs `command` against the data directory `config` names, writing its
 /// answer to `out`.
+/// `vcon-server migrate`: makes or brings up to date the schema of the
+/// PostgreSQL catalog `config` names, and prints what it did. It uses no
+/// data directory and no master key.
+///
+/// # Errors
+///
+/// [`CommandError::Storage`] when the catalog is local, this build has no
+/// PostgreSQL support, or the migration was refused.
+pub fn migrate(config: &Config, out: &mut dyn Write) -> Result<(), CommandError> {
+    let done = backend::migrate_for_command(&config.catalog).map_err(CommandError::Storage)?;
+    line(out, &done)
+}
+
 pub fn run(config: &Config, command: &Command, out: &mut dyn Write) -> Result<(), CommandError> {
     let sharing = command.work().sharing();
     let _lock = datadir::lock(&config.data_dir, sharing).map_err(CommandError::DataDir)?;

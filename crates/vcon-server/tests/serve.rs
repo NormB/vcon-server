@@ -1330,10 +1330,35 @@ mod postgres {
         std::fs::write(&s.config, text).expect("writes");
     }
 
+    /// Runs `vcon-server migrate` as `vcon_migrate`, on a copy of `s`'s
+    /// configuration with that login, and checks what it printed: the
+    /// schema is at this binary's version, whichever run made it.
+    fn migrate(s: &Setup) {
+        let text = std::fs::read_to_string(&s.config).expect("reads");
+        let migrate_config = s.dir.path().join("vcon-migrate.toml");
+        std::fs::write(
+            &migrate_config,
+            text.replace("user = \"vcon_app\"", "user = \"vcon_migrate\""),
+        )
+        .expect("writes");
+        let out = Command::new(env!("CARGO_BIN_EXE_vcon-server"))
+            .args(["migrate", "--config"])
+            .arg(&migrate_config)
+            .output()
+            .expect("runs");
+        let printed = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(
+            out.status.success() && printed.contains("\"to\":1"),
+            "migrate succeeded and left version 1: {printed} {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
     #[test]
     fn serve_reaches_postgresql_over_tls_then_refuses_to_go_on_as_a_preview() {
         let s = setup();
         on_postgres(&s, "ca.pem");
+        migrate(&s);
         let out = refused(s3::with_keys(serve(&s)));
         let text = stderr(&out);
         assert_eq!(out.status.code(), Some(1), "exit 1: {text}");

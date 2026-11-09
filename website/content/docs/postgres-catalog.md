@@ -1,16 +1,17 @@
 +++
 title = "Keep the catalogs in PostgreSQL"
-description = "Preview: reach a PostgreSQL server over TLS for the catalogs: the database's side, the role, TLS and client certificates, the configuration, the secret files, and what each refusal at start means. This release connects, checks the server and stops."
+description = "Preview: reach a PostgreSQL server over TLS for the catalogs: the database's side, the roles, the schema and `migrate`, TLS and client certificates, the configuration, the secret files, and what each refusal at start means. This release migrates the schema, connects, checks the server and stops."
 weight = 13
 +++
 
 **This page is a preview.** The PostgreSQL catalog is being built. In this
-release, a server configured for it reads its secret files, connects to
-PostgreSQL over TLS, checks the server and the role, and then stops with
-exit code 1: the catalogs and the registry are not kept in PostgreSQL yet,
-and stay in the data directory as SQLCipher files. This page covers what
-that start does, so a database can be set up and checked ahead of the
-catalog itself. CI does not run this page's commands yet; the messages
+release, `vcon-server migrate` makes the schema in the database, and a
+server configured for it reads its secret files, connects to PostgreSQL
+over TLS, checks the server, the roles and the schema's version, and then
+stops with exit code 1: the catalogs and the registry are not kept in
+PostgreSQL yet, and stay in the data directory as SQLCipher files. This
+page covers what those two do, so a database can be set up and checked
+ahead of the catalog itself. CI does not run this page's commands yet; the messages
 below were printed by the server built from this release's source.
 
 The release binaries and `cargo install vcon-server` do not have the
@@ -57,20 +58,33 @@ ssl_key_file = 'server.key'
 password_encryption = 'scram-sha-256'
 ```
 
-Make a role that may log in, is not a superuser and does not have
-`BYPASSRLS`, and a database for it, as a superuser in `psql`:
+Make three roles and a database, as a superuser in `psql`:
 
 ```sql
+CREATE ROLE vcon_owner NOLOGIN NOSUPERUSER NOBYPASSRLS;
 CREATE ROLE vcon_app LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD 'the role password';
-CREATE DATABASE vcon;
+CREATE ROLE vcon_migrate LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD 'another password';
+GRANT vcon_owner TO vcon_migrate;
+CREATE DATABASE vcon OWNER vcon_owner;
 ```
 
-Then in `pg_hba.conf`, before any line that would match it with another
+- `vcon_owner` owns the schema; nobody logs in as it.
+- `vcon_app` is the role the server logs in as. It reads and writes rows,
+  never the schema, and a query from it with no tenant set is refused by
+  row-level security.
+- `vcon_migrate` is the role `vcon-server migrate` logs in as. Keep its
+  password apart from the server's: a server that logs in with a role that
+  owns the tables, or can act as `vcon_owner`, is refused. If your server
+  must log in as another role name, make that role a member of `vcon_app`.
+
+Then in `pg_hba.conf`, before any line that would match them with another
 method:
 
 ```text
 hostssl vcon vcon_app 0.0.0.0/0 scram-sha-256
 hostssl vcon vcon_app ::/0 scram-sha-256
+hostssl vcon vcon_migrate 0.0.0.0/0 scram-sha-256
+hostssl vcon vcon_migrate ::/0 scram-sha-256
 ```
 
 Narrow `0.0.0.0/0` and `::/0` to the servers' addresses. Reload with
@@ -185,6 +199,31 @@ client_key_file = "/etc/vcon-server/pg-client.key"
   holds.
 - **The pool.** At most `pool` connections are open at once. A request
   waits at most `connect_timeout` seconds for a free one.
+
+## Make the schema
+
+`vcon-server migrate` makes the catalog's schema in the database, as
+`vcon_owner`, one transaction per schema version. It needs no data
+directory or master key, only `[catalog.postgres]`, so run it with a copy
+of the configuration whose `user` and `password_file` are `vcon_migrate`'s:
+
+```sh
+vcon-server migrate --config /etc/vcon-server/vcon-migrate.toml
+```
+
+It takes the two locks every server and command shares and refuses if
+another holds them, so no server may run during a migration. It says what
+it found and what it left:
+
+```text
+{"from":0,"message":"schema version 0 to schema version 1","migrated":true,"to":1}
+```
+
+Run it again after an upgrade of the binary; a schema already at the
+binary's version is left alone. The server never migrates at start: with
+several instances, one starting up would change the schema under the
+others. After each migration, every new connection reads the schema's
+version and refuses any other than the binary's.
 
 ## Check it
 
@@ -316,6 +355,42 @@ vcon-server: the storage cannot be used: catalog.postgres: no server could be us
 A standby is in recovery and takes no writes. The second is a server, or a
 role or database, with `default_transaction_read_only = on`. List the
 primary in `hosts`; a standby before it is passed over.
+
+### The schema is missing or the wrong version
+
+```text
+vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database has no vCon schema: run vcon-server migrate
+vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is version 1, older than this binary's 2: run vcon-server migrate
+vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is newer than this binary (version 3, this binary 2): upgrade this server
+```
+
+Run `vcon-server migrate` with `vcon_migrate`'s configuration, or upgrade
+the server.
+
+### The role owns the catalog or may not use it
+
+```text
+vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the role "vcon_migrate" owns the catalog's tables or is a member of the role that does; a server logs in as vcon_app
+vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the role "vcon_x" may not use the vCon schema; make it a member of vcon_app, or log in as vcon_app
+```
+
+A server must not hold the role that can change the schema. Set `user` to
+`vcon_app`, or to a role that is a member of `vcon_app` and not of
+`vcon_owner`.
+
+### migrate cannot act as the owner
+
+```text
+vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the role "vcon_app" cannot act as vcon_owner, which migrate needs; run GRANT vcon_owner TO "vcon_app" as a superuser, for a role the server does not use
+vcon-server: the storage cannot be used: catalog.postgres: another server or command holds the database's locks; stop every server and command and run migrate again
+```
+
+Run `migrate` with the login role that is a member of `vcon_owner` (the
+first), with every server and command stopped (the second). A message
+that a schema exists that vcon-server did not make means a `vcon` schema
+is already there without its version table: remove it or use another
+database. A migration that fails leaves the database at the version
+before it; its message names the statement's error.
 
 ### The server cannot be reached
 

@@ -67,6 +67,13 @@ enum Command {
     /// Moves the data to the storage the configuration names.
     #[command(subcommand)]
     Storage(StorageCommand),
+    /// Makes or brings up to date the schema of the PostgreSQL catalog the
+    /// configuration names, as a role that may act as vcon_owner. Runs only
+    /// while no server does; a server never migrates at start.
+    Migrate {
+        #[command(flatten)]
+        config: ConfigArg,
+    },
 }
 
 #[derive(Subcommand)]
@@ -259,6 +266,7 @@ fn main() -> ExitCode {
     }
     let (config, command) = match cli.command {
         Command::Serve { config } => return serve(&config),
+        Command::Migrate { config } => return migrate(&config.config),
         Command::Mcp { config } => return mcp(&config),
         Command::Tenant(c) => tenant(c),
         Command::Key(c) => key(c),
@@ -368,6 +376,19 @@ fn key(command: KeyCommand) -> (ConfigArg, commands::Command) {
         }
         KeyCommand::List { config, tenant } => (config, commands::Command::KeyList { tenant }),
         KeyCommand::Revoke { config, id } => (config, commands::Command::KeyRevoke { id }),
+    }
+}
+
+/// `vcon-server migrate`: reads the configuration and applies the
+/// migrations, needing no data directory or master key.
+fn migrate(config: &Path) -> ExitCode {
+    let config = match config::load(config) {
+        Ok(config) => config,
+        Err(e) => return fail(format!("configuration: {e}")),
+    };
+    match commands::migrate(&config, &mut std::io::stdout().lock()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => fail(e),
     }
 }
 

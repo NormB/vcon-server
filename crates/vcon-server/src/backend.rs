@@ -653,6 +653,43 @@ pub(crate) fn catalog_for_command(
         .block_on(catalog_for(catalog))
 }
 
+/// `vcon-server migrate`: applies the migrations of the PostgreSQL catalog
+/// `catalog` names, on a runtime of its own, and gives the line to print.
+///
+/// # Errors
+///
+/// A `StorageError` when the catalog is local, this build has no PostgreSQL
+/// support, or the step that refused it says why.
+pub(crate) fn migrate_for_command(
+    catalog: &crate::config::CatalogStore,
+) -> Result<serde_json::Value, crate::config::StorageError> {
+    match catalog {
+        crate::config::CatalogStore::Local => Err(crate::config::StorageError(
+            "migrate is for a PostgreSQL catalog: catalog.backend is \"local\"".to_owned(),
+        )),
+        #[cfg(feature = "postgres")]
+        crate::config::CatalogStore::Postgres(settings) => {
+            let migrated = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| crate::config::StorageError(format!("the runtime cannot start: {e}")))?
+                .block_on(postgres::migrate(settings))?;
+            Ok(serde_json::json!({
+                "migrated": migrated.from != migrated.to,
+                "from": migrated.from,
+                "to": migrated.to,
+                "message": migrated.message(),
+            }))
+        }
+        #[cfg(not(feature = "postgres"))]
+        crate::config::CatalogStore::Postgres(_) => Err(crate::config::StorageError(
+            "catalog.backend is \"postgres\", but this build has no PostgreSQL support (cargo \
+             feature postgres)"
+                .to_owned(),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod catalog_tests {
     use super::*;
@@ -669,6 +706,16 @@ mod catalog_tests {
             catalog_for_command(&CatalogStore::Local),
             Ok(()),
             "and a command makes no runtime for it"
+        );
+    }
+
+    #[test]
+    fn migrate_is_refused_with_a_local_catalog_and_says_why() {
+        let crate::config::StorageError(message) =
+            migrate_for_command(&CatalogStore::Local).expect_err("refused");
+        assert!(
+            message.contains("PostgreSQL catalog") && message.contains("\"local\""),
+            "names the setting: {message}"
         );
     }
 
@@ -714,6 +761,32 @@ mod catalog_tests {
             message.starts_with("catalog.postgres: no server could be used: ")
                 && message.contains(&format!("127.0.0.1:{}", settings.port)),
             "names the key and the server: {message}"
+        );
+    }
+
+    #[cfg(not(feature = "postgres"))]
+    #[test]
+    fn a_build_without_postgres_refuses_migrate_by_its_feature() {
+        let dir = tempfile::tempdir().expect("dir");
+        let settings = crate::config::PostgresSettings {
+            hosts: vec!["db1.example.com".to_owned()],
+            port: 5432,
+            dbname: "vcon".to_owned(),
+            user: "vcon_migrate".to_owned(),
+            ca_file: None,
+            password_file: Some(dir.path().join("pg.password")),
+            client_cert_file: None,
+            client_key_file: None,
+            pool: 1,
+            connect_timeout: std::time::Duration::from_secs(1),
+            statement_timeout: std::time::Duration::from_secs(1),
+            lock_timeout: std::time::Duration::from_secs(1),
+        };
+        let crate::config::StorageError(message) =
+            migrate_for_command(&CatalogStore::Postgres(Box::new(settings))).expect_err("refused");
+        assert!(
+            message.contains("cargo feature postgres"),
+            "names the feature: {message}"
         );
     }
 

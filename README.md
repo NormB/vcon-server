@@ -107,9 +107,10 @@ leaves it out.
 
 The `postgres` cargo feature, which is not on by default and not in the
 release binaries, adds a preview of the
-[PostgreSQL catalog](https://vcon-server.com/docs/postgres-catalog/): the
-server connects to PostgreSQL over TLS, checks it, and stops, since the
-catalogs are not kept there yet.
+[PostgreSQL catalog](https://vcon-server.com/docs/postgres-catalog/):
+`vcon-server migrate` makes the schema, and the server connects to
+PostgreSQL over TLS, checks it, and stops, since the catalogs are not kept
+there yet.
 
 ## Contributing
 

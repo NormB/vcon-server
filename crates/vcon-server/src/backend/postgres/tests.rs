@@ -11,6 +11,7 @@
 
 mod edge;
 mod failure;
+mod schema_tests;
 mod success;
 
 use std::net::SocketAddr;
@@ -20,7 +21,7 @@ use std::path::{Path, PathBuf};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-use super::connect::{ConnectError, Connected, Connector, Target};
+use super::connect::{ConnectError, Connected, Connector, Purpose, Target};
 #[cfg(feature = "backend-tests")]
 use super::pool::Pool;
 use super::secrets::Secrets;
@@ -94,13 +95,13 @@ pub(super) fn settings(
 /// A connector for `settings`, its secrets read from their files.
 pub(super) fn connector(settings: &PostgresSettings) -> Connector {
     let secrets = Secrets::read(settings).expect("the secret files read");
-    Connector::new(settings, secrets).expect("the connector")
+    Connector::new(settings, secrets, Purpose::Connect).expect("the connector")
 }
 
 /// A connector for `targets`, with `settings`'s login.
 pub(super) fn connector_to(targets: Vec<Target>, settings: &PostgresSettings) -> Connector {
     let secrets = Secrets::read(settings).expect("the secret files read");
-    Connector::to(targets, settings, secrets).expect("the connector")
+    Connector::to(targets, settings, secrets, Purpose::Connect).expect("the connector")
 }
 
 /// One connection with `settings`.

@@ -13,12 +13,27 @@ use tokio_postgres::{Client, SimpleQueryMessage};
 use tokio_postgres_rustls::MakeRustlsConnect;
 use zeroize::Zeroizing;
 
+use super::schema;
 use super::secrets::Secrets;
 use crate::config::{PostgresSettings, StorageError};
 
 /// The `application_name` every connection gives, so the server's
 /// `pg_stat_activity` names the program. It holds no address or name.
 pub(crate) const APPLICATION_NAME: &str = "vcon-server";
+
+/// What a connection is for, which decides the checks made on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Purpose {
+    /// Serving the catalog: the schema must be this binary's, and the role
+    /// must not own it.
+    Serve,
+    /// `vcon-server migrate`: the role must be able to act as `vcon_owner`.
+    Migrate,
+    /// A connection with neither of those checks, for the connector's own
+    /// tests.
+    #[cfg(test)]
+    Connect,
+}
 
 /// Where one connection is made: the host name TLS checks the certificate
 /// against, the address connected to when it is not looked up by that name,
@@ -108,6 +123,7 @@ pub(crate) struct Connector {
     tls: MakeRustlsConnect,
     connect_timeout: Duration,
     options: String,
+    purpose: Purpose,
 }
 
 impl fmt::Debug for Connector {
@@ -153,10 +169,11 @@ pub(crate) fn tls_config(secrets: &Secrets) -> Result<ClientConfig, StorageError
 }
 
 impl Connector {
-    /// A connector for `settings`, logging in with `secrets`.
+    /// A connector for `settings`, logging in with `secrets`, for `purpose`.
     pub(crate) fn new(
         settings: &PostgresSettings,
         secrets: Secrets,
+        purpose: Purpose,
     ) -> Result<Connector, StorageError> {
         let targets = settings
             .hosts
@@ -167,7 +184,7 @@ impl Connector {
                 port: settings.port,
             })
             .collect();
-        Connector::to(targets, settings, secrets)
+        Connector::to(targets, settings, secrets, purpose)
     }
 
     /// A connector for `targets` in place of the hosts `settings` names.
@@ -175,6 +192,7 @@ impl Connector {
         targets: Vec<Target>,
         settings: &PostgresSettings,
         secrets: Secrets,
+        purpose: Purpose,
     ) -> Result<Connector, StorageError> {
         let tls = MakeRustlsConnect::new(tls_config(&secrets)?);
         Ok(Connector {
@@ -185,6 +203,7 @@ impl Connector {
             tls,
             connect_timeout: settings.connect_timeout,
             options: session_options(settings.statement_timeout, settings.lock_timeout),
+            purpose,
         })
     }
 
@@ -245,7 +264,7 @@ impl Connector {
             // An error here closes the client, which its next call reports.
             let _closed = connection.await;
         });
-        let server = check(&client, target).await?;
+        let server = check(&client, target, self.purpose).await?;
         Ok(Connected { client, server })
     }
 }
@@ -343,7 +362,7 @@ pub(crate) fn with_causes(e: &dyn std::error::Error) -> String {
 /// The checks every new connection passes before it is used, in one round
 /// trip: not a standby, not read-only, and a role that is neither a
 /// superuser nor has BYPASSRLS, which would pass row-level security.
-async fn check(client: &Client, target: &Target) -> Result<Server, String> {
+async fn check(client: &Client, target: &Target, purpose: Purpose) -> Result<Server, String> {
     const CHECK: &str = "SELECT pg_is_in_recovery(), current_setting('transaction_read_only'), \
                          r.rolsuper, r.rolbypassrls, current_setting('server_version'), \
                          pg_backend_pid(), current_user FROM pg_roles r \
@@ -386,6 +405,12 @@ async fn check(client: &Client, target: &Target) -> Result<Server, String> {
             "the role {user:?} has BYPASSRLS, which passes row-level security; log in as a role \
              without it"
         ));
+    }
+    match purpose {
+        Purpose::Serve => schema::serving_checks(client, &user).await?,
+        Purpose::Migrate => schema::migrating_checks(client, &user).await?,
+        #[cfg(test)]
+        Purpose::Connect => {}
     }
     Ok(Server {
         target: target.to_string(),

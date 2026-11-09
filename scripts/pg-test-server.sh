@@ -117,7 +117,13 @@ HBA
 set -eu
 psql -v ON_ERROR_STOP=1 -v pw="$VCON_TEST_PASSWORD" --username postgres <<'SQL'
 CREATE ROLE vcon_app LOGIN PASSWORD :'pw';
-CREATE DATABASE vcon OWNER vcon_app;
+CREATE ROLE vcon_owner NOLOGIN;
+CREATE DATABASE vcon OWNER vcon_owner;
+CREATE ROLE vcon_migrate LOGIN PASSWORD :'pw';
+GRANT vcon_owner TO vcon_migrate;
+CREATE ROLE vcon_tester LOGIN CREATEDB PASSWORD :'pw';
+GRANT vcon_owner TO vcon_tester;
+CREATE ROLE vcon_stranger LOGIN PASSWORD :'pw';
 CREATE ROLE vcon_cert LOGIN;
 CREATE ROLE vcon_both LOGIN PASSWORD :'pw';
 CREATE ROLE vcon_trust LOGIN;
