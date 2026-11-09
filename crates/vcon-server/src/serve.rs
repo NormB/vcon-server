@@ -123,6 +123,9 @@ pub async fn run(config: &Config, shutdown: impl Future<Output = ()>) -> Result<
     let master = Key::load_master(&config.master_key).map_err(ServeError::MasterKey)?;
     let objects =
         backend::objects_for(&config.storage, &config.data_dir).map_err(ServeError::Storage)?;
+    backend::catalog_for(&config.catalog)
+        .await
+        .map_err(ServeError::Storage)?;
     let tenants = Tenants::open_in(
         &config.data_dir,
         master,
@@ -495,6 +498,7 @@ mod tests {
             },
             storage: crate::config::Storage::default(),
             export: crate::config::Export::default(),
+            catalog: crate::config::CatalogStore::Local,
         };
         let app = app_from(&config, tenants.clone());
         assert!(Arc::ptr_eq(&app.tenants, &tenants));

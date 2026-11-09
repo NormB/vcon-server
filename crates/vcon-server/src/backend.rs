@@ -32,6 +32,9 @@ pub mod local;
 #[cfg(feature = "s3")]
 pub(crate) mod migrate;
 pub(crate) mod pack;
+// The catalogs in PostgreSQL, a preview: the connector and the pool.
+#[cfg(feature = "postgres")]
+pub(crate) mod postgres;
 #[cfg(feature = "s3")]
 pub(crate) mod s3;
 
@@ -602,5 +605,142 @@ pub(crate) fn objects_for(
             "storage.objects is \"s3\", but this build has no S3 support (cargo feature s3)"
                 .to_owned(),
         )),
+    }
+}
+
+/// The catalog `catalog` names, checked before anything is opened. The
+/// local catalog needs nothing more. A PostgreSQL catalog is a preview in
+/// this release: its secret files are read, a connection is made and the
+/// server checked, and then the start is refused with what was reached,
+/// since the catalogs are not kept there yet.
+///
+/// # Errors
+///
+/// A `StorageError` for a PostgreSQL catalog: the step that refused it, or
+/// the preview's refusal after a good connection.
+pub(crate) async fn catalog_for(
+    catalog: &crate::config::CatalogStore,
+) -> Result<(), crate::config::StorageError> {
+    match catalog {
+        crate::config::CatalogStore::Local => Ok(()),
+        #[cfg(feature = "postgres")]
+        crate::config::CatalogStore::Postgres(settings) => Err(postgres::preview(settings).await),
+        #[cfg(not(feature = "postgres"))]
+        crate::config::CatalogStore::Postgres(_) => Err(crate::config::StorageError(
+            "catalog.backend is \"postgres\", but this build has no PostgreSQL support (cargo \
+             feature postgres)"
+                .to_owned(),
+        )),
+    }
+}
+
+/// [`catalog_for`] for a command, which runs outside any runtime: a
+/// PostgreSQL catalog is checked on a runtime of its own, made for it.
+///
+/// # Errors
+///
+/// As [`catalog_for`], or a `StorageError` if that runtime cannot start.
+pub(crate) fn catalog_for_command(
+    catalog: &crate::config::CatalogStore,
+) -> Result<(), crate::config::StorageError> {
+    if *catalog == crate::config::CatalogStore::Local {
+        return Ok(());
+    }
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| crate::config::StorageError(format!("the runtime cannot start: {e}")))?
+        .block_on(catalog_for(catalog))
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    use super::*;
+    use crate::config::CatalogStore;
+
+    #[tokio::test]
+    async fn the_local_catalog_needs_nothing_more() {
+        assert_eq!(
+            catalog_for(&CatalogStore::Local).await,
+            Ok(()),
+            "the SQLCipher files open as before"
+        );
+        assert_eq!(
+            catalog_for_command(&CatalogStore::Local),
+            Ok(()),
+            "and a command makes no runtime for it"
+        );
+    }
+
+    /// Settings for a PostgreSQL catalog in `dir`, at a port of the
+    /// loopback address nothing listens on.
+    #[cfg(feature = "postgres")]
+    fn unreachable(dir: &Path) -> crate::config::PostgresSettings {
+        use std::os::unix::fs::PermissionsExt;
+        let password = dir.join("pg.password");
+        std::fs::write(&password, "p\n").expect("writes");
+        std::fs::set_permissions(&password, std::fs::Permissions::from_mode(0o600)).expect("mode");
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("binds")
+            .local_addr()
+            .expect("an address")
+            .port();
+        crate::config::PostgresSettings {
+            hosts: vec!["127.0.0.1".to_owned()],
+            port,
+            dbname: "vcon".to_owned(),
+            user: "vcon_app".to_owned(),
+            ca_file: None,
+            password_file: Some(password),
+            client_cert_file: None,
+            client_key_file: None,
+            pool: 1,
+            connect_timeout: std::time::Duration::from_secs(1),
+            statement_timeout: std::time::Duration::from_secs(1),
+            lock_timeout: std::time::Duration::from_secs(1),
+        }
+    }
+
+    /// A command runs outside any runtime; the check makes its own.
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn a_command_with_a_postgres_catalog_is_refused_with_why() {
+        let dir = tempfile::tempdir().expect("dir");
+        let settings = unreachable(dir.path());
+        let crate::config::StorageError(message) =
+            catalog_for_command(&CatalogStore::Postgres(Box::new(settings.clone())))
+                .expect_err("refused");
+        assert!(
+            message.starts_with("catalog.postgres: no server could be used: ")
+                && message.contains(&format!("127.0.0.1:{}", settings.port)),
+            "names the key and the server: {message}"
+        );
+    }
+
+    #[cfg(not(feature = "postgres"))]
+    #[tokio::test]
+    async fn a_build_without_postgres_refuses_a_postgres_catalog_by_its_feature() {
+        let settings = crate::config::PostgresSettings {
+            hosts: vec!["db1.example.com".to_owned()],
+            port: 5432,
+            dbname: "vcon".to_owned(),
+            user: "vcon_app".to_owned(),
+            ca_file: None,
+            password_file: Some("/etc/vcon-server/pg.password".into()),
+            client_cert_file: None,
+            client_key_file: None,
+            pool: 1,
+            connect_timeout: std::time::Duration::from_secs(1),
+            statement_timeout: std::time::Duration::from_secs(1),
+            lock_timeout: std::time::Duration::from_secs(1),
+        };
+        let crate::config::StorageError(message) =
+            catalog_for(&CatalogStore::Postgres(Box::new(settings)))
+                .await
+                .expect_err("refused");
+        assert!(
+            message.contains("catalog.backend") && message.contains("cargo feature postgres"),
+            "names the setting and the feature: {message}"
+        );
     }
 }

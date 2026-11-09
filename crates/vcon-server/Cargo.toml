@@ -65,6 +65,14 @@ serde_json = "1.0.154"
 time = { version = "0.3.55", features = ["formatting", "parsing"] }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "macros", "sync", "time", "signal"] }
 tokio-rustls = "0.26.6"
+# The PostgreSQL catalog (cargo feature postgres): the client, without its
+# default features, and its rustls connector on the rustls and AWS-LC stack
+# above. The pool is the crate's own (backend/postgres/pool.rs).
+tokio-postgres = { version = "=0.7.18", default-features = false, features = ["runtime"], optional = true }
+tokio-postgres-rustls = { version = "=0.14.0", default-features = false, optional = true }
+# The system's certificate authorities, for a PostgreSQL server without a
+# catalog.postgres.ca_file; already in the build through the S3 client.
+rustls-native-certs = { version = "0.8.5", optional = true }
 toml = "1.1.8"
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
@@ -79,6 +87,10 @@ s3 = ["dep:aws-config", "dep:aws-sdk-s3", "dep:aws-smithy-http-client"]
 # The store conformance suite against real services: run with the service
 # addresses set (see backend/s3.rs); without them the suite fails.
 backend-tests = []
+# The catalogs in PostgreSQL ([catalog.postgres]), a preview: this release
+# connects, checks the server and stops (see backend/postgres.rs).
+# It needs S3 objects ([catalog] in configuration.md), so it turns s3 on.
+postgres = ["s3", "dep:tokio-postgres", "dep:tokio-postgres-rustls", "dep:rustls-native-certs"]
 
 [dev-dependencies]
 # rusqlite 0.41.0's pragma helpers refuse SQLCipher's own pragma names

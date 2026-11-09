@@ -147,12 +147,19 @@ fn read_secret(path: &std::path::Path, table: &str) -> Result<Zeroizing<String>,
     ));
     file.read_to_string(&mut text)
         .map_err(|e| refused(&e.to_string()))?;
+    secret_line(&text).map_err(refused)
+}
+
+/// The one line a secret file holds, its line ending left out; the reason
+/// when the text is empty or holds more than one line. The PostgreSQL
+/// catalog's password file is held to the same rule.
+pub(crate) fn secret_line(text: &str) -> Result<Zeroizing<String>, &'static str> {
     let line = text.trim_end_matches(['\r', '\n']);
     if line.is_empty() {
-        return Err(refused("the file is empty"));
+        return Err("the file is empty");
     }
     if line.contains(['\r', '\n']) {
-        return Err(refused("the file holds more than one line"));
+        return Err("the file holds more than one line");
     }
     Ok(Zeroizing::new(line.to_owned()))
 }
@@ -160,8 +167,8 @@ fn read_secret(path: &std::path::Path, table: &str) -> Result<Zeroizing<String>,
 /// The PEM file in `path`, once each certificate in it has been parsed
 /// and taken as a trust anchor; at least one must be there. The client's
 /// TLS layer panics on a file that fails either step, so it is refused
-/// here, by name.
-fn read_ca(path: &std::path::Path, table: &str) -> Result<Vec<u8>, StorageError> {
+/// here, by name. The PostgreSQL catalog's `ca_file` is read with it too.
+pub(crate) fn read_ca(path: &std::path::Path, table: &str) -> Result<Vec<u8>, StorageError> {
     use rustls::pki_types::CertificateDer;
     use rustls::pki_types::pem::PemObject;
 

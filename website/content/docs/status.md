@@ -109,6 +109,14 @@ what is built, unless it says otherwise.
 
 ## Being built
 
+- **A PostgreSQL catalog**, a preview behind the `postgres` cargo feature:
+  `[catalog.postgres]` is read and checked, and a start reads its secret
+  files once, connects over TLS with the certificate and host name
+  verified, logs in by SCRAM-SHA-256 with channel binding or a client
+  certificate, refuses a standby, a read-only server, a superuser and a role
+  with `BYPASSRLS`, and then stops, since the catalogs are not kept there
+  yet. Its tests run against PostgreSQL 16 and 18 in CI. See
+  [keep the catalogs in PostgreSQL](@/docs/postgres-catalog.md).
 - **The draft's recommended algorithms** for `vcon::write` (RS256,
   RSA-OAEP and A256CBC-HS512) as an option of the `vcon` crate, and a check
   of its output with another JOSE library, for a release after vcon 0.4.0.

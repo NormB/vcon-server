@@ -52,6 +52,19 @@ Durations are whole seconds and sizes are bytes; each must be more than zero.
 | `export.s3.allow_http` | As `storage.s3.allow_http` | `false` |
 | `export.s3.ca_file` | As `storage.s3.ca_file` | none |
 | `export.s3.timeout` | Seconds one request to the export's service may take | `30` |
+| `catalog.backend` | Where the catalogs and the registry are kept: `local`, as SQLCipher files in `data_dir`, or `postgres`, a preview that needs `storage.objects = "s3"` (see [Catalog in PostgreSQL](#catalog-in-postgresql)) | `local` |
+| `catalog.postgres.hosts` | Host names or IP addresses of the PostgreSQL servers, tried in order; a DNS name in ASCII (an internationalized name in its `xn--` form) or an address, never a Unix socket | required with `postgres` |
+| `catalog.postgres.port` | TCP port of every host | `5432` |
+| `catalog.postgres.dbname` | Database name, at most 63 bytes | required with `postgres` |
+| `catalog.postgres.user` | Role the server logs in as, at most 63 bytes; not a superuser and without `BYPASSRLS` | required with `postgres` |
+| `catalog.postgres.ca_file` | PEM file of the certificate authorities trusted for the servers' certificates, in place of the system's | none |
+| `catalog.postgres.password_file` | File holding the role's password, used only with SCRAM-SHA-256 and channel binding; one line | none |
+| `catalog.postgres.client_cert_file` | PEM client certificate chain; required with `client_key_file` | none |
+| `catalog.postgres.client_key_file` | PEM private key of the client certificate | none |
+| `catalog.postgres.pool` | Most connections open at once | `16` |
+| `catalog.postgres.connect_timeout` | Seconds a connection, or a wait for a free one, may take | `5` |
+| `catalog.postgres.statement_timeout` | Seconds a statement may run (PostgreSQL's `statement_timeout`), at most `2147483` | `30` |
+| `catalog.postgres.lock_timeout` | Seconds a statement may wait for a lock (PostgreSQL's `lock_timeout`), at most `2147483` | `10` |
 
 At start and then each day, `serve` logs a warning while the oldest purge or
 tenant removal waiting for [key rotation](@/docs/operations.md#key-rotation)
@@ -215,6 +228,67 @@ pack_limit = 16777216
   with Object Lock or versioning; `check` names each such tenant as a
   problem. See
   [packed versions without the table](@/docs/parquet-storage.md#packed-versions-without-the-table).
+
+## Catalog in PostgreSQL
+
+Preview: with `catalog.backend = "postgres"`, `serve` and every command
+read the `[catalog.postgres]` secret files, connect to PostgreSQL over TLS,
+check the server, and then stop with exit code 1, because this release
+does not yet keep the catalogs there. The catalogs and the registry stay
+in `data_dir`. It needs the `postgres` cargo feature, which the release
+binaries do not have yet. The how-to
+[keep the catalogs in PostgreSQL](@/docs/postgres-catalog.md) gives the
+database's side, each refusal and what it means.
+
+```toml
+listen = "0.0.0.0:8443"
+data_dir = "/var/lib/vcon-server"
+master_key = "/etc/vcon-server/master.key"
+
+[tls]
+cert = "/etc/vcon-server/cert.pem"
+key = "/etc/vcon-server/key.pem"
+
+[storage]
+objects = "s3"
+
+[storage.s3]
+endpoint = "https://objects.example.com:9000"
+region = "us-east-1"
+bucket = "vcon"
+path_style = true
+access_key_id = "vcon-server"
+secret_access_key_file = "/etc/vcon-server/s3.secret"
+
+[catalog]
+backend = "postgres"
+
+[catalog.postgres]
+hosts = ["db1.example.com"]
+dbname = "vcon"
+user = "vcon_app"
+ca_file = "/etc/vcon-server/pg-ca.pem"
+password_file = "/etc/vcon-server/pg.password"
+```
+
+- **TLS only.** There is no `sslmode` key. Every connection is TLS, with
+  the server's certificate checked against `ca_file` (or the system's
+  certificate authorities without it) and against the host name it was
+  reached by. A server that does not offer TLS is refused, and so is a Unix
+  socket host.
+- **Logging in.** With `password_file`, the server accepts only SCRAM-SHA-256
+  with channel binding (`SCRAM-SHA-256-PLUS`), which ties the password
+  exchange to this TLS connection; a server that asks for `md5`, `password`
+  or no password at all (`trust`) is refused before the password is sent.
+  With a client certificate and no `password_file`, a server's `trust` line
+  cannot be told from its `cert` line, so check `pg_hba.conf`.
+- **Secret files.** `password_file` and `client_key_file` are read once, at
+  start, before any connection, and never again: the pool reconnects from
+  memory. Each must be a regular file that gives other users no access
+  (no bit of `0007` set); group access is allowed, for a file such as
+  `0640 root:vcon`.
+- **The role.** A superuser, a role with `BYPASSRLS`, and a server in
+  recovery (a standby) or with `transaction_read_only` on are refused.
 
 ## Where the defaults come from
 

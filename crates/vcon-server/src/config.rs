@@ -47,6 +47,50 @@ pub struct Config {
     pub storage: Storage,
     /// How `export parquet` reaches a bucket: the `[export]` table.
     pub export: Export,
+    /// Where the catalogs and the registry are kept: the `[catalog]` table.
+    pub catalog: CatalogStore,
+}
+
+/// Where the catalogs and the registry are kept: `catalog.backend`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum CatalogStore {
+    /// SQLCipher files in `data_dir`.
+    #[default]
+    Local,
+    /// A PostgreSQL database, reached over TLS: `[catalog.postgres]`.
+    Postgres(Box<PostgresSettings>),
+}
+
+/// How to reach the PostgreSQL database: the `[catalog.postgres]` table.
+/// TLS, with the server's certificate chain and host name verified, is the
+/// only way it is reached.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PostgresSettings {
+    /// The servers' host names or IP addresses, tried in order.
+    pub hosts: Vec<String>,
+    /// The TCP port of every host.
+    pub port: u16,
+    /// The database.
+    pub dbname: String,
+    /// The role the server logs in as.
+    pub user: String,
+    /// PEM certificates of the authorities trusted for the servers' TLS
+    /// certificates, in place of the system's; None trusts the system's.
+    pub ca_file: Option<PathBuf>,
+    /// The file holding the role's password, for SCRAM with channel binding.
+    pub password_file: Option<PathBuf>,
+    /// The file holding the PEM client certificate chain.
+    pub client_cert_file: Option<PathBuf>,
+    /// The file holding the client certificate's PEM private key.
+    pub client_key_file: Option<PathBuf>,
+    /// The most connections open at once.
+    pub pool: u32,
+    /// How long a connection, or a wait for a free one, may take.
+    pub connect_timeout: Duration,
+    /// The longest a statement may run (PostgreSQL's `statement_timeout`).
+    pub statement_timeout: Duration,
+    /// The longest a statement may wait for a lock (`lock_timeout`).
+    pub lock_timeout: Duration,
 }
 
 /// The `[export]` table.
@@ -260,6 +304,8 @@ pub fn load(path: &Path) -> Result<Config, ConfigError> {
 /// not more than zero.
 pub fn parse(text: &str) -> Result<Config, ConfigError> {
     let raw: Raw = toml::from_str(text).map_err(|e| ConfigError(e.to_string()))?;
+    let storage = storage(raw.storage)?;
+    let catalog = catalog(raw.catalog, &storage)?;
     let retention_default = match raw.retention_default {
         None => Retention::Years(7),
         Some(text) => Retention::parse(&text).ok_or_else(|| {
@@ -293,10 +339,11 @@ pub fn parse(text: &str) -> Result<Config, ConfigError> {
         )?,
         supported_critical: raw.supported_critical.into_iter().collect(),
         mcp: mcp_limits(&raw.mcp)?,
-        storage: storage(raw.storage)?,
+        storage,
         export: Export {
             s3: raw.export.s3.map(export_s3).transpose()?,
         },
+        catalog,
     })
 }
 
@@ -372,6 +419,223 @@ fn storage(raw: RawStorage) -> Result<Storage, ConfigError> {
         }
     };
     Ok(Storage { objects, parquet })
+}
+
+/// The PostgreSQL port unless configured.
+pub const POSTGRES_PORT: u16 = 5432;
+
+/// The most connections open at once unless configured.
+pub const POSTGRES_POOL: u32 = 16;
+
+/// How long a connection, or a wait for a free one, may take unless
+/// configured.
+pub const POSTGRES_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The longest a statement may run unless configured.
+pub const POSTGRES_STATEMENT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The longest a statement may wait for a lock unless configured.
+pub const POSTGRES_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The longest `statement_timeout` and `lock_timeout`, in whole seconds:
+/// PostgreSQL holds each as milliseconds in a 32-bit integer.
+pub const POSTGRES_TIMEOUT_LIMIT: u64 = i32::MAX as u64 / 1000;
+
+/// The longest database or role name: PostgreSQL cuts a longer one to this
+/// many bytes (NAMEDATALEN - 1), which would name another database or role.
+pub const POSTGRES_NAME_LIMIT: usize = 63;
+
+/// The `[catalog]` table checked: a `[catalog.postgres]` table only with
+/// `backend = "postgres"`, and that only with the objects in a bucket.
+fn catalog(raw: RawCatalog, storage: &Storage) -> Result<CatalogStore, ConfigError> {
+    match (raw.backend.as_deref(), raw.postgres) {
+        (None | Some("local"), None) => Ok(CatalogStore::Local),
+        (None | Some("local"), Some(_)) => Err(ConfigError(
+            "catalog.postgres is set but catalog.backend is not \"postgres\"".to_owned(),
+        )),
+        (Some("postgres"), None) => Err(ConfigError(
+            "catalog.backend is \"postgres\" but there is no catalog.postgres table".to_owned(),
+        )),
+        (Some("postgres"), Some(pg)) => {
+            // A shared catalog with objects in one host's data directory
+            // would name objects the other hosts cannot read, and recovery
+            // on one host would take the others' rows as naming missing
+            // objects.
+            if !matches!(storage.objects, ObjectStore::S3(_)) {
+                return Err(ConfigError(
+                    "catalog.backend = \"postgres\" needs storage.objects = \"s3\": a catalog \
+                     in PostgreSQL names objects that every server must be able to read"
+                        .to_owned(),
+                ));
+            }
+            postgres_settings(pg).map(|pg| CatalogStore::Postgres(Box::new(pg)))
+        }
+        (Some(other), _) => Err(ConfigError(format!(
+            "catalog.backend: {other:?} is not \"local\" or \"postgres\""
+        ))),
+    }
+}
+
+fn postgres_settings(raw: RawPostgres) -> Result<PostgresSettings, ConfigError> {
+    const KEY: &str = "catalog.postgres";
+    if raw.hosts.is_empty() {
+        return Err(ConfigError(format!(
+            "{KEY}.hosts is empty; name at least one server"
+        )));
+    }
+    let mut seen = BTreeSet::new();
+    for host in &raw.hosts {
+        check_host(host).map_err(|why| ConfigError(format!("{KEY}.hosts: {host:?} {why}")))?;
+        if !seen.insert(host.to_ascii_lowercase()) {
+            return Err(ConfigError(format!("{KEY}.hosts names {host:?} twice")));
+        }
+    }
+    let port = match raw.port {
+        None => POSTGRES_PORT,
+        Some(port) => u16::try_from(positive(&format!("{KEY}.port"), port)?).map_err(|_| {
+            ConfigError(format!("{KEY}.port {port} is not a TCP port (1 to 65535)"))
+        })?,
+    };
+    check_name("dbname", &raw.dbname)?;
+    check_name("user", &raw.user)?;
+    for (name, path) in [
+        ("ca_file", &raw.ca_file),
+        ("password_file", &raw.password_file),
+        ("client_cert_file", &raw.client_cert_file),
+        ("client_key_file", &raw.client_key_file),
+    ] {
+        if path.as_ref().is_some_and(|p| p.as_os_str().is_empty()) {
+            return Err(ConfigError(format!("{KEY}.{name} is empty")));
+        }
+    }
+    match (&raw.client_cert_file, &raw.client_key_file) {
+        (Some(_), None) => {
+            return Err(ConfigError(format!(
+                "{KEY}.client_cert_file is set without {KEY}.client_key_file"
+            )));
+        }
+        (None, Some(_)) => {
+            return Err(ConfigError(format!(
+                "{KEY}.client_key_file is set without {KEY}.client_cert_file"
+            )));
+        }
+        _ => {}
+    }
+    if raw.password_file.is_none() && raw.client_cert_file.is_none() {
+        return Err(ConfigError(format!(
+            "set {KEY}.password_file, {KEY}.client_cert_file, or both: a server that asks for \
+             neither is not accepted"
+        )));
+    }
+    let pool = match raw.pool {
+        None => POSTGRES_POOL,
+        Some(pool) => u32::try_from(positive(&format!("{KEY}.pool"), pool)?)
+            .map_err(|_| ConfigError(format!("{KEY}.pool is too large")))?,
+    };
+    let limited = |name: &str, value: Option<u64>, default: Duration| {
+        let key = format!("{KEY}.{name}");
+        let value = seconds(&key, value, default)?;
+        if value.as_secs() > POSTGRES_TIMEOUT_LIMIT {
+            return Err(ConfigError(format!(
+                "{key} is more than {POSTGRES_TIMEOUT_LIMIT} seconds, the longest PostgreSQL holds"
+            )));
+        }
+        Ok(value)
+    };
+    Ok(PostgresSettings {
+        hosts: raw.hosts,
+        port,
+        dbname: raw.dbname,
+        user: raw.user,
+        ca_file: raw.ca_file,
+        password_file: raw.password_file,
+        client_cert_file: raw.client_cert_file,
+        client_key_file: raw.client_key_file,
+        pool,
+        connect_timeout: seconds(
+            &format!("{KEY}.connect_timeout"),
+            raw.connect_timeout,
+            POSTGRES_CONNECT_TIMEOUT,
+        )?,
+        statement_timeout: limited(
+            "statement_timeout",
+            raw.statement_timeout,
+            POSTGRES_STATEMENT_TIMEOUT,
+        )?,
+        lock_timeout: limited("lock_timeout", raw.lock_timeout, POSTGRES_LOCK_TIMEOUT)?,
+    })
+}
+
+/// A database or role name PostgreSQL takes as written: not empty, no NUL,
+/// and no longer than [`POSTGRES_NAME_LIMIT`] bytes.
+fn check_name(key: &str, name: &str) -> Result<(), ConfigError> {
+    let refused = |why: &str| Err(ConfigError(format!("catalog.postgres.{key} {why}")));
+    if name.is_empty() {
+        return refused("is empty");
+    }
+    if name.contains('\0') {
+        return refused("holds a NUL character, which PostgreSQL names cannot");
+    }
+    if name.len() > POSTGRES_NAME_LIMIT {
+        return refused(&format!(
+            "is {} bytes; PostgreSQL would cut it to {POSTGRES_NAME_LIMIT} bytes and name \
+             another database or role",
+            name.len()
+        ));
+    }
+    Ok(())
+}
+
+/// A host the catalog may connect to: an IP address, or a DNS name in
+/// ASCII (RFC 1123 labels). The reason a host is refused, after its name.
+fn check_host(host: &str) -> Result<(), String> {
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return Ok(());
+    }
+    if host.starts_with('/') {
+        return Err(
+            "is a Unix socket, which carries no TLS; the catalog is reached over TCP \
+                    with TLS only"
+                .to_owned(),
+        );
+    }
+    if let Some(bare) = host.strip_prefix('[').and_then(|h| h.strip_suffix(']'))
+        && bare.parse::<std::net::Ipv6Addr>().is_ok()
+    {
+        return Err(format!(
+            "is written in brackets; write the address as {bare:?}"
+        ));
+    }
+    if host.is_empty() {
+        return Err("is empty".to_owned());
+    }
+    if !host.is_ascii() {
+        return Err("is not ASCII; write an internationalized name in its xn-- form".to_owned());
+    }
+    if host.contains(':') {
+        return Err(
+            "holds a colon; give the port in catalog.postgres.port, which every host uses"
+                .to_owned(),
+        );
+    }
+    if host.len() > 253 {
+        return Err("is longer than 253 characters, the longest DNS name".to_owned());
+    }
+    let good_label = |label: &str| {
+        (1..=63).contains(&label.len())
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    };
+    if !host.split('.').all(good_label) {
+        return Err(
+            "is not a DNS name: labels of 1 to 63 letters, digits and hyphens, joined by dots"
+                .to_owned(),
+        );
+    }
+    Ok(())
 }
 
 /// `[export.s3]` checked as `[storage.s3]` is, but for its bucket.
@@ -509,6 +773,32 @@ struct Raw {
     storage: RawStorage,
     #[serde(default)]
     export: RawExport,
+    #[serde(default)]
+    catalog: RawCatalog,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawCatalog {
+    backend: Option<String>,
+    postgres: Option<RawPostgres>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPostgres {
+    hosts: Vec<String>,
+    port: Option<u64>,
+    dbname: String,
+    user: String,
+    ca_file: Option<PathBuf>,
+    password_file: Option<PathBuf>,
+    client_cert_file: Option<PathBuf>,
+    client_key_file: Option<PathBuf>,
+    pool: Option<u64>,
+    connect_timeout: Option<u64>,
+    statement_timeout: Option<u64>,
+    lock_timeout: Option<u64>,
 }
 
 #[derive(Default, Deserialize)]
@@ -657,6 +947,23 @@ secret_access_key_file = "/etc/vcon-server/export.secret"
 allow_http = true
 ca_file = "/etc/vcon-server/export-ca.pem"
 timeout = 120
+
+[catalog]
+backend = "postgres"
+
+[catalog.postgres]
+hosts = ["db1.example.com", "192.0.2.10", "2001:db8::10"]
+port = 6432
+dbname = "vcon"
+user = "vcon_app"
+ca_file = "/etc/vcon-server/pg-ca.pem"
+password_file = "/etc/vcon-server/postgres.password"
+client_cert_file = "/etc/vcon-server/pg-client.pem"
+client_key_file = "/etc/vcon-server/pg-client.key"
+pool = 8
+connect_timeout = 10
+statement_timeout = 60
+lock_timeout = 20
 "#;
 
     #[test]
@@ -713,6 +1020,22 @@ timeout = 120
                         timeout: Duration::from_secs(120),
                     }),
                 },
+                catalog: CatalogStore::Postgres(Box::new(PostgresSettings {
+                    hosts: ["db1.example.com", "192.0.2.10", "2001:db8::10"]
+                        .map(String::from)
+                        .into(),
+                    port: 6432,
+                    dbname: "vcon".to_owned(),
+                    user: "vcon_app".to_owned(),
+                    ca_file: Some("/etc/vcon-server/pg-ca.pem".into()),
+                    password_file: Some("/etc/vcon-server/postgres.password".into()),
+                    client_cert_file: Some("/etc/vcon-server/pg-client.pem".into()),
+                    client_key_file: Some("/etc/vcon-server/pg-client.key".into()),
+                    pool: 8,
+                    connect_timeout: Duration::from_secs(10),
+                    statement_timeout: Duration::from_secs(60),
+                    lock_timeout: Duration::from_secs(20),
+                })),
             }),
             "every key the file writes is read into its field"
         );
@@ -993,6 +1316,48 @@ key = "/etc/vcon-server/key.pem"
             ),
             ("export.s3.ca_file", export.ca_file != least_export.ca_file),
             ("export.s3.timeout", export.timeout != least_export.timeout),
+        ] {
+            assert!(
+                differs,
+                "FULL writes {key} as a value other than its default"
+            );
+        }
+        assert_ne!(
+            full.catalog, least.catalog,
+            "FULL writes catalog.backend as a value other than its default"
+        );
+        let CatalogStore::Postgres(pg) = full.catalog else {
+            panic!("FULL keeps its catalogs in PostgreSQL")
+        };
+        let least_pg = catalog::postgres_least();
+        for (key, differs) in [
+            ("catalog.postgres.port", pg.port != least_pg.port),
+            ("catalog.postgres.ca_file", pg.ca_file != least_pg.ca_file),
+            (
+                "catalog.postgres.password_file",
+                pg.password_file != least_pg.password_file,
+            ),
+            (
+                "catalog.postgres.client_cert_file",
+                pg.client_cert_file != least_pg.client_cert_file,
+            ),
+            (
+                "catalog.postgres.client_key_file",
+                pg.client_key_file != least_pg.client_key_file,
+            ),
+            ("catalog.postgres.pool", pg.pool != least_pg.pool),
+            (
+                "catalog.postgres.connect_timeout",
+                pg.connect_timeout != least_pg.connect_timeout,
+            ),
+            (
+                "catalog.postgres.statement_timeout",
+                pg.statement_timeout != least_pg.statement_timeout,
+            ),
+            (
+                "catalog.postgres.lock_timeout",
+                pg.lock_timeout != least_pg.lock_timeout,
+            ),
         ] {
             assert!(
                 differs,
@@ -1392,7 +1757,8 @@ key = "/etc/vcon-server/key.pem"
             let defaults = parse(LEAST).expect("least");
             let mut all = Vec::new();
             keys(&FULL.parse::<toml::Table>().expect("toml"), "", &mut all);
-            assert_eq!(all.len(), 38, "{all:?}");
+            assert_eq!(all.len(), 51, "{all:?}");
+            let pg = catalog::postgres_least();
             for key in all {
                 let default = match key.as_str() {
                     "listen" | "data_dir" | "master_key" | "tls.cert" | "tls.key" => {
@@ -1435,6 +1801,25 @@ key = "/etc/vcon-server/key.pem"
                     "export.s3.path_style" => format!("`{}`", s3_least().path_style),
                     "export.s3.allow_http" => format!("`{}`", s3_least().allow_http),
                     "export.s3.timeout" => format!("`{}`", S3_TIMEOUT.as_secs()),
+                    "catalog.backend" => "`local`".to_owned(),
+                    "catalog.postgres.hosts"
+                    | "catalog.postgres.dbname"
+                    | "catalog.postgres.user" => "required with `postgres`".to_owned(),
+                    "catalog.postgres.ca_file"
+                    | "catalog.postgres.password_file"
+                    | "catalog.postgres.client_cert_file"
+                    | "catalog.postgres.client_key_file" => "none".to_owned(),
+                    "catalog.postgres.port" => format!("`{}`", pg.port),
+                    "catalog.postgres.pool" => format!("`{}`", pg.pool),
+                    "catalog.postgres.connect_timeout" => {
+                        format!("`{}`", pg.connect_timeout.as_secs())
+                    }
+                    "catalog.postgres.statement_timeout" => {
+                        format!("`{}`", pg.statement_timeout.as_secs())
+                    }
+                    "catalog.postgres.lock_timeout" => {
+                        format!("`{}`", pg.lock_timeout.as_secs())
+                    }
                     "supported_critical" => {
                         assert!(
                             defaults.supported_critical.is_empty(),
@@ -1480,7 +1865,12 @@ key = "/etc/vcon-server/key.pem"
         #[test]
         fn every_example_file_on_the_site_reads() {
             let mut examples = 0;
-            for name in ["configuration.md", "getting-started.md", "container.md"] {
+            for name in [
+                "configuration.md",
+                "getting-started.md",
+                "container.md",
+                "postgres-catalog.md",
+            ] {
                 let text = page(name);
                 for block in text.split("```toml\n").skip(1) {
                     let toml = block.split("```").next().expect("a block");
@@ -1489,10 +1879,579 @@ key = "/etc/vcon-server/key.pem"
                 }
             }
             assert_eq!(
-                examples, 5,
-                "three on the configuration page, one each on getting started and the \
-                 container page, so a block the split misses is caught"
+                examples, 7,
+                "four on the configuration page, one each on getting started, the \
+                 container page and the PostgreSQL catalog page, so a block the split misses \
+                 is caught"
             );
+        }
+    }
+
+    /// The `[catalog]` table: where the catalogs and the registry are kept,
+    /// and how the PostgreSQL database is reached.
+    mod catalog {
+        use super::*;
+
+        /// LEAST with its objects in a bucket and its catalogs in PostgreSQL,
+        /// with only the `[catalog.postgres]` keys that have no default and
+        /// a password file.
+        pub(super) fn postgres_text() -> String {
+            format!(
+                "{LEAST}\n[storage]\nobjects = \"s3\"\n\n[storage.s3]\nregion = \"us-east-1\"\n\
+                 bucket = \"vcon\"\n\n[catalog]\nbackend = \"postgres\"\n\n[catalog.postgres]\n\
+                 hosts = [\"db1.example.com\"]\ndbname = \"vcon\"\nuser = \"vcon_app\"\n\
+                 password_file = \"/etc/vcon-server/pg.password\"\n"
+            )
+        }
+
+        /// `postgres_text` with `from` replaced by `to`; `from` must be there.
+        fn edited(from: &str, to: &str) -> String {
+            let text = postgres_text();
+            assert!(text.contains(from), "the least text holds {from:?}");
+            text.replace(from, to)
+        }
+
+        /// `postgres_text` with `line` added to `[catalog.postgres]`.
+        fn with(line: &str) -> String {
+            format!("{}{line}\n", postgres_text())
+        }
+
+        /// The PostgreSQL settings `text` reads to.
+        fn postgres(text: &str) -> PostgresSettings {
+            match parse(text)
+                .unwrap_or_else(|e| panic!("{e}\n{text}"))
+                .catalog
+            {
+                CatalogStore::Postgres(pg) => *pg,
+                CatalogStore::Local => panic!("backend = \"postgres\" keeps the catalogs there"),
+            }
+        }
+
+        /// The PostgreSQL settings with only the keys that have no default.
+        pub(super) fn postgres_least() -> PostgresSettings {
+            postgres(&postgres_text())
+        }
+
+        /// The message `text` is refused with.
+        fn refused(text: &str) -> String {
+            parse(text).expect_err(text).0
+        }
+
+        mod success {
+            use super::*;
+
+            #[test]
+            fn a_postgres_catalog_is_read_with_its_defaults() {
+                assert_eq!(
+                    postgres_least(),
+                    PostgresSettings {
+                        hosts: vec!["db1.example.com".to_owned()],
+                        port: 5432,
+                        dbname: "vcon".to_owned(),
+                        user: "vcon_app".to_owned(),
+                        ca_file: None,
+                        password_file: Some("/etc/vcon-server/pg.password".into()),
+                        client_cert_file: None,
+                        client_key_file: None,
+                        pool: 16,
+                        connect_timeout: Duration::from_secs(5),
+                        statement_timeout: Duration::from_secs(30),
+                        lock_timeout: Duration::from_secs(10),
+                    },
+                    "only hosts, dbname, user and a way to log in are required"
+                );
+            }
+
+            #[test]
+            fn without_a_catalog_table_the_catalogs_are_local() {
+                assert_eq!(
+                    parse(LEAST).expect("parses").catalog,
+                    CatalogStore::Local,
+                    "a file written before the PostgreSQL catalog keeps its meaning"
+                );
+            }
+
+            #[test]
+            fn backend_local_is_the_local_catalog() {
+                let text = format!("{LEAST}\n[catalog]\nbackend = \"local\"\n");
+                assert_eq!(
+                    parse(&text).expect("parses").catalog,
+                    CatalogStore::Local,
+                    "\"local\" names the default"
+                );
+            }
+
+            #[test]
+            fn a_client_certificate_alone_is_enough_to_log_in() {
+                let text = edited(
+                    "password_file = \"/etc/vcon-server/pg.password\"\n",
+                    "client_cert_file = \"/c.pem\"\nclient_key_file = \"/c.key\"\n",
+                );
+                let pg = postgres(&text);
+                assert_eq!(
+                    (pg.password_file, pg.client_cert_file, pg.client_key_file),
+                    (None, Some("/c.pem".into()), Some("/c.key".into())),
+                    "a certificate and its key, with no password"
+                );
+            }
+
+            #[test]
+            fn a_password_and_a_client_certificate_are_read_together() {
+                let pg = postgres(&with(
+                    "client_cert_file = \"/c.pem\"\nclient_key_file = \"/c.key\"",
+                ));
+                assert!(
+                    pg.password_file.is_some() && pg.client_cert_file.is_some(),
+                    "both ways of logging in, as pg_hba.conf's clientcert=verify-full asks"
+                );
+            }
+
+            #[test]
+            fn several_hosts_are_kept_in_their_order() {
+                let text = edited(
+                    "hosts = [\"db1.example.com\"]",
+                    "hosts = [\"db2.example.com\", \"db1.example.com\", \"192.0.2.10\"]",
+                );
+                assert_eq!(
+                    postgres(&text).hosts,
+                    ["db2.example.com", "db1.example.com", "192.0.2.10"],
+                    "tried in the order written"
+                );
+            }
+
+            #[test]
+            fn parquet_storage_with_a_postgres_catalog_is_read() {
+                let text = edited(
+                    "bucket = \"vcon\"\n",
+                    "bucket = \"vcon\"\n\n[storage.parquet]\n",
+                );
+                let config = parse(&text).expect("parses");
+                assert!(
+                    config.storage.parquet.is_some()
+                        && matches!(config.catalog, CatalogStore::Postgres(_)),
+                    "Parquet files in the bucket and the catalogs in PostgreSQL"
+                );
+            }
+        }
+
+        mod failure {
+            use super::*;
+
+            /// `text` is refused with a message holding every one of `names`.
+            fn refused_naming(text: &str, names: &[&str]) {
+                let message = refused(text);
+                for name in names {
+                    assert!(message.contains(name), "names {name}: {message}");
+                }
+            }
+
+            #[test]
+            fn an_unknown_backend_is_named() {
+                refused_naming(
+                    &edited("backend = \"postgres\"", "backend = \"mysql\""),
+                    &["catalog.backend", "\"mysql\""],
+                );
+            }
+
+            #[test]
+            fn a_postgres_table_without_the_postgres_backend_is_refused() {
+                refused_naming(
+                    &edited("backend = \"postgres\"", "backend = \"local\""),
+                    &["catalog.postgres", "catalog.backend"],
+                );
+            }
+
+            #[test]
+            fn the_postgres_backend_without_its_table_is_refused() {
+                let text = format!(
+                    "{LEAST}\n[storage]\nobjects = \"s3\"\n[storage.s3]\nregion = \"us-east-1\"\n\
+                     bucket = \"vcon\"\n[catalog]\nbackend = \"postgres\"\n"
+                );
+                refused_naming(&text, &["catalog.postgres"]);
+            }
+
+            #[test]
+            fn a_postgres_catalog_with_local_objects_is_refused() {
+                let text = format!(
+                    "{LEAST}\n[catalog]\nbackend = \"postgres\"\n[catalog.postgres]\n\
+                     hosts = [\"db1.example.com\"]\ndbname = \"vcon\"\nuser = \"vcon_app\"\n\
+                     password_file = \"/p\"\n"
+                );
+                refused_naming(&text, &["catalog.backend", "storage.objects", "\"s3\""]);
+            }
+
+            #[test]
+            fn an_empty_host_list_is_refused() {
+                refused_naming(
+                    &edited("hosts = [\"db1.example.com\"]", "hosts = []"),
+                    &["catalog.postgres.hosts"],
+                );
+            }
+
+            #[test]
+            fn an_empty_host_name_is_refused() {
+                refused_naming(
+                    &edited("hosts = [\"db1.example.com\"]", "hosts = [\"\"]"),
+                    &["catalog.postgres.hosts"],
+                );
+            }
+
+            #[test]
+            fn a_host_that_is_not_a_dns_name_is_refused() {
+                for host in [
+                    "db_1.example.com",
+                    "db..example.com",
+                    "-db.example.com",
+                    "db .example.com",
+                ] {
+                    refused_naming(
+                        &edited("\"db1.example.com\"", &format!("{host:?}")),
+                        &["catalog.postgres.hosts", host],
+                    );
+                }
+            }
+
+            #[test]
+            fn a_missing_host_list_is_named() {
+                refused_naming(&edited("hosts = [\"db1.example.com\"]\n", ""), &["hosts"]);
+            }
+
+            #[test]
+            fn a_port_of_zero_is_refused() {
+                refused_naming(&with("port = 0"), &["catalog.postgres.port"]);
+            }
+
+            #[test]
+            fn a_port_above_65535_is_refused() {
+                refused_naming(&with("port = 65536"), &["catalog.postgres.port"]);
+            }
+
+            #[test]
+            fn an_empty_database_name_is_refused() {
+                refused_naming(
+                    &edited("dbname = \"vcon\"", "dbname = \"\""),
+                    &["catalog.postgres.dbname"],
+                );
+            }
+
+            #[test]
+            fn a_missing_database_name_is_named() {
+                refused_naming(&edited("dbname = \"vcon\"\n", ""), &["dbname"]);
+            }
+
+            #[test]
+            fn an_empty_user_is_refused() {
+                refused_naming(
+                    &edited("user = \"vcon_app\"", "user = \"\""),
+                    &["catalog.postgres.user"],
+                );
+            }
+
+            #[test]
+            fn a_missing_user_is_named() {
+                refused_naming(&edited("user = \"vcon_app\"\n", ""), &["user"]);
+            }
+
+            #[test]
+            fn no_password_and_no_client_certificate_is_refused() {
+                refused_naming(
+                    &edited("password_file = \"/etc/vcon-server/pg.password\"\n", ""),
+                    &[
+                        "catalog.postgres.password_file",
+                        "catalog.postgres.client_cert_file",
+                    ],
+                );
+            }
+
+            #[test]
+            fn a_client_certificate_without_its_key_is_refused() {
+                refused_naming(
+                    &with("client_cert_file = \"/c.pem\""),
+                    &["catalog.postgres.client_key_file"],
+                );
+            }
+
+            #[test]
+            fn a_client_key_without_its_certificate_is_refused() {
+                refused_naming(
+                    &with("client_key_file = \"/c.key\""),
+                    &["catalog.postgres.client_cert_file"],
+                );
+            }
+
+            #[test]
+            fn an_empty_file_name_is_refused() {
+                for (key, text) in [
+                    ("ca_file", with("ca_file = \"\"")),
+                    (
+                        "password_file",
+                        edited("\"/etc/vcon-server/pg.password\"", "\"\""),
+                    ),
+                    (
+                        "client_cert_file",
+                        with("client_cert_file = \"\"\nclient_key_file = \"/c.key\""),
+                    ),
+                    (
+                        "client_key_file",
+                        with("client_cert_file = \"/c.pem\"\nclient_key_file = \"\""),
+                    ),
+                ] {
+                    refused_naming(&text, &[&format!("catalog.postgres.{key}")]);
+                }
+            }
+
+            #[test]
+            fn a_pool_of_zero_is_refused() {
+                refused_naming(&with("pool = 0"), &["catalog.postgres.pool"]);
+            }
+
+            #[test]
+            fn a_pool_too_large_to_count_is_refused() {
+                refused_naming(&with("pool = 4294967296"), &["catalog.postgres.pool"]);
+            }
+
+            #[test]
+            fn a_connect_timeout_of_zero_is_refused() {
+                refused_naming(
+                    &with("connect_timeout = 0"),
+                    &["catalog.postgres.connect_timeout"],
+                );
+            }
+
+            #[test]
+            fn a_statement_timeout_of_zero_is_refused() {
+                refused_naming(
+                    &with("statement_timeout = 0"),
+                    &["catalog.postgres.statement_timeout"],
+                );
+            }
+
+            #[test]
+            fn a_lock_timeout_of_zero_is_refused() {
+                refused_naming(
+                    &with("lock_timeout = 0"),
+                    &["catalog.postgres.lock_timeout"],
+                );
+            }
+
+            /// There is no sslmode: TLS with verification is the only mode.
+            #[test]
+            fn an_sslmode_key_is_an_unknown_key() {
+                refused_naming(&with("sslmode = \"disable\""), &["`sslmode`"]);
+            }
+
+            #[test]
+            fn an_unknown_key_in_the_catalog_table_is_named() {
+                refused_naming(
+                    &edited(
+                        "backend = \"postgres\"",
+                        "backend = \"postgres\"\nreplicas = 2",
+                    ),
+                    &["`replicas`"],
+                );
+            }
+        }
+
+        mod edge {
+            use super::*;
+
+            fn host_text(host: &str) -> String {
+                edited("\"db1.example.com\"", &format!("{host:?}"))
+            }
+
+            #[test]
+            fn ipv6_hosts_are_read() {
+                for host in ["2001:db8::10", "::1", "2001:db8:0:0:0:0:0:10"] {
+                    assert_eq!(
+                        postgres(&host_text(host)).hosts,
+                        [host],
+                        "an IPv6 address is a host as written"
+                    );
+                }
+            }
+
+            #[test]
+            fn a_bracketed_ipv6_host_is_refused_with_its_bare_form() {
+                let message = refused(&host_text("[2001:db8::10]"));
+                assert!(
+                    message.contains("catalog.postgres.hosts")
+                        && message.contains("\"2001:db8::10\""),
+                    "names the key and the form to write: {message}"
+                );
+            }
+
+            /// A Unix socket carries no TLS, and TLS is the only way the
+            /// catalog is reached.
+            #[test]
+            fn a_unix_socket_host_is_refused_because_tls_is_required() {
+                let message = refused(&host_text("/var/run/postgresql"));
+                assert!(
+                    message.contains("catalog.postgres.hosts")
+                        && message.contains("Unix socket")
+                        && message.contains("TLS"),
+                    "says why: {message}"
+                );
+            }
+
+            #[test]
+            fn a_unicode_host_name_is_refused_with_a_pointer_to_its_ascii_form() {
+                let message = refused(&host_text("bücher.example.com"));
+                assert!(
+                    message.contains("catalog.postgres.hosts") && message.contains("xn--"),
+                    "an internationalized name is written in its xn-- form: {message}"
+                );
+            }
+
+            #[test]
+            fn an_ascii_form_of_a_unicode_host_name_is_read() {
+                assert_eq!(
+                    postgres(&host_text("xn--bcher-kva.example.com")).hosts,
+                    ["xn--bcher-kva.example.com"],
+                    "the xn-- form is a DNS name"
+                );
+            }
+
+            #[test]
+            fn unicode_database_and_role_names_are_read() {
+                let text = edited("dbname = \"vcon\"", "dbname = \"vcon_数据\"")
+                    .replace("user = \"vcon_app\"", "user = \"vcon_ünï\"");
+                let pg = postgres(&text);
+                assert_eq!(
+                    (pg.dbname.as_str(), pg.user.as_str()),
+                    ("vcon_数据", "vcon_ünï"),
+                    "PostgreSQL names may hold any character but NUL"
+                );
+            }
+
+            /// PostgreSQL cuts a longer name to 63 bytes, which would log in
+            /// to another database or as another role than written.
+            #[test]
+            fn a_name_of_63_bytes_is_read_and_one_of_64_refused() {
+                let at_limit = "数".repeat(21);
+                assert_eq!(at_limit.len(), 63, "21 three-byte characters");
+                for key in ["dbname", "user"] {
+                    let line = |name: &str| format!("{key} = \"{name}\"");
+                    let from = if key == "dbname" {
+                        "dbname = \"vcon\""
+                    } else {
+                        "user = \"vcon_app\""
+                    };
+                    let pg = postgres(&edited(from, &line(&at_limit)));
+                    let read = if key == "dbname" { pg.dbname } else { pg.user };
+                    assert_eq!(read, at_limit, "{key}: 63 bytes is PostgreSQL's limit");
+                    let message = refused(&edited(from, &line(&format!("{at_limit}a"))));
+                    assert!(
+                        message.contains(&format!("catalog.postgres.{key}"))
+                            && message.contains("63 bytes"),
+                        "{key}: {message}"
+                    );
+                }
+            }
+
+            #[test]
+            fn a_nul_in_a_name_is_refused() {
+                for (from, to, key) in [
+                    ("dbname = \"vcon\"", "dbname = \"vc\\u0000on\"", "dbname"),
+                    ("user = \"vcon_app\"", "user = \"vcon\\u0000\"", "user"),
+                ] {
+                    let message = refused(&edited(from, to));
+                    assert!(
+                        message.contains(&format!("catalog.postgres.{key}"))
+                            && message.contains("NUL"),
+                        "{key}: {message}"
+                    );
+                }
+            }
+
+            #[test]
+            fn the_first_and_last_ports_are_read() {
+                for port in [1, 65535] {
+                    assert_eq!(
+                        u64::from(postgres(&with(&format!("port = {port}"))).port),
+                        port,
+                        "every TCP port but 0"
+                    );
+                }
+            }
+
+            /// PostgreSQL holds both timeouts as milliseconds in a 32-bit
+            /// integer: 2147483647 ms, so 2147483 whole seconds.
+            #[test]
+            fn timeouts_at_the_postgresql_limit_are_read_and_one_past_refused() {
+                for key in ["statement_timeout", "lock_timeout"] {
+                    let pg = postgres(&with(&format!("{key} = 2147483")));
+                    let read = if key == "statement_timeout" {
+                        pg.statement_timeout
+                    } else {
+                        pg.lock_timeout
+                    };
+                    assert_eq!(read, Duration::from_secs(2_147_483), "{key} at the limit");
+                    let message = refused(&with(&format!("{key} = 2147484")));
+                    assert!(
+                        message.contains(&format!("catalog.postgres.{key}"))
+                            && message.contains("2147483"),
+                        "{key}: {message}"
+                    );
+                }
+            }
+
+            #[test]
+            fn a_one_second_connect_timeout_is_read() {
+                assert_eq!(
+                    postgres(&with("connect_timeout = 1")).connect_timeout,
+                    Duration::from_secs(1),
+                    "the shortest timeout"
+                );
+            }
+
+            #[test]
+            fn the_same_host_twice_is_refused() {
+                let message = refused(&edited(
+                    "hosts = [\"db1.example.com\"]",
+                    "hosts = [\"db1.example.com\", \"DB1.example.com\"]",
+                ));
+                assert!(
+                    message.contains("catalog.postgres.hosts") && message.contains("twice"),
+                    "a DNS name in any case is one host: {message}"
+                );
+            }
+
+            #[test]
+            fn a_dns_label_of_63_characters_is_read_and_one_of_64_refused() {
+                let label = "a".repeat(63);
+                let host = format!("{label}.example.com");
+                assert_eq!(
+                    postgres(&host_text(&host)).hosts,
+                    [host],
+                    "63 is the DNS limit"
+                );
+                let message = refused(&host_text(&format!("a{label}.example.com")));
+                assert!(message.contains("catalog.postgres.hosts"), "{message}");
+            }
+
+            #[test]
+            fn a_host_name_of_more_than_253_characters_is_refused() {
+                let label = "a".repeat(63);
+                let at_limit = format!("{label}.{label}.{label}.{}", "a".repeat(61));
+                assert_eq!(at_limit.len(), 253, "four labels");
+                assert_eq!(
+                    postgres(&host_text(&at_limit)).hosts,
+                    std::slice::from_ref(&at_limit),
+                    "253 characters is the DNS limit"
+                );
+                let message = refused(&host_text(&format!("a{at_limit}")));
+                assert!(message.contains("catalog.postgres.hosts"), "{message}");
+            }
+
+            #[test]
+            fn a_port_written_in_a_host_is_refused_with_the_port_key_named() {
+                let message = refused(&host_text("db1.example.com:5432"));
+                assert!(
+                    message.contains("catalog.postgres.hosts")
+                        && message.contains("catalog.postgres.port"),
+                    "the port has its own key: {message}"
+                );
+            }
         }
     }
 

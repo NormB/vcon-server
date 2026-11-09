@@ -105,6 +105,12 @@ binaries and in `cargo install`. Both need the `s3` cargo feature, which is
 on by default; `cargo build --release -p vcon-server --no-default-features`
 leaves it out.
 
+The `postgres` cargo feature, which is not on by default and not in the
+release binaries, adds a preview of the
+[PostgreSQL catalog](https://vcon-server.com/docs/postgres-catalog/): the
+server connects to PostgreSQL over TLS, checks it, and stops, since the
+catalogs are not kept there yet.
+
 ## Contributing
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) first. Every contributor signs the

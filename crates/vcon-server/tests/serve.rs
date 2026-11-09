@@ -907,7 +907,7 @@ mod s3 {
     }
 
     /// curl, signing its request for S3 with the test service's keys.
-    fn signed(method: &str, path: &str) -> String {
+    pub(super) fn signed(method: &str, path: &str) -> String {
         let output = Command::new("curl")
             .args(["-sS", "--fail-with-body", "-X", method])
             .args(["--aws-sigv4", "aws:amz:us-east-1:s3", "--user"])
@@ -933,7 +933,7 @@ mod s3 {
     }
 
     /// `s`'s configuration with its objects in `bucket`, and no keys.
-    fn in_bucket(s: &Setup, bucket: &str) {
+    pub(super) fn in_bucket(s: &Setup, bucket: &str) {
         let mut text = std::fs::read_to_string(&s.config).expect("reads");
         text.push_str(&format!(
             "\n[storage]\nobjects = \"s3\"\n\n[storage.s3]\nendpoint = \"{}\"\nregion = \
@@ -949,7 +949,7 @@ mod s3 {
     }
 
     /// `command`, with the test service's keys in the environment only.
-    fn with_keys(mut command: Command) -> Command {
+    pub(super) fn with_keys(mut command: Command) -> Command {
         for name in ["AWS_PROFILE", "AWS_SESSION_TOKEN", "AWS_CONFIG_FILE"] {
             command.env_remove(name);
         }
@@ -1249,6 +1249,79 @@ mod s3 {
             names(&bucket),
             ["vcon-server.claim"],
             "only the claim is left in the bucket"
+        );
+    }
+}
+
+/// With the catalogs in PostgreSQL, a preview in this release: against the
+/// servers `scripts/pg-test-server.sh` starts (`VCON_TEST_PG_*`) and the
+/// S3-compatible service of `VCON_TEST_S3_*`, since a PostgreSQL catalog
+/// needs its objects in a bucket.
+#[cfg(all(feature = "backend-tests", feature = "postgres"))]
+mod postgres {
+    use super::*;
+
+    fn var(name: &str) -> String {
+        std::env::var(name).unwrap_or_else(|_| {
+            panic!("{name} is not set: these tests need scripts/pg-test-server.sh's servers")
+        })
+    }
+
+    /// `s`'s configuration with its objects in a new bucket and its
+    /// catalogs on the test primary, trusting the CA in `ca`.
+    fn on_postgres(s: &Setup, ca: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let bucket = format!("vcon-pg-{}", &TenantId::generate().to_string()[..12]);
+        s3::signed("PUT", &bucket);
+        s3::in_bucket(s, &bucket);
+        let dir = PathBuf::from(var("VCON_TEST_PG_DIR"));
+        let password = s.dir.path().join("pg.password");
+        std::fs::copy(dir.join("password"), &password).expect("copies the password");
+        std::fs::set_permissions(&password, std::fs::Permissions::from_mode(0o600)).expect("mode");
+        let mut text = std::fs::read_to_string(&s.config).expect("reads");
+        text.push_str(&format!(
+            "\n[catalog]\nbackend = \"postgres\"\n\n[catalog.postgres]\nhosts = \
+             [\"localhost\"]\nport = {}\ndbname = \"vcon\"\nuser = \"vcon_app\"\n\
+             ca_file = \"{}\"\npassword_file = \"{}\"\n",
+            var("VCON_TEST_PG_PORT"),
+            dir.join(ca).display(),
+            password.display()
+        ));
+        std::fs::write(&s.config, text).expect("writes");
+    }
+
+    #[test]
+    fn serve_reaches_postgresql_over_tls_then_refuses_to_go_on_as_a_preview() {
+        let s = setup();
+        on_postgres(&s, "ca.pem");
+        let out = refused(s3::with_keys(serve(&s)));
+        let text = stderr(&out);
+        assert_eq!(out.status.code(), Some(1), "exit 1: {text}");
+        assert!(
+            text.contains(&format!(
+                "connected to PostgreSQL {}.",
+                var("VCON_TEST_PG_MAJOR")
+            )) && text.contains("as vcon_app over TLS")
+                && text.contains("a preview"),
+            "names what it reached and why it stops: {text}"
+        );
+        let password =
+            std::fs::read_to_string(PathBuf::from(var("VCON_TEST_PG_DIR")).join("password"))
+                .expect("reads");
+        assert!(
+            !text.contains(password.trim_end()),
+            "never the password: {text}"
+        );
+    }
+
+    #[test]
+    fn serve_refuses_a_postgresql_server_whose_certificate_another_authority_signed() {
+        let s = setup();
+        on_postgres(&s, "wrong-ca.pem");
+        let text = stderr(&refused(s3::with_keys(serve(&s))));
+        assert!(
+            text.contains("not signed by an authority in catalog.postgres.ca_file"),
+            "{text}"
         );
     }
 }

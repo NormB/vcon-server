@@ -259,6 +259,7 @@ pub fn run(config: &Config, command: &Command, out: &mut dyn Write) -> Result<()
     let sharing = command.work().sharing();
     let _lock = datadir::lock(&config.data_dir, sharing).map_err(CommandError::DataDir)?;
     let master = Key::load_master(&config.master_key).map_err(CommandError::MasterKey)?;
+    backend::catalog_for_command(&config.catalog).map_err(CommandError::Storage)?;
     // A master rotation renames over server.sqlite, so nothing may hold it
     // open: it runs before the registry is opened.
     if let Command::RekeyMaster { new_master } = command {

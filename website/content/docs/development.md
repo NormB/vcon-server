@@ -108,6 +108,29 @@ docker stop vcon-rustfs
 Each test makes a bucket of its own, so a run leaves buckets behind;
 `docker stop` removes the container and them.
 
+The PostgreSQL catalog's connector and pool (the `postgres` cargo feature, a
+preview) are tested against real PostgreSQL servers as well. With both
+`postgres` and `backend-tests`, the tests in `backend::postgres::` connect
+to the servers `scripts/pg-test-server.sh` starts in containers: a primary
+with TLS and one test role for each way of logging in, a hot standby of it,
+and a server with ssl off. CI's "catalog backends (PostgreSQL N)" jobs run
+them on PostgreSQL 16 and 18, each image pinned by digest, with RustFS
+beside them for `serve`'s test, since a PostgreSQL catalog needs its objects
+in a bucket. As with S3, the tests fail, never skip, when the servers are
+not there. With the RustFS above still running:
+
+```sh
+image=postgres@sha256:f4610795587492cd4fb887c2dc3de301b813278bb6f616992061141b5f15ac36 # 16.15-alpine
+scripts/pg-test-server.sh start "$image" "$PWD/target/pg-test"
+set -a; . target/pg-test/env; set +a
+scripts/nextest.sh run -p vcon-server --features postgres,backend-tests --lib backend::postgres::
+scripts/nextest.sh run -p vcon-server --features postgres,backend-tests --test serve postgres::
+scripts/pg-test-server.sh stop "$PWD/target/pg-test"
+```
+
+`stop` removes the containers and the network `start` made, by the ids
+`start` recorded, and the directory.
+
 ## Linking
 
 Test and development builds on aarch64 Linux link with the Rust

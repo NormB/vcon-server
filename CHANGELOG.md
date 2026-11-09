@@ -8,6 +8,29 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- A preview of the PostgreSQL catalog, behind the `postgres` cargo feature
+  (not on by default; it turns on `s3`). The `[catalog]` table names where
+  the catalogs are kept: `backend = "local"`, the default, or `"postgres"`
+  with a `[catalog.postgres]` table, which needs `storage.objects = "s3"`.
+  Every key is checked at start, each refusal naming its key: hosts (DNS
+  names in ASCII or IP addresses, no Unix socket), the port, database and
+  role names of at most 63 bytes with no NUL, a password file or a client
+  certificate, the pool size and the timeouts. With it, `serve` and every
+  command read the password file and the client key once, refusing a file
+  other users may read, connect over TLS with the certificate chain and the
+  host name verified by rustls, log in only by SCRAM-SHA-256 with channel
+  binding or a client certificate (a server that asks for `md5`, a plain
+  password or `trust` is refused before the password is sent), refuse a
+  standby, a read-only server, a superuser and a role with `BYPASSRLS`, and
+  then stop with exit code 1, since the catalogs are not kept in PostgreSQL
+  yet. The connections come from a pool in the crate. New dependencies:
+  tokio-postgres 0.7.18 and tokio-postgres-rustls 0.14.0. The how-to "Keep
+  the catalogs in PostgreSQL" covers the database's side and each refusal.
+- `scripts/pg-test-server.sh` starts the PostgreSQL servers the catalog's
+  tests run against, in containers with TLS (a primary, a hot standby and a
+  server with ssl off), and removes them. CI's "catalog backends
+  (PostgreSQL 16)" and "(PostgreSQL 18)" jobs run those tests, and `serve`
+  with a PostgreSQL catalog beside RustFS.
 - `scripts/check_action_pins.py`, run by CI's scan job and the commit hook,
   refuses a `uses:` in `.github/workflows/` or `.github/actions/` that is not
   a local path in the repository or `owner/repo@<40-hex commit> # v<version>`:

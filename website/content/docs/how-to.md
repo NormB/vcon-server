@@ -29,6 +29,11 @@ shows. `scripts/docs_test.py` runs them. See
   still reads back, a read with DuckDB, what a purge removes from the bucket
   and from the storage's disks, and what each refusal means. CI runs it with
   RustFS.
+- [Keep the catalogs in PostgreSQL](@/docs/postgres-catalog.md), a preview
+  that CI does not run yet: the database's side, the role, TLS and client
+  certificates, the configuration and the secret files, and what each
+  refusal at start means. In this release the server connects, checks the
+  server and stops.
 
 ## Use it
 
