@@ -223,17 +223,26 @@ pub(super) mod live {
         (tmp, s)
     }
 
-    /// `as_user`, logging in with `user`'s client certificate as well, or
-    /// with it alone when `password` is false.
+    /// How a test with a client certificate logs in.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum Login {
+        /// The certificate, and no password file.
+        CertificateAlone,
+        /// The certificate, and the password file as well.
+        CertificateAndSecret,
+    }
+
+    /// `as_user`, with `user`'s client certificate, logging in as `login`
+    /// says.
     pub(crate) fn with_certificate(
         user: &str,
-        password: bool,
+        login: Login,
     ) -> (tempfile::TempDir, PostgresSettings) {
         let (tmp, mut s) = as_user(user);
         let key = std::fs::read(dir().join(format!("{user}.key"))).expect("the client key");
         s.client_key_file = Some(file(tmp.path(), "client.key", &key, 0o600));
         s.client_cert_file = Some(dir().join(format!("{user}.crt")));
-        if !password {
+        if login == Login::CertificateAlone {
             s.password_file = None;
         }
         (tmp, s)

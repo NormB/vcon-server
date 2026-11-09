@@ -102,7 +102,7 @@ fn a_target_names_its_host_and_port_and_brackets_an_ipv6_address() {
 /// Against the containers of `scripts/pg-test-server.sh`.
 #[cfg(feature = "backend-tests")]
 mod live {
-    use super::super::live::{self, as_user, value, with_certificate};
+    use super::super::live::{self, Login, as_user, value, with_certificate};
     use super::super::{connect, connector_to, pool};
     use super::*;
 
@@ -138,7 +138,7 @@ mod live {
 
     #[tokio::test]
     async fn a_client_certificate_alone_logs_in() {
-        let (_tmp, s) = with_certificate("vcon_cert", false);
+        let (_tmp, s) = with_certificate("vcon_cert", Login::CertificateAlone);
         let c = connect(&s).await.expect("connects with the certificate");
         assert_eq!(c.server.user, "vcon_cert", "pg_hba.conf's cert line");
         assert_eq!(
@@ -154,7 +154,7 @@ mod live {
 
     #[tokio::test]
     async fn a_client_certificate_and_a_password_log_in_together() {
-        let (_tmp, s) = with_certificate("vcon_both", true);
+        let (_tmp, s) = with_certificate("vcon_both", Login::CertificateAndSecret);
         let c = connect(&s).await.expect("connects");
         assert_eq!(
             c.server.user, "vcon_both",
@@ -218,7 +218,7 @@ mod live {
 
     #[tokio::test]
     async fn the_pool_reconnects_from_memory_once_the_secret_files_are_gone() {
-        let (tmp, s) = with_certificate("vcon_both", true);
+        let (tmp, s) = with_certificate("vcon_both", Login::CertificateAndSecret);
         let pool = pool(&s);
         let first = pool.get().await.expect("a connection");
         std::fs::remove_file(tmp.path().join("pg.password")).expect("removes the password");

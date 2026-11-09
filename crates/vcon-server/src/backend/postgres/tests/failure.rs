@@ -163,7 +163,7 @@ async fn a_server_that_does_not_offer_tls_is_refused() {
 #[cfg(feature = "backend-tests")]
 mod live {
     use super::super::super::connect::Target;
-    use super::super::live::{self, as_user, value, with_certificate};
+    use super::super::live::{self, Login, as_user, value, with_certificate};
     use super::super::{connector_to, pool};
     use super::*;
 
@@ -298,7 +298,7 @@ mod live {
 
     #[tokio::test]
     async fn a_client_certificate_from_another_authority_is_refused_by_the_server() {
-        let (tmp, mut s) = with_certificate("vcon_cert", false);
+        let (tmp, mut s) = with_certificate("vcon_cert", Login::CertificateAlone);
         let key = std::fs::read(live::dir().join("stranger.key")).expect("the key");
         s.client_key_file = Some(file(tmp.path(), "client.key", &key, 0o600));
         s.client_cert_file = Some(live::dir().join("stranger.crt"));
@@ -313,7 +313,7 @@ mod live {
 
     #[tokio::test]
     async fn a_server_that_asks_for_a_password_none_was_given_for_is_refused() {
-        let (_tmp, mut s) = with_certificate("vcon_cert", false);
+        let (_tmp, mut s) = with_certificate("vcon_cert", Login::CertificateAlone);
         s.user = "vcon_app".to_owned();
         let message = refused(&s).await;
         assert!(
