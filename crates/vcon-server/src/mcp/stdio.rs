@@ -98,7 +98,7 @@ impl std::error::Error for StdioError {}
 impl fmt::Display for StdioError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            StdioError::KeyFile(why) => write!(f, "key_file: {why}"),
+            StdioError::KeyFile(why) => f.write_str(why),
             StdioError::Tls(why) => write!(f, "ca: {why}"),
             StdioError::Refused(status) => {
                 write!(f, "the server refused the key ({status})")
@@ -110,15 +110,15 @@ impl fmt::Display for StdioError {
 }
 
 /// The one token a key file holds, with white space at either end removed.
+/// The file is held to the one secret-file rule (`crate::secret_file`).
 fn token(key_file: &Path) -> Result<String, StdioError> {
-    let text = std::fs::read_to_string(key_file)
-        .map_err(|e| StdioError::KeyFile(format!("{}: {e}", key_file.display())))?;
+    let refused =
+        |why: &str| StdioError::KeyFile(format!("key_file {}: {why}", key_file.display()));
+    let bytes = crate::secret_file::read(key_file, "key_file").map_err(StdioError::KeyFile)?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| refused("the file is not UTF-8"))?;
     let token = text.trim();
     if token.is_empty() || token.contains(char::is_whitespace) {
-        return Err(StdioError::KeyFile(format!(
-            "{}: holds no single token",
-            key_file.display()
-        )));
+        return Err(refused("holds no single token"));
     }
     Ok(token.to_owned())
 }
@@ -317,8 +317,8 @@ mod tests {
     fn each_error_names_what_failed() {
         for (error, text) in [
             (
-                StdioError::KeyFile("k: gone".to_owned()),
-                "key_file: k: gone",
+                StdioError::KeyFile("key_file k: gone".to_owned()),
+                "key_file k: gone",
             ),
             (StdioError::Tls("c: bad".to_owned()), "ca: c: bad"),
             (StdioError::Refused(401), "the server refused the key (401)"),
@@ -350,6 +350,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let file = dir.path().join("agent.token");
         std::fs::write(&file, "  vcs_0011223344556677_secret \n").expect("write");
+        key_mode(&file, 0o600);
         assert_eq!(token(&file).expect("read"), "vcs_0011223344556677_secret");
         for text in ["", " \n", "vcs_a b"] {
             std::fs::write(&file, text).expect("write");
@@ -461,6 +462,56 @@ mod tests {
         assert!(
             bytes < 32 * 1024 * 1024,
             "the bridge stopped reading near rmcp's 16 MiB limit, not after {bytes} bytes"
+        );
+    }
+
+    fn key_mode(path: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+    }
+
+    fn key_file_of_mode(dir: &tempfile::TempDir, mode: u32) -> std::path::PathBuf {
+        let file = dir.path().join("agent.token");
+        std::fs::write(&file, "vcs_0011223344556677_secret\n").expect("write");
+        key_mode(&file, mode);
+        file
+    }
+
+    #[test]
+    fn a_key_file_other_users_may_read_is_refused_with_the_fix() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = key_file_of_mode(&dir, 0o644);
+        let error = token(&file).expect_err("refused");
+        let path = file.display();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "key_file {path}: other users may read or change the file (mode 0644); run \
+                 `chmod 600 {path}`, or `chmod 640 {path}` for a group that only reads it"
+            ),
+            "the refusal names key_file, the file, its mode and the fix"
+        );
+        assert!(!error.to_string().contains("vcs_0011"), "{error}");
+    }
+
+    #[test]
+    fn a_key_file_its_group_may_read_is_used() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = key_file_of_mode(&dir, 0o640);
+        assert_eq!(
+            token(&file).expect("read"),
+            "vcs_0011223344556677_secret",
+            "a group may read a 0640 key file"
+        );
+    }
+
+    #[test]
+    fn a_missing_key_file_names_the_key_and_the_file() {
+        let error = token(Path::new("/nonexistent/agent.token")).expect_err("refused");
+        assert_eq!(
+            error.to_string(),
+            "key_file /nonexistent/agent.token: No such file or directory (os error 2)",
+            "a missing key file is named with its key and path"
         );
     }
 }

@@ -20,6 +20,11 @@ fn setup() -> Setup {
     std::fs::create_dir(&data).expect("data dir");
     let master = dir.path().join("master.key");
     std::fs::write(&master, [0x42; 32]).expect("master key");
+    std::fs::set_permissions(
+        &master,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+    )
+    .expect("chmod 0600");
     let config = dir.path().join("vcon-server.toml");
     std::fs::write(
         &config,
@@ -303,6 +308,11 @@ fn rekey_master_rotates_and_says_what_comes_next() {
     s.ok(&["tenant", "create", "acme"]);
     let new_key = s.data.with_file_name("new.key");
     std::fs::write(&new_key, [0x43; 32]).expect("new key");
+    std::fs::set_permissions(
+        &new_key,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+    )
+    .expect("chmod 0600");
     let new_key = new_key.to_str().expect("path");
     let out = s.ok(&["rekey", "master", "--new-master", new_key]);
     assert!(out[0]["master_key_id"].is_string());

@@ -1554,6 +1554,9 @@ pub enum TlsError {
     Certificate,
     /// The key file could not be read, or holds no key.
     Key,
+    /// The key file breaks the secret-file rule or cannot be opened; the
+    /// text names `tls.key`, the file and the fix.
+    KeyFile(String),
     /// rustls refused the pair, for instance a key that is not the
     /// certificate's.
     Refused(rustls::Error),
@@ -1569,7 +1572,8 @@ pub fn tls_config(certificate: &Path, key: &Path) -> Result<Arc<ServerConfig>, T
     if chain.is_empty() {
         return Err(TlsError::Certificate);
     }
-    let key = PrivateKeyDer::from_pem_file(key).map_err(|_| TlsError::Key)?;
+    let bytes = crate::secret_file::read(key, "tls.key").map_err(TlsError::KeyFile)?;
+    let key = PrivateKeyDer::from_pem_slice(&bytes).map_err(|_| TlsError::Key)?;
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     let mut config = ServerConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
@@ -1636,6 +1640,11 @@ mod tests {
         let (cert, key) = (dir.path().join("cert.pem"), dir.path().join("key.pem"));
         std::fs::write(&cert, &pem).expect("write");
         std::fs::write(&key, made.signing_key.serialize_pem()).expect("write");
+        std::fs::set_permissions(
+            &key,
+            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+        )
+        .expect("chmod 0600");
         Certificate {
             _dir: dir,
             cert,
@@ -1691,6 +1700,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let (missing, empty) = (dir.path().join("missing"), dir.path().join("empty"));
         std::fs::write(&empty, "").expect("write");
+        std::fs::set_permissions(
+            &empty,
+            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+        )
+        .expect("chmod 0600");
         assert!(matches!(
             tls_config(&missing, &c.key),
             Err(TlsError::Certificate)
@@ -1699,7 +1713,10 @@ mod tests {
             tls_config(&empty, &c.key),
             Err(TlsError::Certificate)
         ));
-        assert!(matches!(tls_config(&c.cert, &missing), Err(TlsError::Key)));
+        assert!(
+            matches!(tls_config(&c.cert, &missing), Err(TlsError::KeyFile(t)) if t.starts_with(&format!("tls.key {}: No such file", missing.display()))),
+            "a missing key file is named with the key and the path"
+        );
         assert!(matches!(tls_config(&c.cert, &empty), Err(TlsError::Key)));
         assert!(matches!(
             tls_config(&c.cert, &other.key),

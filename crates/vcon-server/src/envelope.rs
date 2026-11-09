@@ -1,7 +1,6 @@
 //! Keys and the encryption that protects every stored body.
 
 use std::fmt;
-use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
 
@@ -75,11 +74,29 @@ impl Key {
     /// # Errors
     ///
     /// [`KeyError::Read`] if the file cannot be opened or read,
+    /// [`KeyError::Refused`] if it is not a regular file, another user owns
+    /// it, or its mode lets other users read it or its group change it (the
+    /// one secret-file rule, `0600`, `0400` or `0640`),
     /// [`KeyError::WrongSize`] if it holds other than 32 bytes, and
     /// [`KeyError::Memory`] if the key's page cannot be locked.
     pub fn load_master(path: &Path) -> Result<Key, KeyError> {
+        Key::load_master_named(path, "master_key")
+    }
+
+    /// [`Key::load_master`], with the file named `key` in a refusal, such as
+    /// `--new-master` for the key `rekey master` moves to.
+    ///
+    /// # Errors
+    ///
+    /// As [`Key::load_master`].
+    pub fn load_master_named(path: &Path, key: &str) -> Result<Key, KeyError> {
         let mut page = LockedPage::new().map_err(KeyError::Memory)?;
-        let mut file = File::open(path).map_err(KeyError::Read)?;
+        let mut file = crate::secret_file::check_open(path).map_err(|problem| match problem {
+            crate::secret_file::Problem::Io(e) => KeyError::Read(e),
+            crate::secret_file::Problem::Refused(refusal) => {
+                KeyError::Refused(crate::secret_file::describe(key, path, refusal))
+            }
+        })?;
         let buf = page.bytes_mut();
         file.read_exact(&mut buf[..KEY_LEN])
             .map_err(|e| match e.kind() {
@@ -134,6 +151,9 @@ pub enum KeyError {
     Memory(io::Error),
     /// The master key file could not be opened or read.
     Read(io::Error),
+    /// The master key file breaks the secret-file rule; the text names
+    /// the key, the file and the command that fixes it.
+    Refused(String),
     /// The master key file does not hold exactly 32 bytes.
     WrongSize,
     /// A wrapped key did not open. Like [`OpenError`], it does not say which
@@ -145,6 +165,7 @@ pub enum KeyError {
 impl fmt::Display for KeyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            KeyError::Refused(why) => why,
             KeyError::Memory(_) => "the key's memory could not be locked or kept out of core dumps",
             KeyError::Read(_) => "the master key file could not be read",
             KeyError::WrongSize => "the master key file does not hold exactly 32 bytes",
@@ -157,7 +178,7 @@ impl std::error::Error for KeyError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             KeyError::Memory(e) | KeyError::Read(e) => Some(e),
-            KeyError::WrongSize | KeyError::Damaged => None,
+            KeyError::Refused(_) | KeyError::WrongSize | KeyError::Damaged => None,
         }
     }
 }

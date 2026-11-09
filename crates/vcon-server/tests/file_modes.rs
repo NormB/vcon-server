@@ -40,6 +40,11 @@ fn setup(umask: &'static str) -> Setup {
     let (cert, key) = (dir.path().join("cert.pem"), dir.path().join("key.pem"));
     std::fs::write(&cert, &pem).expect("write");
     std::fs::write(&key, made.signing_key.serialize_pem()).expect("write");
+    std::fs::set_permissions(
+        &key,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+    )
+    .expect("chmod 0600");
     let config = dir.path().join("vcon-server.toml");
     write_config(
         &config,

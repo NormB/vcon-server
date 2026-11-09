@@ -15,6 +15,39 @@ CI runs every command on this page on each change. It installs the previous
 release, sets it up as [getting started](@/docs/getting-started.md) does,
 upgrades it to the server built from the change, and goes back again.
 
+## From 0.4.0: the secret-file rule
+
+After 0.4.0, every file that holds a secret is held to one rule: the master
+key, the TLS key, the S3 and export secret access key files, the PostgreSQL
+password and client key, and the MCP stdio key file (see
+[secret files](@/docs/configuration.md#secret-files)). A file that other
+users may read, or that its group may change, or that another user owns, now
+stops the server at start, and stops each command that reads it. 0.4.0
+used such a file without a word. **This is a breaking change:** a host whose
+master key is `0644` starts under 0.4.0 and does not start after it.
+
+Before you install the new binary, list the mode and the owner of each
+secret file the configuration names. With the files of
+[getting started](@/docs/getting-started.md):
+
+```sh
+sudo stat -c '%a %U %n' /etc/vcon-server/master.key /etc/vcon-server/key.pem
+```
+
+```text
+400 vcon /etc/vcon-server/master.key
+400 vcon /etc/vcon-server/key.pem
+```
+
+Add each `secret_access_key_file`, `password_file` and `client_key_file`
+the configuration sets. Each file passes when its mode is `600`, `400` or
+`640` and its owner is the server's account or root. For one that does not,
+run the command its error names, for example:
+
+- `sudo chmod 600 /etc/vcon-server/master.key` for a mode such as `644`;
+- `sudo chown vcon /etc/vcon-server/master.key` for a file another account
+  owns.
+
 ## From 0.3.0 to 0.4.0
 
 0.4.0 brings every catalog, `server.sqlite` and each tenant's, from schema

@@ -63,6 +63,7 @@ pub mod ids;
 pub mod mcp;
 pub mod query;
 pub mod retention;
+pub(crate) mod secret_file;
 #[expect(
     clippy::missing_errors_doc,
     clippy::must_use_candidate,

@@ -399,7 +399,17 @@ mod rekey_tests {
                 dir: tempfile::tempdir().expect("temp dir"),
             };
             std::fs::write(d.key_file("old"), [0x31; 32]).expect("old key");
+            std::fs::set_permissions(
+                d.key_file("old"),
+                <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+            )
+            .expect("chmod 0600");
             std::fs::write(d.key_file("new"), [0x32; 32]).expect("new key");
+            std::fs::set_permissions(
+                d.key_file("new"),
+                <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+            )
+            .expect("chmod 0600");
             let tenants = d.open("old").expect("opens");
             let mut made = Vec::new();
             for (n, name) in ["acme", "beta"].into_iter().enumerate() {
@@ -511,6 +521,11 @@ mod rekey_tests {
         fn a_key_that_opens_neither_way_is_refused() {
             let (d, _, _) = setup();
             std::fs::write(d.key_file("other"), [0x33; 32]).expect("other key");
+            std::fs::set_permissions(
+                d.key_file("other"),
+                <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+            )
+            .expect("chmod 0600");
             let before = d.server_file();
             assert_eq!(
                 rekey_master(d.data(), &d.key("other"), &d.key("new"), NOW),

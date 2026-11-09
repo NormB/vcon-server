@@ -10,6 +10,36 @@ error too, so a misspelt key is never silently ignored.
 
 Durations are whole seconds and sizes are bytes; each must be more than zero.
 
+## Secret files
+
+Every file that holds a secret is held to one rule: `master_key`, `tls.key`,
+`storage.s3.secret_access_key_file`, `export.s3.secret_access_key_file`,
+`catalog.postgres.password_file` and `catalog.postgres.client_key_file`, the
+key file `rekey master --new-master` names, and the MCP stdio
+configuration's `key_file`. The server, or the command, stops before it uses
+a file that is:
+
+- not a regular file, such as a directory or a FIFO;
+- owned by a user other than the one it runs as, or root (a process that
+  runs as root may read any owner's file);
+- readable, writable or executable by other users, or writable by its
+  group: any bit of `0027` in its mode.
+
+`0600`, `0400` and `0640` pass. `0640` is for a file that root owns and the
+server's group reads, such as `0640 root:vcon`. `0644`, `0604` and `0660` are
+refused. A symbolic link is followed, and the file it names is the one
+checked. The error names the key, the file, its mode and the command that
+fixes it:
+
+```text
+vcon-server: the master key cannot be read: master_key /etc/vcon-server/master.key: other users may read or change the file (mode 0644); run `chmod 600 /etc/vcon-server/master.key`, or `chmod 640 /etc/vcon-server/master.key` for a group that only reads it
+vcon-server: the TLS certificate or key cannot be used: tls.key /etc/vcon-server/key.pem: the file is owned by uid 1001, not by the user this runs as (uid 998) or root; run `chown 998 /etc/vcon-server/key.pem` (or `chown root`)
+```
+
+Releases up to 0.4.0 checked only the two `catalog.postgres` files, and
+allowed a group to write them. To check a host before an upgrade, see
+[upgrade](@/docs/upgrading.md#from-0-4-0-the-secret-file-rule).
+
 ## Keys
 
 | Key | Meaning | Default |
@@ -284,9 +314,7 @@ password_file = "/etc/vcon-server/pg.password"
   cannot be told from its `cert` line, so check `pg_hba.conf`.
 - **Secret files.** `password_file` and `client_key_file` are read once, at
   start, before any connection, and never again: the pool reconnects from
-  memory. Each must be a regular file that gives other users no access
-  (no bit of `0007` set); group access is allowed, for a file such as
-  `0640 root:vcon`.
+  memory. Each is held to [the secret-file rule](#secret-files).
 - **The role.** A superuser, a role with `BYPASSRLS`, and a server in
   recovery (a standby) or with `transaction_read_only` on are refused.
 

@@ -239,7 +239,7 @@ TOML error that names it.
 
 ```text
 vcon-server: the storage cannot be used: catalog.postgres.password_file /etc/vcon-server/pg.password: No such file or directory (os error 2)
-vcon-server: the storage cannot be used: catalog.postgres.password_file /etc/vcon-server/pg.password: other users may use the file (mode 0644); make it 0600, or 0640 for a group
+vcon-server: the storage cannot be used: catalog.postgres.password_file /etc/vcon-server/pg.password: other users may read or change the file (mode 0644); run `chmod 600 /etc/vcon-server/pg.password`, or `chmod 640 /etc/vcon-server/pg.password` for a group that only reads it
 ```
 
 Install the file again, as [above](#the-secret-files). The same messages

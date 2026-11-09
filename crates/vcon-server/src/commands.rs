@@ -176,6 +176,9 @@ impl fmt::Display for CommandError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CommandError::DataDir(e) => write!(f, "{e}"),
+            CommandError::MasterKey(KeyError::Refused(why)) => {
+                write!(f, "the master key cannot be read: {why}")
+            }
             CommandError::MasterKey(e) => write!(f, "the master key cannot be read: {e:?}"),
             CommandError::Open(e) => write!(
                 f,
@@ -516,7 +519,8 @@ fn rekey_master(
     new_master: &std::path::Path,
     out: &mut dyn Write,
 ) -> Result<(), CommandError> {
-    let new = Key::load_master(new_master).map_err(CommandError::MasterKey)?;
+    let new =
+        Key::load_master_named(new_master, "--new-master").map_err(CommandError::MasterKey)?;
     if new.id() == master.id() {
         return Err(CommandError::SameMasterKey);
     }
@@ -741,12 +745,18 @@ mod tests {
         config: Config,
     }
 
+    fn chmod(path: &std::path::Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+    }
+
     fn setup() -> Setup {
         let dir = tempfile::tempdir().expect("temp dir");
         let data = dir.path().join("data");
         std::fs::create_dir(&data).expect("data dir");
         let master = dir.path().join("master.key");
         std::fs::write(&master, [0x5a; 32]).expect("master key file");
+        chmod(&master, 0o600);
         let config = crate::config::parse(&format!(
             "listen = \"127.0.0.1:1\"\ndata_dir = {data:?}\nmaster_key = {master:?}\n\
              [tls]\ncert = \"c\"\nkey = \"k\"\n"
@@ -1151,6 +1161,7 @@ mod tests {
         s.create("acme");
         let new_file = s.config.master_key.with_file_name("new.key");
         std::fs::write(&new_file, [0x5c; 32]).expect("new key");
+        chmod(&new_file, 0o600);
         assert!(matches!(
             s.run(Command::RekeyMaster {
                 new_master: s.config.master_key.clone()
@@ -1513,6 +1524,72 @@ mod tests {
             !s.tenant_dirs().contains(&in_progress),
             "removed by an alone command"
         );
+    }
+
+    #[test]
+    fn a_master_key_other_users_may_read_stops_every_command() {
+        let s = setup();
+        s.create("acme");
+        chmod(&s.config.master_key, 0o644);
+        let error = s.run(Command::TenantList).expect_err("refused");
+        let path = s.config.master_key.display();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "the master key cannot be read: master_key {path}: other users may read or \
+                 change the file (mode 0644); run `chmod 600 {path}`, or `chmod 640 {path}` for \
+                 a group that only reads it"
+            ),
+            "the command stops with the rule's text, naming the key, the file and the fix"
+        );
+    }
+
+    #[test]
+    fn rekey_master_refuses_a_new_key_other_users_may_read_under_its_option() {
+        let s = setup();
+        s.create("acme");
+        let new_file = s.config.master_key.with_file_name("new.key");
+        std::fs::write(&new_file, [0x5c; 32]).expect("new key");
+        chmod(&new_file, 0o644);
+        let error = s
+            .run(Command::RekeyMaster {
+                new_master: new_file.clone(),
+            })
+            .expect_err("refused");
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("--new-master {}: other users", new_file.display())),
+            "{error}"
+        );
+    }
+
+    #[cfg(feature = "s3")]
+    #[test]
+    fn an_export_secret_other_users_may_read_is_refused_under_export_s3() {
+        let s = setup();
+        let secret = s.config.master_key.with_file_name("export.secret");
+        std::fs::write(&secret, "k3y-0123\n").expect("secret");
+        chmod(&secret, 0o644);
+        let mut config = s.config.clone();
+        config.export = crate::config::parse(&format!(
+            "listen = \"127.0.0.1:1\"\ndata_dir = \"/d\"\nmaster_key = \"/m\"\n\
+             [tls]\ncert = \"c\"\nkey = \"k\"\n\
+             [export.s3]\nendpoint = \"http://127.0.0.1:9\"\nregion = \"eu-west-3\"\n\
+             access_key_id = \"id\"\nsecret_access_key_file = {secret:?}\nallow_http = true\n"
+        ))
+        .expect("a configuration")
+        .export;
+        let error = s3_target(&config, "vcon", "").err().expect("refused");
+        let text = error.to_string();
+        assert!(
+            text.contains(&format!(
+                "export.s3.secret_access_key_file {}: other users",
+                secret.display()
+            )),
+            "{text}"
+        );
+        assert!(!text.contains("k3y"), "{text}");
     }
 
     #[test]

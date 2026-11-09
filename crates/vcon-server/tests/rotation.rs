@@ -76,6 +76,11 @@ fn setup() -> Setup {
     let dir = tempfile::tempdir().expect("temp dir");
     std::fs::create_dir(dir.path().join("data")).expect("data dir");
     std::fs::write(dir.path().join("old.key"), [0x61; 32]).expect("old master");
+    std::fs::set_permissions(
+        dir.path().join("old.key"),
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+    )
+    .expect("chmod 0600");
     let s = Setup {
         config: dir.path().join("vcon-server.toml"),
         dir,
@@ -239,6 +244,11 @@ fn a_vcon_purged_before_a_rotation_cannot_be_recovered_from_an_old_copy() {
         "rekeying the tenant ends the wait"
     );
     std::fs::write(s.key_file("new.key"), [0x62; 32]).expect("new master");
+    std::fs::set_permissions(
+        s.key_file("new.key"),
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+    )
+    .expect("chmod 0600");
     let new_master_path = s.key_file("new.key");
     s.ok(&[
         "rekey",

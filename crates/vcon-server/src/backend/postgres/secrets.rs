@@ -2,9 +2,6 @@
 //! the client certificate and its key, and the certificate authorities.
 //! Nothing here is read again; the pool reconnects from what is held.
 
-use std::fs::File;
-use std::io::Read;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use rustls::RootCertStore;
@@ -13,11 +10,6 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::config::{PostgresSettings, StorageError};
-
-/// The bits of a secret file's mode that may not be set: any access for
-/// users other than the owner and the group. Group access is allowed, for a
-/// file such as `0640 root:vcon`.
-pub(crate) const OTHERS: u32 = 0o007;
 
 /// What the connector logs in with, read from the files once.
 pub(crate) struct Secrets {
@@ -141,28 +133,9 @@ fn read_client(
     Ok((chain, key))
 }
 
-/// The bytes of the secret file `path`, named `key` in an error: a regular
-/// file that gives other users no access. The mode is read from the file
-/// opened, so it is the file read that was checked. The bytes are read into
-/// a buffer of the file's size and zeroed when dropped.
+/// The bytes of the secret file `path`, named `key` in an error, held to
+/// the one secret-file rule every secret the configuration names is held to
+/// (`crate::secret_file`).
 pub(crate) fn read_private(path: &Path, key: &str) -> Result<Zeroizing<Vec<u8>>, StorageError> {
-    let refused = |why: &str| StorageError(format!("{key} {}: {why}", path.display()));
-    let mut file = File::open(path).map_err(|e| refused(&e.to_string()))?;
-    let meta = file.metadata().map_err(|e| refused(&e.to_string()))?;
-    if !meta.is_file() {
-        return Err(refused("not a regular file"));
-    }
-    let mode = meta.permissions().mode();
-    if mode & OTHERS != 0 {
-        return Err(refused(&format!(
-            "other users may use the file (mode {:04o}); make it 0600, or 0640 for a group",
-            mode & 0o7777
-        )));
-    }
-    let mut bytes = Zeroizing::new(Vec::with_capacity(
-        usize::try_from(meta.len()).unwrap_or(0).saturating_add(1),
-    ));
-    file.read_to_end(&mut bytes)
-        .map_err(|e| refused(&e.to_string()))?;
-    Ok(bytes)
+    crate::secret_file::read(path, key).map_err(StorageError)
 }

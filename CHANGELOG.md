@@ -20,6 +20,30 @@ All notable changes to this project are recorded here. The format follows
   of a new version; it is taken now because it is a security update, which
   Dependabot also takes with no cooldown. A test serves the bridge an
   endless JSON answer and checks that it gives up near the limit.
+### Changed
+
+- **Breaking: every secret file is held to one rule.** `master_key`,
+  `tls.key`, `storage.s3.secret_access_key_file`,
+  `export.s3.secret_access_key_file`, `catalog.postgres.password_file` and
+  `catalog.postgres.client_key_file`, the file `rekey master --new-master`
+  names, and the MCP stdio configuration's `key_file` must each be a regular
+  file, owned by the user the process runs as or by root, with no bit of
+  `0027` in its mode: no access for other users and no write for the group.
+  `0600`, `0400` and `0640` pass; `0644`, `0604` and `0660` are refused.
+  Until now only the two `catalog.postgres` files were checked, and a group
+  could write them; a master key, TLS key or S3 secret that every user on the
+  host could read was used without a word. `serve` and each command stop with
+  an error that names the key, the file, its mode and the `chmod` or `chown`
+  that fixes it. A FIFO is refused without being opened, so it cannot block
+  the start. The check is one function, `crate::secret_file`, used by every
+  reader. **Upgrade note:** before installing, run
+  `stat -c '%a %U %n'` on each secret file the configuration names, and
+  `chmod 600` (or `chown` to the server's account) any that would be
+  refused; the Upgrade page's "From 0.4.0: the secret-file rule" has the
+  steps. For the `vcon-server` library, `KeyError` gains `Refused(String)`,
+  and `TlsError` gains `KeyFile(String)`; neither enum is
+  `#[non_exhaustive]`, so a `match` on either needs the new arm. A directory
+  given as the master key is now `KeyError::Refused`, not `KeyError::Read`.
 
 ### Added
 

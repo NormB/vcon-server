@@ -38,7 +38,7 @@ fn a_password_file_other_users_can_read_is_refused_without_its_text() {
         assert!(
             message.contains("catalog.postgres.password_file")
                 && message.contains(&format!("{mode:04o}"))
-                && message.contains("0600"),
+                && message.contains("chmod 600"),
             "{mode:o}: names the key, the mode and the fix: {message}"
         );
         assert!(!message.contains("s3cret"), "never the secret: {message}");
@@ -56,6 +56,31 @@ fn a_client_key_other_users_can_read_is_refused() {
     assert!(
         message.contains("catalog.postgres.client_key_file") && message.contains("0644"),
         "names the key and the mode: {message}"
+    );
+}
+
+#[test]
+fn a_password_file_its_group_may_write_is_refused() {
+    let dir = tempfile::tempdir().expect("dir");
+    let s = with_password(dir.path(), b"s3cret-example\n", 0o660);
+    let message = unread(&s);
+    assert!(
+        message.contains("catalog.postgres.password_file") && message.contains("(mode 0660)"),
+        "group write lets the group replace the password: {message}"
+    );
+}
+
+#[test]
+fn a_client_key_its_group_may_write_is_refused() {
+    let dir = tempfile::tempdir().expect("dir");
+    let made = pki();
+    let mut s = with_password(dir.path(), b"p\n", 0o600);
+    s.client_cert_file = Some(file(dir.path(), "c.pem", made.cert.as_bytes(), 0o644));
+    s.client_key_file = Some(file(dir.path(), "c.key", made.key.as_bytes(), 0o620));
+    let message = unread(&s);
+    assert!(
+        message.contains("catalog.postgres.client_key_file") && message.contains("(mode 0620)"),
+        "{message}"
     );
 }
 

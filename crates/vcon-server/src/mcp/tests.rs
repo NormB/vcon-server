@@ -80,6 +80,11 @@ pub(super) async fn serving(
     let (cert, key): (PathBuf, PathBuf) = (dir.path().join("cert.pem"), dir.path().join("key.pem"));
     std::fs::write(&cert, &pem).expect("write");
     std::fs::write(&key, made.signing_key.serialize_pem()).expect("write");
+    std::fs::set_permissions(
+        &key,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+    )
+    .expect("chmod 0600");
     let tls = api::tls_config(&cert, &key).expect("tls");
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");

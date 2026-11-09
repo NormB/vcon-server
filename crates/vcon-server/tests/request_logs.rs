@@ -89,6 +89,11 @@ async fn each_request_is_logged_by_its_route_template_and_no_id() {
     let key_file = dir.path().join("key.pem");
     std::fs::write(&cert, &pem).expect("write");
     std::fs::write(&key_file, made.signing_key.serialize_pem()).expect("write");
+    std::fs::set_permissions(
+        &key_file,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+    )
+    .expect("chmod 0600");
     let tls = tls_config(&cert, &key_file).expect("tls");
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

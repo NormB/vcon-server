@@ -7,7 +7,6 @@
 //! `pack::name` gives, and are read by ranges.
 
 use std::future::Future;
-use std::io::Read;
 use std::sync::{Arc, mpsc};
 
 use aws_sdk_s3::Client;
@@ -130,23 +129,19 @@ pub(crate) fn client_for(settings: &S3Settings, table: &str) -> Result<Arc<S3>, 
 }
 
 /// The secret access key in `path`: one line, its line ending left out.
-/// It is read into a buffer of the file's size, so no shorter copy is left
+/// The file is held to the one secret-file rule (`crate::secret_file`). It
+/// is read into a buffer of the file's size, so no shorter copy is left
 /// behind by a reallocation, and every copy here is zeroed when dropped.
 /// An error names the key and the file, never the text.
 fn read_secret(path: &std::path::Path, table: &str) -> Result<Zeroizing<String>, StorageError> {
-    let refused = |why: &str| {
-        StorageError(format!(
-            "{table}.secret_access_key_file {}: {why}",
-            path.display()
-        ))
-    };
-    let mut file = std::fs::File::open(path).map_err(|e| refused(&e.to_string()))?;
-    let size = file.metadata().map_err(|e| refused(&e.to_string()))?.len();
-    let mut text = Zeroizing::new(String::with_capacity(
-        usize::try_from(size).unwrap_or(0).saturating_add(1),
-    ));
-    file.read_to_string(&mut text)
-        .map_err(|e| refused(&e.to_string()))?;
+    let key = format!("{table}.secret_access_key_file");
+    let refused = |why: &str| StorageError(format!("{key} {}: {why}", path.display()));
+    let mut bytes = crate::secret_file::read(path, &key).map_err(StorageError)?;
+    let text = String::from_utf8(std::mem::take(&mut *bytes)).map_err(|e| {
+        zeroize::Zeroize::zeroize(&mut e.into_bytes());
+        refused("the file is not UTF-8")
+    })?;
+    let text = Zeroizing::new(text);
     secret_line(&text).map_err(refused)
 }
 
@@ -1051,7 +1046,73 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("s3.secret");
         std::fs::write(&path, text).expect("writes the secret file");
+        secret_mode(&path, 0o600);
         (dir, path)
+    }
+
+    fn secret_mode(path: &std::path::Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+    }
+
+    /// `unreachable()` with its secret in a file of `mode`.
+    fn with_secret(mode: u32) -> (tempfile::TempDir, S3Settings) {
+        let (dir, path) = secret_in(b"k3y-0123\n");
+        secret_mode(&path, mode);
+        let mut settings = unreachable();
+        settings.access_key_id = Some("id".to_owned());
+        settings.secret_access_key_file = Some(path);
+        (dir, settings)
+    }
+
+    #[test]
+    fn a_storage_secret_other_users_may_read_is_refused_with_the_fix() {
+        let (_dir, settings) = with_secret(0o644);
+        let path = settings.secret_access_key_file.clone().expect("set");
+        let error = client_for(&settings, "storage.s3").expect_err("refused");
+        assert!(
+            error.0.starts_with(&format!(
+                "storage.s3.secret_access_key_file {}: other users may read or change the file (mode 0644); run `chmod 600 {}`",
+                path.display(),
+                path.display()
+            )),
+            "{error}"
+        );
+        assert!(!error.0.contains("k3y"), "{error}");
+    }
+
+    #[test]
+    fn a_storage_secret_its_group_may_write_is_refused() {
+        let (_dir, settings) = with_secret(0o660);
+        let error = client_for(&settings, "storage.s3").expect_err("refused");
+        assert!(error.0.contains("(mode 0660)"), "{error}");
+    }
+
+    #[test]
+    fn a_storage_secret_of_0604_is_refused() {
+        let (_dir, settings) = with_secret(0o604);
+        assert!(
+            client_for(&settings, "storage.s3").is_err(),
+            "others may read a 0604 secret"
+        );
+    }
+
+    #[test]
+    fn a_storage_secret_of_0600_or_0640_or_0400_makes_a_client() {
+        for mode in [0o600, 0o640, 0o400] {
+            let (_dir, settings) = with_secret(mode);
+            assert!(client_for(&settings, "storage.s3").is_ok(), "{mode:o}");
+        }
+    }
+
+    #[test]
+    fn an_export_secret_is_refused_under_the_export_table() {
+        let (_dir, settings) = with_secret(0o644);
+        let error = client_for(&settings, "export.s3").expect_err("refused");
+        assert!(
+            error.0.starts_with("export.s3.secret_access_key_file "),
+            "{error}"
+        );
     }
 
     #[test]
@@ -2224,6 +2285,11 @@ pub(crate) mod remote {
         if !file.exists() {
             let key: [u8; 32] = std::array::from_fn(|_| rand_byte());
             std::fs::write(&file, key).expect("a master key file");
+            std::fs::set_permissions(
+                &file,
+                <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+            )
+            .expect("chmod 0600");
         }
         let master = Key::load_master(&file).expect("the master key");
         let data = dir.join("data");

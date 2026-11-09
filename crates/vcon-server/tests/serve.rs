@@ -34,6 +34,7 @@ struct Setup {
     dir: tempfile::TempDir,
     config: PathBuf,
     master_key: PathBuf,
+    tls_key: PathBuf,
     pem: String,
     token: String,
     data: PathBuf,
@@ -57,6 +58,12 @@ fn random_key_file(path: &std::path::Path) {
         .read_exact(&mut bytes)
         .expect("32 random bytes");
     std::fs::write(path, bytes).expect("write the key file");
+    chmod(path, 0o600);
+}
+
+fn chmod(path: &std::path::Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("chmod");
 }
 
 fn setup() -> Setup {
@@ -95,6 +102,7 @@ fn setup_on(clock: Arc<dyn Clock>) -> Setup {
     let (cert, key) = (dir.path().join("cert.pem"), dir.path().join("key.pem"));
     std::fs::write(&cert, &pem).expect("write");
     std::fs::write(&key, made.signing_key.serialize_pem()).expect("write");
+    chmod(&key, 0o600);
     let config = dir.path().join("vcon-server.toml");
     std::fs::write(
         &config,
@@ -127,6 +135,7 @@ read = 30
         dir,
         config,
         master_key,
+        tls_key: key,
         pem,
         token,
         data,
@@ -383,6 +392,37 @@ fn a_wrong_master_key_stops_the_start() {
         "{}",
         stderr(&output)
     );
+}
+
+#[test]
+fn a_master_key_other_users_may_read_stops_the_start_and_names_the_fix() {
+    let s = setup();
+    chmod(&s.master_key, 0o644);
+    let text = stderr(&refused(serve(&s)));
+    let path = s.master_key.display();
+    assert!(
+        text.contains(&format!("the master key cannot be read: master_key {path}: other users may read or change the file (mode 0644); run `chmod 600 {path}`")),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_tls_key_other_users_may_read_stops_the_start_and_names_the_fix() {
+    let s = setup();
+    chmod(&s.tls_key, 0o644);
+    let text = stderr(&refused(serve(&s)));
+    let path = s.tls_key.display();
+    assert!(
+        text.contains(&format!("the TLS certificate or key cannot be used: tls.key {path}: other users may read or change the file (mode 0644); run `chmod 600 {path}`")),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_tls_key_its_group_may_read_serves() {
+    let s = setup();
+    chmod(&s.tls_key, 0o640);
+    let _running = start(serve(&s));
 }
 
 #[test]

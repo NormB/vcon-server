@@ -53,6 +53,9 @@ impl fmt::Display for ServeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ServeError::DataDir(e) => write!(f, "{e}"),
+            ServeError::MasterKey(KeyError::Refused(why)) => {
+                write!(f, "the master key cannot be read: {why}")
+            }
             ServeError::MasterKey(e) => write!(f, "the master key cannot be read: {e:?}"),
             ServeError::WrongMasterKey => {
                 f.write_str("the master key is not the one server.sqlite was made under")
@@ -107,6 +110,9 @@ impl fmt::Display for ServeError {
                  [storage.parquet] table back, since packed versions cannot be turned back into \
                  objects; vcon-server check names the tenants"
             ),
+            ServeError::Tls(crate::api::TlsError::KeyFile(why)) => {
+                write!(f, "the TLS certificate or key cannot be used: {why}")
+            }
             ServeError::Tls(e) => write!(f, "the TLS certificate or key cannot be used: {e:?}"),
             ServeError::Listen(e) => write!(f, "the listening address cannot be bound: {e}"),
             ServeError::Serve(e) => write!(f, "serving failed: {e}"),

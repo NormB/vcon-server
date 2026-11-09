@@ -61,6 +61,11 @@ fn setup_at(listen: &str) -> Setup {
         .read_exact(&mut bytes)
         .expect("32 random bytes");
     std::fs::write(&master_key, bytes).expect("write the key file");
+    std::fs::set_permissions(
+        &master_key,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+    )
+    .expect("chmod 0600");
     let tenants = Tenants::open(
         &data,
         Key::load_master(&master_key).expect("the master key"),
@@ -84,6 +89,11 @@ fn setup_at(listen: &str) -> Setup {
     let (cert, tls_key) = (dir.path().join("cert.pem"), dir.path().join("key.pem"));
     std::fs::write(&cert, made.cert.pem()).expect("write");
     std::fs::write(&tls_key, made.signing_key.serialize_pem()).expect("write");
+    std::fs::set_permissions(
+        &tls_key,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+    )
+    .expect("chmod 0600");
     let config = dir.path().join("vcon-server.toml");
     std::fs::write(
         &config,
@@ -157,6 +167,11 @@ impl Setup {
     fn client_file(&self, name: &str, token: &str) -> PathBuf {
         let key_file = self.dir.path().join(format!("{name}.token"));
         std::fs::write(&key_file, format!("{token}\n")).expect("write the key file");
+        std::fs::set_permissions(
+            &key_file,
+            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+        )
+        .expect("chmod 0600");
         let file = self.dir.path().join(format!("{name}.toml"));
         std::fs::write(
             &file,
@@ -372,6 +387,11 @@ fn a_ca_file_without_a_certificate_or_a_server_not_there_stops_the_command() {
     .expect("write");
     let key_file = s.dir.path().join("agent.token");
     std::fs::write(&key_file, &s.token).expect("write");
+    std::fs::set_permissions(
+        &key_file,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+    )
+    .expect("chmod 0600");
     // A port held by the client end of a connection, where nothing
     // listens: a connection to it is refused, and no server can bind it
     // while it is held. A port freed here could be taken by another
@@ -444,6 +464,11 @@ fn a_bad_client_file_is_refused_naming_its_key() {
     let s = setup();
     let key_file = s.dir.path().join("agent.token");
     std::fs::write(&key_file, &s.token).expect("write");
+    std::fs::set_permissions(
+        &key_file,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+    )
+    .expect("chmod 0600");
     let cases = [
         (
             "unknown",
