@@ -45,6 +45,9 @@ pub struct Page {
 pub enum ApiError {
     /// No answer arrived: the address, TLS or the network.
     Unreachable(String),
+    /// The client refused the server's certificate, so no request was
+    /// sent: what is wrong with it and what to do.
+    Untrusted(String),
     /// The server answered this status, with the problem's title if it
     /// sent one.
     Status(u16, Option<String>),
@@ -58,6 +61,9 @@ impl fmt::Display for ApiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ApiError::Unreachable(why) => write!(f, "the server did not answer: {why}"),
+            ApiError::Untrusted(why) => {
+                write!(f, "the server's certificate was refused: {why}")
+            }
             ApiError::Status(401, _) => f.write_str("the server refused the key (401)"),
             ApiError::Status(status, Some(title)) => {
                 write!(f, "the server answered {status} ({title})")
@@ -316,7 +322,7 @@ impl State {
     /// A page did not arrive: a next page leaves the rows and a notice, a
     /// first page leaves an error in place of rows that may be out of date.
     fn page_failed(&mut self, error: &ApiError) {
-        if matches!(error, ApiError::Unreachable(_)) {
+        if matches!(error, ApiError::Unreachable(_) | ApiError::Untrusted(_)) {
             self.connection = Connection::Failed(error.to_string());
         }
         if self.more {

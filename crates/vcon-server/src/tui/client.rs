@@ -175,12 +175,63 @@ impl Api for HttpApi {
     }
 }
 
-/// A request that got no answer, with the causes reqwest keeps below its
-/// own sentence (the refused connection, the certificate that failed).
+/// What is wrong with a certificate the client refused, and what to do,
+/// for the refusals an operator can act on; `None` for any other, whose
+/// own text is shown.
+fn certificate_advice(error: &rustls::CertificateError) -> Option<&'static str> {
+    use rustls::CertificateError as Refused;
+    match error {
+        // rustls carries webpki's `CaUsedAsEndEntity` only as an opaque
+        // error, so its name in the debug form is all there is to match.
+        // The test against a server with such a certificate fails if a
+        // rustls release changes it.
+        Refused::Other(other) if format!("{other:?}").contains("CaUsedAsEndEntity") => Some(
+            "it is marked as a certificate authority (CA:TRUE), and a server's own certificate may not be one; make the server's certificate with basicConstraints=CA:FALSE, as getting started shows",
+        ),
+        // A trusted certificate of the issuer's name that did not sign it
+        // is a bad signature: the server's certificate was replaced and
+        // the client file's `ca` still holds the old one.
+        Refused::UnknownIssuer | Refused::BadSignature => Some(
+            "no certificate this client trusts signed it; set ca in the client file to the server's current certificate authority",
+        ),
+        Refused::NotValidForName | Refused::NotValidForNameContext { .. } => Some(
+            "it is not for the name in url; use a name the certificate holds, or give the server a certificate for this one",
+        ),
+        Refused::Expired | Refused::ExpiredContext { .. } => {
+            Some("it has expired; renew the server's certificate, or correct this machine's clock")
+        }
+        Refused::NotValidYet | Refused::NotValidYetContext { .. } => Some(
+            "it is not valid yet; correct this machine's clock, or wait for the certificate's start",
+        ),
+        _ => None,
+    }
+}
+
+/// The TLS library's error at `cause`: the cause itself, or what the I/O
+/// errors around it carry. A failed handshake arrives as an I/O error that
+/// holds an I/O error that holds it, and `source` does not look inside one.
+fn tls_error<'a>(cause: &'a (dyn Error + 'static)) -> Option<&'a rustls::Error> {
+    let mut at = cause;
+    loop {
+        if let Some(found) = at.downcast_ref::<rustls::Error>() {
+            return Some(found);
+        }
+        at = at.downcast_ref::<std::io::Error>()?.get_ref()?;
+    }
+}
+
+/// A request that got no answer: a refused certificate in words an
+/// operator can act on, else the causes reqwest keeps below its own
+/// sentence (the refused connection, the handshake that failed).
 fn unreachable(error: &reqwest::Error) -> ApiError {
     let mut why = error.to_string();
     let mut cause = error.source();
     while let Some(inner) = cause {
+        if let Some(rustls::Error::InvalidCertificate(refused)) = tls_error(inner)
+            && let Some(advice) = certificate_advice(refused)
+        {
+            return ApiError::Untrusted(advice.to_owned());
+        }
         why.push_str(": ");
         why.push_str(&inner.to_string());
         cause = inner.source();
@@ -517,13 +568,206 @@ mod tests {
         let api = HttpApi::new(&client(dir.path(), port, &trusted, 0o600)).expect("a client");
         let outcome = api.key();
         assert!(
-            matches!(outcome, Err(ApiError::Unreachable(_))),
+            matches!(outcome, Err(ApiError::Untrusted(_))),
             "the certificate is verified: {outcome:?}"
         );
         assert_eq!(
             *heads.lock().expect("the lock"),
             Vec::<String>::new(),
             "nothing, the token least of all, is sent to a server that is not trusted"
+        );
+    }
+
+    // A certificate the client refuses: what the message says.
+
+    /// A certificate for `name` that is its own issuer, changed by `change`
+    /// before it is signed.
+    fn certificate_with(
+        name: &str,
+        change: impl FnOnce(&mut rcgen::CertificateParams),
+    ) -> Certificate {
+        let signing_key = rcgen::KeyPair::generate().expect("a key");
+        let mut params = rcgen::CertificateParams::new(vec![name.to_owned()]).expect("params");
+        change(&mut params);
+        let cert = params.self_signed(&signing_key).expect("a certificate");
+        rcgen::CertifiedKey { cert, signing_key }
+    }
+
+    /// A self-signed certificate marked as a certificate authority, as
+    /// `openssl req -x509` makes one by default.
+    fn ca_certificate() -> Certificate {
+        certificate_with("localhost", |params| {
+            params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        })
+    }
+
+    /// What the UI is told when a server presents `served` and the client
+    /// file trusts `trusted`, and the heads of the requests the server got.
+    fn refusal(served: &Certificate, trusted: &Certificate) -> (String, Vec<String>) {
+        let (port, heads) = server(served, response("200 OK", "{}"));
+        let dir = tempfile::tempdir().expect("temp dir");
+        let api = HttpApi::new(&client(dir.path(), port, trusted, 0o600)).expect("a client");
+        let error = api.key().expect_err("the certificate is refused");
+        let heads = heads.lock().expect("the lock").clone();
+        (error.to_string(), heads)
+    }
+
+    #[test]
+    fn a_ca_certificate_as_the_servers_own_is_said_in_words() {
+        let cert = ca_certificate();
+        let (said, _) = refusal(&cert, &cert);
+        assert!(
+            said.starts_with("the server's certificate was refused: ") && said.contains("CA:TRUE"),
+            "what is wrong: {said}"
+        );
+        assert!(
+            !said.contains("OtherError") && !said.contains("CaUsedAsEndEntity"),
+            "not the library's own text: {said}"
+        );
+    }
+
+    #[test]
+    fn a_ca_certificate_as_the_servers_own_says_what_to_do() {
+        let cert = ca_certificate();
+        let (said, _) = refusal(&cert, &cert);
+        assert!(
+            said.contains("basicConstraints=CA:FALSE"),
+            "the option that makes a certificate a server's: {said}"
+        );
+    }
+
+    #[test]
+    fn a_ca_certificate_as_the_servers_own_is_still_refused_before_any_request() {
+        let cert = ca_certificate();
+        let (_, heads) = refusal(&cert, &cert);
+        assert_eq!(
+            heads,
+            Vec::<String>::new(),
+            "no request, and so no token, goes to that server"
+        );
+    }
+
+    #[test]
+    fn a_certificate_from_an_issuer_the_client_does_not_know_says_to_set_ca() {
+        let served = certificate_with("localhost", |params| {
+            params
+                .distinguished_name
+                .push(rcgen::DnType::CommonName, "another issuer");
+        });
+        let (said, _) = refusal(&served, &certificate());
+        assert!(
+            said.starts_with("the server's certificate was refused: ")
+                && said.contains("set ca in the client file"),
+            "what is wrong and what to do: {said}"
+        );
+    }
+
+    #[test]
+    fn a_replaced_certificate_of_the_same_name_says_to_set_ca() {
+        // Two self-signed certificates with one subject: the trusted one
+        // has the issuer's name and did not sign the served one.
+        let (said, _) = refusal(&certificate(), &certificate());
+        assert!(
+            said.starts_with("the server's certificate was refused: ")
+                && said.contains("set ca in the client file"),
+            "what is wrong and what to do: {said}"
+        );
+        assert!(
+            !said.contains("BadSignature"),
+            "not the library's own text: {said}"
+        );
+    }
+
+    #[test]
+    fn a_certificate_for_another_name_says_so() {
+        let cert = certificate_with("other.example.com", |_| {});
+        let (said, _) = refusal(&cert, &cert);
+        assert!(
+            said.starts_with("the server's certificate was refused: ")
+                && said.contains("not for the name in url"),
+            "what is wrong: {said}"
+        );
+    }
+
+    #[test]
+    fn an_expired_certificate_says_so() {
+        let cert = certificate_with("localhost", |params| {
+            params.not_before = rcgen::date_time_ymd(2020, 1, 1);
+            params.not_after = rcgen::date_time_ymd(2020, 2, 1);
+        });
+        let (said, _) = refusal(&cert, &cert);
+        assert!(
+            said.starts_with("the server's certificate was refused: ")
+                && said.contains("it has expired"),
+            "what is wrong: {said}"
+        );
+    }
+
+    #[test]
+    fn a_certificate_not_valid_yet_says_so() {
+        let cert = certificate_with("localhost", |params| {
+            params.not_before = rcgen::date_time_ymd(2999, 1, 1);
+            params.not_after = rcgen::date_time_ymd(2999, 2, 1);
+        });
+        let (said, _) = refusal(&cert, &cert);
+        assert!(
+            said.starts_with("the server's certificate was refused: ")
+                && said.contains("it is not valid yet"),
+            "what is wrong: {said}"
+        );
+    }
+
+    #[test]
+    fn a_refused_certificate_message_never_holds_the_token() {
+        let cert = ca_certificate();
+        let (said, _) = refusal(&cert, &cert);
+        assert!(
+            !said.contains("secret"),
+            "the token is not in the message: {said}"
+        );
+    }
+
+    #[test]
+    fn a_closed_port_is_not_called_a_certificate_refusal() {
+        let cert = certificate();
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("binds");
+            listener.local_addr().expect("an address").port()
+        };
+        let dir = tempfile::tempdir().expect("temp dir");
+        let api = HttpApi::new(&client(dir.path(), port, &cert, 0o600)).expect("a client");
+        let said = api.key().expect_err("nothing listens").to_string();
+        assert!(
+            said.starts_with("the server did not answer: ") && !said.contains("certificate"),
+            "no certificate was seen: {said}"
+        );
+    }
+
+    #[test]
+    fn a_refused_certificate_shows_the_connection_as_not_connected() {
+        use crate::tui::state::{Connection, State};
+        let cert = ca_certificate();
+        let (port, _) = server(&cert, response("200 OK", "{}"));
+        let dir = tempfile::tempdir().expect("temp dir");
+        let api = HttpApi::new(&client(dir.path(), port, &cert, 0o600)).expect("a client");
+        let (mut state, _) = State::new("https://localhost", (80, 24));
+        // The key answers by hand; then the list is asked of the server.
+        state.step(
+            Event::KeyInfo(Ok(KeyInfo {
+                id: "0011223344556677".to_owned(),
+                tenant: Some("t_example".to_owned()),
+                scopes: vec!["read".to_owned()],
+            })),
+            time::OffsetDateTime::UNIX_EPOCH,
+        );
+        state.step(
+            Event::Page(api.page(None)),
+            time::OffsetDateTime::UNIX_EPOCH,
+        );
+        assert!(
+            matches!(&state.connection, Connection::Failed(why) if why.contains("certificate was refused")),
+            "a server whose certificate is refused is not connected: {:?}",
+            state.connection
         );
     }
 

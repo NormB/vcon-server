@@ -73,6 +73,10 @@ scripts/rustfmt.sh --check
 python3 -I scripts/test_check_style.py
 python3 -I scripts/check_style.py --walk
 cargo clippy --workspace --all-targets --locked --quiet -- -D warnings
+# The documentation, with rustdoc's warnings denied: a link that does not
+# resolve, or one from public documentation to a private item, fails here
+# (tests/rustdoc_gate.rs holds this line and CI's to one command).
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked --quiet
 # The tests run under cargo-nextest (scripts/nextest.sh), which ends a test
 # still running at the deadline in .config/nextest.toml and fails it by
 # name; cargo test has no deadline, so one hung test hung this hook. nextest

@@ -151,8 +151,8 @@ and restart it.
 To try the server before you have a certificate, make a self-signed one for
 the name that clients use, and install it the same way. By default
 `openssl req -x509` marks the certificate as a certificate authority
-(`CA:TRUE`), and `vcon-server mcp`, which is built on rustls, refuses such a
-certificate from a server. The `-addext` options below mark it `CA:FALSE`,
+(`CA:TRUE`), and `vcon-server mcp` and `vcon-server tui`, which are built on
+rustls, refuse such a certificate from a server. The `-addext` options below mark it `CA:FALSE`,
 for signatures, and for a TLS server:
 
 ```sh

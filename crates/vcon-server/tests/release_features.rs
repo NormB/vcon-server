@@ -135,6 +135,55 @@ fn nothing_names_the_terminal_ui_as_an_extra_feature() {
     );
 }
 
+/// The entries of the changelog's unreleased section that name `needle`:
+/// an entry starts at a line that begins `- ` and holds the lines after it.
+fn unreleased_entries(changelog: &str, needle: &str) -> Vec<String> {
+    let section: Vec<&str> = changelog
+        .lines()
+        .skip_while(|line| !line.starts_with("## [Unreleased]"))
+        .skip(1)
+        .take_while(|line| !line.starts_with("## ["))
+        .collect();
+    let mut entries: Vec<String> = Vec::new();
+    for line in section {
+        if line.starts_with("- ") {
+            entries.push(line.to_owned());
+        } else if line.starts_with("  ")
+            && let Some(entry) = entries.last_mut()
+        {
+            entry.push(' ');
+            entry.push_str(line.trim());
+        }
+    }
+    entries.retain(|entry| entry.contains(needle));
+    entries
+}
+
+#[test]
+fn the_changelog_does_not_call_the_terminal_ui_off_by_default() {
+    let entries = unreleased_entries(&read("CHANGELOG.md"), "`tui`");
+    let stale: Vec<&String> = entries
+        .iter()
+        .filter(|entry| entry.contains("off by default"))
+        .collect();
+    assert_eq!(
+        stale,
+        Vec::<&String>::new(),
+        "tui is a default feature; an entry from before that says otherwise"
+    );
+}
+
+#[test]
+fn an_entry_is_read_with_its_following_lines_and_only_from_the_unreleased_section() {
+    let changelog =
+        "## [Unreleased]\n\n### Added\n\n- one `x`\n  more\n- two\n\n## [0.1.0]\n\n- old `x`\n";
+    assert_eq!(
+        unreleased_entries(changelog, "`x`"),
+        ["- one `x` more"],
+        "the entry that names it, whole; not a released one"
+    );
+}
+
 #[test]
 fn the_release_build_names_no_features_of_its_own() {
     let script = read("scripts/reproducible-build.sh");

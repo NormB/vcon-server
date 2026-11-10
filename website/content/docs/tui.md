@@ -96,12 +96,11 @@ shown below.
    vcon-server tui --config ~/.config/vcon-server/tui.toml
    ```
 
-   The screen, in a terminal of 80 columns by 24 lines, with `<address>`,
-   `<id>` and `…` standing for the server's address, the tenant's id and
-   the tenant's vCons:
+   The screen, in a terminal of 80 columns by 24 lines, with `<id>` and `…`
+   standing for the tenant's id and the tenant's vCons:
 
    ```text
-   <address> | tenant <id> | connected
+   vcon.example.com:8443 | tenant <id> | connected
      UUID                                  STORED (UTC+00:00)   UPDATED (UTC+00:00)
    …
    j down  k up  Enter open  r refresh  n more  ? help  q quit
@@ -153,6 +152,12 @@ an error or by a failure of the program itself.
 
 - Color is never the only sign of anything: the connection is a word and the
   selected row has a `>` in front of it.
+- The first line always ends with the connection, whole. When the line is
+  wider than the terminal, the parts give way in this order: the address
+  loses `https://`; the tenant's id is shortened, with `...`; the tenant is
+  left out; and only then is the address shortened. At 80 columns a tenant
+  id of 32 characters is whole, at 60 it is shortened, and at 40 the line
+  holds the address and the connection.
 - With `NO_COLOR` set, `TERM=dumb` or no `TERM`, no color is used at all.
 - The views are made for 80 columns by 24 lines and follow a resize. Below
   80 columns the list drops the update time; from 114 it adds the version.
@@ -167,7 +172,12 @@ an error or by a failure of the program itself.
 | `ca:` and a reason, at start | The CA file is missing or holds no certificate | Name the certificate's PEM copy |
 | `memory cannot be locked`, at start | The account has no memory-lock allowance | Allow it, as in getting started |
 | `this build has no terminal UI` | The binary was built with `--no-default-features` | Use a release binary, or build with the default features |
-| `not connected`, with `the server did not answer` | The address, the network, or a certificate the client does not trust | Check `url` and `ca`, then press `r` |
+| `a terminal is required`, at start | Standard input or standard output is not a terminal: a pipe, a redirect, or a job that has none | Run it in a terminal |
+| `not connected`, with `the server did not answer` | The address or the network | Check `url`, then press `r` |
+| `the server's certificate was refused: it is marked as a certificate authority (CA:TRUE)` | The server presents a certificate made as a certificate authority's, which `openssl req -x509` makes by default | On the server, make the certificate with `basicConstraints=CA:FALSE`, as in [getting started](@/docs/getting-started.md#get-a-certificate), and restart the server |
+| `the server's certificate was refused: no certificate this client trusts signed it` | `ca` is missing, names another certificate authority, or holds a certificate the server has since replaced | Set `ca` to the server's current certificate authority, then start again |
+| `the server's certificate was refused: it is not for the name in url` | `url` names the server by a name its certificate does not hold | Use a name the certificate holds |
+| `the server's certificate was refused: it has expired`, or `it is not valid yet` | The certificate's dates, or this machine's clock | Renew the certificate on the server, or correct the clock |
 | `the server refused the key (401)` | The token is not a key the server knows, or the key is revoked | Put a current token in `key_file`, then start again |
 | `this is an operator key` | Operator keys reach no vCon | Use a tenant key with `read` |
 | `this key lacks the read scope` | The key holds other scopes only | Use a key that holds `read` |

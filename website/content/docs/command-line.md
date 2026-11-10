@@ -220,8 +220,9 @@ memory. The release binaries, `cargo install` and a build from source carry
 it (the cargo feature `tui`, on by default); a build made with
 `--no-default-features` exits with code 1 and
 `this build has no terminal UI`. It exits with code 0
-when the user quits, and code 1 when the client file, the key file or the
-terminal cannot be used. See [the terminal UI](@/docs/tui.md).
+when the user quits, and code 1 when the client file or the key file cannot
+be used, or when standard input or standard output is not a terminal
+(`a terminal is required`). See [the terminal UI](@/docs/tui.md).
 
 ## Running beside the server
 

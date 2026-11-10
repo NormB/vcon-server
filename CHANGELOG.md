@@ -8,12 +8,6 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
-- `vcon-server tui`, in a build with the new cargo feature `tui` (off by
-  default): a terminal UI that lists the vCons of one key's tenant and shows
-  each one's uuid, version and times. It is a client of a running server's
-  HTTP API with a `read` key from a client file, so the server's scopes and
-  audit log apply; it reads only, and never a vCon's content. A build
-  without the feature has the command and says how to get one.
 - The console opens a vCon masked, in the vCons and Legal views: a summary
   with its form, counts and each party as the last four digits of a number
   or the domain of an address, and the whole text only after a reveal,
@@ -48,6 +42,31 @@ All notable changes to this project are recorded here. The format follows
   under a per-row key derived from the catalog key, with associated data
   binding the tenant, table, column and row, and HMAC-SHA256 under an index
   key for the values SQL must find.
+
+### Fixed
+
+- `vcon-server tui`: in a terminal narrower than its first line, the
+  server's address is no longer the first part shortened. The connection is
+  always whole; the address loses `https://`, then the tenant's id is
+  shortened, then the tenant is left out, and only then is the address
+  shortened.
+- `vcon-server tui` without a terminal exits with code 1 and
+  `a terminal is required`, with which of standard input and standard
+  output is not one, in place of
+  `the terminal: No such device or address (os error 6)`. It checks before
+  it reads the key file.
+- `vcon-server tui` says what is wrong with a server certificate it
+  refuses, and what to do, in place of the TLS library's text: a
+  certificate marked as a certificate authority (`CA:TRUE`), one no
+  trusted certificate signed, one for another name, one that has expired
+  and one not valid yet. Each is still refused before any request is sent.
+- The documentation builds with rustdoc's warnings denied: two links from
+  public documentation in `mcp/fence.rs` to a private item are gone, and
+  the commit hook and CI now build it that way.
+- The scenario runner that runs the pages' commands in CI gives a
+  container with apt a list of package mirrors that answer, in place of
+  one host; an outage of `archive.ubuntu.com` on port 80 had failed a
+  required check.
 
 ## [0.4.1] - 2026-11-09
 

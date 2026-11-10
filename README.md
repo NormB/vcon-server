@@ -137,7 +137,9 @@ private spec or plan file (a name ending in .local.md), and that none is staged
 staged, it checks that every GitHub Action is pinned by commit
 (`scripts/check_action_pins.py`) and runs `scripts/rustfmt.sh --check`,
 `scripts/check_style.py --walk`,
-`cargo clippy --workspace --all-targets --locked --quiet -- -D warnings`, the
+`cargo clippy --workspace --all-targets --locked --quiet -- -D warnings`,
+builds the documentation with rustdoc's warnings denied
+(`cargo doc --workspace --no-deps --locked --quiet`), and runs the
 tests with `scripts/nextest.sh run --workspace --locked` and the doc tests with
 `cargo test --workspace --locked --quiet --doc` (on aarch64, linked by
 `scripts/cc-lld.sh` with the toolchain's lld), the same for the fuzz package, the

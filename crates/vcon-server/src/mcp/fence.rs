@@ -19,7 +19,8 @@ const ESCAPED: [char; 16] = [
     '\u{202d}', '\u{202e}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}', '\u{2028}', '\u{2029}',
 ];
 
-/// JSON text with each character in [`ESCAPED`] written as its JSON escape
+/// JSON text with each escaped character (a fence bracket, a bidirectional
+/// control, a line or paragraph separator) written as its JSON escape
 /// `\uXXXX`. A stored vCon is one JSON object, so these can stand only
 /// inside its strings, where the escape means the same character: every
 /// value parses back unchanged.
@@ -42,8 +43,8 @@ pub fn fence(inner: &str) -> String {
     format!("{OPEN}{inner}{CLOSE}")
 }
 
-/// A name or a label: every character in [`ESCAPED`] and every control
-/// character written as `\uXXXX`, then fenced.
+/// A name or a label: every escaped character (see [`escape_json`]) and
+/// every control character written as `\uXXXX`, then fenced.
 #[must_use]
 pub fn fence_field(text: &str) -> String {
     let mut out = String::with_capacity(text.len());

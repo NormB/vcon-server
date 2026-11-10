@@ -284,6 +284,8 @@ git config core.hooksPath .githooks
   [adding a GitHub Action](#adding-a-github-action)) and runs
   `scripts/rustfmt.sh --check`, `scripts/check_style.py --walk`,
   `cargo clippy --workspace --all-targets --locked --quiet -- -D warnings`,
+  the documentation with rustdoc's warnings denied
+  (`cargo doc --workspace --no-deps --locked --quiet`),
   the tests with `scripts/nextest.sh run --workspace --locked` (each test
   under the deadline in `.config/nextest.toml`) and the doc tests with
   `cargo test --workspace --locked --quiet --doc`, then the same for the fuzz

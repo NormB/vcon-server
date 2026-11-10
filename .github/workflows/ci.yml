@@ -51,6 +51,11 @@ jobs:
         run: |
           cargo clippy --workspace --all-targets --locked -- -D warnings
           cargo clippy --manifest-path fuzz/Cargo.toml --all-targets --locked -- -D warnings
+      - name: Documentation, with rustdoc's warnings denied
+        # A link that does not resolve, or one from public documentation to
+        # a private item, fails here; the commit hook runs the same command
+        # (tests/rustdoc_gate.rs).
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked --quiet
       - name: Tests
         # Every command locks all of its memory before it reads a key, and the
         # tests run the binary; the runner's default lock limit is too small.

@@ -17,6 +17,7 @@ pub mod keys;
 pub mod state;
 pub mod view;
 
+use std::io::IsTerminal;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
@@ -55,9 +56,14 @@ pub fn translate(input: &Input) -> Option<Event> {
 ///
 /// # Errors
 ///
-/// A sentence naming what failed: the key file, the CA file, or the
-/// terminal. It never holds the token.
+/// A sentence naming what failed: no terminal ([`require_terminal`]), the
+/// key file, the CA file, or the terminal. It never holds the token.
 pub fn run(config: &ClientConfig) -> Result<(), String> {
+    // First, so that no key is read for a run that cannot start.
+    require_terminal(
+        std::io::stdin().is_terminal(),
+        std::io::stdout().is_terminal(),
+    )?;
     let api: Arc<dyn Api> = Arc::new(HttpApi::new(config)?);
     let theme = view::theme(
         std::env::var("NO_COLOR").ok().as_deref(),
@@ -77,6 +83,26 @@ pub fn run(config: &ClientConfig) -> Result<(), String> {
     );
     ratatui::restore();
     result.map(|_| ())
+}
+
+/// Whether the UI can start: it reads keys from standard input and draws
+/// on standard output, so each must be a terminal. `input` and `output`
+/// say whether they are.
+///
+/// # Errors
+///
+/// A sentence that says a terminal is required, which of the two is not
+/// one, and what to do.
+pub fn require_terminal(input: bool, output: bool) -> Result<(), String> {
+    let what = match (input, output) {
+        (true, true) => return Ok(()),
+        (false, true) => "standard input is not one",
+        (true, false) => "standard output is not one",
+        (false, false) => "standard input and standard output are not one",
+    };
+    Err(format!(
+        "a terminal is required: {what}; run it in a terminal, not through a pipe, a redirect or a job without one"
+    ))
 }
 
 /// Where the terminal's events come from: the keyboard in [`run`], a

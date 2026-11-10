@@ -103,39 +103,96 @@ pub fn draw(frame: &mut Frame<'_>, state: &State, theme: Theme) {
     );
 }
 
-/// The status line: the server, the tenant and the connection. The server's
-/// address is the part shortened when the line is too long.
+/// Whose key the server answered for, as the status line names it.
+enum Owner<'a> {
+    /// The server has not answered for the key.
+    Unknown,
+    /// An operator key, which has no tenant.
+    Operator,
+    /// A tenant key, with the tenant's id.
+    Tenant(&'a str),
+}
+
+/// The scheme every server address has, and so the first thing left out.
+const SCHEME: &str = "https://";
+/// Between the parts of the status line.
+const BETWEEN: &str = " | ";
+/// Ends a part that was shortened.
+const CUT: &str = "...";
+/// The fewest characters of a tenant id worth showing.
+const ID_MIN: usize = 4;
+
+/// The status line before the connection word, which the caller appends:
+/// the server's address and whose key it is, each followed by [`BETWEEN`].
+///
+/// THE RULE for a line longer than `columns`. An operator needs the
+/// connection first, then the server, then the tenant, so the parts give
+/// way in the other order, and nothing that carries information goes
+/// before something that carries none:
+///
+/// 1. The connection word is never shortened or left out.
+/// 2. The address loses `https://`, which every address has.
+/// 3. A tenant id is shortened to what fits, with `...`, down to
+///    [`ID_MIN`] characters. A phrase (`tenant unknown`, `no tenant
+///    (operator key)`) is never cut.
+/// 4. The tenant part is left out.
+/// 5. Only then is the address shortened, at its end, with `...`.
+fn status_lead(server: &str, owner: &Owner<'_>, word: &str, columns: usize) -> String {
+    let length = |text: &str| text.chars().count();
+    let owner_whole = match owner {
+        Owner::Unknown => "tenant unknown".to_owned(),
+        Owner::Operator => "no tenant (operator key)".to_owned(),
+        Owner::Tenant(id) => format!("tenant {id}"),
+    };
+    // What the address and the tenant part may take together.
+    let room = columns.saturating_sub(length(word));
+    let with_owner = |address: &str, owner: &str| format!("{address}{BETWEEN}{owner}{BETWEEN}");
+    let whole = with_owner(server, &owner_whole);
+    if length(&whole) <= room {
+        return whole;
+    }
+    let bare = server.strip_prefix(SCHEME).unwrap_or(server);
+    let unschemed = with_owner(bare, &owner_whole);
+    if length(&unschemed) <= room {
+        return unschemed;
+    }
+    if let Owner::Tenant(id) = owner {
+        let around = length(&with_owner(bare, "tenant ")).saturating_add(length(CUT));
+        let kept = room.saturating_sub(around);
+        if kept >= ID_MIN {
+            let id: String = id.chars().take(kept).collect();
+            return with_owner(bare, &format!("tenant {id}{CUT}"));
+        }
+    }
+    let alone = format!("{bare}{BETWEEN}");
+    if length(&alone) <= room {
+        return alone;
+    }
+    let kept = room.saturating_sub(length(BETWEEN).saturating_add(length(CUT)));
+    let address: String = bare.chars().take(kept).collect();
+    format!("{address}{CUT}{BETWEEN}")
+}
+
+/// The status line: the server, the tenant and the connection, shortened
+/// by [`status_lead`]'s rule when the terminal is narrower than the line.
 fn status(state: &State, columns: u16, theme: Theme) -> Line<'static> {
-    let (tenant, word, color) = match &state.connection {
-        Connection::Connecting => ("tenant unknown".to_owned(), "connecting", Color::Yellow),
-        Connection::Failed(_) => ("tenant unknown".to_owned(), "not connected", Color::Red),
+    let (owner, word, color) = match &state.connection {
+        Connection::Connecting => (Owner::Unknown, "connecting", Color::Yellow),
+        Connection::Failed(_) => (Owner::Unknown, "not connected", Color::Red),
         Connection::Connected(info) => (
-            info.tenant.as_ref().map_or_else(
-                || "no tenant (operator key)".to_owned(),
-                |tenant| format!("tenant {tenant}"),
-            ),
+            info.tenant
+                .as_deref()
+                .map_or(Owner::Operator, Owner::Tenant),
             "connected",
             Color::Green,
         ),
     };
-    let middle = format!(" | {tenant} | ");
-    let taken = middle.chars().count().saturating_add(word.len());
-    let room = usize::from(columns).saturating_sub(taken);
-    let server = if state.server.chars().count() > room {
-        let kept: String = state.server.chars().take(room.saturating_sub(3)).collect();
-        format!("{kept}...")
-    } else {
-        state.server.clone()
-    };
+    let lead = status_lead(&state.server, &owner, word, usize::from(columns));
     let mut style = Style::new().add_modifier(Modifier::BOLD);
     if theme.color {
         style = style.fg(color);
     }
-    Line::from(vec![
-        Span::raw(server),
-        Span::raw(middle),
-        Span::styled(word, style),
-    ])
+    Line::from(vec![Span::raw(lead), Span::styled(word, style)])
 }
 
 /// A message in place of a view's content, wrapped to the body.
@@ -897,6 +954,269 @@ mod tests {
             "the state is never pushed off: {}",
             lines[0]
         );
+    }
+
+    // The status line at each width. The rule: the connection is never
+    // shortened; then the server's address; then the tenant.
+
+    const SERVER: &str = "https://vcon.example.com:8443";
+    const LONG_ID: &str = "658a6d102142fea77f47ee8a332323d8";
+
+    /// A state for the server at `server` whose key answered with `tenant`.
+    fn keyed(server: &str, tenant: Option<&str>) -> State {
+        let mut state = State::new(server, (80, 24)).0;
+        state.step(
+            Event::KeyInfo(Ok(KeyInfo {
+                id: "0123456789abcdef".to_owned(),
+                tenant: tenant.map(str::to_owned),
+                scopes: vec!["read".to_owned()],
+            })),
+            NOW,
+        );
+        state
+    }
+
+    /// A state whose server refused the key.
+    fn refused(server: &str) -> State {
+        let mut state = State::new(server, (80, 24)).0;
+        state.step(Event::KeyInfo(Err(ApiError::Status(401, None))), NOW);
+        state
+    }
+
+    /// The status line of `state` in a terminal of `columns`.
+    fn status_at(state: &State, columns: u16) -> String {
+        screen(state, columns, 24)[0].trim_end().to_owned()
+    }
+
+    #[test]
+    fn at_120_columns_the_status_line_is_whole() {
+        assert_eq!(
+            status_at(&keyed(SERVER, Some(LONG_ID)), 120),
+            format!("{SERVER} | tenant {LONG_ID} | connected"),
+            "everything fits"
+        );
+    }
+
+    #[test]
+    fn at_80_columns_the_address_loses_only_its_scheme() {
+        assert_eq!(
+            status_at(&keyed(SERVER, Some(LONG_ID)), 80),
+            format!("vcon.example.com:8443 | tenant {LONG_ID} | connected"),
+            "https:// says nothing a reader needs: every address has it"
+        );
+    }
+
+    #[test]
+    fn at_60_columns_the_tenant_id_is_shortened_and_the_address_is_not() {
+        assert_eq!(
+            status_at(&keyed(SERVER, Some(LONG_ID)), 60),
+            "vcon.example.com:8443 | tenant 658a6d102142fe... | connected",
+            "the tenant gives way before the server does"
+        );
+    }
+
+    #[test]
+    fn at_40_columns_the_tenant_is_left_out_and_the_address_is_not() {
+        assert_eq!(
+            status_at(&keyed(SERVER, Some(LONG_ID)), 40),
+            "vcon.example.com:8443 | connected",
+            "the server and the connection"
+        );
+    }
+
+    #[test]
+    fn a_line_that_fits_exactly_keeps_its_scheme() {
+        assert_eq!(
+            status_at(&keyed(SERVER, Some(LONG_ID)), 83),
+            format!("{SERVER} | tenant {LONG_ID} | connected"),
+            "83 characters in 83 columns"
+        );
+    }
+
+    #[test]
+    fn a_short_tenant_id_is_whole_at_60_columns() {
+        assert_eq!(
+            status_at(&keyed(SERVER, Some("t_example")), 60),
+            format!("{SERVER} | tenant t_example | connected"),
+            "60 characters in 60 columns"
+        );
+    }
+
+    #[test]
+    fn an_address_with_a_path_is_shown_with_it() {
+        let line = status_at(
+            &keyed("https://vcon.example.com:8443/base", Some("t_example")),
+            120,
+        );
+        assert!(
+            line.starts_with("https://vcon.example.com:8443/base | "),
+            "the path is part of the address: {line}"
+        );
+    }
+
+    #[test]
+    fn a_refused_key_at_40_columns_shows_the_address_and_not_connected() {
+        assert_eq!(
+            status_at(&refused(SERVER), 40),
+            "vcon.example.com:8443 | not connected",
+            "`tenant unknown` is the part left out"
+        );
+    }
+
+    #[test]
+    fn a_refused_key_at_60_columns_keeps_tenant_unknown() {
+        assert_eq!(
+            status_at(&refused(SERVER), 60),
+            "vcon.example.com:8443 | tenant unknown | not connected",
+            "without the scheme the three parts fit"
+        );
+    }
+
+    #[test]
+    fn a_refused_key_at_80_columns_is_whole() {
+        assert_eq!(
+            status_at(&refused(SERVER), 80),
+            format!("{SERVER} | tenant unknown | not connected"),
+            "everything fits"
+        );
+    }
+
+    #[test]
+    fn connecting_at_40_columns_shows_the_address_and_connecting() {
+        assert_eq!(
+            status_at(&State::new(SERVER, (40, 24)).0, 40),
+            "vcon.example.com:8443 | connecting",
+            "`tenant unknown` is the part left out"
+        );
+    }
+
+    #[test]
+    fn an_operator_key_at_60_columns_is_named_whole() {
+        assert_eq!(
+            status_at(&keyed(SERVER, None), 60),
+            "vcon.example.com:8443 | no tenant (operator key) | connected",
+            "60 characters in 60 columns"
+        );
+    }
+
+    #[test]
+    fn an_operator_key_at_40_columns_is_left_out_not_cut() {
+        assert_eq!(
+            status_at(&keyed(SERVER, None), 40),
+            "vcon.example.com:8443 | connected",
+            "a phrase is whole or absent"
+        );
+    }
+
+    #[test]
+    fn a_long_address_is_cut_at_its_end_and_the_connection_is_whole() {
+        let server = format!("https://{}.example.com:8443", "a".repeat(90));
+        assert_eq!(
+            status_at(&refused(&server), 40),
+            format!("{}... | not connected", "a".repeat(21)),
+            "40 columns: 21 of the address, the mark, and the connection"
+        );
+    }
+
+    #[test]
+    fn four_characters_of_a_tenant_id_are_the_fewest_shown() {
+        assert_eq!(
+            status_at(&keyed(SERVER, Some(LONG_ID)), 50),
+            "vcon.example.com:8443 | tenant 658a... | connected",
+            "50 columns leave room for four"
+        );
+    }
+
+    #[test]
+    fn a_tenant_id_with_room_for_three_characters_is_left_out() {
+        assert_eq!(
+            status_at(&keyed(SERVER, Some(LONG_ID)), 49),
+            "vcon.example.com:8443 | connected",
+            "three characters name no tenant"
+        );
+    }
+
+    #[test]
+    fn one_column_short_of_whole_the_scheme_goes_first() {
+        assert_eq!(
+            status_at(&keyed(SERVER, Some(LONG_ID)), 82),
+            format!("vcon.example.com:8443 | tenant {LONG_ID} | connected"),
+            "the tenant id stays whole"
+        );
+    }
+
+    #[test]
+    fn one_column_short_of_a_whole_id_shortens_it_to_fit() {
+        let line = status_at(&keyed(SERVER, Some(LONG_ID)), 74);
+        assert_eq!(
+            line,
+            format!(
+                "vcon.example.com:8443 | tenant {}... | connected",
+                &LONG_ID[..28]
+            ),
+            "74 columns: 28 characters and the mark"
+        );
+    }
+
+    #[test]
+    fn an_address_that_is_not_https_is_shown_as_it_is() {
+        assert_eq!(
+            status_at(&refused("vcon.example.com:8443"), 40),
+            "vcon.example.com:8443 | not connected",
+            "there is no scheme to leave out"
+        );
+    }
+
+    #[test]
+    fn an_address_that_fits_exactly_at_40_columns_is_whole() {
+        let server = format!("https://{}", "b".repeat(28));
+        assert_eq!(
+            status_at(&keyed(&server, Some(LONG_ID)), 40),
+            format!("{} | connected", "b".repeat(28)),
+            "28 characters, the separator and the connection are 40"
+        );
+    }
+
+    #[test]
+    fn the_status_line_fits_and_ends_with_the_connection_at_every_width() {
+        let long = format!("https://{}.example.com:8443", "a".repeat(90));
+        for server in [SERVER, long.as_str()] {
+            let states = [
+                (State::new(server, (80, 24)).0, "connecting"),
+                (refused(server), "not connected"),
+                (keyed(server, Some(LONG_ID)), "connected"),
+                (keyed(server, None), "connected"),
+            ];
+            for (state, word) in &states {
+                for columns in 40..=130 {
+                    let line = status_at(state, columns);
+                    assert!(
+                        line.chars().count() <= usize::from(columns),
+                        "{columns} columns: {line}"
+                    );
+                    assert!(
+                        line.ends_with(&format!(" | {word}")),
+                        "{columns} columns, the connection is whole and last: {line}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_tenant_phrase_is_whole_or_absent_at_every_width() {
+        for (state, phrase) in [
+            (refused(SERVER), "tenant unknown"),
+            (keyed(SERVER, None), "no tenant (operator key)"),
+        ] {
+            for columns in 40..=130 {
+                let line = status_at(&state, columns);
+                assert!(
+                    line.contains(phrase) || !line.contains("tenant"),
+                    "{columns} columns: {line}"
+                );
+            }
+        }
     }
 
     #[test]
