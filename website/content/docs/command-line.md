@@ -1,7 +1,10 @@
 +++
 title = "Command line"
 description = "Every vcon-server command: what it does, what it prints, its exit codes, and which may run beside a serving server."
-weight = 85
+weight = 54
+
+[extra]
+group = "reference"
 +++
 
 Every command but `mcp` and `tui` takes `--config <file>`, the same file `serve` reads,

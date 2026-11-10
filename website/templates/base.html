@@ -16,7 +16,7 @@
   <title>{% block title %}{{ config.title }}{% endblock title %}</title>
   <meta name="description" content="{% block description %}{{ config.description }}{% endblock description %}">
   <meta property="og:title" content="{% block og_title %}{{ config.title }}{% endblock og_title %}">
-  <meta property="og:description" content="{{ config.description }}">
+  <meta property="og:description" content="{% block og_description %}{{ config.description }}{% endblock og_description %}">
   <meta property="og:type" content="{% block og_type %}website{% endblock og_type %}">
   <meta property="og:site_name" content="vcon-server">
   <link rel="canonical" href="{{ config.base_url }}{% if current_path is defined %}{{ current_path }}{% endif %}">
@@ -29,8 +29,9 @@
   <link rel="icon" href="{{ get_url(path='favicon.svg') }}" type="image/svg+xml">
   <link rel="apple-touch-icon" href="{{ get_url(path='apple-touch-icon.png') }}">
   <link rel="stylesheet" href="{{ get_url(path='style.css', cachebust=true) }}">
-  <script src="{{ get_url(path='elasticlunr.min.js') }}" defer></script>
-  <script src="{{ get_url(path='search_index.en.js') }}" defer></script>
+  {# The search library and index are not loaded here: js/search.js fetches
+     them, from the addresses on the search box, when the box is first used.
+     The index is over a megabyte and every page would fetch it. #}
   <script src="{{ get_url(path='js/search.js', cachebust=true) }}" defer></script>
 </head>
 <body>
@@ -45,7 +46,7 @@
         <a href="{{ get_url(path='@/standards.md') }}">Standards</a>
         <a href="{{ config.extra.repo | safe }}">GitHub</a>
       </nav>
-      <div class="search" id="search" hidden>
+      <div class="search" id="search" data-lunr="{{ get_url(path='elasticlunr.min.js') }}" data-index="{{ get_url(path='search_index.en.js', cachebust=true) }}" hidden>
         <label for="search-input" class="visually-hidden">Search the docs</label>
         <input id="search-input" type="search" placeholder="Search docs" autocomplete="off">
         <ul id="search-results" class="search-results" hidden></ul>

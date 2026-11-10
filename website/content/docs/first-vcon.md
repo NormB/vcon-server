@@ -2,6 +2,9 @@
 title = "Store your first vCon"
 description = "A first vCon end to end: store it, store it again, see a conflict refused, read it back byte for byte, list it, and delete it, each with a key that holds only the scope it needs, and every answer shown."
 weight = 12
+
+[extra]
+group = "start"
 +++
 
 This how-to stores one vCon and follows it to its deletion. Each step shows
@@ -293,6 +296,26 @@ curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/
 401
 401
 ```
+
+## When a step fails
+
+- **A `curl` error, `401`, `403` or `503` where this page shows another
+  answer:** see [when a request fails](@/docs/getting-started.md#when-a-request-fails).
+- **`$TENANT` is empty:** no tenant is named `acme`.
+  `sudo -u vcon vcon-server tenant list --config /etc/vcon-server/vcon-server.toml`
+  prints each tenant with its name; use that name, or make the tenant as
+  [getting started](@/docs/getting-started.md#make-the-first-tenant-and-its-keys)
+  does.
+- **The store answers `415`,
+  [`unsupported-media-type`](@/problems/unsupported-media-type.md):** the
+  `Content-Type` is not `application/vcon`, `application/vcon+gzip` or
+  `application/json`.
+- **The store answers `422`:** the body is not a vCon the server can store.
+  The problem's `type` names the check that failed;
+  [storing vCons](@/docs/storing-vcons.md#what-is-checked) lists the checks.
+- **The first store answers `410`, [`gone`](@/problems/gone.md):** a vCon
+  with this uuid was stored and deleted before. A deleted uuid stays
+  deleted. Run [write a vCon](#write-a-vcon) again for a new uuid.
 
 ## Clean up
 

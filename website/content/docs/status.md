@@ -1,7 +1,10 @@
 +++
 title = "What is built"
 description = "Which parts of vcon-server work today, and which are being built."
-weight = 5
+weight = 60
+
+[extra]
+group = "project"
 +++
 
 vcon-server 0.4.2 is released: the `vcon` and `vcon-server` crates are on
@@ -110,6 +113,18 @@ what is built, unless it says otherwise.
   checksums, every file with a signed build provenance attestation; from
   0.3.0 also a Sigstore signature over the checksums and the provenance as a
   file. The release workflow also publishes both crates to crates.io.
+
+## On `main` only
+
+The site is built from the `main` branch, so a page can describe what no
+release holds yet. Release 0.4.2 does not have these:
+
+- **Reveals in the audit log.** `GET /vcons/{uuid}?reveal=<part>`, and the
+  same parameter on the two legal read routes, records the read as
+  `reveal_<part>` or `legal_reveal_<part>`, and the console marks each of
+  its reveals that way. Release 0.4.2 has no `reveal` parameter: it passes
+  the query over and records `read` or `legal_read`. See
+  [reveals](@/docs/http-api.md#reveals).
 
 ## Being built
 

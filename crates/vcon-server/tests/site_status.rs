@@ -218,3 +218,110 @@ fn no_page_calls_a_feature_unreleased_once_the_changelog_has_none() {
         "the changelog lists nothing unreleased, yet these pages say a feature is: {found:#?}"
     );
 }
+
+/// The heading of the status page's list of what is on `main` and in no
+/// release. Its words are one of `UNRELEASED_PHRASES`, so the release that
+/// ships the entries must take the section out
+/// (`no_page_calls_a_feature_unreleased_once_the_changelog_has_none`).
+const UNRELEASED_HEADING: &str = "## On `main` only";
+
+/// The text of the changelog's `[Unreleased]` section.
+fn unreleased_section(changelog: &str) -> &str {
+    changelog
+        .split("\n## [")
+        .find(|section| section.starts_with("Unreleased]"))
+        .expect("the changelog has an [Unreleased] section")
+}
+
+/// The words in backquotes in `text`, each once, in order: the routes,
+/// parameters, commands and keys it names.
+fn code_spans(text: &str) -> Vec<&str> {
+    let mut spans = Vec::new();
+    for (i, part) in text.split('`').enumerate() {
+        if i % 2 == 1 && !part.is_empty() && !spans.contains(&part) {
+            spans.push(part);
+        }
+    }
+    spans
+}
+
+/// The text under the status page's unreleased heading, up to the next
+/// `## ` heading, or `None` when the page has no such section.
+fn unreleased_on_status(status: &str) -> Option<&str> {
+    let start = status.find(&format!("{UNRELEASED_HEADING}\n"))? + UNRELEASED_HEADING.len();
+    let rest = &status[start..];
+    Some(rest.find("\n## ").map_or(rest, |end| &rest[..end]))
+}
+
+#[test]
+fn the_code_span_reader_takes_each_span_once() {
+    assert_eq!(
+        code_spans("Use `GET /a` or `b`; `GET /a` again, and `` nothing."),
+        ["GET /a", "b"],
+        "each backquoted span once, in order, and no empty one"
+    );
+    assert!(
+        code_spans("No spans here.").is_empty(),
+        "plain text has none"
+    );
+}
+
+#[test]
+fn the_status_section_reader_stops_at_the_next_heading() {
+    let page = "## Built\n\n- A.\n\n## On `main` only\n\n- `x` is new.\n\n## Being built\n\n- B.\n";
+    assert_eq!(
+        unreleased_on_status(page),
+        Some("\n\n- `x` is new.\n"),
+        "the section's own text"
+    );
+    assert_eq!(
+        unreleased_on_status("## Built\n\n- A.\n"),
+        None,
+        "a page without the heading has no such section"
+    );
+    assert_eq!(
+        unreleased_on_status("## On `main` only\n\n- Last.\n"),
+        Some("\n\n- Last.\n"),
+        "a section at the end of the page runs to the end"
+    );
+}
+
+/// The site is built from `main`, so a page can describe what no release
+/// holds; a reader who installed the release then finds the page wrong.
+/// While the changelog lists additions under `[Unreleased]`, the status
+/// page says so, in one section, and names what the changelog's first words
+/// name. Found on 2026-11-10: the HTTP API and audit-log pages described
+/// the `reveal` parameter, added after 0.4.2, with no word that 0.4.2 does
+/// not have it.
+#[test]
+fn the_status_page_lists_what_is_on_main_and_in_no_release() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let changelog = std::fs::read_to_string(root.join("CHANGELOG.md")).expect("read CHANGELOG.md");
+    let unreleased = unreleased_section(&changelog);
+    let Some(added) = unreleased
+        .split("\n### ")
+        .find(|part| part.starts_with("Added\n"))
+    else {
+        return;
+    };
+    let status = page("docs/status.md");
+    let section = unreleased_on_status(&status).unwrap_or_else(|| {
+        panic!(
+            "the changelog lists unreleased additions, and docs/status.md has no section \
+             {UNRELEASED_HEADING:?}"
+        )
+    });
+    let entries: Vec<&str> = added.split("\n- ").skip(1).collect();
+    assert!(!entries.is_empty(), "the Added part has entries");
+    for entry in entries {
+        let named = code_spans(entry);
+        assert!(
+            named.is_empty()
+                || named
+                    .iter()
+                    .any(|span| section.contains(&format!("`{span}`"))),
+            "docs/status.md's unreleased section names none of {named:?}, from the changelog \
+             entry: {entry}"
+        );
+    }
+}

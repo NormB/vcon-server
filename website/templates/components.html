@@ -1,16 +1,32 @@
 {# Tera v2 components (Zola 0.23 removed macros). Components are global, so
    no template imports this file; they see only the arguments they are given. #}
-{% component docs_nav(current) %}
+{# The sidebar: the documentation pages under the heading of their group,
+   in the order of their weights. A page names its group in its front matter
+   (`[extra] group`); tests/docs_index.rs holds every page to one of these
+   groups, in this order, with no two pages at one weight. The groups follow
+   Diataxis: the first-visit path, how-to guides, explanation (concepts) and
+   reference, then the pages about the project itself. The groups and their
+   headings are `docs_groups` in config.toml, which the documentation's own
+   index (section.html) reads too; a component sees only its arguments, so
+   each caller passes the list. #}
+{% component docs_nav(current, groups) %}
 {% set docs = get_section(path="docs/_index.md") %}
+{% set problems = get_url(path="@/problems/_index.md") %}
+{% set standards = get_url(path="@/standards.md") %}
 <nav class="doc-nav" aria-label="Documentation">
-  <p class="doc-nav-title"><a href="{{ docs.permalink }}">Documentation</a></p>
-  <ul>
-  {% for p in docs.pages %}
+  <p class="doc-nav-title"><a href="{{ docs.permalink }}"{% if docs.permalink == current %} aria-current="page"{% endif %}>Documentation</a></p>
+  {% for g in groups %}
+  <p class="doc-nav-group" id="doc-nav-{{ g[0] }}">{{ g[1] }}</p>
+  <ul aria-labelledby="doc-nav-{{ g[0] }}">
+  {% for p in docs.pages %}{% if p.extra.group == g[0] %}
     <li><a href="{{ p.permalink }}"{% if p.permalink == current %} aria-current="page"{% endif %}>{{ p.title }}</a></li>
-  {% endfor %}
+  {% endif %}{% endfor %}
+  {% if g[0] == "reference" %}
+    <li><a href="{{ problems }}"{% if problems == current %} aria-current="page"{% endif %}>Problem types</a></li>
+    <li><a href="{{ standards }}"{% if standards == current %} aria-current="page"{% endif %}>Standards</a></li>
+  {% endif %}
   </ul>
-  <p class="doc-nav-title"><a href="{{ get_url(path='@/problems/_index.md') }}">Problem types</a></p>
-  <p class="doc-nav-title"><a href="{{ get_url(path='@/standards.md') }}">Standards</a></p>
+  {% endfor %}
 </nav>
 {% endcomponent docs_nav %}
 

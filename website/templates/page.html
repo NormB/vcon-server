@@ -1,11 +1,12 @@
 {% extends "base.html" %}
 {% block title %}{{ page.title }} — {{ config.title }}{% endblock title %}
 {% block description %}{{ page.description | default(value=config.description) }}{% endblock description %}
+{% block og_description %}{{ page.description | default(value=config.description) }}{% endblock og_description %}
 {% block og_title %}{{ page.title }} — {{ config.title }}{% endblock og_title %}
 {% block og_type %}article{% endblock og_type %}
 {% block content %}
 <div class="doc-layout">
-  <aside class="doc-sidebar">{{ <docs_nav current={page.permalink} /> }}</aside>
+  <aside class="doc-sidebar">{{ <docs_nav current={page.permalink} groups={config.extra.docs_groups} /> }}</aside>
   <article class="doc">
     <header>
       <h1>{{ page.title }}</h1>

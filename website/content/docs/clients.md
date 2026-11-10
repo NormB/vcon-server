@@ -1,7 +1,10 @@
 +++
 title = "Client examples"
 description = "Programs in curl, Python, TypeScript, Go and Rust that work through the HTTP API and MCP: store, gzip, list with a cursor, replace, legal hold, audit, admin and MCP calls, and delete."
-weight = 72
+weight = 51
+
+[extra]
+group = "reference"
 +++
 
 The repository's `clients/` directory holds one small program per language.

@@ -1,10 +1,11 @@
 {% extends "base.html" %}
 {% block title %}{{ page.slug }} ({{ page.extra.status }}) — {{ config.title }} problem type{% endblock title %}
 {% block description %}{{ page.extra.problem_title }}{% endblock description %}
+{% block og_description %}{{ page.extra.problem_title }}{% endblock og_description %}
 {% block og_type %}article{% endblock og_type %}
 {% block content %}
 <div class="doc-layout">
-  <aside class="doc-sidebar">{{ <docs_nav current={page.permalink} /> }}</aside>
+  <aside class="doc-sidebar">{{ <docs_nav current={page.permalink} groups={config.extra.docs_groups} /> }}</aside>
   <article class="doc">
     <header>
       <p class="kicker"><a href="{{ get_url(path='@/problems/_index.md') }}">Problem types</a></p>

@@ -1,7 +1,10 @@
 +++
 title = "Audit logs"
 description = "What vcon-server records about each request, where, and what it never records."
-weight = 60
+weight = 43
+
+[extra]
+group = "concepts"
 +++
 
 ## Two kinds of log
@@ -93,6 +96,10 @@ action through MCP is recorded as its HTTP route records it.
 | `backup` | a run of `vcon-server backup`, with its outcome | admin |
 
 ## Reveals
+
+Reveals are on `main` only, in no release yet: release 0.4.2 records each
+of these reads as `read` or `legal_read`, and never writes a `reveal_` or
+`legal_reveal_` action.
 
 A client that shows a vCon masked, as the [console](@/docs/console.md)
 does, reads it once for its summary and again each time a person chooses

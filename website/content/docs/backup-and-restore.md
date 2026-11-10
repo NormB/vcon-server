@@ -1,7 +1,10 @@
 +++
 title = "Back up and restore"
 description = "Back up the master key and the data directory while the server runs, restore the data directory, check it, and see what a restore brings back, revoked keys included."
-weight = 16
+weight = 24
+
+[extra]
+group = "how-to"
 +++
 
 A backup is two things, kept in different places: the data directory, which
@@ -246,6 +249,30 @@ Once the restored server is checked, remove the old data directory:
 ```sh
 sudo rm -rf /var/lib/vcon-server.old
 ```
+
+## When a step fails
+
+- **A `curl` error, or `401`, `403` or `503` where this page shows another
+  answer:** see [when a request fails](@/docs/getting-started.md#when-a-request-fails).
+- **`the backup's path already exists; a backup is written to a new directory`:**
+  the directory `backup` was told to make is there already. Name one that
+  does not exist.
+- **`the backup could not be written, or the data could not be read`:**
+  the service account cannot write the directory that is to hold the
+  backup, or cannot read the data directory. Name a directory inside one
+  that `vcon` can write, and run the command as `vcon`.
+- **`the master key is not the one server.sqlite was made under`, from
+  `check` on the restored directory:** the configuration names a master key
+  other than the one that was current when the backup was taken. Point
+  `master_key` at that key's copy, found by its id in
+  [back up the master key](#back-up-the-master-key).
+- **The restored server does not start, with `Permission denied (os error 13)`:**
+  the restored files are not owned by `vcon`. Give them back with
+  `sudo chown -R vcon:vcon /var/lib/vcon-server`, as in
+  [getting started](@/docs/getting-started.md#allow-it-to-lock-its-memory).
+- **A key revoked after the backup works again:** the restore brought it
+  back. Revoke it again, as in
+  [what the restore brings back](#what-the-restore-brings-back).
 
 ## Objects in an S3 bucket
 

@@ -1,7 +1,10 @@
 +++
 title = "HTTP API"
 description = "Every route: the scope it needs, what it takes, and what it answers."
-weight = 70
+weight = 50
+
+[extra]
+group = "reference"
 +++
 
 ## Basics
@@ -122,6 +125,10 @@ done
 ```
 
 ## Reveals
+
+The `reveal` parameter is on `main` only, in no release yet: release 0.4.2
+passes the query over and records each of these reads as `read` or
+`legal_read`.
 
 The three routes that read a vCon, `GET /vcons/{uuid}`,
 `GET /legal/vcons/{uuid}` and `GET /legal/vcons/{uuid}/versions/{version}`,

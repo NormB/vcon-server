@@ -1,7 +1,10 @@
 +++
 title = "Getting started"
 description = "From an installed binary to a running server: the service account, memory locking, the master key, a certificate, the configuration, the first tenant and its keys, and the server started under systemd or in the foreground."
-weight = 10
+weight = 11
+
+[extra]
+group = "start"
 +++
 
 This page takes a host with `vcon-server` installed to a running server that
@@ -380,6 +383,26 @@ curl -sS --cacert /usr/local/share/vcon-server/ca.pem https://vcon.example.com:8
 ```text
 {"status":401,"title":"A valid bearer key is needed","type":"https://vcon-server.com/problems/unauthorized"}
 ```
+
+## When a request fails
+
+These are the failures of a request to a running server, on this page and
+in every guide that follows it:
+
+| What you see | Cause | What to do |
+|---|---|---|
+| `curl: (6) Could not resolve host` | The server's name is not in DNS or in `/etc/hosts` on the host you test from | Add it to `/etc/hosts`, as in [check that it answers](#check-that-it-answers) |
+| `curl: (7) Failed to connect` | No server listens at that address and port | Check that the server runs (`systemctl status vcon-server`, or the terminal it runs in) and that the URL's port is the one in `listen`; then see [when it does not start](#when-it-does-not-start) |
+| `curl: (60) SSL certificate problem` | curl does not trust the server's certificate: `--cacert` is missing or names another certificate | Pass `--cacert /usr/local/share/vcon-server/ca.pem`, the copy [get a certificate](#get-a-certificate) installs |
+| `curl: (60) SSL: no alternative certificate subject name matches target host name` | The URL names the server by a name its certificate does not hold | Use the name the certificate was made for |
+| `401`, [`unauthorized`](@/problems/unauthorized.md) | The request has no key, a token the server does not know, or a revoked key. A shell variable that should hold a token is empty when the command that made the key failed, or in a new shell | `echo "${#MONITOR}"` prints `64` for a token; make the key again if it does not |
+| `403`, [`forbidden`](@/problems/forbidden.md) | The key lacks the scope the route needs | `GET /key` with that key shows its scopes; use a key that holds the scope ([tenants and keys](@/docs/tenants-and-keys.md)) |
+| `503`, [`unavailable`](@/problems/unavailable.md) | `server.sqlite` does not answer, or the key's tenant is being removed | See [operations](@/docs/operations.md) |
+| A `vcon-server` command stops with `memory cannot be locked` | The account that runs it has no memory-lock allowance | [Allow it to lock its memory](#allow-it-to-lock-its-memory) |
+
+Every other refusal is an RFC 9457 problem document whose `type` is a page
+under [problem types](@/problems/_index.md); the page says what caused it
+and what to do.
 
 ## Stop it and start it again
 

@@ -1,7 +1,10 @@
 +++
 title = "Operations"
 description = "Running vcon-server day to day: the data directory, what may run beside the server, the purge sweep, logs, health checks and backups."
-weight = 80
+weight = 47
+
+[extra]
+group = "concepts"
 +++
 
 ## The data directory

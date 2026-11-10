@@ -72,6 +72,26 @@ test.describe("what the home page shows", () => {
     expect(await page.locator("#how-to .cards a").count()).toBeGreaterThan(0);
   });
 
+  test("the page says who it is for, with the first pages each reader needs", async ({ page }) => {
+    const intro = page.locator(".intro");
+    await expect(intro.getByRole("heading", { name: "Who it is for" })).toBeVisible();
+    const readers = intro.locator("h2#who-it-is-for + ul > li");
+    await expect(readers).toHaveCount(4);
+    for (const reader of await readers.all()) {
+      expect(await reader.getByRole("link").count(), "each reader has a page to start at").toBeGreaterThan(0);
+    }
+    // The first-visit path, in order, for the reader who runs the server.
+    const first = await readers.first().getByRole("link").evaluateAll((as) => as.map((a) => new URL(a.href).pathname));
+    expect(first.slice(0, 3)).toEqual(["/docs/install/", "/docs/getting-started/", "/docs/first-vcon/"]);
+  });
+
+  test("the status note names the release and links what is built", async ({ page }) => {
+    const note = page.locator(".intro blockquote");
+    await expect(note).toContainText(/Status: \d+\.\d+\.\d+ released, not yet for production\./);
+    await expect(note).toContainText("the terminal UI");
+    await expect(note.getByRole("link", { name: "what is built" })).toHaveAttribute("href", /\/docs\/status\/$/);
+  });
+
   test("the footer groups its links", async ({ page }) => {
     const foot = page.getByRole("contentinfo");
     for (const name of ["Docs", "Issues", "Releases", "Security policy", "Patreon", "GitHub Sponsors"]) {

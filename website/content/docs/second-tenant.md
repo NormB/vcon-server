@@ -1,7 +1,10 @@
 +++
 title = "Add a second tenant"
 description = "Make a second tenant over the admin API while the server runs, give it a key, see that its data and acme's stay apart, change its retention period, and remove it."
-weight = 14
+weight = 22
+
+[extra]
+group = "how-to"
 +++
 
 A tenant is one customer, department or application whose vCons are kept
@@ -234,6 +237,26 @@ curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/
 ```text
 200
 ```
+
+## When a step fails
+
+- **A `curl` error, or `401` or `503` where this page shows another
+  answer:** see [when a request fails](@/docs/getting-started.md#when-a-request-fails).
+- **`403`, [`forbidden`](@/problems/forbidden.md), on an `/admin/` route:**
+  the token is a tenant key's. The admin routes take an operator key, made
+  on the server's host with `vcon-server key create --operator`.
+- **The first `POST /admin/tenants` answers `409`,
+  [`name-taken`](@/problems/name-taken.md):** a tenant named `globex`
+  exists, for example from an earlier run that stopped before
+  [remove it](#remove-it). Remove that tenant first, or use another name
+  in every step.
+- **The removal answers `409`, [`holds-vcons`](@/problems/holds-vcons.md):**
+  the tenant keeps a version, and the request has no `?force=true`.
+- **The removal answers `409`, [`under-hold`](@/problems/under-hold.md),
+  with `?force=true`:** a vCon of the tenant is under a legal hold. Release
+  the hold with a key of that tenant that holds `legal`
+  (`DELETE /legal/vcons/{uuid}/hold`), then remove the tenant. See
+  [retention and legal holds](@/docs/retention-and-holds.md#legal-holds).
 
 ## Clean up
 

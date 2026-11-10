@@ -1,7 +1,10 @@
 +++
 title = "Revoke and rotate keys"
 description = "Revoke an API key over HTTP or on the host, replace a key without a gap, and rotate a tenant's key and the master key, with every command and its output."
-weight = 15
+weight = 23
+
+[extra]
+group = "how-to"
 +++
 
 Two kinds of key need replacing from time to time:
@@ -307,6 +310,26 @@ From this step on, data purged before the rotation cannot be read from any
 copy taken before it. A rotation step that stops part way is finished by
 running it again. The test suite also plays this procedure end to end with
 the binary (`crates/vcon-server/tests/rotation.rs`).
+
+## When a step fails
+
+- **A `curl` error, or `401`, `403` or `503` where this page shows another
+  answer:** see [when a request fails](@/docs/getting-started.md#when-a-request-fails).
+- **`the data directory is in use; stop the server and any other command first`:**
+  a rotation command was run while the server, or another command that
+  runs alone, holds the data directory. Stop the server, as in
+  [rotate the tenant key and the master key](#rotate-the-tenant-key-and-the-master-key),
+  and run the command again.
+- **`the master key is not the one server.sqlite was made under`, from the
+  server or any command:** the configuration's `master_key` names a file
+  other than the key the data is under. After `rekey master`, point
+  `master_key` at the new file.
+- **A rotation command was interrupted:** run the same command again; it
+  finishes the rotation. Until then the server refuses to start, and
+  `vcon-server check` names the tenants whose rotation is part way.
+- **The old key still works after its replacement was made:** making a key
+  revokes no other key. Revoke the old one, as in
+  [replace a key without a gap](#replace-a-key-without-a-gap).
 
 ## Clean up
 

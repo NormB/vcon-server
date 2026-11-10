@@ -1,7 +1,10 @@
 +++
 title = "Retention and legal holds"
 description = "How long a deleted vCon is kept, when it is erased, how a legal hold stops that, and what the legal routes can read and restore."
-weight = 50
+weight = 42
+
+[extra]
+group = "concepts"
 +++
 
 ## The rule

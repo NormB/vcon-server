@@ -1,7 +1,10 @@
 +++
 title = "Security"
 description = "The key hierarchy, what is encrypted with what, how the process protects keys in memory, and what an attacker gets from each thing they might steal."
-weight = 65
+weight = 44
+
+[extra]
+group = "concepts"
 +++
 
 ## Keys

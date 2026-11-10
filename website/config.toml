@@ -23,6 +23,16 @@ external_level = "warn"
 
 [extra]
 repo = "https://github.com/NormB/vcon-server"
+# The groups of the documentation's sidebar and index, in the order shown:
+# the name a page gives as `[extra] group` in its front matter, then the
+# heading. tests/docs_index.rs holds every page to one of these names.
+docs_groups = [
+  ["start", "Start here"],
+  ["how-to", "How-to guides"],
+  ["concepts", "Concepts"],
+  ["reference", "Reference"],
+  ["project", "Project"],
+]
 author = "Norm Brandinger"
 linkedin_url = "https://www.linkedin.com/in/nbrandinger"
 patreon_url = "https://www.patreon.com/c/NormB975"

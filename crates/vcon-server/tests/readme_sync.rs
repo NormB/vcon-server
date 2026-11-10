@@ -35,7 +35,10 @@ const SITE: &str = "https://vcon-server.com/";
 const HOOKS: [&str; 3] = ["pre-commit", "commit-msg", "pre-push"];
 
 /// Spellings that differ in US English, the language of the documentation.
-const NON_US_SPELLINGS: [&str; 8] = [
+/// Each is a whole word or the stem its forms share (`normalis` finds
+/// "normalised" and "normalisation"); none is part of a US word the pages
+/// use.
+const NON_US_SPELLINGS: [&str; 27] = [
     "authorised",
     "authorisation",
     "licence",
@@ -44,6 +47,25 @@ const NON_US_SPELLINGS: [&str; 8] = [
     "colour",
     "organisation",
     "recognise",
+    "labelled",
+    "labelling",
+    "cancelled",
+    "cancelling",
+    "normalis",
+    "serialis",
+    "initialis",
+    "centre",
+    "catalogue",
+    "analysed",
+    "analysing",
+    "favour",
+    "neighbour",
+    "artefact",
+    "defence",
+    "fulfil ",
+    "whilst",
+    "summaris",
+    "minimis",
 ];
 
 /// The words of `NON_US_SPELLINGS` that `text` holds, in any case.
@@ -639,6 +661,19 @@ fn the_spelling_reader_finds_each_word_in_any_case() {
     assert!(
         non_us_spellings("Returns them to authorized readers.").is_empty(),
         "US spelling is not reported"
+    );
+    assert_eq!(
+        non_us_spellings("Labelled keys, never re-serialised or normalised, for a contact-centre."),
+        ["labelled", "normalis", "serialis", "centre"],
+        "a stem finds each of its forms, and a word inside a hyphenated one"
+    );
+    assert!(
+        non_us_spellings(
+            "Labeled keys, serialized and normalized at the center, canceled, in the catalog; \
+             it fulfills and analyzes the analyses, as a license allows."
+        )
+        .is_empty(),
+        "the US forms of the listed words are not reported"
     );
 }
 

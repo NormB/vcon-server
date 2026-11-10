@@ -37,6 +37,26 @@ All notable changes to this project are recorded here. The format follows
   fields, the catalogs' schema version and every API answer are unchanged,
   and no other client is affected.
 
+### Fixed
+
+- The `vcon` crate's README and the library page passed
+  `application/vcon+json` to `vcon::read::inspect` in their example. The
+  vCon draft registers `application/vcon` and `application/vcon+gzip`, and
+  the server refuses any other vCon media type with
+  `unsupported-media-type`; the example now passes `application/vcon`, and
+  a test holds every vCon media type the pages name to the ones the API
+  takes.
+- The site's pages no longer fetch the search index, a file of over a
+  megabyte, until the search box is used.
+- The documentation's sidebar and index list the pages under five group
+  headings, starting with install, getting started and the first vCon; no
+  two pages share a place in the order, as five pairs did. Each how-to guide says what
+  to do when a step fails, `llms.txt` links every page once, and the
+  status page lists what is on `main` and in no release.
+- Seven words on the site were not in US spelling, and the
+  tenants-and-keys page left `GET /key` out of the routes any valid key
+  may ask.
+
 ## [0.4.2] - 2026-11-10
 
 Nothing in this release breaks a 0.4.1 deployment, and an upgrade from

@@ -2,7 +2,7 @@
 {% block title %}{{ section.title }} — {{ config.title }}{% endblock title %}
 {% block content %}
 <div class="doc-layout">
-  <aside class="doc-sidebar">{{ <docs_nav current={section.permalink} /> }}</aside>
+  <aside class="doc-sidebar">{{ <docs_nav current={section.permalink} groups={config.extra.docs_groups} /> }}</aside>
   <article class="doc">
     <header>
       <h1>{{ section.title }}</h1>

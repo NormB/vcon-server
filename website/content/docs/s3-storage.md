@@ -1,7 +1,10 @@
 +++
 title = "Keep vCons in an S3 bucket"
 description = "Keep each version's sealed object in an S3-compatible bucket (RustFS, MinIO or AWS S3) instead of the data directory: the bucket and its keys on the storage side, the configuration, a check that the objects go there and that a purge removes them, what each refusal means, and how to clean up."
-weight = 11
+weight = 27
+
+[extra]
+group = "how-to"
 +++
 
 **S3 storage is in release 0.4.0 and later.** Release 0.3.0 and earlier

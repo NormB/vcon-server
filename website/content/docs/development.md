@@ -1,7 +1,10 @@
 +++
 title = "Development"
 description = "The code's layout, how it is tested, the gates every commit passes, and how to work on this site."
-weight = 90
+weight = 62
+
+[extra]
+group = "project"
 +++
 
 ## Layout
@@ -348,8 +351,44 @@ content-security policy is one), and that it shows the sections it is built
 from. On every page they check three WCAG 2.2 AA criteria axe does not:
 nothing scrolls sideways at 320 pixels (reflow), no keyboard focus stop is
 hidden under the pinned header, and a link to a place on a page shows it below
-the header. The search tests check that the search box is labelled and that
-what it finds is announced as a status. CI runs it in the website job.
+the header. The search tests check that the search box is labeled, that
+what it finds is announced as a status, and that a page fetches the search
+library and index only once the box is used: the index is the site's
+largest file, over a megabyte, so no page loads it up front. The sidebar
+tests check that it lists the pages under their group headings, marks the
+page being read, and matches the documentation's index. CI runs it in the
+website job.
+
+### Adding a documentation page
+
+**Purpose:** a new page under `website/content/docs/` that the sidebar, the
+indexes and the tests all know.
+
+**Prerequisites:** Zola 0.23.6 for `scripts/check-site.sh`; nothing changes
+on any other system until the page is deployed with the next push to `main`.
+
+**Steps:**
+
+1. Write the page with `title`, `description` and `weight` in its front
+   matter, and its group under `[extra]`: `group = "start"`, `"how-to"`,
+   `"concepts"`, `"reference"` or `"project"`. The groups, with the
+   headings the sidebar shows, are `docs_groups` in `website/config.toml`.
+2. Choose a `weight` no other page has, between the weights of the group's
+   first and last pages: the sidebar lists the pages by weight.
+3. Add a line for it to `docs/README.md`, with the page's title and
+   description word for word, and to `website/static/llms.txt`.
+4. A page in the `start` or `how-to` group is a guide: link it from
+   [how-to guides](@/docs/how-to.md), and give it a heading that starts
+   "Before you" (what to have first) and one that starts "When" (what to do
+   when a step fails).
+
+**Verify:** `scripts/nextest.sh run -p vcon-server --test docs_index` passes,
+and `scripts/check-site.sh` prints `check-site: ok`.
+
+**Troubleshoot:** the `docs_index` tests name the page and what it lacks: a
+group the sidebar does not show, a weight another page has, a page of one
+group sorted among another's, a line missing from `docs/README.md` or
+`llms.txt`, or a guide without one of its two headings.
 
 The home page states the number of automated tests and the share of lines
 they cover. Nobody types these numbers. The deploy downloads the test output

@@ -1,7 +1,10 @@
 +++
 title = "How-to guides"
 description = "Step-by-step guides for installing and running vcon-server. Each shows every command and its output, and CI runs each against a live server."
-weight = 7
+weight = 20
+
+[extra]
+group = "how-to"
 +++
 
 Each guide gives every command to paste, in order, and what the command
@@ -30,10 +33,11 @@ shows. `scripts/docs_test.py` runs them. See
   and from the storage's disks, and what each refusal means. CI runs it with
   RustFS.
 - [Keep the catalogs in PostgreSQL](@/docs/postgres-catalog.md), a preview
-  that CI does not run yet: the database's side, the role, TLS and client
-  certificates, the configuration and the secret files, and what each
-  refusal at start means. In this release the server connects, checks the
-  server and stops.
+  that CI does not run yet: the database's side, the roles, the schema and
+  `vcon-server migrate`, TLS and client certificates, the configuration and
+  the secret files, and what each refusal at start means. In this release
+  `migrate` makes the schema, and the server connects, checks the server
+  and stops.
 
 ## Use it
 

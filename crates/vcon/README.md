@@ -45,7 +45,7 @@ let body = br#"{
   "created_at": "2026-10-23T00:00:00Z",
   "parties": []
 }"#;
-let found = inspect(body, Some("application/vcon+json"), &limits, &supported)
+let found = inspect(body, Some("application/vcon"), &limits, &supported)
     .expect("the body is a vCon");
 assert_eq!(found.form, Form::Unsigned);
 assert!(!found.gzip);

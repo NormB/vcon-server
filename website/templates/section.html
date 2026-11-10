@@ -2,18 +2,22 @@
 {% block title %}{{ section.title }} — {{ config.title }}{% endblock title %}
 {% block content %}
 <div class="doc-layout">
-  <aside class="doc-sidebar">{{ <docs_nav current={section.permalink} /> }}</aside>
+  <aside class="doc-sidebar">{{ <docs_nav current={section.permalink} groups={config.extra.docs_groups} /> }}</aside>
   <article class="doc">
     <header>
       <h1>{{ section.title }}</h1>
       {% if section.description %}<p class="lead">{{ section.description }}</p>{% endif %}
     </header>
     {{ <prose html={section.content} /> }}
+    {# The same groups, in the same order, as the sidebar (components.html). #}
+    {% for g in config.extra.docs_groups %}
+    <h2 id="{{ g[0] }}">{{ g[1] }}</h2>
     <ul class="cards">
-    {% for p in section.pages %}
+    {% for p in section.pages %}{% if p.extra.group == g[0] %}
       <li><a href="{{ p.permalink }}"><strong>{{ p.title }}</strong><span>{{ p.description }}</span></a></li>
-    {% endfor %}
+    {% endif %}{% endfor %}
     </ul>
+    {% endfor %}
   </article>
 </div>
 {% endblock content %}

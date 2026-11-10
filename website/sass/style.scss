@@ -129,6 +129,7 @@ main { max-width: 72rem; margin: 0 auto; padding: 1rem; }
 .doc-nav li a:hover { color: var(--fg); background: var(--panel); }
 .doc-nav li a[aria-current="page"] { color: var(--fg); background: var(--panel); font-weight: 600; }
 .doc-nav-title { font-weight: 600; margin: 0.5rem 0; }
+.doc-nav-group { font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--fg); margin: 0.9rem 0 0.3rem; padding: 0 0.5rem; }
 .doc-nav-title a { color: var(--fg); text-decoration: none; }
 .doc { max-width: 52rem; min-width: 0; }
 .doc h1 { margin-top: 0.5rem; line-height: 1.2; }
@@ -160,7 +161,8 @@ main { max-width: 72rem; margin: 0 auto; padding: 1rem; }
 @media (max-width: 52rem) {
   .doc-layout { grid-template-columns: minmax(0, 1fr); gap: 1rem; }
   .doc-sidebar { position: static; max-height: none; border-bottom: 1px solid var(--line); padding-bottom: 0.5rem; }
-  .doc-nav ul { display: flex; flex-wrap: wrap; gap: 0.2rem; }
+  .doc-nav ul { display: flex; flex-wrap: wrap; gap: 0.2rem; margin-bottom: 0.4rem; }
+  .doc-nav-group { margin-top: 0.5rem; }
   .toc ul { columns: 1; }
   .search { margin-left: 0; width: 100%; }
   .search input { width: 100%; max-width: none; }

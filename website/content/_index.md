@@ -163,8 +163,8 @@ summary = "Every how-to guide, with the install and getting-started pages."
 > **Status: 0.4.2 released, not yet for production.** The store, the HTTP API
 > with its client routes and OpenAPI description, tenants and their keys,
 > retention and the purge sweep, legal holds, the audit logs, the console, the
-> command line, key rotation, `check` and the MCP server with its tools are
-> built and tested. From 0.4.0 the sealed objects can be kept in an S3 bucket
+> terminal UI, the command line, key rotation, `check` and the MCP server
+> with its tools are built and tested. From 0.4.0 the sealed objects can be kept in an S3 bucket
 > (RustFS, MinIO or AWS S3) and packed there into Parquet files, and a
 > tenant's vCons can be exported as Parquet files. See
 > [what is built](@/docs/status.md).
@@ -180,3 +180,19 @@ court says otherwise.
 vcon-server is the place a producer sends vCons to and the place they are read
 back from: an HTTP API over an encrypted store, with tenants kept apart, every
 request recorded, and retention periods and legal holds applied to each vCon.
+
+## Who it is for
+
+- **Operators** who run the server on Linux: [install](@/docs/install.md)
+  it, follow [getting started](@/docs/getting-started.md) to a running
+  server, [store a first vCon](@/docs/first-vcon.md), then read
+  [operations](@/docs/operations.md).
+- **Developers** of the recorders, conservers and applications that send
+  vCons and read them back: [producers](@/docs/producers.md), the
+  [HTTP API](@/docs/http-api.md) and the
+  [client examples](@/docs/clients.md) in five languages.
+- **Compliance and legal staff** who set how long a conversation is kept
+  and who may see it: [retention and legal holds](@/docs/retention-and-holds.md),
+  [audit logs](@/docs/audit-logs.md) and [security](@/docs/security.md).
+- **AI agents**, and the people who connect them:
+  [connect an AI agent over MCP](@/docs/connect-mcp.md).

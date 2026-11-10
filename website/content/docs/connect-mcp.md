@@ -1,7 +1,10 @@
 +++
 title = "Connect an AI agent over MCP"
 description = "Give an AI agent its own key, then check the MCP endpoint by hand: the handshake and the tool list over HTTPS, the refusals, and the same through vcon-server mcp."
-weight = 19
+weight = 31
+
+[extra]
+group = "how-to"
 +++
 
 An AI agent reaches vcon-server through the Model Context Protocol (MCP):
@@ -176,6 +179,23 @@ curl -sS --cacert /usr/local/share/vcon-server/ca.pem "$URL/audit?limit=10000" -
 a client that starts `vcon-server mcp` and for one that connects over HTTP
 itself. Copy `agent/mcp.toml`, the key file and `ca.pem` to the agent's
 account, and point the client file's paths at them.
+
+## When a step fails
+
+- **A `curl` error, or `503`:** see [when a request fails](@/docs/getting-started.md#when-a-request-fails).
+- **`401`, `403` or `405` from `/mcp`:**
+  [what the endpoint refuses](#what-the-endpoint-refuses) gives the cause of
+  each.
+- **The tool list lacks a tool:** the key lacks the scope the tool needs.
+  [MCP](@/docs/mcp.md) gives the scope of every tool.
+- **`vcon-server mcp` exits 1:** the client file or the key file cannot be
+  read, the server cannot be reached, or the server refused the key
+  (`vcon-server: the server refused the key (401)`). The reason is on
+  standard error; the [command line](@/docs/command-line.md) page gives the
+  client file's keys.
+- **`vcon-server mcp` stops with `memory cannot be locked`:** the account
+  that runs it has no memory-lock allowance; see
+  [getting started](@/docs/getting-started.md#allow-it-to-lock-its-memory).
 
 ## Clean up
 

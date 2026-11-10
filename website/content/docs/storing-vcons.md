@@ -1,7 +1,10 @@
 +++
 title = "Storing vCons"
 description = "What vcon-server accepts, what it checks, how versions, deletes and replaces work, and what it never does to a vCon."
-weight = 40
+weight = 41
+
+[extra]
+group = "concepts"
 +++
 
 ## What is accepted
@@ -57,8 +60,8 @@ the keys can verify or decrypt them later.
 
 ## Stored exactly as received
 
-The stored body is the request body, byte for byte: never re-serialised,
-re-compressed or normalised. A read returns those bytes, with
+The stored body is the request body, byte for byte: never re-serialized,
+re-compressed or normalized. A read returns those bytes, with
 `Content-Type: application/vcon+gzip` if they were gzipped and
 `application/vcon` if not.
 

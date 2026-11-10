@@ -1,7 +1,10 @@
 +++
 title = "Use keys and scopes"
 description = "Make a key for each scope, see what each one may do and what it is refused, and make a key with more than one scope. Every request and its answer is shown."
-weight = 13
+weight = 21
+
+[extra]
+group = "how-to"
 +++
 
 A key holds scopes, and each route needs one scope. This how-to makes a key
@@ -28,7 +31,7 @@ TENANT=$(sudo -u vcon vcon-server tenant list --config $CONFIG | jq -r 'select(.
 ## Make a key for each scope
 
 A tenant key belongs to one tenant and holds any of `write`, `read`,
-`delete`, `legal` and `audit`. Make one key for each, labelled with its
+`delete`, `legal` and `audit`. Make one key for each, labeled with its
 scope. `key create` runs beside the server:
 
 ```sh
@@ -281,6 +284,18 @@ Give each producer, reader and process its own key, with only the scopes it
 needs and a label that names who holds it. A request whose key lacks the
 scope is refused with [`forbidden`](@/problems/forbidden.md), and the audit
 log records the refusal.
+
+## When a step fails
+
+- **A `curl` error, or `401` or `503` where this page shows another
+  answer:** see [when a request fails](@/docs/getting-started.md#when-a-request-fails).
+- **`403` where this page shows `200`, `201` or `204`, or the other way
+  around:** the variable holds another key's token.
+  [Ask the key what it holds](#ask-a-key-what-it-holds): `GET /key` answers
+  with the id, tenant and scopes of the token sent.
+- **Every request with one key answers `401`:** the key was revoked, by
+  [clean up](#clean-up) in an earlier run or by an operator. Make the key
+  again, as in [make a key for each scope](#make-a-key-for-each-scope).
 
 ## Clean up
 

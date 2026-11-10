@@ -1,7 +1,10 @@
 +++
 title = "Assurance case"
 description = "Why vcon-server's security requirements are met: the threat model, the trust boundaries, how the design principles are applied, and how the common weaknesses are countered."
-weight = 66
+weight = 45
+
+[extra]
+group = "concepts"
 +++
 
 The claim: a vCon stored in vcon-server is readable only through a key

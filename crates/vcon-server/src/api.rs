@@ -5236,6 +5236,94 @@ mod site_pages {
             .collect();
         assert_eq!(pages, names);
     }
+
+    /// The `application/vcon` media types `text` names, each with the
+    /// `+suffix` that follows it, if any.
+    fn vcon_media_types(text: &str) -> Vec<&str> {
+        const NAME: &str = "application/vcon";
+        let mut found = Vec::new();
+        let mut rest = text;
+        while let Some(at) = rest.find(NAME) {
+            let from = &rest[at..];
+            let end = from[NAME.len()..]
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '+' || c == '-'))
+                .map_or(from.len(), |n| NAME.len() + n);
+            found.push(&from[..end]);
+            rest = &from[end..];
+        }
+        found
+    }
+
+    #[test]
+    fn the_media_type_reader_takes_each_name_with_its_suffix() {
+        assert_eq!(
+            vcon_media_types(
+                "Send `application/vcon`, or \"application/vcon+gzip\"; not application/vcon+json."
+            ),
+            [
+                "application/vcon",
+                "application/vcon+gzip",
+                "application/vcon+json"
+            ],
+            "each name ends where its suffix does"
+        );
+        assert!(
+            vcon_media_types("application/json and text/plain").is_empty(),
+            "other media types are not read"
+        );
+    }
+
+    /// Every Markdown file under `dir`.
+    fn markdown_under(dir: &std::path::Path, found: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                markdown_under(&path, found);
+            } else if path.extension().is_some_and(|ext| ext == "md") {
+                found.push(path);
+            }
+        }
+    }
+
+    /// A reader copies a media type from an example into a request. One the
+    /// API does not take would be refused with `unsupported-media-type`.
+    /// Found on 0.4.2: the `vcon` crate's README and the library page passed
+    /// `application/vcon+json`, which the vCon draft does not register.
+    #[test]
+    fn every_vcon_media_type_the_pages_name_is_one_the_api_takes() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut files = vec![
+            root.join("README.md"),
+            root.join("crates/vcon/README.md"),
+            root.join("crates/vcon-server/README.md"),
+            root.join("website/static/llms.txt"),
+        ];
+        markdown_under(&root.join("website/content"), &mut files);
+        assert!(
+            files.iter().any(|f| f.ends_with("docs/library.md")),
+            "the walk reached the docs pages"
+        );
+        let mut named = 0;
+        let mut refused = Vec::new();
+        for file in &files {
+            let text =
+                std::fs::read_to_string(file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+            for media_type in vcon_media_types(&text) {
+                named += 1;
+                if !is_vcon_media_type(media_type) {
+                    refused.push(format!("{}: {media_type}", file.display()));
+                }
+            }
+        }
+        assert!(
+            named > 10,
+            "the reader found the pages' media types: {named}"
+        );
+        assert!(
+            refused.is_empty(),
+            "the pages name media types the API refuses: {refused:#?}"
+        );
+    }
 }
 
 /// Reading the description, for the tests that hold it to the code.

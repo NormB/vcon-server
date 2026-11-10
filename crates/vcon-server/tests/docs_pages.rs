@@ -11,6 +11,9 @@
 //! The HTTP API page has a row for every route the API's router serves, and
 //! only those, and `openapi.json` describes each of them.
 //!
+//! The tenants-and-keys page names every route the HTTP API page gives to
+//! any valid key.
+//!
 //! The Development page's how-to on adding a GitHub Action names the check
 //! that enforces the pin and the two forms it accepts. It is checked here,
 //! not in `scripts/test_check_action_pins.py`, because the hook tests run
@@ -436,4 +439,55 @@ fn the_development_page_says_how_to_add_an_action() {
             "the how-to on adding an action says {says}"
         );
     }
+}
+
+/// The routes the HTTP API page's tables give to any valid key: the first
+/// cell of each row whose second cell is `any valid key`.
+fn routes_for_any_key(page: &str) -> Vec<String> {
+    page.lines()
+        .filter_map(|line| line.strip_prefix("| `"))
+        .filter_map(|rest| rest.split_once("` | "))
+        .filter(|(_, rest)| rest.starts_with("any valid key |"))
+        .map(|(route, _)| route.to_owned())
+        .collect()
+}
+
+#[test]
+fn the_any_key_reader_takes_the_rows_with_that_scope() {
+    let page = "| Route | Scope | Answers |\n|---|---|---|\n| `GET /key` | any valid key | x |\n\
+                | `GET /vcons` | `read` | y |\n| `GET /health` | any valid key | z |\n";
+    assert_eq!(
+        routes_for_any_key(page),
+        ["GET /key", "GET /health"],
+        "the rows whose scope is any valid key, in order"
+    );
+    assert!(
+        routes_for_any_key("| `GET /vcons` | `read` | any valid key may not |\n").is_empty(),
+        "the words in another cell do not count"
+    );
+}
+
+/// The tenants-and-keys page says what each scope allows and then what any
+/// valid key may ask. Found on 0.4.2: it named `GET /health` and
+/// `GET /openapi.json` and left out `GET /key`, added in 0.3.0.
+#[test]
+fn the_keys_page_names_every_route_any_valid_key_may_ask() {
+    let routes = routes_for_any_key(&read("website/content/docs/http-api.md"));
+    assert!(
+        routes.len() >= 3,
+        "the reader found the routes for any valid key: {routes:?}"
+    );
+    let keys_page = read("website/content/docs/tenants-and-keys.md");
+    let sentence = keys_page
+        .split("\n\n")
+        .find(|paragraph| paragraph.starts_with("Any valid key may ask"))
+        .expect("the tenants-and-keys page says what any valid key may ask");
+    let missing: Vec<&String> = routes
+        .iter()
+        .filter(|route| !sentence.contains(&format!("`{route}`")))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "the tenants-and-keys page does not say any valid key may ask {missing:?}: {sentence}"
+    );
 }

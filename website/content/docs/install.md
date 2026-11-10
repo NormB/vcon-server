@@ -1,7 +1,10 @@
 +++
 title = "Install"
 description = "Put the vcon-server binary on a Linux host: download a release and check it, install it with cargo, build it from source, or run it in a container. Each path lists what to install first on Debian, Ubuntu and Fedora, what each step prints, and what to do when a step fails."
-weight = 8
+weight = 10
+
+[extra]
+group = "start"
 +++
 
 vcon-server is one binary, `vcon-server`. This page puts it at

@@ -1,7 +1,10 @@
 +++
 title = "Console"
 description = "Open the web console the server serves, sign in with an API key, and what the console does and does not keep."
-weight = 72
+weight = 53
+
+[extra]
+group = "reference"
 +++
 
 The server serves a web console on its own TLS listener. The console is a

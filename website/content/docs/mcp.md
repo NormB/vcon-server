@@ -1,7 +1,10 @@
 +++
 title = "MCP"
 description = "Connecting an AI agent to vcon-server over MCP, and every tool with its parameters and an example."
-weight = 74
+weight = 52
+
+[extra]
+group = "reference"
 +++
 
 vcon-server serves the Model Context Protocol (MCP), so an AI agent can store,

@@ -1,7 +1,10 @@
 +++
 title = "Configuration"
 description = "Every key of the configuration file, its default, and why the default is what it is."
-weight = 20
+weight = 55
+
+[extra]
+group = "reference"
 +++
 
 `vcon-server serve --config <file>` reads one TOML file. A wrong file stops the

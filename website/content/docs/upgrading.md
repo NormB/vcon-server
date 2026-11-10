@@ -1,7 +1,10 @@
 +++
 title = "Upgrade"
 description = "Move a running server to a newer release: check the new binary, stop the server, copy the data directory, install the binary, check the data with it, start it, and go back to the old version if you need to."
-weight = 18
+weight = 25
+
+[extra]
+group = "how-to"
 +++
 
 An upgrade replaces the binary. The data directory, the configuration and
@@ -340,6 +343,25 @@ its objects in a bucket:
   so a server whose objects are in a bucket cannot go back to 0.3.0.
 
 CI runs this page with the objects in the data directory only.
+
+## When a step fails
+
+- **`flock` exits 1 and the copy is not made:** the server, or a command,
+  still holds the data directory. [Stop the server](#stop-the-server) and
+  run the copy again.
+- **`check` with the new binary exits 1:** its report names each problem.
+  Do not start the server on that data. Install the old binary again and
+  put back the copy, as in
+  [go back to the old version](#go-back-to-the-old-version).
+- **The new server refuses to start, and names a secret file:** from 0.4.1
+  a secret file that other users may read, that its group may change, or
+  that another user owns stops the server; see
+  [from 0.4.0 to 0.4.1](#from-0-4-0-to-0-4-1-the-secret-file-rule).
+- **The old binary stops with `schema version 4 is not one this build knows`:**
+  a newer binary has opened the data directory. The old one reads only the
+  copy taken before the upgrade; see
+  [go back to the old version](#go-back-to-the-old-version).
+- **A failed request after the start:** see [when a request fails](@/docs/getting-started.md#when-a-request-fails).
 
 ## Clean up
 

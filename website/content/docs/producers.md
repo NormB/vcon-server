@@ -1,16 +1,19 @@
 +++
 title = "Producers"
 description = "Sending vCons to vcon-server from a recorder, a conserver or any other producer: keys, retries, and what each answer means."
-weight = 75
+weight = 46
+
+[extra]
+group = "concepts"
 +++
 
-A producer is anything that makes vCons: a call recorder, a contact-centre
+A producer is anything that makes vCons: a call recorder, a contact-center
 platform, a conserver pipeline, a capture tool. vcon-server takes them over
 one route, `POST /vcons`, with a bearer key.
 
 ## Give each producer its own key
 
-Make a tenant key with only the `write` scope, labelled with the producer's
+Make a tenant key with only the `write` scope, labeled with the producer's
 name:
 
 ```sh

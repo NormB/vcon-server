@@ -1,7 +1,10 @@
 +++
 title = "Keep the catalogs in PostgreSQL"
 description = "Preview: reach a PostgreSQL server over TLS for the catalogs: the database's side, the roles, the schema and `migrate`, TLS and client certificates, the configuration, the secret files, and what each refusal at start means. This release migrates the schema, connects, checks the server and stops."
-weight = 13
+weight = 30
+
+[extra]
+group = "how-to"
 +++
 
 **This page is a preview.** The PostgreSQL catalog is being built. In this

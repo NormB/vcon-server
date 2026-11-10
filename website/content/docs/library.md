@@ -1,7 +1,10 @@
 +++
 title = "The vcon library"
 description = "Read, check and write vCons in your own Rust code with the vcon crate."
-weight = 74
+weight = 56
+
+[extra]
+group = "reference"
 +++
 
 `vcon` is the Rust library vcon-server uses to check every vCon it receives.
@@ -57,7 +60,7 @@ let body = br#"{
   "created_at": "2026-10-23T00:00:00Z",
   "parties": []
 }"#;
-let found = inspect(body, Some("application/vcon+json"), &limits, &supported)
+let found = inspect(body, Some("application/vcon"), &limits, &supported)
     .expect("the body is a vCon");
 assert_eq!(found.form, Form::Unsigned);
 assert!(!found.gzip);

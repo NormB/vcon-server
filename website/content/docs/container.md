@@ -1,7 +1,10 @@
 +++
 title = "Run it in a container"
 description = "Build a container image from a checked release, keep the configuration and the data in volumes, allow the server to lock its memory, make the first keys, run it, back it up, and stop it, with Docker or Docker Compose."
-weight = 17
+weight = 26
+
+[extra]
+group = "how-to"
 +++
 
 The server runs in a container as it runs on a host, with one difference: a
@@ -372,6 +375,26 @@ release 0.3.0 cannot. For a bucket:
 
 [Keep vCons in an S3 bucket](@/docs/s3-storage.md) sets up the bucket, its
 key and the configuration. This container path was not run by CI.
+
+## When a step fails
+
+- **`memory cannot be locked: Cannot allocate memory (os error 12)`:** the
+  container was started without `--ulimit memlock=-1`; see
+  [without the memory-lock limit](#without-the-memory-lock-limit). With
+  Compose, the service needs the `ulimits` entry of the file above.
+- **`docker build` stops at `sha256sum`:** the archive downloaded is not
+  the one `SHA256SUMS.txt` names. Build again; if it stops again, do not
+  use the archive.
+- **`docker build` stops at `curl` with `404`:** no release has the version
+  in `VERSION`. The
+  [releases page](https://github.com/NormB/vcon-server/releases) lists them.
+- **`curl: (6) Could not resolve host: vcon.example.com`:** the request has
+  no `--resolve vcon.example.com:8443:127.0.0.1`, and the name is not in
+  DNS.
+- **`curl: (7) Failed to connect`:** the container is not running, or port
+  8443 is not published. `docker ps` lists it with its ports, and
+  `docker logs vcon-server` shows why the server stopped.
+- **Any other failed request:** see [when a request fails](@/docs/getting-started.md#when-a-request-fails).
 
 ## Remove everything
 

@@ -1,7 +1,10 @@
 +++
 title = "Export to Parquet"
 description = "Write a copy of a tenant's vCons as Parquet files, to a directory or an S3 bucket, beside a running server: choose which clear columns the files carry, read them with DuckDB, check the export, and see what each refusal means."
-weight = 12
+weight = 29
+
+[extra]
+group = "how-to"
 +++
 
 `vcon-server export parquet` writes a copy of one tenant's kept versions,

@@ -1,7 +1,10 @@
 +++
 title = "Roadmap"
 description = "The next milestones for vcon-server."
-weight = 6
+weight = 61
+
+[extra]
+group = "project"
 +++
 
 These are the next milestones. They have no dates, and their order may

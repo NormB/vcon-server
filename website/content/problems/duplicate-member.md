@@ -12,4 +12,4 @@ Some JSON object in the body, at any depth, names the same member twice. JSON pa
 
 ## What to do
 
-Fix the producer's serialiser.
+Fix the producer's serializer.

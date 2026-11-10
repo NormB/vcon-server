@@ -1,28 +1,59 @@
 # vcon-server
 
-> vcon-server stores vCons (the IETF conversation-record format, draft-ietf-vcon-vcon-core) encrypted at rest under per-tenant keys, keeps each for its tenant's retention period, erases it after, honors legal holds, and records every request in an audit log. It is written in Rust, licensed MIT OR Apache-2.0, and in development (not yet for production).
+> vcon-server stores vCons (the IETF conversation-record format, draft-ietf-vcon-vcon-core) encrypted at rest under per-tenant keys, keeps each for its tenant's retention period, erases it after, honors legal holds, and records every request in an audit log. It is written in Rust, licensed MIT OR Apache-2.0, and released as Linux binaries and as crates; it is not yet for production.
 
-## Docs
+## Start here
 
-- [What is built](https://vcon-server.com/docs/status/): what works today and what is being built
-- [Getting started](https://vcon-server.com/docs/getting-started/): build, install from crates.io or download a release, master key, certificate, configuration, systemd
-- [Configuration](https://vcon-server.com/docs/configuration/): every key and default
-- [Tenants and keys](https://vcon-server.com/docs/tenants-and-keys/): scopes write, read, delete, legal (tenant keys) and admin (operator keys)
-- [Storing vCons](https://vcon-server.com/docs/storing-vcons/): accepted forms, checks, versions, ETag and If-Match
-- [Retention and legal holds](https://vcon-server.com/docs/retention-and-holds/): the purge rule and the legal routes
-- [Audit logs](https://vcon-server.com/docs/audit-logs/): what is recorded and what never is
-- [Security](https://vcon-server.com/docs/security/): key hierarchy and memory protection
-- [HTTP API](https://vcon-server.com/docs/http-api/): every route with its scope and answers
-- [MCP](https://vcon-server.com/docs/mcp/): the MCP server for AI agents, over HTTPS or stdio, and every tool with its parameters and an example
+- [Install](https://vcon-server.com/docs/install/): download a release and check it, install with cargo, or build from source, on Debian, Ubuntu and Fedora
+- [Getting started](https://vcon-server.com/docs/getting-started/): the service account, memory locking, the master key, a certificate, the configuration, the first tenant and its keys, systemd
+- [Store your first vCon](https://vcon-server.com/docs/first-vcon/): store, store again, a refused conflict, read, list and delete, with a key for each scope
+
+## How-to guides
+
+- [How-to guides](https://vcon-server.com/docs/how-to/): the list of the guides; CI runs each guide's commands against a live server
+- [Use keys and scopes](https://vcon-server.com/docs/keys-and-scopes/): a key for each scope, what each may do and what it is refused
+- [Add a second tenant](https://vcon-server.com/docs/second-tenant/): a tenant made over the admin API, its key, its data kept apart, its retention period, its removal
+- [Revoke and rotate keys](https://vcon-server.com/docs/rotate-keys/): revoke an API key, replace one without a gap, rotate a tenant key and the master key
+- [Back up and restore](https://vcon-server.com/docs/backup-and-restore/): the master key and the data directory, a restore, and what the restore brings back
+- [Upgrade](https://vcon-server.com/docs/upgrading/): a new binary over a running server, the data checked with it, the way back, and the steps for each release
+- [Run it in a container](https://vcon-server.com/docs/container/): an image built from a checked release, volumes, the memory-lock limit, Docker and Docker Compose
+- [Keep vCons in an S3 bucket](https://vcon-server.com/docs/s3-storage/): RustFS, MinIO or AWS S3 for the sealed objects, the configuration, and what each refusal at start means
+- [Keep vCons as Parquet files in a bucket](https://vcon-server.com/docs/parquet-storage/): the objects packed into Parquet files, what a purge removes, and what each refusal means
+- [Export to Parquet](https://vcon-server.com/docs/export-parquet/): a copy of a tenant's vCons as Parquet files, the clear columns of each metadata level, a read with DuckDB
+- [Keep the catalogs in PostgreSQL](https://vcon-server.com/docs/postgres-catalog/): a preview: the roles, the schema and migrate, TLS, the configuration, and what each refusal at start means
+- [Connect an AI agent over MCP](https://vcon-server.com/docs/connect-mcp/): a key for the agent, the handshake and the tool list over HTTPS and through vcon-server mcp
+- [Terminal UI](https://vcon-server.com/docs/tui/): vcon-server tui: the key and client file it needs, its keys and its messages
+
+## Concepts
+
+- [Tenants and keys](https://vcon-server.com/docs/tenants-and-keys/): tenants, the scopes write, read, delete, legal and audit of a tenant key, and admin of an operator key
+- [Storing vCons](https://vcon-server.com/docs/storing-vcons/): accepted forms and media types, checks, versions, ETag and If-Match
+- [Retention and legal holds](https://vcon-server.com/docs/retention-and-holds/): the purge rule, retention periods, legal holds and the legal routes
+- [Audit logs](https://vcon-server.com/docs/audit-logs/): what is recorded, every action, and what never is recorded
+- [Security](https://vcon-server.com/docs/security/): the key hierarchy, memory protection, and what each theft gives
+- [Assurance case](https://vcon-server.com/docs/assurance-case/): the threat model, the trust boundaries, and how common weaknesses are countered
 - [Producers](https://vcon-server.com/docs/producers/): sending vCons and handling each answer
-- [Operations](https://vcon-server.com/docs/operations/): data directory, locks, sweep, logs, backups
-- [MCP](https://vcon-server.com/docs/mcp/): connecting an AI agent over HTTPS or the stdio command, and every tool with its parameters and an example
-- [Command line](https://vcon-server.com/docs/command-line/): tenant, key and audit commands, output and exit codes
-- [The vcon library](https://vcon-server.com/docs/library/): reading and checking a vCon in Rust with the vcon crate
-- [Development](https://vcon-server.com/docs/development/): layout, tests and gates
+- [Operations](https://vcon-server.com/docs/operations/): the data directory, locks, the purge sweep, logs, health, backups and key rotation
 
 ## Reference
 
+- [HTTP API](https://vcon-server.com/docs/http-api/): every route with its scope, what it takes and what it answers
+- [Client examples](https://vcon-server.com/docs/clients/): programs in curl, Python, TypeScript, Go and Rust that use the HTTP API and MCP
+- [MCP](https://vcon-server.com/docs/mcp/): the MCP server for AI agents, over HTTPS or the stdio command, and every tool with its parameters and an example
+- [Console](https://vcon-server.com/docs/console/): the web console the server serves at /console/
+- [Command line](https://vcon-server.com/docs/command-line/): every command, its output and exit codes, and which may run beside a serving server
+- [Configuration](https://vcon-server.com/docs/configuration/): every key of the configuration file and its default
+- [The vcon library](https://vcon-server.com/docs/library/): reading, checking and writing vCons in Rust with the vcon crate
+
+## Project
+
+- [What is built](https://vcon-server.com/docs/status/): what works today and what is being built
+- [Roadmap](https://vcon-server.com/docs/roadmap/): the next milestones
+- [Development](https://vcon-server.com/docs/development/): the code's layout, tests and gates
+
+## Optional
+
 - [Problem types](https://vcon-server.com/problems/): every RFC 9457 type the API answers with
-- [Standards](https://vcon-server.com/standards/)
+- [OpenAPI description](https://vcon-server.com/openapi.json): every route, status and problem type, OpenAPI 3.1
+- [Standards](https://vcon-server.com/standards/): the specifications vcon-server follows
 - [Source](https://github.com/NormB/vcon-server)

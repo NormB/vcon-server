@@ -1,7 +1,10 @@
 +++
 title = "Tenants and keys"
 description = "How tenants keep their data apart, what each key scope allows, and how keys are made and revoked."
-weight = 30
+weight = 40
+
+[extra]
+group = "concepts"
 +++
 
 ## Tenants
@@ -52,7 +55,8 @@ An **operator key** belongs to no tenant and holds only `admin`, which allows
 the `/admin/` routes: tenants, their keys and the admin audit log. A tenant key can never hold
 `admin`, and an operator key can never reach a tenant's vCons.
 
-Any valid key may ask `GET /health` and `GET /openapi.json`.
+Any valid key may ask `GET /key`, which answers with the key's own id,
+tenant and scopes, `GET /health` and `GET /openapi.json`.
 
 Give each producer, reader and process its own key with only the scopes it
 needs, and a label that says who holds it. A request whose key lacks the scope

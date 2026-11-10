@@ -68,9 +68,13 @@ awk 'n >= 2 { print } /^\+\+\+$/ { n++ }' "$cla_page" | tail -n +2 | cmp -s - "$
   || fail "website/content/cla.md does not reproduce CLA.md"
 [ -s "$site/cla/index.html" ] || fail "the build has no CLA page"
 
-# Search works only if the pages load its three scripts.
-for script in elasticlunr.min.js search_index.en.js js/search.js; do
-  grep -qF "$script" "$home" || fail "the home page does not load $script"
+# Search works only if the page loads js/search.js and names the two files
+# that script fetches when the search box is first used, and loads neither
+# of those itself: the index is the site's largest file.
+grep -qP '<script src="[^"]*js/search\.js[^"]*" defer>' "$home" || fail "the home page does not load js/search.js"
+for script in elasticlunr.min.js search_index.en.js; do
+  grep -qP "data-(lunr|index)=\"[^\"]*${script//./\\.}" "$home" || fail "the home page's search box does not name $script"
+  if grep -qP "<script[^>]*${script//./\\.}" "$home"; then fail "the home page loads $script before the search box is used"; fi
 done
 
 pages=0
@@ -85,9 +89,15 @@ done
 [ "$pages" -gt 0 ] || fail "no problem pages"
 
 # Every <script> must load a file; no <style> element, style attribute or
-# on...= handler anywhere.
+# on...= handler anywhere. And the description a link preview shows
+# (og:description) is the page's own description, not the site's on every
+# page.
 while IFS= read -r -d '' html; do
   rel="${html#"$site"/}"
+  described="$(grep -oP '(?<=<meta name="description" content=")[^"]*' "$html" | head -n 1)"
+  previewed="$(grep -oP '(?<=<meta property="og:description" content=")[^"]*' "$html" | head -n 1)"
+  [ -n "$described" ] || fail "$rel has no description"
+  [ "$described" = "$previewed" ] || fail "$rel: og:description is not the page's description"
   if grep -Pq '<script(?![^>]*\ssrc=)[^>]*>' "$html"; then fail "$rel has an inline script"; fi
   if grep -Pqi '<style[\s>]' "$html"; then fail "$rel has a <style> element"; fi
   if grep -Pqi '<[a-z][^>]*\sstyle\s*=' "$html"; then fail "$rel has a style attribute"; fi

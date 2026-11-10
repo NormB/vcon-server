@@ -1,7 +1,10 @@
 +++
 title = "Keep vCons as Parquet files in a bucket"
 description = "Turn on Parquet storage over an S3 bucket: what the bucket must be, the configuration, a check that the server packs its objects into Parquet files and still reads each vCon back, a read of the files with DuckDB, what a purge removes from the bucket and from the storage's disks, and what each refusal means."
-weight = 11
+weight = 28
+
+[extra]
+group = "how-to"
 +++
 
 Parquet storage is in release 0.4.0 and later; release 0.3.0 refuses a

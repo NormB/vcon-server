@@ -1,7 +1,10 @@
 +++
 title = "Terminal UI"
 description = "Browse a tenant's vCons from a terminal with vcon-server tui: the build, the key and client file it needs, the keys, and what each message means."
-weight = 73
+weight = 32
+
+[extra]
+group = "how-to"
 +++
 
 `vcon-server tui` shows a tenant's vCons in a terminal. It is a client of a
