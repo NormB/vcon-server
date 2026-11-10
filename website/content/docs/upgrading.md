@@ -15,6 +15,22 @@ CI runs every command on this page on each change. It installs the previous
 release, sets it up as [getting started](@/docs/getting-started.md) does,
 upgrades it to the server built from the change, and goes back again.
 
+## From 0.4.1 to 0.4.2
+
+Nothing in 0.4.2 needs a step of its own: the steps below, with the new
+binary, are the whole upgrade. The catalogs keep their schema version, so
+0.4.1 opens a data directory that 0.4.2 has served, and the configuration
+and the HTTP API's routes are as they were. `vcon-server migrate` is new and
+is for the [PostgreSQL catalog preview](@/docs/postgres-catalog.md) only; a
+server with the default catalogs does not run it.
+
+Two things look different after the upgrade. The
+[console](@/docs/console.md) opens a vCon masked, and shows its text only
+after a reveal, which the audit log records as a read. Its page loads one
+more file, `/console/format.js`, so a proxy that passes the console's paths
+by name must pass that one too. And the binary has a new command,
+[`vcon-server tui`](@/docs/tui.md).
+
 ## From 0.4.0 to 0.4.1: the secret-file rule
 
 From 0.4.1, every file that holds a secret is held to one rule: the master
@@ -117,7 +133,7 @@ but do not install it yet. The commands use their own variable names, so
 they do not change the ones from install:
 
 ```sh
-NEW_VERSION=0.4.1
+NEW_VERSION=0.4.2
 NEW_ARCHIVE=vcon-server-$NEW_VERSION-$(uname -m)-unknown-linux-gnu.tar.gz
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/$NEW_ARCHIVE
 curl -fsSL -o SHA256SUMS-$NEW_VERSION.txt https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/SHA256SUMS.txt

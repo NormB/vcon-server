@@ -6,6 +6,11 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-11-10
+
+Nothing in this release breaks a 0.4.1 deployment, and an upgrade from
+0.4.1 is the binary alone: see the Upgrade page's "From 0.4.1 to 0.4.2".
+
 ### Added
 
 - The console opens a vCon masked, in the vCons and Legal views: a summary
@@ -42,6 +47,29 @@ All notable changes to this project are recorded here. The format follows
   under a per-row key derived from the catalog key, with associated data
   binding the tenant, table, column and row, and HMAC-SHA256 under an index
   key for the values SQL must find.
+
+### Changed
+
+- The console no longer shows a vCon's whole text when it is opened. It
+  shows the masked summary, and each reveal is one more read of the vCon in
+  the audit log. The HTTP API is as it was: `GET /vcons/{uuid}` and the
+  legal reads answer as in 0.4.1. The console's page now loads a fourth
+  file, `/console/format.js`; a proxy in front of the server that
+  passes the console's paths by name must pass that one too.
+- The `vcon-server` crate's default features now include `tui`, so a build
+  with default features compiles ratatui 0.30.2 and, through it, crossterm
+  0.29.0. A dependency on the crate with `default-features = false` is built
+  as before, without them. The library's public items are all still there:
+  `tui`, `commands::migrate`, the column codec's names in `envelope`, and
+  `console::FILES`, `console::File` and `console::path_of` are new.
+- The catalogs in `data_dir` keep their schema version, so a server on the
+  default catalogs has nothing to migrate, and 0.4.1 opens a data directory
+  0.4.2 has served. `vcon-server migrate` is for the PostgreSQL catalog
+  preview only and refuses a configuration whose `catalog.backend` is
+  `"local"`. A build with the `postgres` feature and
+  `catalog.backend = "postgres"` now needs `vcon-server migrate` run first:
+  a connection refuses a database without the schema, where 0.4.1 connected
+  and stopped. Neither release serves from PostgreSQL.
 
 ### Fixed
 
@@ -523,7 +551,8 @@ All notable changes to this project are recorded here. The format follows
   stack and abort the server. `vcon::MAX_SIGNED_LAYERS`,
   `vcon::MAX_JSON_DEPTH` and `vcon::Rejection::TooDeep` name the limits.
 
-[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/NormB/vcon-server/releases/tag/v0.4.2
 [0.4.1]: https://github.com/NormB/vcon-server/releases/tag/v0.4.1
 [0.4.0]: https://github.com/NormB/vcon-server/releases/tag/v0.4.0
 [0.3.0]: https://github.com/NormB/vcon-server/releases/tag/v0.3.0

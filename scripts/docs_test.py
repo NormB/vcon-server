@@ -367,7 +367,7 @@ HOWTO = (
 # docs/upgrading.md installs the binary it names as NEW: the one under test.
 UNDER_TEST = {"NEW": "/docs-test/vcon-server"}
 # The release before this one, which the upgrade scenario upgrades from.
-PREVIOUS = "0.4.0"
+PREVIOUS = "0.4.1"
 
 SCENARIOS = [
     # The how-tos, on a Debian and a Fedora with no systemd: the server runs

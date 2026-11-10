@@ -21,7 +21,7 @@ output back. The examples are in the
 `created_at`, `updated_at`, `subject`, each party's `tel`, `mailto` and
 `name`, and the number of dialogs.
 
-**Status: 0.4.1 released, not yet for production.** The API may change in
+**Status: 0.4.2 released, not yet for production.** The API may change in
 any release before 1.0.
 
 [vcon-server](https://crates.io/crates/vcon-server) uses this crate to check

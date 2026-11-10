@@ -67,7 +67,7 @@ CMD ["serve", "--config", "/etc/vcon-server/vcon-server.toml"]
 Build it, naming the version:
 
 ```sh
-VERSION=0.4.1
+VERSION=0.4.2
 docker build -q --build-arg VERSION=$VERSION -t vcon-server:$VERSION . >/dev/null
 docker run --rm vcon-server:$VERSION --version
 ```
