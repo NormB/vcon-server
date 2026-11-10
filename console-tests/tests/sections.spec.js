@@ -87,7 +87,10 @@ test("a link is shown as text with a label, and nothing is loaded from it", asyn
   await expect(item).toContainText("dialog 2");
   await expect(item).toContainText("points outside the server and is never loaded");
   expect(await page.locator("#view a[href], #view img, #view audio, #view video, #view iframe").count()).toBe(0);
-  expect(asked.filter((u) => u.includes("media.example.com"))).toEqual([]);
+  // Every request the page made went to the console's own origin.
+  const own = new URL(page.url()).origin;
+  expect(asked.length).toBeGreaterThan(0);
+  expect(asked.filter((u) => new URL(u).origin !== own)).toEqual([]);
 });
 
 test("a hostile link is text: it is not a link and does not run", async ({ page, request, tenant }) => {
@@ -174,6 +177,7 @@ test("a vCon past the display limit is cut, and says to download the rest", asyn
   const body = call(uuid, { analysis: [{ type: "transcript", body: "word ".repeat(450000) }] });
   await opened(page, request, tenant, body);
   await page.click("#reveal");
+  await expect(page.locator("#vcon-cut")).toBeVisible();
   await expect(page.locator("#vcon-cut")).toContainText("Only the first 2097152 characters are shown");
   await expect(page.locator("#vcon-cut")).toContainText("Download");
   expect(await page.locator("#vcon-body").evaluate((e) => e.textContent.length)).toBe(2097152);
