@@ -111,7 +111,7 @@ impl fmt::Display for StdioError {
 
 /// The one token a key file holds, with white space at either end removed.
 /// The file is held to the one secret-file rule (`crate::secret_file`).
-fn token(key_file: &Path) -> Result<String, StdioError> {
+pub(crate) fn token(key_file: &Path) -> Result<String, StdioError> {
     let refused =
         |why: &str| StdioError::KeyFile(format!("key_file {}: {why}", key_file.display()));
     let bytes = crate::secret_file::read(key_file, "key_file").map_err(StdioError::KeyFile)?;
@@ -125,7 +125,7 @@ fn token(key_file: &Path) -> Result<String, StdioError> {
 
 /// An HTTPS client trusting `ca`, or the system's roots without it. It
 /// connects directly, through no proxy.
-fn https_client(ca: Option<&Path>) -> Result<reqwest::Client, StdioError> {
+pub(crate) fn https_client(ca: Option<&Path>) -> Result<reqwest::Client, StdioError> {
     let mut builder = reqwest::Client::builder().no_proxy();
     if let Some(ca) = ca {
         let pem =

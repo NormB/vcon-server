@@ -49,6 +49,8 @@ where each item is described in full:
 - **The console:** a web page at `/console/`.
 - **The MCP server:** tools for AI agents, at `/mcp` and through
   `vcon-server mcp`.
+- **The terminal UI:** `vcon-server tui` lists a tenant's vCons, in a build
+  with the `tui` feature.
 - **Tenants and keys:** scoped bearer keys, revocation and tenant removal.
 - **Retention:** periods per tenant or server-wide, and the purge sweep.
 - **Audit logs:** one per tenant and one for administration.

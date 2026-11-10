@@ -4,7 +4,7 @@ description = "Every vcon-server command: what it does, what it prints, its exit
 weight = 85
 +++
 
-Every command but `mcp` takes `--config <file>`, the same file `serve` reads,
+Every command but `mcp` and `tui` takes `--config <file>`, the same file `serve` reads,
 and acts on the data directory it names. Like `serve`, each turns core dumps off and
 locks its memory before it reads a key, so it needs the same memory-lock
 allowance (see [getting started](@/docs/getting-started.md#allow-it-to-lock-its-memory)).
@@ -12,7 +12,7 @@ Run each as the service account that owns the data directory, never as root.
 
 With the objects in an S3 bucket (`storage.objects = "s3"`; see
 [keep vCons in an S3 bucket](@/docs/s3-storage.md)),
-every command but `mcp` and `rekey master` (which touches only
+every command but `mcp`, `tui` and `rekey master` (which touches only
 `server.sqlite`) also reads the secret key file, reaches the bucket,
 reads its versioning and checks the claim on its prefix before it does
 anything else, and exits 1 with `the storage cannot be used:` and the reason
@@ -204,6 +204,22 @@ client file or the key file cannot be read, when the server cannot be reached,
 or when the server refuses the key: `vcon-server: the server refused the key
 (401)`. Like the other commands it locks its memory, so the account that runs
 it needs the same memory-lock allowance.
+
+## The terminal UI
+
+| Command | Prints | Runs beside `serve` |
+|---|---|---|
+| `tui --config <client file>` | a full-screen view of a tenant's vCons | yes |
+
+`tui` shows the vCons of one key's tenant in the terminal, read from a
+running server over its HTTP API: the list, and each vCon's uuid, version
+and times, never its content. Like `mcp` it reads a client file (`url`, the
+server's address; `key_file`; and the optional `ca`) instead of the server's
+configuration, opens no data directory and no master key, and locks its
+memory. It is in a build with the cargo feature `tui` only; another build
+exits with code 1 and `this build has no terminal UI`. It exits with code 0
+when the user quits, and code 1 when the client file, the key file or the
+terminal cannot be used. See [the terminal UI](@/docs/tui.md).
 
 ## Running beside the server
 

@@ -67,6 +67,10 @@ what is built, unless it says otherwise.
   audit logs, and for an operator key the tenants and their keys; each passes
   one gate for rate, concurrency and scope, and leaves the records its HTTP
   route leaves. See [MCP](@/docs/mcp.md).
+- **The terminal UI:** `vcon-server tui`, in a build with the cargo feature
+  `tui`, lists the vCons of one key's tenant and shows each one's uuid,
+  version and times, read over the HTTP API with a `read` key. It reads
+  only, and never a vCon's content. See [the terminal UI](@/docs/tui.md).
 - **Tenants and keys.** Scoped bearer keys, revocation, tenant removal that
   never passes a legal hold.
 - **Retention.** Calendar periods per tenant or server-wide, the purge sweep

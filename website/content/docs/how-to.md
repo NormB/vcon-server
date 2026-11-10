@@ -44,6 +44,8 @@ shows. `scripts/docs_test.py` runs them. See
 - [Add a second tenant](@/docs/second-tenant.md): a tenant made over the
   admin API, its key, its data kept apart, its retention period, and its
   removal.
+- [Browse vCons in a terminal](@/docs/tui.md): `vcon-server tui`, its
+  build, the key and client file it needs, its keys and its messages.
 
 ## Run it
 

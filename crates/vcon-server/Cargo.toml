@@ -48,6 +48,9 @@ libc = "0.2.191"
 # no compression codec: a sealed body is AES-GCM ciphertext, which does not
 # compress, and the metadata columns are small.
 parquet = { version = "=60.0.0", default-features = false }
+# The terminal UI (cargo feature tui): the widgets, and through them
+# crossterm for the terminal itself.
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"], optional = true }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2"] }
 rmcp = { version = "3.9.0", default-features = false, features = [
     "server",
@@ -91,6 +94,9 @@ backend-tests = []
 # connects, checks the server and stops (see backend/postgres.rs).
 # It needs S3 objects ([catalog] in configuration.md), so it turns s3 on.
 postgres = ["s3", "dep:tokio-postgres", "dep:tokio-postgres-rustls", "dep:rustls-native-certs"]
+# `vcon-server tui`: a terminal UI that reads a running server over its HTTP
+# API with one key. Off by default, so a server build does not carry it.
+tui = ["dep:ratatui"]
 
 [dev-dependencies]
 # rusqlite 0.41.0's pragma helpers refuse SQLCipher's own pragma names

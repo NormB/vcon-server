@@ -8,6 +8,12 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- `vcon-server tui`, in a build with the new cargo feature `tui` (off by
+  default): a terminal UI that lists the vCons of one key's tenant and shows
+  each one's uuid, version and times. It is a client of a running server's
+  HTTP API with a `read` key from a client file, so the server's scopes and
+  audit log apply; it reads only, and never a vCon's content. A build
+  without the feature has the command and says how to get one.
 - `vcon-server migrate`, for the PostgreSQL catalog preview: it makes the
   catalog's schema as `vcon_owner`, one transaction per schema version,
   alone (it takes the advisory locks every server and command shares). A

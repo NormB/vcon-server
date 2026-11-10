@@ -43,6 +43,14 @@ enum Command {
         #[arg(long)]
         config: PathBuf,
     },
+    /// Shows a running server's vCons in the terminal, read over its HTTP
+    /// API with the one key its client file names. Only in a build with
+    /// the cargo feature tui.
+    Tui {
+        /// The client file: the server's URL, the key file and the CA.
+        #[arg(long)]
+        config: PathBuf,
+    },
     /// Opens every stored version and reports damage, leftover files,
     /// versions past due and work waiting for key rotation; exits 1 when
     /// anything needs attention. Runs only while no server does.
@@ -268,6 +276,7 @@ fn main() -> ExitCode {
         Command::Serve { config } => return serve(&config),
         Command::Migrate { config } => return migrate(&config.config),
         Command::Mcp { config } => return mcp(&config),
+        Command::Tui { config } => return tui(&config),
         Command::Tenant(c) => tenant(c),
         Command::Key(c) => key(c),
         Command::Rekey(RekeyCommand::Tenant { config, id }) => {
@@ -438,6 +447,26 @@ fn run_mcp(config: &Path) -> Result<(), ExitCode> {
     runtime()?
         .block_on(vcon_server::mcp::stdio::stdio(&config))
         .map_err(fail)
+}
+
+/// `vcon-server tui` until the user quits.
+#[cfg(feature = "tui")]
+fn tui(config: &Path) -> ExitCode {
+    let config = match vcon_server::mcp::stdio::client_config(config) {
+        Ok(config) => config,
+        Err(e) => return fail(format!("client file: {e}")),
+    };
+    match vcon_server::tui::run(&config) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(why) => fail(why),
+    }
+}
+
+/// `vcon-server tui` in a build without the terminal UI: says how to get
+/// one, and fails.
+#[cfg(not(feature = "tui"))]
+fn tui(_config: &Path) -> ExitCode {
+    fail("this build has no terminal UI: build vcon-server with the cargo feature tui")
 }
 
 /// Completes on SIGINT or SIGTERM.

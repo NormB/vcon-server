@@ -102,3 +102,7 @@ pub mod store;
     )
 )]
 pub mod tenants;
+/// `vcon-server tui`: a terminal UI that reads a running server over its
+/// HTTP API (cargo feature `tui`).
+#[cfg(feature = "tui")]
+pub mod tui;
