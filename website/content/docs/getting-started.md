@@ -139,8 +139,12 @@ sudo sha256sum /etc/vcon-server/master.key | cut -c1-16
 
 The API is served over TLS only, with HTTP/2 and HTTP/1.1. The server needs
 a PEM certificate chain and its PEM private key, readable by the service
-account. With a certificate from your certificate authority or ACME client,
-install the two files as `cert.pem` and `key.pem`:
+account. For a free certificate that every client already trusts, finish
+this page with the self-signed one below, then follow
+[get a Let's Encrypt certificate](@/docs/lets-encrypt.md): certbot gets it,
+and a hook installs it and each renewal for the server. With a certificate
+from another certificate authority or ACME client, install the two files as
+`cert.pem` and `key.pem`:
 
 <!-- docs-test: skip the run makes a self-signed certificate below instead -->
 ```sh
@@ -467,6 +471,9 @@ curl -sS --cacert /usr/local/share/vcon-server/ca.pem https://vcon.example.com:8
 
 ## Next
 
+- [Get a Let's Encrypt certificate](@/docs/lets-encrypt.md): a free,
+  publicly trusted certificate in place of the self-signed one, renewed
+  automatically, so clients need no CA file.
 - [Store your first vCon](@/docs/first-vcon.md): store, read, list and
   delete a vCon, with a key for each scope.
 - [The how-to guides](@/docs/how-to.md): keys and scopes, a second tenant,

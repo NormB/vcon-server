@@ -62,3 +62,15 @@
 {%- endif %}
 </svg>
 {% endcomponent icon %}
+
+{# A screen of `vcon-server tui`, from data/tui-screens.json, which a test in
+   crates/vcon-server/src/tui/view.rs writes from the UI's own drawing code
+   and fails on when the two differ. `name` is a screen in that file. #}
+{% component tui_screen(name, label) %}
+{%- set s = load_data(path="data/tui-screens.json")[name] -%}
+<figure class="term">
+<div class="term-bar" aria-hidden="true"><span></span><span></span><span></span><b>vcon-server tui</b></div>
+<pre class="term-screen" tabindex="0" aria-label="{{ label }}">{% for line in s.lines %}{% for run in line %}{% if run.class %}<span class="{{ run.class }}">{{ run.text }}</span>{% else %}{{ run.text }}{% endif %}{% endfor %}
+{% endfor %}</pre>
+</figure>
+{% endcomponent tui_screen %}

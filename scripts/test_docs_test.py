@@ -1030,6 +1030,42 @@ class Prelude(unittest.TestCase):
     def test_a_dnf_scenario_gets_no_apt_setting(self):
         self.assertEqual(dt.runner_prelude(self.scenario("fedora:44", {"dnf"})), "")
 
+    def test_an_acme_scenario_gets_a_test_certificate_authority(self):
+        prelude = dt.runner_prelude(self.scenario("systemd", {"debian", "apt", "systemd", "acme"}))
+        self.assertIn("pebble", prelude, "Pebble stands in for Let's Encrypt")
+        self.assertIn("server = https://localhost:14000/dir", prelude, "certbot is pointed at Pebble")
+        self.assertIn("update-ca-certificates", prelude, "Pebble's roots are trusted as a public CA's are")
+        self.assertIn(dt.ACME_TSIG_SECRET, prelude, "BIND takes the TSIG key the page shows")
+        # The certbot package ships /etc/letsencrypt/cli.ini as a conffile:
+        # one there already stops its install at dpkg's prompt.
+        self.assertNotIn("/etc/letsencrypt/cli.ini", prelude, "the package's own cli.ini is left alone")
+        self.assertIn("/root/.config/letsencrypt/cli.ini", prelude, "root's cli.ini names Pebble")
+
+    def test_a_scenario_without_acme_gets_no_certificate_authority(self):
+        prelude = dt.runner_prelude(self.scenario("systemd", {"debian", "apt", "systemd"}))
+        self.assertNotIn("pebble", prelude, "only an acme scenario runs Pebble")
+
+
+class LetsEncrypt(unittest.TestCase):
+    """The Let's Encrypt page runs once per challenge, after getting started,
+    under systemd, whose unit the deploy hook restarts."""
+
+    def scenario(self, name):
+        found = [s for s in dt.SCENARIOS if s.name == name]
+        self.assertEqual(len(found), 1, f"one scenario named {name}")
+        return found[0]
+
+    def test_each_challenge_has_a_scenario(self):
+        for name, challenge in (("lets-encrypt-http", "http-01"), ("lets-encrypt-dns", "dns-01")):
+            s = self.scenario(name)
+            self.assertEqual(s.where, "systemd", f"{name}: the deploy hook restarts a systemd unit")
+            self.assertEqual(s.pages, ("getting-started.md", "lets-encrypt.md"), f"{name}: after getting started")
+            self.assertTrue({"acme", challenge} <= s.tags, f"{name}: runs the {challenge} steps against Pebble")
+
+    def test_the_page_shows_the_tsig_secret_bind_takes(self):
+        page = open(os.path.join(dt.ROOT, "website", "content", "docs", "lets-encrypt.md")).read()
+        self.assertIn(dt.ACME_TSIG_SECRET, page, "the page's sample credentials are the ones CI's DNS server takes")
+
 
 TERMINAL_PAGE = """<!-- docs-test: terminal READY -->
 ```sh

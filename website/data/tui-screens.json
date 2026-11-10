@@ -1,0 +1,228 @@
+{
+  "detail": {
+    "columns": 80,
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "vcon.example.com:8443 | tenant 8c41f2d9a07e4b5c9d13e6f0a2b4c7d8 | "
+        },
+        {
+          "class": "bold green",
+          "text": "connected"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "vCon da58fbbe-e87f-854c-be87-f6a99b4b1f77"
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "Version       da58fbbee87fb54c2c7ddf743fdaa66d"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "First stored  2026-11-09 23:54:32 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Last updated  2026-11-10 00:06:32 UTC+00:00"
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "Content is not shown: this view lists metadata only."
+        }
+      ],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [
+        {
+          "class": "",
+          "text": "3 of 100 read, more on the server | as of 2026-11-10 01:20:00 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Esc back  j down  k up  r refresh  ? help  q quit"
+        }
+      ]
+    ]
+  },
+  "list": {
+    "columns": 80,
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "vcon.example.com:8443 | tenant 8c41f2d9a07e4b5c9d13e6f0a2b4c7d8 | "
+        },
+        {
+          "class": "bold green",
+          "text": "connected"
+        }
+      ],
+      [
+        {
+          "class": "bold",
+          "text": "  UUID                                  STORED (UTC+00:00)   UPDATED (UTC+00:00)"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  f372fe94-f82b-8c6e-bf82-678dde6e5fd2  2026-11-10 01:08:10  2026-11-10 01:08:10"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  e6e5fd29-f054-88dd-bf05-8f1bbcdcbfa5  2026-11-10 00:31:07  2026-11-10 00:37:07"
+        }
+      ],
+      [
+        {
+          "class": "reversed",
+          "text": "> da58fbbe-e87f-854c-be87-f6a99b4b1f77  2026-11-09 23:54:32  2026-11-10 00:06:32"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  cdcbfa53-e0a8-81bb-be0a-1e3779b97f4a  2026-11-09 23:17:29  2026-11-09 23:35:29"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  c13ef8e8-d8d2-8e2a-bd8d-45c55827df1d  2026-11-09 22:40:26  2026-11-09 22:40:26"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  b4b1f77d-d0fd-8a99-bd0f-ad5336963eef  2026-11-09 22:03:51  2026-11-09 22:09:51"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  a824f612-c926-8708-bc92-d4e115049ec2  2026-11-09 21:26:48  2026-11-09 21:38:48"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  9b97f4a7-c151-8377-bc15-3c6ef372fe94  2026-11-09 20:49:13  2026-11-09 21:07:13"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  8f0af33c-b97b-8fe6-bb97-63fcd1e15e67  2026-11-09 20:12:10  2026-11-09 20:12:10"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  827df1d1-b1a4-8c55-bb1a-8b8ab04fbe3a  2026-11-09 19:35:07  2026-11-09 19:41:07"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  75f0f066-a9cf-88c4-ba9c-f3188ebe1e0c  2026-11-09 18:58:32  2026-11-09 19:10:32"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  6963eefb-a1f8-8533-ba1f-1aa66d2c7ddf  2026-11-09 18:21:29  2026-11-09 18:39:29"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  5cd6ed90-9a22-81a2-b9a2-42344b9addb2  2026-11-09 17:44:26  2026-11-09 17:44:26"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  5049ec25-924d-8e11-b924-a9c22a093d84  2026-11-09 17:07:51  2026-11-09 17:13:51"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  43bceaba-8a76-8a80-b8a7-d15008779d57  2026-11-09 16:30:48  2026-11-09 16:42:48"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  372fe94f-82a1-86ef-b82a-38dde6e5fd29  2026-11-09 15:53:13  2026-11-09 16:11:13"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  2aa2e7e4-7acb-835e-b7ac-606bc5545cfc  2026-11-09 15:16:10  2026-11-09 15:16:10"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  1e15e679-72f4-8fcd-b72f-87f9a3c2bccf  2026-11-09 14:39:07  2026-11-09 14:45:07"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  1188e50e-6b1f-8c3c-b6b1-ef8782311ca1  2026-11-09 14:02:32  2026-11-09 14:14:32"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  04fbe3a3-6348-88ab-b634-1715609f7c74  2026-11-09 13:25:29  2026-11-09 13:43:29"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "3 of 100 read, more on the server | as of 2026-11-10 01:20:00 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "j down  k up  Enter open  r refresh  n more  ? help  q quit"
+        }
+      ]
+    ]
+  }
+}

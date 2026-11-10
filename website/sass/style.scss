@@ -189,3 +189,28 @@ main { max-width: 72rem; margin: 0 auto; padding: 1rem; }
   .search { margin-left: 0; width: 100%; }
   .search input { width: 100%; max-width: none; }
 }
+
+/* A screen of the terminal UI (the tui_screen component): dark in both themes,
+   as a terminal is, 80 columns wide, scrolling sideways on a narrow screen. */
+:root {
+  --term-bg: #0b1120;
+  --term-fg: #e2e8f0;
+  --term-bar: #1e293b;
+  --term-green: #4ade80;
+  --term-yellow: #facc15;
+  --term-red: #f87171;
+}
+.term { margin: 1.25rem 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--term-bg); box-shadow: var(--shadow); max-width: 100%; }
+.term-bar { display: flex; align-items: center; gap: 0.4rem; padding: 0.45rem 0.8rem; background: var(--term-bar); }
+.term-bar span { width: 0.7rem; height: 0.7rem; border-radius: 50%; background: #475569; }
+.term-bar b { margin-left: 0.5rem; font: 600 0.8rem var(--sans); color: #cbd5e1; }
+.term-screen { margin: 0; border-radius: 0; background: var(--term-bg); color: var(--term-fg); font-size: 0.8rem; line-height: 1.3; overflow-x: auto; }
+.term-screen .bold { font-weight: 700; }
+.term-screen .green { color: var(--term-green); }
+.term-screen .yellow { color: var(--term-yellow); }
+.term-screen .red { color: var(--term-red); }
+.term-screen .reversed { background: var(--term-fg); color: var(--term-bg); }
+@media (prefers-color-scheme: dark) {
+  /* Darker than the page's own background, so the screen stands out. */
+  :root { --term-bg: #020617; --term-bar: #172033; }
+}

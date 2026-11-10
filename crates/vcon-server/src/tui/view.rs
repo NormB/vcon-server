@@ -397,9 +397,11 @@ fn hints(view: View) -> String {
 mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use ratatui::style::Color;
-    use time::OffsetDateTime;
+    use ratatui::buffer::Cell;
+    use ratatui::style::{Color, Modifier};
+    use time::format_description::well_known::Rfc3339;
     use time::macros::datetime;
+    use time::{Duration, OffsetDateTime};
 
     use super::{Theme, draw, theme, utc};
     use crate::tui::keys::BINDINGS;
@@ -1225,6 +1227,138 @@ mod tests {
         assert!(
             shown.contains("UTC+00:00"),
             "times are UTC, stated: {shown}"
+        );
+    }
+
+    // The screens the site shows.
+
+    /// The file the terminal UI's page and the home page draw their screens
+    /// from: `tui_screen` in website/templates/components.html.
+    fn screens_file() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../website/data/tui-screens.json")
+    }
+
+    /// A tenant's first page of 100 vCons, newest first, with more on the
+    /// server, and the third one selected: the list the site shows.
+    fn shown_list() -> State {
+        let mut state = connecting();
+        state.step(
+            Event::KeyInfo(Ok(KeyInfo {
+                id: "5b0c3f9a1d2e4f60".to_owned(),
+                tenant: Some("8c41f2d9a07e4b5c9d13e6f0a2b4c7d8".to_owned()),
+                scopes: vec!["read".to_owned()],
+            })),
+            NOW,
+        );
+        let vcons = (0..100_u64).map(shown_row).collect();
+        state.step(
+            Event::Page(Ok(Page {
+                vcons,
+                next: Some("cursor-2".to_owned()),
+            })),
+            NOW,
+        );
+        press(state, &[Action::Down, Action::Down])
+    }
+
+    /// The `n`th vCon of the shown list: a version 8 uuid made from `n`,
+    /// stored 37 minutes before the one above it, some updated since.
+    fn shown_row(n: u64) -> Row {
+        let mix = n
+            .wrapping_add(1)
+            .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+            .rotate_left(17);
+        let minutes = i64::try_from(n).expect("a small number").saturating_mul(37);
+        let stored = NOW
+            - Duration::minutes(minutes.saturating_add(11))
+            - Duration::seconds(i64::try_from(mix % 60).expect("under 60"));
+        let updated =
+            stored + Duration::minutes(i64::try_from(n % 4).expect("under 4").saturating_mul(6));
+        let time = |at: OffsetDateTime| at.format(&Rfc3339).expect("an RFC 3339 time");
+        Row {
+            uuid: format!(
+                "{:08x}-{:04x}-8{:03x}-b{:03x}-{:012x}",
+                mix >> 32,
+                (mix >> 16) & 0xffff,
+                mix & 0xfff,
+                (mix >> 20) & 0xfff,
+                mix.rotate_left(29) & 0xffff_ffff_ffff
+            ),
+            stored_at: time(stored),
+            updated_at: time(updated),
+            version: format!("{mix:016x}{:016x}", mix.rotate_left(7)),
+        }
+    }
+
+    /// The class names website/sass/style.scss styles a cell with.
+    fn classes(cell: &Cell) -> String {
+        assert_eq!(cell.bg, Color::Reset, "the site draws no background color");
+        let mut out = Vec::new();
+        if cell.modifier.contains(Modifier::BOLD) {
+            out.push("bold");
+        }
+        if cell.modifier.contains(Modifier::REVERSED) {
+            out.push("reversed");
+        }
+        match cell.fg {
+            Color::Reset => {}
+            Color::Green => out.push("green"),
+            Color::Yellow => out.push("yellow"),
+            Color::Red => out.push("red"),
+            other => panic!("the site has no class for {other:?}"),
+        }
+        out.join(" ")
+    }
+
+    /// The screen, in color, at 80 by 24: each line as runs of text that
+    /// share one style, without the plain blanks that end a line.
+    fn styled(state: &State) -> serde_json::Value {
+        let terminal = terminal(state, 80, 24, COLOR);
+        let buffer = terminal.backend().buffer();
+        let lines: Vec<serde_json::Value> = (0..24_u16)
+            .map(|y| {
+                let mut runs: Vec<(String, String)> = Vec::new();
+                for x in 0..80_u16 {
+                    let cell = &buffer[(x, y)];
+                    let class = classes(cell);
+                    match runs.last_mut() {
+                        Some((last, text)) if *last == class => text.push_str(cell.symbol()),
+                        _ => runs.push((class, cell.symbol().to_owned())),
+                    }
+                }
+                if let Some((class, text)) = runs.last_mut()
+                    && class.is_empty()
+                {
+                    text.truncate(text.trim_end().len());
+                }
+                runs.retain(|(_, text)| !text.is_empty());
+                runs.into_iter()
+                    .map(|(class, text)| serde_json::json!({"class": class, "text": text}))
+                    .collect()
+            })
+            .collect();
+        serde_json::json!({"columns": 80, "lines": lines})
+    }
+
+    #[test]
+    fn the_site_shows_the_screens_draw_makes() {
+        let list = shown_list();
+        let made = serde_json::json!({
+            "list": styled(&list),
+            "detail": styled(&press(list, &[Action::Open])),
+        });
+        let made = format!("{}\n", serde_json::to_string_pretty(&made).expect("JSON"));
+        let path = screens_file();
+        if std::env::var_os("VCON_SERVER_WRITE_SCREENS").is_some() {
+            std::fs::write(&path, &made)
+                .unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+        }
+        let shown = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        assert!(
+            shown == made,
+            "{} is not the screens draw makes now: run this test with VCON_SERVER_WRITE_SCREENS=1 to write them again",
+            path.display()
         );
     }
 }

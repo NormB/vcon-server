@@ -414,6 +414,11 @@ SCENARIOS = [
     # The Parquet export to a directory, read with DuckDB, after the server
     # is set up with its objects in the data directory.
     Scenario("parquet", "systemd", frozenset({"debian", "apt", "systemd"}), ("getting-started.md", "export-parquet.md")),
+    # A Let's Encrypt certificate in place of the self-signed one, once by
+    # HTTP-01 and once by DNS-01, from Pebble (ACME_SETUP), under systemd,
+    # whose unit the page's deploy hook restarts.
+    Scenario("lets-encrypt-http", "systemd", frozenset({"debian", "apt", "systemd", "acme", "http-01"}), ("getting-started.md", "lets-encrypt.md")),
+    Scenario("lets-encrypt-dns", "systemd", frozenset({"debian", "apt", "systemd", "acme", "dns-01"}), ("getting-started.md", "lets-encrypt.md")),
     # The container how-to, with this host's Docker: it builds an image from
     # the release the page names, and removes what it made at the end.
     Scenario("container", "host", frozenset({"docker"}), ("container.md",), binary=False),
@@ -1121,6 +1126,72 @@ def apt_mirror_setup(chosen: dict, root: str = "") -> list[str]:
 DNF_SCRIPT = "dnf install -y -q util-linux-script\n"
 
 
+# The TSIG secret the Let's Encrypt page's DNS-01 credentials show, which
+# the DNS server ACME_SETUP runs accepts. It is the base64 of a sentence
+# that says it is an example.
+ACME_TSIG_SECRET = "ZXhhbXBsZS10c2lnLXNlY3JldC1yZXBsYWNlLXdpdGgtdGhlLW9uZS15b3VyLWRucy1zZXJ2ZXItbWFkZSEh"
+
+# An acme scenario's stand-in for Let's Encrypt, so the Let's Encrypt page
+# runs unchanged: Pebble, Let's Encrypt's test ACME server, on this
+# container, with root's certbot cli.ini naming it as the server (the one in
+# /etc/letsencrypt is the package's conffile: one written there first stops
+# the package's install at dpkg's prompt). BIND serves
+# example.com, resolves vcon.example.com to this container for Pebble's
+# HTTP-01 check, and takes the page's TSIG key for DNS-01 updates. Pebble's
+# listener and its roots are made trusted the way a public CA's are, so
+# clients that pass no CA file trust the certificate certbot gets.
+ACME_SETUP = f"""\
+apt-get update -qq
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq pebble bind9 openssl curl ca-certificates >/dev/null
+cat > /etc/bind/docs-test-certbot.key <<'DOCS_TEST_EOF'
+key "certbot." {{ algorithm hmac-sha512; secret "{ACME_TSIG_SECRET}"; }};
+DOCS_TEST_EOF
+cat > /etc/bind/named.conf.local <<'DOCS_TEST_EOF'
+include "/etc/bind/docs-test-certbot.key";
+zone "example.com" {{
+  type primary;
+  file "/var/lib/bind/example.com.zone";
+  update-policy {{ grant certbot. name _acme-challenge.vcon.example.com. TXT; }};
+}};
+DOCS_TEST_EOF
+cat > /etc/bind/named.conf.options <<'DOCS_TEST_EOF'
+options {{
+  directory "/var/cache/bind";
+  listen-on {{ 127.0.0.1; }};
+  listen-on-v6 {{ none; }};
+  recursion no;
+  dnssec-validation no;
+}};
+DOCS_TEST_EOF
+cat > /var/lib/bind/example.com.zone <<'DOCS_TEST_EOF'
+$TTL 60
+@    IN SOA ns.example.com. hostmaster.example.com. 1 60 60 600 60
+@    IN NS  ns.example.com.
+ns   IN A   127.0.0.1
+vcon IN A   127.0.0.1
+DOCS_TEST_EOF
+chown bind:bind /var/lib/bind/example.com.zone
+systemctl restart named
+install -d /etc/pebble
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj /CN=localhost \\
+  -addext subjectAltName=DNS:localhost -keyout /etc/pebble/key.pem -out /etc/pebble/cert.pem 2>/dev/null
+cat > /etc/pebble/pebble.json <<'DOCS_TEST_EOF'
+{{"pebble": {{"listenAddress": "127.0.0.1:14000", "managementListenAddress": "127.0.0.1:15000",
+  "certificate": "/etc/pebble/cert.pem", "privateKey": "/etc/pebble/key.pem",
+  "httpPort": 80, "tlsPort": 443, "ocspResponderURL": "", "externalAccountBindingRequired": false}}}}
+DOCS_TEST_EOF
+cp /etc/pebble/cert.pem /usr/local/share/ca-certificates/docs-test-pebble-listener.crt
+update-ca-certificates >/dev/null 2>&1
+systemd-run --unit pebble --setenv PEBBLE_VA_NOSLEEP=1 --setenv PEBBLE_WFE_NONCEREJECT=0 \\
+  /usr/bin/pebble -config /etc/pebble/pebble.json -dnsserver 127.0.0.1:53
+timeout 30 sh -c 'until curl -sf -o /dev/null https://localhost:14000/dir; do sleep 0.2; done'
+curl -sf https://localhost:15000/roots/0 > /usr/local/share/ca-certificates/docs-test-pebble-root.crt
+update-ca-certificates >/dev/null 2>&1
+install -d -m 0700 /root/.config/letsencrypt
+echo 'server = https://localhost:14000/dir' > /root/.config/letsencrypt/cli.ini
+"""
+
+
 def runner_prelude(scenario: Scenario, steps: list[Block] | tuple = (), mirrors: dict | None = None) -> str:
     """The runner's own setup inside a scenario's container: apt retries each
     download, with apt's own growing delay between tries, gives up one that
@@ -1129,7 +1200,8 @@ def runner_prelude(scenario: Scenario, steps: list[Block] | tuple = (), mirrors:
     if scenario.where == "host":
         return ""
     if "apt" in scenario.tags:
-        return APT_RETRIES + "".join(c + "\n" for c in apt_mirror_setup(mirrors or {}))
+        apt = APT_RETRIES + "".join(c + "\n" for c in apt_mirror_setup(mirrors or {}))
+        return apt + ACME_SETUP if "acme" in scenario.tags else apt
     if "dnf" in scenario.tags and any(b.terminal is not None for b in steps):
         return DNF_SCRIPT
     return ""

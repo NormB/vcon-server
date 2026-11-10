@@ -10,6 +10,11 @@ install_link = "@/docs/install.md"
 # The texts around "A first look", inline markdown.
 first_look_intro = "Send a vCon with a key that holds the `write` scope, then read it back."
 first_look_outro = "Sending the same bytes again answers `200` with the same version, so a producer can retry safely."
+# The terminal UI section, inline markdown; its screen comes from
+# data/tui-screens.json.
+tui_intro = "`vcon-server tui` lists a tenant's vCons in a terminal, over the HTTP API, with one key that holds the `read` scope."
+tui_label = "The vcon-server tui list view: the server, the tenant and connected on the first line, then a vCon on each line with its uuid and the times it was stored and updated, the third one selected, and the keys on the last line."
+tui_outro = "It shows what `GET /vcons` lists and never asks for a vCon's content, and the server's scopes and audit log apply to it as to any client."
 # The Install and How-to sections: their text is the docs' (see the how-to
 # pages); the layout is the template's. Plain text, not markdown. Every plain
 # key sits above the first [[...]] table, or TOML puts it inside that table.
@@ -113,6 +118,11 @@ note = "It prints vcon-server and its version. The install page also checks the 
 [[extra.install]]
 title = "Set it up and start it"
 note = "Getting started makes the service account, the master key, a certificate, the configuration and the first keys, then starts the server under systemd or in the foreground."
+
+[[extra.howto]]
+title = "Get a Let's Encrypt certificate"
+link = "@/docs/lets-encrypt.md"
+summary = "A free, publicly trusted certificate by HTTP-01 or DNS-01 with certbot, renewed automatically, so clients need no CA file."
 
 [[extra.howto]]
 title = "Store your first vCon"

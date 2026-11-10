@@ -46,6 +46,15 @@ All notable changes to this project are recorded here. The format follows
   the tab closes. A recording at a link is never loaded. The console page
   has the how-to. A proxy that passes the console's paths by name must also
   pass `/console/player.html` and `/console/player.js`.
+- A how-to, "Get a Let's Encrypt certificate": a free, publicly trusted
+  certificate in place of the self-signed one, by HTTP-01 or DNS-01 with
+  certbot, with a deploy hook that installs each new certificate for the
+  server and restarts it. Clients then need no CA file. CI runs the page
+  once per challenge, with Pebble, Let's Encrypt's test server, and BIND in
+  its place. Getting started, the how-to list and the home page link it.
+- The terminal UI's page and the home page show its list and detail
+  screens, drawn by the UI's own code: a test fails when the site's copy
+  differs from what it draws.
 - A read of a vCon can be marked as a reveal of one part of it:
   `GET /vcons/{uuid}?reveal=<part>`, and the same parameter on
   `GET /legal/vcons/{uuid}` and

@@ -21,6 +21,11 @@ shows. `scripts/docs_test.py` runs them. See
 - [Getting started](@/docs/getting-started.md): the service account, the
   master key, a certificate, the configuration and the first keys. Then the
   server is started under systemd or in the foreground.
+- [Get a Let's Encrypt certificate](@/docs/lets-encrypt.md): a free,
+  publicly trusted certificate in place of the self-signed one, by HTTP-01
+  or DNS-01 with certbot, and its renewal with a hook that installs it and
+  restarts the server. Clients then need no CA file. CI runs it with
+  Pebble, Let's Encrypt's test server, in Let's Encrypt's place.
 
 - [Keep vCons in an S3 bucket](@/docs/s3-storage.md): RustFS, MinIO or AWS
   S3 for the sealed objects, the bucket and its key on the storage side, a

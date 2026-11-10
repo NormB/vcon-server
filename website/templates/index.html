@@ -65,6 +65,15 @@
   <p>{{ x.first_look_outro | markdown(inline=true) | safe }} The <a href="{{ get_url(path='@/docs/http-api.md') }}">HTTP API</a> lists every route.</p>
 </section>
 
+{# The terminal UI: a screen the UI's own drawing code made (see the
+   tui_screen component). Its text is set in _index.md's front matter. #}
+<section class="home-section" id="terminal" aria-labelledby="terminal-title">
+  <h2 id="terminal-title">Browse in a terminal</h2>
+  <p>{{ x.tui_intro | markdown(inline=true) | safe }}</p>
+  {{ <tui_screen name="list" label={x.tui_label} /> }}
+  <p>{{ x.tui_outro | markdown(inline=true) | safe }} <a href="{{ get_url(path='@/docs/tui.md') }}">Terminal UI</a> shows how to set it up.</p>
+</section>
+
 {# The Install and How-to slots: their text is set in _index.md's front
    matter; this file sets only how it is laid out. #}
 <section class="home-section" id="install" aria-labelledby="install-title">

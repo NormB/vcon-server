@@ -20,6 +20,18 @@ This release reads only. It has three views:
 - **The detail:** one vCon's uuid, version and times.
 - **Help:** every key.
 
+The list, in a terminal of 80 columns by 24 lines, with the third vCon of
+the first 100 selected:
+
+{{ <tui_screen name="list" label="The vcon-server tui list view: the server, the tenant and connected on the first line, then a vCon on each line with its uuid and the times it was stored and updated, the third one selected, and the keys on the last line." /> }}
+
+Enter opens the selected vCon's metadata:
+
+{{ <tui_screen name="detail" label="The vcon-server tui detail view: the selected vCon's uuid, version, and the times it was stored and updated, with the keys on the last line." /> }}
+
+Both screens are drawn by the terminal UI's own code: a test fails when
+they differ from what it draws.
+
 It shows what `GET /vcons` lists and nothing else. It never asks the server
 for a vCon's content, so no party, dialog or attachment reaches the
 terminal.
@@ -90,7 +102,8 @@ shown below.
    - `key_file`: the file holding the token and nothing else, by its full
      path.
    - `ca`: optional. PEM certificates to trust for the server; without it,
-     the system's trusted roots are used.
+     the system's trusted roots are used. Leave it out for a server with a
+     [Let's Encrypt certificate](@/docs/lets-encrypt.md).
 
 4. Start it, and press `q` to leave it:
 

@@ -409,6 +409,19 @@ fn the_first_pages_are_the_first_visit_path() {
         ["install.md", "getting-started.md", "first-vcon.md"],
         "a new reader installs, starts the server and stores a first vCon, in that order"
     );
+    // The first group holds that path and nothing else: the site's test of
+    // the sidebar expects those three links there, and a guide for one
+    // deployment choice belongs with the how-to guides.
+    let start: Vec<&str> = pages
+        .iter()
+        .filter(|p| p.group == GROUPS[0])
+        .map(|p| p.file.as_str())
+        .collect();
+    assert_eq!(
+        start, first,
+        "the group {:?} holds the first-visit path only",
+        GROUPS[0]
+    );
 }
 
 #[test]
