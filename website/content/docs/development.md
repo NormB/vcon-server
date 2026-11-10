@@ -424,8 +424,19 @@ right:
   pinned by digest in `IMAGES` in `scripts/docs_test.py` and pulled with
   retries; an image a page builds from is then tagged with the name the page
   uses.
-- In a container with apt, the runner sets `Acquire::Retries "10"` before
-  the first page, so apt retries each download with its own growing delay.
+- In a container with apt, the runner sets `Acquire::Retries "3"` and
+  `Acquire::http::Timeout "10"` before the first page, so apt retries each
+  download and gives up one that stalls.
+- A container with apt reads its packages from a list of mirrors, not from
+  one host. Before the scenario starts, the runner asks each mirror in
+  `APT_MIRRORS` in `scripts/docs_test.py` for its index, with a time limit
+  of 5 seconds, and writes those that answer, in order, to a list that
+  apt's `mirror+file:` method reads. The log names them in a line that
+  starts `docs-test: packages from`. Signatures are checked as before. The
+  page's own `apt-get` commands are not changed. If no mirror of a source
+  answers, the run ends at once with exit code 3 and the message `the
+  package mirrors are unreachable from this machine; this is not a failure
+  of the pages`, with each address it tried.
 
 `lint` also fails on a page that downloads a release asset no line of
 `scripts/docs-test-pins.txt` matches, and on a sha256 written on such a page

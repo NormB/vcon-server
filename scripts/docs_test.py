@@ -57,7 +57,27 @@ fail a page whose commands are right:
 - Each image is pinned by digest (IMAGES) and pulled with retries; an image
   a page builds FROM is pulled the same way, then tagged with the name the
   page uses.
-- In a container with apt, apt retries each download (Acquire::Retries).
+- In a container with apt, apt retries each download 3 times
+  (Acquire::Retries) and gives up one that stalls for 10 s
+  (Acquire::http::Timeout).
+- A container with apt reads its packages from a list of mirrors, not from
+  one host. Before anything else the runner asks each mirror of each source
+  the image's apt reads (APT_MIRRORS) for its index, keeps those that answer
+  within 5 s, says in the log which they are, and points apt at them with
+  its `mirror+file:` method. The list gives each mirror its place as its
+  priority, so apt asks the first one that answered and goes on to the next
+  only when a download fails. Signatures are checked as before: only the
+  host a file comes from changes. The page's own apt-get commands run as a
+  reader types them. If no mirror of a source answers, the run ends at once
+  with exit code 3 and says that the package mirrors are unreachable, so an
+  outage is not read as a page's failure. On 2026-11-10 archive.ubuntu.com
+  and security.ubuntu.com did not answer on port 80; `apt-get update` in
+  the release-ubuntu scenario waited out the scenario's 900 s, and the run
+  reported docs/install.md:84 as failed. A mirror that stops answering
+  after it was chosen still costs apt its time limit and its retries for
+  every file, which is why a mirror that does not answer is left out of the
+  list and not only placed last. Fedora's dnf picks among mirrors itself
+  and is left alone.
 
 Usage:
   python3 -I scripts/docs_test.py list               the scenario names, as JSON
@@ -301,13 +321,22 @@ def pinned_image(name: str) -> str:
 # The image of the systemd scenario: Debian with systemd as its init, and
 # nothing else the pages would install.
 SYSTEMD_IMAGE = "docs-test-systemd:trixie"
-SYSTEMD_DOCKERFILE = f"""FROM {pinned_image("debian:trixie-slim")}
-RUN apt-get update -qq -o Acquire::Retries=10 \\
- && apt-get install -y -qq -o Acquire::Retries=10 --no-install-recommends systemd systemd-sysv dbus >/dev/null \\
+
+
+def systemd_dockerfile(mirrors: dict) -> str:
+    """The systemd image's Dockerfile, its packages read through `mirrors`
+    (see apt_mirror_setup)."""
+    setup = "".join(f"{c} \\\n && " for c in apt_mirror_setup(mirrors))
+    limits = f"-o Acquire::Retries={APT_TRIES} -o Acquire::http::Timeout={APT_TIMEOUT}"
+    return f"""FROM {pinned_image("debian:trixie-slim")}
+RUN {setup}apt-get update -qq {limits} \\
+ && apt-get install -y -qq {limits} --no-install-recommends systemd systemd-sysv dbus >/dev/null \\
  && rm -rf /var/lib/apt/lists/*
 STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]
 """
+
+
 SYSTEMD_RUN = (
     "--privileged",
     "--cgroupns=host",
@@ -944,10 +973,129 @@ def pull_with_retry(name: str, run=_docker_quiet, sleep=time.sleep) -> str:
     raise PageError(f"{ref} could not be pulled after {len(PULL_DELAYS) + 1} attempts: {last}")
 
 
-APT_RETRIES = """cat > /etc/apt/apt.conf.d/80docs-test-retries <<'DOCS_TEST_EOF'
-Acquire::Retries "10";
+# How often apt asks again for a download that failed, and the seconds it
+# waits on a host that sends nothing. Both are small: apt spends them on
+# every file before it asks the next mirror, and with a time limit of 30 s
+# and 10 retries one `apt-get update` did not end in 170 s (2026-11-10).
+APT_TRIES = 3
+APT_TIMEOUT = 10
+APT_RETRIES = f"""cat > /etc/apt/apt.conf.d/80docs-test-retries <<'DOCS_TEST_EOF'
+Acquire::Retries "{APT_TRIES}";
+Acquire::http::Timeout "{APT_TIMEOUT}";
+Acquire::https::Timeout "{APT_TIMEOUT}";
 DOCS_TEST_EOF
 """
+
+# Each package source an image's apt reads (an origin), and the hosts that
+# hold the same files: the origin itself and at least one other, in the
+# order apt tries them. Azure's mirror is the one GitHub's own runner images
+# use. Each was read on port 80 from this project's host on 2026-11-10.
+_UBUNTU_MIRRORS = (
+    "http://azure.archive.ubuntu.com/ubuntu/",
+    "http://mirrors.edge.kernel.org/ubuntu/",
+    "http://mirror.math.princeton.edu/pub/ubuntu/",
+)
+APT_MIRRORS = {
+    "http://archive.ubuntu.com/ubuntu/": (_UBUNTU_MIRRORS[0], "http://archive.ubuntu.com/ubuntu/", *_UBUNTU_MIRRORS[1:]),
+    "http://security.ubuntu.com/ubuntu/": ("http://security.ubuntu.com/ubuntu/", *_UBUNTU_MIRRORS),
+    "http://ports.ubuntu.com/ubuntu-ports/": (
+        "http://ports.ubuntu.com/ubuntu-ports/",
+        "http://azure.ports.ubuntu.com/ubuntu-ports/",
+    ),
+    "http://deb.debian.org/debian": (
+        "http://deb.debian.org/debian",
+        "http://ftp.us.debian.org/debian",
+        "http://ftp.debian.org/debian",
+    ),
+    "http://deb.debian.org/debian-security": (
+        "http://deb.debian.org/debian-security",
+        "http://security.debian.org/debian-security",
+    ),
+}
+
+
+class MirrorError(PageError):
+    """No package mirror answered: an outage outside the pages."""
+
+
+def apt_origins(where: str, machine: str) -> tuple:
+    """The origins the apt of a scenario's system reads: by its image, and
+    for Ubuntu by the CPU. None for a system without apt, and for this
+    host, whose sources the runner does not touch."""
+    if where == "systemd" or where.startswith("debian:"):
+        return ("http://deb.debian.org/debian", "http://deb.debian.org/debian-security")
+    if where.startswith("ubuntu:"):
+        if machine == "x86_64":
+            return ("http://archive.ubuntu.com/ubuntu/", "http://security.ubuntu.com/ubuntu/")
+        return ("http://ports.ubuntu.com/ubuntu-ports/",)
+    return ()
+
+
+def probe_mirror(url: str, timeout: float = 5) -> bool:
+    """Whether the mirror at `url` serves its index of suites, within
+    `timeout` seconds."""
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(url.rstrip("/") + "/dists/", timeout=timeout) as answer:
+            return answer.status == 200
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+
+
+def choose_mirrors(origins: tuple, probe=probe_mirror) -> dict:
+    """For each origin, its mirrors that answer now, in their listed order.
+    An origin none of whose mirrors answers stops the run with a
+    MirrorError: no step could install a package, and a run that went on
+    would hang in the first one and read as that page's failure."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    urls = sorted({m for origin in origins for m in APT_MIRRORS[origin]})
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        answers = dict(zip(urls, pool.map(probe, urls)))
+    chosen = {}
+    for origin in origins:
+        chosen[origin] = [m for m in APT_MIRRORS[origin] if answers[m]]
+        if not chosen[origin]:
+            raise MirrorError(
+                f"no package mirror answered for {origin} (tried {', '.join(APT_MIRRORS[origin])}): "
+                "the package mirrors are unreachable from this machine; this is not a failure of the pages"
+            )
+    return chosen
+
+
+def mirror_notes(chosen: dict) -> list[str]:
+    """What the run's log says about the mirrors: one line an origin."""
+    return [f"docs-test: packages from {origin} come from {', then '.join(mirrors)}" for origin, mirrors in chosen.items()]
+
+
+def apt_mirror_setup(chosen: dict, root: str = "") -> list[str]:
+    """The shell commands that point apt at the chosen mirrors: for each
+    origin, a file listing them, and the origin's address in every source
+    file replaced by apt's `mirror+file:` method on that file, which asks
+    the mirror of the lowest priority first and the next when it fails. A
+    page's own `apt-get` commands then run as a
+    reader types them. `root` is where /etc is, for tests. Each command is
+    one line, so they also join into a Dockerfile's RUN."""
+    commands = []
+    for n, (origin, mirrors) in enumerate(chosen.items()):
+        listing = f"{root}/etc/apt/docs-test-mirrors-{n}.list"
+        # Each with its place as its priority: among mirrors without one
+        # apt's mirror method chooses for itself, not in the order written.
+        places = " ".join(f"{_quote(m)} {place}" for place, m in enumerate(mirrors, 1))
+        commands.append(f"printf '%s\\tpriority:%s\\n' {places} > {listing}")
+        # The origin with or without its last slash, as a whole word: one
+        # origin (.../debian) is the start of another (.../debian-security).
+        found = re.sub(r"[.\[\]*^$\\#]", r"\\\g<0>", origin.rstrip("/"))
+        # Each source file there is: an image has sources.list, files in
+        # sources.list.d, or both, and the runner's setup stops at a
+        # command that fails.
+        commands.append(
+            f"for f in {root}/etc/apt/sources.list {root}/etc/apt/sources.list.d/*; do "
+            f"if [ -f \"$f\" ]; then sed -i 's#{found}/\\?\\([[:space:]]\\|$\\)#mirror+file:{listing}\\1#' \"$f\"; fi; done"
+        )
+    return commands
 
 
 # script(1), which runs a terminal step, where the image lacks it: Fedora's
@@ -956,14 +1104,15 @@ DOCS_TEST_EOF
 DNF_SCRIPT = "dnf install -y -q util-linux-script\n"
 
 
-def runner_prelude(scenario: Scenario, steps: list[Block] | tuple = ()) -> str:
+def runner_prelude(scenario: Scenario, steps: list[Block] | tuple = (), mirrors: dict | None = None) -> str:
     """The runner's own setup inside a scenario's container: apt retries each
-    download, with apt's own growing delay between tries, and a dnf system
-    whose steps hold a terminal step gets script(1). Nothing on a host."""
+    download, with apt's own growing delay between tries, gives up one that
+    stalls, and reads the mirrors chosen for this run; a dnf system whose
+    steps hold a terminal step gets script(1). Nothing on a host."""
     if scenario.where == "host":
         return ""
     if "apt" in scenario.tags:
-        return APT_RETRIES
+        return APT_RETRIES + "".join(c + "\n" for c in apt_mirror_setup(mirrors or {}))
     if "dnf" in scenario.tags and any(b.terminal is not None for b in steps):
         return DNF_SCRIPT
     return ""
@@ -1234,6 +1383,16 @@ def report(steps: list[Block], outdir: str) -> int:
 
 
 def run(scenario: Scenario, binary: str | None, keep: str | None) -> int:
+    # First, before anything is fetched or started: with no package mirror
+    # the run could only hang in its first step. A system without apt has no
+    # origin (apt_origins), so nothing is asked for it.
+    try:
+        mirrors = choose_mirrors(apt_origins(scenario.where, platform.machine()), probe_mirror)
+    except MirrorError as e:
+        print(f"docs-test: {scenario.name}: {e}", file=sys.stderr)
+        return 3
+    for note in mirror_notes(mirrors):
+        print(note, flush=True)
     blocks: list[Block] = []
     for p in scenario.pages:
         blocks += page_blocks(p)
@@ -1248,7 +1407,7 @@ def run(scenario: Scenario, binary: str | None, keep: str | None) -> int:
     missing = release_pin_problems(release_versions(steps, sets), pins)
     if missing:
         raise PageError("; ".join(missing))
-    prelude = runner_prelude(scenario, steps)
+    prelude = runner_prelude(scenario, steps, mirrors)
     if scenario.binary:
         if not binary:
             print(f"docs-test: {scenario.name} needs --binary", file=sys.stderr)
@@ -1286,7 +1445,7 @@ def run(scenario: Scenario, binary: str | None, keep: str | None) -> int:
             except subprocess.TimeoutExpired:
                 print(f"docs-test: {scenario.name} ran past {scenario.timeout} s")
         else:
-            _run_in_container(scenario, binary, work, outdir)
+            _run_in_container(scenario, binary, work, outdir, mirrors)
         passed = report(steps, outdir)
         if keep:
             shutil.copytree(work, keep, dirs_exist_ok=True)
@@ -1298,11 +1457,11 @@ def run(scenario: Scenario, binary: str | None, keep: str | None) -> int:
         shutil.rmtree(work, ignore_errors=True)
 
 
-def _run_in_container(scenario: Scenario, binary: str | None, work: str, outdir: str) -> None:
+def _run_in_container(scenario: Scenario, binary: str | None, work: str, outdir: str, mirrors: dict | None = None) -> None:
     name = f"docs-test-{scenario.name}-{os.getpid()}"
     if scenario.where == "systemd":
         pull_with_retry("debian:trixie-slim")
-        _docker("build", "-q", "-t", SYSTEMD_IMAGE, "-", input=SYSTEMD_DOCKERFILE.encode(), stdout=subprocess.DEVNULL)
+        _docker("build", "-q", "-t", SYSTEMD_IMAGE, "-", input=systemd_dockerfile(mirrors or {}).encode(), stdout=subprocess.DEVNULL)
         start = ["run", "-d", "--name", name, *SYSTEMD_RUN, *scenario.docker, SYSTEMD_IMAGE]
     else:
         start = ["run", "-d", "--name", name, *scenario.docker, pull_with_retry(scenario.where), "sleep", "infinity"]

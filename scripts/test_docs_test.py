@@ -848,7 +848,7 @@ class Images(unittest.TestCase):
                 dt.pinned_image(s.where)
 
     def test_the_systemd_image_builds_from_a_pinned_digest(self):
-        self.assertIn(f"FROM {dt.pinned_image('debian:trixie-slim')}\n", dt.SYSTEMD_DOCKERFILE)
+        self.assertIn(f"FROM {dt.pinned_image('debian:trixie-slim')}\n", dt.systemd_dockerfile({}))
 
     def test_the_images_a_page_builds_from_are_named(self):
         blocks = dt.parse("Save it:\n\n<!-- docs-test: file Dockerfile -->\n```dockerfile\nFROM debian:trixie-slim AS download\nRUN x\nFROM download AS check\nFROM debian:trixie-slim\n```\n", "p.md")
@@ -890,7 +890,7 @@ class Prelude(unittest.TestCase):
         return dt.Scenario("x", where, frozenset(tags), ("install.md",), binary=False)
 
     def test_an_apt_scenario_in_a_container_retries_apt_downloads(self):
-        self.assertIn('Acquire::Retries "10";', dt.runner_prelude(self.scenario("debian:trixie-slim", {"apt"})))
+        self.assertIn('Acquire::Retries "3";', dt.runner_prelude(self.scenario("debian:trixie-slim", {"apt"})))
 
     def test_a_host_scenario_changes_nothing_on_the_host(self):
         self.assertEqual(dt.runner_prelude(self.scenario("host", {"docker"})), "")
@@ -1221,6 +1221,387 @@ class TerminalRules(unittest.TestCase):
     def test_a_host_scenario_with_a_terminal_step_installs_nothing(self):
         steps = dt.parse(TERMINAL_PAGE, "p.md")
         self.assertEqual(dt.runner_prelude(self.scenario("host", {"dnf"}), steps), "")
+
+
+
+UBUNTU = "http://archive.ubuntu.com/ubuntu/"
+UBUNTU_SECURITY = "http://security.ubuntu.com/ubuntu/"
+UBUNTU_PORTS = "http://ports.ubuntu.com/ubuntu-ports/"
+DEBIAN = "http://deb.debian.org/debian"
+DEBIAN_SECURITY = "http://deb.debian.org/debian-security"
+
+
+class Stop(Exception):
+    """Raised by a test's stand-in to end a run at the point under test."""
+
+
+class PackageMirrors(unittest.TestCase):
+    """A scenario's container must not depend on one outside host for its
+    packages: the runner gives apt a list of mirrors that answer now, and
+    says so when none does. On 2026-11-10 archive.ubuntu.com and
+    security.ubuntu.com did not answer on port 80, `apt-get update` in the
+    release-ubuntu scenario hung for the scenario's 900 s, twice, and the
+    failure read as the install page's."""
+
+    def scenario(self, where, tags=("apt",)):
+        return dt.Scenario("x", where, frozenset(tags), ("install.md",), binary=False)
+
+    # Success.
+
+    def test_ubuntu_on_x86_64_reads_the_archive_and_the_security_hosts(self):
+        self.assertEqual(dt.apt_origins("ubuntu:24.04", "x86_64"), (UBUNTU, UBUNTU_SECURITY))
+
+    def test_debian_and_the_systemd_image_read_debian_and_its_security_archive(self):
+        self.assertEqual(dt.apt_origins("debian:trixie-slim", "x86_64"), (DEBIAN, DEBIAN_SECURITY))
+        self.assertEqual(dt.apt_origins("systemd", "aarch64"), (DEBIAN, DEBIAN_SECURITY))
+
+    def test_the_mirror_githubs_runners_use_is_asked_first_for_the_ubuntu_archive(self):
+        self.assertEqual(dt.APT_MIRRORS[UBUNTU][:2], ("http://azure.archive.ubuntu.com/ubuntu/", UBUNTU))
+
+    def test_the_mirrors_that_answer_are_kept_in_their_listed_order(self):
+        chosen = dt.choose_mirrors((UBUNTU,), lambda url: True)
+        self.assertEqual(chosen, {UBUNTU: list(dt.APT_MIRRORS[UBUNTU])})
+
+    def test_the_setup_writes_one_list_of_mirrors_for_each_origin(self):
+        setup = dt.apt_mirror_setup({DEBIAN: ["http://a.example.com/debian"], DEBIAN_SECURITY: ["http://b.example.com/debian-security"]})
+        written = [c.rsplit(" > ", 1) for c in setup if c.startswith("printf ")]
+        self.assertEqual([where for _, where in written], ["/etc/apt/docs-test-mirrors-0.list", "/etc/apt/docs-test-mirrors-1.list"])
+        self.assertIn("'http://a.example.com/debian'", written[0][0])
+        self.assertIn("'http://b.example.com/debian-security'", written[1][0])
+
+    def rewritten(self, chosen, name, text):
+        """The file `name` under /etc/apt after the setup ran on a copy of it."""
+        root = tempfile.mkdtemp()
+        try:
+            path = os.path.join(root, "etc/apt", name)
+            os.makedirs(os.path.dirname(path))
+            os.makedirs(os.path.join(root, "etc/apt/sources.list.d"), exist_ok=True)
+            os.makedirs(os.path.join(root, "etc/apt/apt.conf.d"), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+            script = "set -e\n" + "\n".join(dt.apt_mirror_setup(chosen, root=root)) + "\n"
+            done = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            with open(path, encoding="utf-8") as f:
+                return f.read()
+        finally:
+            shutil.rmtree(root)
+
+    def listed(self, mirrors):
+        """The list of mirrors the setup writes for one origin, as apt reads it."""
+        root = tempfile.mkdtemp()
+        try:
+            os.makedirs(os.path.join(root, "etc/apt/sources.list.d"))
+            script = "set -e\n" + "\n".join(dt.apt_mirror_setup({DEBIAN: mirrors}, root=root)) + "\n"
+            # sh, not bash: the same commands are a Dockerfile's RUN.
+            done = subprocess.run(["sh", "-c", script], capture_output=True, text=True, timeout=30)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            with open(os.path.join(root, "etc/apt/docs-test-mirrors-0.list"), encoding="utf-8") as f:
+                return f.read()
+        finally:
+            shutil.rmtree(root)
+
+    def test_the_list_gives_each_mirror_its_place_as_a_priority(self):
+        # apt's mirror method does not read a list in the order written: of
+        # two mirrors with no priority it asked the second for every file
+        # (measured on 2026-11-10 with the second one unreachable; the
+        # update did not end in 80 s). A lower priority is asked first.
+        self.assertEqual(
+            self.listed(["http://a.example.com/debian", "http://b.example.com/debian"]),
+            "http://a.example.com/debian\tpriority:1\nhttp://b.example.com/debian\tpriority:2\n",
+        )
+
+    def test_a_deb822_source_is_pointed_at_the_list_of_mirrors(self):
+        after = self.rewritten(
+            {UBUNTU_PORTS: ["http://a.example.com/ubuntu-ports/"]},
+            "sources.list.d/ubuntu.sources",
+            "Types: deb\nURIs: http://ports.ubuntu.com/ubuntu-ports/\nSuites: noble\n",
+        )
+        self.assertIn("URIs: mirror+file:", after)
+        self.assertIn("/etc/apt/docs-test-mirrors-0.list\nSuites: noble\n", after)
+
+    def test_the_run_says_which_mirror_each_origin_gets(self):
+        notes = dt.mirror_notes({UBUNTU: ["http://a.example.com/ubuntu/", "http://b.example.com/ubuntu/"]})
+        self.assertEqual(
+            notes,
+            ["docs-test: packages from " + UBUNTU + " come from http://a.example.com/ubuntu/, then http://b.example.com/ubuntu/"],
+        )
+
+    def test_a_run_names_the_mirrors_it_chose_before_it_reads_a_page(self):
+        (scenario,) = [s for s in dt.SCENARIOS if s.name == "release-ubuntu"]
+        dead = {UBUNTU, UBUNTU_SECURITY}
+        said = io.StringIO()
+        with unittest.mock.patch.object(dt, "probe_mirror", lambda url, timeout=5: url not in dead), \
+                unittest.mock.patch.object(dt.platform, "machine", lambda: "x86_64"), \
+                unittest.mock.patch.object(dt, "page_blocks", side_effect=Stop), \
+                contextlib.redirect_stdout(said), self.assertRaises(Stop):
+            dt.run(scenario, None, None)
+        azure, kernel, princeton = dt.APT_MIRRORS[UBUNTU_SECURITY][1:]
+        self.assertEqual(
+            said.getvalue().splitlines(),
+            [
+                f"docs-test: packages from {UBUNTU} come from {azure}, then {kernel}, then {princeton}",
+                f"docs-test: packages from {UBUNTU_SECURITY} come from {azure}, then {kernel}, then {princeton}",
+            ],
+            "the two hosts that did not answer on 2026-11-10 are in neither list",
+        )
+
+    def started(self, where, **patches):
+        """What a run of an apt scenario with no steps says, up to the
+        point where a patched function raises Stop. Only the Debian origin
+        itself does not answer."""
+        scenario = dt.Scenario("x", where, frozenset({"apt"}), (), binary=False)
+        said = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(unittest.mock.patch.object(dt, "probe_mirror", lambda url, timeout=5: url != DEBIAN))
+            for name, replacement in patches.items():
+                stack.enter_context(unittest.mock.patch.object(dt, name, replacement))
+            stack.enter_context(contextlib.redirect_stdout(said))
+            stack.enter_context(self.assertRaises(Stop))
+            dt.run(scenario, None, None)
+        return said.getvalue()
+
+    def test_a_run_gives_the_chosen_mirrors_to_the_containers_setup(self):
+        preludes = []
+
+        def script(steps, prelude, sets=None):
+            preludes.append(prelude)
+            raise Stop
+
+        self.started("debian:trixie-slim", script=script)
+        (prelude,) = preludes
+        self.assertIn("printf '%s\\tpriority:%s\\n' 'http://ftp.us.debian.org/debian' 1 'http://ftp.debian.org/debian' 2 > /etc/apt/docs-test-mirrors-0.list\n", prelude)
+
+    def test_a_systemd_run_builds_its_image_through_the_chosen_mirrors(self):
+        dockerfiles = []
+
+        def docker(*args, **options):
+            if args[0] == "build":
+                dockerfiles.append(options["input"].decode())
+                raise Stop
+            raise AssertionError(f"docker {args[0]} before the image is built")
+
+        self.started("systemd", _docker=docker, pull_with_retry=lambda name: name)
+        (dockerfile,) = dockerfiles
+        self.assertIn("RUN printf '%s\\tpriority:%s\\n' 'http://ftp.us.debian.org/debian' 1 'http://ftp.debian.org/debian' 2 > /etc/apt/docs-test-mirrors-0.list", dockerfile)
+
+    def test_an_apt_container_gets_the_mirror_setup_before_the_pages(self):
+        prelude = dt.runner_prelude(self.scenario("debian:trixie-slim"), (), {DEBIAN: ["http://a.example.com/debian"]})
+        self.assertIn("docs-test-mirrors-0.list", prelude)
+        self.assertIn('Acquire::Retries "3";', prelude)
+
+    def test_the_systemd_image_is_built_through_the_mirrors_too(self):
+        dockerfile = dt.systemd_dockerfile({DEBIAN: ["http://a.example.com/debian"]})
+        self.assertLess(
+            dockerfile.index("docs-test-mirrors-0.list"),
+            dockerfile.index("apt-get update"),
+            "the mirrors are set before the image's first download",
+        )
+
+    def serve(self, status):
+        """A local HTTP server that answers every request with `status`;
+        returns its base URL and the function that stops it."""
+        import http.server
+        import threading
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                self.send_response(status)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        return f"http://127.0.0.1:{httpd.server_address[1]}/debian"
+
+    def test_a_mirror_that_serves_its_index_answers(self):
+        self.assertTrue(dt.probe_mirror(self.serve(200)))
+
+    # Failure.
+
+    def test_a_mirror_that_does_not_answer_is_left_out(self):
+        dead = dt.APT_MIRRORS[UBUNTU][0]
+        chosen = dt.choose_mirrors((UBUNTU,), lambda url: url != dead)
+        self.assertEqual(chosen[UBUNTU], list(dt.APT_MIRRORS[UBUNTU][1:]))
+
+    def test_no_mirror_for_an_origin_is_an_unreachable_mirror_not_a_page_failure(self):
+        with self.assertRaises(dt.MirrorError) as raised:
+            dt.choose_mirrors((UBUNTU, UBUNTU_SECURITY), lambda url: False)
+        said = str(raised.exception)
+        self.assertIn("no package mirror answered for " + UBUNTU, said)
+        self.assertIn("the package mirrors are unreachable from this machine", said)
+        self.assertIn("not a failure of the pages", said)
+        for mirror in dt.APT_MIRRORS[UBUNTU]:
+            self.assertIn(mirror, said, "each mirror tried is named")
+
+    def test_one_origin_without_a_mirror_fails_even_when_another_has_one(self):
+        with self.assertRaisesRegex(dt.MirrorError, "no package mirror answered for " + UBUNTU_SECURITY):
+            dt.choose_mirrors((UBUNTU, UBUNTU_SECURITY), lambda url: url == UBUNTU)
+
+    def test_a_mirror_that_answers_404_does_not_answer(self):
+        self.assertFalse(dt.probe_mirror(self.serve(404)))
+
+    def test_a_closed_port_does_not_answer(self):
+        import socket
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        self.assertFalse(dt.probe_mirror(f"http://127.0.0.1:{port}/debian"))
+
+    def test_a_mirror_that_accepts_and_sends_nothing_is_given_up(self):
+        import socket
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            s.listen(1)
+            started = time.monotonic()
+            self.assertFalse(dt.probe_mirror(f"http://127.0.0.1:{s.getsockname()[1]}/debian", timeout=1))
+            self.assertLess(time.monotonic() - started, 5, "the wait is the timeout, not the scenario's 900 s")
+
+    def test_a_run_with_no_mirror_ends_at_once_and_says_the_mirrors_are_unreachable(self):
+        (scenario,) = [s for s in dt.SCENARIOS if s.name == "release-ubuntu"]
+        said = io.StringIO()
+        with unittest.mock.patch.object(dt, "probe_mirror", lambda url, timeout=5: False), \
+                unittest.mock.patch.object(dt, "_docker", side_effect=AssertionError("no container is started")), \
+                unittest.mock.patch.object(dt, "released", side_effect=AssertionError("nothing else is asked")), \
+                contextlib.redirect_stdout(said), contextlib.redirect_stderr(said):
+            code = dt.run(scenario, None, None)
+        self.assertEqual(code, 3, "its own exit code")
+        self.assertIn("docs-test: release-ubuntu: no package mirror answered", said.getvalue())
+
+    def test_apt_gives_up_a_download_that_stalls(self):
+        # Without a timeout apt waits on a mirror that accepts a connection
+        # and sends nothing, and its retries never start. Both numbers are
+        # small because apt spends them on every file before it asks the
+        # next mirror.
+        prelude = dt.runner_prelude(self.scenario("ubuntu:24.04"), (), {})
+        self.assertIn('Acquire::http::Timeout "10";', prelude)
+        self.assertIn('Acquire::https::Timeout "10";', prelude)
+        self.assertIn('Acquire::Retries "3";', prelude)
+
+    def test_the_systemd_image_is_built_with_the_same_two_limits(self):
+        dockerfile = dt.systemd_dockerfile({})
+        for command in ("apt-get update", "apt-get install"):
+            self.assertIn(f"{command} -qq -o Acquire::Retries=3 -o Acquire::http::Timeout=10 ", dockerfile.replace("install -y", "install"))
+
+    # Edge.
+
+    def test_ubuntu_on_arm_reads_the_ports_host(self):
+        self.assertEqual(dt.apt_origins("ubuntu:24.04", "aarch64"), (UBUNTU_PORTS,))
+
+    def test_fedora_and_the_host_have_no_apt_origin(self):
+        self.assertEqual(dt.apt_origins("fedora:44", "x86_64"), ())
+        self.assertEqual(dt.apt_origins("host", "x86_64"), ())
+
+    def test_every_origin_is_one_of_its_own_mirrors_and_has_another(self):
+        for origin, mirrors in dt.APT_MIRRORS.items():
+            self.assertIn(origin, mirrors, origin)
+            self.assertGreaterEqual(len(set(mirrors)), 2, f"{origin} depends on one host")
+
+    def test_the_debian_origin_does_not_take_the_security_archives_line(self):
+        after = self.rewritten(
+            {DEBIAN: ["http://a.example.com/debian"]},
+            "sources.list.d/debian.sources",
+            "URIs: http://deb.debian.org/debian\nSuites: trixie\n\nURIs: http://deb.debian.org/debian-security\nSuites: trixie-security\n",
+        )
+        self.assertIn("URIs: http://deb.debian.org/debian-security\n", after, "one origin is a prefix of the other")
+        self.assertEqual(after.count("mirror+file:"), 1)
+
+    def test_the_setup_ends_0_as_the_runner_runs_it_on_an_image_with_no_sources_list(self):
+        # debian:trixie-slim has /etc/apt/sources.list.d/debian.sources and
+        # no /etc/apt/sources.list. The runner's setup runs under
+        # `set -eo pipefail` (see script), where one failing command ends
+        # the run before the first page.
+        root = tempfile.mkdtemp()
+        try:
+            source = os.path.join(root, "etc/apt/sources.list.d/debian.sources")
+            os.makedirs(os.path.dirname(source))
+            with open(source, "w", encoding="utf-8") as f:
+                f.write("URIs: http://deb.debian.org/debian\nSuites: trixie\n")
+            setup = "".join(c + "\n" for c in dt.apt_mirror_setup({DEBIAN: ["http://a.example.com/debian"]}, root=root))
+            done = subprocess.run(["bash", "-c", "set -eo pipefail\n" + setup + "echo reached\n"], capture_output=True, text=True, timeout=30)
+            self.assertEqual((done.returncode, done.stdout, done.stderr), (0, "reached\n", ""))
+            with open(source, encoding="utf-8") as f:
+                self.assertEqual(f.read(), f"URIs: mirror+file:{root}/etc/apt/docs-test-mirrors-0.list\nSuites: trixie\n")
+        finally:
+            shutil.rmtree(root)
+
+    def test_the_setup_does_not_rewrite_its_own_list_of_mirrors(self):
+        # The origin is one of its own mirrors, so its address is in the list.
+        self.assertEqual(self.listed(["http://deb.debian.org/debian"]), "http://deb.debian.org/debian\tpriority:1\n")
+
+    def test_the_security_archive_is_pointed_at_its_own_list(self):
+        after = self.rewritten(
+            {DEBIAN: ["http://a.example.com/debian"], DEBIAN_SECURITY: ["http://b.example.com/debian-security"]},
+            "sources.list.d/debian.sources",
+            "URIs: http://deb.debian.org/debian\nSuites: trixie\n\nURIs: http://deb.debian.org/debian-security\nSuites: trixie-security\n",
+        )
+        self.assertRegex(after, r"^URIs: mirror\+file:\S+-0\.list\nSuites: trixie\n\nURIs: mirror\+file:\S+-1\.list\nSuites: trixie-security\n$")
+
+    def test_a_one_line_source_is_pointed_at_the_list_of_mirrors(self):
+        after = self.rewritten(
+            {UBUNTU: ["http://a.example.com/ubuntu/"]},
+            "sources.list",
+            "deb http://archive.ubuntu.com/ubuntu/ jammy main restricted\n",
+        )
+        self.assertRegex(after, r"^deb mirror\+file:\S+/etc/apt/docs-test-mirrors-0\.list jammy main restricted\n$")
+
+    def test_a_source_on_another_host_is_left_as_it_is(self):
+        text = "deb [signed-by=/usr/share/keyrings/x.gpg] https://cli.github.com/packages stable main\n"
+        self.assertEqual(self.rewritten({UBUNTU: ["http://a.example.com/ubuntu/"]}, "sources.list.d/github-cli.list", text), text)
+
+    def test_an_origin_written_without_its_last_slash_is_found(self):
+        after = self.rewritten(
+            {UBUNTU: ["http://a.example.com/ubuntu/"]},
+            "sources.list",
+            "deb http://archive.ubuntu.com/ubuntu jammy main\n",
+        )
+        self.assertIn("mirror+file:", after)
+
+    def test_a_host_scenario_gets_no_mirror_setup(self):
+        self.assertEqual(dt.runner_prelude(self.scenario("host", ("docker",)), (), {DEBIAN: ["http://a.example.com/debian"]}), "")
+
+    def test_a_run_on_a_system_without_apt_asks_no_mirror(self):
+        for where, tags in (("fedora:44", {"dnf"}), ("host", {"docker"})):
+            scenario = dt.Scenario("x", where, frozenset(tags), (), binary=False)
+            asked = []
+            said = io.StringIO()
+            with unittest.mock.patch.object(dt, "probe_mirror", lambda url, timeout=5: asked.append(url)), \
+                    unittest.mock.patch.object(dt, "script", side_effect=Stop), \
+                    contextlib.redirect_stdout(said), self.assertRaises(Stop):
+                dt.run(scenario, None, None)
+            self.assertEqual((asked, said.getvalue()), ([], ""), where)
+
+    def test_a_dnf_scenario_gets_no_apt_setup(self):
+        self.assertEqual(dt.runner_prelude(self.scenario("fedora:44", ("dnf",)), (), {}), "")
+
+    def test_the_probe_asks_for_the_mirrors_index_of_suites(self):
+        asked = []
+        import http.server
+        import threading
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                asked.append(self.path)
+                self.send_response(200)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        dt.probe_mirror(base + "/debian")
+        dt.probe_mirror(base + "/ubuntu/")
+        self.assertEqual(asked, ["/debian/dists/", "/ubuntu/dists/"], "one slash, with or without the mirror's own")
 
 
 if __name__ == "__main__":
