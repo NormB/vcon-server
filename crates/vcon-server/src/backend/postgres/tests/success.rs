@@ -264,7 +264,9 @@ mod live {
                 .contains(&format!("connected to PostgreSQL {}.", live::major()))
                 && refused.0.contains("as vcon_app over TLS")
                 && refused.0.contains("preview")
-                && refused.0.contains("catalog.backend = \"local\""),
+                && refused
+                    .0
+                    .contains("remove the [catalog] and [catalog.postgres] tables to serve"),
             "names what it reached and what to do: {refused}"
         );
         assert!(!refused.0.contains(&live::password()), "never the password");
