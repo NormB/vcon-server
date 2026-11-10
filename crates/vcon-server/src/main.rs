@@ -44,8 +44,8 @@ enum Command {
         config: PathBuf,
     },
     /// Shows a running server's vCons in the terminal, read over its HTTP
-    /// API with the one key its client file names. Only in a build with
-    /// the cargo feature tui.
+    /// API with the one key its client file names. In every build but one
+    /// made without the default features.
     Tui {
         /// The client file: the server's URL, the key file and the CA.
         #[arg(long)]

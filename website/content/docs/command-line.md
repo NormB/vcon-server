@@ -216,8 +216,10 @@ running server over its HTTP API: the list, and each vCon's uuid, version
 and times, never its content. Like `mcp` it reads a client file (`url`, the
 server's address; `key_file`; and the optional `ca`) instead of the server's
 configuration, opens no data directory and no master key, and locks its
-memory. It is in a build with the cargo feature `tui` only; another build
-exits with code 1 and `this build has no terminal UI`. It exits with code 0
+memory. The release binaries, `cargo install` and a build from source carry
+it (the cargo feature `tui`, on by default); a build made with
+`--no-default-features` exits with code 1 and
+`this build has no terminal UI`. It exits with code 0
 when the user quits, and code 1 when the client file, the key file or the
 terminal cannot be used. See [the terminal UI](@/docs/tui.md).
 

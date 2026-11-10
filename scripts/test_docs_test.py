@@ -10,9 +10,13 @@ Run: python3 -I scripts/test_docs_test.py
 import os
 import shutil
 import tempfile
+import time
 import subprocess
 import sys
+import contextlib
+import io
 import unittest
+import unittest.mock
 
 # No __pycache__ beside the scripts: nothing ignores it.
 sys.dont_write_bytecode = True
@@ -893,6 +897,330 @@ class Prelude(unittest.TestCase):
 
     def test_a_dnf_scenario_gets_no_apt_setting(self):
         self.assertEqual(dt.runner_prelude(self.scenario("fedora:44", {"dnf"})), "")
+
+
+TERMINAL_PAGE = """<!-- docs-test: terminal READY -->
+```sh
+vcon-server tui --config tui.toml
+```
+
+```text
+a | b | connected
+```
+"""
+
+
+class Terminal(unittest.TestCase):
+    """A step the page runs in a terminal: a full-screen command, which the
+    runner starts in a pseudo-terminal, ends with q, and whose screen it
+    compares with the page."""
+
+    # Success.
+
+    def test_the_marker_names_the_text_that_says_the_screen_is_ready(self):
+        (block,) = dt.parse(TERMINAL_PAGE, "p.md")
+        self.assertEqual(block.terminal, "READY")
+
+    # Failure.
+
+    def test_a_terminal_marker_without_its_text_is_refused(self):
+        with self.assertRaisesRegex(dt.PageError, "p.md:1: `terminal` needs the text"):
+            dt.parse("<!-- docs-test: terminal -->\n```sh\ntop\n```\n", "p.md")
+
+
+    def test_a_ready_text_of_two_words_is_refused(self):
+        # The runner looks for the text in what the command writes, where a
+        # space the screen already held is a cursor movement, not a space.
+        with self.assertRaisesRegex(dt.PageError, "p.md:1: `terminal` takes one word"):
+            dt.parse("<!-- docs-test: terminal two words -->\n```sh\ntop\n```\n", "p.md")
+
+
+    def test_a_terminal_step_cannot_also_run_in_the_background(self):
+        with self.assertRaisesRegex(dt.PageError, "p.md:1: a `terminal` step cannot be a `background` step"):
+            dt.parse("<!-- docs-test: terminal READY; background serving -->\n```sh\ntop\n```\n", "p.md")
+
+
+    def step(self, page=TERMINAL_PAGE):
+        return dt.script(dt.parse(page, "p.md"), "")
+
+    def test_a_terminal_step_runs_in_a_pseudo_terminal_of_80_by_24(self):
+        script = self.step()
+        self.assertIn("script -qefc", script, "util-linux script gives the command a terminal")
+        self.assertIn("stty rows 24 cols 80", script, "the size the page's screen was taken at")
+
+
+    def run_steps(self, page, env=None):
+        """Runs the page's script with bash and returns each step's exit
+        record and output."""
+        work = tempfile.mkdtemp()
+        out = os.path.join(work, "out")
+        os.mkdir(out)
+        try:
+            with open(os.path.join(work, "run.sh"), "w", encoding="utf-8") as f:
+                f.write(self.step(page))
+            env = dict(os.environ, DOCS_TEST_OUT=out, DOCS_TEST_WORK=work, **(env or {}))
+            subprocess.run(["bash", os.path.join(work, "run.sh")], env=env, check=False, timeout=120)
+            def read(name):
+                path = os.path.join(out, name)
+                if not os.path.exists(path):
+                    return None
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    return f.read()
+            n = len(dt.parse(page, "p.md"))
+            return [((read(f"{i}.rc") or "").strip() or None, read(f"{i}.out")) for i in range(n)]
+        finally:
+            shutil.rmtree(work)
+
+    # A full-screen command in bash: it draws on the alternate screen,
+    # waits for one key without echo, and ends 0 on q, 3 on anything else.
+    FULL_SCREEN = (
+        "printf '\\033[?1049h\\033[1;1Ha | b | connected READY'\n"
+        "stty -echo -icanon\n"
+        "key=$(dd bs=1 count=1 2>/dev/null)\n"
+        "printf '\\033[?1049l'\n"
+        "[ \"$key\" = q ] || exit 3\n"
+    )
+
+    def test_q_is_typed_once_the_ready_text_is_written_and_the_command_ends_0(self):
+        page = "<!-- docs-test: terminal READY -->\n```sh\n" + self.FULL_SCREEN + "```\n"
+        ((rc, out),) = self.run_steps(page)
+        self.assertEqual(rc, "0", f"the command read q and ended: {out!r}")
+
+
+    def test_a_command_that_never_writes_the_ready_text_is_recorded_as_never(self):
+        page = "<!-- docs-test: terminal NEVER-WRITTEN -->\n```sh\n" + self.FULL_SCREEN + "```\n"
+        with unittest.mock.patch.object(dt, "READY_SECONDS", 1):
+            ((rc, _),) = self.run_steps(page)
+        self.assertEqual(rc, "never")
+
+
+    def terminal_page(self, code, ready="READY", more=""):
+        return f"<!-- docs-test: terminal {ready} -->\n```sh\n{code}```\n{more}"
+
+    def test_what_the_command_wrote_is_the_steps_output(self):
+        ((_, out),) = self.run_steps(self.terminal_page(self.FULL_SCREEN))
+        self.assertIn("a | b | connected READY", out)
+
+    def test_the_step_after_a_terminal_step_runs(self):
+        rcs = [rc for rc, _ in self.run_steps(self.terminal_page(self.FULL_SCREEN, more="\n```sh\necho after\n```\n"))]
+        self.assertEqual(rcs, ["0", "0"])
+
+    def test_a_command_that_ends_before_its_screen_is_ready_is_not_waited_for(self):
+        started = time.monotonic()
+        ((rc, _),) = self.run_steps(self.terminal_page("exit 1\n"))
+        self.assertEqual(rc, "never")
+        self.assertLess(time.monotonic() - started, 20, "the wait for the ready text ended with the command")
+
+    def test_a_command_that_ends_1_after_its_screen_is_recorded_and_stops_the_run(self):
+        code = "printf READY\nstty -echo -icanon\ndd bs=1 count=1 >/dev/null 2>&1\nexit 1\n"
+        rcs = [rc for rc, _ in self.run_steps(self.terminal_page(code, more="\n```sh\necho after\n```\n"))]
+        self.assertEqual(rcs, ["1", None], "the exit is recorded and the next step does not run")
+
+    def test_a_failing_command_in_the_block_ends_the_block(self):
+        ((rc, out),) = self.run_steps(self.terminal_page("false\nprintf READY\n"))
+        self.assertEqual(rc, "never", f"nothing after the failure ran: {out!r}")
+
+    def test_a_command_that_does_not_end_on_q_is_ended_at_the_time_limit(self):
+        with unittest.mock.patch.object(dt, "TERMINAL_SECONDS", 2):
+            ((rc, _),) = self.run_steps(self.terminal_page("printf READY\nsleep 30\n"))
+        self.assertEqual(rc, "124", "timeout's status for a command it ended")
+
+    def test_the_terminal_is_80_columns_by_24_lines(self):
+        code = "printf 'size=%s READY' \"$(stty size | tr ' ' x)\"\nstty -echo -icanon\ndd bs=1 count=1 >/dev/null 2>&1\n"
+        ((_, out),) = self.run_steps(self.terminal_page(code))
+        self.assertIn("size=24x80", out)
+
+    def test_quotes_and_dollars_in_the_block_reach_the_command_as_written(self):
+        code = "X=inner\nprintf '%s READY' \"it's $X\"\nstty -echo -icanon\ndd bs=1 count=1 >/dev/null 2>&1\n"
+        ((_, out),) = self.run_steps(self.terminal_page(code))
+        self.assertIn("it's inner READY", out)
+
+    def test_the_block_sees_exported_variables_only(self):
+        setup = "```sh\nexport SHOWN=exported\nHIDDEN=plain\n```\n\n"
+        code = "printf '%s READY' \"[$SHOWN][${HIDDEN:-}]\"\nstty -echo -icanon\ndd bs=1 count=1 >/dev/null 2>&1\n"
+        (_, (_, out)) = self.run_steps(setup + self.terminal_page(code))
+        self.assertIn("[exported][] READY", out)
+
+    def test_a_ready_text_with_shell_characters_is_looked_for_as_written(self):
+        code = "printf '%s' 'UTC+00:00$x*'\nstty -echo -icanon\ndd bs=1 count=1 >/dev/null 2>&1\n"
+        ((rc, out),) = self.run_steps(self.terminal_page(code, ready="UTC+00:00$x*"))
+        self.assertEqual(rc, "0", out)
+
+
+class Screen(unittest.TestCase):
+    """What a terminal of 80 columns by 24 lines shows after the bytes a
+    full-screen command wrote: the text the page's screen is compared with."""
+
+    # Success.
+
+    def test_text_lands_where_the_cursor_is(self):
+        self.assertEqual(dt.screen("hello"), "hello\n")
+
+
+    def test_a_cursor_position_moves_to_its_line_and_column(self):
+        self.assertEqual(dt.screen("\x1b[2;3Hxy"), "\n  xy\n")
+
+
+    def test_colors_and_other_attributes_are_not_text(self):
+        self.assertEqual(dt.screen("\x1b[1m\x1b[32mconnected\x1b[0m"), "connected\n")
+
+
+    def test_the_screen_is_the_alternate_screen_as_the_command_left_it(self):
+        written = "$ tui\x1b[?1049h\x1b[1;1Ha | b | connected\x1b[?1049l$ "
+        self.assertEqual(dt.screen(written), "a | b | connected\n")
+
+
+    def test_clearing_the_screen_empties_it(self):
+        self.assertEqual(dt.screen("old\x1b[2J\x1b[1;5Hnew"), "    new\n")
+
+
+    # Edge.
+
+    def test_a_carriage_return_and_a_line_feed_start_the_next_line(self):
+        self.assertEqual(dt.screen("one\r\ntwo"), "one\ntwo\n")
+
+
+    def test_a_position_without_numbers_is_the_first_cell(self):
+        self.assertEqual(dt.screen("\x1b[5;5Hx\x1b[Hy"), "y\n\n\n\n    x\n")
+
+
+    def test_a_position_past_the_screen_is_its_last_cell(self):
+        shown = dt.screen("\x1b[99;999Hx").split("\n")
+        self.assertEqual(len(shown) - 1, 24, "the last line")
+        self.assertEqual(shown[23], " " * 79 + "x", "the last column")
+
+
+    def test_text_past_the_last_column_goes_on_at_the_next_line(self):
+        self.assertEqual(dt.screen("\x1b[1;79Habcd"), " " * 78 + "ab\ncd\n")
+
+
+    def test_a_line_feed_on_the_last_line_moves_every_line_up(self):
+        written = "first\r\n" + "\r\n" * 22 + "last\r\nnew"
+        shown = dt.screen(written).split("\n")
+        self.assertEqual(shown[22:24], ["last", "new"], "the screen moved up one line")
+        self.assertNotIn("first", shown, "the first line left the screen")
+
+
+    def test_erasing_to_the_end_of_the_line_keeps_what_is_before_the_cursor(self):
+        self.assertEqual(dt.screen("abcdef\r\nsecond\x1b[1;3H\x1b[K"), "ab\nsecond\n")
+
+
+    def test_a_window_title_is_not_text(self):
+        self.assertEqual(dt.screen("\x1b]0;vcon-server\x07shown"), "shown\n")
+
+
+    def test_control_characters_and_short_escapes_are_dropped(self):
+        # ESC = (keypad mode) and a bell: neither is a cell.
+        self.assertEqual(dt.screen("\x1b=a\x07b"), "ab\n")
+
+
+    def test_a_command_that_never_left_an_alternate_screen_shows_the_main_one(self):
+        self.assertEqual(dt.screen("plain output\r\n"), "plain output\n")
+
+    def test_of_two_visits_to_the_alternate_screen_the_last_is_shown(self):
+        written = "\x1b[?1049hfirst\x1b[?1049l\x1b[?1049hsecond\x1b[?1049l"
+        self.assertEqual(dt.screen(written), "second\n")
+
+    def test_a_character_of_several_bytes_is_one_cell(self):
+        self.assertEqual(dt.screen("\u2026|"), "\u2026|\n")
+
+
+
+class TerminalReport(unittest.TestCase):
+    """The verdict on a terminal step: its screen against the page's."""
+
+    WROTE = "\x1b[?1049h\x1b[1;1Ha | b | \x1b[1mconnected\x1b[0m\x1b[24;1Hq quit\x1b[?1049l"
+
+    def verdict(self, page, wrote, rc="0"):
+        """How many steps passed, and what the report printed."""
+        steps = dt.parse(page, "p.md")
+        outdir = tempfile.mkdtemp()
+        try:
+            with open(os.path.join(outdir, "0.out"), "w", encoding="utf-8") as f:
+                f.write(wrote)
+            with open(os.path.join(outdir, "0.rc"), "w", encoding="utf-8") as f:
+                f.write(rc + "\n")
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                passed = dt.report(steps, outdir)
+            return passed, printed.getvalue()
+        finally:
+            shutil.rmtree(outdir)
+
+    # Success.
+
+    def test_the_screen_is_compared_with_the_pages_text_block(self):
+        page = TERMINAL_PAGE.replace("a | b | connected\n", "a | b | connected\n\u2026\nq quit\n")
+        passed, printed = self.verdict(page, self.WROTE)
+        self.assertEqual(passed, 1, printed)
+
+
+    # Failure.
+
+    def test_a_screen_that_differs_fails_and_is_shown_as_a_screen(self):
+        passed, printed = self.verdict(TERMINAL_PAGE, self.WROTE.replace("connected", "refused"))
+        self.assertEqual(passed, 0, printed)
+        self.assertIn("line 1: the page says 'a | b | connected', it printed 'a | b | refused'", printed)
+        self.assertNotIn("\x1b", printed, "the report shows the screen, not the escape sequences")
+
+    def test_a_ready_text_never_written_is_named(self):
+        passed, printed = self.verdict(TERMINAL_PAGE, self.WROTE, rc="never")
+        self.assertEqual(passed, 0, printed)
+        self.assertIn("it never printed 'READY'", printed)
+
+
+
+class TerminalRules(unittest.TestCase):
+    """What the runner holds a page with a terminal step to, and what it
+    sets up for one."""
+
+    def scenario(self, where, tags):
+        return dt.Scenario("x", where, frozenset(tags), ("tui.md",))
+
+    # Failure.
+
+    def test_a_terminal_step_with_no_screen_after_it_is_a_problem(self):
+        blocks = dt.parse("<!-- docs-test: terminal READY -->\n```sh\ntop\n```\n", "p.md")
+        self.assertEqual(
+            dt.lint_page(blocks, [frozenset()]),
+            ["p.md:2: a terminal step with no screen shown after it"],
+        )
+
+    # Success.
+
+    def test_a_dnf_scenario_with_a_terminal_step_installs_script(self):
+        steps = dt.parse(TERMINAL_PAGE, "p.md")
+        self.assertIn(
+            "dnf install -y -q util-linux-script",
+            dt.runner_prelude(self.scenario("fedora:44", {"dnf"}), steps),
+            "Fedora's image has no script(1)",
+        )
+
+    def test_every_how_to_scenario_runs_the_terminal_ui_page(self):
+        for name in ("foreground", "foreground-fedora", "systemd"):
+            (scenario,) = [s for s in dt.SCENARIOS if s.name == name]
+            self.assertIn("tui.md", scenario.pages, name)
+
+    def test_the_terminal_ui_page_starts_the_ui_in_a_terminal_and_shows_its_screen(self):
+        steps = [b for b in dt.page_blocks("tui.md") if b.terminal is not None]
+        self.assertEqual(len(steps), 1, "one step starts the UI")
+        self.assertIn("vcon-server tui --config", steps[0].code)
+        self.assertIn("connected", steps[0].expect or "", "the screen the page shows")
+
+    # Edge.
+
+    def test_a_dnf_scenario_without_a_terminal_step_installs_nothing(self):
+        steps = dt.parse("```sh\nls\n```\n", "p.md")
+        self.assertEqual(dt.runner_prelude(self.scenario("fedora:44", {"dnf"}), steps), "")
+
+    def test_an_apt_scenario_with_a_terminal_step_installs_nothing_more(self):
+        # Debian's and Ubuntu's script(1) is in bsdutils, which every image has.
+        steps = dt.parse(TERMINAL_PAGE, "p.md")
+        self.assertEqual(dt.runner_prelude(self.scenario("debian:trixie-slim", {"apt"}), steps), dt.APT_RETRIES)
+
+    def test_a_host_scenario_with_a_terminal_step_installs_nothing(self):
+        steps = dt.parse(TERMINAL_PAGE, "p.md")
+        self.assertEqual(dt.runner_prelude(self.scenario("host", {"dnf"}), steps), "")
 
 
 if __name__ == "__main__":

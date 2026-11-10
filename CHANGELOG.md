@@ -29,6 +29,14 @@ All notable changes to this project are recorded here. The format follows
   and its browser tests run axe-core (WCAG 2.2 AA) on every view. The
   console's files are served from one list that a test holds to the
   directory and to the published package.
+- `vcon-server tui`: a terminal UI that lists the vCons of one key's tenant
+  and shows each one's uuid, version and times. It is a client of a running
+  server's HTTP API with a `read` key from a client file, so the server's
+  scopes and audit log apply; it reads only, and never a vCon's content. It
+  is in the release binaries, `cargo install` and a build from source: the
+  new cargo feature `tui` is on by default. A build made with
+  `--no-default-features` has the command and says that it has no terminal
+  UI.
 - `vcon-server migrate`, for the PostgreSQL catalog preview: it makes the
   catalog's schema as `vcon_owner`, one transaction per schema version,
   alone (it takes the advisory locks every server and command shares). A

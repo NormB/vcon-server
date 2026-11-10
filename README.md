@@ -49,8 +49,7 @@ where each item is described in full:
 - **The console:** a web page at `/console/`.
 - **The MCP server:** tools for AI agents, at `/mcp` and through
   `vcon-server mcp`.
-- **The terminal UI:** `vcon-server tui` lists a tenant's vCons, in a build
-  with the `tui` feature.
+- **The terminal UI:** `vcon-server tui` lists a tenant's vCons.
 - **Tenants and keys:** scoped bearer keys, revocation and tenant removal.
 - **Retention:** periods per tenant or server-wide, and the purge sweep.
 - **Audit logs:** one per tenant and one for administration.
@@ -106,6 +105,10 @@ those objects into Parquet files in the same bucket, are in the release
 binaries and in `cargo install`. Both need the `s3` cargo feature, which is
 on by default; `cargo build --release -p vcon-server --no-default-features`
 leaves it out.
+
+The [terminal UI](https://vcon-server.com/docs/tui/) is in the release
+binaries and in `cargo install` too: the `tui` cargo feature is on by
+default, and `--no-default-features` leaves it out as well.
 
 The `postgres` cargo feature, which is not on by default and not in the
 release binaries, adds a preview of the

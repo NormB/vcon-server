@@ -24,6 +24,13 @@ An HTML comment on the line before a block changes how it runs:
     <!-- docs-test: file <path> -->        a block (TOML, a unit) the page says
                                            to save as <path>; written there
     <!-- docs-test: always -->             run at the end, even after a failure
+    <!-- docs-test: terminal <word> -->    a full-screen command: run in a
+                                           terminal of 80 columns by 24 lines,
+                                           in a bash of its own (it sees the
+                                           exported variables only); when it
+                                           writes <word>, q is typed; the text
+                                           block after it is the screen it had
+                                           when it ended
 
 Markers combine with ";", such as `only systemd; exit 1`.
 
@@ -94,6 +101,8 @@ class Block:
     path: str | None = None
     always: bool = False
     since: str | None = None
+    # The text that says a full-screen command has drawn its screen.
+    terminal: str | None = None
     # The page's text from the last block or heading to this block: what a
     # reader sees just before it.
     prose: str = ""
@@ -131,12 +140,20 @@ def parse_marker(text: str, at: str) -> dict:
             out["path"] = rest
         elif word == "always":
             out["always"] = True
+        elif word == "terminal":
+            if not rest:
+                raise PageError(f"{at}: `terminal` needs the text that says the screen is ready")
+            if " " in rest:
+                raise PageError(f"{at}: `terminal` takes one word, as the command writes it")
+            out["terminal"] = rest
         elif word == "since":
             if not RELEASE.match(rest):
                 raise PageError(f"{at}: `since` needs a release version such as 0.3.0")
             out["since"] = rest
         else:
             raise PageError(f"{at}: unknown docs-test marker `{word}`")
+    if "terminal" in out and "background" in out:
+        raise PageError(f"{at}: a `terminal` step cannot be a `background` step")
     return out
 
 
@@ -315,6 +332,7 @@ HOWTO = (
     "backup-and-restore.md",
     "rotate-keys.md",
     "connect-mcp.md",
+    "tui.md",
     "upgrading.md",
 )
 # docs/upgrading.md installs the binary it names as NEW: the one under test.
@@ -441,6 +459,8 @@ def _step(n: int, b: Block) -> str:
             f"grep -qsF -- {ready} {out} || {{ echo never > {rc}; exit 101; }}\n"
             f"echo 0 > {rc}\n"
         )
+    if b.terminal is not None:
+        return head + _terminal_step(n, b)
     if b.exit != 0:
         return head + (
             f"set +e\n{{\n{b.code}}} > {out} 2>&1 < /dev/null\necho $? > {rc}\n"
@@ -450,6 +470,126 @@ def _step(n: int, b: Block) -> str:
         f"set -eo pipefail\n{{\n{b.code}}} > {out} 2>&1 < /dev/null\n"
         f"set +eo pipefail\necho 0 > {rc}\n"
     )
+
+
+# A terminal step may take this long, from its start to its end.
+TERMINAL_SECONDS = 120
+# How long a terminal step's ready text is waited for before q is typed.
+READY_SECONDS = 60
+
+
+def _terminal_step(n: int, b: Block) -> str:
+    """A full-screen command: run by util-linux script(1), which gives it a
+    pseudo-terminal, here of 80 columns by 24 lines. Everything the command
+    writes, escape sequences included, is the step's output. Once that holds
+    the ready text, or after READY_SECONDS without it, q is typed. The block runs in
+    a bash of its own, which sees the exported variables only."""
+    out = f'"$DOCS_TEST_OUT/{n}.out"'
+    rc = f'"$DOCS_TEST_OUT/{n}.rc"'
+    code = f'"$DOCS_TEST_OUT/{n}.sh"'
+    ended = f'"$DOCS_TEST_OUT/{n}.ended"'
+    ready = _quote(b.terminal)
+    return (
+        f"set +e\ncat > {code} <<'DOCS_TEST_EOF'\nset -eo pipefail\nstty rows 24 cols 80\n{b.code}DOCS_TEST_EOF\n"
+        f": > {out}\n"
+        "{\n"
+        f"  for _ in $(seq {READY_SECONDS * 10}); do grep -qaF -- {ready} {out} && break; [ -e {ended} ] && break; sleep 0.1; done\n"
+        "  printf q\n"
+        f"  for _ in $(seq {TERMINAL_SECONDS * 10}); do [ -e {ended} ] && break; sleep 0.1; done\n"
+        "} | {\n"
+        f'  timeout {TERMINAL_SECONDS} script -qefc "bash $DOCS_TEST_OUT/{n}.sh" /dev/null > {out} 2>&1\n'
+        f"  echo $? > {ended}\n"
+        "}\n"
+        f"grep -qaF -- {ready} {out} || {{ echo never > {rc}; exit 101; }}\n"
+        f"cp {ended} {rc}\n"
+        f'[ "$(cat {rc})" = {b.exit} ] || exit 100\n'
+    )
+
+
+# The terminal a terminal step runs in.
+COLUMNS, LINES = 80, 24
+# ESC [, an optional ?, numbers between semicolons, and the letter that
+# says what the sequence does. One this reader does not know changes nothing.
+CONTROL_SEQUENCE = re.compile(r"\x1b\[(\??)([\d;]*)([@-~])")
+# ESC ], text, and BEL or ESC \\: the window's title and the like.
+OS_COMMAND = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+
+
+class _Screen:
+    """The cells of a terminal, and its cursor."""
+
+    def __init__(self) -> None:
+        self.cells = [[" "] * COLUMNS for _ in range(LINES)]
+        self.x = self.y = 0
+
+    def put(self, ch: str) -> None:
+        if ch == "\r":
+            self.x = 0
+        elif ch == "\n":
+            self.down()
+        else:
+            if self.x == COLUMNS:
+                self.x = 0
+                self.down()
+            self.cells[self.y][self.x] = ch
+            self.x += 1
+
+    def down(self) -> None:
+        """To the next line; on the last one, every line moves up instead."""
+        if self.y == LINES - 1:
+            del self.cells[0]
+            self.cells.append([" "] * COLUMNS)
+        else:
+            self.y += 1
+
+    def text(self) -> str:
+        lines = ["".join(row).rstrip() for row in self.cells]
+        while lines and not lines[-1]:
+            lines.pop()
+        return "".join(l + "\n" for l in lines)
+
+
+def screen(written: str) -> str:
+    """The screen after a command wrote `written` to a terminal of COLUMNS
+    by LINES: its lines, without the blanks that end a line and the empty
+    lines that end the screen. For a command that used the alternate
+    screen, as a full-screen command does, it is that screen as the command
+    last left it: what its user saw before it ended."""
+    s = main = _Screen()
+    left = None
+    at = 0
+    while at < len(written):
+        m = CONTROL_SEQUENCE.match(written, at)
+        if m:
+            private, numbers, final = m.groups()
+            if final == "H" and not private:
+                # A number left out is 1.
+                at_line, at_column = ([int(n) if n else 1 for n in numbers.split(";")] + [1])[:2]
+                s.y = min(max(at_line, 1), LINES) - 1
+                s.x = min(max(at_column, 1), COLUMNS) - 1
+            elif final == "K" and numbers in ("", "0"):
+                s.cells[s.y][s.x:] = [" "] * (COLUMNS - s.x)
+            elif final == "J" and numbers == "2":
+                s.cells = _Screen().cells
+            elif private and numbers == "1049" and final == "h":
+                s = _Screen()
+            elif private and numbers == "1049" and final == "l":
+                left, s = s.text(), main
+            at = m.end()
+            continue
+        m = OS_COMMAND.match(written, at)
+        if m:
+            at = m.end()
+            continue
+        ch = written[at]
+        if ch == "\x1b":
+            # Any other escape is ESC and one character.
+            at += 2
+            continue
+        if ch in "\r\n" or ch >= " " and ch != "\x7f":
+            s.put(ch)
+        at += 1
+    return s.text() if left is None else left
 
 
 # Run before the first step of each page after the first: a reader comes
@@ -810,11 +950,22 @@ DOCS_TEST_EOF
 """
 
 
-def runner_prelude(scenario: Scenario) -> str:
+# script(1), which runs a terminal step, where the image lacks it: Fedora's
+# has no util-linux at all. On Debian and Ubuntu it is in bsdutils, which
+# every image has.
+DNF_SCRIPT = "dnf install -y -q util-linux-script\n"
+
+
+def runner_prelude(scenario: Scenario, steps: list[Block] | tuple = ()) -> str:
     """The runner's own setup inside a scenario's container: apt retries each
-    download, with apt's own growing delay between tries. Nothing on a host."""
-    if scenario.where != "host" and "apt" in scenario.tags:
+    download, with apt's own growing delay between tries, and a dnf system
+    whose steps hold a terminal step gets script(1). Nothing on a host."""
+    if scenario.where == "host":
+        return ""
+    if "apt" in scenario.tags:
         return APT_RETRIES
+    if "dnf" in scenario.tags and any(b.terminal is not None for b in steps):
+        return DNF_SCRIPT
     return ""
 
 
@@ -861,6 +1012,8 @@ def lint_page(blocks: list[Block], tag_sets: list[frozenset], host: bool = False
             joined = b.code.replace("\\\n", " ")
             if SERVER_REQUEST.search(joined):
                 problems.append(f"{b.at}: a request to the server with no output shown after it")
+        if b.terminal is not None and b.expect is None:
+            problems.append(f"{b.at}: a terminal step with no screen shown after it")
         if host and b.background is not None:
             problems.append(f"{b.at}: a background step on this host would outlive the run")
     return problems
@@ -1049,13 +1202,16 @@ def report(steps: list[Block], outdir: str) -> int:
             print(f"not run  {b.at}")
             continue
         got = open(out_path, encoding="utf-8", errors="replace").read() if os.path.exists(out_path) else ""
+        if b.terminal is not None:
+            # What the page shows is the screen, not the bytes that drew it.
+            got = screen(got)
         rc = open(rc_path).read().strip() if os.path.exists(rc_path) else None
         why = None
         if rc is None:
             why = "it stopped the run: a command in it failed"
             stopped = True
         elif rc == "never":
-            why = f"it never printed {b.background!r}"
+            why = f"it never printed {b.background or b.terminal!r}"
             stopped = True
         elif rc != str(b.exit):
             why = f"it exited {rc}, the page expects {b.exit}"
@@ -1092,7 +1248,7 @@ def run(scenario: Scenario, binary: str | None, keep: str | None) -> int:
     missing = release_pin_problems(release_versions(steps, sets), pins)
     if missing:
         raise PageError("; ".join(missing))
-    prelude = runner_prelude(scenario)
+    prelude = runner_prelude(scenario, steps)
     if scenario.binary:
         if not binary:
             print(f"docs-test: {scenario.name} needs --binary", file=sys.stderr)

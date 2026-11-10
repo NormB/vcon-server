@@ -49,8 +49,8 @@ libc = "0.2.191"
 # no compression codec: a sealed body is AES-GCM ciphertext, which does not
 # compress, and the metadata columns are small.
 parquet = { version = "=60.0.0", default-features = false }
-# The terminal UI (cargo feature tui): the widgets, and through them
-# crossterm for the terminal itself.
+# The terminal UI (cargo feature tui, on by default): the widgets, and
+# through them crossterm for the terminal itself.
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"], optional = true }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2"] }
 rmcp = { version = "3.9.0", default-features = false, features = [
@@ -85,7 +85,7 @@ vcon = { path = "../vcon", version = "0.4.1" }
 zeroize = "1.9.1"
 
 [features]
-default = ["s3"]
+default = ["s3", "tui"]
 # Objects in an S3-compatible bucket (RustFS, MinIO, AWS S3).
 s3 = ["dep:aws-config", "dep:aws-sdk-s3", "dep:aws-smithy-http-client"]
 # The store conformance suite against real services: run with the service
@@ -96,7 +96,9 @@ backend-tests = []
 # It needs S3 objects ([catalog] in configuration.md), so it turns s3 on.
 postgres = ["s3", "dep:tokio-postgres", "dep:tokio-postgres-rustls", "dep:rustls-native-certs"]
 # `vcon-server tui`: a terminal UI that reads a running server over its HTTP
-# API with one key. Off by default, so a server build does not carry it.
+# API with one key. On by default, so the release binaries, `cargo install`
+# and a build from source carry it (tests/release_features.rs holds that
+# rule); `--no-default-features` leaves it out.
 tui = ["dep:ratatui"]
 
 [dev-dependencies]

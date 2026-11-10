@@ -1,4 +1,5 @@
-//! `vcon-server tui`: a terminal UI for a running server.
+//! `vcon-server tui`: a terminal UI for a running server (cargo feature
+//! `tui`, on by default).
 //!
 //! It is a client of the server's HTTP API with one API key, as any other
 //! client is: it opens no data directory, catalog or master key, so the

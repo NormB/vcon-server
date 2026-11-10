@@ -153,17 +153,15 @@ jobs:
           done
           echo "RustFS never answered" >&2
           exit 1
-      - name: Clippy with the backend tests, and without S3
+      - name: Clippy with the backend tests, and without the default features (S3, the terminal UI)
         run: |
           cargo clippy -p vcon-server --all-targets --locked --features backend-tests -- -D warnings
           cargo clippy -p vcon-server --all-targets --locked --no-default-features -- -D warnings
-          cargo clippy -p vcon-server --all-targets --locked --features tui -- -D warnings
       - name: Backend tests
         # The serve test runs the binary, which locks all of its memory.
         run: |
           set -euo pipefail
           sudo prlimit --pid $$ --memlock=unlimited:unlimited
-          scripts/nextest.sh run -p vcon-server --locked --features tui --no-fail-fast --lib "tui::"
           scripts/nextest.sh run -p vcon-server --locked --features backend-tests --no-fail-fast --lib "backend::"
           scripts/nextest.sh run -p vcon-server --locked --features backend-tests --no-fail-fast --lib "export::"
           scripts/nextest.sh run -p vcon-server --locked --features backend-tests --no-fail-fast --lib "store::packed::"
