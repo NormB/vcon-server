@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Recording player, vcon-server console</title>
+<link rel="stylesheet" href="console.css">
+<script type="module" src="player.js"></script>
+</head>
+<body>
+<header>
+<h1>Recording player</h1>
+</header>
+<main id="main">
+<p id="playing" role="status">Waiting for the console to hand over a recording.</p>
+<audio id="audio" controls aria-labelledby="playing" hidden></audio>
+<p id="player-error" role="alert"></p>
+<p class="note">The recording was read with the key signed in to the console, and the audit log records that read as a reveal of audio. This page holds it in memory only, lets go of it when playback ends or the page closes, and makes no request of its own.</p>
+<button id="close" type="button">Close the player</button>
+</main>
+</body>
+</html>

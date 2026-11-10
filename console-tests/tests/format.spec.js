@@ -399,7 +399,7 @@ test.describe("the reveal marker", () => {
     );
   });
   test("a part the server does not know is never sent as a marker", () => {
-    for (const unknown of ["everything", "Parties", "", "all&x=1", "audio/1"]) {
+    for (const unknown of ["everything", "Parties", "", "all&x=1", "audio/1", "video"]) {
       expect(() => format.revealPath("/vcons/x", unknown), unknown).toThrow(RangeError);
     }
   });
@@ -416,6 +416,318 @@ test.describe("the reveal marker", () => {
   });
   test("the list of parts cannot be changed by the page that reads it", () => {
     expect(() => format.REVEAL_PARTS.push("everything")).toThrow(TypeError);
-    expect(format.REVEAL_PARTS).toHaveLength(6);
+    expect(format.REVEAL_PARTS).toHaveLength(7);
+  });
+});
+
+/** Bytes that start as a WAV file does: RIFF, a length, WAVE. */
+function wav(extra = 8) {
+  return Uint8Array.from([...Buffer.from("RIFF"), 36, 0, 0, 0, ...Buffer.from("WAVEfmt "), ...new Array(extra).fill(0)]);
+}
+
+/** Bytes that start as an MP3 with an ID3 tag does. */
+function mp3() {
+  return Uint8Array.from([...Buffer.from("ID3"), 4, 0, 0, 0, 0, 0, 0, 0xff, 0xfb, 0x90, 0x00]);
+}
+
+/** Bytes that start as an Ogg stream does, with `head` as its first packet. */
+function ogg(head = "\x01vorbis") {
+  const page = new Uint8Array(28 + head.length);
+  page.set(Buffer.from("OggS"), 0);
+  page.set(Buffer.from(head, "latin1"), 28);
+  return page;
+}
+
+/** An Ogg stream that holds Opus. */
+function opus() {
+  return ogg("OpusHead");
+}
+
+/** A vCon, as text, whose dialogs are these. */
+function withDialogs(...dialog) {
+  return JSON.stringify({ uuid: "0199e5c6-0d7a-7c11-8000-000000000001", parties: [], dialog });
+}
+
+/** A recording dialog that holds `bytes` inline, declared as `mediatype`. */
+function inline(bytes, mediatype = "audio/wav", encoding = "base64url") {
+  const body = Buffer.from(bytes).toString(encoding === "base64" ? "base64" : "base64url");
+  return { type: "recording", start: "2026-10-23T12:00:00Z", parties: [0], mediatype, encoding, body };
+}
+
+test.describe("recordings", () => {
+  test("bytes that start as a WAV file does are audio/wav", () => {
+    expect(format.audioSignature(wav())).toBe("audio/wav");
+  });
+  test("bytes that are markup, text or nothing are the signature of no audio", () => {
+    for (const text of ["<svg xmlns='http://www.w3.org/2000/svg'><script>1</script></svg>", "<!doctype html><html>", "{}", "hello there, this is text", "RIFF", ""]) {
+      expect(format.audioSignature(Uint8Array.from(Buffer.from(text))), text).toBeNull();
+    }
+  });
+  test("bytes that start with an ID3 tag or an MPEG audio frame are audio/mpeg", () => {
+    expect(format.audioSignature(mp3())).toBe("audio/mpeg");
+    expect(format.audioSignature(Uint8Array.from([0xff, 0xfb, 0x90, 0x00, 0, 0]))).toBe("audio/mpeg");
+    expect(format.audioSignature(Uint8Array.from([0xff, 0xf3, 0x48, 0xc4, 0, 0]))).toBe("audio/mpeg");
+  });
+  test("bytes that only look like the start of an MPEG frame are not audio", () => {
+    const notFrames = {
+      "a reserved layer": [0xff, 0xe1, 0x90, 0x00],
+      "a reserved version": [0xff, 0xea, 0x90, 0x00],
+      "a bit rate that does not exist": [0xff, 0xfb, 0xf0, 0x00],
+      "a sample rate that does not exist": [0xff, 0xfb, 0x9c, 0x00],
+      "UTF-16 text": [0xff, 0xfe, 0x3c, 0x00, 0x73, 0x00],
+      "two bytes": [0xff, 0xfb],
+    };
+    for (const [what, bytes] of Object.entries(notFrames)) {
+      expect(format.audioSignature(Uint8Array.from(bytes)), what).toBeNull();
+    }
+  });
+  test("bytes that start as an Ogg stream does are audio/ogg", () => {
+    expect(format.audioSignature(ogg())).toBe("audio/ogg");
+  });
+  test("an Ogg stream whose first packet is an Opus header is audio/opus", () => {
+    expect(format.audioSignature(opus())).toBe("audio/opus");
+  });
+  test("a dialog's inline WAV recording is decoded to its bytes and its type", () => {
+    const got = format.recording(withDialogs(inline(wav())), 0);
+    expect(got.ok).toBe(true);
+    expect(got.type).toBe("audio/wav");
+    expect(Array.from(got.bytes)).toEqual(Array.from(wav()));
+  });
+  test("a recording declared as a type the console does not play is refused, and the reason names the type", () => {
+    for (const type of ["image/svg+xml", "text/html", "video/mp4", "audio/x-wav", "audio/wave", "application/octet-stream"]) {
+      expect(format.recording(withDialogs(inline(wav(), type)), 0), type).toEqual({
+        ok: false,
+        reason:
+          `Dialog 1's recording is declared as ${type}, which the console does not play. ` +
+          "It plays audio/wav, audio/mpeg, audio/ogg and audio/opus. Download the vCon to use the recording another way.",
+      });
+    }
+  });
+  test("a recording whose bytes are not what it is declared as is refused", () => {
+    const svg = Buffer.from("<svg xmlns='http://www.w3.org/2000/svg' onload='alert(1)'/>");
+    const html = Buffer.from("<!doctype html><script>alert(1)</script>");
+    for (const [bytes, type] of [[svg, "audio/wav"], [html, "audio/mpeg"], [mp3(), "audio/wav"], [wav(), "audio/ogg"], [ogg(), "audio/mpeg"]]) {
+      expect(format.recording(withDialogs(inline(bytes, type)), 0), type).toEqual({
+        ok: false,
+        reason:
+          `Dialog 1's recording is declared as ${type}, but its bytes are not ${type}. ` +
+          "The console does not play it. Download the vCon to examine the recording.",
+      });
+    }
+  });
+  test("Opus in an Ogg stream plays when it is declared as audio/ogg or as audio/opus", () => {
+    expect(format.recording(withDialogs(inline(opus(), "audio/ogg")), 0).ok).toBe(true);
+    expect(format.recording(withDialogs(inline(opus(), "audio/opus")), 0).ok).toBe(true);
+    expect(format.recording(withDialogs(inline(ogg(), "audio/opus")), 0).ok).toBe(false);
+  });
+  test("a recording kept at a link outside the server is never played", () => {
+    const linked = { type: "recording", mediatype: "audio/wav", url: "https://media.example.com/a.wav" };
+    expect(format.recording(withDialogs(linked), 0)).toEqual({
+      ok: false,
+      reason: "Dialog 1's recording is at a link outside the server, which the console never loads.",
+    });
+  });
+  test("a dialog with nothing inside it has no recording to play", () => {
+    for (const dialog of [{ type: "recording", mediatype: "audio/wav" }, { type: "recording", mediatype: "audio/wav", encoding: "base64url", body: "" }, { type: "incomplete" }]) {
+      expect(format.recording(withDialogs(dialog), 0)).toEqual({
+        ok: false,
+        reason: "Dialog 1 has no recording inside the vCon.",
+      });
+    }
+  });
+  test("a body that is not encoded as base64url or base64 is not a recording", () => {
+    for (const encoding of ["none", "json", "hex", undefined, 7]) {
+      const dialog = { ...inline(wav()), encoding };
+      expect(format.recording(withDialogs(dialog), 0), String(encoding)).toEqual({
+        ok: false,
+        reason: "Dialog 1 holds text or data, not an encoded recording.",
+      });
+    }
+  });
+  test("a body that is not base64 cannot be decoded, and says so", () => {
+    for (const body of ["****", "UklGR", "UklG RiQA", "UklGR=iQ"]) {
+      const dialog = { ...inline(wav()), body };
+      expect(format.recording(withDialogs(dialog), 0), body).toEqual({
+        ok: false,
+        reason: "Dialog 1's recording cannot be decoded: its body is not base64. Download the vCon to examine it.",
+      });
+    }
+  });
+  test("a recording larger than the limit is refused before it is decoded, with both sizes", () => {
+    const big = inline(wav(100));
+    const size = wav(100).length;
+    expect(format.recording(withDialogs(big), 0, size - 1)).toEqual({
+      ok: false,
+      reason:
+        `Dialog 1's recording is about ${size} bytes, and the console plays at most ${size - 1}. ` +
+        "Download the vCon to hear it another way.",
+    });
+  });
+  test("a recording of exactly the limit is played, and the limit is 100 MiB", () => {
+    const size = wav(100).length;
+    expect(format.recording(withDialogs(inline(wav(100))), 0, size).ok).toBe(true);
+    expect(format.recording(withDialogs(inline(wav(100), "audio/wav", "base64")), 0, size).ok).toBe(true);
+    expect(format.AUDIO_LIMIT).toBe(104857600);
+  });
+  test("a dialog the vCon does not have has no recording", () => {
+    const text = withDialogs(inline(wav()), "not an object");
+    for (const index of [2, -1, 0.5, "0", null, undefined, Number.NaN, 1]) {
+      expect(format.recording(text, index), String(index)).toEqual({
+        ok: false,
+        reason: "The vCon has no such dialog to play.",
+      });
+    }
+  });
+  test("a vCon that cannot be read in parts has no recording the console can play", () => {
+    const sealed = JSON.stringify({ protected: "eA", ciphertext: "Y2lwaGVy", iv: "aXY", tag: "dGFn" });
+    for (const text of [sealed, "not json", "[]", "null"]) {
+      expect(format.recording(text, 0), text).toEqual({
+        ok: false,
+        reason: "This vCon cannot be read in parts, so the console cannot play from it.",
+      });
+    }
+  });
+  test("a declared type is read without its case or its parameters", () => {
+    for (const declared of ["Audio/WAV", "audio/wav; rate=8000", " audio/wav ", "AUDIO/WAV;codecs=1"]) {
+      const got = format.recording(withDialogs(inline(wav(), declared)), 0);
+      expect(got.ok, declared).toBe(true);
+      expect(got.type, declared).toBe("audio/wav");
+    }
+  });
+  test("a recording that does not say what type it is is refused", () => {
+    for (const mediatype of [undefined, null, 7, "", " ", ";", {}]) {
+      const dialog = { ...inline(wav()), mediatype };
+      expect(format.recording(withDialogs(dialog), 0), String(mediatype)).toEqual({
+        ok: false,
+        reason: "Dialog 1's recording does not say what type it is, so the console does not play it. Download the vCon to examine it.",
+      });
+    }
+  });
+  test("a dialog that names its type the older way, as mimetype, is read the same", () => {
+    const { mediatype, ...rest } = inline(mp3(), "audio/mpeg");
+    const got = format.recording(withDialogs({ ...rest, mimetype: mediatype }), 0);
+    expect(got.ok).toBe(true);
+    expect(got.type).toBe("audio/mpeg");
+    // When both are there, the current name is the one read.
+    const both = format.recording(withDialogs({ ...rest, mimetype: "audio/mpeg", mediatype: "video/mp4" }), 0);
+    expect(both.ok).toBe(false);
+  });
+  test("a long declared type is cut in the reason, and is text whatever it holds", () => {
+    const hostile = `audio/<img src=x onerror=alert(1)>${"a".repeat(200)}`;
+    const got = format.recording(withDialogs(inline(wav(), hostile)), 0);
+    expect(got.ok).toBe(false);
+    expect(got.reason).toContain(`is declared as ${hostile.slice(0, 80)}…, which the console does not play.`);
+    expect(got.reason).not.toContain("a".repeat(100));
+  });
+  test("the dialogs that hold a recording the console plays are listed by place and type", () => {
+    const text = withDialogs(inline(wav()), { type: "text", body: "hello", encoding: "none" }, inline(opus(), "audio/opus"));
+    expect(format.recordings(text)).toEqual([
+      { index: 0, type: "audio/wav" },
+      { index: 2, type: "audio/opus" },
+    ]);
+  });
+  test("a vCon that cannot be read, or has no dialog list, lists no recording", () => {
+    const sealed = JSON.stringify({ protected: "eA", ciphertext: "Y2lwaGVy", iv: "aXY", tag: "dGFn" });
+    for (const text of [sealed, "not json", "{}", JSON.stringify({ dialog: "x" }), JSON.stringify({ dialog: [null, 7, "x", []] })]) {
+      expect(format.recordings(text), text).toEqual([]);
+    }
+  });
+  test("a dialog the console would refuse to play is not listed as a recording", () => {
+    const text = withDialogs(
+      { type: "recording", mediatype: "audio/wav", url: "https://media.example.com/a.wav" },
+      inline(wav(), "image/svg+xml"),
+      inline(wav(), "video/mp4"),
+      { ...inline(wav()), encoding: "none" },
+      { ...inline(wav()), mediatype: undefined },
+      inline(wav(200)),
+      inline(mp3(), "audio/mpeg"),
+    );
+    expect(format.recordings(text, 100)).toEqual([{ index: 6, type: "audio/mpeg" }]);
+  });
+});
+
+/** The message the console hands the player: a recording, its type and a line naming it. */
+function handOver(bytes = wav(), type = "audio/wav", label = "Dialog 1 of 0199e5c6-0d7a-7c11-8000-000000000001") {
+  return { kind: "recording", type, label, bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) };
+}
+
+test.describe("what the player is handed", () => {
+  test("a recording with its type and a line naming it is taken", () => {
+    const got = format.handed(handOver());
+    expect(got.type).toBe("audio/wav");
+    expect(got.label).toBe("Dialog 1 of 0199e5c6-0d7a-7c11-8000-000000000001");
+    expect(Array.from(new Uint8Array(got.bytes))).toEqual(Array.from(wav()));
+  });
+  test("a message that is not an object is not taken", () => {
+    for (const data of [null, undefined, "recording", 7, true, [], [handOver()], () => handOver()]) {
+      expect(format.handed(data), String(data)).toBeNull();
+    }
+  });
+  test("a message of another kind is not taken", () => {
+    for (const kind of [undefined, "", "player-ready", "Recording", "recording ", 1]) {
+      expect(format.handed({ ...handOver(), kind }), String(kind)).toBeNull();
+    }
+  });
+  test("bytes that are not one buffer of bytes are not taken", () => {
+    for (const bytes of [wav(), Array.from(wav()), "UklGRg", undefined, null, { byteLength: 20 }, new Blob([wav()])]) {
+      expect(format.handed({ ...handOver(), bytes }), Object.prototype.toString.call(bytes)).toBeNull();
+    }
+  });
+  test("a recording with no bytes, or more than the limit, is not taken", () => {
+    expect(format.handed({ ...handOver(), bytes: new ArrayBuffer(0) })).toBeNull();
+    expect(format.handed(handOver(wav(100)), wav(100).length - 1)).toBeNull();
+    expect(format.handed(handOver(wav(100)), wav(100).length)).not.toBeNull();
+  });
+  test("a recording of a type the console does not play is not taken", () => {
+    for (const type of ["image/svg+xml", "text/html", "video/mp4", "audio/x-wav", "AUDIO/WAV", "audio/wav; x=1", "", undefined, 7]) {
+      expect(format.handed({ ...handOver(), type }), String(type)).toBeNull();
+    }
+  });
+  test("bytes that are not the type they are handed over as are not taken", () => {
+    const svg = Uint8Array.from(Buffer.from("<svg xmlns='http://www.w3.org/2000/svg' onload='alert(1)'/>"));
+    const html = Uint8Array.from(Buffer.from("<!doctype html><script>alert(1)</script>"));
+    expect(format.handed(handOver(svg, "audio/wav"))).toBeNull();
+    expect(format.handed(handOver(html, "audio/mpeg"))).toBeNull();
+    expect(format.handed(handOver(mp3(), "audio/wav"))).toBeNull();
+    expect(format.handed(handOver(mp3(), "audio/mpeg"))).not.toBeNull();
+  });
+  test("a line naming the recording must be text of 1 to 200 characters, and is kept as it is", () => {
+    for (const label of [undefined, null, 7, "", "x".repeat(201), ["Dialog 1"]]) {
+      expect(format.handed({ ...handOver(), label }), String(label).slice(0, 20)).toBeNull();
+    }
+    expect(format.handed({ ...handOver(), label: "x".repeat(200) })).not.toBeNull();
+    const markup = "<img src=x onerror=alert(1)>";
+    expect(format.handed({ ...handOver(), label: markup }).label).toBe(markup);
+  });
+  test("what the console hands over for a recording is what the player takes", () => {
+    const found = format.recording(withDialogs(inline(mp3(), "audio/mpeg"), inline(wav())), 1);
+    const message = format.handOver(found, "0199e5c6-0d7a-7c11-8000-000000000001", 1);
+    expect(Object.keys(message).sort()).toEqual(["bytes", "kind", "label", "type"]);
+    const taken = format.handed(message);
+    expect(taken.type).toBe("audio/wav");
+    expect(taken.label).toBe("Dialog 2 of 0199e5c6-0d7a-7c11-8000-000000000001, audio/wav");
+    expect(Array.from(new Uint8Array(taken.bytes))).toEqual(Array.from(wav()));
+  });
+});
+
+test.describe("whose message is taken", () => {
+  const origin = "https://vcon.example.com";
+  const console_ = { name: "the console's window" };
+
+  test("a message from the expected window on this origin is taken", () => {
+    expect(format.accepts({ origin, source: console_ }, console_, origin)).toBe(true);
+  });
+  test("a message from another origin is not taken, however close its name", () => {
+    for (const other of ["https://vcon.example.com:8443", "http://vcon.example.com", "https://vcon.example.com.evil.example", "https://evil.example", "null", ""]) {
+      expect(format.accepts({ origin: other, source: console_ }, console_, origin), other).toBe(false);
+    }
+  });
+  test("a message from another window on this origin is not taken", () => {
+    expect(format.accepts({ origin, source: { name: "another tab" } }, console_, origin)).toBe(false);
+    expect(format.accepts({ origin, source: null }, console_, origin)).toBe(false);
+  });
+  test("a page with no window to hear from takes no message, one with no source too", () => {
+    expect(format.accepts({ origin, source: null }, null, origin)).toBe(false);
+    expect(format.accepts({ origin, source: undefined }, undefined, origin)).toBe(false);
   });
 });

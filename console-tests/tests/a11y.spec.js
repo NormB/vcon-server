@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import AxeBuilder from "@axe-core/playwright";
 import { TAGS, describe } from "../../site-tests/tests/axe.js";
-import { test, expect, signIn, vcon, store, openView, operatorKey } from "./fixtures.js";
+import { test, expect, signIn, vcon, store, openView, operatorKey, wav, inline } from "./fixtures.js";
 
 const SCHEMES = ["light", "dark"];
 const SIZES = [
@@ -70,6 +70,43 @@ for (const scheme of SCHEMES) {
         await expect(page.locator("#version-summary")).toBeVisible();
         await meetsRules(page);
         await fitsItsWidth(page);
+      });
+
+      test("the vCons view with a recording to play, and one refused", async ({ page, request, tenant }) => {
+        const uuid = randomUUID();
+        const body = { uuid, created_at: "2026-10-23T12:00:00Z", parties: [], dialog: [inline(wav()), inline(Buffer.from("<svg/>"), "audio/wav")] };
+        await store(request, await tenant.key(["write"]), Buffer.from(JSON.stringify(body)));
+        await signIn(page, await tenant.key(["read"]));
+        await openView(page, "vcons");
+        await page.click(`#vcon-list tbody tr:has-text("${uuid}") button.open`);
+        await expect(page.locator("#vcon-recordings button")).toHaveCount(2);
+        await meetsRules(page);
+        const [refused] = await Promise.all([page.waitForEvent("popup"), page.click("#vcon-play-2")]);
+        await expect(page.locator("#vcon-recordings-state")).toContainText("but its bytes are not audio/wav");
+        await expect.poll(() => refused.isClosed()).toBe(true);
+        await meetsRules(page);
+        await fitsItsWidth(page);
+      });
+
+      test("the recording player, waiting, with a recording and after it ends", async ({ page, request, tenant }) => {
+        const uuid = randomUUID();
+        const body = { uuid, created_at: "2026-10-23T12:00:00Z", parties: [], dialog: [inline(wav())] };
+        await store(request, await tenant.key(["write"]), Buffer.from(JSON.stringify(body)));
+        await signIn(page, await tenant.key(["read"]));
+        await openView(page, "vcons");
+        await page.click(`#vcon-list tbody tr:has-text("${uuid}") button.open`);
+        const [player] = await Promise.all([page.waitForEvent("popup"), page.click("#vcon-play-1")]);
+        await expect(player.locator("#audio")).toBeVisible();
+        await meetsRules(player);
+        await fitsItsWidth(player);
+        await player.locator("#audio").evaluate((audio) => audio.dispatchEvent(new Event("ended")));
+        await expect(player.locator("#audio")).toBeHidden();
+        await meetsRules(player);
+        const alone = await page.context().newPage();
+        await alone.goto("/console/player.html");
+        await expect(alone.locator("#playing")).toContainText("nothing else");
+        await meetsRules(alone);
+        await fitsItsWidth(alone);
       });
 
       test("the audit view", async ({ page, request, tenant }) => {

@@ -6,7 +6,7 @@
 
 use axum::Router;
 use axum::extract::Request;
-use axum::http::header::{CONTENT_TYPE, LOCATION};
+use axum::http::header::{CONTENT_SECURITY_POLICY, CONTENT_TYPE, LOCATION};
 use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -19,7 +19,7 @@ pub type File = (&'static str, &'static [u8], &'static str);
 /// Every file the console is made of. The router serves exactly these, and
 /// a test holds this list, the `console` directory and the package's
 /// `include` list to one another.
-pub const FILES: [File; 4] = [
+pub const FILES: [File; 6] = [
     (
         "index.html",
         include_bytes!("../console/index.html"),
@@ -40,6 +40,16 @@ pub const FILES: [File; 4] = [
         include_bytes!("../console/console.css"),
         "text/css; charset=utf-8",
     ),
+    (
+        "player.html",
+        include_bytes!("../console/player.html"),
+        "text/html; charset=utf-8",
+    ),
+    (
+        "player.js",
+        include_bytes!("../console/player.js"),
+        "text/javascript; charset=utf-8",
+    ),
 ];
 
 /// The file the bare `/console/` path answers with.
@@ -56,7 +66,8 @@ pub fn path_of(name: &str) -> String {
 }
 
 /// The headers on every console answer: no inline code, nothing from
-/// another origin, no framing, no sniffing, no referrer, no caching.
+/// another origin, no framing, no sniffing, no referrer, no caching. The
+/// player's page alone carries [`PLAYER_POLICY`] in place of the first.
 pub const HEADERS: [(&str, &str); 7] = [
     (
         "content-security-policy",
@@ -71,6 +82,29 @@ pub const HEADERS: [(&str, &str); 7] = [
     ("cross-origin-opener-policy", "same-origin"),
     ("cross-origin-resource-policy", "same-origin"),
 ];
+
+/// The policy of the player's page: the console's, but a recording may
+/// play from a blob made in the page (`media-src blob:`) and the page may
+/// make no request at all (`connect-src 'none'`). The console hands the
+/// player the bytes; the player fetches nothing.
+pub const PLAYER_POLICY: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; \
+     connect-src 'none'; media-src blob:; base-uri 'none'; form-action 'none'; \
+     frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'";
+
+/// The path of the player's page, the one console answer with a policy
+/// of its own.
+pub const PLAYER_PATH: &str = "/console/player.html";
+
+/// The content-security policy of the answer at `path`: the player's for
+/// the player's page and the console's for everything else.
+#[must_use]
+pub fn policy_for(path: &str) -> &'static str {
+    if path == PLAYER_PATH {
+        PLAYER_POLICY
+    } else {
+        HEADERS[0].1
+    }
+}
 
 /// The console's routes, merged into the API's router: its files,
 /// `/console` sent on to `/console/`, and 404 for any other path under
@@ -94,14 +128,22 @@ async fn file(body: &'static [u8], media_type: &'static str) -> Response {
     ([(CONTENT_TYPE, media_type)], body).into_response()
 }
 
-/// Puts every header in `HEADERS` on a console answer.
+/// Puts every header in `HEADERS` on a console answer. The player's
+/// page, when it is served, carries its own policy in place of the
+/// console's; a refusal at its path is not the page and does not.
 async fn with_headers(request: Request, next: Next) -> Response {
+    let policy = policy_for(request.uri().path());
     let mut answer = next.run(request).await;
     for (name, value) in HEADERS {
         answer.headers_mut().insert(
             HeaderName::from_static(name),
             HeaderValue::from_static(value),
         );
+    }
+    if answer.status() == StatusCode::OK {
+        answer
+            .headers_mut()
+            .insert(CONTENT_SECURITY_POLICY, HeaderValue::from_static(policy));
     }
     answer
 }
@@ -342,6 +384,151 @@ mod tests {
             r#"redirect: "error""#,
         ] {
             assert!(script.contains(option), "fetch is made with {option}");
+        }
+    }
+
+    /// A policy as its directives and their sources.
+    fn directives(policy: &str) -> std::collections::BTreeMap<&str, Vec<&str>> {
+        policy
+            .split(';')
+            .map(|d| {
+                let mut words = d.split_whitespace();
+                (words.next().expect("a directive"), words.collect())
+            })
+            .collect()
+    }
+
+    /// The policy every console answer has carried since the console
+    /// shipped, written out here so a change to it fails a test.
+    const STRICT: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; \
+         connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; \
+         require-trusted-types-for 'script'; trusted-types 'none'";
+
+    /// The player's page may play a recording the console hands it, from
+    /// a blob made in the page, and may make no request of its own. Every
+    /// other rule is the console's.
+    #[test]
+    fn the_player_page_has_the_strict_policy_but_plays_a_blob_and_connects_nowhere() {
+        let mut expected = directives(STRICT);
+        expected.insert("connect-src", vec!["'none'"]);
+        expected.insert("media-src", vec!["blob:"]);
+        assert_eq!(
+            directives(super::policy_for("/console/player.html")),
+            expected,
+            "the player's policy"
+        );
+    }
+
+    /// Only the player's page, by its exact path, has the player's policy:
+    /// a path that is nearly it, holds it or adds to it has the console's.
+    #[test]
+    fn a_path_that_is_not_exactly_the_players_has_the_strict_policy() {
+        for path in [
+            "/console/",
+            "/console/console.js",
+            "/console/player.js",
+            "/console/player.html/",
+            "/console/player.html/x",
+            "/console/PLAYER.HTML",
+            "/console/player.htm",
+            "/console/x/player.html",
+            "/console//player.html",
+            "/console/player.html%2f",
+            "/player.html",
+            "/console/aplayer.html",
+            "",
+        ] {
+            assert_eq!(super::policy_for(path), STRICT, "{path}");
+        }
+    }
+
+    /// The player's page loads its one script and the console's
+    /// stylesheet, holds no inline code, and its audio element has the
+    /// browser's own controls and nothing to play until the script is
+    /// handed a recording: no source, and it never starts by itself.
+    #[test]
+    fn the_players_page_holds_no_inline_code_and_nothing_to_play() {
+        let page = source("player.html");
+        assert!(
+            page.contains(r#"<script type="module" src="player.js"></script>"#),
+            "the page loads its script"
+        );
+        assert!(
+            page.contains(r#"<link rel="stylesheet" href="console.css">"#),
+            "the page loads the console's styles"
+        );
+        let lower = page.to_lowercase();
+        assert_eq!(lower.matches("<script").count(), 1, "one script element");
+        assert!(!lower.contains("<style"), "no style element");
+        assert!(!lower.contains(" style="), "no style attribute");
+        assert!(!has_event_handler(&page), "no event-handler attribute");
+        assert_eq!(lower.matches("<audio").count(), 1, "one audio element");
+        let audio = &lower[lower.find("<audio").expect("the audio element")..];
+        let audio = &audio[..audio.find('>').expect("its end")];
+        assert!(audio.contains(" controls"), "the browser's own controls");
+        for refused in [" src", " autoplay", " loop", " crossorigin"] {
+            assert!(
+                !audio.contains(refused),
+                "the audio element has no{refused}"
+            );
+        }
+        for refused in [
+            "<source", "<track", "<iframe", "<img", "<object", "<embed", "<a ",
+        ] {
+            assert!(!lower.contains(refused), "the page has no {refused}");
+        }
+    }
+
+    /// The player is handed its recording: its script makes no request of
+    /// any kind, loads no other code, and posts a message to no origin
+    /// but its own.
+    #[test]
+    fn the_players_script_makes_no_request_and_names_its_own_origin() {
+        let script = source("player.js");
+        for refused in [
+            "fetch(",
+            "XMLHttpRequest",
+            "WebSocket",
+            "EventSource",
+            "sendBeacon",
+            "import(",
+            "serviceWorker",
+            "Worker(",
+            "\"*\"",
+            "'*'",
+            "http:",
+            "https:",
+        ] {
+            assert!(!script.contains(refused), "player.js uses {refused}");
+        }
+        assert!(
+            script.contains("location.origin"),
+            "messages name the page's own origin"
+        );
+        let imports: Vec<&str> = script
+            .lines()
+            .filter(|line| line.starts_with("import "))
+            .collect();
+        assert_eq!(imports.len(), 1, "one import: {imports:?}");
+        assert!(
+            imports[0].ends_with(r#" from "./format.js";"#),
+            "the console's own rules, from its own file: {imports:?}"
+        );
+    }
+
+    /// The console hands a recording to the player's window alone: no
+    /// script posts a message to every origin.
+    #[test]
+    fn no_script_posts_a_message_to_every_origin() {
+        let names: Vec<&str> = scripts().iter().map(|(name, _)| *name).collect();
+        assert!(
+            names.contains(&"player.js"),
+            "the player's script is served"
+        );
+        for (name, script) in scripts() {
+            for refused in ["\"*\"", "'*'"] {
+                assert!(!script.contains(refused), "{name} names every origin");
+            }
         }
     }
 }

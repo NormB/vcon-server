@@ -149,6 +149,7 @@ curl -s "https://vcon.example.com/vcons/$UUID?reveal=parties" -H "Authorization:
 | `analysis` | `reveal_analysis` | `legal_reveal_analysis` |
 | `links` | `reveal_links` | `legal_reveal_links` |
 | `all` | `reveal_all` | `legal_reveal_all` |
+| `audio` | `reveal_audio` | `legal_reveal_audio` |
 
 The answer is the same with and without the parameter: the whole vCon, as
 stored, with the same headers. The parameter needs no scope of its own and
@@ -157,7 +158,7 @@ the [audit log](@/docs/audit-logs.md#reveals), the part the client is about
 to show. A refused reveal (403, 404, 410) is recorded under its reveal
 action too.
 
-`reveal` must be the only parameter and be given once, with one of the six
+`reveal` must be the only parameter and be given once, with one of the seven
 values, in lower case. Anything else is
 [`bad-query`](@/problems/bad-query.md) (400): no vCon is sent, and the
 refusal is recorded as a `read` or a `legal_read`. A query that does not

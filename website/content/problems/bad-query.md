@@ -22,5 +22,5 @@ A query the route does not take:
 
 Send no query, or one the route's row on the
 [HTTP API](@/docs/http-api.md) page names. For `reveal`, send it alone,
-once, with one of `parties`, `subject`, `dialog`, `analysis`, `links` or
-`all`.
+once, with one of `parties`, `subject`, `dialog`, `analysis`, `links`,
+`all` or `audio`.

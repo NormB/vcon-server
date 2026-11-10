@@ -125,6 +125,12 @@ release holds yet. Release 0.4.2 does not have these:
   its reveals that way. Release 0.4.2 has no `reveal` parameter: it passes
   the query over and records `read` or `legal_read`. See
   [reveals](@/docs/http-api.md#reveals).
+- **A recording player in the console.** A dialog's recording that is
+  inside the vCon plays in a tab of its own, `/console/player.html`, whose
+  policy alone lets a blob play and lets the page make no request. Each
+  Play is recorded as `reveal_audio` or `legal_reveal_audio`. Release 0.4.2
+  has no Play button and no such page. See
+  [play a recording](@/docs/console.md#play-a-recording).
 
 ## Being built
 

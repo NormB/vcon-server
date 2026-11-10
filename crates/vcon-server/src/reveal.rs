@@ -23,17 +23,20 @@ pub enum Part {
     Links,
     /// The whole vCon.
     All,
+    /// One dialog's recording, to play it.
+    Audio,
 }
 
 impl Part {
     /// Every part, in the order the console offers them.
-    pub const ALL: [Part; 6] = [
+    pub const ALL: [Part; 7] = [
         Part::Parties,
         Part::Subject,
         Part::Dialog,
         Part::Analysis,
         Part::Links,
         Part::All,
+        Part::Audio,
     ];
 
     /// The part's name, as the marker gives it and the log records it.
@@ -46,6 +49,7 @@ impl Part {
             Part::Analysis => "analysis",
             Part::Links => "links",
             Part::All => "all",
+            Part::Audio => "audio",
         }
     }
 
@@ -88,7 +92,9 @@ mod tests {
         let named: Vec<&str> = Part::ALL.into_iter().map(Part::name).collect();
         assert_eq!(
             named,
-            ["parties", "subject", "dialog", "analysis", "links", "all"],
+            [
+                "parties", "subject", "dialog", "analysis", "links", "all", "audio"
+            ],
             "the names"
         );
     }
@@ -108,7 +114,7 @@ mod tests {
 
     #[test]
     fn a_marker_that_names_no_known_part_is_refused() {
-        for unknown in ["everything", "party", "audio2", "*"] {
+        for unknown in ["everything", "party", "audio2", "*", "video"] {
             let query = format!("reveal={unknown}");
             assert_eq!(Part::from_query(Some(&query)), Err(BadQuery), "{query}");
         }
@@ -191,7 +197,8 @@ mod tests {
                 "reveal_dialog",
                 "reveal_analysis",
                 "reveal_links",
-                "reveal_all"
+                "reveal_all",
+                "reveal_audio"
             ],
             "the names"
         );
@@ -211,8 +218,35 @@ mod tests {
                 "legal_reveal_dialog",
                 "legal_reveal_analysis",
                 "legal_reveal_links",
-                "legal_reveal_all"
+                "legal_reveal_all",
+                "legal_reveal_audio"
             ],
+            "the names"
+        );
+    }
+
+    /// The name of the part a query marks, or the refusal.
+    fn marked(query: &str) -> Result<Option<&'static str>, BadQuery> {
+        Part::from_query(Some(query)).map(|part| part.map(Part::name))
+    }
+
+    #[test]
+    fn a_marker_of_audio_is_a_reveal_of_a_recording() {
+        assert_eq!(marked("reveal=audio"), Ok(Some("audio")), "the part");
+    }
+
+    #[test]
+    fn a_reveal_of_a_recording_has_actions_of_its_own() {
+        let audio = Part::ALL
+            .into_iter()
+            .find(|part| part.name() == "audio")
+            .expect("a part named audio");
+        assert_eq!(
+            (
+                Action::Reveal(audio).as_str(),
+                Action::LegalReveal(audio).as_str()
+            ),
+            ("reveal_audio", "legal_reveal_audio"),
             "the names"
         );
     }

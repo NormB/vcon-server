@@ -8,11 +8,26 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- The console plays a recording that a vCon holds inside a dialog: one
+  **Play** button for each dialog whose `body` is `base64url` or `base64`
+  and whose `mediatype` is `audio/wav`, `audio/mpeg`, `audio/ogg` or
+  `audio/opus`, up to 104,857,600 bytes. The player is a page of its own,
+  `/console/player.html`, opened in a new tab. Its content-security policy
+  alone has `media-src blob:`, and has `connect-src 'none'`; the policy of
+  every other console answer is unchanged. The console reads the vCon with
+  the key as a reveal of `audio`, recorded as `reveal_audio` or
+  `legal_reveal_audio`, checks that the recording's bytes carry the
+  signature of the type the dialog declares, and hands the bytes to the
+  player, which has no key, makes no request, keeps nothing in the browser,
+  never starts by itself and lets go of the recording when playback ends or
+  the tab closes. A recording at a link is never loaded. The console page
+  has the how-to. A proxy that passes the console's paths by name must also
+  pass `/console/player.html` and `/console/player.js`.
 - A read of a vCon can be marked as a reveal of one part of it:
   `GET /vcons/{uuid}?reveal=<part>`, and the same parameter on
   `GET /legal/vcons/{uuid}` and
   `GET /legal/vcons/{uuid}/versions/{version}`, with the part `parties`,
-  `subject`, `dialog`, `analysis`, `links` or `all`. The answer is the one
+  `subject`, `dialog`, `analysis`, `links`, `all` or `audio`. The answer is the one
   the read gives without the parameter, and the key needs the same scope:
   the parameter only changes the action the audit log records, to
   `reveal_<part>`, or `legal_reveal_<part>` on a legal route. A `reveal`
@@ -28,10 +43,11 @@ All notable changes to this project are recorded here. The format follows
   now marks each Reveal, so the tenant log holds `reveal_parties`,
   `reveal_subject`, `reveal_dialog`, `reveal_analysis`, `reveal_links` or
   `reveal_all` where 0.4.2 wrote `read`, and the `legal_reveal_` actions
-  with the same six endings where it wrote `legal_read`. Opening a vCon and
-  **Download** are still `read`. Upgrade steps: before installing the new
-  binary, add the twelve action names to any rule, parser or report that
-  lists actions; to keep a count of every read of content, count the
+  with the same six endings where it wrote `legal_read`. Playing a
+  recording, which 0.4.2 could not do, is recorded as `reveal_audio` or
+  `legal_reveal_audio`. Opening a vCon and **Download** are still `read`.
+  Upgrade steps: before installing the new binary, add the fourteen action
+  names to any rule, parser or report that lists actions; to keep a count of every read of content, count the
   actions that start with `reveal_` together with `read`, and those that
   start with `legal_reveal_` together with `legal_read`. The record's
   fields, the catalogs' schema version and every API answer are unchanged,

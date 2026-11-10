@@ -13,6 +13,25 @@ with, so it can do exactly what that key can do over the API, and every
 request it makes is checked and recorded in the
 [audit log](@/docs/audit-logs.md) as any client's would be.
 
+## Before you start
+
+- **A running server.** The console is part of the server and is always
+  served, on the same TLS listener as the HTTP API. There is no setting to
+  turn it on. See [getting started](@/docs/getting-started.md).
+- **An API key.** Any key signs in. What the console then shows depends on
+  the key's scopes; see [tenants and keys](@/docs/tenants-and-keys.md) to
+  make one.
+- **A browser that reaches the server's address** and trusts its
+  certificate, or in which you have accepted it.
+- **Nothing on any other system.** A reverse proxy in front of the server
+  must pass `/console/` and the files under it, and each answer's headers,
+  unchanged.
+
+Two things on this page are on `main` only, in no release yet. Release
+0.4.2 records each Reveal as `read` or `legal_read`, not under a reveal
+action, and it has no [recording player](#play-a-recording). The
+[status](@/docs/status.md) page lists what no release holds.
+
 ## Open it
 
 Open `/console/` on the server's address in a browser, for example:
@@ -22,7 +41,10 @@ https://vcon.example.com:8443/console/
 ```
 
 `/console` without the slash is sent on to `/console/`. The page and its
-files (a stylesheet and two scripts) need no key; they hold no data.
+files need no key; they hold no data. They are `/console/console.css`,
+`/console/console.js`, `/console/format.js` and, for the
+[recording player](#play-a-recording), `/console/player.html` and
+`/console/player.js`.
 
 ## Sign in
 
@@ -125,7 +147,9 @@ part of the console page the server already serves, and needs no setting.
 **Verify:** read the tenant's [audit log](@/docs/audit-logs.md) with an
 `audit` key, in the **Audit log** view or over the API. Opening a vCon
 leaves one `read` record for its uuid, and each **Download** leaves one
-more. Each Reveal leaves a record that names the part it showed:
+more. On `main` only, in no release yet (release 0.4.2 records each Reveal
+as one more `read` or `legal_read`), each Reveal leaves a record that
+names the part it showed:
 `reveal_parties`, `reveal_subject`, `reveal_dialog`, `reveal_analysis`,
 `reveal_links`, or `reveal_all` for the whole vCon. In the Legal view each
 find and each version opened leaves a `legal_read` record, and each Reveal
@@ -159,6 +183,96 @@ enough to make the summary. A reveal is recorded under an action of its
 own because the console marks the read it makes for one; see
 [reveals](@/docs/audit-logs.md#reveals) for what the marker does and does
 not do.
+
+## Play a recording
+
+The player is on `main` only, in no release yet: release 0.4.2 has no Play
+button and no player page.
+
+**Purpose:** hear a recording that a vCon holds inside one of its dialogs,
+in the browser, without saving the vCon, and leave a record that it was
+played.
+
+**Prerequisites:**
+
+- A key with the `read` scope, or the `legal` scope for the Legal view.
+- The recording is inside the vCon: the dialog has a `body` encoded as
+  `base64url` (or `base64`) and a `mediatype` of `audio/wav`,
+  `audio/mpeg`, `audio/ogg` or `audio/opus`, and is at most 104,857,600
+  bytes. A recording the dialog only links to (`url`) is never played,
+  because the console never loads a link from a vCon.
+- The browser lets this site open a tab. The player is a tab of its own;
+  a browser set to block pop-ups must allow them for the server's address.
+- On other systems: a reverse proxy or firewall that passes the console's
+  paths by name must also pass `/console/player.html` and
+  `/console/player.js`, and must pass the `Content-Security-Policy` header
+  of each answer unchanged. Nothing changes on the server: there is no
+  setting.
+
+**Steps:**
+
+1. Open the vCon, as in [open a vCon masked](#open-a-vcon-masked). Under
+   the reveal buttons there is one button for each dialog with a recording
+   the console plays: **Play dialog 1 recording (opens the player in a new
+   tab)**.
+2. Choose it. The console opens the player's tab, reads the vCon again as
+   a [reveal](@/docs/audit-logs.md#reveals) of `audio`, checks that the
+   recording's first bytes are the type the dialog declares, and hands the
+   bytes to the tab. The console then says
+   `Dialog 1's recording was handed to the player's tab.`
+3. In the player, read the line that names what it holds, such as
+   `Ready to play: Dialog 1 of <uuid>, audio/wav. It does not start by itself: use the controls below.`
+   Focus is on the browser's own audio controls: play, pause, seek and
+   volume, by mouse or keyboard.
+4. When playback ends, the player lets go of the recording and says so.
+   To hear it again, choose Play in the console again.
+5. Choose **Close the player** when you are done. Focus returns to the
+   Play button in the console, which says `The player was closed.`
+   Signing out of the console closes every player it opened.
+
+**Verify:** read the tenant's [audit log](@/docs/audit-logs.md). Each Play
+leaves one `reveal_audio` record for the vCon's uuid, or
+`legal_reveal_audio` from the Legal view, with the key that played it.
+
+**Troubleshoot:**
+
+- *There is no Play button for a dialog:* its recording is at a link, or
+  its body is not declared as one of the four audio types, is not encoded
+  as `base64url` or `base64`, or is over the size limit. **Download** has
+  the whole vCon.
+- *`The browser blocked the player's tab. Allow pop-ups for this site, then choose Play again.`:*
+  allow pop-ups for the server's address in the browser's settings. Nothing
+  was read, and nothing is recorded.
+- *`Dialog 1's recording is declared as audio/wav, but its bytes are not audio/wav.`:*
+  the bytes do not start as that kind of file does. The console hands
+  nothing to the player. The read is recorded, because the console had to
+  read the vCon to find out.
+- *The player says `The browser could not play this recording.`:* the bytes
+  start as audio does but the browser's decoder refuses them, or the
+  browser has no decoder for the type. **Download** the vCon and use
+  another tool.
+- *The player says it is waiting and nothing arrives:* the console's tab
+  was closed or reloaded, which forgets the key. Close the player, sign in
+  again and choose Play.
+- *The player's tab is blank or shows a refusal:* a proxy in front of the
+  server does not pass `/console/player.html` or `/console/player.js`.
+
+What the player is and is not:
+
+- It is a page of its own because a browser applies one
+  content-security policy to a whole page. The console's policy plays no
+  media at all, and stays as it is. The player's policy alone has
+  `media-src blob:`, and has `connect-src 'none'`: the player can play a
+  blob made in its own page and can make no request of any kind.
+- It never has the key. The console reads the vCon and hands the player
+  the recording's bytes in a message to its own origin; the player takes a
+  message only from the console that opened it, only once, and only when
+  it is one recording of a listed type whose bytes carry that type's
+  signature.
+- It keeps the recording in memory only: nothing in browser storage, and
+  nothing in its address, which is the same for every recording. It lets
+  go of the recording when playback ends and when the tab closes.
+- It never starts playing by itself.
 
 ## Lists, times and refusals
 
@@ -224,6 +338,36 @@ Sign in with an operator key and choose **Tenants**.
 Each of these leaves the same audit record as the same request made with
 `curl` or any other client.
 
+## When something does not work
+
+- *The browser warns about the certificate:* the server's certificate is
+  not one the browser trusts. Use the address the certificate names, or
+  give the server a certificate from an authority the browser trusts; see
+  [getting started](@/docs/getting-started.md).
+- *`The key was not accepted.`:* the key is mistyped, revoked, or of
+  another server. The console says no more than this, as the API does.
+  Paste the whole token, or make a new key.
+- *A view is not there:* the key lacks the scope the view needs; see the
+  table under [what you see](#what-you-see). Sign in with a key that has
+  it.
+- *`The server could not be reached. Check the connection and try again.`:*
+  the request got no answer. The server is stopped, the network is down,
+  or a proxy closed the connection. The key is still held; choose the
+  action again.
+- *A request is refused with a status:* the line shows the problem's title,
+  its status and what to do next. Each problem type has a page under
+  [problems](@/problems/_index.md).
+- *The page is blank, or has no styles:* a proxy in front of the server
+  does not pass one of the console's files, or changes the
+  `Content-Security-Policy` header. The files are listed under
+  [open it](#open-it).
+- *After a reload the console asks for the key again:* that is how it
+  works. The key is held in the page's memory only.
+
+Each task on this page has its own troubleshooting list:
+[open a vCon masked](#open-a-vcon-masked) and
+[play a recording](#play-a-recording).
+
 ## Keyboard and screen readers
 
 The console is built to WCAG 2.2 level AA, and its browser tests run
@@ -233,6 +377,10 @@ axe-core on every view, in light and dark, at 320 and 1280 pixels wide.
 - Every control has a label and shows a focus ring when the keyboard
   reaches it. Choosing a view moves focus to its heading, and a reveal
   moves focus to the revealed text.
+- A Play button says that it opens a new tab. The player has one heading,
+  a line that names the recording, the browser's own audio controls, which
+  take focus when the recording arrives, and a button that closes it and
+  returns focus to the Play button.
 - The view shown is marked for assistive technology, and in bold and
   underlined.
 - Refusals are announced at once; list states and the result of a store
@@ -247,15 +395,17 @@ axe-core on every view, in light and dark, at 320 and 1280 pixels wide.
   the tab or signing out forgets it, and you sign in again.
 - The console asks the browser not to cache any answer, and writes nothing
   the server sends to browser storage.
+- A recording handed to the [player](#play-a-recording) is held in that
+  tab's memory until playback ends or the tab closes, and nowhere else.
 - Everything the server sends is shown as text. Markup inside a stored vCon,
   a tenant name or a key label is shown as the characters it is made of and
   never runs.
 
 ## What protects it
 
-Every console answer carries these headers, so the page runs only its own
-script, loads nothing from another site, cannot be shown inside another
-site's frame and is not cached:
+Every console answer but one carries these headers, so the page runs only
+its own script, loads nothing from another site, cannot be shown inside
+another site's frame and is not cached:
 
 ```text
 Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'
@@ -265,6 +415,16 @@ Referrer-Policy: no-referrer
 Cache-Control: no-store
 Cross-Origin-Opener-Policy: same-origin
 Cross-Origin-Resource-Policy: same-origin
+```
+
+The one other is the [recording player](#play-a-recording)'s page,
+`/console/player.html`, when it is served. It carries the same headers with
+this policy in place of the first, which differs in two places: the page
+may play a blob it made (`media-src blob:`) and may make no request at all
+(`connect-src 'none'`):
+
+```text
+Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none'; media-src blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'
 ```
 
 The server sets no cookie and sends no cross-origin (CORS) headers, so a page

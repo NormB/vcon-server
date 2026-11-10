@@ -501,3 +501,45 @@ fn the_description_names_the_marker_and_its_parts_on_every_route_that_takes_it()
         assert!(listed, "{path}");
     }
 }
+
+#[tokio::test]
+async fn a_read_marked_as_audio_is_recorded_as_a_reveal_of_a_recording() {
+    let s = server().await;
+    let tag = stored(&s).await;
+    let reader = s.key(&[Scope::Read]);
+    let plain = whole(get(&s, &format!("/vcons/{UUID}"), &reader).await).await;
+    let marked = whole(get(&s, &format!("/vcons/{UUID}?reveal=audio"), &reader).await).await;
+    assert_eq!(marked, plain, "the answer");
+    assert_eq!(
+        recorded(&s).last().expect("a record"),
+        &("reveal_audio".to_owned(), 200, UUID.into(), bare(&tag)),
+        "the record"
+    );
+}
+
+#[tokio::test]
+async fn a_legal_read_marked_as_audio_is_recorded_as_a_legal_reveal_of_a_recording() {
+    let s = server().await;
+    let tag = stored(&s).await;
+    let legal = s.key(&[Scope::Legal]);
+    for path in [
+        format!("/legal/vcons/{UUID}?reveal=audio"),
+        format!(
+            "/legal/vcons/{UUID}/versions/{}?reveal=audio",
+            tag.trim_matches('"')
+        ),
+    ] {
+        let answer = get(&s, &path, &legal).await;
+        assert_eq!(answer.status(), 200, "{path}");
+        assert_eq!(
+            recorded(&s).last().expect("a record"),
+            &(
+                "legal_reveal_audio".to_owned(),
+                200,
+                UUID.into(),
+                bare(&tag)
+            ),
+            "{path}"
+        );
+    }
+}

@@ -1061,6 +1061,44 @@
         }
       }
     },
+    "/console/player.html": {
+      "get": {
+        "operationId": "consolePlayerPage",
+        "summary": "The console's recording player; it plays what the console's page hands it and makes no request",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The page",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/console/player.js": {
+      "get": {
+        "operationId": "consolePlayerScript",
+        "summary": "The recording player's script",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The script",
+            "content": {
+              "text/javascript": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/console/{other}": {
       "parameters": [
         {
@@ -3156,7 +3194,7 @@
         "name": "reveal",
         "in": "query",
         "required": false,
-        "description": "Marks the read as a reveal of one part of the vCon, for a client that shows a vCon masked. The answer is the whole vCon, as without it; the audit log records the action reveal_<part>, or legal_reveal_<part> on a legal route, in place of read or legal_read. It must be the only parameter, given once.",
+        "description": "Marks the read as a reveal of one part of the vCon, for a client that shows a vCon masked. The answer is the whole vCon, as without it; the audit log records the action reveal_<part>, or legal_reveal_<part> on a legal route, in place of read or legal_read. The part audio is for a client about to play one dialog's recording. It must be the only parameter, given once.",
         "schema": {
           "type": "string",
           "enum": [
@@ -3165,7 +3203,8 @@
             "dialog",
             "analysis",
             "links",
-            "all"
+            "all",
+            "audio"
           ]
         }
       }

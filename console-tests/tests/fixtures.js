@@ -127,3 +127,27 @@ export function done(record) {
     count: record.count,
   };
 }
+
+/** A WAV file of silence: 8 kHz, mono, 16 bits, `seconds` long. */
+export function wav(seconds = 0.2) {
+  const samples = Math.round(8000 * seconds);
+  const file = Buffer.alloc(44 + samples * 2);
+  file.write("RIFF", 0, "latin1");
+  file.writeUInt32LE(36 + samples * 2, 4);
+  file.write("WAVEfmt ", 8, "latin1");
+  file.writeUInt32LE(16, 16);
+  file.writeUInt16LE(1, 20);
+  file.writeUInt16LE(1, 22);
+  file.writeUInt32LE(8000, 24);
+  file.writeUInt32LE(16000, 28);
+  file.writeUInt16LE(2, 32);
+  file.writeUInt16LE(16, 34);
+  file.write("data", 36, "latin1");
+  file.writeUInt32LE(samples * 2, 40);
+  return file;
+}
+
+/** A recording dialog that holds `bytes` inline, declared as `mediatype`. */
+export function inline(bytes, mediatype = "audio/wav") {
+  return { type: "recording", start: "2026-10-23T12:00:00Z", parties: [0], mediatype, encoding: "base64url", body: bytes.toString("base64url") };
+}

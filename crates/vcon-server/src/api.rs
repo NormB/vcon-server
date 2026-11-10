@@ -4970,8 +4970,11 @@ mod tests {
                 let answer = s.client().get(s.url(path)).send().await.expect("an answer");
                 assert_eq!(answer.status(), 200, "{path}");
                 assert_eq!(answer.headers()["content-type"], media_type, "{path}");
-                for (name, value) in crate::console::HEADERS {
-                    assert_eq!(answer.headers()[name], value, "{path} {name}");
+                // The player's page has a policy of its own, which
+                // api::player_routes holds; every other header is shared.
+                let shared = usize::from(path == crate::console::PLAYER_PATH);
+                for (name, value) in &crate::console::HEADERS[shared..] {
+                    assert_eq!(answer.headers()[*name], *value, "{path} {name}");
                 }
                 let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                     .join("console")
@@ -5043,6 +5046,9 @@ mod tests {
 /// pages to the code.
 #[cfg(test)]
 mod reveal_routes;
+
+#[cfg(test)]
+mod player_routes;
 
 #[cfg(test)]
 mod site_pages {

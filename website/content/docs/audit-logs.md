@@ -60,6 +60,7 @@ action through MCP is recorded as its HTTP route records it.
 | `reveal_analysis` | a vCon read as a [reveal](#reveals) of the analysis (`GET /vcons/{uuid}?reveal=analysis`) | the tenant's |
 | `reveal_links` | a vCon read as a [reveal](#reveals) of the links (`GET /vcons/{uuid}?reveal=links`) | the tenant's |
 | `reveal_all` | a vCon read as a [reveal](#reveals) of the whole vCon (`GET /vcons/{uuid}?reveal=all`) | the tenant's |
+| `reveal_audio` | a vCon read as a [reveal](#reveals) of one dialog's recording, to play it (`GET /vcons/{uuid}?reveal=audio`) | the tenant's |
 | `delete` | a vCon deleted (`DELETE /vcons/{uuid}`) | the tenant's |
 | `list` | a page of the vCon list (`GET /vcons`) | the tenant's |
 | `purge` | a version erased, by the purge sweep (actor `sweep`), or at once by a delete when the period is `0d` | the tenant's |
@@ -70,6 +71,7 @@ action through MCP is recorded as its HTTP route records it.
 | `legal_reveal_analysis` | a legal read as a [reveal](#reveals) of the analysis (`?reveal=analysis` on either legal read route) | the tenant's |
 | `legal_reveal_links` | a legal read as a [reveal](#reveals) of the links (`?reveal=links` on either legal read route) | the tenant's |
 | `legal_reveal_all` | a legal read as a [reveal](#reveals) of the whole vCon (`?reveal=all` on either legal read route) | the tenant's |
+| `legal_reveal_audio` | a legal read as a [reveal](#reveals) of one dialog's recording, to play it (`?reveal=audio` on either legal read route) | the tenant's |
 | `legal_versions` | a read of a vCon's version history | the tenant's |
 | `restore` | a deleted vCon made live again | the tenant's |
 | `hold` | a legal hold placed | the tenant's |
@@ -106,8 +108,8 @@ does, reads it once for its summary and again each time a person chooses
 to see a part of it. That second read carries a marker, `?reveal=<part>`,
 and is recorded as `reveal_<part>` in place of `read`, or as
 `legal_reveal_<part>` in place of `legal_read` on the legal read routes.
-The parts are `parties`, `subject`, `dialog`, `analysis`, `links` and `all`
-(the whole vCon).
+The parts are `parties`, `subject`, `dialog`, `analysis`, `links`, `all`
+(the whole vCon) and `audio` (one dialog's recording, to play it).
 
 The marker changes the record's action and nothing else. The route, the
 scope the key needs and the answer are those of the read without it: the

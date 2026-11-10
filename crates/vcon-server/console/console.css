@@ -223,3 +223,27 @@ h4 {
   font-size: 1rem;
   margin-bottom: 0.25rem;
 }
+
+/* One Play button per recording, each on a line of its own; a long name
+   wraps inside its button. */
+.recordings {
+  list-style: none;
+  display: grid;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+  padding: 0;
+}
+.recordings button {
+  max-width: 100%;
+  text-align: start;
+  white-space: normal;
+}
+
+/* The player's controls are as wide as a phone allows, and no wider than
+   a form. */
+audio {
+  display: block;
+  width: 100%;
+  max-width: 32rem;
+  margin: 0.75rem 0;
+}

@@ -4,7 +4,22 @@
 // and a reload forgets it. Every value from the server reaches the page as
 // text, never as markup.
 
-import { utc, summary, refusalText, section, links, shown, revealPath, DISPLAY_LIMIT } from "./format.js";
+import {
+  utc,
+  summary,
+  refusalText,
+  section,
+  links,
+  shown,
+  revealPath,
+  recordings,
+  recording,
+  handOver,
+  accepts,
+  DISPLAY_LIMIT,
+  PLAYER_READY,
+  PLAYER_CLOSED,
+} from "./format.js";
 
 let token = null;
 let key = null;
@@ -138,6 +153,48 @@ function stateOf(made, noun) {
   };
 }
 
+/**
+ * The player tabs this page opened and has not seen close: each tab's
+ * window, with the recording waiting for it (null once handed over),
+ * whether the player said it can take one, and what to do when it closes.
+ */
+const players = new Map();
+
+/** Hands a player its recording once it has both said it is ready and been given one. */
+function handOverWhenReady(tab) {
+  const state = players.get(tab);
+  if (state !== undefined && state.ready && state.message !== null) {
+    const { message } = state;
+    state.message = null;
+    // To this origin only, and the bytes are moved, not copied.
+    tab.postMessage(message, location.origin, [message.bytes]);
+    state.handed();
+  }
+}
+
+window.addEventListener("message", (event) => {
+  const tab = event.source;
+  const state = players.get(tab);
+  if (state === undefined || !accepts(event, tab, location.origin)) {
+    return;
+  }
+  if (event.data === PLAYER_READY) {
+    state.ready = true;
+    handOverWhenReady(tab);
+  } else if (event.data === PLAYER_CLOSED) {
+    players.delete(tab);
+    state.closed();
+  }
+});
+
+/** Closes every player this page opened: what they hold was read with this page's key. */
+function closePlayers() {
+  for (const tab of players.keys()) {
+    tab.close();
+  }
+  players.clear();
+}
+
 /** What a masked vCon hides, and what Reveal does. */
 const MASKED_NOTE =
   "Names, the subject, full numbers and addresses, links and what was said are hidden. " +
@@ -168,7 +225,8 @@ function save(name, text) {
  * Download, which reveals nothing on the page.
  * `say` shows a line of text beside the vCon. The ids are `<name>-etag`,
  * `<name>-summary`, `<name>-reveal-<part>`, `<name>-section`,
- * `<name>-links`, `<name>-download`, `<name>-body` and `reveal`.
+ * `<name>-links`, `<name>-download`, `<name>-body`, `<name>-recordings`,
+ * `<name>-play-<dialog number>`, `<name>-recordings-state` and `reveal`.
  */
 function maskedVcon(name, reveal, label, say) {
   const etag = el("p", "", { id: `${name}-etag` });
@@ -177,6 +235,8 @@ function maskedVcon(name, reveal, label, say) {
   const buttons = el("div", "", { class: "reveals", role: "group", "aria-label": `Reveal or download ${label}` });
   const partTitle = el("h4", "", { id: `${name}-section-title`, hidden: "" });
   const part = el("pre", "", { id: `${name}-section`, hidden: "", tabindex: "0", role: "group", "aria-labelledby": `${name}-section-title` });
+  const playList = el("ul", "", { id: `${name}-recordings`, class: "recordings" });
+  const playState = el("p", "", { id: `${name}-recordings-state`, class: "state", role: "status" });
   const linkList = el("ul", "", { id: `${name}-links`, class: "links" });
   const linkState = el("p", "", { id: `${name}-links-state`, class: "state", role: "status" });
   const whole = el("button", `Reveal ${label}`, { id: reveal, type: "button" });
@@ -253,6 +313,63 @@ function maskedVcon(name, reveal, label, say) {
   });
   buttons.append(showLinks, download);
 
+  /**
+   * A button that plays the recording of dialog `index` in the player: a
+   * tab of its own, opened at the click, so the browser sees the person
+   * ask for it. The vCon is then read again as a reveal of audio, the
+   * recording checked, and its bytes handed to the tab. A tab that will
+   * get no recording is closed.
+   */
+  function playButton(index) {
+    const number = index + 1;
+    const button = el("button", `Play dialog ${number} recording (opens the player in a new tab)`, {
+      id: `${name}-play-${number}`,
+      type: "button",
+    });
+    button.addEventListener("click", async () => {
+      playState.textContent = "";
+      const tab = window.open("player.html", "_blank");
+      if (tab === null) {
+        playState.textContent = "The browser blocked the player's tab. Allow pop-ups for this site, then choose Play again.";
+        return;
+      }
+      const state = {
+        ready: false,
+        message: null,
+        handed() {
+          playState.textContent = `Dialog ${number}'s recording was handed to the player's tab.`;
+        },
+        closed() {
+          playState.textContent = "The player was closed.";
+          button.focus();
+        },
+      };
+      players.set(tab, state);
+      const abandon = () => {
+        players.delete(tab);
+        tab.close();
+      };
+      const got = await again("audio");
+      if (got === null) {
+        abandon();
+        return;
+      }
+      const found = recording(got.text, index);
+      if (!found.ok) {
+        abandon();
+        playState.textContent = found.reason;
+        return;
+      }
+      if (!players.has(tab)) {
+        // Closed, or signed out, while the vCon was read.
+        return;
+      }
+      state.message = handOver(found, saveAs, index);
+      handOverWhenReady(tab);
+    });
+    return button;
+  }
+
   whole.addEventListener("click", async () => {
     const got = await again("all");
     if (got === null) {
@@ -271,7 +388,7 @@ function maskedVcon(name, reveal, label, say) {
     body.focus();
   });
   return {
-    nodes: [etag, masked, note, buttons, partTitle, part, linkList, linkState, whole, cut, body],
+    nodes: [etag, masked, note, buttons, playList, playState, partTitle, part, linkList, linkState, whole, cut, body],
     /**
      * Shows `got` masked. `read` reads the same vCon again, for a Reveal
      * of the part it is given or, given null, for a Download, which saves
@@ -283,6 +400,13 @@ function maskedVcon(name, reveal, label, say) {
       etag.textContent = got.etag;
       mask();
       showSummary(masked, summary(got.text));
+      clear(playList);
+      playState.textContent = "";
+      for (const { index } of recordings(got.text)) {
+        const item = el("li");
+        item.append(playButton(index));
+        playList.append(item);
+      }
     },
   };
 }
@@ -881,6 +1005,7 @@ function showSignedIn() {
 function showSignedOut(message = "") {
   token = null;
   key = null;
+  closePlayers();
   clear(document.getElementById("key-fields"));
   clear(document.getElementById("views"));
   clear(document.getElementById("view"));
