@@ -52,6 +52,9 @@ allowed a group to write them. To check a host before an upgrade, see
 | `master_key` | File holding the 32-byte master key | required |
 | `tls.cert` | PEM certificate chain | required |
 | `tls.key` | PEM private key | required |
+| `operator.listen` | Address and port of the operator listener, such as `127.0.0.1:8444`. With it, this address serves operator keys only and `listen` serves tenant keys only (see [the operator listener](@/docs/operator-listener.md)) | none: `listen` serves both |
+| `operator.tls.cert` | PEM certificate chain the operator listener presents; set together with `operator.tls.key` | `tls.cert` |
+| `operator.tls.key` | PEM private key of the operator listener; set together with `operator.tls.cert` | `tls.key` |
 | `retention_default` | Retention period for tenants that set none: years, months or days, written `7y`, `18m` or `90d` | `7y` |
 | `purge_interval` | Seconds between purge sweeps | `3600` (1 hour) |
 | `rotation_warn` | Seconds the oldest work may wait for key rotation before a warning is logged | `2592000` (30 days) |

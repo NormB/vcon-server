@@ -8,6 +8,25 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- An operator listener. With an `[operator]` table in the configuration,
+  `serve` listens on a second address, `operator.listen`, and each address
+  serves one kind of key: `listen` serves tenant keys only, and
+  `operator.listen` serves operator keys only, so the routes that manage
+  tenants and keys can sit on an address the internet does not reach, such
+  as `127.0.0.1:8444`. A valid key that comes to the other listener is
+  refused with 403 and the new problem type `wrong-listener`, before any
+  route sees the request, on every route and on `/mcp`; a request with no
+  key or a bad one is 401 on both, as before. Each such refusal is counted
+  in the audit log under the new action `wrong_listener`, one record for
+  each key and minute: in the admin log for an operator key and in the
+  tenant's log for a tenant key. The operator listener presents `tls.cert`
+  unless `[operator.tls]` names a certificate and key of its own. Both
+  listeners serve the console, which tells a key of the other kind to use
+  the other address. `serve` binds both addresses before it serves either,
+  and logs `the operator listener is bound operator_listen=<address>`
+  before its `serving` line. Without the table nothing changes: one
+  listener serves both kinds of key. The operator-listener page has the
+  how-to, with what to change in proxies and clients.
 - The console plays a recording that a vCon holds inside a dialog: one
   **Play** button for each dialog whose `body` is `base64url` or `base64`
   and whose `mediatype` is `audio/wav`, `audio/mpeg`, `audio/ogg` or
@@ -56,6 +75,16 @@ All notable changes to this project are recorded here. The format follows
   start with `legal_reveal_` together with `legal_read`. The record's
   fields, the catalogs' schema version and every API answer are unchanged,
   and no other client is affected.
+- The description at `/openapi.json` lists 403 for `GET /health`,
+  `GET /key` and `GET /openapi.json`, which answer it only on a server
+  with an operator listener, and names `wrong-listener` among the problem
+  types. A reader of the audit log that knows a fixed list of actions
+  must add `wrong_listener`; a server without an `[operator]` table never
+  writes it.
+- For users of the `vcon-server` library: `config::Config` has a new
+  member, `operator`, and `api::App` a new member, `plane`, so code that
+  builds either with a struct literal must set them (`None` and
+  `access::Plane::Both` keep the behavior as it was).
 - The console is made of two more files, `/console/player.html` and
   `/console/player.js`. A reverse proxy or firewall that passes the
   console's paths by name must pass both, and must pass each answer's

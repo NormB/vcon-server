@@ -367,6 +367,7 @@ HOWTO = (
     "connect-mcp.md",
     "read-audit-logs.md",
     "tui.md",
+    "operator-listener.md",
     "upgrading.md",
 )
 # docs/upgrading.md installs the binary it names as NEW: the one under test.

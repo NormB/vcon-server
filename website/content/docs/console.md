@@ -27,9 +27,10 @@ request it makes is checked and recorded in the
   must pass `/console/` and the files under it, and each answer's headers,
   unchanged.
 
-Two things on this page are on `main` only, in no release yet. Release
+Three things on this page are on `main` only, in no release yet. Release
 0.4.2 records each Reveal as `read` or `legal_read`, not under a reveal
-action, and it has no [recording player](#play-a-recording). The
+action, it has no [recording player](#play-a-recording), and it has no
+[operator listener](@/docs/operator-listener.md). The
 [status](@/docs/status.md) page lists what no release holds.
 
 ## Open it
@@ -364,6 +365,13 @@ Each of these leaves the same audit record as the same request made with
   [getting started](@/docs/getting-started.md).
 - *`The key was not accepted.`:* the key is mistyped, revoked, or of
   another server. The console says no more than this, as the API does.
+- *`This listener does not serve this kind of key (403).`:* the server has
+  an [operator listener](@/docs/operator-listener.md), and the key is of
+  the kind the other address serves. Both addresses serve this console:
+  open it at the address for operator keys to sign in with an operator
+  key, and at the address for tenant keys to sign in with a tenant key.
+  The server's operator has both addresses. The page keeps no key after
+  the refusal.
   Paste the whole token, or make a new key.
 - *A view is not there:* the key lacks the scope the view needs; see the
   table under [what you see](#what-you-see). Sign in with a key that has

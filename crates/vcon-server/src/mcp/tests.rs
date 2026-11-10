@@ -50,6 +50,15 @@ pub(super) async fn serving(
     routes: fn(Arc<App>) -> axum::Router,
     limits: crate::mcp::Limits,
 ) -> Server {
+    serving_on(routes, limits, crate::access::Plane::Both).await
+}
+
+/// [`serving`], on a listener of `plane`.
+pub(super) async fn serving_on(
+    routes: fn(Arc<App>) -> axum::Router,
+    limits: crate::mcp::Limits,
+    plane: crate::access::Plane,
+) -> Server {
     let dir = tempfile::tempdir().expect("temp dir");
     let tenants = Arc::new(
         Tenants::open(
@@ -73,6 +82,7 @@ pub(super) async fn serving(
         supported: Default::default(),
         retention_default: Retention::Years(7),
         mcp: limits,
+        plane,
     });
     let made =
         rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).expect("a certificate");
@@ -2849,5 +2859,83 @@ mod traits {
             "answered: The key does not allow this",
             "Display of Outcome::Answered"
         );
+    }
+}
+
+mod planes {
+    use super::*;
+    use crate::access::Plane;
+
+    async fn on(plane: Plane) -> Server {
+        serving_on(api::router, crate::mcp::Limits::DEFAULT, plane).await
+    }
+
+    fn problem_name(a: &Answer) -> String {
+        a.body["type"]
+            .as_str()
+            .unwrap_or_default()
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_owned()
+    }
+
+    #[tokio::test]
+    async fn the_tenant_listener_serves_mcp_to_a_tenant_key() {
+        let s = on(Plane::Tenant).await;
+        let a = s
+            .post(Some(&s.key(&[Scope::Read])), &initialize("2025-11-25"), &[])
+            .await;
+        assert_eq!(a.status, 200, "{:?}", a.body);
+    }
+
+    #[tokio::test]
+    async fn the_operator_listener_serves_mcp_to_an_operator_key() {
+        let s = on(Plane::Operator).await;
+        let a = s
+            .post(Some(&s.operator()), &initialize("2025-11-25"), &[])
+            .await;
+        assert_eq!(a.status, 200, "{:?}", a.body);
+    }
+
+    #[tokio::test]
+    async fn the_tenant_listener_refuses_mcp_to_an_operator_key() {
+        let s = on(Plane::Tenant).await;
+        let a = s
+            .post(Some(&s.operator()), &initialize("2025-11-25"), &[])
+            .await;
+        assert_eq!(a.status, 403, "{:?}", a.body);
+        assert_eq!(problem_name(&a), "wrong-listener", "{:?}", a.body);
+        assert_eq!(s.admin_log("wrong_listener").len(), 1, "counted");
+        assert_eq!(
+            s.admin_log("mcp"),
+            Vec::<Value>::new(),
+            "not counted as an MCP request"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_operator_listener_refuses_mcp_to_a_tenant_key() {
+        let s = on(Plane::Operator).await;
+        let a = s
+            .post(Some(&s.key(&[Scope::Read])), &list_tools(), &[])
+            .await;
+        assert_eq!(a.status, 403, "{:?}", a.body);
+        assert_eq!(problem_name(&a), "wrong-listener", "{:?}", a.body);
+        assert_eq!(s.tenant_log("wrong_listener").len(), 1, "counted");
+        assert_eq!(
+            s.tenant_log("mcp"),
+            Vec::<Value>::new(),
+            "not counted as an MCP request"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_without_a_key_is_unauthorized_on_each_plane() {
+        for plane in [Plane::Tenant, Plane::Operator] {
+            let s = on(plane).await;
+            let a = s.post(None, &initialize("2025-11-25"), &[]).await;
+            assert_eq!(a.status, 401, "{plane:?}: {:?}", a.body);
+        }
     }
 }

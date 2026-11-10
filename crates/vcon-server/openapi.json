@@ -84,7 +84,7 @@
             }
           },
           "403": {
-            "description": "The key does not allow this: forbidden",
+            "description": "The key does not allow this, or this listener does not serve this kind of key: forbidden, wrong-listener",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -240,7 +240,7 @@
             }
           },
           "403": {
-            "description": "The key does not allow this: forbidden",
+            "description": "The key does not allow this, or this listener does not serve this kind of key: forbidden, wrong-listener",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -373,7 +373,7 @@
             }
           },
           "403": {
-            "description": "The key does not allow this: forbidden",
+            "description": "The key does not allow this, or this listener does not serve this kind of key: forbidden, wrong-listener",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -486,7 +486,7 @@
             }
           },
           "403": {
-            "description": "The key does not allow this: forbidden",
+            "description": "The key does not allow this, or this listener does not serve this kind of key: forbidden, wrong-listener",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -670,7 +670,7 @@
             }
           },
           "403": {
-            "description": "The key does not allow this: forbidden",
+            "description": "The key does not allow this, or this listener does not serve this kind of key: forbidden, wrong-listener",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -763,6 +763,16 @@
               }
             }
           },
+          "403": {
+            "description": "This listener does not serve this kind of key: wrong-listener",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "503": {
             "description": "The service cannot answer now: unavailable, audit-failed, limit-reached or master-key-limit",
             "content": {
@@ -799,6 +809,16 @@
           },
           "401": {
             "description": "No valid bearer key: unauthorized",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "This listener does not serve this kind of key: wrong-listener",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -870,7 +890,7 @@
             }
           },
           "403": {
-            "description": "The request carries an Origin header"
+            "description": "The request carries an Origin header, or this listener does not serve this kind of key (wrong-listener)"
           },
           "406": {
             "description": "The Accept header does not take application/json and text/event-stream"
@@ -945,6 +965,16 @@
           },
           "401": {
             "description": "No valid bearer key: unauthorized",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "This listener does not serve this kind of key: wrong-listener",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1204,7 +1234,7 @@
             }
           },
           "403": {
-            "description": "The key does not allow this: forbidden",
+            "description": "The key does not allow this, or this listener does not serve this kind of key: forbidden, wrong-listener",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1306,7 +1336,7 @@
             }
           },
           "403": {
-            "description": "The key does not allow this: forbidden",
+            "description": "The key does not allow this, or this listener does not serve this kind of key: forbidden, wrong-listener",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1443,7 +1473,7 @@
             }
           },
           "403": {
-            "description": "The key does not allow this: forbidden",
+            "description": "The key does not allow this, or this listener does not serve this kind of key: forbidden, wrong-listener",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1565,7 +1595,7 @@
             }
           },
           "403": {
-            "description": "The key does not allow this: forbidden",
+            "description": "The key does not allow this, or this listener does not serve this kind of key: forbidden, wrong-listener",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1707,7 +1737,7 @@
             }
           },
           "403": {
-            "description": "The key does not allow this: forbidden",
+            "description": "The key does not allow this, or this listener does not serve this kind of key: forbidden, wrong-listener",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1827,7 +1857,7 @@
             }
           },
           "403": {
-            "description": "The key does not allow this: forbidden",
+            "description": "The key does not allow this, or this listener does not serve this kind of key: forbidden, wrong-listener",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1949,7 +1979,7 @@
             }
           },
           "403": {
-            "description": "The key does not allow this: forbidden",
+            "description": "The key does not allow this, or this listener does not serve this kind of key: forbidden, wrong-listener",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2054,7 +2084,7 @@
             }
           },
           "403": {
-            "description": "The key does not allow this: forbidden",
+            "description": "The key does not allow this, or this listener does not serve this kind of key: forbidden, wrong-listener",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2168,7 +2198,7 @@
             }
           },
           "403": {
-            "description": "The key does not allow this: forbidden",
+            "description": "The key does not allow this, or this listener does not serve this kind of key: forbidden, wrong-listener",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2293,7 +2323,7 @@
             }
           },
           "403": {
-            "description": "The key does not allow this: forbidden",
+            "description": "The key does not allow this, or this listener does not serve this kind of key: forbidden, wrong-listener",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2392,7 +2422,7 @@
             }
           },
           "403": {
-            "description": "The key does not allow this: forbidden",
+            "description": "The key does not allow this, or this listener does not serve this kind of key: forbidden, wrong-listener",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2507,7 +2537,7 @@
             }
           },
           "403": {
-            "description": "The key does not allow this: forbidden",
+            "description": "The key does not allow this, or this listener does not serve this kind of key: forbidden, wrong-listener",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2631,7 +2661,7 @@
             }
           },
           "403": {
-            "description": "The key does not allow this: forbidden",
+            "description": "The key does not allow this, or this listener does not serve this kind of key: forbidden, wrong-listener",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2768,7 +2798,7 @@
             }
           },
           "403": {
-            "description": "The key does not allow this: forbidden",
+            "description": "The key does not allow this, or this listener does not serve this kind of key: forbidden, wrong-listener",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2893,7 +2923,7 @@
             }
           },
           "403": {
-            "description": "The key does not allow this: forbidden",
+            "description": "The key does not allow this, or this listener does not serve this kind of key: forbidden, wrong-listener",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2995,7 +3025,7 @@
             }
           },
           "403": {
-            "description": "The key does not allow this: forbidden",
+            "description": "The key does not allow this, or this listener does not serve this kind of key: forbidden, wrong-listener",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3238,6 +3268,7 @@
               "https://vcon-server.com/problems/damaged",
               "https://vcon-server.com/problems/duplicate-member",
               "https://vcon-server.com/problems/forbidden",
+              "https://vcon-server.com/problems/wrong-listener",
               "https://vcon-server.com/problems/gone",
               "https://vcon-server.com/problems/holds-vcons",
               "https://vcon-server.com/problems/immutable",

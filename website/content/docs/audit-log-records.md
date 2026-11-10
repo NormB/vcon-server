@@ -69,6 +69,7 @@ action through MCP is recorded as its HTTP route records it.
 | `health` | a health check, [counted](@/docs/audit-logs.md#counted-records) | the key's |
 | `auth_failed` | a request whose token was refused, [counted](@/docs/audit-logs.md#counted-records) | the key's tenant's when the key is known, otherwise the admin log with an empty actor |
 | `mcp` | a request to `/mcp`, [counted](@/docs/audit-logs.md#counted-records) | the key's |
+| `wrong_listener` | a valid key refused because it came to the listener that serves the other kind of key, on a server with an [operator listener](@/docs/operator-listener.md), [counted](@/docs/audit-logs.md#counted-records) | the admin log for an operator key; the tenant's for a tenant key, or the admin log when the tenant's cannot be opened |
 | `key_create` | a key made, over the admin API or by `vcon-server key create` | admin, copied to the tenant's for a tenant key |
 | `key_revoke` | a key revoked | admin, copied to the tenant's for a tenant key |
 | `key_list` | the keys listed | admin |

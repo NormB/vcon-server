@@ -22,7 +22,7 @@ use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use serde::de::{Deserialize, DeserializeOwned, Deserializer, Error as _};
 
-use crate::access::{self, AuthError, Caller, Scope, Scopes};
+use crate::access::{self, AuthError, Caller, Plane, Scope, Scopes};
 use crate::audit::{Action, Actor, AuditQuery, Entry};
 use crate::ids::{KeyId, TenantId, VersionId};
 use crate::query::BadQuery;
@@ -58,6 +58,8 @@ pub struct App {
     pub retention_default: Retention,
     /// The MCP server's limits.
     pub mcp: crate::mcp::Limits,
+    /// Which keys the listener this serves on admits.
+    pub plane: Plane,
 }
 
 /// The routes, served from `app`.
@@ -1253,18 +1255,28 @@ async fn admit(
 }
 
 /// The caller a request's bearer key names: 401 for a missing or bad
-/// key, and 503 when the key table cannot be read.
+/// key, 503 when the key table cannot be read, and 403 `wrong-listener`
+/// for a valid key of the kind this listener does not serve
+/// ([`Plane::admits`]), counted in the audit.
 pub(crate) async fn authenticated(app: &Arc<App>, headers: &HeaderMap) -> Result<Caller, Problem> {
     let authorization = headers
         .get(AUTHORIZATION)
         .map(|v| v.to_str().unwrap_or_default().to_owned());
-    let tenants = app.tenants.clone();
-    blocking(move || access::authenticate(&tenants, authorization.as_deref()))
-        .await
-        .map_err(|e| match e {
-            AuthError::Io => Problem::Unavailable,
-            _ => Problem::Unauthorized,
-        })
+    let (tenants, plane) = (app.tenants.clone(), app.plane);
+    blocking(move || {
+        let caller =
+            access::authenticate(&tenants, authorization.as_deref()).map_err(|e| match e {
+                AuthError::Io => Problem::Unavailable,
+                _ => Problem::Unauthorized,
+            })?;
+        if plane.admits(&caller) {
+            Ok(caller)
+        } else {
+            tenants.count_wrong_listener(caller.key, caller.tenant);
+            Err(Problem::WrongListener)
+        }
+    })
+    .await
 }
 
 impl App {
@@ -1328,6 +1340,8 @@ pub(crate) async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send 
 pub(crate) enum Problem {
     Unauthorized,
     Forbidden,
+    /// The key is valid, and this listener serves the other kind of key.
+    WrongListener,
     TooLarge,
     Timeout,
     BadBody,
@@ -1419,7 +1433,7 @@ impl Problem {
     pub(crate) fn status(self) -> StatusCode {
         match self {
             Problem::Unauthorized => StatusCode::UNAUTHORIZED,
-            Problem::Forbidden => StatusCode::FORBIDDEN,
+            Problem::Forbidden | Problem::WrongListener => StatusCode::FORBIDDEN,
             Problem::UnknownKey => StatusCode::NOT_FOUND,
             Problem::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Problem::Timeout => StatusCode::REQUEST_TIMEOUT,
@@ -1469,6 +1483,10 @@ impl Problem {
         match self {
             Problem::Unauthorized => ("unauthorized", "A valid bearer key is needed"),
             Problem::Forbidden => ("forbidden", "The key does not allow this"),
+            Problem::WrongListener => (
+                "wrong-listener",
+                "This listener does not serve this kind of key",
+            ),
             Problem::TooLarge => ("too-large", "The body is over the size limit"),
             Problem::Timeout => ("timeout", "The body did not arrive in time"),
             Problem::BadBody => ("bad-body", "The body could not be read"),
@@ -1608,7 +1626,7 @@ pub enum TlsError {
     /// The key file could not be read, or holds no key.
     Key,
     /// The key file breaks the secret-file rule or cannot be opened; the
-    /// text names `tls.key`, the file and the fix.
+    /// text names the configuration key, the file and the fix.
     KeyFile(String),
     /// rustls refused the pair, for instance a key that is not the
     /// certificate's.
@@ -1616,8 +1634,18 @@ pub enum TlsError {
 }
 
 /// The server's TLS configuration from a PEM certificate chain and a PEM
-/// private key.
+/// private key, the files `tls.cert` and `tls.key` name.
 pub fn tls_config(certificate: &Path, key: &Path) -> Result<Arc<ServerConfig>, TlsError> {
+    tls_config_named(certificate, key, "tls.key")
+}
+
+/// [`tls_config`], for a key file that the configuration key `named`
+/// names, so a refusal of the file says which key to look at.
+pub fn tls_config_named(
+    certificate: &Path,
+    key: &Path,
+    named: &str,
+) -> Result<Arc<ServerConfig>, TlsError> {
     let chain: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(certificate)
         .map_err(|_| TlsError::Certificate)?
         .collect::<Result<_, _>>()
@@ -1625,7 +1653,7 @@ pub fn tls_config(certificate: &Path, key: &Path) -> Result<Arc<ServerConfig>, T
     if chain.is_empty() {
         return Err(TlsError::Certificate);
     }
-    let bytes = crate::secret_file::read(key, "tls.key").map_err(TlsError::KeyFile)?;
+    let bytes = crate::secret_file::read(key, named).map_err(TlsError::KeyFile)?;
     let key = PrivateKeyDer::from_pem_slice(&bytes).map_err(|_| TlsError::Key)?;
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     let mut config = ServerConfig::builder_with_provider(provider)
@@ -1825,7 +1853,20 @@ mod tests {
             server_from(&[], default).await
         }
 
+        /// A server whose listener is of `plane`.
+        pub(crate) async fn server_on(plane: Plane) -> Server {
+            server_of(&[], Retention::Years(7), plane).await
+        }
+
         async fn server_from(supported: &[&str], retention_default: Retention) -> Server {
+            server_of(supported, retention_default, Plane::Both).await
+        }
+
+        async fn server_of(
+            supported: &[&str],
+            retention_default: Retention,
+            plane: Plane,
+        ) -> Server {
             let dir = tempfile::tempdir().expect("temp dir");
             let clock = Arc::new(TestClock(std::sync::Mutex::new(START)));
             let tenants = Arc::new(
@@ -1848,6 +1889,7 @@ mod tests {
                 supported: supported.iter().map(|s| (*s).to_owned()).collect(),
                 retention_default,
                 mcp: crate::mcp::Limits::DEFAULT,
+                plane,
             });
             let certificate = certificate();
             let tls = tls_config(&certificate.cert, &certificate.key).expect("tls");
@@ -5018,6 +5060,9 @@ mod reveal_routes;
 mod player_routes;
 
 #[cfg(test)]
+mod plane_routes;
+
+#[cfg(test)]
 mod site_pages {
     use std::collections::BTreeSet;
     use std::path::PathBuf;
@@ -5031,6 +5076,7 @@ mod site_pages {
         let mut all = vec![
             Problem::Unauthorized,
             Problem::Forbidden,
+            Problem::WrongListener,
             Problem::TooLarge,
             Problem::Timeout,
             Problem::BadBody,
@@ -5053,6 +5099,7 @@ mod site_pages {
             match problem {
                 Problem::Unauthorized
                 | Problem::Forbidden
+                | Problem::WrongListener
                 | Problem::TooLarge
                 | Problem::Timeout
                 | Problem::BadBody

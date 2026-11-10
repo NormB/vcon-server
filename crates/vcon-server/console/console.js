@@ -70,13 +70,13 @@ async function request(method, path, body = undefined, headers = {}) {
 
 /** A refusal as text: the problem's title, its status and what to do. */
 async function refusal(answer) {
-  let title;
+  let problem;
   try {
-    title = (await answer.json()).title;
+    problem = await answer.json();
   } catch {
-    title = undefined;
+    problem = null;
   }
-  return refusalText(answer.status, title);
+  return refusalText(answer.status, problem?.title, problem?.type);
 }
 
 function show(id, shown) {

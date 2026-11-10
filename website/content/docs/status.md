@@ -125,6 +125,12 @@ release holds yet. Release 0.4.2 does not have these:
   its reveals that way. Release 0.4.2 has no `reveal` parameter: it passes
   the query over and records `read` or `legal_read`. See
   [reveals](@/docs/http-api.md#reveals).
+- **An operator listener.** With an `[operator]` table in the
+  configuration, the server listens on a second address that serves
+  operator keys only, and `listen` serves tenant keys only; a valid key at
+  the other address is refused with `wrong-listener`. Release 0.4.2 has
+  one listener for both kinds of key, and refuses a configuration with
+  that table. See [the operator listener](@/docs/operator-listener.md).
 - **A recording player in the console.** A dialog's recording that is
   inside the vCon plays in a tab of its own, `/console/player.html`, whose
   policy alone lets a blob play and lets the page make no request. Each

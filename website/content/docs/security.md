@@ -65,7 +65,7 @@ no framing.
 | The master key alone | nothing without the data |
 | Both | everything they cover, as of when they were taken |
 | A tenant key | its scopes, for its tenant, until revoked |
-| An operator key | tenant and key management over HTTP; never any vCon, and never a new operator key |
+| An operator key | tenant and key management over HTTP; never any vCon, and never a new operator key. On a server with an [operator listener](@/docs/operator-listener.md), only at that listener's address: the address tenants use refuses it |
 | The request log | method, route template, status and timing only |
 | The bucket of [S3 storage](@/docs/s3-storage.md) | sealed objects only, named by random ids: no vCon, no uuid, and no key that opens one |
 | The S3 secret key | the same objects, and the power to delete them: no vCon, but a deleted object is a version lost, so keep the key as a secret and give it access to one bucket |

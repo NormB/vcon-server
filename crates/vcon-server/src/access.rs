@@ -165,6 +165,34 @@ pub struct Caller {
     pub scopes: Scopes,
 }
 
+/// Which keys a listener serves. With one listener, it serves both
+/// kinds. With an operator listener beside it, each serves one kind: a
+/// tenant key on the tenant listener and an operator key on the operator
+/// listener, and a valid key of the other kind is refused before any
+/// route sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Plane {
+    /// The one listener of a server with no operator listener.
+    #[default]
+    Both,
+    /// The tenant listener of a server that has an operator listener.
+    Tenant,
+    /// The operator listener.
+    Operator,
+}
+
+impl Plane {
+    /// Whether a listener of this plane serves `caller`.
+    #[must_use]
+    pub fn admits(self, caller: &Caller) -> bool {
+        match self {
+            Plane::Both => true,
+            Plane::Tenant => caller.tenant.is_some(),
+            Plane::Operator => caller.tenant.is_none(),
+        }
+    }
+}
+
 /// Why a request's token was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthError {
@@ -317,6 +345,85 @@ mod tests {
     use super::*;
 
     const ID: &str = "0123456789abcdef";
+
+    mod planes {
+        use super::*;
+
+        fn tenant_key(scopes: &[Scope]) -> Caller {
+            Caller {
+                key: KeyId([1; 8]),
+                tenant: Some(TenantId([2; 16])),
+                scopes: Scopes::of(scopes),
+            }
+        }
+
+        fn operator_key() -> Caller {
+            Caller {
+                key: KeyId([3; 8]),
+                tenant: None,
+                scopes: Scopes::of(&[Scope::Admin]),
+            }
+        }
+
+        #[test]
+        fn the_one_listener_admits_both_kinds_of_key() {
+            assert!(
+                Plane::Both.admits(&tenant_key(&[Scope::Read])),
+                "a tenant key"
+            );
+            assert!(Plane::Both.admits(&operator_key()), "an operator key");
+        }
+
+        #[test]
+        fn the_tenant_listener_admits_tenant_keys_only() {
+            assert!(
+                Plane::Tenant.admits(&tenant_key(&[Scope::Read])),
+                "a tenant key"
+            );
+            assert!(!Plane::Tenant.admits(&operator_key()), "an operator key");
+        }
+
+        #[test]
+        fn the_operator_listener_admits_operator_keys_only() {
+            assert!(Plane::Operator.admits(&operator_key()), "an operator key");
+            assert!(
+                !Plane::Operator.admits(&tenant_key(&[Scope::Read])),
+                "a tenant key"
+            );
+        }
+
+        /// The kind of a key is whether it has a tenant, never what its
+        /// scopes say: a tenant key with no scope, or with every scope, is
+        /// a tenant key, and a key with no tenant is an operator key
+        /// whatever it holds.
+        #[test]
+        fn the_kind_of_a_key_is_its_tenant_not_its_scopes() {
+            let every = [
+                Scope::Write,
+                Scope::Read,
+                Scope::Delete,
+                Scope::Legal,
+                Scope::Audit,
+                Scope::Admin,
+            ];
+            for scopes in [&[][..], &every[..], &[Scope::Admin][..]] {
+                let of_a_tenant = tenant_key(scopes);
+                assert!(Plane::Tenant.admits(&of_a_tenant), "{scopes:?}");
+                assert!(!Plane::Operator.admits(&of_a_tenant), "{scopes:?}");
+                let of_none = Caller {
+                    tenant: None,
+                    ..of_a_tenant
+                };
+                assert!(Plane::Operator.admits(&of_none), "{scopes:?}");
+                assert!(!Plane::Tenant.admits(&of_none), "{scopes:?}");
+            }
+        }
+
+        #[test]
+        fn a_listener_is_the_one_listener_unless_said_otherwise() {
+            assert_eq!(Plane::default(), Plane::Both, "the default plane");
+        }
+    }
 
     fn secret(byte: u8) -> String {
         URL_SAFE_NO_PAD.encode([byte; 32])

@@ -86,6 +86,12 @@ with the status each was answered, in the key's tenant log or, for an
 operator key, the admin log. A request whose count cannot be written is
 answered 503 audit-failed.
 
+On a server with an [operator listener](@/docs/operator-listener.md), a
+valid key refused because it came to the listener that serves the other
+kind of key is counted as action `wrong_listener`, with status 403, under
+the key's id. The request is refused whether or not the count could be
+written. The action is on `main` only, in no release yet.
+
 ## Reading the logs
 
 `vcon-server audit export (--tenant <id> | --admin) [--since <seq>]` writes a

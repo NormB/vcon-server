@@ -1469,3 +1469,331 @@ mod postgres {
         );
     }
 }
+
+/// `serve` with an `[operator]` table: a second listener that serves
+/// operator keys only, while `listen` serves tenant keys only.
+mod operator_listener {
+    use super::*;
+
+    /// `setup`, with an operator key made, and `table` added to the
+    /// configuration.
+    fn setup_with(table: &str) -> (Setup, String) {
+        let s = setup();
+        let operator = registry(&s)
+            .create_key(Actor::Cli, None, Scopes::of(&[Scope::Admin]), "operator")
+            .expect("an operator key")
+            .token;
+        let mut text = std::fs::read_to_string(&s.config).expect("read");
+        text.push_str(table);
+        std::fs::write(&s.config, text).expect("write");
+        (s, operator)
+    }
+
+    const TABLE: &str = "\n[operator]\nlisten = \"127.0.0.1:0\"\n";
+
+    /// The address the operator listener's line names.
+    fn operator_addr(started: &mut Started) -> SocketAddr {
+        let line = started
+            .line_with("operator_listen=", Duration::from_secs(20))
+            .expect("a line that names the operator listener");
+        line.split_whitespace()
+            .find_map(|f| f.strip_prefix("operator_listen="))
+            .expect("the field")
+            .parse()
+            .expect("an address")
+    }
+
+    /// A client that trusts `pem` and reaches `addr` as localhost.
+    fn client(pem: &str, addr: SocketAddr) -> reqwest::Client {
+        reqwest::Client::builder()
+            .tls_certs_only([reqwest::Certificate::from_pem(pem.as_bytes()).expect("pem")])
+            .resolve("localhost", addr)
+            .no_proxy()
+            .timeout(Duration::from_secs(20))
+            .build()
+            .expect("a client")
+    }
+
+    /// The status of `GET path` at `addr` with `token`, and the last part
+    /// of the problem type when the answer is a problem.
+    async fn get(pem: &str, addr: SocketAddr, path: &str, token: &str) -> (u16, String) {
+        let answer = client(pem, addr)
+            .get(format!("https://localhost:{}{path}", addr.port()))
+            .bearer_auth(token)
+            .send()
+            .await
+            .expect("an answer");
+        let status = answer.status().as_u16();
+        let problem = answer
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|body| body["type"].as_str().map(str::to_owned))
+            .and_then(|url| url.rsplit('/').next().map(str::to_owned))
+            .unwrap_or_default();
+        (status, problem)
+    }
+
+    fn stop(started: &mut Started) {
+        let pid = started.running.0.id();
+        // SAFETY: the pid is our running child's.
+        let sent = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+        assert_eq!(sent, 0, "the signal was sent");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let status = loop {
+            if let Some(status) = started.running.0.try_wait().expect("wait") {
+                break status;
+            }
+            assert!(Instant::now() < deadline, "serve did not stop on SIGTERM");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(status.success(), "it stopped cleanly: {status:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn each_listener_serves_its_own_kind_of_key_and_refuses_the_other() {
+        let (s, operator) = setup_with(TABLE);
+        let mut started = start(serve(&s));
+        let (tenant_addr, operator_addr) = (started.addr, operator_addr(&mut started));
+        assert_ne!(tenant_addr, operator_addr, "two sockets");
+
+        assert_eq!(
+            get(&s.pem, tenant_addr, "/key", &s.token).await.0,
+            200,
+            "a tenant key on the tenant listener"
+        );
+        assert_eq!(
+            get(&s.pem, operator_addr, "/admin/tenants", &operator)
+                .await
+                .0,
+            200,
+            "an operator key on the operator listener"
+        );
+        assert_eq!(
+            get(&s.pem, tenant_addr, "/admin/tenants", &operator).await,
+            (403, "wrong-listener".to_owned()),
+            "an operator key on the tenant listener"
+        );
+        assert_eq!(
+            get(&s.pem, operator_addr, "/vcons", &s.token).await,
+            (403, "wrong-listener".to_owned()),
+            "a tenant key on the operator listener"
+        );
+        stop(&mut started);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn without_the_table_the_one_listener_serves_both_kinds_as_before() {
+        let (s, operator) = setup_with("");
+        let mut started = start(serve(&s));
+        let addr = started.addr;
+        assert_eq!(
+            get(&s.pem, addr, "/key", &s.token).await.0,
+            200,
+            "a tenant key"
+        );
+        assert_eq!(
+            get(&s.pem, addr, "/admin/tenants", &operator).await.0,
+            200,
+            "an operator key"
+        );
+        assert_eq!(
+            started.line_with("operator_listen=", Duration::from_millis(300)),
+            None,
+            "no operator listener is named"
+        );
+        stop(&mut started);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn both_listeners_serve_the_console_without_a_key() {
+        let (s, _) = setup_with(TABLE);
+        let mut started = start(serve(&s));
+        for addr in [started.addr, operator_addr(&mut started)] {
+            let answer = client(&s.pem, addr)
+                .get(format!("https://localhost:{}/console/", addr.port()))
+                .send()
+                .await
+                .expect("an answer");
+            assert_eq!(answer.status(), 200, "{addr}");
+        }
+        stop(&mut started);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_operator_listener_presents_its_own_certificate_when_it_has_one() {
+        let made = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()])
+            .expect("a certificate");
+        let own_pem = made.cert.pem();
+        let (s, operator) = setup_with("");
+        let (cert, key) = (s.dir.path().join("ops.pem"), s.dir.path().join("ops.key"));
+        std::fs::write(&cert, &own_pem).expect("write");
+        std::fs::write(&key, made.signing_key.serialize_pem()).expect("write");
+        chmod(&key, 0o600);
+        let mut text = std::fs::read_to_string(&s.config).expect("read");
+        text.push_str(&format!(
+            "{TABLE}\n[operator.tls]\ncert = \"{}\"\nkey = \"{}\"\n",
+            cert.display(),
+            key.display()
+        ));
+        std::fs::write(&s.config, text).expect("write");
+        let mut started = start(serve(&s));
+        let (tenant_addr, operator_addr) = (started.addr, operator_addr(&mut started));
+
+        assert_eq!(
+            get(&own_pem, operator_addr, "/key", &operator).await.0,
+            200,
+            "the operator listener, trusted by its own certificate"
+        );
+        assert_eq!(
+            get(&s.pem, tenant_addr, "/key", &s.token).await.0,
+            200,
+            "the tenant listener, trusted by the server's"
+        );
+        let crossed = client(&s.pem, operator_addr)
+            .get(format!("https://localhost:{}/key", operator_addr.port()))
+            .bearer_auth(&operator)
+            .send()
+            .await;
+        assert!(
+            crossed.is_err(),
+            "the operator listener does not present the server's certificate: {crossed:?}"
+        );
+        stop(&mut started);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sigterm_stops_both_listeners() {
+        let (s, _) = setup_with(TABLE);
+        let mut started = start(serve(&s));
+        let (tenant_addr, operator_addr) = (started.addr, operator_addr(&mut started));
+        stop(&mut started);
+        for addr in [tenant_addr, operator_addr] {
+            assert!(
+                std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(5)).is_err(),
+                "{addr} no longer listens"
+            );
+        }
+    }
+
+    #[test]
+    fn the_serving_line_still_names_the_tenant_listener() {
+        let (s, _) = setup_with(TABLE);
+        let mut started = start(serve(&s));
+        let tenant_addr = started.addr;
+        let operator_addr = operator_addr(&mut started);
+        assert_ne!(tenant_addr.port(), 0, "the port bound");
+        assert_ne!(operator_addr.port(), 0, "the port bound");
+        assert_ne!(tenant_addr.port(), operator_addr.port(), "a port each");
+        assert!(tenant_addr.ip().is_loopback(), "{tenant_addr}");
+        assert!(operator_addr.ip().is_loopback(), "{operator_addr}");
+    }
+
+    #[test]
+    fn the_operator_listener_is_named_before_the_serving_line() {
+        // A script that waits for the serving line finds both listeners
+        // bound when it sees it.
+        let (s, _) = setup_with(TABLE);
+        let started = start(serve(&s));
+        assert!(
+            started
+                .early
+                .iter()
+                .any(|line| line.contains("operator_listen=127.0.0.1:")),
+            "named before the serving line: {:?}",
+            started.early
+        );
+    }
+
+    #[test]
+    fn an_operator_address_that_is_taken_stops_the_start() {
+        let taken = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = taken.local_addr().expect("addr");
+        let (s, _) = setup_with(&format!("\n[operator]\nlisten = \"{addr}\"\n"));
+        let text = stderr(&refused(serve(&s)));
+        assert!(
+            text.contains("the operator listening address cannot be bound: "),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_tenant_address_that_is_taken_is_still_named_as_the_listening_address() {
+        let taken = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = taken.local_addr().expect("addr");
+        let (s, _) = setup_with(TABLE);
+        let text = std::fs::read_to_string(&s.config).expect("read").replace(
+            "listen = \"127.0.0.1:0\"\ndata_dir",
+            &format!("listen = \"{addr}\"\ndata_dir"),
+        );
+        std::fs::write(&s.config, text).expect("write");
+        let text = stderr(&refused(serve(&s)));
+        assert!(
+            text.contains("the listening address cannot be bound: "),
+            "{text}"
+        );
+        assert!(!text.contains("operator"), "{text}");
+    }
+
+    #[test]
+    fn the_tenant_listeners_own_socket_stops_the_start_and_names_the_key() {
+        let (s, _) = setup_with("\n[operator]\nlisten = \"127.0.0.1:8443\"\n");
+        let text = std::fs::read_to_string(&s.config).expect("read").replace(
+            "listen = \"127.0.0.1:0\"\ndata_dir",
+            "listen = \"127.0.0.1:8443\"\ndata_dir",
+        );
+        std::fs::write(&s.config, text).expect("write");
+        let text = stderr(&refused(serve(&s)));
+        assert!(text.contains("operator.listen: 127.0.0.1:8443"), "{text}");
+    }
+
+    #[test]
+    fn an_operator_key_file_other_users_may_read_stops_the_start_and_names_the_fix() {
+        let (s, _) = setup_with("");
+        let made = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()])
+            .expect("a certificate");
+        let (cert, key) = (s.dir.path().join("ops.pem"), s.dir.path().join("ops.key"));
+        std::fs::write(&cert, made.cert.pem()).expect("write");
+        std::fs::write(&key, made.signing_key.serialize_pem()).expect("write");
+        chmod(&key, 0o644);
+        let mut text = std::fs::read_to_string(&s.config).expect("read");
+        text.push_str(&format!(
+            "{TABLE}\n[operator.tls]\ncert = \"{}\"\nkey = \"{}\"\n",
+            cert.display(),
+            key.display()
+        ));
+        std::fs::write(&s.config, text).expect("write");
+        let text = stderr(&refused(serve(&s)));
+        let path = key.display();
+        assert!(
+            text.contains(&format!(
+                "the operator listener's TLS certificate or key cannot be used: operator.tls.key {path}: other users may read or change the file (mode 0644); run `chmod 600 {path}`"
+            )),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn an_operator_certificate_that_is_missing_stops_the_start() {
+        let (s, _) = setup_with("");
+        let mut text = std::fs::read_to_string(&s.config).expect("read");
+        text.push_str(&format!(
+            "{TABLE}\n[operator.tls]\ncert = \"{}\"\nkey = \"{}\"\n",
+            s.dir.path().join("missing.pem").display(),
+            s.tls_key.display()
+        ));
+        std::fs::write(&s.config, text).expect("write");
+        let text = stderr(&refused(serve(&s)));
+        assert!(
+            text.contains("the operator listener's TLS certificate or key cannot be used"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn an_operator_table_without_its_address_stops_the_start_and_names_the_key() {
+        let (s, _) = setup_with("\n[operator]\n");
+        let text = stderr(&refused(serve(&s)));
+        assert!(text.contains("`listen`"), "{text}");
+    }
+}

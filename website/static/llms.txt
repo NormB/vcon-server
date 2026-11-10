@@ -24,6 +24,7 @@
 - [Connect an AI agent over MCP](https://vcon-server.com/docs/connect-mcp/): a key for the agent, the handshake and the tool list over HTTPS and through vcon-server mcp
 - [Read the audit logs](https://vcon-server.com/docs/read-audit-logs/): a tenant's log and the admin log, on the host and over HTTPS, and who revealed which part of a vCon
 - [Terminal UI](https://vcon-server.com/docs/tui/): vcon-server tui: the key and client file it needs, its keys and its messages
+- [Operator listener](https://vcon-server.com/docs/operator-listener/): a second listener for operator keys only, its configuration, checks and what to change in proxies and clients
 
 ## Concepts
 

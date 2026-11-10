@@ -212,6 +212,30 @@ test.describe("refusals", () => {
   test("a missing scope is told which kind of key is needed", () => {
     expect(refusalText(403, "Forbidden")).toBe("Forbidden (403). Sign in with a key that holds the scope this needs.");
   });
+  test("a key on the listener that serves the other kind is told to use the other address", () => {
+    expect(
+      refusalText(403, "This listener does not serve this kind of key", "https://vcon-server.com/problems/wrong-listener"),
+    ).toBe(
+      "This listener does not serve this kind of key (403). " +
+        "Open the console at the server's other address and sign in there: " +
+        "one address serves tenant keys and the other serves operator keys.",
+    );
+  });
+  test("a missing scope keeps its own advice when the problem type is forbidden", () => {
+    expect(refusalText(403, "Forbidden", "https://vcon-server.com/problems/forbidden")).toBe(
+      "Forbidden (403). Sign in with a key that holds the scope this needs.",
+    );
+  });
+  test("a problem type that is not text, or is absent, changes nothing", () => {
+    for (const type of [undefined, null, 7, {}, ["https://vcon-server.com/problems/wrong-listener"], ""]) {
+      expect(refusalText(403, "Forbidden", type)).toBe("Forbidden (403). Sign in with a key that holds the scope this needs.");
+    }
+  });
+  test("only a type that ends in the problem's name is the wrong listener", () => {
+    for (const type of ["wrong-listener/other", "https://example.com/problems/wrong-listener-not", "WRONG-LISTENER"]) {
+      expect(refusalText(403, "Forbidden", type)).toBe("Forbidden (403). Sign in with a key that holds the scope this needs.");
+    }
+  });
   test("a changed version is told to open it again", () => {
     expect(refusalText(412, "Precondition failed")).toBe(
       "Precondition failed (412). It changed since you opened it: open it again, then repeat the change.",

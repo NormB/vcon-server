@@ -53,6 +53,36 @@ pub struct Config {
     pub export: Export,
     /// Where the catalogs and the registry are kept: the `[catalog]` table.
     pub catalog: CatalogStore,
+    /// The operator listener: the `[operator]` table. Without it, the one
+    /// listener serves operator keys too.
+    pub operator: Option<Operator>,
+}
+
+/// The operator listener: the `[operator]` table. With it, `serve` listens
+/// on a second address that serves operator keys only, and `listen` serves
+/// tenant keys only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Operator {
+    /// The address and port of the operator listener (`operator.listen`).
+    pub listen: SocketAddr,
+    /// Its certificate chain (`operator.tls.cert`), or `tls.cert` when the
+    /// table has no `[operator.tls]`.
+    pub tls_cert: PathBuf,
+    /// Its private key (`operator.tls.key`), or `tls.key` when the table
+    /// has no `[operator.tls]`.
+    pub tls_key: PathBuf,
+}
+
+/// Whether two listening addresses would take the same socket: the same
+/// port, other than the port 0 that asks the system for a free one, on
+/// the same address, or on addresses of one family of which one is the
+/// unspecified address, which takes every address of the family.
+#[must_use]
+pub fn same_socket(a: SocketAddr, b: SocketAddr) -> bool {
+    a.port() == b.port()
+        && a.port() != 0
+        && (a.ip() == b.ip()
+            || (a.is_ipv4() == b.is_ipv4() && (a.ip().is_unspecified() || b.ip().is_unspecified())))
 }
 
 /// Where the catalogs and the registry are kept: `catalog.backend`.
@@ -318,10 +348,11 @@ pub fn parse(text: &str) -> Result<Config, ConfigError> {
             ))
         })?,
     };
+    let tls = (raw.tls.cert, raw.tls.key);
     Ok(Config {
         listen: raw.listen,
-        tls_cert: raw.tls.cert,
-        tls_key: raw.tls.key,
+        tls_cert: tls.0.clone(),
+        tls_key: tls.1.clone(),
         data_dir: raw.data_dir,
         master_key: raw.master_key,
         retention_default,
@@ -349,7 +380,35 @@ pub fn parse(text: &str) -> Result<Config, ConfigError> {
             s3: raw.export.s3.map(export_s3).transpose()?,
         },
         catalog,
+        operator: operator(raw.operator, raw.listen, &tls)?,
     })
+}
+
+/// The `[operator]` table, checked against the tenant listener.
+fn operator(
+    raw: Option<RawOperator>,
+    listen: SocketAddr,
+    tls: &(PathBuf, PathBuf),
+) -> Result<Option<Operator>, ConfigError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    if same_socket(raw.listen, listen) {
+        return Err(ConfigError(format!(
+            "operator.listen: {} is the socket `listen` takes ({listen}); the operator listener \
+             needs an address or port of its own",
+            raw.listen
+        )));
+    }
+    let (tls_cert, tls_key) = match raw.tls {
+        Some(own) => (own.cert, own.key),
+        None => tls.clone(),
+    };
+    Ok(Some(Operator {
+        listen: raw.listen,
+        tls_cert,
+        tls_key,
+    }))
 }
 
 /// The `[mcp]` table's limits, each key that is not written at its default.
@@ -815,6 +874,14 @@ struct Raw {
     export: RawExport,
     #[serde(default)]
     catalog: RawCatalog,
+    operator: Option<RawOperator>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawOperator {
+    listen: SocketAddr,
+    tls: Option<RawTls>,
 }
 
 #[derive(Default, Deserialize)]
@@ -947,6 +1014,13 @@ supported_critical = ["known", "other"]
 [tls]
 cert = "/etc/vcon-server/cert.pem"
 key = "/etc/vcon-server/key.pem"
+
+[operator]
+listen = "127.0.0.1:8444"
+
+[operator.tls]
+cert = "/etc/vcon-server/operator-cert.pem"
+key = "/etc/vcon-server/operator-key.pem"
 
 [limits]
 body = 10485760
@@ -1088,9 +1162,277 @@ lock_timeout = 20
                     statement_timeout: Duration::from_secs(60),
                     lock_timeout: Duration::from_secs(20),
                 })),
+                operator: Some(Operator {
+                    listen: "127.0.0.1:8444".parse().expect("address"),
+                    tls_cert: "/etc/vcon-server/operator-cert.pem".into(),
+                    tls_key: "/etc/vcon-server/operator-key.pem".into(),
+                }),
             }),
             "every key the file writes is read into its field"
         );
+    }
+
+    mod operator_listener {
+        use super::*;
+
+        /// The least configuration, with an `[operator]` table made of `table`.
+        fn with(table: &str) -> String {
+            format!("{LEAST}\n{table}")
+        }
+
+        fn address(text: &str) -> SocketAddr {
+            text.parse().expect("an address")
+        }
+
+        #[test]
+        fn without_the_table_there_is_no_operator_listener() {
+            assert_eq!(
+                parse(LEAST).expect("parses").operator,
+                None,
+                "one listener, as before the table existed"
+            );
+        }
+
+        #[test]
+        fn the_table_with_its_address_alone_takes_the_servers_certificate_and_key() {
+            let config = parse(&with("[operator]\nlisten = \"127.0.0.1:8444\"\n")).expect("parses");
+            assert_eq!(
+                config.operator,
+                Some(Operator {
+                    listen: address("127.0.0.1:8444"),
+                    tls_cert: "/etc/vcon-server/cert.pem".into(),
+                    tls_key: "/etc/vcon-server/key.pem".into(),
+                }),
+                "tls.cert and tls.key serve both listeners"
+            );
+        }
+
+        #[test]
+        fn the_table_may_name_a_certificate_and_key_of_its_own() {
+            let config = parse(&with(
+                "[operator]\nlisten = \"127.0.0.1:8444\"\n\n[operator.tls]\n\
+                 cert = \"/etc/vcon-server/ops.pem\"\nkey = \"/etc/vcon-server/ops.key\"\n",
+            ))
+            .expect("parses");
+            assert_eq!(
+                config.operator,
+                Some(Operator {
+                    listen: address("127.0.0.1:8444"),
+                    tls_cert: "/etc/vcon-server/ops.pem".into(),
+                    tls_key: "/etc/vcon-server/ops.key".into(),
+                }),
+                "the operator listener's own pair"
+            );
+            assert_eq!(
+                config.tls_cert,
+                PathBuf::from("/etc/vcon-server/cert.pem"),
+                "the tenant listener keeps its own"
+            );
+        }
+
+        #[test]
+        fn the_table_leaves_every_other_key_as_it_was() {
+            let without = parse(LEAST).expect("parses");
+            let with = parse(&with("[operator]\nlisten = \"127.0.0.1:8444\"\n")).expect("parses");
+            assert_eq!(
+                Config {
+                    operator: None,
+                    ..with
+                },
+                without,
+                "only the operator member differs"
+            );
+        }
+
+        #[test]
+        fn the_operator_listener_may_be_on_any_address_the_operator_chooses() {
+            for listen in [
+                "127.0.0.1:8444",
+                "[::1]:8444",
+                "192.0.2.10:8444",
+                "[2001:db8::10]:8444",
+                "0.0.0.0:8444",
+                "127.0.0.1:0",
+            ] {
+                let config =
+                    parse(&with(&format!("[operator]\nlisten = \"{listen}\"\n"))).expect(listen);
+                assert_eq!(
+                    config.operator.expect("an operator listener").listen,
+                    address(listen),
+                    "{listen}"
+                );
+            }
+        }
+
+        #[test]
+        fn the_same_port_on_another_address_is_another_socket() {
+            for (tenant, operator) in [
+                ("192.0.2.10:8443", "127.0.0.1:8443"),
+                ("127.0.0.1:8443", "[::1]:8443"),
+                ("0.0.0.0:8443", "[::1]:8443"),
+            ] {
+                let text = with(&format!("[operator]\nlisten = \"{operator}\"\n")).replace(
+                    "127.0.0.1:8443\"\ndata_dir",
+                    &format!("{tenant}\"\ndata_dir"),
+                );
+                assert!(
+                    parse(&text).is_ok(),
+                    "{tenant} and {operator}: {:?}",
+                    parse(&text)
+                );
+            }
+        }
+
+        #[test]
+        fn port_zero_twice_is_two_sockets() {
+            let text = with("[operator]\nlisten = \"127.0.0.1:0\"\n")
+                .replace("127.0.0.1:8443", "127.0.0.1:0");
+            let config = parse(&text).expect("parses");
+            assert_eq!(config.listen, address("127.0.0.1:0"), "the tenant listener");
+            assert_eq!(
+                config.operator.expect("an operator listener").listen,
+                address("127.0.0.1:0"),
+                "the operator listener"
+            );
+        }
+
+        #[test]
+        fn the_table_without_its_address_is_refused_by_name() {
+            for table in [
+                "[operator]\n",
+                "[operator.tls]\ncert = \"a.pem\"\nkey = \"a.key\"\n",
+            ] {
+                let error = parse(&with(table)).expect_err("no address");
+                assert!(error.0.contains("`listen`"), "{table}: {error}");
+            }
+        }
+
+        #[test]
+        fn the_tenant_listeners_own_socket_is_refused() {
+            let error =
+                parse(&with("[operator]\nlisten = \"127.0.0.1:8443\"\n")).expect_err("one socket");
+            assert_eq!(
+                error.0,
+                "operator.listen: 127.0.0.1:8443 is the socket `listen` takes (127.0.0.1:8443); \
+                 the operator listener needs an address or port of its own",
+                "the refusal names both keys and both addresses"
+            );
+        }
+
+        #[test]
+        fn a_socket_the_tenant_listener_covers_is_refused() {
+            for (tenant, operator) in [
+                ("0.0.0.0:8443", "127.0.0.1:8443"),
+                ("127.0.0.1:8443", "0.0.0.0:8443"),
+                ("[::]:8443", "[::1]:8443"),
+                ("[2001:db8::10]:8443", "[::]:8443"),
+            ] {
+                let text = with(&format!("[operator]\nlisten = \"{operator}\"\n")).replace(
+                    "127.0.0.1:8443\"\ndata_dir",
+                    &format!("{tenant}\"\ndata_dir"),
+                );
+                let error = parse(&text).expect_err("one socket");
+                assert!(
+                    error.0.starts_with("operator.listen: "),
+                    "{tenant} and {operator}: {error}"
+                );
+            }
+        }
+
+        #[test]
+        fn an_address_that_is_not_one_is_refused_by_name() {
+            for listen in ["localhost:8444", "127.0.0.1", "8444", "", "127.0.0.1:99999"] {
+                let error = parse(&with(&format!("[operator]\nlisten = \"{listen}\"\n")))
+                    .expect_err(listen);
+                assert!(error.0.contains("listen"), "{listen}: {error}");
+            }
+        }
+
+        #[test]
+        fn an_address_of_the_wrong_type_is_refused() {
+            for value in ["8444", "true", "[\"127.0.0.1:8444\"]"] {
+                let error =
+                    parse(&with(&format!("[operator]\nlisten = {value}\n"))).expect_err(value);
+                assert!(error.0.contains("listen"), "{value}: {error}");
+            }
+        }
+
+        #[test]
+        fn an_unknown_key_in_the_table_is_refused_by_name() {
+            for (table, key) in [
+                (
+                    "[operator]\nlisten = \"127.0.0.1:8444\"\nport = 8444\n",
+                    "port",
+                ),
+                (
+                    "[operator]\nlisten = \"127.0.0.1:8444\"\n[operator.tls]\ncert = \"a\"\nkey = \"b\"\nca = \"c\"\n",
+                    "ca",
+                ),
+                (
+                    "[operator]\nlisten = \"127.0.0.1:8444\"\n[operator.limits]\nbody = 1\n",
+                    "limits",
+                ),
+            ] {
+                let error = parse(&with(table)).expect_err(key);
+                assert!(error.0.contains(&format!("`{key}`")), "{key}: {error}");
+            }
+        }
+
+        #[test]
+        fn half_a_certificate_and_key_pair_is_refused_by_the_missing_half() {
+            for (given, missing) in [("cert", "key"), ("key", "cert")] {
+                let table = format!(
+                    "[operator]\nlisten = \"127.0.0.1:8444\"\n[operator.tls]\n{given} = \"a.pem\"\n"
+                );
+                let error = parse(&with(&table)).expect_err(missing);
+                assert!(
+                    error.0.contains(&format!("`{missing}`")),
+                    "{given} alone: {error}"
+                );
+            }
+        }
+
+        #[test]
+        fn the_table_written_twice_is_refused() {
+            let table = "[operator]\nlisten = \"127.0.0.1:8444\"\n[operator]\nlisten = \"127.0.0.1:8445\"\n";
+            assert!(parse(&with(table)).is_err(), "TOML takes a table once");
+        }
+
+        #[test]
+        fn operator_as_a_value_and_not_a_table_is_refused() {
+            let text = format!("operator = \"127.0.0.1:8444\"\n{LEAST}");
+            let error = parse(&text).expect_err("not a table");
+            assert!(error.0.contains("operator"), "{error}");
+        }
+
+        #[test]
+        fn two_addresses_are_one_socket_only_on_one_port_and_one_address() {
+            let same = [
+                ("127.0.0.1:8443", "127.0.0.1:8443"),
+                ("0.0.0.0:8443", "127.0.0.1:8443"),
+                ("192.0.2.10:8443", "0.0.0.0:8443"),
+                ("[::]:8443", "[2001:db8::10]:8443"),
+                ("[::1]:8443", "[::1]:8443"),
+                ("0.0.0.0:8443", "0.0.0.0:8443"),
+            ];
+            for (a, b) in same {
+                assert!(same_socket(address(a), address(b)), "{a} and {b}");
+                assert!(same_socket(address(b), address(a)), "{b} and {a}");
+            }
+            let different = [
+                ("127.0.0.1:8443", "127.0.0.1:8444"),
+                ("127.0.0.1:8443", "192.0.2.10:8443"),
+                ("0.0.0.0:8443", "0.0.0.0:8444"),
+                ("127.0.0.1:8443", "[::1]:8443"),
+                ("0.0.0.0:8443", "[::1]:8443"),
+                ("127.0.0.1:0", "127.0.0.1:0"),
+                ("0.0.0.0:0", "127.0.0.1:0"),
+            ];
+            for (a, b) in different {
+                assert!(!same_socket(address(a), address(b)), "{a} and {b}");
+                assert!(!same_socket(address(b), address(a)), "{b} and {a}");
+            }
+        }
     }
 
     mod connection_limits {
@@ -2004,13 +2346,16 @@ key = "/etc/vcon-server/key.pem"
             let defaults = parse(LEAST).expect("least");
             let mut all = Vec::new();
             keys(&FULL.parse::<toml::Table>().expect("toml"), "", &mut all);
-            assert_eq!(all.len(), 54, "{all:?}");
+            assert_eq!(all.len(), 57, "{all:?}");
             let pg = catalog::postgres_least();
             for key in all {
                 let default = match key.as_str() {
                     "listen" | "data_dir" | "master_key" | "tls.cert" | "tls.key" => {
                         "required".to_owned()
                     }
+                    "operator.listen" => "none: `listen` serves both".to_owned(),
+                    "operator.tls.cert" => "`tls.cert`".to_owned(),
+                    "operator.tls.key" => "`tls.key`".to_owned(),
                     "retention_default" => format!("`{}`", defaults.retention_default),
                     "purge_interval" => format!("`{}`", defaults.purge_interval.as_secs()),
                     "rotation_warn" => format!("`{}`", defaults.rotation_warn.as_secs()),

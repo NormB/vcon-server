@@ -15,6 +15,12 @@ group = "reference"
   [`unauthorized`](@/problems/unauthorized.md) (401); a key without the
   route's scope is [`forbidden`](@/problems/forbidden.md) (403). See
   [tenants and keys](@/docs/tenants-and-keys.md).
+- **One listener, or two.** By default one address serves every key. On a
+  server with an [operator listener](@/docs/operator-listener.md), the
+  address in `listen` serves tenant keys only and the address in
+  `operator.listen` serves operator keys only; a valid key at the other
+  address is [`wrong-listener`](@/problems/wrong-listener.md) (403) on
+  every route. The operator listener is on `main` only, in no release yet.
 - **A key names its tenant.** No route takes a tenant id for vCons; the
   key decides.
 - **MCP** is served at `POST /mcp` on the same listener, with the same keys:

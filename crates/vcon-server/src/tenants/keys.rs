@@ -68,12 +68,26 @@ impl Tenants {
     /// one after another share a record. A failure to count leaves the
     /// request refused all the same.
     pub(crate) fn count_auth_failure(&self, known: Option<(KeyId, Option<TenantId>)>) {
+        self.count_refusal(Action::AuthFailed, 401, known);
+    }
+
+    /// Counts a valid key refused by a listener that serves the other
+    /// kind of key, where [`Tenants::count_auth_failure`] counts a failed
+    /// check: under the key's id, in its tenant's log, or the admin log for
+    /// an operator key or a tenant whose log cannot be opened.
+    pub(crate) fn count_wrong_listener(&self, key: KeyId, tenant: Option<TenantId>) {
+        self.count_refusal(Action::WrongListener, 403, Some((key, tenant)));
+    }
+
+    /// Counts a request refused before any route saw it, as `action` with
+    /// `status`.
+    fn count_refusal(&self, action: Action, status: u16, known: Option<(KeyId, Option<TenantId>)>) {
         let entry = |actor| Entry {
             actor,
-            action: Action::AuthFailed,
+            action,
             target: None,
             version: None,
-            status: 401,
+            status,
         };
         if let Some((id, Some(tenant))) = known
             && self

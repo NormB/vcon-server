@@ -84,6 +84,9 @@ pub enum Action {
     Metadata,
     /// A request to the MCP server, counted (`count`), not recorded.
     Mcp,
+    /// A valid key refused because the listener it came to serves the
+    /// other kind of key; counted (`count`), not recorded.
+    WrongListener,
 }
 
 impl Action {
@@ -135,6 +138,7 @@ impl Action {
             Action::TenantMetadata => "tenant_metadata",
             Action::Metadata => "metadata",
             Action::Mcp => "mcp",
+            Action::WrongListener => "wrong_listener",
         }
     }
 }
@@ -541,6 +545,7 @@ mod tests {
             Action::TenantMetadata => "tenant_metadata",
             Action::Metadata => "metadata",
             Action::Mcp => "mcp",
+            Action::WrongListener => "wrong_listener",
         };
         let every = [
             Action::Create,
@@ -588,6 +593,7 @@ mod tests {
             Action::TenantMetadata,
             Action::Metadata,
             Action::Mcp,
+            Action::WrongListener,
         ];
         let mut seen = std::collections::BTreeSet::new();
         for action in every {

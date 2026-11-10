@@ -23,7 +23,7 @@ upgrades it to the server built from the change, and goes back again.
 These are on `main` only, in no release yet; they apply to the release
 that follows 0.4.2. The upgrade is the binary alone: the catalogs keep
 their schema version, and the configuration is as it was. Two things need
-a look before it.
+a look before it, and a third is new and optional.
 
 - **Readers of the audit log.** The console marks each Reveal, so a
   tenant's log holds `reveal_parties`, `reveal_subject`, `reveal_dialog`,
@@ -37,6 +37,13 @@ a look before it.
   [recording player](@/docs/console.md#play-a-recording). Pass both, and
   pass each answer's `Content-Security-Policy` header unchanged: the
   player's page has a policy of its own.
+- **The operator listener, if you turn it on.** A configuration without an
+  `[operator]` table serves as before: one listener, both kinds of key.
+  With the table, operator keys work only at the new address, so every
+  script, client file and console bookmark that uses one must move there,
+  and a proxy rule that passes `/admin/` on the public name can go. The
+  audit log gains the action `wrong_listener`. See
+  [the operator listener](@/docs/operator-listener.md).
 
 ## From 0.4.1 to 0.4.2
 

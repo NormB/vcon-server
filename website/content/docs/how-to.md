@@ -69,6 +69,9 @@ shows. `scripts/docs_test.py` runs them. See
   release, volumes, the memory-lock limit, Docker and Docker Compose.
 - [Upgrade](@/docs/upgrading.md): a new binary over a running server, the
   data checked with it, and the way back.
+- [Give operator keys their own listener](@/docs/operator-listener.md): a
+  second address that serves operator keys only, so the address tenants
+  use refuses them, with what to change in proxies and clients.
 
 ## Connect an AI agent
 

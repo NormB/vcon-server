@@ -7,10 +7,11 @@ use std::{fmt, io};
 
 use tokio::net::TcpListener;
 
+use crate::access::Plane;
 use crate::api::{self, App, Limits, TlsError};
 use crate::backend;
 use crate::clock::{Clock, SystemClock};
-use crate::config::{Config, ParquetSettings, StorageError};
+use crate::config::{Config, Operator, ParquetSettings, StorageError};
 use crate::datadir::{self, LockError, Work};
 use crate::envelope::{Key, KeyError};
 use crate::fs::OsFs;
@@ -45,6 +46,10 @@ pub enum ServeError {
     Tls(TlsError),
     /// The listening address could not be bound.
     Listen(io::Error),
+    /// The operator listener's certificate or key could not be used.
+    OperatorTls(TlsError),
+    /// The operator listener's address could not be bound.
+    OperatorListen(io::Error),
     /// Serving failed.
     Serve(io::Error),
 }
@@ -115,6 +120,17 @@ impl fmt::Display for ServeError {
             }
             ServeError::Tls(e) => write!(f, "the TLS certificate or key cannot be used: {e:?}"),
             ServeError::Listen(e) => write!(f, "the listening address cannot be bound: {e}"),
+            ServeError::OperatorTls(crate::api::TlsError::KeyFile(why)) => write!(
+                f,
+                "the operator listener's TLS certificate or key cannot be used: {why}"
+            ),
+            ServeError::OperatorTls(e) => write!(
+                f,
+                "the operator listener's TLS certificate or key cannot be used: {e:?}"
+            ),
+            ServeError::OperatorListen(e) => {
+                write!(f, "the operator listening address cannot be bound: {e}")
+            }
             ServeError::Serve(e) => write!(f, "serving failed: {e}"),
             ServeError::Storage(e) => write!(f, "the storage cannot be used: {e}"),
         }
@@ -165,6 +181,24 @@ pub async fn run(config: &Config, shutdown: impl Future<Output = ()>) -> Result<
     // The address bound, which names the port the system chose when the
     // configuration gives port 0.
     let bound = listener.local_addr().map_err(ServeError::Listen)?;
+    // The operator listener, when the configuration has one: bound before
+    // anything is served, so a start that cannot have both serves neither.
+    let operator = match &config.operator {
+        Some(operator) => {
+            let tls = api::tls_config_named(
+                &operator.tls_cert,
+                &operator.tls_key,
+                operator_key_name(config, operator),
+            )
+            .map_err(ServeError::OperatorTls)?;
+            let listener = TcpListener::bind(operator.listen)
+                .await
+                .map_err(ServeError::OperatorListen)?;
+            let bound = listener.local_addr().map_err(ServeError::OperatorListen)?;
+            Some((listener, tls, bound))
+        }
+        None => None,
+    };
     let tenants = Arc::new(tenants);
     // The purge sweep: at start, then purge_interval after each sweep ends,
     // until the server stops.
@@ -218,16 +252,58 @@ pub async fn run(config: &Config, shutdown: impl Future<Output = ()>) -> Result<
             }
         },
     ));
-    let app = app_from(config, tenants);
-    tracing::info!(listen = %bound, "serving");
-    let served = api::serve_within(
-        listener,
-        tls,
-        api::router(Arc::new(app)),
-        shutdown,
-        config.connection,
-    )
-    .await;
+    // With an operator listener each listener serves one kind of key;
+    // without one, the one listener serves both.
+    let (halt, halted) = tokio::sync::watch::channel(());
+    let until_halted = |mut halted: tokio::sync::watch::Receiver<()>| async move {
+        // An error is the sender dropped: halted as well.
+        let _ = halted.changed().await;
+    };
+    let both = async {
+        let Some((operator_listener, operator_tls, operator_bound)) = operator else {
+            let app = app_from(config, tenants, Plane::Both);
+            tracing::info!(listen = %bound, "serving");
+            return api::serve_within(
+                listener,
+                tls,
+                api::router(Arc::new(app)),
+                until_halted(halted),
+                config.connection,
+            )
+            .await;
+        };
+        let tenant_app = app_from(config, tenants.clone(), Plane::Tenant);
+        let operator_app = app_from(config, tenants, Plane::Operator);
+        // Before the serving line: whoever waits for that line finds both
+        // listeners bound.
+        tracing::info!(operator_listen = %operator_bound, "the operator listener is bound");
+        tracing::info!(listen = %bound, "serving");
+        let (tenant, operator) = tokio::join!(
+            api::serve_within(
+                listener,
+                tls,
+                api::router(Arc::new(tenant_app)),
+                until_halted(halted.clone()),
+                config.connection,
+            ),
+            api::serve_within(
+                operator_listener,
+                operator_tls,
+                api::router(Arc::new(operator_app)),
+                until_halted(halted),
+                config.connection,
+            ),
+        );
+        tenant.and(operator)
+    };
+    let mut both = std::pin::pin!(both);
+    let served = tokio::select! {
+        served = &mut both => served,
+        () = shutdown => {
+            let _ = halt.send(());
+            both.await
+        }
+    };
     let _ = stop.send(());
     let _ = stop_warning.send(());
     let _ = stop_packing.send(());
@@ -345,8 +421,20 @@ where
     }
 }
 
-/// What the API serves from, as the configuration sets it.
-fn app_from(config: &Config, tenants: Arc<Tenants>) -> App {
+/// The configuration key that names the operator listener's key file:
+/// `operator.tls.key`, or `tls.key` when the `[operator]` table names no
+/// pair of its own and the listener takes the server's.
+fn operator_key_name(config: &Config, operator: &Operator) -> &'static str {
+    if operator.tls_key == config.tls_key && operator.tls_cert == config.tls_cert {
+        "tls.key"
+    } else {
+        "operator.tls.key"
+    }
+}
+
+/// What the API serves from on a listener of `plane`, as the
+/// configuration sets it.
+fn app_from(config: &Config, tenants: Arc<Tenants>, plane: Plane) -> App {
     App {
         tenants,
         limits: Limits {
@@ -357,6 +445,7 @@ fn app_from(config: &Config, tenants: Arc<Tenants>) -> App {
         supported: config.supported_critical.clone(),
         retention_default: config.retention_default,
         mcp: config.mcp,
+        plane,
     }
 }
 
@@ -513,8 +602,10 @@ mod tests {
             storage: crate::config::Storage::default(),
             export: crate::config::Export::default(),
             catalog: crate::config::CatalogStore::Local,
+            operator: None,
         };
-        let app = app_from(&config, tenants.clone());
+        let app = app_from(&config, tenants.clone(), Plane::Tenant);
+        assert_eq!(app.plane, Plane::Tenant, "the plane it was given");
         assert!(Arc::ptr_eq(&app.tenants, &tenants));
         assert_eq!(app.limits.body, 12_345);
         assert_eq!(app.limits.inflated, 67_890);

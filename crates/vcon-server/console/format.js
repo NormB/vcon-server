@@ -304,8 +304,17 @@ export function summary(text) {
   return counted(vcon, "unsigned");
 }
 
-/** What to do about a refusal, by its status. */
-function advice(status) {
+/** The end of the problem type a listener answers a key of the other kind with. */
+const WRONG_LISTENER = "/problems/wrong-listener";
+
+/** What to do about a refusal, by its problem type when that says more, else its status. */
+function advice(status, type) {
+  if (typeof type === "string" && type.endsWith(WRONG_LISTENER)) {
+    return (
+      "Open the console at the server's other address and sign in there: " +
+      "one address serves tenant keys and the other serves operator keys."
+    );
+  }
   if (status === 401) {
     return "Sign in again with a key the server accepts.";
   }
@@ -339,13 +348,16 @@ function advice(status) {
   return "Try again.";
 }
 
-/** A refusal as text: what happened, its status and what to do. */
-export function refusalText(status, title) {
+/**
+ * A refusal as text: what happened, its status and what to do. `type` is
+ * the problem document's type, when the answer had one.
+ */
+export function refusalText(status, title, type = undefined) {
   if (status === 0) {
     return "The server could not be reached. Check the connection and try again.";
   }
   const what = typeof title === "string" && title !== "" ? `${title} (${status})` : `HTTP ${status}`;
-  return `${what}. ${advice(status)}`;
+  return `${what}. ${advice(status, type)}`;
 }
 
 /** The parts a reveal can name, as the server's `reveal` parameter lists them. */
