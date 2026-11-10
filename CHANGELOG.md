@@ -112,6 +112,39 @@ All notable changes to this project are recorded here. The format follows
   page (WCAG 1.4.11 asks 3 to 1), and the focus ring of the sidebar's links
   and of the home page's code blocks was cut off by the box around them.
 
+### Fixed
+
+- The server no longer stops when the system cannot hand it a connection.
+  Before, one failed accept, such as the one a process out of file
+  descriptors gets, ended `serve` with `serving failed`. Now the listener
+  goes on: at once when the failure was one connection's own (it ended
+  before it was taken), and after one second otherwise, with a warning in
+  the log each time.
+- A connection that stalls is closed, where before it was kept for as long
+  as the other side kept it, with its file descriptor. A connection is
+  closed when its TLS handshake is not done 10 seconds after it was taken,
+  when no request head has arrived 30 seconds after the handshake, and when
+  an HTTP/1.1 request head on it takes more than 30 seconds, which
+  includes the wait for the next request on a connection kept open. A
+  client that keeps an HTTP/1.1 connection idle for more than 30 seconds
+  finds it closed and opens another, as HTTP clients do without being
+  told. The three limits are new configuration keys,
+  `limits.timeouts.handshake`, `limits.timeouts.first_head` and
+  `limits.timeouts.head`, each from 1 to 3600 seconds, with those
+  defaults; a deployment whose clients keep idle HTTP/1.1 connections
+  longer raises `limits.timeouts.head`. For users of the `vcon-server`
+  library: `config::Config` has a new member, `connection`, and
+  `api::serve` takes any `api::Accept`, which `tokio::net::TcpListener`
+  implements.
+- A SIGTERM or SIGINT that arrives as soon as `serve` has written its
+  `serving` line stops the server in order, with exit status 0. Before,
+  the server began to take the two signals only after that line, so a
+  supervisor or script that stopped it at once could find it killed by
+  the signal instead. `serve` now takes both signals before it opens the
+  data directory, and a server that cannot take them does not start
+  (`the stop signals cannot be taken`), where before it started and then
+  stopped at once.
+
 ## [0.4.2] - 2026-11-10
 
 Nothing in this release breaks a 0.4.1 deployment, and an upgrade from

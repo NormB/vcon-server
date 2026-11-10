@@ -220,7 +220,14 @@ pub async fn run(config: &Config, shutdown: impl Future<Output = ()>) -> Result<
     ));
     let app = app_from(config, tenants);
     tracing::info!(listen = %bound, "serving");
-    let served = api::serve(listener, tls, api::router(Arc::new(app)), shutdown).await;
+    let served = api::serve_within(
+        listener,
+        tls,
+        api::router(Arc::new(app)),
+        shutdown,
+        config.connection,
+    )
+    .await;
     let _ = stop.send(());
     let _ = stop_warning.send(());
     let _ = stop_packing.send(());
@@ -496,6 +503,7 @@ mod tests {
             body_limit: 12_345,
             inflated_limit: 67_890,
             read_timeout: Duration::from_secs(17),
+            connection: crate::api::ConnectionLimits::default(),
             supported_critical: ["known".to_owned()].into(),
             mcp: crate::mcp::Limits {
                 calls_per_second: 3,

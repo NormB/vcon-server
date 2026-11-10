@@ -1,8 +1,6 @@
 //! The HTTP API, served over TLS only.
 
 use std::collections::BTreeSet;
-use std::future::Future;
-use std::io;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -19,15 +17,10 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post, put};
 use http_body_util::LengthLimitError;
-use hyper_util::rt::{TokioExecutor, TokioIo};
-use hyper_util::server::conn::auto;
-use hyper_util::service::TowerToHyperService;
 use rustls::ServerConfig;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use serde::de::{Deserialize, DeserializeOwned, Deserializer, Error as _};
-use tokio::net::TcpListener;
-use tokio_rustls::TlsAcceptor;
 
 use crate::access::{self, AuthError, Caller, Scope, Scopes};
 use crate::audit::{Action, Actor, AuditQuery, Entry};
@@ -40,6 +33,9 @@ use crate::tenants::{KeyInfo, Removal, TenantError, TenantInfo, Tenants};
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 use vcon::read::{Inspection, Rejection};
+
+mod listen;
+pub use listen::{Accept, AfterFailure, ConnectionLimits, after_failure, serve, serve_within};
 
 /// The limits from configuration that the API applies to every request.
 #[derive(Debug, Clone, Copy)]
@@ -1642,42 +1638,13 @@ pub fn tls_config(certificate: &Path, key: &Path) -> Result<Arc<ServerConfig>, T
     Ok(Arc::new(config))
 }
 
-/// Serves `app` on `listener` over TLS until `shutdown` completes. A
-/// connection whose handshake fails, such as plain HTTP, is dropped; the
-/// server goes on.
-pub async fn serve(
-    listener: TcpListener,
-    tls: Arc<ServerConfig>,
-    app: Router,
-    shutdown: impl Future<Output = ()>,
-) -> io::Result<()> {
-    let acceptor = TlsAcceptor::from(tls);
-    let mut shutdown = std::pin::pin!(shutdown);
-    loop {
-        let (tcp, _) = tokio::select! {
-            accepted = listener.accept() => accepted?,
-            () = &mut shutdown => return Ok(()),
-        };
-        let acceptor = acceptor.clone();
-        let service = TowerToHyperService::new(app.clone());
-        tokio::spawn(async move {
-            let Ok(stream) = acceptor.accept(tcp).await else {
-                return;
-            };
-            // The connection's own errors end only the connection.
-            let _ = auto::Builder::new(TokioExecutor::new())
-                .serve_connection(TokioIo::new(stream), service)
-                .await;
-        });
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
     use std::path::PathBuf;
 
     use axum::routing::get;
+    use tokio::net::TcpListener;
 
     use super::*;
 

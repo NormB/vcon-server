@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
+use crate::api::ConnectionLimits;
 use crate::retention::Retention;
 
 /// The configuration `serve` runs with. Durations are written in whole
@@ -39,6 +40,9 @@ pub struct Config {
     pub inflated_limit: u64,
     /// How long a request body may take to arrive.
     pub read_timeout: Duration,
+    /// How long a connection may take over its handshake and its request
+    /// heads (`limits.timeouts.handshake`, `first_head` and `head`).
+    pub connection: ConnectionLimits,
     /// Extension names accepted in `critical` and `must_support`.
     pub supported_critical: BTreeSet<String>,
     /// The MCP server's limits.
@@ -337,6 +341,7 @@ pub fn parse(text: &str) -> Result<Config, ConfigError> {
             raw.limits.timeouts.read,
             READ_TIMEOUT,
         )?,
+        connection: connection_limits(&raw.limits.timeouts)?,
         supported_critical: raw.supported_critical.into_iter().collect(),
         mcp: mcp_limits(&raw.mcp)?,
         storage,
@@ -744,6 +749,41 @@ fn positive(key: &str, value: u64) -> Result<u64, ConfigError> {
     Ok(value)
 }
 
+/// The most seconds a connection limit may be set to: an hour. A limit
+/// meant to close a stalled connection that waits longer than this closes
+/// none in practice.
+pub const CONNECTION_LIMIT_MAX: u64 = 3600;
+
+/// The `[limits.timeouts]` keys that bound a connection, each that is
+/// not written at its default.
+fn connection_limits(raw: &RawTimeouts) -> Result<ConnectionLimits, ConfigError> {
+    let default = ConnectionLimits::default();
+    let limit = |key: &str, value: Option<u64>, default: Duration| {
+        let limit = seconds(key, value, default)?;
+        if limit.as_secs() > CONNECTION_LIMIT_MAX {
+            return Err(ConfigError(format!(
+                "{key} must be at most {CONNECTION_LIMIT_MAX} seconds, and is {}",
+                limit.as_secs()
+            )));
+        }
+        Ok(limit)
+    };
+    Ok(ConnectionLimits {
+        handshake: limit(
+            "limits.timeouts.handshake",
+            raw.handshake,
+            default.handshake,
+        )?,
+        first_head: limit(
+            "limits.timeouts.first_head",
+            raw.first_head,
+            default.first_head,
+        )?,
+        head: limit("limits.timeouts.head", raw.head, default.head)?,
+        accept_pause: default.accept_pause,
+    })
+}
+
 /// `value` in whole seconds, or `default` when it is not written.
 fn seconds(key: &str, value: Option<u64>, default: Duration) -> Result<Duration, ConfigError> {
     match value {
@@ -886,6 +926,9 @@ struct RawLimits {
 #[serde(deny_unknown_fields)]
 struct RawTimeouts {
     read: Option<u64>,
+    handshake: Option<u64>,
+    first_head: Option<u64>,
+    head: Option<u64>,
 }
 
 #[cfg(test)]
@@ -911,6 +954,9 @@ inflated = 104857600
 
 [limits.timeouts]
 read = 30
+handshake = 5
+first_head = 15
+head = 20
 
 [mcp]
 calls_per_second = 20
@@ -982,6 +1028,12 @@ lock_timeout = 20
                 body_limit: 10_485_760,
                 inflated_limit: 104_857_600,
                 read_timeout: Duration::from_secs(30),
+                connection: ConnectionLimits {
+                    handshake: Duration::from_secs(5),
+                    first_head: Duration::from_secs(15),
+                    head: Duration::from_secs(20),
+                    accept_pause: Duration::from_secs(1),
+                },
                 supported_critical: ["known", "other"].map(String::from).into(),
                 mcp: crate::mcp::Limits {
                     calls_per_second: 20,
@@ -1039,6 +1091,145 @@ lock_timeout = 20
             }),
             "every key the file writes is read into its field"
         );
+    }
+
+    mod connection_limits {
+        use super::*;
+
+        fn with(timeouts: &str) -> Result<Config, ConfigError> {
+            parse(&format!("{LEAST}\n[limits.timeouts]\n{timeouts}"))
+        }
+
+        #[test]
+        fn the_defaults_are_ten_seconds_and_thirty_and_thirty() {
+            let config = parse(LEAST).expect("parses");
+            assert_eq!(
+                config.connection,
+                ConnectionLimits {
+                    handshake: Duration::from_secs(10),
+                    first_head: Duration::from_secs(30),
+                    head: Duration::from_secs(30),
+                    accept_pause: Duration::from_secs(1),
+                },
+                "with no [limits.timeouts] table"
+            );
+            assert_eq!(
+                config.connection,
+                ConnectionLimits::default(),
+                "the defaults serve applies without a configuration"
+            );
+        }
+
+        #[test]
+        fn each_key_sets_its_own_limit_and_no_other() {
+            let default = ConnectionLimits::default();
+            for (line, expected) in [
+                (
+                    "handshake = 3",
+                    ConnectionLimits {
+                        handshake: Duration::from_secs(3),
+                        ..default
+                    },
+                ),
+                (
+                    "first_head = 7",
+                    ConnectionLimits {
+                        first_head: Duration::from_secs(7),
+                        ..default
+                    },
+                ),
+                (
+                    "head = 75",
+                    ConnectionLimits {
+                        head: Duration::from_secs(75),
+                        ..default
+                    },
+                ),
+            ] {
+                let config = with(line).expect(line);
+                assert_eq!(config.connection, expected, "{line}");
+                assert_eq!(
+                    config.read_timeout, READ_TIMEOUT,
+                    "{line}: the body limit is its own key"
+                );
+            }
+        }
+
+        #[test]
+        fn the_three_keys_together_are_all_read() {
+            let config = with("handshake = 2\nfirst_head = 4\nhead = 6\nread = 8").expect("parses");
+            assert_eq!(
+                (
+                    config.connection.handshake,
+                    config.connection.first_head,
+                    config.connection.head,
+                    config.read_timeout,
+                ),
+                (
+                    Duration::from_secs(2),
+                    Duration::from_secs(4),
+                    Duration::from_secs(6),
+                    Duration::from_secs(8),
+                ),
+                "each key in its own member"
+            );
+        }
+
+        #[test]
+        fn one_second_and_one_hour_are_the_bounds_and_both_are_taken() {
+            for key in ["handshake", "first_head", "head"] {
+                for seconds in [1, CONNECTION_LIMIT_MAX] {
+                    assert!(
+                        with(&format!("{key} = {seconds}")).is_ok(),
+                        "{key} = {seconds}"
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn zero_is_refused_by_name() {
+            for key in ["handshake", "first_head", "head"] {
+                let error = with(&format!("{key} = 0")).expect_err(key);
+                assert_eq!(
+                    error.0,
+                    format!("limits.timeouts.{key} must be more than 0"),
+                    "{key}"
+                );
+            }
+        }
+
+        #[test]
+        fn more_than_an_hour_is_refused_by_name_with_the_bound() {
+            for key in ["handshake", "first_head", "head"] {
+                for seconds in [3601_u64, 86_400, u64::from(u32::MAX)] {
+                    let error = with(&format!("{key} = {seconds}")).expect_err(key);
+                    assert_eq!(
+                        error.0,
+                        format!(
+                            "limits.timeouts.{key} must be at most 3600 seconds, and is {seconds}"
+                        ),
+                        "{key} = {seconds}"
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn a_value_that_is_not_whole_seconds_is_refused() {
+            for key in ["handshake", "first_head", "head"] {
+                for value in ["-1", "1.5", "\"10\"", "true", "[10]"] {
+                    let error = with(&format!("{key} = {value}")).expect_err(key);
+                    assert!(error.0.contains(key), "{key} = {value}: {error}");
+                }
+            }
+        }
+
+        #[test]
+        fn the_wait_after_a_failed_accept_has_no_key() {
+            let error = with("accept_pause = 2").expect_err("no such key");
+            assert!(error.0.contains("`accept_pause`"), "{error}");
+        }
     }
 
     #[test]
@@ -1147,9 +1338,40 @@ key = "/etc/vcon-server/key.pem"
                 },
             ),
             (
-                "[limits.timeouts]\nread = 30\n",
+                "[limits.timeouts]\nread = 30\nhandshake = 5\nfirst_head = 15\nhead = 20\n",
                 Config {
                     read_timeout: Duration::from_secs(60),
+                    connection: ConnectionLimits::default(),
+                    ..base.clone()
+                },
+            ),
+            (
+                "handshake = 5\n",
+                Config {
+                    connection: ConnectionLimits {
+                        handshake: Duration::from_secs(10),
+                        ..base.connection
+                    },
+                    ..base.clone()
+                },
+            ),
+            (
+                "first_head = 15\n",
+                Config {
+                    connection: ConnectionLimits {
+                        first_head: Duration::from_secs(30),
+                        ..base.connection
+                    },
+                    ..base.clone()
+                },
+            ),
+            (
+                "head = 20\n",
+                Config {
+                    connection: ConnectionLimits {
+                        head: Duration::from_secs(30),
+                        ..base.connection
+                    },
                     ..base.clone()
                 },
             ),
@@ -1712,6 +1934,31 @@ key = "/etc/vcon-server/key.pem"
             ),
             ("read = 30", "read = 0", "limits.timeouts.read"),
             ("read = 30", "read = -1", "read"),
+            (
+                "handshake = 5",
+                "handshake = 0",
+                "limits.timeouts.handshake",
+            ),
+            (
+                "handshake = 5",
+                "handshake = 3601",
+                "limits.timeouts.handshake",
+            ),
+            ("handshake = 5", "handshake = \"5s\"", "handshake"),
+            (
+                "first_head = 15",
+                "first_head = 0",
+                "limits.timeouts.first_head",
+            ),
+            (
+                "first_head = 15",
+                "first_head = 3601",
+                "limits.timeouts.first_head",
+            ),
+            ("first_head = 15", "first_head = 1.5", "first_head"),
+            ("\nhead = 20", "\nhead = 0", "limits.timeouts.head"),
+            ("\nhead = 20", "\nhead = 3601", "limits.timeouts.head"),
+            ("\nhead = 20", "\nhead = 18446744073709551615", "head"),
         ] {
             let error = parse(&FULL.replace(from, to)).expect_err(key);
             assert!(error.0.contains(key), "{key}: {error}");
@@ -1757,7 +2004,7 @@ key = "/etc/vcon-server/key.pem"
             let defaults = parse(LEAST).expect("least");
             let mut all = Vec::new();
             keys(&FULL.parse::<toml::Table>().expect("toml"), "", &mut all);
-            assert_eq!(all.len(), 51, "{all:?}");
+            assert_eq!(all.len(), 54, "{all:?}");
             let pg = catalog::postgres_least();
             for key in all {
                 let default = match key.as_str() {
@@ -1770,6 +2017,13 @@ key = "/etc/vcon-server/key.pem"
                     "limits.body" => format!("`{}`", defaults.body_limit),
                     "limits.inflated" => format!("`{}`", defaults.inflated_limit),
                     "limits.timeouts.read" => format!("`{}`", defaults.read_timeout.as_secs()),
+                    "limits.timeouts.handshake" => {
+                        format!("`{}`", defaults.connection.handshake.as_secs())
+                    }
+                    "limits.timeouts.first_head" => {
+                        format!("`{}`", defaults.connection.first_head.as_secs())
+                    }
+                    "limits.timeouts.head" => format!("`{}`", defaults.connection.head.as_secs()),
                     "mcp.calls_per_second" => format!("`{}`", defaults.mcp.calls_per_second),
                     "mcp.concurrent" => format!("`{}`", defaults.mcp.concurrent),
                     "mcp.response_bytes" => format!("`{}`", defaults.mcp.response_bytes),

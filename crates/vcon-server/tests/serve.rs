@@ -380,6 +380,85 @@ async fn mlock_serve_stores_reads_keeps_its_memory_locked_and_stops_on_sigterm()
     assert!(status.success(), "it stopped cleanly: {status:?}");
 }
 
+/// Starts a server and sends it `signal` as soon as its serving line is
+/// read, `rounds` times over; each must stop as it does on a signal that
+/// comes later: cleanly, with exit status 0.
+fn stops_cleanly_on_a_signal_at_the_serving_line(signal: libc::c_int, rounds: usize) {
+    for round in 0..rounds {
+        let s = setup();
+        let mut started = start(serve(&s));
+        let pid = started.running.0.id();
+        // SAFETY: the pid is our running child's.
+        let sent = unsafe { libc::kill(pid as libc::pid_t, signal) };
+        assert_eq!(sent, 0, "the signal was sent");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let status = loop {
+            if let Some(status) = started.running.0.try_wait().expect("wait") {
+                break status;
+            }
+            assert!(Instant::now() < deadline, "serve did not stop");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert!(
+            status.success(),
+            "round {round}: a signal at the serving line is an orderly stop, not {status:?}"
+        );
+    }
+}
+
+/// The serving line says the server can be stopped as well as reached: a
+/// supervisor that stops it the moment it reads the line gets an orderly
+/// stop.
+#[test]
+fn a_sigterm_at_the_serving_line_stops_cleanly() {
+    stops_cleanly_on_a_signal_at_the_serving_line(libc::SIGTERM, 8);
+}
+
+#[test]
+fn a_sigint_at_the_serving_line_stops_cleanly() {
+    stops_cleanly_on_a_signal_at_the_serving_line(libc::SIGINT, 8);
+}
+
+/// The connection limits come from the configuration: with a handshake
+/// limit of one second, a connection that sends nothing is closed after
+/// about a second, where the default keeps it ten.
+#[test]
+fn serve_closes_a_silent_connection_at_the_configured_handshake_limit() {
+    use std::io::Read;
+    let s = setup();
+    let text = std::fs::read_to_string(&s.config)
+        .expect("read")
+        .replace("read = 30\n", "read = 30\nhandshake = 1\n");
+    assert!(text.contains("handshake = 1"), "the key was written");
+    std::fs::write(&s.config, text).expect("write");
+    let started = start(serve(&s));
+    let mut silent = std::net::TcpStream::connect(started.addr).expect("connects");
+    silent
+        .set_read_timeout(Some(Duration::from_secs(8)))
+        .expect("a read limit");
+    let begun = Instant::now();
+    let mut sink = [0; 16];
+    // Closed is a read of nothing, or a reset; still open is a timeout.
+    let closed = match silent.read(&mut sink) {
+        Ok(0) => true,
+        Ok(_) => false,
+        Err(e) => !matches!(
+            e.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ),
+    };
+    assert!(
+        closed,
+        "closed within 8 seconds, before the default's 10: {:?}",
+        begun.elapsed()
+    );
+    assert!(
+        begun.elapsed() >= Duration::from_millis(900),
+        "not before the limit: {:?}",
+        begun.elapsed()
+    );
+}
+
 #[test]
 fn a_wrong_master_key_stops_the_start() {
     let s = setup();

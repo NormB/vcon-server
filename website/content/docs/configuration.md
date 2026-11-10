@@ -58,6 +58,9 @@ allowed a group to write them. To check a host before an upgrade, see
 | `limits.body` | Largest request body, in bytes | `16777216` (16 MiB) |
 | `limits.inflated` | Most bytes gzip inflation may produce while one body is checked | `67108864` (64 MiB) |
 | `limits.timeouts.read` | Seconds a request body may take to arrive | `60` |
+| `limits.timeouts.handshake` | Seconds a connection may take over its TLS handshake, from 1 to 3600; a connection that takes longer is closed | `10` |
+| `limits.timeouts.first_head` | Seconds from the end of the handshake to the whole head of the connection's first request, on HTTP/1.1 and HTTP/2, from 1 to 3600; a connection that has sent no request by then is closed | `30` |
+| `limits.timeouts.head` | Seconds an HTTP/1.1 request head may take to arrive, from 1 to 3600. For a request after the first this includes the wait for it, so it is also how long an idle HTTP/1.1 connection is kept open | `30` |
 | `supported_critical` | Extension names accepted in a vCon's `critical` list, for all tenants | none |
 | `mcp.calls_per_second` | MCP tool calls one key may make in each one-second window | `100` |
 | `mcp.concurrent` | MCP tool calls running at once on the server | `100` |
@@ -99,6 +102,21 @@ allowed a group to write them. To check a host before an upgrade, see
 | `catalog.postgres.statement_timeout` | Seconds a statement may run (PostgreSQL's `statement_timeout`), at most `2147483` | `30` |
 | `catalog.postgres.lock_timeout` | Seconds a statement may wait for a lock (PostgreSQL's `lock_timeout`), at most `2147483` | `10` |
 
+The three connection limits close a connection that stalls, so that it
+does not hold a file descriptor for as long as the other side likes. A
+client that keeps an HTTP/1.1 connection idle for longer than
+`limits.timeouts.head` finds it closed and opens another, as HTTP clients
+do without being told; raise the key for clients that keep connections
+longer. The first request of an HTTP/1.1 connection is under both
+`first_head` and `head`, so the lesser applies to it. A request whose head
+arrived in time may take as long as it needs, and its body is under
+`limits.timeouts.read`. The default of 30 seconds for a head is the
+default header timeout of hyper, the HTTP library the server is built on.
+
+When the system cannot hand the server a connection, such as when the
+process is out of file descriptors, the server logs a warning, waits one
+second and goes on. That wait has no key.
+
 At start and then each day, `serve` logs a warning while the oldest purge or
 tenant removal waiting for [key rotation](@/docs/operations.md#key-rotation)
 is older than `rotation_warn`.
@@ -124,6 +142,9 @@ inflated = 67108864
 
 [limits.timeouts]
 read = 60
+handshake = 10
+first_head = 30
+head = 30
 
 [mcp]
 calls_per_second = 100

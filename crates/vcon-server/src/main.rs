@@ -419,9 +419,13 @@ fn run_serve(config: &Path) -> Result<(), ExitCode> {
         .with_writer(std::io::stderr)
         .init();
     let config = config::load(config).map_err(|e| fail(format!("configuration: {e}")))?;
-    runtime()?
-        .block_on(serve::run(&config, stop_signal()))
-        .map_err(fail)
+    runtime()?.block_on(async {
+        // Taken before the server starts, so a signal that arrives at any
+        // moment from here on is an orderly stop.
+        let stop =
+            stop_signal().map_err(|e| fail(format!("the stop signals cannot be taken: {e}")))?;
+        serve::run(&config, stop).await.map_err(fail)
+    })
 }
 
 /// The async runtime `serve` and `mcp` run on, or the exit for a runtime
@@ -469,17 +473,23 @@ fn tui(_config: &Path) -> ExitCode {
     fail("this build has no terminal UI: build vcon-server with the cargo feature tui")
 }
 
-/// Completes on SIGINT or SIGTERM.
-async fn stop_signal() {
+/// Takes SIGINT and SIGTERM from this call on, and gives a future that
+/// completes when either has arrived, including one that arrived before
+/// the future was first polled. Called inside the runtime.
+///
+/// # Errors
+///
+/// The system's error when a signal cannot be taken. No test reaches it:
+/// the system refuses only a signal that may not be caught, and these two
+/// may.
+fn stop_signal() -> std::io::Result<impl Future<Output = ()>> {
     use tokio::signal::unix::{SignalKind, signal};
-    let (Ok(mut interrupt), Ok(mut terminate)) = (
-        signal(SignalKind::interrupt()),
-        signal(SignalKind::terminate()),
-    ) else {
-        return;
-    };
-    tokio::select! {
-        _ = interrupt.recv() => {}
-        _ = terminate.recv() => {}
-    }
+    let mut interrupt = signal(SignalKind::interrupt())?;
+    let mut terminate = signal(SignalKind::terminate())?;
+    Ok(async move {
+        tokio::select! {
+            _ = interrupt.recv() => {}
+            _ = terminate.recv() => {}
+        }
+    })
 }
