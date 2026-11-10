@@ -18,8 +18,8 @@ Open `/console/` on the server's address in a browser, for example:
 https://vcon.example.com:8443/console/
 ```
 
-`/console` without the slash is sent on to `/console/`. The page and its two
-files need no key; they hold no data.
+`/console` without the slash is sent on to `/console/`. The page and its
+files (a stylesheet and two scripts) need no key; they hold no data.
 
 ## Sign in
 
@@ -55,29 +55,101 @@ Choose **vCons**.
   `GET /vcons`.
 - **Read one** (`read`): choose **Open** beside it in the list, or type its
   uuid under **vCon uuid** and choose **Open**. The console shows its
-  version (`ETag`) and the vCon as text (`GET /vcons/{uuid}`). A vCon stored
-  gzipped is inflated first.
+  version (`ETag`) and a masked summary (`GET /vcons/{uuid}`); see
+  [open a vCon masked](#open-a-vcon-masked). A vCon stored gzipped is
+  inflated first.
 - **Store one** (`write`): under **Store a vCon from a file**, pick the file
   and choose **Store**. The console sends the file's bytes unchanged
   (`POST /vcons`) and shows the stored uuid and version, or why the server
-  refused it, such as `The body is not one JSON object (422)`.
+  refused it, such as
+  `The body is not one JSON object (422). Correct what was sent and try again.`
 - **Delete one** (`delete`): choose **Delete** under the vCon you opened, or
   type its uuid and choose **Delete**, then confirm. The console calls
   `DELETE /vcons/{uuid}`.
+
+## Open a vCon masked
+
+**Purpose:** see what a vCon holds without putting names, numbers or what
+was said on the screen, and leave a record each time the content itself is
+shown.
+
+**Prerequisites:** a key with the `read` scope, and a browser that reaches
+the server's TLS listener. Nothing changes on any other system: masking is
+part of the console page the server already serves, and needs no setting.
+
+**Steps:**
+
+1. Sign in, choose **vCons**, and choose **Open** beside a vCon. With a
+   `legal` key, choose **Legal** and **Find** a vCon instead: the version
+   found, and each kept version you **Open**, is masked the same way.
+2. Read the summary. It shows:
+   - the form: `unsigned`, `signed (JWS)` or `encrypted (JWE)`;
+   - when the vCon says it was created, in UTC;
+   - whether it has a subject (`present, hidden` or `none`);
+   - the number of dialogs, their total seconds, and the number of
+     attachments and analyses;
+   - each party as a line such as
+     `Party 1: number ending 0123; address at example.com; name hidden`.
+     A telephone number shows its last four digits, and one of fewer than
+     eight digits is hidden whole. An email address shows its domain only.
+   - for a signed vCon, the `alg`, `kid` and `x5t` of its first signature's
+     header. The summary is read from the signed payload; the console does
+     not verify the signature. An encrypted vCon is not decoded.
+3. To see the whole vCon, choose **Reveal the whole vCon** (in the Legal
+   view, **Reveal this version** or **Reveal the opened version**). The
+   console reads it again and shows it as text.
+
+**Verify:** read the tenant's [audit log](@/docs/audit-logs.md) with an
+`audit` key. Opening a vCon leaves one `read` record for its uuid, and each
+**Reveal the whole vCon** leaves one more. In the Legal view each find,
+each version opened and each reveal leaves the record its legal read
+leaves. Opening another vCon, or the same
+one again, masks it again.
+
+**Troubleshoot:**
+
+- *The summary says `not JSON` or `not a JSON object`:* the stored bytes are
+  not a vCon the console can summarize. **Reveal the whole vCon** still
+  shows them as text.
+- *Reveal answers `(410)`:* the vCon was deleted after you opened it. A key
+  with the `legal` scope can still find it under **Legal**.
+- *Nothing happens after Reveal and a line says the server could not be
+  reached:* the request got no answer. Check the connection and choose
+  Reveal again.
+- *Reveal answers `(401)`:* the key was revoked. Sign in with another key.
+
+Masking is what the console shows, not what the server sends: the API
+answers a `read` key with the whole vCon, and the console keeps it only long
+enough to make the summary. The audit record of a reveal is the same `read`
+record as any other read.
+
+## Lists, times and refusals
+
+Every list says `Loading …` while its request is out and `No … to show.`
+when the answer holds nothing. A list that could not be read shows why
+instead, and a request that got no answer shows
+`The server could not be reached. Check the connection and try again.`
+
+Every time the console shows is in UTC, written with its offset, such as
+`2026-10-23 12:00:00 UTC+00:00`. When the server refuses a request, the
+console shows the problem's title, its status and what to do next, such as
+`The body is not one JSON object (422). Correct what was sent and try again.`
 
 ## Look up a vCon as a legal key
 
 Choose **Legal**, type the vCon's uuid and choose **Find**. The console shows
 whether the vCon is `live` or `deleted`, its current version (or, once
 deleted, the last kept one) as text, and every kept version with when it was
-stored and hidden. Choose **Open** beside a version to read it. These use
+stored and hidden. Choose **Open** beside a version to read it. Both are
+shown masked first; see [open a vCon masked](#open-a-vcon-masked). These use
 `GET /legal/vcons/{uuid}`, `GET /legal/vcons/{uuid}/versions` and
 `GET /legal/vcons/{uuid}/versions/{version}`.
 
 Under the vCon found:
 
 - **Hold** puts a legal hold on it (`PUT /legal/vcons/{uuid}/hold`).
-- **Release hold** takes the hold off (`DELETE /legal/vcons/{uuid}/hold`).
+- **Release hold** takes the hold off after you confirm
+  (`DELETE /legal/vcons/{uuid}/hold`).
 - **Restore** makes a deleted vCon live again with its last kept version
   (`POST /legal/vcons/{uuid}/restore`). A live vCon is refused with
   `not-deleted` (409).
@@ -114,6 +186,22 @@ Sign in with an operator key and choose **Tenants**.
 
 Each of these leaves the same audit record as the same request made with
 `curl` or any other client.
+
+## Keyboard and screen readers
+
+The console is built to WCAG 2.2 level AA, and its browser tests run
+axe-core on every view, in light and dark, at 320 and 1280 pixels wide.
+
+- The first Tab stop is **Skip to the content**.
+- Every control has a label and shows a focus ring when the keyboard
+  reaches it. Choosing a view moves focus to its heading, and a reveal
+  moves focus to the revealed text.
+- The view shown is marked for assistive technology, and in bold and
+  underlined.
+- Refusals are announced at once; list states and the result of a store
+  are announced when the screen reader is idle.
+- The page follows the system's light or dark setting, and a wide table
+  scrolls inside its own region, so the page never scrolls sideways.
 
 ## What the console keeps
 

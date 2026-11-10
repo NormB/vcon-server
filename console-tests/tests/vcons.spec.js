@@ -32,6 +32,7 @@ test("a stored vCon is shown as text: its markup never runs", async ({ page, req
   await signIn(page, await tenant.key(["read"]));
   await openView(page, "vcons");
   await page.click(`#vcon-list tbody tr:has-text("${uuid}") button.open`);
+  await page.click("#reveal");
   const body = page.locator("#vcon-body");
   await expect(body).toContainText(JSON.stringify(subject).slice(1, -1));
   expect(await body.locator("*").count(), "no element made from the text").toBe(0);
@@ -47,6 +48,7 @@ test("a gzipped vCon is shown inflated", async ({ page, request, tenant }) => {
   await openView(page, "vcons");
   await page.fill("#uuid", uuid);
   await page.click("#open-uuid");
+  await page.click("#reveal");
   await expect(page.locator("#vcon-body")).toContainText('"subject":"zipped call"');
 });
 
@@ -57,6 +59,7 @@ test("a read-only key gets no write or delete control, and the API refuses one",
   await signIn(page, reader);
   await openView(page, "vcons");
   await page.click(`#vcon-list tbody tr:has-text("${uuid}") button.open`);
+  await page.click("#reveal");
   await expect(page.locator("#vcon-body")).toContainText("kept");
   await expect(page.locator("#store")).toHaveCount(0);
   await expect(page.locator("#delete")).toHaveCount(0);
@@ -88,7 +91,7 @@ test("a refused store shows the problem as text", async ({ page, tenant }) => {
   await openView(page, "vcons");
   await page.setInputFiles("#store-file", { name: "bad.vcon", mimeType: "application/vcon", buffer: Buffer.from("<b>not json</b>") });
   await page.click("#store button[type=submit]");
-  await expect(page.locator("#store-result")).toHaveText("The body is not one JSON object (422)");
+  await expect(page.locator("#store-result")).toHaveText("The body is not one JSON object (422). Correct what was sent and try again.");
   expect(await page.locator("#store-result *").count()).toBe(0);
 });
 
@@ -124,10 +127,15 @@ test("a legal key lists a vCon's versions and reads an earlier one", async ({ pa
   await page.fill("#legal-uuid", uuid);
   await page.click("#legal-find button[type=submit]");
   await expect(page.locator("#legal-state")).toHaveText("live");
+  await expect(page.locator("#legal-body")).toBeHidden();
+  await page.click("#legal-reveal");
   await expect(page.locator("#legal-body")).toContainText("second words");
   const versions = page.locator("#versions tbody tr");
   await expect(versions).toHaveCount(2);
   await versions.nth(0).locator("button.open-version").click();
+  await expect(page.locator("#version-summary")).toContainText("unsigned");
+  await expect(page.locator("#version-body")).toBeHidden();
+  await page.click("#version-reveal");
   await expect(page.locator("#version-body")).toContainText("first words");
   expect(await stored(page)).toEqual(nothingStored);
 });

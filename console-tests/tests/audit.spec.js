@@ -2,10 +2,11 @@
 // an operator key, a page at a time, as the API serves them.
 import { randomUUID } from "node:crypto";
 import { test, expect, signIn, vcon, store, openView, auditLog, operatorKey } from "./fixtures.js";
+import { utc } from "../../crates/vcon-server/console/format.js";
 
 /** The rows of the audit table, as the records' fields in column order. */
 function fields(r) {
-  return [r.seq, r.at, r.actor, r.action, r.target ?? "", r.version ?? "", r.status, r.count].map(String);
+  return [r.seq, utc(r.at), r.actor, r.action, r.target ?? "", r.version ?? "", r.status, r.count].map(String);
 }
 
 test("an audit key reads its tenant's log, a page at a time", async ({ page, request, tenant }) => {

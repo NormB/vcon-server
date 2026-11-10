@@ -25,6 +25,7 @@ include = [
     "/console/index.html",
     "/console/console.js",
     "/console/console.css",
+    "/console/format.js",
 ]
 
 [dependencies]

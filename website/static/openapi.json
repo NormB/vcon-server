@@ -1037,6 +1037,25 @@
         }
       }
     },
+    "/console/format.js": {
+      "get": {
+        "operationId": "consoleFormat",
+        "summary": "The console's formatting script",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The script",
+            "content": {
+              "text/javascript": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/console/{other}": {
       "parameters": [
         {

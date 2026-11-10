@@ -9,6 +9,7 @@
 <script type="module" src="console.js"></script>
 </head>
 <body>
+<a class="skip" href="#main">Skip to the content</a>
 <header>
 <h1>vcon-server console</h1>
 <div id="signed-in" hidden>
@@ -16,19 +17,24 @@
 <button id="sign-out" type="button">Sign out</button>
 </div>
 </header>
-<main>
-<form id="sign-in">
+<nav id="views" aria-label="Views" hidden></nav>
+<main id="main" tabindex="-1">
+<form id="sign-in" aria-labelledby="sign-in-title">
+<h2 id="sign-in-title">Sign in</h2>
 <label for="key">API key</label>
-<input id="key" name="key" type="password" autocomplete="off" spellcheck="false" required>
+<input id="key" name="key" type="password" autocomplete="off" spellcheck="false" required aria-describedby="key-help sign-in-error">
+<p id="key-help">The key is held in this page's memory only. Reloading or closing the page forgets it.</p>
 <button type="submit">Sign in</button>
 <p id="sign-in-error" role="alert"></p>
 </form>
-<section id="key-info" hidden>
-<h2>This key</h2>
+<section id="key-info" aria-labelledby="key-info-title" hidden>
+<h2 id="key-info-title">This key</h2>
 <dl id="key-fields"></dl>
 </section>
-<nav id="views" hidden></nav>
 <section id="view" hidden></section>
 </main>
+<footer>
+<p>Times are shown in UTC (offset +00:00).</p>
+</footer>
 </body>
 </html>

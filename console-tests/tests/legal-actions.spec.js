@@ -21,8 +21,17 @@ test("hold, release and restore leave the records the API leaves", async ({ page
   await expect(page.locator("#legal-state")).toHaveText("deleted");
   await page.click("#hold");
   await expect(page.locator("#legal-message")).toHaveText(`Held ${byConsole}`);
+  page.once("dialog", (d) => d.dismiss());
+  await page.click("#release");
+  await expect(page.locator("#legal-message")).toHaveText(`Held ${byConsole}`);
+  const asked = [];
+  page.once("dialog", (d) => {
+    asked.push(d.message());
+    return d.accept();
+  });
   await page.click("#release");
   await expect(page.locator("#legal-message")).toHaveText(`Released ${byConsole}`);
+  expect(asked).toEqual([`Release the hold on ${byConsole}? Retention can then purge it.`]);
   await page.click("#restore");
   await expect(page.locator("#legal-message")).toContainText(`Restored ${byConsole}`);
   await expect(page.locator("#legal-state")).toHaveText("live");
@@ -48,5 +57,5 @@ test("a legal action the API refuses shows the problem as text", async ({ page, 
   await page.click("#legal-find button[type=submit]");
   await expect(page.locator("#legal-state")).toHaveText("live");
   await page.click("#restore");
-  await expect(page.locator("#legal-message")).toHaveText(/\(409\)$/);
+  await expect(page.locator("#legal-message")).toHaveText(/\(409\)\. Reload the view and check its state before trying again\.$/);
 });

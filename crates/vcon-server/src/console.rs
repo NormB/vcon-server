@@ -1,5 +1,5 @@
 //! The console: a web page served on the TLS listener at `/console/`. It
-//! is a client of the HTTP API and nothing more. Its three files are built
+//! is a client of the HTTP API and nothing more. Its files are built
 //! into the binary and need no key: they are the same for every caller,
 //! hold no data and change nothing. Every request the page makes is an API
 //! request that carries the key the user signed in with.
@@ -12,10 +12,48 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 
-/// The page, its script and its styles, as built into the binary.
-const PAGE: &[u8] = include_bytes!("../console/index.html");
-const SCRIPT: &[u8] = include_bytes!("../console/console.js");
-const STYLE: &[u8] = include_bytes!("../console/console.css");
+/// One console file: its name under `/console/` (empty for the page),
+/// its bytes as built into the binary, and its media type.
+pub type File = (&'static str, &'static [u8], &'static str);
+
+/// Every file the console is made of. The router serves exactly these, and
+/// a test holds this list, the `console` directory and the package's
+/// `include` list to one another.
+pub const FILES: [File; 4] = [
+    (
+        "index.html",
+        include_bytes!("../console/index.html"),
+        "text/html; charset=utf-8",
+    ),
+    (
+        "console.js",
+        include_bytes!("../console/console.js"),
+        "text/javascript; charset=utf-8",
+    ),
+    (
+        "format.js",
+        include_bytes!("../console/format.js"),
+        "text/javascript; charset=utf-8",
+    ),
+    (
+        "console.css",
+        include_bytes!("../console/console.css"),
+        "text/css; charset=utf-8",
+    ),
+];
+
+/// The file the bare `/console/` path answers with.
+const PAGE: &str = "index.html";
+
+/// The path a console file is served at.
+#[must_use]
+pub fn path_of(name: &str) -> String {
+    if name == PAGE {
+        "/console/".to_owned()
+    } else {
+        format!("/console/{name}")
+    }
+}
 
 /// The headers on every console answer: no inline code, nothing from
 /// another origin, no framing, no sniffing, no referrer, no caching.
@@ -34,24 +72,18 @@ pub const HEADERS: [(&str, &str); 7] = [
     ("cross-origin-resource-policy", "same-origin"),
 ];
 
-/// The console's routes, merged into the API's router: its three files,
+/// The console's routes, merged into the API's router: its files,
 /// `/console` sent on to `/console/`, and 404 for any other path under
 /// it, each answer with the headers.
 pub fn router<S: Clone + Send + Sync + 'static>() -> Router<S> {
-    Router::new()
-        .route(
-            "/console",
-            get(|| async { (StatusCode::PERMANENT_REDIRECT, [(LOCATION, "/console/")]) }),
-        )
-        .route("/console/", get(|| file(PAGE, "text/html; charset=utf-8")))
-        .route(
-            "/console/console.js",
-            get(|| file(SCRIPT, "text/javascript; charset=utf-8")),
-        )
-        .route(
-            "/console/console.css",
-            get(|| file(STYLE, "text/css; charset=utf-8")),
-        )
+    let mut router = Router::new().route(
+        "/console",
+        get(|| async { (StatusCode::PERMANENT_REDIRECT, [(LOCATION, "/console/")]) }),
+    );
+    for (name, body, media_type) in FILES {
+        router = router.route(&path_of(name), get(move || file(body, media_type)));
+    }
+    router
         .route("/console/{*other}", any(|| async { StatusCode::NOT_FOUND }))
         // On the console's own routes only, so the API's answers and its
         // fallback are left as they are.
@@ -83,6 +115,86 @@ mod tests {
             .join("console")
             .join(name);
         std::fs::read_to_string(path).expect("the source file")
+    }
+
+    /// Every script of the console, by name.
+    fn scripts() -> Vec<(&'static str, String)> {
+        super::FILES
+            .into_iter()
+            .filter(|(name, _, _)| name.ends_with(".js"))
+            .map(|(name, _, _)| (name, source(name)))
+            .collect()
+    }
+
+    /// The directory, the served list and the package's include list name
+    /// the same files, so a file added to one and not the others fails
+    /// here and not as a 404 in a browser or a broken published crate.
+    #[test]
+    fn the_directory_the_served_files_and_the_package_agree() {
+        let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("console");
+        let mut on_disk: Vec<String> = std::fs::read_dir(directory)
+            .expect("the console directory")
+            .map(|entry| {
+                entry
+                    .expect("an entry")
+                    .file_name()
+                    .into_string()
+                    .expect("a UTF-8 name")
+            })
+            .collect();
+        on_disk.sort();
+        let mut served: Vec<String> = super::FILES
+            .into_iter()
+            .map(|(name, _, _)| name.to_owned())
+            .collect();
+        served.sort();
+        assert_eq!(served, on_disk, "served files against the directory");
+        let manifest =
+            std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
+                .expect("the manifest");
+        for name in &on_disk {
+            assert!(
+                manifest.contains(&format!("\"/console/{name}\",")),
+                "the package includes {name}"
+            );
+        }
+    }
+
+    /// Each file is served with the media type its extension needs: a
+    /// module script under another type is refused by the browser.
+    #[test]
+    fn each_file_has_the_media_type_of_its_extension() {
+        for (name, body, media_type) in super::FILES {
+            let expected = match name.rsplit('.').next() {
+                Some("html") => "text/html; charset=utf-8",
+                Some("js") => "text/javascript; charset=utf-8",
+                Some("css") => "text/css; charset=utf-8",
+                other => panic!("{name}: no media type for {other:?}"),
+            };
+            assert_eq!(media_type, expected, "{name}");
+            assert!(!body.is_empty(), "{name} is not empty");
+            assert!(std::str::from_utf8(body).is_ok(), "{name} is UTF-8");
+        }
+    }
+
+    #[test]
+    fn the_page_is_served_at_the_directory_path_and_the_rest_by_name() {
+        assert_eq!(super::path_of("index.html"), "/console/", "index.html");
+        assert_eq!(
+            super::path_of("console.js"),
+            "/console/console.js",
+            "console.js"
+        );
+        assert_eq!(
+            super::path_of("console.css"),
+            "/console/console.css",
+            "console.css"
+        );
+        assert_eq!(
+            super::path_of("format.js"),
+            "/console/format.js",
+            "format.js"
+        );
     }
 
     /// The headers hold the rules the design sets, so a weaker policy
@@ -185,37 +297,45 @@ mod tests {
         }
     }
 
-    /// The script reaches the page only through text, never markup, runs
-    /// no code from strings, and keeps nothing in browser storage.
+    /// No script reaches the page through markup, runs code from strings
+    /// or keeps anything in browser storage; values are set as text.
     #[test]
-    fn the_script_uses_no_html_sink_and_no_storage() {
-        let script = source("console.js");
-        for refused in [
-            "innerHTML",
-            "outerHTML",
-            "insertAdjacentHTML",
-            "document.write",
-            "eval(",
-            "Function(",
-            "setTimeout(\"",
-            "setInterval(\"",
-            "localStorage",
-            "sessionStorage",
-            "indexedDB",
-            "document.cookie",
-            "caches.",
-        ] {
-            assert!(!script.contains(refused), "the script uses {refused}");
+    fn no_script_uses_an_html_sink_or_storage() {
+        for (name, script) in scripts() {
+            for refused in [
+                "innerHTML",
+                "outerHTML",
+                "insertAdjacentHTML",
+                "document.write",
+                "eval(",
+                "Function(",
+                "setTimeout(\"",
+                "setInterval(\"",
+                "localStorage",
+                "sessionStorage",
+                "indexedDB",
+                "document.cookie",
+                "caches.",
+            ] {
+                assert!(!script.contains(refused), "{name} uses {refused}");
+            }
         }
-        assert!(script.contains("textContent"), "values are set as text");
+        assert!(
+            source("console.js").contains("textContent"),
+            "values are set as text"
+        );
     }
 
     /// Every request goes through one call of `fetch`, which never lets
     /// the browser keep the answer, send a cookie or follow a redirect.
     #[test]
     fn every_request_goes_through_one_fetch() {
+        let calls: usize = scripts()
+            .iter()
+            .map(|(_, script)| script.matches("fetch(").count())
+            .sum();
+        assert_eq!(calls, 1, "one fetch call in all the scripts");
         let script = source("console.js");
-        assert_eq!(script.matches("fetch(").count(), 1, "one fetch call");
         for option in [
             r#"cache: "no-store""#,
             r#"credentials: "omit""#,

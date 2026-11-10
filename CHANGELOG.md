@@ -14,6 +14,17 @@ All notable changes to this project are recorded here. The format follows
   HTTP API with a `read` key from a client file, so the server's scopes and
   audit log apply; it reads only, and never a vCon's content. A build
   without the feature has the command and says how to get one.
+- The console opens a vCon masked, in the vCons and Legal views: a summary
+  with its form, counts and each party as the last four digits of a number
+  or the domain of an address, and the whole text only after a reveal,
+  which reads the vCon again so the audit log holds a record of it. Every
+  list has a loading and an empty state, a request that gets no answer is
+  reported, a refusal says what to do next, releasing a hold asks first,
+  and times are shown in UTC with the offset stated. The page has a skip
+  link, a labeled navigation, a focus ring and scrolling table regions,
+  and its browser tests run axe-core (WCAG 2.2 AA) on every view. The
+  console's files are served from one list that a test holds to the
+  directory and to the published package.
 - `vcon-server migrate`, for the PostgreSQL catalog preview: it makes the
   catalog's schema as `vcon_owner`, one transaction per schema version,
   alone (it takes the advisory locks every server and command shares). A

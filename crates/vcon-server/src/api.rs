@@ -4908,20 +4908,8 @@ mod tests {
         #[tokio::test]
         async fn the_router_serves_the_console_without_a_key() {
             let s = server().await;
-            let files = [
-                ("/console/", "index.html", "text/html; charset=utf-8"),
-                (
-                    "/console/console.js",
-                    "console.js",
-                    "text/javascript; charset=utf-8",
-                ),
-                (
-                    "/console/console.css",
-                    "console.css",
-                    "text/css; charset=utf-8",
-                ),
-            ];
-            for (path, file, media_type) in files {
+            for (file, _, media_type) in crate::console::FILES {
+                let path = &crate::console::path_of(file);
                 let answer = s.client().get(s.url(path)).send().await.expect("an answer");
                 assert_eq!(answer.status(), 200, "{path}");
                 assert_eq!(answer.headers()["content-type"], media_type, "{path}");
