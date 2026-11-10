@@ -22,6 +22,7 @@
 - [Export to Parquet](https://vcon-server.com/docs/export-parquet/): a copy of a tenant's vCons as Parquet files, the clear columns of each metadata level, a read with DuckDB
 - [Keep the catalogs in PostgreSQL](https://vcon-server.com/docs/postgres-catalog/): a preview: the roles, the schema and migrate, TLS, the configuration, and what each refusal at start means
 - [Connect an AI agent over MCP](https://vcon-server.com/docs/connect-mcp/): a key for the agent, the handshake and the tool list over HTTPS and through vcon-server mcp
+- [Read the audit logs](https://vcon-server.com/docs/read-audit-logs/): a tenant's log and the admin log, on the host and over HTTPS, and who revealed which part of a vCon
 - [Terminal UI](https://vcon-server.com/docs/tui/): vcon-server tui: the key and client file it needs, its keys and its messages
 
 ## Concepts
@@ -29,7 +30,7 @@
 - [Tenants and keys](https://vcon-server.com/docs/tenants-and-keys/): tenants, the scopes write, read, delete, legal and audit of a tenant key, and admin of an operator key
 - [Storing vCons](https://vcon-server.com/docs/storing-vcons/): accepted forms and media types, checks, versions, ETag and If-Match
 - [Retention and legal holds](https://vcon-server.com/docs/retention-and-holds/): the purge rule, retention periods, legal holds and the legal routes
-- [Audit logs](https://vcon-server.com/docs/audit-logs/): what is recorded, every action, and what never is recorded
+- [Audit logs](https://vcon-server.com/docs/audit-logs/): what is recorded, where, and what never is recorded
 - [Security](https://vcon-server.com/docs/security/): the key hierarchy, memory protection, and what each theft gives
 - [Assurance case](https://vcon-server.com/docs/assurance-case/): the threat model, the trust boundaries, and how common weaknesses are countered
 - [Producers](https://vcon-server.com/docs/producers/): sending vCons and handling each answer
@@ -39,8 +40,9 @@
 
 - [HTTP API](https://vcon-server.com/docs/http-api/): every route with its scope, what it takes and what it answers
 - [Client examples](https://vcon-server.com/docs/clients/): programs in curl, Python, TypeScript, Go and Rust that use the HTTP API and MCP
-- [MCP](https://vcon-server.com/docs/mcp/): the MCP server for AI agents, over HTTPS or the stdio command, and every tool with its parameters and an example
+- [MCP](https://vcon-server.com/docs/mcp/): the MCP server for AI agents, over HTTPS or the stdio command, the gate each tool call passes, and every tool with its parameters and an example
 - [Console](https://vcon-server.com/docs/console/): the web console the server serves at /console/
+- [Audit log records](https://vcon-server.com/docs/audit-log-records/): the members of a record and every action
 - [Command line](https://vcon-server.com/docs/command-line/): every command, its output and exit codes, and which may run beside a serving server
 - [Configuration](https://vcon-server.com/docs/configuration/): every key of the configuration file and its default
 - [The vcon library](https://vcon-server.com/docs/library/): reading, checking and writing vCons in Rust with the vcon crate

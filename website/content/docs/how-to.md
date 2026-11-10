@@ -32,12 +32,13 @@ shows. `scripts/docs_test.py` runs them. See
   still reads back, a read with DuckDB, what a purge removes from the bucket
   and from the storage's disks, and what each refusal means. CI runs it with
   RustFS.
-- [Keep the catalogs in PostgreSQL](@/docs/postgres-catalog.md), a preview
-  that CI does not run yet: the database's side, the roles, the schema and
+- [Keep the catalogs in PostgreSQL](@/docs/postgres-catalog.md), a
+  preview: the database's side, the roles, the schema and
   `vcon-server migrate`, TLS and client certificates, the configuration and
   the secret files, and what each refusal at start means. In this release
   `migrate` makes the schema, and the server connects, checks the server
-  and stops.
+  and stops. CI runs it with Debian 13's PostgreSQL 17 and a server built
+  with the `postgres` feature.
 
 ## Use it
 
@@ -57,6 +58,9 @@ shows. `scripts/docs_test.py` runs them. See
   replace one without a gap, and rotate the tenant key and the master key.
 - [Back up and restore](@/docs/backup-and-restore.md): the master key and
   the data directory, a restore, and what it brings back.
+- [Read the audit logs](@/docs/read-audit-logs.md): a tenant's log and the
+  admin log, with a command on the host and over HTTPS a page at a time,
+  and who revealed which part of a vCon.
 - [Export to Parquet](@/docs/export-parquet.md): a tenant's vCons as
   Parquet files in a directory or a bucket, beside a running server, the
   clear columns each metadata level adds, a read with DuckDB, and what each
@@ -72,6 +76,6 @@ shows. `scripts/docs_test.py` runs them. See
   agent, the handshake and the tool list over HTTPS and through
   `vcon-server mcp`, and the refusals. The tool list holds the tools the
   key's scopes allow.
-- [MCP](@/docs/mcp.md): the endpoint, the stdio command, the configuration
-  an agent's client reads, and every tool with its parameters and an
+- [MCP](@/docs/mcp.md), the reference: the endpoint, the stdio command, the
+  gate each tool call passes, and every tool with its parameters and an
   example.

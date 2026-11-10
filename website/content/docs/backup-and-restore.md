@@ -250,6 +250,49 @@ Once the restored server is checked, remove the old data directory:
 sudo rm -rf /var/lib/vcon-server.old
 ```
 
+## Copy it with the server stopped
+
+`backup` is the way to copy a running server's data. With the server
+stopped, the data directory can also be copied with `tar`; this works with
+every version, including those without `vcon-server backup`. The copy holds
+the data directory's two lock files, `lock` and `lock.commands`, as a
+command that runs alone does, so no server or other command can start while
+it runs. CI runs this copy and its restore on the
+[upgrade](@/docs/upgrading.md#copy-the-data-directory) page.
+
+<!-- docs-test: skip the upgrade page runs this copy, with the server stopped as its steps leave it -->
+```sh
+sudo install -d -m 0700 /backup/stopped
+sudo systemctl stop vcon-server
+sudo flock --nonblock /var/lib/vcon-server/lock flock --nonblock /var/lib/vcon-server/lock.commands \
+  tar -C /var/lib -cf /backup/stopped/vcon-server-data-$(date -u +%Y%m%dT%H%M%SZ).tar vcon-server
+sudo systemctl start vcon-server
+```
+
+The archive goes in a directory of its own, for root alone; `/backup`
+itself stays open to the service account, which writes `backup`'s copies
+under it. If a server or a command still holds the data directory, `flock`
+exits 1 and nothing is copied. Store the archive away from the master
+key's copies.
+
+Restore it with the server stopped, and check it before starting. `tar -p`,
+run as root, keeps the files' owner and modes:
+
+<!-- docs-test: skip the upgrade page runs this restore, with the server stopped as its steps leave it -->
+```sh
+sudo systemctl stop vcon-server
+sudo mv /var/lib/vcon-server /var/lib/vcon-server.old
+sudo tar -C /var/lib -xpf /backup/stopped/vcon-server-data-<time>.tar
+sudo -u vcon vcon-server check --config /etc/vcon-server/vcon-server.toml
+sudo systemctl start vcon-server
+```
+
+Do not copy a running server's files with `tar` or `cp`: each file is read
+at a different moment, and a catalog copied in the middle of a transaction
+may be corrupt. [Operations](@/docs/operations.md#or-take-a-filesystem-snapshot)
+describes a filesystem snapshot, the other way to copy while the server
+runs.
+
 ## When a step fails
 
 - **A `curl` error, or `401`, `403` or `503` where this page shows another

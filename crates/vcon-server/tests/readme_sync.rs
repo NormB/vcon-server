@@ -38,7 +38,7 @@ const HOOKS: [&str; 3] = ["pre-commit", "commit-msg", "pre-push"];
 /// Each is a whole word or the stem its forms share (`normalis` finds
 /// "normalised" and "normalisation"); none is part of a US word the pages
 /// use.
-const NON_US_SPELLINGS: [&str; 27] = [
+const NON_US_SPELLINGS: [&str; 29] = [
     "authorised",
     "authorisation",
     "licence",
@@ -66,6 +66,8 @@ const NON_US_SPELLINGS: [&str; 27] = [
     "whilst",
     "summaris",
     "minimis",
+    "misspelt",
+    "learnt",
 ];
 
 /// The words of `NON_US_SPELLINGS` that `text` holds, in any case.

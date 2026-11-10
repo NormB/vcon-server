@@ -14,6 +14,10 @@
 {% set problems = get_url(path="@/problems/_index.md") %}
 {% set standards = get_url(path="@/standards.md") %}
 <nav class="doc-nav" aria-label="Documentation">
+  {# On a narrow screen js/nav.js shows this button and folds the links
+     behind it, so the page's content comes first; see that file. #}
+  <button type="button" class="doc-nav-toggle" id="doc-nav-toggle" aria-expanded="false" aria-controls="doc-nav-links" hidden>Documentation pages</button>
+  <div class="doc-nav-links" id="doc-nav-links">
   <p class="doc-nav-title"><a href="{{ docs.permalink }}"{% if docs.permalink == current %} aria-current="page"{% endif %}>Documentation</a></p>
   {% for g in groups %}
   <p class="doc-nav-group" id="doc-nav-{{ g[0] }}">{{ g[1] }}</p>
@@ -27,6 +31,7 @@
   {% endif %}
   </ul>
   {% endfor %}
+  </div>
 </nav>
 {% endcomponent docs_nav %}
 

@@ -597,3 +597,221 @@ fn llms_txt_links_every_page_once_and_only_pages() {
         "llms.txt links more than once: {repeated:?}"
     );
 }
+
+// Three pages each held more than one kind of writing: explanation, steps
+// to follow, and tables to look things up in. Each now keeps one kind, and
+// the rest is on a page of its own kind. A link published before the split
+// still lands on a heading of the page it names.
+
+/// The headings each split page had before the split, as the ids in its
+/// URLs (`/docs/<page>/#<id>`), from the site as release 0.4.2 published
+/// it. Other sites and this repository's changelog link them, so each stays
+/// a heading of its page.
+const PUBLISHED_ANCHORS: [(&str, &[&str]); 3] = [
+    (
+        "audit-logs.md",
+        &[
+            "two-kinds-of-log",
+            "a-record",
+            "every-action",
+            "reveals",
+            "see-who-revealed-what",
+            "counted-records",
+            "reading-the-logs",
+            "the-request-log-is-not-the-audit-log",
+        ],
+    ),
+    (
+        "operations.md",
+        &[
+            "the-data-directory",
+            "objects-in-an-s3-bucket",
+            "one-server-per-directory",
+            "the-purge-sweep",
+            "logs",
+            "health-checks",
+            "stopping",
+            "checking-the-data",
+            "key-rotation",
+            "back-up-and-restore",
+            "back-up-the-master-key",
+            "back-up-the-data-directory",
+            "or-copy-it-with-the-server-stopped",
+            "or-take-a-filesystem-snapshot",
+            "restore-the-data-directory",
+            "what-a-key-rotation-does-to-backups",
+        ],
+    ),
+    (
+        "mcp.md",
+        &[
+            "connect-over-https",
+            "connect-over-stdio",
+            "client-configuration",
+            "tool-calls",
+            "what-every-tool-shares",
+            "tools",
+            "vcon-tools",
+            "vcon-store",
+            "vcon-get",
+            "vcon-list",
+            "vcon-replace",
+            "vcon-delete",
+            "legal-tools",
+            "legal-versions",
+            "legal-get",
+            "legal-hold",
+            "legal-release",
+            "legal-restore",
+            "audit-tool",
+            "audit-read",
+            "admin-tools",
+            "admin-tenant-create",
+            "admin-tenant-list",
+            "admin-tenant-retention",
+            "admin-key-create",
+            "admin-key-list",
+            "admin-key-revoke",
+            "admin-audit-read",
+            "admin-tenant-remove",
+        ],
+    ),
+];
+
+/// The id Zola gives a heading: lower case, with each run of other
+/// characters as one hyphen.
+fn slug(heading: &str) -> String {
+    let mut slug = String::new();
+    for c in heading.chars() {
+        if c.is_alphanumeric() {
+            slug.extend(c.to_lowercase());
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    slug.trim_end_matches('-').to_string()
+}
+
+/// The text of one documentation page.
+fn page_text(file: &str) -> String {
+    let path = root().join("website/content/docs").join(file);
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+/// The lines of `text` that open a fenced block of the language `lang`.
+fn blocks_of(text: &str, lang: &str) -> usize {
+    let open = format!("```{lang}");
+    text.lines().filter(|line| line.trim() == open).count()
+}
+
+#[test]
+fn the_slug_reader_writes_ids_as_zola_does() {
+    assert_eq!(
+        slug(" What a key rotation does to backups"),
+        "what-a-key-rotation-does-to-backups",
+        "words joined by hyphens"
+    );
+    assert_eq!(
+        slug(" `vcon_store`"),
+        "vcon-store",
+        "marks and underscores are not kept"
+    );
+    assert_eq!(
+        slug(" From 0.4.0 to 0.4.1: the secret-file rule"),
+        "from-0-4-0-to-0-4-1-the-secret-file-rule",
+        "each run of marks is one hyphen"
+    );
+}
+
+#[test]
+fn every_anchor_published_before_the_split_is_still_a_heading_of_its_page() {
+    let mut gone = Vec::new();
+    for (file, anchors) in PUBLISHED_ANCHORS {
+        let ids: BTreeSet<String> = headings(&page_text(file)).into_iter().map(slug).collect();
+        for anchor in anchors {
+            if !ids.contains(*anchor) {
+                gone.push(format!("/docs/{}/#{anchor}", file.trim_end_matches(".md")));
+            }
+        }
+    }
+    assert!(
+        gone.is_empty(),
+        "links published before the split lead nowhere: {gone:#?}"
+    );
+}
+
+#[test]
+fn the_pages_the_split_made_are_in_the_groups_of_their_kind() {
+    let pages = pages();
+    let group = |file: &str| {
+        pages
+            .iter()
+            .find(|p| p.file == file)
+            .map(|p| p.group.clone())
+            .unwrap_or_else(|| format!("no page {file}"))
+    };
+    for (file, kind) in [
+        ("audit-logs.md", "concepts"),
+        ("audit-log-records.md", "reference"),
+        ("read-audit-logs.md", "how-to"),
+        ("operations.md", "concepts"),
+        ("mcp.md", "reference"),
+        ("connect-mcp.md", "how-to"),
+    ] {
+        assert_eq!(group(file), kind, "{file} is in the group of its kind");
+    }
+}
+
+/// The explanation pages hold no steps to run and no table to look a value
+/// up in; the reference page holds no steps; the guides hold the steps.
+#[test]
+fn each_split_page_keeps_to_one_kind_of_writing() {
+    let audit = page_text("audit-logs.md");
+    assert_eq!(
+        blocks_of(&audit, "sh"),
+        0,
+        "audit-logs.md explains; the commands are on read-audit-logs.md"
+    );
+    assert!(
+        !audit.contains("| `create` |") && !audit.contains("| `seq` |"),
+        "audit-logs.md explains; the action and field tables are on audit-log-records.md"
+    );
+    let operations = page_text("operations.md");
+    assert_eq!(
+        blocks_of(&operations, "sh"),
+        0,
+        "operations.md explains; the steps are on the rotation and backup guides"
+    );
+    assert!(
+        !operations.contains("`purges_awaiting_rotation` and"),
+        "operations.md explains; check's members are on command-line.md"
+    );
+    let mcp = page_text("mcp.md");
+    assert!(
+        !mcp.contains("\"mcpServers\""),
+        "mcp.md is the reference; the client configuration is a step of connect-mcp.md"
+    );
+    let records = page_text("audit-log-records.md");
+    assert_eq!(
+        blocks_of(&records, "sh"),
+        0,
+        "audit-log-records.md is tables, not steps"
+    );
+    assert!(
+        records.contains("| `create` |") && records.contains("| `seq` |"),
+        "audit-log-records.md holds the action and the field tables"
+    );
+    let guide = page_text("read-audit-logs.md");
+    assert!(
+        blocks_of(&guide, "sh") >= 3,
+        "read-audit-logs.md holds the commands"
+    );
+    assert!(
+        page_text("connect-mcp.md").contains("\"mcpServers\""),
+        "connect-mcp.md holds the client configuration"
+    );
+    assert!(
+        page_text("command-line.md").contains("`purges_awaiting_rotation`"),
+        "command-line.md says what each member of check's report means"
+    );
+}

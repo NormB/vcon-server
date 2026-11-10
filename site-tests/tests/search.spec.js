@@ -3,6 +3,7 @@
 // The search index is the site's largest file by far, so a page fetches it
 // only once the search box is used.
 import { test, expect } from "@playwright/test";
+import { borderContrast } from "./axe.js";
 
 test.beforeEach(async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -115,3 +116,12 @@ test("a search file that cannot be fetched is announced, and the next use tries 
   await box.fill("tenants");
   await expect(page.locator("#search-results a").first()).toBeVisible();
 });
+
+for (const scheme of ["light", "dark"]) {
+  test(`the search box's edge stands out from the header in ${scheme} (WCAG 1.4.11)`, async ({ page }) => {
+    await page.emulateMedia({ colorScheme: scheme });
+    await page.reload();
+    const ratio = await page.getByRole("searchbox", { name: "Search the docs" }).evaluate(borderContrast);
+    expect(ratio, "the border against the header's background").toBeGreaterThanOrEqual(3);
+  });
+}

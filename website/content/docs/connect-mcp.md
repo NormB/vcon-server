@@ -10,7 +10,7 @@ group = "how-to"
 An AI agent reaches vcon-server through the Model Context Protocol (MCP):
 over HTTPS at `/mcp` on the server's TLS listener, or by starting
 `vcon-server mcp`, which forwards to a running server. [MCP](@/docs/mcp.md)
-describes both, and the configuration an agent's client reads. This how-to
+describes both, the gate each tool call passes and every tool. This how-to
 makes a key for an agent and checks each path by hand, with `curl` and with
 `vcon-server mcp`, before an agent is pointed at it.
 
@@ -175,10 +175,51 @@ curl -sS --cacert /usr/local/share/vcon-server/ca.pem "$URL/audit?limit=10000" -
 
 ## Point the agent at it
 
-[MCP](@/docs/mcp.md#client-configuration) gives the configuration blocks for
-a client that starts `vcon-server mcp` and for one that connects over HTTP
-itself. Copy `agent/mcp.toml`, the key file and `ca.pem` to the agent's
-account, and point the client file's paths at them.
+Copy `agent/mcp.toml`, the key file and `ca.pem` to the agent's account,
+and point the client file's paths at them. Then give the agent's client
+its configuration.
+
+These blocks are for a client that reads its servers from an `mcpServers`
+object in a JSON file. For a client that starts its servers as commands:
+
+```json
+{
+  "mcpServers": {
+    "vcon-server": {
+      "command": "vcon-server",
+      "args": ["mcp", "--config", "/home/agent/.config/vcon-server/mcp.toml"]
+    }
+  }
+}
+```
+
+`mcp.toml` is the client file. The key stays in the key file it names, never
+in the client's configuration.
+
+For a client that connects over HTTP itself:
+
+```json
+{
+  "mcpServers": {
+    "vcon-server": {
+      "type": "http",
+      "url": "https://vcon.example.com:8443/mcp",
+      "headers": {
+        "Authorization": "Bearer ${VCON_SERVER_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+A client that expands `${VAR}` in its configuration replaces
+`${VCON_SERVER_TOKEN}` with that environment variable's value; otherwise
+write the token there, and keep the file readable only by its owner. When the
+server's certificate comes from a private CA, a client that runs on Node.js
+trusts it when `NODE_EXTRA_CA_CERTS` names the CA's PEM file.
+
+[MCP](@/docs/mcp.md) describes the endpoint, the gate every tool call
+passes and every tool.
 
 ## When a step fails
 

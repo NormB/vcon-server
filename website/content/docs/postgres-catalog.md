@@ -14,15 +14,25 @@ over TLS, checks the server, the roles and the schema's version, and then
 stops with exit code 1: the catalogs and the registry are not kept in
 PostgreSQL yet, and stay in the data directory as SQLCipher files. This
 page covers what those two do, so a database can be set up and checked
-ahead of the catalog itself. CI does not run this page's commands yet; the messages
-below were printed by the server built from this release's source.
+ahead of the catalog itself.
+
+CI runs every command on this page on each change, after
+[getting started](@/docs/getting-started.md) and
+[keep vCons in an S3 bucket](@/docs/s3-storage.md), on Debian 13 with the
+PostgreSQL 17 it packages, the database on the server's own host, and a
+server built with the `postgres` feature. The messages under
+[when it does not start](#when-it-does-not-start) that no step here prints
+were printed by the server built from this release's source.
 
 The release binaries and `cargo install vcon-server` do not have the
 `postgres` cargo feature. Build from source with it, as
-[install](@/docs/install.md#build-from-source) shows, adding the feature:
+[install](@/docs/install.md#build-from-source) shows, adding the feature,
+and install that binary:
 
+<!-- docs-test: skip the run is given a server built with the postgres feature -->
 ```sh
 cargo build --release --locked -p vcon-server --features postgres
+sudo install -m 0755 target/release/vcon-server /usr/local/bin/vcon-server
 ```
 
 ## What was tested, and what was not
@@ -31,6 +41,8 @@ cargo build --release --locked -p vcon-server --features postgres
   against each on every change, in containers with TLS: a primary with one
   test role for each way of logging in, a hot standby of it, and a server
   with ssl off. PostgreSQL 16 is the oldest release supported.
+- **PostgreSQL 17, as Debian 13 packages it.** CI runs this page's steps
+  against it: one server, logged in to with a password.
 - **Not tested:** PostgreSQL 15 and earlier, managed services (Amazon RDS,
   Cloud SQL, Azure), connection poolers, and a server certificate with an
   Ed25519 key (see [TLS](#tls)).
@@ -48,27 +60,97 @@ cargo build --release --locked -p vcon-server --features postgres
 - On the database host, `pg_hba.conf` lines that let the server's role in
   only over TLS (`hostssl`), and only with SCRAM-SHA-256 or a client
   certificate.
+- A superuser on the database host, to make the roles and the database.
+  The steps below run on one host that holds PostgreSQL and vcon-server
+  both; with two hosts, each heading says which host its steps are for.
+- One shell for the steps: later steps use variables that earlier steps
+  set, and `$MONITOR` of [getting started](@/docs/getting-started.md).
 
 ## On the database host
 
-Store passwords as SCRAM in `postgresql.conf` (the default since
-PostgreSQL 14):
+Install PostgreSQL 16 or later. On Debian 13, as packaged (PostgreSQL 17):
 
-```text
-ssl = on
-ssl_cert_file = 'server.crt'
-ssl_key_file = 'server.key'
-password_encryption = 'scram-sha-256'
+<!-- docs-test: only apt -->
+```sh
+sudo apt-get install -y -qq postgresql >/dev/null
 ```
 
-Make three roles and a database, as a superuser in `psql`:
+The package starts the server on a host. Where it does not, as in a
+container whose image stops packages from starting services, start it; the
+second command waits until it answers:
 
-```sql
-CREATE ROLE vcon_owner NOLOGIN NOSUPERUSER NOBYPASSRLS;
-CREATE ROLE vcon_app LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD 'the role password';
-CREATE ROLE vcon_migrate LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD 'another password';
-GRANT vcon_owner TO vcon_migrate;
-CREATE DATABASE vcon OWNER vcon_owner;
+```sh
+sudo systemctl start postgresql
+timeout 30 sh -c 'until sudo -u postgres psql -Atc "SELECT 1" 2>/dev/null; do sleep 1; done'
+```
+
+```text
+1
+```
+
+Find where this server keeps its configuration and its data:
+
+```sh
+PGETC=$(dirname "$(sudo -u postgres psql -Atc 'SHOW config_file')")
+PGDATA=$(sudo -u postgres psql -Atc 'SHOW data_directory')
+sudo -u postgres psql -Atc 'SHOW server_version_num' | cut -c1-2
+```
+
+```text
+17
+```
+
+Give the server a certificate that holds the name vcon-server reaches it
+by, here `db1.example.com`. With a certificate from your certificate
+authority, install it and its key as `server.crt` and `server.key` in the
+data directory. To try it without one, make a self-signed certificate; the
+`-addext` options mark it as a TLS server's and not an authority's, which
+vcon-server requires:
+
+```sh
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 365 \
+  -subj /CN=db1.example.com -addext subjectAltName=DNS:db1.example.com \
+  -addext basicConstraints=critical,CA:FALSE -addext keyUsage=critical,digitalSignature -addext extendedKeyUsage=serverAuth \
+  -keyout pg-server.key -out pg-server.pem 2>/dev/null
+sudo install -m 0600 -o postgres -g postgres pg-server.key "$PGDATA/server.key"
+sudo install -m 0644 -o postgres -g postgres pg-server.pem "$PGDATA/server.crt"
+```
+
+Turn TLS on with that certificate, and store passwords as SCRAM (the
+default since PostgreSQL 14). Debian's `postgresql.conf` reads every file in
+`conf.d`; elsewhere, put the four lines in `postgresql.conf` itself. Then
+restart PostgreSQL:
+
+```sh
+printf '%s\n' "ssl = on" "ssl_cert_file = 'server.crt'" "ssl_key_file = 'server.key'" "password_encryption = 'scram-sha-256'" \
+  | sudo tee "$PGETC/conf.d/vcon.conf" >/dev/null
+sudo systemctl restart postgresql
+timeout 30 sh -c 'until sudo -u postgres psql -Atc "SHOW ssl" 2>/dev/null; do sleep 1; done'
+```
+
+```text
+on
+```
+
+Make three roles and a database, as a superuser. Each login role gets a
+random password, kept in a shell variable until it is installed in a file:
+
+```sh
+PG_PASSWORD=$(openssl rand -hex 24)
+PG_MIGRATE_PASSWORD=$(openssl rand -hex 24)
+sudo -u postgres psql -q -v ON_ERROR_STOP=1 \
+  -c "CREATE ROLE vcon_owner NOLOGIN NOSUPERUSER NOBYPASSRLS" \
+  -c "CREATE ROLE vcon_app LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '$PG_PASSWORD'" \
+  -c "CREATE ROLE vcon_migrate LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '$PG_MIGRATE_PASSWORD'" \
+  -c "GRANT vcon_owner TO vcon_migrate" \
+  -c "CREATE DATABASE vcon OWNER vcon_owner"
+sudo -u postgres psql -Atc "SELECT rolname FROM pg_roles WHERE rolname LIKE 'vcon\_%' ORDER BY 1"
+```
+
+```text
+vcon_app
+vcon_migrate
+vcon_owner
 ```
 
 - `vcon_owner` owns the schema; nobody logs in as it.
@@ -80,18 +162,27 @@ CREATE DATABASE vcon OWNER vcon_owner;
   owns the tables, or can act as `vcon_owner`, is refused. If your server
   must log in as another role name, make that role a member of `vcon_app`.
 
-Then in `pg_hba.conf`, before any line that would match them with another
-method:
+Then let the two roles in, over TLS and with SCRAM only. The lines go at
+the top of `pg_hba.conf`, before any line that would match the roles with
+another method:
 
-```text
-hostssl vcon vcon_app 0.0.0.0/0 scram-sha-256
-hostssl vcon vcon_app ::/0 scram-sha-256
-hostssl vcon vcon_migrate 0.0.0.0/0 scram-sha-256
-hostssl vcon vcon_migrate ::/0 scram-sha-256
+```sh
+sudo sed -i '1i hostssl vcon vcon_app 0.0.0.0/0 scram-sha-256\nhostssl vcon vcon_app ::/0 scram-sha-256\nhostssl vcon vcon_migrate 0.0.0.0/0 scram-sha-256\nhostssl vcon vcon_migrate ::/0 scram-sha-256' "$PGETC/pg_hba.conf"
+sudo -u postgres psql -Atc 'SELECT pg_reload_conf()'
+sudo -u postgres psql -Atc "SELECT type, user_name, auth_method FROM pg_hba_file_rules WHERE database = '{vcon}' AND error IS NULL"
 ```
 
-Narrow `0.0.0.0/0` and `::/0` to the servers' addresses. Reload with
-`SELECT pg_reload_conf();`.
+```text
+t
+hostssl|{vcon_app}|scram-sha-256
+hostssl|{vcon_app}|scram-sha-256
+hostssl|{vcon_migrate}|scram-sha-256
+hostssl|{vcon_migrate}|scram-sha-256
+```
+
+Narrow `0.0.0.0/0` and `::/0` to the servers' addresses. With vcon-server
+on another host, also set `listen_addresses` in `postgresql.conf` to an
+address that host reaches, and restart PostgreSQL.
 
 ## TLS
 
@@ -137,13 +228,32 @@ them apart: check `pg_hba.conf` for a `trust` line that matches the role.
 
 ## The secret files
 
+These steps, and the rest of the page, are for the vcon-server host.
+
 The password and the client certificate's key are each in a file that
 gives other users no access: no bit of `0007` set. The group may read it,
-for a file owned by root and readable by the service's group. Install the
-password on one line:
+for a file owned by root and readable by the service's group. Install each
+password on one line, and the certificate vcon-server is to trust for the
+database (your authority's, or the self-signed one from above):
 
 ```sh
 printf %s "$PG_PASSWORD" | sudo install -m 0600 -o vcon -g vcon /dev/stdin /etc/vcon-server/pg.password
+printf %s "$PG_MIGRATE_PASSWORD" | sudo install -m 0600 -o vcon -g vcon /dev/stdin /etc/vcon-server/pg-migrate.password
+sudo install -m 0644 -o vcon -g vcon pg-server.pem /etc/vcon-server/pg-ca.pem
+unset PG_PASSWORD PG_MIGRATE_PASSWORD
+sudo stat -c '%a %U %n' /etc/vcon-server/pg.password /etc/vcon-server/pg-migrate.password
+```
+
+```text
+600 vcon /etc/vcon-server/pg.password
+600 vcon /etc/vcon-server/pg-migrate.password
+```
+
+A client certificate's key is installed the same way, as the file
+`client_key_file` names:
+
+<!-- docs-test: skip the run logs in with a password, not a client certificate -->
+```sh
 sudo install -m 0600 -o vcon -g vcon pg-client.key /etc/vcon-server/pg-client.key
 ```
 
@@ -151,11 +261,23 @@ The server reads every file `[catalog.postgres]` names once, when it
 starts, before it connects, and never again: each new connection is made
 from what it read. A message never holds the password or the key.
 
+The certificate names `db1.example.com`. Until DNS gives that name to the
+database host, add it to `/etc/hosts` on the vcon-server host:
+
+```sh
+echo '127.0.0.1 db1.example.com' | sudo tee -a /etc/hosts
+```
+
+```text
+127.0.0.1 db1.example.com
+```
+
 ## The configuration
 
 Add the `[catalog]` table to the configuration, beside the `[storage]`
 table of the bucket. Every key, with its default, is on the
-[configuration page](@/docs/configuration.md#catalog-in-postgresql).
+[configuration page](@/docs/configuration.md#catalog-in-postgresql). A
+whole configuration, with two database hosts and a client certificate:
 
 ```toml
 listen = "0.0.0.0:8443"
@@ -190,6 +312,31 @@ client_cert_file = "/etc/vcon-server/pg-client.pem"
 client_key_file = "/etc/vcon-server/pg-client.key"
 ```
 
+The steps here add the two tables to the configuration that
+[keep vCons in an S3 bucket](@/docs/s3-storage.md) left, with one host and
+a password. Stop the server first: with these tables it does not serve.
+
+```sh
+sudo systemctl stop vcon-server
+printf '%s\n' '' '[catalog]' 'backend = "postgres"' '' '[catalog.postgres]' 'hosts = ["db1.example.com"]' \
+  'dbname = "vcon"' 'user = "vcon_app"' 'ca_file = "/etc/vcon-server/pg-ca.pem"' \
+  'password_file = "/etc/vcon-server/pg.password"' \
+  | sudo tee -a /etc/vcon-server/vcon-server.toml >/dev/null
+sudo tail -n 9 /etc/vcon-server/vcon-server.toml
+```
+
+```text
+[catalog]
+backend = "postgres"
+
+[catalog.postgres]
+hosts = ["db1.example.com"]
+dbname = "vcon"
+user = "vcon_app"
+ca_file = "/etc/vcon-server/pg-ca.pem"
+password_file = "/etc/vcon-server/pg.password"
+```
+
 - **Hosts.** Each is a DNS name in ASCII, an internationalized name in its
   `xn--` form, or an IP address (an IPv6 address without brackets). They
   are tried in order, each for at most `connect_timeout` seconds. A standby
@@ -205,13 +352,27 @@ client_key_file = "/etc/vcon-server/pg-client.key"
 
 ## Make the schema
 
+Until the schema is made, the server and every command refuse the
+database, and say what to run:
+
+<!-- docs-test: exit 1 -->
+```sh
+sudo -u vcon vcon-server check --config /etc/vcon-server/vcon-server.toml
+```
+
+```text
+vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database has no vCon schema: run vcon-server migrate
+```
+
 `vcon-server migrate` makes the catalog's schema in the database, as
 `vcon_owner`, one transaction per schema version. It needs no data
 directory or master key, only `[catalog.postgres]`, so run it with a copy
 of the configuration whose `user` and `password_file` are `vcon_migrate`'s:
 
 ```sh
-vcon-server migrate --config /etc/vcon-server/vcon-migrate.toml
+sudo sed -e 's/^user = "vcon_app"/user = "vcon_migrate"/' -e 's|/pg\.password"|/pg-migrate.password"|' /etc/vcon-server/vcon-server.toml \
+  | sudo install -m 0400 -o vcon -g vcon /dev/stdin /etc/vcon-server/vcon-migrate.toml
+sudo -u vcon vcon-server migrate --config /etc/vcon-server/vcon-migrate.toml
 ```
 
 It takes the two locks every server and command shares and refuses if
@@ -219,33 +380,100 @@ another holds them, so no server may run during a migration. It says what
 it found and what it left:
 
 ```text
-{"from":0,"message":"schema version 0 to schema version 1","migrated":true,"to":1}
+{"from":0,"message":"schema version 0 to schema version <version>","migrated":true,"to":<version>}
 ```
 
 Run it again after an upgrade of the binary; a schema already at the
-binary's version is left alone. The server never migrates at start: with
-several instances, one starting up would change the schema under the
-others. After each migration, every new connection reads the schema's
-version and refuses any other than the binary's.
+binary's version is left alone:
+
+```sh
+sudo -u vcon vcon-server migrate --config /etc/vcon-server/vcon-migrate.toml | jq -c '{migrated, same: (.from == .to)}'
+```
+
+```text
+{"migrated":false,"same":true}
+```
+
+The server never migrates at start: with several instances, one starting
+up would change the schema under the others. After each migration, every
+new connection reads the schema's version and refuses any other than the
+binary's.
 
 ## Check it
 
-Start the server with the configuration:
+Run a command with the server's configuration, or start the server:
 
+<!-- docs-test: exit 1 -->
 ```sh
-sudo -u vcon vcon-server serve --config /etc/vcon-server/vcon-server.toml
+sudo -u vcon vcon-server check --config /etc/vcon-server/vcon-server.toml
 ```
 
 In this release it reaches the first host that passes the checks, says
 which, and stops with exit code 1:
 
 ```text
-vcon-server: the storage cannot be used: catalog.postgres: connected to PostgreSQL 16.15 at db1.example.com:5432 as vcon_app over TLS; this release does not keep the catalogs in PostgreSQL yet (a preview), so it stops here: set catalog.backend = "local" to serve
+vcon-server: the storage cannot be used: catalog.postgres: connected to PostgreSQL <version> at db1.example.com:5432 as vcon_app over TLS; this release does not keep the catalogs in PostgreSQL yet (a preview), so it stops here: remove the [catalog] and [catalog.postgres] tables to serve
 ```
 
-Every command (`check`, `tenant create` and the others) does the same.
-Set `catalog.backend = "local"`, or remove the `[catalog]` table, to serve
-from the data directory again.
+`serve` and every other command (`tenant create` and the rest) do the
+same. The next two steps make two of the refusals of
+[when it does not start](#when-it-does-not-start) on purpose. A server
+that logs in as the role that can change the schema:
+
+<!-- docs-test: exit 1 -->
+```sh
+sudo -u vcon vcon-server check --config /etc/vcon-server/vcon-migrate.toml
+```
+
+```text
+vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the role "vcon_migrate" owns the catalog's tables or is a member of the role that does; a server logs in as vcon_app
+```
+
+And `migrate` run with the server's role, which may not act as the owner:
+
+<!-- docs-test: exit 1 -->
+```sh
+sudo -u vcon vcon-server migrate --config /etc/vcon-server/vcon-server.toml
+```
+
+```text
+vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the role "vcon_app" cannot act as vcon_owner, which migrate needs; run GRANT vcon_owner TO "vcon_app" as a superuser, for a role the server does not use
+```
+
+## Serve from the data directory again
+
+Remove the `[catalog]` and `[catalog.postgres]` tables to serve from the
+data directory again. Both must go: `backend = "local"` beside a
+`[catalog.postgres]` table is refused, with
+`catalog.postgres is set but catalog.backend is not "postgres"`, so that a
+table left behind is never silently unused. The steps above put the two
+tables at the end of the file, so this removes them. Then start the server,
+and ask for its health:
+
+```sh
+sudo sed -i '/^\[catalog\]$/,$d' /etc/vcon-server/vcon-server.toml
+sudo systemctl start vcon-server
+timeout 30 sh -c 'until curl -s -o /dev/null --cacert /usr/local/share/vcon-server/ca.pem https://vcon.example.com:8443/health; do sleep 1; done'
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem https://vcon.example.com:8443/health -H "Authorization: Bearer $MONITOR"
+```
+
+```text
+{"status":"ok"}
+```
+
+## Clean up
+
+The working directory holds the server certificate's key. PostgreSQL has
+its own copy; remove this one:
+
+```sh
+rm -f pg-server.key pg-server.pem
+ls pg-server.key 2>/dev/null || echo "pg-server.key is gone"
+```
+
+```text
+pg-server.key is gone
+```
 
 ## When it does not start
 

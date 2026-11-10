@@ -43,6 +43,8 @@ below open each page's source in the repository.
 - [Tenants and keys](../website/content/docs/tenants-and-keys.md): How tenants keep their data apart, what each key scope allows, and how keys are made and revoked.
 - [Retention and legal holds](../website/content/docs/retention-and-holds.md): How long a deleted vCon is kept, when it is erased, how a legal hold stops that, and what the legal routes can read and restore.
 - [Audit logs](../website/content/docs/audit-logs.md): What vcon-server records about each request, where, and what it never records.
+- [Audit log records](../website/content/docs/audit-log-records.md): The members of an audit record, and every action a record can name, with what it records and which log holds it.
+- [Read the audit logs](../website/content/docs/read-audit-logs.md): Read a tenant's audit log and the admin log, with a command on the host and over HTTPS a page at a time, and list who revealed which part of a vCon. Every command and what it prints is shown.
 
 ## Security
 

@@ -188,7 +188,7 @@ take the optional `reveal` parameter; see [reveals](#reveals).
 All need an operator key (scope `admin`). A tenant key gets
 [`forbidden`](@/problems/forbidden.md). Bodies are JSON objects, and a member
 a route does not take is refused with
-[`invalid-body`](@/problems/invalid-body.md) (422), so a misspelt member never
+[`invalid-body`](@/problems/invalid-body.md) (422), so a misspelled member never
 goes unnoticed.
 
 | Route | Takes | Answers |
@@ -221,7 +221,7 @@ space at either end. A tenant key's scopes are one or more of `write`,
 
 Both answer `Content-Type: application/jsonl`: one record a line, oldest
 first, exactly the lines `vcon-server audit export` writes for the same
-records (see [audit logs](@/docs/audit-logs.md#a-record)).
+records (see [audit log records](@/docs/audit-log-records.md#a-record)).
 
 - `after` is a `seq`: the page starts after it (default `0`, the start).
 - `limit` is 1 to 10000 records a page (default 1000).

@@ -231,14 +231,36 @@ fn the_how_to_scenarios_run_a_build_of_the_default_features() {
         .skip(1)
         .take_while(|line| line.starts_with("   ") || line.is_empty())
         .collect();
-    let commands = builds(&job.join("\n"))
+    let job = job.join("\n");
+    let commands = builds(&job)
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
+    // The second build is for the one scenario whose page says to build
+    // with the postgres feature (the PostgreSQL catalog preview, which the
+    // default build does not have). Every other scenario gets the first.
     assert_eq!(
         commands,
-        ["run: cargo build --locked -p vcon-server"],
-        "the binary the how-to pages run against is built as a reader's is"
+        [
+            "run: cargo build --locked -p vcon-server",
+            "run: cargo build --locked -p vcon-server --features postgres"
+        ],
+        "the binary the how-to pages run against is built as a reader's is, and the \
+         PostgreSQL page's as that page says"
+    );
+    // Both builds write target/debug/vcon-server, so the default one is
+    // kept, under the name the scenarios without a feature download,
+    // before the feature build replaces it.
+    let at = |text: &str| {
+        job.find(text)
+            .unwrap_or_else(|| panic!("the docs-binary job has no `{text}`"))
+    };
+    let default_kept = at("          name: docs-vcon-server\n");
+    let feature_built = at("run: cargo build --locked -p vcon-server --features postgres");
+    let feature_kept = at("          name: docs-vcon-server-postgres\n");
+    assert!(
+        default_kept < feature_built && feature_built < feature_kept,
+        "the default build is kept before the postgres build replaces it, and that one after"
     );
 }
 

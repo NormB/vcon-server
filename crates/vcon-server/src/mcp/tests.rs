@@ -2643,14 +2643,17 @@ mod site_page {
         assert!(text.contains("`WWW-Authenticate: Bearer`"), "{text}");
     }
 
-    /// Each client configuration on the page starts `vcon-server mcp
-    /// --config` with a client file, or reaches `/mcp` over HTTPS with a
-    /// bearer key.
+    /// Each client configuration, a step of the connect-mcp guide, starts
+    /// `vcon-server mcp --config` with a client file, or reaches `/mcp` over
+    /// HTTPS with a bearer key.
     #[test]
     fn the_client_configurations_use_the_servers_commands() {
         // The tools' sections hold JSON examples too; these are the
         // configurations.
-        let page = section(&page(), "Client configuration");
+        let page = section(
+            &read("website/content/docs/connect-mcp.md"),
+            "Point the agent at it",
+        );
         let blocks: Vec<Value> = page
             .split("```json\n")
             .skip(1)

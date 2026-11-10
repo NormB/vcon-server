@@ -361,6 +361,138 @@ class HomePage(unittest.TestCase):
         self.assertEqual(dt.home_install_problems(front, self.INSTALL), [])
 
 
+class RootOnlyDirectories(unittest.TestCase):
+    """A directory one page makes for root alone, and a path under it that
+    a page writes as the service account: found on 2026-11-10, when the
+    upgrade page's `install -d -m 0700 /backup` left `vcon-server backup
+    /backup/vcon-server/...` of the backup page refused."""
+
+    ROOT_ONLY = "```sh\nsudo install -d -m 0700 /backup\n```\n"
+    AS_VCON = "```sh\nsudo -u vcon vcon-server backup /backup/vcon-server/data-1 \\\n  --config $CONFIG\n```\n"
+
+    def test_a_path_under_a_root_only_directory_written_as_vcon_is_found(self):
+        problems = dt.root_only_directory_problems({"a.md": self.ROOT_ONLY, "b.md": self.AS_VCON})
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("a.md:2", problems[0])
+        self.assertIn("b.md:2", problems[0])
+        self.assertIn("/backup", problems[0])
+
+    def test_it_is_found_on_one_page_too(self):
+        self.assertEqual(len(dt.root_only_directory_problems({"a.md": self.ROOT_ONLY + self.AS_VCON})), 1)
+
+    def test_a_variable_set_to_a_path_under_it_and_used_as_vcon_is_found(self):
+        page = "```sh\nBACKUP=/backup/vcon-server/data-1\nsudo -u vcon vcon-server backup \"$BACKUP\" --config $CONFIG\n```\n"
+        self.assertEqual(len(dt.root_only_directory_problems({"a.md": self.ROOT_ONLY, "b.md": page})), 1)
+
+    def test_a_directory_made_for_vcon_is_not_root_only(self):
+        made = "```sh\nsudo install -d -m 0700 -o vcon -g vcon /backup/vcon-server\n```\n"
+        self.assertEqual(dt.root_only_directory_problems({"a.md": made, "b.md": self.AS_VCON}), [])
+
+    def test_a_root_only_directory_beside_it_is_no_problem(self):
+        beside = "```sh\nsudo install -d -m 0700 /backup/stopped\n```\n"
+        self.assertEqual(dt.root_only_directory_problems({"a.md": beside, "b.md": self.AS_VCON}), [])
+
+    def test_a_path_that_only_starts_with_the_same_letters_is_no_problem(self):
+        other = "```sh\nsudo -u vcon vcon-server backup /backup2/data --config $CONFIG\n```\n"
+        self.assertEqual(dt.root_only_directory_problems({"a.md": self.ROOT_ONLY, "b.md": other}), [])
+
+    def test_a_command_run_as_root_under_it_is_no_problem(self):
+        root = "```sh\nsudo tar -C /var/lib -cf /backup/copy.tar vcon-server\n```\n"
+        self.assertEqual(dt.root_only_directory_problems({"a.md": self.ROOT_ONLY, "b.md": root}), [])
+
+    def test_a_wider_mode_is_not_root_only(self):
+        wide = "```sh\nsudo install -d -m 0755 /backup\n```\n"
+        self.assertEqual(dt.root_only_directory_problems({"a.md": wide, "b.md": self.AS_VCON}), [])
+
+    def test_text_outside_a_code_block_is_not_a_command(self):
+        prose = "Do not run `sudo install -d -m 0700 /backup` here.\n"
+        self.assertEqual(dt.root_only_directory_problems({"a.md": prose, "b.md": self.AS_VCON}), [])
+
+    def test_the_pages_keep_the_rule(self):
+        self.assertEqual(dt.root_only_directory_problems(dt.docs_texts()), [])
+
+    def test_lint_reports_it(self):
+        with unittest.mock.patch.object(dt, "docs_texts", lambda: {"a.md": self.ROOT_ONLY, "b.md": self.AS_VCON}):
+            self.assertTrue(any("/backup" in p for p in dt.lint()))
+
+
+class EveryGuideRuns(unittest.TestCase):
+    """The how-to index says CI runs each guide. A guide is a page whose
+    front matter names the group `start` or `how-to`; found on 2026-11-10:
+    the PostgreSQL guide was in no scenario."""
+
+    def test_the_group_reader_reads_the_front_matter(self):
+        text = '+++\ntitle = "A"\nweight = 3\n\n[extra]\ngroup = "how-to"\n+++\n\ngroup = "start" in the body\n'
+        self.assertEqual(dt.page_group(text), "how-to")
+        self.assertEqual(dt.page_group("No front matter.\n"), "")
+        in_the_body_only = '+++\ntitle = "A"\n+++\n\n```toml\n[extra]\ngroup = "how-to"\n```\n'
+        self.assertEqual(dt.page_group(in_the_body_only), "", "a group a page only shows as an example is not its group")
+
+    def test_a_guide_no_scenario_runs_is_named(self):
+        texts = {"a.md": '+++\n[extra]\ngroup = "how-to"\n+++\n', "b.md": '+++\n[extra]\ngroup = "start"\n+++\n',
+                 "c.md": '+++\n[extra]\ngroup = "reference"\n+++\n', "how-to.md": '+++\n[extra]\ngroup = "how-to"\n+++\n'}
+        scenarios = [dt.Scenario("x", "debian:trixie-slim", frozenset(), ("a.md",))]
+        self.assertEqual(dt.guides_not_run(texts, scenarios), ["b.md"])
+
+    def test_every_guide_is_in_a_scenario(self):
+        self.assertEqual(dt.guides_not_run(dt.docs_texts(), dt.SCENARIOS), [])
+
+    def test_lint_reports_a_guide_no_scenario_runs(self):
+        with unittest.mock.patch.object(dt, "guides_not_run", lambda texts, scenarios: ["new-guide.md"]):
+            self.assertTrue(any("new-guide.md" in p for p in dt.lint()))
+
+
+class Features(unittest.TestCase):
+    """A scenario whose pages need a cargo feature the default build lacks
+    names it, and CI gives that scenario a server built with it."""
+
+    def by_name(self, name):
+        return next(s for s in dt.SCENARIOS if s.name == name)
+
+    def test_most_scenarios_need_no_feature(self):
+        self.assertEqual(self.by_name("foreground").features, ())
+        self.assertEqual(dt.artifact(self.by_name("foreground")), "docs-vcon-server")
+
+    def test_the_postgres_scenario_needs_the_postgres_feature(self):
+        s = self.by_name("postgres")
+        self.assertEqual(s.features, ("postgres",))
+        self.assertEqual(dt.artifact(s), "docs-vcon-server-postgres")
+
+    def test_it_runs_the_guide_after_the_bucket_it_needs(self):
+        s = self.by_name("postgres")
+        self.assertEqual(s.pages, ("getting-started.md", "s3-storage.md", "postgres-catalog.md"))
+        self.assertIn("rustfs", s.tags)
+        self.assertEqual(s.where, "systemd")
+
+    def test_the_artifact_command_prints_the_name(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(dt.main(["artifact", "postgres"]), 0)
+        self.assertEqual(out.getvalue(), "docs-vcon-server-postgres\n")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(dt.main(["artifact", "systemd"]), 0)
+        self.assertEqual(out.getvalue(), "docs-vcon-server\n")
+
+    def test_the_artifact_command_refuses_a_name_that_is_no_scenario(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(dt.main(["artifact", "nope"]), 2)
+        self.assertIn("nope", err.getvalue())
+
+    def test_ci_builds_and_keeps_a_server_for_every_feature_set(self):
+        with open(os.path.join(dt.ROOT, ".github", "workflows", "ci.yml"), encoding="utf-8") as f:
+            workflow = f.read()
+        for s in dt.SCENARIOS:
+            name = dt.artifact(s)
+            self.assertIn(f"name: {name}\n", workflow, f"ci.yml keeps no artifact {name}")
+            if s.features:
+                build = f"cargo build --locked -p vcon-server --features {','.join(s.features)}"
+                self.assertIn(build, workflow, f"ci.yml does not run: {build}")
+        self.assertIn('python3 -I scripts/docs_test.py artifact "$SCENARIO"', workflow,
+                      "ci.yml does not ask the runner which server a scenario gets")
+
+
 class GitHubApi(unittest.TestCase):
     """The release lookups ask the GitHub API with the job's token, and a
     refusal says why instead of passing for an unpublished release."""

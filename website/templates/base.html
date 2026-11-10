@@ -32,6 +32,9 @@
   {# The search library and index are not loaded here: js/search.js fetches
      them, from the addresses on the search box, when the box is first used.
      The index is over a megabyte and every page would fetch it. #}
+  {# Not deferred: it marks the document as scripted before the body is
+     drawn, so a phone never draws the sidebar's links and then folds them. #}
+  <script src="{{ get_url(path='js/nav.js', cachebust=true) }}"></script>
   <script src="{{ get_url(path='js/search.js', cachebust=true) }}" defer></script>
 </head>
 <body>

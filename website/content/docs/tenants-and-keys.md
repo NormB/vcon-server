@@ -76,10 +76,12 @@ is refused with [`forbidden`](@/problems/forbidden.md) and recorded.
 
 ## Removing a tenant
 
-`DELETE /admin/tenants/{id}` removes a tenant that keeps no version. With
-`?force=true` it also removes one that does, with its vCons, unless a vCon of
-the tenant is under a legal hold: then it is refused with
-[`under-hold`](@/problems/under-hold.md), whatever the query. Over HTTP nothing
+`DELETE /admin/tenants/{id}` removes a tenant that keeps no version; one
+that keeps a version is refused with
+[`holds-vcons`](@/problems/holds-vcons.md). With `?force=true` it also
+removes one that does, with its vCons, unless a vCon of the tenant is under
+a legal hold: then it is refused with
+[`under-hold`](@/problems/under-hold.md). Over HTTP nothing
 passes a legal hold; only `vcon-server tenant remove --force --override-holds`,
 run with the server stopped, can.
 

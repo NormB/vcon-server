@@ -296,3 +296,72 @@ mod live {
         );
     }
 }
+
+/// A configuration with the bucket and the two catalog tables the
+/// PostgreSQL guide leaves, `catalog` standing for the `[catalog]` part.
+fn configuration(catalog: &str) -> String {
+    format!(
+        "listen = \"0.0.0.0:8443\"\ndata_dir = \"/var/lib/vcon-server\"\n\
+         master_key = \"/etc/vcon-server/master.key\"\n\n[tls]\ncert = \"c.pem\"\nkey = \"k.pem\"\n\n\
+         [storage]\nobjects = \"s3\"\n\n[storage.s3]\nendpoint = \"https://objects.example.com:9000\"\n\
+         region = \"us-east-1\"\nbucket = \"vcon\"\naccess_key_id = \"k\"\n\
+         secret_access_key_file = \"/etc/vcon-server/s3.secret\"\n{catalog}"
+    )
+}
+
+const POSTGRES_TABLE: &str = "\n[catalog.postgres]\nhosts = [\"db1.example.com\"]\ndbname = \"vcon\"\n\
+                              user = \"vcon_app\"\npassword_file = \"/etc/vcon-server/pg.password\"\n";
+
+/// The preview's stop tells the operator how to serve again. Found on
+/// 2026-11-10, running the PostgreSQL guide: it said to set
+/// `catalog.backend = "local"`, and a configuration with that and the
+/// `[catalog.postgres]` table still in it is refused.
+#[test]
+fn the_stop_message_gives_advice_the_configuration_accepts() {
+    let said =
+        super::super::stopped_after("PostgreSQL 17.6 at db1.example.com:5432 as vcon_app over TLS");
+    assert!(
+        said.starts_with("catalog.postgres: connected to PostgreSQL 17.6 at db1.example.com:5432 as vcon_app over TLS; "),
+        "it names the server reached: {said}"
+    );
+    assert!(
+        said.ends_with("remove the [catalog] and [catalog.postgres] tables to serve"),
+        "it says what to remove: {said}"
+    );
+    assert!(
+        !said.contains("set catalog.backend"),
+        "it does not advise a change the configuration refuses: {said}"
+    );
+    let with_tables = configuration(&format!(
+        "\n[catalog]\nbackend = \"postgres\"\n{POSTGRES_TABLE}"
+    ));
+    assert!(
+        crate::config::parse(&with_tables).is_ok(),
+        "the guide's configuration reads"
+    );
+    assert!(
+        crate::config::parse(&configuration("")).is_ok(),
+        "following the advice leaves a configuration that reads"
+    );
+}
+
+/// Why the advice is to remove both tables: `backend = "local"` beside a
+/// `[catalog.postgres]` table is refused, so that a table left behind is
+/// never silently unused.
+#[test]
+fn a_local_backend_beside_a_postgres_table_is_refused() {
+    let left = configuration(&format!(
+        "\n[catalog]\nbackend = \"local\"\n{POSTGRES_TABLE}"
+    ));
+    let refused = crate::config::parse(&left).err().map(|e| e.to_string());
+    assert_eq!(
+        refused.as_deref(),
+        Some("catalog.postgres is set but catalog.backend is not \"postgres\""),
+        "the change the old message advised"
+    );
+    let alone = configuration("\n[catalog]\nbackend = \"local\"\n");
+    assert!(
+        crate::config::parse(&alone).is_ok(),
+        "the [catalog] table alone, set to local, reads"
+    );
+}

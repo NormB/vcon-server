@@ -5,7 +5,7 @@
 import { test, expect } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import path from "node:path";
-import { TAGS, describe } from "./axe.js";
+import { TAGS, describe, ringCutBy } from "./axe.js";
 
 const WIDTHS = [360, 768, 1440];
 const SCHEMES = ["light", "dark"];
@@ -90,6 +90,16 @@ test.describe("what the home page shows", () => {
     await expect(note).toContainText(/Status: \d+\.\d+\.\d+ released, not yet for production\./);
     await expect(note).toContainText("the terminal UI");
     await expect(note.getByRole("link", { name: "what is built" })).toHaveAttribute("href", /\/docs\/status\/$/);
+  });
+
+  test("the frames around the code blocks do not cut a block's focus ring", async ({ page }) => {
+    for (const block of await page.locator(".code-frame pre").all()) {
+      await block.focus();
+      await page.keyboard.press("Shift+Tab");
+      await page.keyboard.press("Tab");
+      await expect(block).toBeFocused();
+      expect(await block.evaluate(ringCutBy), "boxes that cut the ring").toEqual([]);
+    }
   });
 
   test("the footer groups its links", async ({ page }) => {

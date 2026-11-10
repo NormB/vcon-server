@@ -9,7 +9,7 @@ group = "reference"
 
 `vcon-server serve --config <file>` reads one TOML file. A wrong file stops the
 start with an error that names the key. A key the server does not know is an
-error too, so a misspelt key is never silently ignored.
+error too, so a misspelled key is never silently ignored.
 
 Durations are whole seconds and sizes are bytes; each must be more than zero.
 

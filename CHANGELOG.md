@@ -62,6 +62,18 @@ All notable changes to this project are recorded here. The format follows
   `Content-Security-Policy` header unchanged: the player's page has a
   policy of its own. A proxy that passes everything under `/console/`
   needs no change.
+- The documentation's sidebar is folded behind one button on a narrow
+  screen, so a page's own content comes first; without JavaScript it is
+  shown as before.
+- Three documentation pages each keep to one kind of writing. The audit
+  log's record members and actions are on a new page, Audit log records,
+  and the steps for reading a log on a new guide, Read the audit logs; the
+  operations page's steps are on the rotation and backup guides and
+  `check`'s members on the command-line page; the MCP client configuration
+  is a step of the Connect an AI agent guide. Every heading the three
+  pages had is still there, so a link to one still lands on it.
+- The PostgreSQL catalog guide's commands are run by CI on each change, as
+  the other guides' are.
 
 ### Fixed
 
@@ -82,6 +94,23 @@ All notable changes to this project are recorded here. The format follows
 - Seven words on the site were not in US spelling, and the
   tenants-and-keys page left `GET /key` out of the routes any valid key
   may ask.
+- A server stopped by the PostgreSQL catalog preview said to set
+  `catalog.backend = "local"` to serve. A configuration with that and the
+  `[catalog.postgres]` table still in it is refused, so the message now
+  says to remove the `[catalog]` and `[catalog.postgres]` tables. Only a
+  build with the `postgres` feature prints it.
+- The upgrade and operations pages made `/backup` a directory for root
+  alone (`install -d -m 0700 /backup`), after which `vcon-server backup
+  /backup/vcon-server/...`, run as `vcon` as the backup page shows, was
+  refused. The copies root makes now go in `/backup/stopped`.
+- The operations page's list of what `check` prints left out four members,
+  the tenants-and-keys page said a tenant under a legal hold is refused
+  with `under-hold` whatever the query (without `force=true` the answer is
+  `holds-vcons`), and the development page's layout left out seven source
+  files.
+- On the site, the search box's edge had a contrast of 1.2 to 1 against the
+  page (WCAG 1.4.11 asks 3 to 1), and the focus ring of the sidebar's links
+  and of the home page's code blocks was cut off by the box around them.
 
 ## [0.4.2] - 2026-11-10
 

@@ -82,6 +82,7 @@ fail a page whose commands are right:
 Usage:
   python3 -I scripts/docs_test.py list               the scenario names, as JSON
   python3 -I scripts/docs_test.py lint               the rules every tested page keeps
+  python3 -I scripts/docs_test.py artifact <scenario>  the CI artifact holding the server it runs
   python3 -I scripts/docs_test.py run <scenario> [--binary <vcon-server>] [--keep <dir>]
 """
 
@@ -298,6 +299,9 @@ class Scenario:
     install_binary: bool = True  # and installs it before the pages run
     timeout: int = 900
     docker: tuple = ()  # extra `docker run` options
+    # The cargo features its pages need beyond the default build's. CI builds
+    # a server with them and gives it to the scenario (`artifact`).
+    features: tuple = ()
 
 
 # Each image a scenario runs in, or a page builds FROM, by the digest of its
@@ -361,6 +365,7 @@ HOWTO = (
     "backup-and-restore.md",
     "rotate-keys.md",
     "connect-mcp.md",
+    "read-audit-logs.md",
     "tui.md",
     "upgrading.md",
 )
@@ -394,6 +399,17 @@ SCENARIOS = [
     # Parquet storage on over the server's bucket (parquet-storage.md).
     Scenario("s3", "systemd", frozenset({"debian", "apt", "systemd", "rustfs"}), ("getting-started.md", "s3-storage.md", "export-parquet.md", "parquet-storage.md")),
     Scenario("s3-minio", "systemd", frozenset({"debian", "apt", "systemd", "minio"}), ("getting-started.md", "s3-storage.md")),
+    # The PostgreSQL catalog preview: a PostgreSQL server from Debian's own
+    # packages beside the server and RustFS, each under systemd, in one
+    # container. The page needs the objects in a bucket and a server built
+    # with the postgres feature, which the default build does not have.
+    Scenario(
+        "postgres",
+        "systemd",
+        frozenset({"debian", "apt", "systemd", "rustfs", "postgres"}),
+        ("getting-started.md", "s3-storage.md", "postgres-catalog.md"),
+        features=("postgres",),
+    ),
     # The Parquet export to a directory, read with DuckDB, after the server
     # is set up with its objects in the data directory.
     Scenario("parquet", "systemd", frozenset({"debian", "apt", "systemd"}), ("getting-started.md", "export-parquet.md")),
@@ -1204,10 +1220,129 @@ def _front_matter(path: str) -> str:
     return parts[1] if len(parts) > 2 else ""
 
 
+ROOT_ONLY_DIRECTORY = re.compile(r"\binstall -d -m 0?700 (/[\w./-]+)\s*$")
+WHOLE_LINE_ASSIGNMENT = re.compile(r"^([A-Z_][A-Z0-9_]*)=(.+)$")
+
+
+def _commands(text: str) -> list[tuple[int, str]]:
+    """Each command line inside the ```sh blocks of a page's text, with the
+    number of its first line; a line ending in a backslash is joined to the
+    next."""
+    found = []
+    inside = False
+    pending: tuple[int, str] | None = None
+    for n, line in enumerate(text.splitlines(), 1):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            inside = not inside and stripped == "```sh"
+            pending = None
+            continue
+        if not inside:
+            continue
+        start, sofar = pending if pending else (n, "")
+        if stripped.endswith("\\"):
+            pending = (start, sofar + stripped[:-1])
+            continue
+        pending = None
+        found.append((start, sofar + stripped))
+    return found
+
+
+def root_only_directory_problems(texts: dict[str, str]) -> list[str]:
+    """The paths a page's command writes as the service account under a
+    directory that a page makes for root alone.
+
+    `install -d -m 0700 <dir>` with no owner (the pattern takes the mode
+    and then the directory, nothing between) makes <dir>, or changes one
+    that exists, so that only root may enter it. A command run with
+    `sudo -u vcon` that names a path under <dir> is then refused, whichever
+    page it is on and whichever was followed first. The scenarios run the
+    pages in one order, so they do not see it: on 2026-11-10 the upgrade
+    page and the operations page made /backup that way, and `vcon-server
+    backup /backup/vcon-server/...`, as the backup page and the operations
+    page run it, was refused for a reader who had followed them first.
+    `texts` is each page's text by its name.
+    """
+    root_only: list[tuple[str, int, str]] = []
+    as_vcon: list[tuple[str, int, str]] = []
+    for page, text in sorted(texts.items()):
+        variables: dict[str, str] = {}
+        for n, command in _commands(text):
+            made = ROOT_ONLY_DIRECTORY.search(command)
+            if made:
+                root_only.append((page, n, made.group(1).rstrip("/")))
+            assigned = WHOLE_LINE_ASSIGNMENT.match(command)
+            if assigned:
+                variables[assigned.group(1)] = assigned.group(2).strip('"')
+            if "sudo -u vcon " in command:
+                for name, value in variables.items():
+                    command = command.replace("${" + name + "}", value).replace("$" + name, value)
+                as_vcon.append((page, n, command))
+    problems = []
+    for made_on, made_at, directory in root_only:
+        under = re.compile(re.escape(directory) + r"/[\w.$-]")
+        for page, n, command in as_vcon:
+            if under.search(command):
+                problems.append(
+                    f"docs/{made_on}:{made_at}: makes {directory} for root alone, and docs/{page}:{n} "
+                    f"writes under it as vcon; make a directory of its own for what root keeps there"
+                )
+    return problems
+
+
+def artifact(scenario: Scenario) -> str:
+    """The name of the CI artifact that holds the server a scenario runs:
+    the default build's, or the build with the scenario's features."""
+    return "-".join(("docs-vcon-server", *scenario.features))
+
+
+GROUP = re.compile(r'(?m)^group = "([^"]*)"$')
+GUIDE_GROUPS = ("start", "how-to")
+GUIDE_INDEX = "how-to.md"
+
+
+def page_group(text: str) -> str:
+    """The sidebar group a page's front matter names, or "" for none."""
+    parts = text.split("+++\n")
+    found = GROUP.search(parts[1]) if len(parts) > 2 else None
+    return found.group(1) if found else ""
+
+
+def guides_not_run(texts: dict[str, str], scenarios: list) -> list[str]:
+    """The guides no scenario runs. A guide is a page in the group `start`
+    or `how-to`, but for the page that lists them. The how-to index says CI
+    runs each guide's commands; this holds it to that."""
+    run_pages = {page for s in scenarios for page in s.pages}
+    return sorted(
+        name
+        for name, text in texts.items()
+        if name != GUIDE_INDEX and page_group(text) in GUIDE_GROUPS and name not in run_pages
+    )
+
+
+def docs_texts() -> dict[str, str]:
+    """The text of every documentation page, by its file name."""
+    texts = {}
+    for name in sorted(os.listdir(DOCS)):
+        if name.endswith(".md"):
+            with open(os.path.join(DOCS, name), encoding="utf-8") as f:
+                texts[name] = f.read()
+    return texts
+
+
 def lint() -> list[str]:
     """Every rule, over every page a scenario runs, and the home page's
     install steps."""
     problems: list[str] = []
+    try:
+        texts = docs_texts()
+        problems += root_only_directory_problems(texts)
+        problems += [
+            f"docs/{name}: a guide no scenario runs; add it to a scenario in scripts/docs_test.py"
+            for name in guides_not_run(texts, SCENARIOS)
+        ]
+    except OSError as e:
+        problems.append(str(e))
     pins: dict = {}
     try:
         pins = read_pins()
@@ -1509,6 +1644,13 @@ def main(argv: list[str]) -> int:
         for p in problems:
             print(p)
         return 1 if problems else 0
+    if command == "artifact" and len(rest) == 1:
+        found = [s for s in SCENARIOS if s.name == rest[0]]
+        if not found:
+            print(f"docs-test: no scenario {rest[0]}; see `list`", file=sys.stderr)
+            return 2
+        print(artifact(found[0]))
+        return 0
     if command == "run" and rest:
         by_name = {s.name: s for s in SCENARIOS}
         if rest[0] not in by_name:

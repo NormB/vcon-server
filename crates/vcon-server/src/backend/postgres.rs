@@ -66,12 +66,19 @@ pub(crate) async fn preview(settings: &PostgresSettings) -> StorageError {
         };
     let pool = Pool::new(connector, settings.pool, settings.connect_timeout);
     match pool.get().await {
-        Ok(lease) => StorageError(format!(
-            "catalog.postgres: connected to {}; this release does not keep the catalogs in \
-             PostgreSQL yet (a preview), so it stops here: set catalog.backend = \"local\" \
-             to serve",
-            lease.server()
-        )),
+        Ok(lease) => StorageError(stopped_after(&lease.server().to_string())),
         Err(refused) => StorageError(format!("catalog.postgres: {refused}")),
     }
+}
+
+/// What the preview says once it has reached and checked `server`: where it
+/// connected, why it stops, and how to serve again. The way back is to
+/// remove both tables: `backend = "local"` beside a `[catalog.postgres]`
+/// table is refused by the configuration.
+fn stopped_after(server: &str) -> String {
+    format!(
+        "catalog.postgres: connected to {server}; this release does not keep the catalogs in \
+         PostgreSQL yet (a preview), so it stops here: remove the [catalog] and \
+         [catalog.postgres] tables to serve"
+    )
 }

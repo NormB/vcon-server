@@ -205,11 +205,13 @@ Copy the data directory with the server stopped. The copy holds the data
 directory's two lock files, `lock` and `lock.commands`, as a command that
 runs alone does, so no server or command can start while it runs. It works
 with every version, including those without `vcon-server backup`.
-`/backup` stands for your backup storage:
+`/backup` stands for your backup storage. The copy goes in a directory of
+its own there, for root alone: `/backup` itself stays open to the service
+account, which writes its [backups](@/docs/backup-and-restore.md) under it:
 
 ```sh
-sudo install -d -m 0700 /backup
-BEFORE=/backup/vcon-server-before-$NEW_VERSION.tar
+sudo install -d -m 0700 /backup/stopped
+BEFORE=/backup/stopped/vcon-server-before-$NEW_VERSION.tar
 sudo flock --nonblock /var/lib/vcon-server/lock flock --nonblock /var/lib/vcon-server/lock.commands \
   tar -C /var/lib -cf "$BEFORE" vcon-server
 sudo tar -tf "$BEFORE" | sed -n 's|^vcon-server/\([^/]*\)$|\1|p' | sort

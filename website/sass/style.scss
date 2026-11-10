@@ -4,6 +4,9 @@
   --fg: #0f172a;
   --muted: #475569;
   --line: #e2e8f0;
+  // The edge of a control (the search box, a button): 3:1 or more against
+  // the page, which --line, a divider, is not (WCAG 1.4.11).
+  --edge: #64748b;
   --panel: #f8fafc;
   --accent: #0f766e;
   --accent-fg: #ffffff;
@@ -20,6 +23,7 @@
     --fg: #e2e8f0;
     --muted: #94a3b8;
     --line: #1e293b;
+    --edge: #94a3b8;
     --panel: #0f172a;
     --accent: #5eead4;
     --accent-fg: #0b1120;
@@ -66,7 +70,7 @@ pre:focus-visible, table:focus-visible { outline-offset: 0; }
 .top-nav a { color: var(--muted); text-decoration: none; }
 .top-nav a:hover { color: var(--fg); }
 .search { position: relative; margin-left: auto; }
-.search input { font: inherit; padding: 0.35rem 0.6rem; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--fg); width: 14rem; max-width: 70vw; }
+.search input { font: inherit; padding: 0.35rem 0.6rem; border: 1px solid var(--edge); border-radius: 6px; background: var(--panel); color: var(--fg); width: 14rem; max-width: 70vw; }
 .search-results { position: absolute; right: 0; top: 2.4rem; width: 24rem; max-width: 90vw; margin: 0; padding: 0.3rem; list-style: none; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15); }
 .search-results li { padding: 0.4rem 0.5rem; }
 .search-results li span { display: block; color: var(--muted); font-size: 0.85rem; }
@@ -120,6 +124,9 @@ main { max-width: 72rem; margin: 0 auto; padding: 1rem; }
 .code-title { margin: 0; padding: 0.5rem 1rem; font-size: 0.9rem; font-weight: 600; background: var(--frame-bar); }
 .code-title::before { content: counter(step) ". "; color: var(--muted); }
 .code-frame pre { margin: 0; border-radius: 0; }
+// The frame clips what is drawn outside it (its rounded corners), so a
+// framed block draws its focus ring inside itself.
+.code-frame pre:focus-visible { outline-offset: -3px; }
 .code-note { margin: 0; padding: 0 1rem 0.9rem; color: var(--muted); font-size: 0.92rem; }
 
 .doc-layout { display: grid; grid-template-columns: 15rem minmax(0, 1fr); gap: 2.5rem; }
@@ -129,6 +136,11 @@ main { max-width: 72rem; margin: 0 auto; padding: 1rem; }
 .doc-nav li a:hover { color: var(--fg); background: var(--panel); }
 .doc-nav li a[aria-current="page"] { color: var(--fg); background: var(--panel); font-weight: 600; }
 .doc-nav-title { font-weight: 600; margin: 0.5rem 0; }
+// Beside the page the sidebar scrolls, so its box cuts whatever is drawn
+// outside it; a link at its edge draws its focus ring inside itself.
+.doc-nav a:focus-visible { outline-offset: -3px; }
+// Shown only on a narrow screen with JavaScript (below); js/nav.js works it.
+.doc-nav-toggle { display: none; }
 .doc-nav-group { font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--fg); margin: 0.9rem 0 0.3rem; padding: 0 0.5rem; }
 .doc-nav-title a { color: var(--fg); text-decoration: none; }
 .doc { max-width: 52rem; min-width: 0; }
@@ -160,8 +172,18 @@ main { max-width: 72rem; margin: 0 auto; padding: 1rem; }
 }
 @media (max-width: 52rem) {
   .doc-layout { grid-template-columns: minmax(0, 1fr); gap: 1rem; }
-  .doc-sidebar { position: static; max-height: none; border-bottom: 1px solid var(--line); padding-bottom: 0.5rem; }
+  // overflow: visible, or the scrolling box the sidebar is beside the page
+  // would cut the focus ring of the button and of the links at its edge.
+  .doc-sidebar { position: static; max-height: none; overflow: visible; border-bottom: 1px solid var(--line); padding-bottom: 0.5rem; }
   .doc-nav ul { display: flex; flex-wrap: wrap; gap: 0.2rem; margin-bottom: 0.4rem; }
+  // The sidebar's links folded behind one button, so the page comes first.
+  // Without JavaScript there is no .js class: the links show, the button
+  // does not.
+  .js .doc-nav-toggle:not([hidden]) { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 2.75rem; padding: 0.4rem 0.8rem; font: inherit; font-weight: 600; color: var(--fg); background: var(--panel); border: 1px solid var(--edge); border-radius: 8px; cursor: pointer; }
+  .js .doc-nav-toggle::after { content: "+"; font-family: var(--mono); color: var(--muted); }
+  .js .doc-nav-toggle[aria-expanded="true"]::after { content: "\2212"; }
+  .js .doc-nav-links { display: none; }
+  .js .doc-nav-links.is-open { display: block; margin-top: 0.5rem; }
   .doc-nav-group { margin-top: 0.5rem; }
   .toc ul { columns: 1; }
   .search { margin-left: 0; width: 100%; }

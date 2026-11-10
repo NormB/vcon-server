@@ -89,8 +89,9 @@ operator keys included (their `tenant` is `null`).
 | `audit export --tenant <id> [--since <seq>]` | the tenant's log's records | yes |
 
 Records are written oldest first, after `--since` if given; keep the last
-`seq` you read and pass it next time. See [audit logs](@/docs/audit-logs.md)
-for the fields.
+`seq` you read and pass it next time. See
+[audit log records](@/docs/audit-log-records.md) for the fields, and
+[read the audit logs](@/docs/read-audit-logs.md) for the steps.
 
 ## Key rotation
 
@@ -121,8 +122,46 @@ file; the old key no longer opens anything. The full procedure is in
 | `check` | one line per tenant, then a summary | no |
 
 `check` is the one command that prints its report and still exits 1, when it
-found a problem: the report says what. See
-[checking the data](@/docs/operations.md#checking-the-data) for each field.
+found a problem: the report says what. It opens every stored version and
+prints one JSON line per tenant and a summary line. A tenant's line gives:
+
+- `tenant` and `name`: the tenant's id and its name;
+- `versions` kept, and `damaged`: the versions whose sealed file is missing or
+  does not open;
+- `packed`: the versions packed into Parquet files (see
+  [Parquet storage](@/docs/parquet-storage.md));
+- `leftovers`: files a crash left that no row names (the next start removes
+  them; `check` only reports them);
+- `past_due` and `oldest_past_due`: versions due for purge, and since when;
+- `purges_awaiting_rotation` and `oldest_purge_awaiting_rotation`: purges
+  since the tenant's key was last rotated;
+- `rotation_stopped`: a `rekey tenant` that stopped part way;
+- `problems`: what needs the operator.
+
+The summary gives `tenants`, the number of tenants;
+`removed_tenants_awaiting_master_rotation` and
+`oldest_removal_awaiting_master_rotation`, the tenants removed since the
+master key was last rotated, and since when; and the total `problems`. A problem is damage, a catalog that does not open (under its
+tenant key, or at all, with the path and the system's error, such as
+`Permission denied (os error 13)`), objects that the storage did not read,
+packed versions with no `[storage.parquet]` in the configuration (`serve`
+refuses to start then), a stopped rotation, or a version that has waited
+longer than `purge_interval` (a sweep that is not keeping up). Leftovers and work waiting for rotation are
+reported but are not problems.
+
+Objects that cannot be read, such as files the service account may not read
+or a bucket key refused `s3:GetObject`, are reported with the error's kind
+and, when the system gives one, its error number, as the server's
+`a stored version's object could not be read` log line gives them, and
+never with an object's key:
+
+```text
+its objects cannot be read: permission denied (os error 13)
+```
+
+A service that does not answer gives a kind alone, such as
+`its objects cannot be read: timed out`. `check` exits 1, after printing its report, when it
+found a problem.
 
 ## Backup
 

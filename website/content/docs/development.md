@@ -12,23 +12,31 @@ group = "project"
 ```text
 clients/            one example client per language (see Client examples)
 crates/
-├── vcon/           the vCon library; today it reads and checks a vCon: form,
-│                   gzip, uuid, critical (no I/O; the IETF examples are its fixtures)
+├── vcon/           the vCon library: it reads and checks a vCon (form, gzip, uuid,
+│                   critical) and writes one, with no I/O; the IETF examples are
+│                   its fixtures
 └── vcon-server/
     ├── console/           the console's page, script and styles, built into the binary
     └── src/
         ├── main.rs        the command line, a thin front end
+        ├── lib.rs         the program itself, which main.rs runs and the tests drive
+        ├── commands.rs    the commands other than serve
         ├── api.rs         HTTP routes, the request pipeline, problem documents
         ├── console.rs     serves the console's files with their headers
         ├── mcp.rs         the MCP server at /mcp; mcp/stdio.rs, the stdio command
+        ├── tui.rs         the terminal UI, a client of a running server
+        ├── reveal.rs      the reveal marker on a read, for the audit log
         ├── access.rs      tokens, scopes, authentication
         ├── store.rs       one tenant's vCons: versions, deletes, purges, legal reads
+        ├── backend.rs     where the data is kept: local files, an S3 bucket, PostgreSQL
+        ├── export.rs      export parquet: a tenant's versions as Parquet files
         ├── tenants.rs     the registry: tenants, their keys, API keys, the admin log
         ├── envelope.rs    keys in locked memory; seal, wrap, HKDF
         ├── catalog.rs     SQLCipher catalogs
         ├── audit.rs       the audit log
         ├── retention.rs   calendar retention periods
         ├── config.rs      the configuration file
+        ├── secret_file.rs  the one rule for every secret file the configuration names
         ├── datadir.rs     who may use the data directory at once
         ├── serve.rs       the server and its purge sweep
         ├── fs.rs, clock.rs  the filesystem and the clock, behind interfaces for tests
@@ -356,8 +364,16 @@ what it finds is announced as a status, and that a page fetches the search
 library and index only once the box is used: the index is the site's
 largest file, over a megabyte, so no page loads it up front. The sidebar
 tests check that it lists the pages under their group headings, marks the
-page being read, and matches the documentation's index. CI runs it in the
-website job.
+page being read, and matches the documentation's index. On a screen too
+narrow for the sidebar to sit beside the page, they check that
+`website/static/js/nav.js` folds its links behind one button, so the
+page's heading is on the first screen; that the button opens and closes
+them with the keyboard, and Escape closes them; and that without
+JavaScript the links are shown and there is no button. They also check
+that the edge of the search box and of that button has a contrast of 3 to
+1 or more against the page, and that no box that clips its contents cuts
+the focus ring of a sidebar link or of a code block on the home page. CI
+runs it in the website job.
 
 ### Adding a documentation page
 
@@ -437,9 +453,13 @@ not name its release, so a reader on an older release is told to skip it.
 A scenario names the pages it runs, the system it runs them on, and its
 tags. The scenarios include Debian 13 and Fedora 44 with the server in the
 foreground, Debian 13 under systemd, each install path on each distribution,
-an upgrade from the previous release to the server under test and back, and
-the container page with Docker on the runner. The how-to scenarios get the server built from the commit
-under test. The release scenarios download the release that the install page
+an upgrade from the previous release to the server under test and back,
+the storage pages with RustFS and MinIO, the PostgreSQL page with Debian's
+own PostgreSQL, and the container page with Docker on the runner. The
+how-to scenarios get the server built from the commit under test; a
+scenario whose pages need a cargo feature the default build lacks names it
+(`features`), and CI gives it a server built with that feature
+(`docs_test.py artifact <scenario>` names the artifact). The release scenarios download the release that the install page
 names. Until that release is published, they download the newest published
 release and say so.
 
@@ -491,10 +511,12 @@ cargo build -p vcon-server
 python3 -I scripts/docs_test.py run foreground --binary target/debug/vcon-server
 ```
 
-It needs Docker. `lint` fails on a block that no scenario runs, on a request
-to the server with no output shown after it, on a marker it does not know,
-and on an install step on the home page whose code is not a run of lines in
-a block of the install page. A run prints one line per block, and for a failure, the block, what the
+It needs Docker. `lint` fails on a block that no scenario runs, on a guide
+(a page in the sidebar's first two groups) that no scenario runs, on a
+request to the server with no output shown after it, on a marker it does
+not know, on a directory that one page makes for root alone and a page
+writes under as the service account, and on an install step on the home
+page whose code is not a run of lines in a block of the install page. A run prints one line per block, and for a failure, the block, what the
 page says it prints, and what it printed.
 
 ## Continuous integration

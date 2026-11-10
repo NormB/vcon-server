@@ -542,3 +542,174 @@ fn a_tenant_catalog_that_may_not_be_opened_is_named_as_that_by_check_and_serve()
         "once allowed"
     );
 }
+
+/// A page of the site's documentation, by its file name.
+fn docs_page(name: &str) -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../website/content/docs")
+        .join(name);
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// The text under the `## {heading}` line of `page`, up to the next `## `
+/// heading.
+fn docs_section(page: &str, heading: &str) -> String {
+    let start = format!("## {heading}\n");
+    let rest = page
+        .split_once(&start)
+        .unwrap_or_else(|| panic!("no section {heading:?}"))
+        .1;
+    rest.split("\n## ").next().unwrap_or(rest).to_owned()
+}
+
+/// The members of a JSON object, sorted.
+fn members(line: &Value) -> Vec<String> {
+    let mut names: Vec<String> = line
+        .as_object()
+        .expect("an object")
+        .keys()
+        .cloned()
+        .collect();
+    names.sort();
+    names
+}
+
+/// The members a `Prints` cell of the command-line page names:
+/// `{"id", "name"}` gives `id` and `name`, sorted. A cell with no braces
+/// gives none.
+fn printed_members(cell: &str) -> Vec<String> {
+    let Some((_, rest)) = cell.split_once('{') else {
+        return Vec::new();
+    };
+    let inside = rest.split('}').next().unwrap_or_default();
+    let mut names: Vec<String> = inside
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_owned)
+        .collect();
+    names.sort();
+    names
+}
+
+/// The `Prints` cell of the command-line page's row whose command starts
+/// with `command`.
+fn prints_cell(page: &str, command: &str) -> String {
+    let row = page
+        .lines()
+        .find(|line| line.starts_with(&format!("| `{command}")))
+        .unwrap_or_else(|| panic!("the command-line page has no row for `{command}`"));
+    row.split(" | ").nth(1).unwrap_or_default().to_owned()
+}
+
+#[test]
+fn the_page_readers_read_a_section_a_row_and_its_members() {
+    let page = "## A\n\ntext a\n\n## B\n\n| Command | Prints | Beside |\n|---|---|---|\n\
+                | `x list` | `{\"id\", \"name\"}` per x, by name | yes |\n| `x remove <id>` | nothing | no |\n\n## C\n";
+    assert_eq!(
+        docs_section(page, "A"),
+        "\ntext a\n",
+        "a section ends at the next heading"
+    );
+    assert_eq!(
+        printed_members(&prints_cell(page, "x list")),
+        ["id", "name"],
+        "the members a row says its command prints"
+    );
+    assert!(
+        printed_members(&prints_cell(page, "x remove")).is_empty(),
+        "a command that prints nothing names no member"
+    );
+    assert_eq!(
+        members(&serde_json::json!({"b": 1, "a": null})),
+        ["a", "b"],
+        "an object's members, sorted"
+    );
+}
+
+/// The command-line page says what each member of `check`'s report means.
+/// Found on 0.4.2, when the operations page held the list: it left out
+/// `tenant` and `name` of a tenant's line, and `tenants` and
+/// `oldest_removal_awaiting_master_rotation` of the summary.
+#[test]
+fn the_command_line_page_names_every_member_check_prints() {
+    let s = setup();
+    s.ok(&["tenant", "create", "acme"]);
+    let report = s.ok(&["check"]);
+    assert_eq!(report.len(), 2, "one line for the tenant, then the summary");
+    let section = docs_section(&docs_page("command-line.md"), "Checking");
+    let mut missing = Vec::new();
+    for line in &report {
+        for name in members(line) {
+            if !section.contains(&format!("`{name}`")) {
+                missing.push(name);
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "command-line.md, \"Checking\", does not name {missing:?}"
+    );
+}
+
+/// The command-line page's `Prints` column names the members of each
+/// command's output, and they are the members the command prints.
+#[test]
+fn the_command_line_page_names_the_members_each_command_prints() {
+    let s = setup();
+    let page = docs_page("command-line.md");
+    let mut wrong = Vec::new();
+    let mut hold = |command: &str, printed: &Value| {
+        let named = printed_members(&prints_cell(&page, command));
+        let actual = members(printed);
+        if named != actual {
+            wrong.push(format!(
+                "`{command}`: the page names {named:?}, it prints {actual:?}"
+            ));
+        }
+    };
+    let made = s.ok(&["tenant", "create", "acme"]);
+    hold("tenant create", &made[0]);
+    let tenant = made[0]["id"].as_str().expect("an id").to_owned();
+    hold("tenant list", &s.ok(&["tenant", "list"])[0]);
+    hold(
+        "tenant set-retention",
+        &s.ok(&["tenant", "set-retention", &tenant, "5y"])[0],
+    );
+    hold(
+        "tenant set-metadata",
+        &s.ok(&["tenant", "set-metadata", &tenant, "counts"])[0],
+    );
+    let key = s.ok(&[
+        "key", "create", "--tenant", &tenant, "--scope", "read", "--label", "a",
+    ]);
+    hold("key create --tenant", &key[0]);
+    hold(
+        "key create --operator",
+        &s.ok(&["key", "create", "--operator", "--label", "o"])[0],
+    );
+    hold("key list", &s.ok(&["key", "list"])[0]);
+    let target = s.data.with_file_name("backup");
+    hold(
+        "backup",
+        &s.ok(&["backup", target.to_str().expect("path")])[0],
+    );
+    let new_key = s.data.with_file_name("new.key");
+    std::fs::write(&new_key, [0x43; 32]).expect("new key");
+    std::fs::set_permissions(
+        &new_key,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+    )
+    .expect("chmod 0600");
+    let rotated = s.ok(&[
+        "rekey",
+        "master",
+        "--new-master",
+        new_key.to_str().expect("path"),
+    ]);
+    hold("rekey master", &rotated[0]);
+    assert!(
+        wrong.is_empty(),
+        "command-line.md has fallen behind: {wrong:#?}"
+    );
+}

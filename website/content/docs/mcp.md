@@ -45,44 +45,10 @@ client file and the exit codes.
 
 ## Client configuration
 
-These blocks are for a client that reads its servers from an `mcpServers`
-object in a JSON file. For a client that starts its servers as commands:
-
-```json
-{
-  "mcpServers": {
-    "vcon-server": {
-      "command": "vcon-server",
-      "args": ["mcp", "--config", "/home/agent/.config/vcon-server/mcp.toml"]
-    }
-  }
-}
-```
-
-`mcp.toml` is the client file. The key stays in the key file it names, never
-in the client's configuration.
-
-For a client that connects over HTTP itself:
-
-```json
-{
-  "mcpServers": {
-    "vcon-server": {
-      "type": "http",
-      "url": "https://vcon.example.com:8443/mcp",
-      "headers": {
-        "Authorization": "Bearer ${VCON_SERVER_TOKEN}"
-      }
-    }
-  }
-}
-```
-
-A client that expands `${VAR}` in its configuration replaces
-`${VCON_SERVER_TOKEN}` with that environment variable's value; otherwise
-write the token there, and keep the file readable only by its owner. When the
-server's certificate comes from a private CA, a client that runs on Node.js
-trusts it when `NODE_EXTRA_CA_CERTS` names the CA's PEM file.
+The configuration blocks an agent's client reads, for a client that starts
+`vcon-server mcp` and for one that connects over HTTPS itself, are a step of
+the guide: see
+[point the agent at it](@/docs/connect-mcp.md#point-the-agent-at-it).
 
 ## Tool calls
 

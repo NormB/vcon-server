@@ -887,6 +887,20 @@ jobs:
           path: target/debug/vcon-server
           retention-days: 1
           if-no-files-found: error
+      # The postgres scenario's pages need the postgres cargo feature, which
+      # the default build does not have (`docs_test.py artifact <scenario>`
+      # names the artifact each scenario gets; scripts/test_docs_test.py
+      # holds these steps to the scenarios' features). Built after the
+      # default server is kept, since it replaces target/debug/vcon-server.
+      - name: Build the server with the postgres feature
+        run: cargo build --locked -p vcon-server --features postgres
+      - name: Keep that server for the postgres scenario
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: docs-vcon-server-postgres
+          path: target/debug/vcon-server
+          retention-days: 1
+          if-no-files-found: error
 
   docs:
     name: how-to ${{ matrix.scenario }} against a live server
@@ -901,10 +915,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      - name: Find the server this scenario runs
+        id: server
+        env:
+          SCENARIO: ${{ matrix.scenario }}
+        run: echo "artifact=$(python3 -I scripts/docs_test.py artifact "$SCENARIO")" >> "$GITHUB_OUTPUT"
       - name: Get the server built from this commit
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: docs-vcon-server
+          name: ${{ steps.server.outputs.artifact }}
           path: ${{ runner.temp }}/server
       # The release assets the pages download (scripts/docs-test-pins.txt),
       # as main last fetched them. docs_test.py's mirror checks each file's

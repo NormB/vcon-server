@@ -7,7 +7,8 @@
 //! policy is the same policy on its own bucket, and the AWS bucket name is
 //! one AWS lets no one make.
 //!
-//! The audit-logs page lists every action the code records, and only those.
+//! The audit-log-records page lists every action the code records, and only
+//! those.
 //! The HTTP API page has a row for every route the API's router serves, and
 //! only those, and `openapi.json` describes each of them.
 //!
@@ -248,7 +249,8 @@ fn the_readers_find_sections_blocks_and_grants() {
     assert_eq!(needed("b").len(), 5, "five grants");
 }
 
-// The audit-logs page lists every action the code records, and only those.
+// The audit-log-records page lists every action the code records, and only
+// those.
 
 /// The names `Action::as_str` writes in the log, read from its source: each
 /// `Action::<Name> => "<name>"` arm.
@@ -280,16 +282,16 @@ fn actions_on_page(page: &str) -> BTreeSet<String> {
 fn the_audit_page_lists_every_action_the_code_records() {
     let code = actions_in_code(&read("crates/vcon-server/src/audit.rs"));
     assert!(code.len() >= 28, "the reader found the actions: {code:?}");
-    let page = actions_on_page(&read("website/content/docs/audit-logs.md"));
+    let page = actions_on_page(&read("website/content/docs/audit-log-records.md"));
     let missing: Vec<_> = code.difference(&page).collect();
     let extra: Vec<_> = page.difference(&code).collect();
     assert!(
         missing.is_empty(),
-        "audit-logs.md does not list {missing:?}"
+        "audit-log-records.md does not list {missing:?}"
     );
     assert!(
         extra.is_empty(),
-        "audit-logs.md lists {extra:?}, which the code never records"
+        "audit-log-records.md lists {extra:?}, which the code never records"
     );
 }
 
@@ -489,5 +491,75 @@ fn the_keys_page_names_every_route_any_valid_key_may_ask() {
     assert!(
         missing.is_empty(),
         "the tenants-and-keys page does not say any valid key may ask {missing:?}: {sentence}"
+    );
+}
+
+/// The source files the Development page's layout tree names under
+/// `crates/vcon-server/src/`: each `name.rs` on a line of the tree's `src/`
+/// part.
+fn sources_in_tree(page: &str) -> BTreeSet<String> {
+    let tree = page
+        .split("```text\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n```").next())
+        .expect("the layout tree, the page's first text block");
+    let src = tree
+        .split_once("    └── src/\n")
+        .expect("the tree's src/ part")
+        .1;
+    let mut names = BTreeSet::new();
+    for line in src.lines().take_while(|line| line.starts_with("        ")) {
+        let entry = line.trim_start_matches(|c: char| !c.is_ascii_alphanumeric());
+        let listed = entry.split("  ").next().unwrap_or_default();
+        for name in listed.split(", ") {
+            if let Some(file) = name.trim().split('/').next().filter(|f| f.ends_with(".rs")) {
+                names.insert(file.to_owned());
+            }
+        }
+    }
+    names
+}
+
+#[test]
+fn the_tree_reader_takes_each_file_of_the_src_part() {
+    let page = "Intro.\n\n```text\ncrates/\n└── vcon-server/\n    ├── console/   files\n    └── src/\n        ├── main.rs        the command line\n        ├── fs.rs, clock.rs  behind interfaces\n        └── mcp.rs         the server; mcp/stdio.rs, the command\nfuzz/               targets\n```\n";
+    assert_eq!(
+        sources_in_tree(page),
+        BTreeSet::from(["clock.rs", "fs.rs", "main.rs", "mcp.rs"].map(str::to_owned)),
+        "each file a line lists, and nothing after the src/ part"
+    );
+}
+
+/// The Development page's layout tree is where a new contributor looks for
+/// a module. Found on 0.4.2: it left out seven of the 25 files, among them
+/// `commands.rs`, `backend.rs` and `tui.rs`.
+#[test]
+fn the_development_page_tree_names_every_source_file() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+    let files: BTreeSet<String> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|name| name.ends_with(".rs"))
+        .collect();
+    assert!(
+        files.contains("main.rs"),
+        "the walk reached the sources: {files:?}"
+    );
+    let named = sources_in_tree(&read("website/content/docs/development.md"));
+    let missing: Vec<&String> = files.difference(&named).collect();
+    assert!(
+        missing.is_empty(),
+        "the layout tree does not name {missing:?}"
+    );
+    let gone: Vec<&String> = named.difference(&files).collect();
+    assert!(
+        gone.is_empty(),
+        "the layout tree names files that are not there: {gone:?}"
     );
 }

@@ -185,42 +185,13 @@ not yet answered; start-up recovery removes what they left.
 ## Checking the data
 
 `vcon-server check`, with the server stopped, opens every stored version and
-prints one JSON line per tenant and a summary line. A tenant's line gives:
-
-- `versions` kept, and `damaged`: the versions whose sealed file is missing or
-  does not open;
-- `packed`: the versions packed into Parquet files (see
-  [Parquet storage](@/docs/parquet-storage.md));
-- `leftovers`: files a crash left that no row names (the next start removes
-  them; `check` only reports them);
-- `past_due` and `oldest_past_due`: versions due for purge, and since when;
-- `purges_awaiting_rotation` and `oldest_purge_awaiting_rotation`: purges
-  since the tenant's key was last rotated;
-- `rotation_stopped`: a `rekey tenant` that stopped part way;
-- `problems`: what needs the operator.
-
-The summary gives `removed_tenants_awaiting_master_rotation` and the total
-`problems`. A problem is damage, a catalog that does not open (under its
-tenant key, or at all, with the path and the system's error, such as
-`Permission denied (os error 13)`), objects that the storage did not read,
-packed versions with no `[storage.parquet]` in the configuration (`serve`
-refuses to start then), a stopped rotation, or a version that has waited
-longer than `purge_interval` (a sweep that is not keeping up). Leftovers and work waiting for rotation are
-reported but are not problems.
-
-Objects that cannot be read, such as files the service account may not read
-or a bucket key refused `s3:GetObject`, are reported with the error's kind
-and, when the system gives one, its error number, as the server's
-`a stored version's object could not be read` log line gives them, and
-never with an object's key:
-
-```text
-its objects cannot be read: permission denied (os error 13)
-```
-
-A service that does not answer gives a kind alone, such as
-`its objects cannot be read: timed out`. `check` exits 1, after printing its report, when it
-found a problem.
+prints one JSON line per tenant and a summary line. It reports damage,
+catalogs that do not open, objects the storage did not read, leftover
+files, versions past due for purge and work waiting for key rotation, and
+exits 1 when anything needs the operator. The restore, upgrade and key
+rotation guides each run it before the server is started again. The
+[command line](@/docs/command-line.md#checking) page says what each member
+of the report means.
 
 ## Key rotation
 
@@ -230,66 +201,21 @@ key. Rotation makes those copies unreadable, by destroying the keys that
 open them. Run the `vcon-server` commands as the service account, with the
 server stopped.
 
-1. Stop the server:
+The steps, with every command and what it prints, are on
+[revoke and rotate keys](@/docs/rotate-keys.md#rotate-the-tenant-key-and-the-master-key):
+stop the server; rotate the key of each tenant that `check` lists with
+purges since its key was last rotated; make a new master key file and
+rotate the master key to it; point `master_key` in the configuration at the
+new file; back up the new master key and the data directory; start the
+server; and destroy every copy of the old master key, backups included.
 
-   ```sh
-   sudo systemctl stop vcon-server
-   ```
-
-2. List the tenants with purges since their key was last rotated:
-
-   ```sh
-   sudo -u vcon vcon-server check --config /etc/vcon-server/vcon-server.toml | jq -r 'select(.purges_awaiting_rotation > 0) | .tenant'
-   ```
-
-3. Rotate the key of each tenant it lists:
-
-   ```sh
-   sudo -u vcon vcon-server rekey tenant <tenant id> --config /etc/vcon-server/vcon-server.toml
-   ```
-
-4. Make a new master key file, under a name not used before, and rotate
-   the master key to it:
-
-   ```sh
-   head -c 32 /dev/urandom | sudo -u vcon tee /etc/vcon-server/master-2.key >/dev/null
-   sudo chmod 0400 /etc/vcon-server/master-2.key
-   sudo -u vcon vcon-server rekey master --new-master /etc/vcon-server/master-2.key \
-     --config /etc/vcon-server/vcon-server.toml
-   ```
-
-   It prints the new key's id and the next steps:
-
-   ```text
-   {"master_key_id":"2a21883e94360e22","next":"point master_key in the configuration at the new key file, start the server, then destroy every copy of the old master key"}
-   ```
-
-5. Point `master_key` in the configuration at the new file:
-
-   ```sh
-   sudo sed -i 's|^master_key = .*|master_key = "/etc/vcon-server/master-2.key"|' /etc/vcon-server/vcon-server.toml
-   ```
-
-6. While the server is still stopped, back up the new master key and the
-   data directory (see [back up and restore](#back-up-and-restore)).
-7. Start the server:
-
-   ```sh
-   sudo systemctl start vcon-server
-   ```
-
-8. Destroy every copy of the old master key, backups included:
-
-   ```sh
-   sudo rm /etc/vcon-server/master.key
-   ```
-
-From step 8 on, the data purged before the rotation cannot be read from any
-copy taken before it. A step that stops part way is finished by running it
-again. The test suite plays this procedure end to end with the binary
-(`crates/vcon-server/tests/rotation.rs`): it copies the data directory, purges
-a vCon, rotates, destroys the old master key, and then tries every key that
-still exists on the copy.
+Once every copy of the old master key is destroyed, the data purged before
+the rotation cannot be read from any copy taken before it. A step that
+stops part way is finished by running it again. The test suite plays this
+procedure end to end with the binary
+(`crates/vcon-server/tests/rotation.rs`): it copies the data directory,
+purges a vCon, rotates, destroys the old master key, and then tries every
+key that still exists on the copy.
 
 ## Back up and restore
 
@@ -308,33 +234,19 @@ opens everything it holds until it is destroyed.
 ### Back up the master key
 
 Back it up when it is made and after each rotation. Copy the file to storage
-that does not hold the data backups, and label the copy with the key's id:
-
-```sh
-sudo sha256sum /etc/vcon-server/master.key | cut -c1-16
-```
-
-Keep a list of every copy, so that each one can be found and destroyed at
-the next rotation.
+that does not hold the data backups, and label the copy with the key's id,
+the first 16 hexadecimal digits of its SHA-256. Keep a list of every copy,
+so that each one can be found and destroyed at the next rotation.
+[Back up and restore](@/docs/backup-and-restore.md#back-up-the-master-key)
+has the commands.
 
 ### Back up the data directory
 
 `backup` writes a copy of the data directory to a new directory while the
-server runs. Run it as the service account. The directory it names must not
-exist yet, and the service account must be able to write the directory that
-holds it:
-
-```sh
-sudo install -d -m 0700 -o vcon -g vcon /backup/vcon-server
-sudo -u vcon vcon-server backup /backup/vcon-server/data-$(date -u +%Y%m%dT%H%M%SZ) \
-  --config /etc/vcon-server/vcon-server.toml
-```
-
-It prints one line:
-
-```text
-{"tenants":2,"tries":1,"versions":1840}
-```
+server runs, as the service account, and prints one line with the numbers
+of tenants, tries and versions.
+[Back up and restore](@/docs/backup-and-restore.md#back-up-the-data-directory)
+has the commands and what they print.
 
 It copies `server.sqlite`, then each tenant's catalog, with SQLite's online
 backup API, so each copy is its catalog as one commit left it; then it copies
@@ -352,23 +264,13 @@ remove it.
 
 ### Or copy it with the server stopped
 
-Copy it with the server stopped. The copy below holds the data directory's
-two lock files, `lock` and `lock.commands`, as a command that runs alone does,
-so no server or other command can start while it runs:
-
-```sh
-sudo install -d -m 0700 /backup
-sudo systemctl stop vcon-server
-sudo flock --nonblock /var/lib/vcon-server/lock flock --nonblock /var/lib/vcon-server/lock.commands \
-  tar -C /var/lib -cf /backup/vcon-server-data-$(date -u +%Y%m%dT%H%M%SZ).tar vcon-server
-sudo systemctl start vcon-server
-```
-
-`/backup` stands for your backup storage. If a server or a command still
-holds the directory, `flock` exits 1 and nothing is copied. A server that stopped cleanly leaves no `-wal` file; the
-archive holds `server.sqlite`, `lock`, `lock.commands` and `tenants/`, and
-nothing in it is readable without the master key. Store it away from the
-master key's copies.
+With the server stopped, the data directory can be copied with `tar`, while
+`flock` holds its two lock files so that no server or command starts during
+the copy. A server that stopped cleanly leaves no `-wal` file; the archive
+holds `server.sqlite`, `lock`, `lock.commands` and `tenants/`, and nothing
+in it is readable without the master key.
+[Back up and restore](@/docs/backup-and-restore.md#copy-it-with-the-server-stopped)
+has the commands.
 
 Do not copy a running server's files with `tar` or `cp`. Each file is read
 at a different moment, and a catalog copied in the middle of a transaction
@@ -388,35 +290,13 @@ filesystem.
 ### Restore the data directory
 
 Restore it with the server stopped, under the master key that was current
-when the backup was taken, then check it before starting. From a directory
-`backup` wrote:
-
-```sh
-sudo systemctl stop vcon-server
-sudo mv /var/lib/vcon-server /var/lib/vcon-server.old
-sudo cp -a /backup/vcon-server/data-<time> /var/lib/vcon-server
-sudo -u vcon vcon-server check --config /etc/vcon-server/vcon-server.toml
-sudo systemctl start vcon-server
-```
-
-From an archive of a stopped copy:
-
-```sh
-sudo systemctl stop vcon-server
-sudo mv /var/lib/vcon-server /var/lib/vcon-server.old
-sudo tar -C /var/lib -xpf /backup/vcon-server-data-<time>.tar
-sudo -u vcon vcon-server check --config /etc/vcon-server/vcon-server.toml
-sudo systemctl start vcon-server
-```
-
-`cp -a` and `tar -p`, run as root, keep the files' owner and modes. A
+when the backup was taken, then run `check` on it before starting. Copied
+as root with `cp -a` or `tar -p`, the files keep their owner and modes. A
 directory `backup` wrote holds no lock files; the server and the commands
-make them. Under any other
-master key, `check` and the server both refuse:
-
-```text
-vcon-server: the master key is not the one server.sqlite was made under
-```
+make them. Under any other master key, `check` and the server both refuse,
+with `the master key is not the one server.sqlite was made under`.
+[Back up and restore](@/docs/backup-and-restore.md#restore-the-data-directory)
+has the commands.
 
 The data directory is then as it was when the backup was taken:
 
@@ -432,7 +312,7 @@ at start.
 ### What a key rotation does to backups
 
 A data backup opens only under the master key that was current when it was
-taken. Once every copy of that key is destroyed (step 8 of
+taken. Once every copy of that key is destroyed (the last step of a
 [key rotation](#key-rotation)), the backup can no longer be read or
 restored, and that includes every vCon purged before the rotation. So:
 
