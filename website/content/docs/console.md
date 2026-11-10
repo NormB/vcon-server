@@ -88,20 +88,39 @@ part of the console page the server already serves, and needs no setting.
    - whether it has a subject (`present, hidden` or `none`);
    - the number of dialogs, their total seconds, and the number of
      attachments and analyses;
+   - each dialog as a line such as
+     `Dialog 1: text, 2026-10-23 12:00:00 UTC+00:00, 30 s, parties 1, 2; content hidden`,
+     with its type, start, length and parties and never what was said. A
+     type the vCon format does not name shows as `other type`;
+   - how many links the vCon holds to places outside the server;
    - each party as a line such as
      `Party 1: number ending 0123; address at example.com; name hidden`.
      A telephone number shows its last four digits, and one of fewer than
      eight digits is hidden whole. An email address shows its domain only.
    - for a signed vCon, the `alg`, `kid` and `x5t` of its first signature's
-     header. The summary is read from the signed payload; the console does
-     not verify the signature. An encrypted vCon is not decoded.
-3. To see the whole vCon, choose **Reveal the whole vCon** (in the Legal
+     header, and `not verified by the console`. The summary is read from
+     the signed payload. An encrypted vCon is not decoded.
+3. To see one part, choose **Reveal parties**, **Reveal subject**,
+   **Reveal dialog** or **Reveal analysis**. The console reads the vCon
+   again and shows that part alone as text. Inline media (a body with a
+   `base64url` or `base64` encoding) is named by its size and not shown.
+4. To see where the vCon links to, choose **Reveal links**. Each link is
+   shown as text with where it is, such as `dialog 2`, and
+   `points outside the server and is never loaded`. The console makes no
+   request to a link and never shows one as a link, an image or a player.
+   **Copy** puts the link's text on the clipboard.
+5. To see the whole vCon, choose **Reveal the whole vCon** (in the Legal
    view, **Reveal this version** or **Reveal the opened version**). The
-   console reads it again and shows it as text.
+   console reads it again and shows it as text. Past 2,097,152 characters
+   the text is cut there, and a line says how many more there are.
+6. To keep a copy, choose **Download**. The console reads the vCon again
+   and the browser saves it as `<uuid>.json`, as plain bytes
+   (`application/octet-stream`), under the uuid and never under a name
+   from the vCon. A vCon stored gzipped is saved inflated.
 
 **Verify:** read the tenant's [audit log](@/docs/audit-logs.md) with an
 `audit` key. Opening a vCon leaves one `read` record for its uuid, and each
-**Reveal the whole vCon** leaves one more. In the Legal view each find,
+Reveal and each **Download** leaves one more. In the Legal view each find,
 each version opened and each reveal leaves the record its legal read
 leaves. Opening another vCon, or the same
 one again, masks it again.
@@ -111,6 +130,10 @@ one again, masks it again.
 - *The summary says `not JSON` or `not a JSON object`:* the stored bytes are
   not a vCon the console can summarize. **Reveal the whole vCon** still
   shows them as text.
+- *A part shows `This vCon cannot be read in parts. Reveal the whole vCon
+  instead.`:* the vCon is encrypted, or is not a JSON object.
+- *Copy answers `The browser did not allow the copy.`:* the browser refused
+  clipboard access. Select the link's text and copy it.
 - *Reveal answers `(410)`:* the vCon was deleted after you opened it. A key
   with the `legal` scope can still find it under **Legal**.
 - *Nothing happens after Reveal and a line says the server could not be

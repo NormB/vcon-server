@@ -89,6 +89,142 @@ function items(value) {
   return Array.isArray(value) ? value : [];
 }
 
+/** The dialog types the vCon format names; any other is not shown. */
+const DIALOG_TYPES = ["recording", "text", "transfer", "incomplete"];
+
+/** Whether a value is a party's place in the parties list. */
+function isIndex(value) {
+  return Number.isInteger(value) && value >= 0;
+}
+
+/** A dialog's parties as their numbers, counted from one. */
+function partiesOf(parties) {
+  if (isIndex(parties)) {
+    return `party ${parties + 1}`;
+  }
+  if (Array.isArray(parties) && parties.length > 0 && parties.every(isIndex)) {
+    return `parties ${parties.map((p) => p + 1).join(", ")}`;
+  }
+  return "no parties";
+}
+
+/**
+ * One dialog as a line with its type, start, length and parties, and
+ * whether it has content, never the content or where a link points.
+ */
+export function dialogLine(dialog, index) {
+  const label = `Dialog ${index + 1}`;
+  if (!isObject(dialog)) {
+    return `${label}: not an object`;
+  }
+  const type = DIALOG_TYPES.includes(dialog.type) ? dialog.type : "other type";
+  const at = typeof dialog.start === "string" ? utc(dialog.start) : "";
+  const start = at.endsWith("UTC+00:00") ? at : "no start";
+  const length = typeof dialog.duration === "number" && dialog.duration > 0 ? `${dialog.duration} s` : "no length";
+  let content = "no content";
+  if (typeof dialog.body === "string" && dialog.body !== "") {
+    content = "content hidden";
+  } else if (typeof dialog.url === "string" && dialog.url !== "") {
+    content = "content at a link outside the server";
+  }
+  return `${label}: ${type}, ${start}, ${length}, ${partiesOf(dialog.parties)}; ${content}`;
+}
+
+/** The parts of a vCon that may hold a link, and what one item is called. */
+const LINKED = [
+  ["dialog", "dialog"],
+  ["attachments", "attachment"],
+  ["analysis", "analysis"],
+];
+
+/** Every link in a vCon object, with where it is. */
+function linksOf(vcon) {
+  const found = [];
+  for (const [part, noun] of LINKED) {
+    items(vcon[part]).forEach((item, index) => {
+      if (isObject(item) && typeof item.url === "string" && item.url !== "") {
+        found.push({ where: `${noun} ${index + 1}`, url: item.url });
+      }
+    });
+  }
+  return found;
+}
+
+/**
+ * The vCon object a body holds, for reading its parts: the body itself, or
+ * a signed vCon's payload. Null for an encrypted vCon and for anything
+ * that is not a JSON object.
+ */
+function readable(text) {
+  let vcon;
+  try {
+    vcon = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!isObject(vcon) || "ciphertext" in vcon) {
+    return null;
+  }
+  if ("payload" in vcon && "signatures" in vcon) {
+    return decoded(vcon.payload);
+  }
+  return vcon;
+}
+
+/** Every link in a vCon body, with where it is; none when it cannot be read. */
+export function links(text) {
+  const vcon = readable(text);
+  return vcon === null ? [] : linksOf(vcon);
+}
+
+/** The most characters of a vCon the console shows at once: 2 MiB. */
+export const DISPLAY_LIMIT = 2 * 1024 * 1024;
+
+/** Text cut at the limit, and how many characters were left out. */
+export function shown(text, limit = DISPLAY_LIMIT) {
+  if (text.length <= limit) {
+    return { text, left: 0 };
+  }
+  return { text: text.slice(0, limit), left: text.length - limit };
+}
+
+/** The encodings under which a body is media, not text to read. */
+const MEDIA_ENCODINGS = ["base64url", "base64"];
+
+/** Items as indented JSON, with inline media named by its size, not shown. */
+function listed(value) {
+  const made = items(value);
+  if (made.length === 0) {
+    return "none";
+  }
+  const readableItems = made.map((item) => {
+    if (isObject(item) && MEDIA_ENCODINGS.includes(item.encoding) && typeof item.body === "string") {
+      return { ...item, body: `[${item.body.length} characters of ${item.encoding}, not shown]` };
+    }
+    return item;
+  });
+  return shown(JSON.stringify(readableItems, null, 2)).text;
+}
+
+/** What each part Reveal can show is made from. */
+const SECTIONS = new Map([
+  ["parties", (vcon) => listed(vcon.parties)],
+  ["subject", (vcon) => (typeof vcon.subject === "string" && vcon.subject !== "" ? vcon.subject : "none")],
+  ["dialog", (vcon) => listed(vcon.dialog)],
+  ["analysis", (vcon) => listed(vcon.analysis)],
+]);
+
+/**
+ * One part of a vCon body as text: `parties`, `subject`, `dialog` or
+ * `analysis`. Null for any other name and for a body that cannot be read
+ * in parts.
+ */
+export function section(text, name) {
+  const make = SECTIONS.get(name);
+  const vcon = readable(text);
+  return make === undefined || vcon === null ? null : make(vcon);
+}
+
 /** A summary of nothing, in the given form. */
 function empty(form, subject) {
   return {
@@ -97,9 +233,11 @@ function empty(form, subject) {
     subject,
     parties: [],
     dialogs: 0,
+    dialog: [],
     seconds: 0,
     attachments: 0,
     analyses: 0,
+    links: 0,
     signature: null,
   };
 }
@@ -119,9 +257,11 @@ function counted(vcon, form) {
     subject: typeof vcon.subject === "string" && vcon.subject !== "" ? "present, hidden" : "none",
     parties: items(vcon.parties).map(partyLine),
     dialogs: dialog.length,
+    dialog: dialog.map(dialogLine),
     seconds,
     attachments: items(vcon.attachments).length,
     analyses: items(vcon.analysis).length,
+    links: linksOf(vcon).length,
     signature: null,
   };
 }

@@ -4,7 +4,7 @@
 // and a reload forgets it. Every value from the server reaches the page as
 // text, never as markup.
 
-import { utc, summary, refusalText } from "./format.js";
+import { utc, summary, refusalText, section, links, shown, DISPLAY_LIMIT } from "./format.js";
 
 let token = null;
 let key = null;
@@ -140,42 +140,145 @@ function stateOf(made, noun) {
 
 /** What a masked vCon hides, and what Reveal does. */
 const MASKED_NOTE =
-  "Names, the subject, full numbers and addresses, and what was said are hidden. " +
-  "Reveal reads it again, and the audit log records that read.";
+  "Names, the subject, full numbers and addresses, links and what was said are hidden. " +
+  "Each Reveal, and Download, reads it again, and the audit log records that read.";
+
+/** The parts of a vCon that Reveal shows one at a time. */
+const PARTS = ["parties", "subject", "dialog", "analysis"];
+
+/** What a part shows for a vCon that has no parts to read. */
+const NO_PARTS = "This vCon cannot be read in parts. Reveal the whole vCon instead.";
+
+/** How long a download's object URL is kept before it is released. */
+const DOWNLOAD_URL_MS = 60000;
+
+/** Hands the browser `text` to save as `<name>.json`, as plain bytes. */
+function save(name, text) {
+  const url = URL.createObjectURL(new Blob([text], { type: "application/octet-stream" }));
+  el("a", "", { href: url, download: `${name}.json` }).click();
+  setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_URL_MS);
+}
 
 /**
- * A vCon shown masked: its version and summary, and its whole text only
- * after Reveal, which reads it again with the function `show` was given.
- * The ids are `<name>-etag`, `<name>-summary`, `<name>-body` and `reveal`.
+ * A vCon shown masked: its version and summary. A part, its links or its
+ * whole text is shown only after a Reveal, and it is saved only by
+ * Download; each reads it again with the function `show` was given.
+ * `say` shows a line of text beside the vCon. The ids are `<name>-etag`,
+ * `<name>-summary`, `<name>-reveal-<part>`, `<name>-section`,
+ * `<name>-links`, `<name>-download`, `<name>-body` and `reveal`.
  */
-function maskedVcon(name, reveal, label) {
+function maskedVcon(name, reveal, label, say) {
   const etag = el("p", "", { id: `${name}-etag` });
   const masked = el("dl", "", { id: `${name}-summary` });
   const note = el("p", MASKED_NOTE, { class: "note" });
-  const button = el("button", `Reveal ${label}`, { id: reveal, type: "button" });
+  const buttons = el("div", "", { class: "reveals", role: "group", "aria-label": `Reveal or download ${label}` });
+  const partTitle = el("h4", "", { id: `${name}-section-title`, hidden: "" });
+  const part = el("pre", "", { id: `${name}-section`, hidden: "", tabindex: "0", role: "group", "aria-labelledby": `${name}-section-title` });
+  const linkList = el("ul", "", { id: `${name}-links`, class: "links" });
+  const linkState = el("p", "", { id: `${name}-links-state`, class: "state", role: "status" });
+  const whole = el("button", `Reveal ${label}`, { id: reveal, type: "button" });
+  const cut = el("p", "", { id: `${name}-cut`, class: "note", hidden: "" });
   const body = el("pre", "", { id: `${name}-body`, hidden: "", tabindex: "0", role: "group", "aria-label": `${label}, as text` });
   let again = null;
-  button.addEventListener("click", async () => {
+  let saveAs = "";
+
+  /** Hides everything a Reveal showed. */
+  function mask() {
+    partTitle.hidden = true;
+    part.textContent = "";
+    part.hidden = true;
+    clear(linkList);
+    linkState.textContent = "";
+    cut.hidden = true;
+    body.textContent = "";
+    body.hidden = true;
+    whole.hidden = false;
+  }
+
+  for (const partName of PARTS) {
+    const button = el("button", `Reveal ${partName}`, { id: `${name}-reveal-${partName}`, type: "button" });
+    button.addEventListener("click", async () => {
+      const got = await again();
+      if (got === null) {
+        partTitle.hidden = true;
+        part.hidden = true;
+        return;
+      }
+      partTitle.textContent = `${partName[0].toUpperCase()}${partName.slice(1)}, revealed`;
+      part.textContent = section(got.text, partName) ?? NO_PARTS;
+      partTitle.hidden = false;
+      part.hidden = false;
+      part.focus();
+    });
+    buttons.append(button);
+  }
+
+  const showLinks = el("button", "Reveal links", { id: `${name}-reveal-links`, type: "button" });
+  showLinks.addEventListener("click", async () => {
     const got = await again();
     if (got === null) {
       return;
     }
+    clear(linkList);
+    const found = links(got.text);
+    linkState.textContent = found.length === 0 ? "No links in this vCon." : "";
+    for (const { where, url } of found) {
+      // A link from a vCon is text: never an anchor, never loaded.
+      const item = el("li");
+      const copy = el("button", "Copy", { type: "button", "aria-label": `Copy the link at ${where}` });
+      copy.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(url);
+          linkState.textContent = `Copied the link at ${where}.`;
+        } catch {
+          linkState.textContent = "The browser did not allow the copy. Select the link's text and copy it.";
+        }
+      });
+      item.append(el("span", `${where}: `), el("code", url), el("span", " points outside the server and is never loaded. "), copy);
+      linkList.append(item);
+    }
+  });
+
+  const download = el("button", "Download", { id: `${name}-download`, type: "button" });
+  download.addEventListener("click", async () => {
+    const got = await again();
+    if (got === null) {
+      return;
+    }
+    save(saveAs, got.text);
+    say(`Downloaded ${saveAs}`);
+  });
+  buttons.append(showLinks, download);
+
+  whole.addEventListener("click", async () => {
+    const got = await again();
+    if (got === null) {
+      return;
+    }
+    const fits = shown(got.text);
     etag.textContent = got.etag;
-    body.textContent = got.text;
+    body.textContent = fits.text;
+    cut.textContent =
+      fits.left === 0
+        ? ""
+        : `Only the first ${DISPLAY_LIMIT} characters are shown; ${fits.left} more are not. Download has all of it.`;
+    cut.hidden = fits.left === 0;
     body.hidden = false;
-    button.hidden = true;
+    whole.hidden = true;
     body.focus();
   });
   return {
-    nodes: [etag, masked, note, button, body],
-    /** Shows `got` masked; `read` reads the same vCon again for Reveal. */
-    show(got, read) {
+    nodes: [etag, masked, note, buttons, partTitle, part, linkList, linkState, whole, cut, body],
+    /**
+     * Shows `got` masked. `read` reads the same vCon again for a Reveal
+     * or a Download, which saves it as `<uuid>.json`.
+     */
+    show(got, read, uuid) {
       again = read;
+      saveAs = uuid;
       etag.textContent = got.etag;
-      body.textContent = "";
-      body.hidden = true;
+      mask();
       showSummary(masked, summary(got.text));
-      button.hidden = false;
     },
   };
 }
@@ -221,25 +324,32 @@ function showSummary(list, s) {
     ["Attachments", String(s.attachments)],
     ["Analyses", String(s.analyses)],
   ];
+  rows.push(["Links outside the server", String(s.links)]);
   if (s.signature !== null) {
     for (const name of ["alg", "kid", "x5t"]) {
       rows.push([`Signature ${name}`, s.signature[name] === "" ? "not stated" : s.signature[name]]);
     }
+    rows.push(["Signature check", "not verified by the console"]);
   }
   for (const [name, value] of rows) {
     list.append(el("dt", name), el("dd", value));
   }
-  const parties = el("dd");
-  if (s.parties.length === 0) {
-    parties.textContent = "none";
-  } else {
-    const lines = el("ul");
-    for (const line of s.parties) {
-      lines.append(el("li", line));
+  for (const [name, lines] of [
+    ["Parties", s.parties],
+    ["Dialog items", s.dialog],
+  ]) {
+    const value = el("dd");
+    if (lines.length === 0) {
+      value.textContent = "none";
+    } else {
+      const made = el("ul");
+      for (const line of lines) {
+        made.append(el("li", line));
+      }
+      value.append(made);
     }
-    parties.append(lines);
+    list.append(el("dt", name), value);
   }
-  list.append(el("dt", "Parties"), parties);
 }
 
 /** The path of one vCon, under `base`. */
@@ -252,7 +362,9 @@ function vconsView(view) {
   const message = el("p", "", { id: "vcon-message", role: "alert" });
   const shown = el("section", "", { id: "vcon", hidden: "" });
   const title = el("h3");
-  const panel = maskedVcon("vcon", "reveal", "the whole vCon");
+  const panel = maskedVcon("vcon", "reveal", "the whole vCon", (text) => {
+    message.textContent = text;
+  });
   shown.append(title, ...panel.nodes);
   let current = null;
 
@@ -276,7 +388,7 @@ function vconsView(view) {
     }
     current = uuid;
     title.textContent = uuid;
-    panel.show(got, () => read(uuid));
+    panel.show(got, () => read(uuid), uuid);
     shown.hidden = false;
   }
 
@@ -400,11 +512,14 @@ function vconList(view, open) {
 function legalView(view) {
   const message = el("p", "", { id: "legal-message", role: "alert" });
   const state = el("p", "", { id: "legal-state" });
-  const panel = maskedVcon("legal", "legal-reveal", "this version");
+  const say = (text) => {
+    message.textContent = text;
+  };
+  const panel = maskedVcon("legal", "legal-reveal", "this version", say);
   const versions = table("versions", ["version", "stored", "hidden", "current", ""]);
   const versionsState = stateOf(versions, "versions");
   const versionTitle = el("h3", "", { id: "version-title", hidden: "" });
-  const versionPanel = maskedVcon("version", "version-reveal", "the opened version");
+  const versionPanel = maskedVcon("version", "version-reveal", "the opened version", say);
   const opened = el("section", "", { id: "version", hidden: "" });
   opened.append(versionTitle, ...versionPanel.nodes);
   const found = el("section", "", { id: "legal-vcon", hidden: "" });
@@ -469,7 +584,7 @@ function legalView(view) {
       return;
     }
     state.textContent = got.state;
-    panel.show(got, () => read(path));
+    panel.show(got, () => read(path), uuid);
     versionsState.loading();
     const listed = await request("GET", vconPath("/legal/vcons", uuid, "/versions"));
     if (listed.status !== 200) {
@@ -489,7 +604,7 @@ function legalView(view) {
         }
         versionTitle.textContent = `Version ${v.version}`;
         versionTitle.hidden = false;
-        versionPanel.show(kept, () => read(one));
+        versionPanel.show(kept, () => read(one), uuid);
         opened.hidden = false;
       });
       versions.tBodies[0].append(

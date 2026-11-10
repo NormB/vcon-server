@@ -9,6 +9,11 @@ import {
   partyLine,
   summary,
   refusalText,
+  dialogLine,
+  section,
+  links,
+  shown,
+  DISPLAY_LIMIT,
 } from "../../crates/vcon-server/console/format.js";
 
 /** A value as base64url, as a JWS carries its header and payload. */
@@ -61,6 +66,9 @@ test.describe("masking", () => {
   test("the domain is the part after the last at sign, in lower case", () => {
     expect(maskMail('mailto:"a@b"@EXAMPLE.com')).toBe("address at example.com");
   });
+  test("an address with no local part is hidden whole", () => {
+    expect(maskMail("@example.com")).toBe("address hidden");
+  });
   test("an address with no domain is hidden whole", () => {
     expect(maskMail("mailto:alice")).toBe("address hidden");
     expect(maskMail("alice@")).toBe("address hidden");
@@ -100,9 +108,14 @@ test.describe("summary", () => {
       subject: "present, hidden",
       parties: ["Party 1: number ending 0123; name hidden", "Party 2: address at example.com"],
       dialogs: 2,
+      dialog: [
+        "Dialog 1: text, no start, 30 s, no parties; no content",
+        "Dialog 2: text, no start, 12.5 s, no parties; no content",
+      ],
       seconds: 42.5,
       attachments: 1,
       analyses: 3,
+      links: 0,
       signature: null,
     });
   });
@@ -119,9 +132,11 @@ test.describe("summary", () => {
       subject: "none",
       parties: [],
       dialogs: 0,
+      dialog: [],
       seconds: 0,
       attachments: 0,
       analyses: 0,
+      links: 0,
       signature: null,
     });
   });
@@ -227,5 +242,143 @@ test.describe("refusals", () => {
   });
   test("no answer at all is told to check the connection", () => {
     expect(refusalText(0, undefined)).toBe("The server could not be reached. Check the connection and try again.");
+  });
+});
+
+test.describe("dialog lines", () => {
+  test("a dialog line shows its type, start, length and parties, and no content", () => {
+    const d = { type: "text", start: "2026-10-23T12:00:00Z", duration: 30, parties: [0, 1], body: "hello there" };
+    expect(dialogLine(d, 0)).toBe("Dialog 1: text, 2026-10-23 12:00:00 UTC+00:00, 30 s, parties 1, 2; content hidden");
+  });
+  test("a recording kept elsewhere says its content is at a link", () => {
+    const d = { type: "recording", parties: 1, url: "https://media.example.com/a.wav" };
+    const line = dialogLine(d, 2);
+    expect(line).toBe("Dialog 3: recording, no start, no length, party 2; content at a link outside the server");
+    expect(line).not.toContain("media.example.com");
+  });
+  test("a type the vCon format does not name is not shown", () => {
+    expect(dialogLine({ type: "Alice said hello" }, 0)).toBe("Dialog 1: other type, no start, no length, no parties; no content");
+  });
+  test("each type the vCon format names is shown", () => {
+    for (const type of ["recording", "text", "transfer", "incomplete"]) {
+      expect(dialogLine({ type }, 0)).toContain(`Dialog 1: ${type},`);
+    }
+  });
+  test("parties that are not whole numbers from zero are not shown", () => {
+    for (const parties of [-1, 1.5, "0", [0, "x"], [], null, { a: 1 }]) {
+      expect(dialogLine({ type: "text", parties }, 0), JSON.stringify(parties)).toContain(", no parties;");
+    }
+  });
+  test("a start that is not a time is not shown", () => {
+    expect(dialogLine({ type: "text", start: "Alice called" }, 0)).toContain(", no start,");
+    expect(dialogLine({ type: "text", start: 7 }, 0)).toContain(", no start,");
+  });
+  test("a dialog that is not an object is named and not read", () => {
+    expect(dialogLine("hello", 1)).toBe("Dialog 2: not an object");
+    expect(dialogLine(null, 0)).toBe("Dialog 1: not an object");
+  });
+  test("the summary lists a line for each dialog", () => {
+    const body = { dialog: [{ type: "text", body: "secret words" }, { type: "recording", url: "https://media.example.com/a" }] };
+    const s = summary(JSON.stringify(body));
+    expect(s.dialog).toEqual([
+      "Dialog 1: text, no start, no length, no parties; content hidden",
+      "Dialog 2: recording, no start, no length, no parties; content at a link outside the server",
+    ]);
+    expect(s.links).toBe(1);
+  });
+});
+
+test.describe("sections", () => {
+  const body = {
+    subject: "Billing question",
+    parties: [{ name: "Alice Example", tel: "+15555550123" }],
+    dialog: [
+      { type: "text", body: "hello there" },
+      { type: "recording", encoding: "base64url", body: "QUJD".repeat(100), url: "https://media.example.com/a.wav" },
+    ],
+    analysis: [{ type: "transcript", body: "Alice: hello there" }],
+    attachments: [{ url: "https://files.example.com/doc" }, { url: 7 }, "x"],
+  };
+  const text = JSON.stringify(body);
+
+  test("the parties section is the parties and nothing else", () => {
+    const shownText = section(text, "parties");
+    expect(JSON.parse(shownText)).toEqual(body.parties);
+    expect(shownText).not.toContain("hello there");
+    expect(shownText).not.toContain("Billing");
+  });
+  test("the subject section is the subject alone", () => {
+    expect(section(text, "subject")).toBe("Billing question");
+  });
+  test("the dialog section holds what was said and not the parties", () => {
+    const shownText = section(text, "dialog");
+    expect(shownText).toContain("hello there");
+    expect(shownText).not.toContain("Alice Example");
+  });
+  test("the analysis section holds the transcript", () => {
+    expect(section(text, "analysis")).toContain("Alice: hello there");
+  });
+  test("inline media is named by its size and not shown", () => {
+    const shownText = section(text, "dialog");
+    expect(shownText).not.toContain("QUJDQUJD");
+    expect(shownText).toContain("400 characters of base64url, not shown");
+  });
+  test("a part the vCon does not have is shown as none", () => {
+    for (const name of ["parties", "subject", "dialog", "analysis"]) {
+      expect(section("{}", name), name).toBe("none");
+    }
+    expect(section('{"parties":[],"subject":""}', "parties")).toBe("none");
+    expect(section('{"parties":[],"subject":""}', "subject")).toBe("none");
+  });
+  test("a signed vCon's sections come from its payload", () => {
+    const signed = { payload: b64url(body), signatures: [{ protected: b64url({ alg: "RS256" }) }] };
+    expect(section(JSON.stringify(signed), "subject")).toBe("Billing question");
+  });
+  test("a vCon that cannot be read has no sections", () => {
+    expect(section("<html>", "parties")).toBeNull();
+    expect(section("[1]", "dialog")).toBeNull();
+    expect(section(JSON.stringify({ ciphertext: "eA" }), "subject")).toBeNull();
+    expect(section(JSON.stringify({ payload: "%%", signatures: [] }), "subject")).toBeNull();
+  });
+  test("a section the console does not have is refused", () => {
+    expect(section(text, "uuid")).toBeNull();
+    expect(section(text, "__proto__")).toBeNull();
+  });
+  test("links are listed with where they are, as text", () => {
+    expect(links(text)).toEqual([
+      { where: "dialog 2", url: "https://media.example.com/a.wav" },
+      { where: "attachment 1", url: "https://files.example.com/doc" },
+    ]);
+  });
+  test("a link of any scheme is listed as the text it is", () => {
+    const hostile = { dialog: [{ url: "javascript:alert(1)" }], analysis: [{ url: "data:text/html,<script>1</script>" }] };
+    expect(links(JSON.stringify(hostile))).toEqual([
+      { where: "dialog 1", url: "javascript:alert(1)" },
+      { where: "analysis 1", url: "data:text/html,<script>1</script>" },
+    ]);
+  });
+  test("a vCon with no links, or one that cannot be read, lists none", () => {
+    expect(links("{}")).toEqual([]);
+    expect(links("not json")).toEqual([]);
+    expect(links(JSON.stringify({ ciphertext: "eA", dialog: [{ url: "https://x.example.com" }] }))).toEqual([]);
+  });
+});
+
+test.describe("the display limit", () => {
+  test("the limit is 2 MiB of characters", () => {
+    expect(DISPLAY_LIMIT).toBe(2 * 1024 * 1024);
+  });
+  test("text within the limit is shown whole", () => {
+    expect(shown("abc", 3)).toEqual({ text: "abc", left: 0 });
+    expect(shown("", 3)).toEqual({ text: "", left: 0 });
+  });
+  test("text past the limit is cut at it and the rest counted", () => {
+    expect(shown("abcdef", 4)).toEqual({ text: "abcd", left: 2 });
+  });
+  test("text is cut at the default limit when none is given", () => {
+    const big = "x".repeat(DISPLAY_LIMIT + 5);
+    const cut = shown(big);
+    expect(cut.text).toHaveLength(DISPLAY_LIMIT);
+    expect(cut.left).toBe(5);
   });
 });

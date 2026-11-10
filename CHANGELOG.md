@@ -17,7 +17,11 @@ All notable changes to this project are recorded here. The format follows
 - The console opens a vCon masked, in the vCons and Legal views: a summary
   with its form, counts and each party as the last four digits of a number
   or the domain of an address, and the whole text only after a reveal,
-  which reads the vCon again so the audit log holds a record of it. Every
+  which reads the vCon again so the audit log holds a record of it. A
+  reveal shows one part (parties, subject, dialog, analysis or links) or
+  the whole text, cut at 2,097,152 characters. A link in a vCon is shown
+  as text and never loaded, and **Download** saves the vCon as
+  `<uuid>.json`. Every
   list has a loading and an empty state, a request that gets no answer is
   reported, a refusal says what to do next, releasing a hold asks first,
   and times are shown in UTC with the offset stated. The page has a skip
