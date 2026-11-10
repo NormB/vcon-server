@@ -315,7 +315,12 @@
       "get": {
         "operationId": "readVcon",
         "summary": "Read the current version, as stored",
-        "description": "Needs a key with the read scope.",
+        "description": "Needs a key with the read scope. With reveal, the answer is the same and the audit log records the read as a reveal of that part.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/reveal"
+          }
+        ],
         "security": [
           {
             "bearer": []
@@ -1332,7 +1337,12 @@
       "get": {
         "operationId": "legalRead",
         "summary": "The current version, or the latest kept one of a deleted uuid",
-        "description": "Needs a key with the legal scope.",
+        "description": "Needs a key with the legal scope. With reveal, the answer is the same and the audit log records the read as a reveal of that part.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/reveal"
+          }
+        ],
         "security": [
           {
             "bearer": []
@@ -1601,7 +1611,12 @@
       "get": {
         "operationId": "legalVersion",
         "summary": "A kept version, as stored",
-        "description": "Needs a key with the legal scope.",
+        "description": "Needs a key with the legal scope. With reveal, the answer is the same and the audit log records the read as a reveal of that part.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/reveal"
+          }
+        ],
         "security": [
           {
             "bearer": []
@@ -3135,6 +3150,23 @@
         "schema": {
           "type": "boolean",
           "default": false
+        }
+      },
+      "reveal": {
+        "name": "reveal",
+        "in": "query",
+        "required": false,
+        "description": "Marks the read as a reveal of one part of the vCon, for a client that shows a vCon masked. The answer is the whole vCon, as without it; the audit log records the action reveal_<part>, or legal_reveal_<part> on a legal route, in place of read or legal_read. It must be the only parameter, given once.",
+        "schema": {
+          "type": "string",
+          "enum": [
+            "parties",
+            "subject",
+            "dialog",
+            "analysis",
+            "links",
+            "all"
+          ]
         }
       }
     },

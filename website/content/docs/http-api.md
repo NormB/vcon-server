@@ -49,7 +49,7 @@ weight = 70
 |---|---|---|---|
 | `POST /vcons` | `write` | a vCon body | `201` with `Location: /vcons/{uuid}` and `ETag`; `200` with the same `ETag` when the same bytes are already current |
 | `GET /vcons` | `read` | optional `limit`, `cursor`, `since`, `until` | `200` with a page of the tenant's live vCons, newest first; see [listing](#listing) |
-| `GET /vcons/{uuid}` | `read` | | `200` with the body as stored, `ETag`, and `Content-Type` `application/vcon` or `application/vcon+gzip` |
+| `GET /vcons/{uuid}` | `read` | optional `reveal`; see [reveals](#reveals) | `200` with the body as stored, `ETag`, and `Content-Type` `application/vcon` or `application/vcon+gzip` |
 | `PUT /vcons/{uuid}` | `write` | `If-Match: "<current version>"` and a vCon body with that uuid | `200` with the new `ETag` |
 | `DELETE /vcons/{uuid}` | `delete` | | `204`, also when already deleted or purged |
 
@@ -121,6 +121,41 @@ while :; do
 done
 ```
 
+## Reveals
+
+The three routes that read a vCon, `GET /vcons/{uuid}`,
+`GET /legal/vcons/{uuid}` and `GET /legal/vcons/{uuid}/versions/{version}`,
+take one optional query parameter, `reveal`, for a client that shows a vCon
+masked and reads it again when a person chooses to see a part of it:
+
+```sh
+# Read the vCon to show its parties; the log records reveal_parties
+curl -s "https://vcon.example.com/vcons/$UUID?reveal=parties" -H "Authorization: Bearer $KEY"
+```
+
+| `reveal` | The audit log records | On a legal route |
+|---|---|---|
+| not given | `read` | `legal_read` |
+| `parties` | `reveal_parties` | `legal_reveal_parties` |
+| `subject` | `reveal_subject` | `legal_reveal_subject` |
+| `dialog` | `reveal_dialog` | `legal_reveal_dialog` |
+| `analysis` | `reveal_analysis` | `legal_reveal_analysis` |
+| `links` | `reveal_links` | `legal_reveal_links` |
+| `all` | `reveal_all` | `legal_reveal_all` |
+
+The answer is the same with and without the parameter: the whole vCon, as
+stored, with the same headers. The parameter needs no scope of its own and
+lets a key read nothing it could not read without it. It only names, in
+the [audit log](@/docs/audit-logs.md#reveals), the part the client is about
+to show. A refused reveal (403, 404, 410) is recorded under its reveal
+action too.
+
+`reveal` must be the only parameter and be given once, with one of the six
+values, in lower case. Anything else is
+[`bad-query`](@/problems/bad-query.md) (400): no vCon is sent, and the
+refusal is recorded as a `read` or a `legal_read`. A query that does not
+name `reveal` is passed over, as it always was on these routes.
+
 ## Legal
 
 All need the `legal` scope. See [retention and legal holds](@/docs/retention-and-holds.md).
@@ -136,6 +171,9 @@ All need the `legal` scope. See [retention and legal holds](@/docs/retention-and
 
 A malformed version id is [`bad-path-version`](@/problems/bad-path-version.md)
 (400); a purged uuid is [`gone`](@/problems/gone.md) (410).
+
+`GET /legal/vcons/{uuid}` and `GET /legal/vcons/{uuid}/versions/{version}`
+take the optional `reveal` parameter; see [reveals](#reveals).
 
 ## Admin
 

@@ -32,7 +32,9 @@ use tokio_rustls::TlsAcceptor;
 use crate::access::{self, AuthError, Caller, Scope, Scopes};
 use crate::audit::{Action, Actor, AuditQuery, Entry};
 use crate::ids::{KeyId, TenantId, VersionId};
+use crate::query::BadQuery;
 use crate::retention::Retention;
+use crate::reveal::Part;
 use crate::store::{Caller as StoreCaller, Created, ListQuery, Store, StoreError};
 use crate::tenants::{KeyInfo, Removal, TenantError, TenantInfo, Tenants};
 use time::format_description::well_known::Rfc3339;
@@ -339,27 +341,55 @@ async fn admin_audit_read(
     }
 }
 
-/// `GET /vcons/{uuid}`: the current version, as stored.
+/// What a read's query makes of it: the part it reveals, if it carries
+/// the marker, and the action it is recorded under. A marker the route
+/// does not take leaves the request the plain read it is refused as.
+fn marked(
+    uri: &Uri,
+    read: Action,
+    reveal: fn(Part) -> Action,
+) -> (Result<Option<Part>, BadQuery>, Action) {
+    let marker = Part::from_query(uri.query());
+    let action = match marker {
+        Ok(Some(part)) => reveal(part),
+        Ok(None) | Err(BadQuery) => read,
+    };
+    (marker, action)
+}
+
+/// `GET /vcons/{uuid}`: the current version, as stored. With
+/// `?reveal=<part>` the answer is the same and the read is recorded as a
+/// reveal of that part.
 async fn read(
     State(app): State<Arc<App>>,
     UriPath(uuid): UriPath<String>,
+    uri: Uri,
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    let admitted = match admit(&app, &headers, body, Scope::Read, Action::Read).await {
+    let (marker, action) = marked(&uri, Action::Read, Action::Reveal);
+    let admitted = match admit(&app, &headers, body, Scope::Read, action).await {
         Ok(admitted) => admitted,
         Err(refused) => return refused.into_response(),
     };
-    let Some(uuid) = vcon::parse_uuid(&uuid) else {
-        let refused = Problem::BadPathUuid;
-        let entry = refusal(admitted.caller.key, Action::Read, refused);
-        return app
-            .refuse(Some(admitted.tenant), entry, refused)
+    let refuse = async |refused| {
+        let entry = refusal(admitted.caller.key, action, refused);
+        app.refuse(Some(admitted.tenant), entry, refused)
             .await
-            .into_response();
+            .into_response()
+    };
+    let Some(uuid) = vcon::parse_uuid(&uuid) else {
+        return refuse(Problem::BadPathUuid).await;
+    };
+    let Ok(part) = marker else {
+        return refuse(Problem::BadQuery).await;
     };
     let (store, key) = (admitted.store.clone(), admitted.caller.key);
-    match blocking(move || store.get(&StoreCaller { key }, uuid)).await {
+    let read = move || match part {
+        Some(part) => store.reveal(&StoreCaller { key }, uuid, part),
+        None => store.get(&StoreCaller { key }, uuid),
+    };
+    match blocking(read).await {
         Ok(stored) => {
             let content_type = if stored.gzip {
                 "application/vcon+gzip"
@@ -506,47 +536,74 @@ async fn legal_admit(
 }
 
 /// `GET /legal/vcons/{uuid}`: the current version, or the latest kept one
-/// of a deleted uuid, as stored, with `Vcon-State`.
+/// of a deleted uuid, as stored, with `Vcon-State`. With `?reveal=<part>`
+/// the answer is the same and the read is recorded as a legal reveal of
+/// that part.
 async fn legal_read(
     State(app): State<Arc<App>>,
     UriPath(uuid): UriPath<String>,
+    uri: Uri,
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    match legal_admit(&app, &headers, body, Action::LegalRead, &uuid).await {
-        Ok((admitted, uuid)) => legal_body(&admitted, uuid, None).await,
+    let (marker, action) = marked(&uri, Action::LegalRead, Action::LegalReveal);
+    match legal_admit(&app, &headers, body, action, &uuid).await {
+        Ok((admitted, uuid)) => legal_body(&app, &admitted, uuid, None, marker).await,
         Err(refused) => refused.into_response(),
     }
 }
 
 /// `GET /legal/vcons/{uuid}/versions/{version}`: that kept version, as
-/// stored.
+/// stored. With `?reveal=<part>` the answer is the same and the read is
+/// recorded as a legal reveal of that part.
 async fn legal_version(
     State(app): State<Arc<App>>,
     UriPath((uuid, version)): UriPath<(String, String)>,
+    uri: Uri,
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    let (admitted, uuid) = match legal_admit(&app, &headers, body, Action::LegalRead, &uuid).await {
+    let (marker, action) = marked(&uri, Action::LegalRead, Action::LegalReveal);
+    let (admitted, uuid) = match legal_admit(&app, &headers, body, action, &uuid).await {
         Ok(admitted) => admitted,
         Err(refused) => return refused.into_response(),
     };
     let Some(version) = VersionId::parse(&version) else {
         let refused = Problem::BadPathVersion;
-        let entry = refusal(admitted.caller.key, Action::LegalRead, refused);
+        let entry = refusal(admitted.caller.key, action, refused);
         return app
             .refuse(Some(admitted.tenant), entry, refused)
             .await
             .into_response();
     };
-    legal_body(&admitted, uuid, Some(version)).await
+    legal_body(&app, &admitted, uuid, Some(version), marker).await
 }
 
-/// A legal read's answer: the body as stored, its tag and the uuid's state.
-async fn legal_body(admitted: &Admitted, uuid: Uuid, version: Option<VersionId>) -> Response {
+/// A legal read's answer: the body as stored, its tag and the uuid's
+/// state. A marker the route does not take is refused here, after the
+/// path, and recorded as the legal read it is.
+async fn legal_body(
+    app: &Arc<App>,
+    admitted: &Admitted,
+    uuid: Uuid,
+    version: Option<VersionId>,
+    marker: Result<Option<Part>, BadQuery>,
+) -> Response {
     let (store, key) = (admitted.store.clone(), admitted.caller.key);
+    let Ok(part) = marker else {
+        let refused = Problem::BadQuery;
+        let entry = refusal(key, Action::LegalRead, refused);
+        return app
+            .refuse(Some(admitted.tenant), entry, refused)
+            .await
+            .into_response();
+    };
+    let read = move || match part {
+        Some(part) => store.legal_reveal(&StoreCaller { key }, uuid, version, part),
+        None => store.legal_get(&StoreCaller { key }, uuid, version),
+    };
     // Store records its own outcomes.
-    match blocking(move || store.legal_get(&StoreCaller { key }, uuid, version)).await {
+    match blocking(read).await {
         Ok(read) => {
             let content_type = if read.stored.gzip {
                 "application/vcon+gzip"
@@ -4984,6 +5041,9 @@ mod tests {
 /// The website documents every problem type at the URL the type names, so
 /// a client following a `type` finds what it means. These tests hold the
 /// pages to the code.
+#[cfg(test)]
+mod reveal_routes;
+
 #[cfg(test)]
 mod site_pages {
     use std::collections::BTreeSet;

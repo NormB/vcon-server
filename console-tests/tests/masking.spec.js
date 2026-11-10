@@ -55,13 +55,13 @@ test("Reveal shows the whole vCon as text", async ({ page, request, tenant }) =>
   await expect(page.locator("#reveal")).toBeHidden();
 });
 
-test("the summary and each reveal are separate recorded reads", async ({ page, request, tenant }) => {
+test("the summary is a recorded read and the reveal a recorded reveal", async ({ page, request, tenant }) => {
   const uuid = await opened(page, request, tenant);
   await page.click("#reveal");
   await expect(page.locator("#vcon-body")).toBeVisible();
   const log = await auditLog(request, await tenant.key(["audit"]), "/audit");
-  const reads = log.filter((r) => r.action === "read" && r.target === uuid && r.status === 200);
-  expect(reads).toHaveLength(2);
+  const recorded = log.filter((r) => r.target === uuid && r.status === 200).map((r) => r.action);
+  expect(recorded).toEqual(["read", "reveal_all"]);
 });
 
 test("opening another vCon masks again", async ({ page, request, tenant }) => {

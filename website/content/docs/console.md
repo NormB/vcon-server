@@ -102,7 +102,8 @@ part of the console page the server already serves, and needs no setting.
      the signed payload. An encrypted vCon is not decoded.
 3. To see one part, choose **Reveal parties**, **Reveal subject**,
    **Reveal dialog** or **Reveal analysis**. The console reads the vCon
-   again and shows that part alone as text. Inline media (a body with a
+   again, as a [reveal](@/docs/audit-logs.md#reveals) of that part, and
+   shows that part alone as text. Inline media (a body with a
    `base64url` or `base64` encoding) is named by its size and not shown.
 4. To see where the vCon links to, choose **Reveal links**. Each link is
    shown as text with where it is, such as `dialog 2`, and
@@ -119,11 +120,14 @@ part of the console page the server already serves, and needs no setting.
    from the vCon. A vCon stored gzipped is saved inflated.
 
 **Verify:** read the tenant's [audit log](@/docs/audit-logs.md) with an
-`audit` key. Opening a vCon leaves one `read` record for its uuid, and each
-Reveal and each **Download** leaves one more. In the Legal view each find,
-each version opened and each reveal leaves the record its legal read
-leaves. Opening another vCon, or the same
-one again, masks it again.
+`audit` key, in the **Audit log** view or over the API. Opening a vCon
+leaves one `read` record for its uuid, and each **Download** leaves one
+more. Each Reveal leaves a record that names the part it showed:
+`reveal_parties`, `reveal_subject`, `reveal_dialog`, `reveal_analysis`,
+`reveal_links`, or `reveal_all` for the whole vCon. In the Legal view each
+find and each version opened leaves a `legal_read` record, and each Reveal
+a `legal_reveal_` record with the same part names. Opening another vCon,
+or the same one again, masks it again.
 
 **Troubleshoot:**
 
@@ -140,11 +144,18 @@ one again, masks it again.
   reached:* the request got no answer. Check the connection and choose
   Reveal again.
 - *Reveal answers `(401)`:* the key was revoked. Sign in with another key.
+- *Reveal answers `(400)`:* the server is older than the console's page
+  and does not know the part. Reload the page, so the page and the server
+  are of one version.
+- *The audit log shows `read` where you expect a reveal:* the page in the
+  browser is from before the server was upgraded. Reload it.
 
 Masking is what the console shows, not what the server sends: the API
 answers a `read` key with the whole vCon, and the console keeps it only long
-enough to make the summary. The audit record of a reveal is the same `read`
-record as any other read.
+enough to make the summary. A reveal is recorded under an action of its
+own because the console marks the read it makes for one; see
+[reveals](@/docs/audit-logs.md#reveals) for what the marker does and does
+not do.
 
 ## Lists, times and refusals
 

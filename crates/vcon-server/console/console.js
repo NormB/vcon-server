@@ -4,7 +4,7 @@
 // and a reload forgets it. Every value from the server reaches the page as
 // text, never as markup.
 
-import { utc, summary, refusalText, section, links, shown, DISPLAY_LIMIT } from "./format.js";
+import { utc, summary, refusalText, section, links, shown, revealPath, DISPLAY_LIMIT } from "./format.js";
 
 let token = null;
 let key = null;
@@ -141,7 +141,8 @@ function stateOf(made, noun) {
 /** What a masked vCon hides, and what Reveal does. */
 const MASKED_NOTE =
   "Names, the subject, full numbers and addresses, links and what was said are hidden. " +
-  "Each Reveal, and Download, reads it again, and the audit log records that read.";
+  "Each Reveal, and Download, reads it again. " +
+  "The audit log records each Reveal with the part it showed, and each Download as a read.";
 
 /** The parts of a vCon that Reveal shows one at a time. */
 const PARTS = ["parties", "subject", "dialog", "analysis"];
@@ -162,7 +163,9 @@ function save(name, text) {
 /**
  * A vCon shown masked: its version and summary. A part, its links or its
  * whole text is shown only after a Reveal, and it is saved only by
- * Download; each reads it again with the function `show` was given.
+ * Download; each reads it again with the function `show` was given, which
+ * takes the part a Reveal shows (`all` for the whole text) and null for a
+ * Download, which reveals nothing on the page.
  * `say` shows a line of text beside the vCon. The ids are `<name>-etag`,
  * `<name>-summary`, `<name>-reveal-<part>`, `<name>-section`,
  * `<name>-links`, `<name>-download`, `<name>-body` and `reveal`.
@@ -198,7 +201,7 @@ function maskedVcon(name, reveal, label, say) {
   for (const partName of PARTS) {
     const button = el("button", `Reveal ${partName}`, { id: `${name}-reveal-${partName}`, type: "button" });
     button.addEventListener("click", async () => {
-      const got = await again();
+      const got = await again(partName);
       if (got === null) {
         partTitle.hidden = true;
         part.hidden = true;
@@ -215,7 +218,7 @@ function maskedVcon(name, reveal, label, say) {
 
   const showLinks = el("button", "Reveal links", { id: `${name}-reveal-links`, type: "button" });
   showLinks.addEventListener("click", async () => {
-    const got = await again();
+    const got = await again("links");
     if (got === null) {
       return;
     }
@@ -241,7 +244,7 @@ function maskedVcon(name, reveal, label, say) {
 
   const download = el("button", "Download", { id: `${name}-download`, type: "button" });
   download.addEventListener("click", async () => {
-    const got = await again();
+    const got = await again(null);
     if (got === null) {
       return;
     }
@@ -251,7 +254,7 @@ function maskedVcon(name, reveal, label, say) {
   buttons.append(showLinks, download);
 
   whole.addEventListener("click", async () => {
-    const got = await again();
+    const got = await again("all");
     if (got === null) {
       return;
     }
@@ -270,8 +273,9 @@ function maskedVcon(name, reveal, label, say) {
   return {
     nodes: [etag, masked, note, buttons, partTitle, part, linkList, linkState, whole, cut, body],
     /**
-     * Shows `got` masked. `read` reads the same vCon again for a Reveal
-     * or a Download, which saves it as `<uuid>.json`.
+     * Shows `got` masked. `read` reads the same vCon again, for a Reveal
+     * of the part it is given or, given null, for a Download, which saves
+     * it as `<uuid>.json`.
      */
     show(got, read, uuid) {
       again = read;
@@ -368,10 +372,13 @@ function vconsView(view) {
   shown.append(title, ...panel.nodes);
   let current = null;
 
-  /** Reads the vCon; a refusal is shown and answered with null. */
-  async function read(uuid) {
+  /**
+   * Reads the vCon, as a reveal of `part` unless it is null; a refusal is
+   * shown and answered with null.
+   */
+  async function read(uuid, part = null) {
     message.textContent = "";
-    const answer = await request("GET", vconPath("/vcons", uuid));
+    const answer = await request("GET", revealPath(vconPath("/vcons", uuid), part));
     if (answer.status !== 200) {
       message.textContent = await refusal(answer);
       return null;
@@ -388,7 +395,7 @@ function vconsView(view) {
     }
     current = uuid;
     title.textContent = uuid;
-    panel.show(got, () => read(uuid), uuid);
+    panel.show(got, (part) => read(uuid, part), uuid);
     shown.hidden = false;
   }
 
@@ -562,9 +569,12 @@ function legalView(view) {
     opened,
   );
 
-  /** Reads one legal path; a refusal is shown and answered with null. */
-  async function read(path) {
-    const answer = await request("GET", path);
+  /**
+   * Reads one legal path, as a reveal of `part` unless it is null; a
+   * refusal is shown and answered with null.
+   */
+  async function read(path, part = null) {
+    const answer = await request("GET", revealPath(path, part));
     if (answer.status !== 200) {
       message.textContent = await refusal(answer);
       return null;
@@ -584,7 +594,7 @@ function legalView(view) {
       return;
     }
     state.textContent = got.state;
-    panel.show(got, () => read(path), uuid);
+    panel.show(got, (part) => read(path, part), uuid);
     versionsState.loading();
     const listed = await request("GET", vconPath("/legal/vcons", uuid, "/versions"));
     if (listed.status !== 200) {
@@ -604,7 +614,7 @@ function legalView(view) {
         }
         versionTitle.textContent = `Version ${v.version}`;
         versionTitle.hidden = false;
-        versionPanel.show(kept, () => read(one), uuid);
+        versionPanel.show(kept, (part) => read(one, part), uuid);
         opened.hidden = false;
       });
       versions.tBodies[0].append(

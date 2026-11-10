@@ -64,7 +64,7 @@ test("Reveal subject, dialog and analysis each show their own part", async ({ pa
   await expect(page.locator("#vcon-section-title")).toHaveText("Analysis, revealed");
 });
 
-test("each part revealed is a read of its own in the audit log", async ({ page, request, tenant }) => {
+test("each part revealed is a record of its own in the audit log", async ({ page, request, tenant }) => {
   const uuid = await opened(page, request, tenant);
   for (const name of ["parties", "subject", "dialog"]) {
     await page.click(`#vcon-reveal-${name}`);
@@ -72,8 +72,8 @@ test("each part revealed is a read of its own in the audit log", async ({ page, 
   }
   await expect(page.locator("#vcon-section")).toContainText("hello there");
   const log = await auditLog(request, await tenant.key(["audit"]), "/audit");
-  const reads = log.filter((r) => r.action === "read" && r.target === uuid && r.status === 200);
-  expect(reads).toHaveLength(4);
+  const recorded = log.filter((r) => r.target === uuid && r.status === 200).map((r) => r.action);
+  expect(recorded).toEqual(["read", "reveal_parties", "reveal_subject", "reveal_dialog"]);
 });
 
 test("a link is shown as text with a label, and nothing is loaded from it", async ({ page, request, tenant }) => {
@@ -146,7 +146,7 @@ test("a vCon that cannot be read in parts says so, and to reveal it whole", asyn
   // The server stores no encrypted vCon made up for a test, so the read a
   // Reveal makes is answered here with a body in the encrypted form.
   const sealed = { uuid, protected: "eA", ciphertext: "Y2lwaGVy", iv: "aXY", tag: "dGFn" };
-  await page.route(`**/vcons/${uuid}`, (route) =>
+  await page.route(`**/vcons/${uuid}?reveal=*`, (route) =>
     route.fulfill({ status: 200, contentType: "application/vcon", headers: { ETag: '"sealed"' }, body: JSON.stringify(sealed) }),
   );
   await page.click("#vcon-reveal-parties");

@@ -25,6 +25,7 @@ use crate::envelope::{self, Context, Key, WrapLimit};
 use crate::fs::Fs;
 use crate::ids::{KeyId, TenantId, VersionId};
 use crate::retention::Retention;
+use crate::reveal::Part;
 
 mod backup;
 mod compact;
@@ -432,9 +433,22 @@ impl Store {
     /// commits the audit record; only then is the body returned. If the
     /// version changed meanwhile, the read starts again.
     pub fn get(&self, who: &Caller, uuid: Uuid) -> Result<Stored, StoreError> {
+        self.read_as(who, uuid, Action::Read)
+    }
+
+    /// Reads the current version of `uuid` as [`Store::get`] does, for a
+    /// caller about to show `part` of it: the same answer, recorded under
+    /// the reveal action of that part.
+    pub fn reveal(&self, who: &Caller, uuid: Uuid, part: Part) -> Result<Stored, StoreError> {
+        self.read_as(who, uuid, Action::Reveal(part))
+    }
+
+    /// The read behind `get` and `reveal`: every outcome is recorded as
+    /// `action`.
+    fn read_as(&self, who: &Caller, uuid: Uuid, action: Action) -> Result<Stored, StoreError> {
         let entry = |status, version| Entry {
             actor: Actor::Key(who.key),
-            action: Action::Read,
+            action,
             target: Some(uuid.to_string()),
             version,
             status,
@@ -2939,5 +2953,136 @@ pub(crate) mod tests {
             version
         );
         assert_eq!(hidden_versions(&f), 0);
+    }
+
+    /// The record of the last request, without its seq and time.
+    fn last_record(f: &Fixture) -> (String, Value, Value, Value) {
+        let log = audit_log(&f.store);
+        let last = log.last().expect("a record");
+        (
+            last["action"].as_str().expect("an action").to_owned(),
+            last["status"].clone(),
+            last["version"].clone(),
+            last["target"].clone(),
+        )
+    }
+
+    #[test]
+    fn a_reveal_reads_what_a_read_does_and_is_recorded_under_its_part() {
+        let f = fixture();
+        let (found, body) = vcon(UUID, "first");
+        let Ok(Created::New(version)) = f.store.create(&f.caller, &found, &body) else {
+            panic!("a new vCon")
+        };
+        let read = f.store.get(&f.caller, found.uuid).expect("reads");
+        for part in Part::ALL {
+            let revealed = f.store.reveal(&f.caller, found.uuid, part).expect("reads");
+            assert_eq!(revealed, read, "{part:?}");
+            assert_eq!(
+                last_record(&f),
+                (
+                    format!("reveal_{}", part.name()),
+                    200.into(),
+                    version.to_string().into(),
+                    UUID.into()
+                ),
+                "{part:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reveal_of_a_uuid_never_stored_is_not_found_and_recorded_as_the_reveal() {
+        let f = fixture();
+        let (found, _) = vcon(UUID, "first");
+        assert_eq!(
+            f.store.reveal(&f.caller, found.uuid, Part::Dialog),
+            Err(StoreError::NotFound),
+            "the answer"
+        );
+        assert_eq!(
+            last_record(&f),
+            (
+                "reveal_dialog".to_owned(),
+                404.into(),
+                Value::Null,
+                UUID.into()
+            ),
+            "the record"
+        );
+    }
+
+    #[test]
+    fn a_reveal_of_a_deleted_vcon_is_gone_and_recorded_as_the_reveal() {
+        let f = fixture();
+        let (found, body) = vcon(UUID, "first");
+        f.store.create(&f.caller, &found, &body).expect("stored");
+        f.store
+            .delete(&f.caller, found.uuid, Retention::Years(7))
+            .expect("deleted");
+        assert_eq!(
+            f.store.reveal(&f.caller, found.uuid, Part::Parties),
+            Err(StoreError::Gone),
+            "the answer"
+        );
+        assert_eq!(
+            last_record(&f),
+            (
+                "reveal_parties".to_owned(),
+                410.into(),
+                Value::Null,
+                UUID.into()
+            ),
+            "the record"
+        );
+    }
+
+    #[test]
+    fn a_reveal_of_a_version_whose_file_is_missing_is_damage_recorded_as_the_reveal() {
+        let f = fixture();
+        let (found, body) = vcon(UUID, "first");
+        let Ok(Created::New(version)) = f.store.create(&f.caller, &found, &body) else {
+            panic!("a new vCon")
+        };
+        f.fs.remove(&f.store.objects_dir.join(version.to_string()))
+            .expect("remove");
+        assert_eq!(
+            f.store.reveal(&f.caller, found.uuid, Part::All),
+            Err(StoreError::Damaged),
+            "the answer"
+        );
+        assert_eq!(
+            last_record(&f),
+            (
+                "reveal_all".to_owned(),
+                500.into(),
+                version.to_string().into(),
+                UUID.into()
+            ),
+            "the record"
+        );
+    }
+
+    /// The marker changes one record's action: the reads before and after
+    /// a reveal are recorded as the reads they are.
+    #[test]
+    fn a_read_before_and_after_a_reveal_is_still_recorded_as_a_read() {
+        let f = fixture();
+        let (found, body) = vcon(UUID, "first");
+        f.store.create(&f.caller, &found, &body).expect("stored");
+        f.store.get(&f.caller, found.uuid).expect("reads");
+        f.store
+            .reveal(&f.caller, found.uuid, Part::Subject)
+            .expect("reads");
+        f.store.get(&f.caller, found.uuid).expect("reads");
+        let actions: Vec<String> = audit_log(&f.store)
+            .iter()
+            .map(|r| r["action"].as_str().expect("an action").to_owned())
+            .collect();
+        assert_eq!(
+            actions,
+            ["create", "read", "reveal_subject", "read"],
+            "the record"
+        );
     }
 }

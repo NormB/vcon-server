@@ -1,6 +1,7 @@
 // What the console works out before it shows anything: times in UTC, masked
 // party values, a vCon's summary and what a refusal means. These run in
 // Node, on the same file the server serves, with no browser and no server.
+import { readFileSync } from "node:fs";
 import { test, expect } from "@playwright/test";
 import {
   utc,
@@ -15,6 +16,7 @@ import {
   shown,
   DISPLAY_LIMIT,
 } from "../../crates/vcon-server/console/format.js";
+import * as format from "../../crates/vcon-server/console/format.js";
 
 /** A value as base64url, as a JWS carries its header and payload. */
 function b64url(value) {
@@ -380,5 +382,40 @@ test.describe("the display limit", () => {
     const cut = shown(big);
     expect(cut.text).toHaveLength(DISPLAY_LIMIT);
     expect(cut.left).toBe(5);
+  });
+});
+
+test.describe("the reveal marker", () => {
+  test("a reveal of a part reads the path with that part as its marker", () => {
+    for (const part of ["parties", "subject", "dialog", "analysis", "links", "all"]) {
+      expect(format.revealPath("/vcons/0199e5c6-0d7a-7c11-8000-000000000001", part)).toBe(
+        `/vcons/0199e5c6-0d7a-7c11-8000-000000000001?reveal=${part}`,
+      );
+    }
+  });
+  test("a read that reveals nothing is the path with no marker", () => {
+    expect(format.revealPath("/vcons/0199e5c6-0d7a-7c11-8000-000000000001", null)).toBe(
+      "/vcons/0199e5c6-0d7a-7c11-8000-000000000001",
+    );
+  });
+  test("a part the server does not know is never sent as a marker", () => {
+    for (const unknown of ["everything", "Parties", "", "all&x=1", "audio/1"]) {
+      expect(() => format.revealPath("/vcons/x", unknown), unknown).toThrow(RangeError);
+    }
+  });
+  test("a path that already has a query or a fragment is never given a marker", () => {
+    for (const path of ["/vcons/x?limit=1", "/vcons/x?", "/vcons/x#top", "/vcons/x?reveal=all"]) {
+      expect(() => format.revealPath(path, "all"), path).toThrow(RangeError);
+    }
+  });
+  test("the parts the console can name are the parts the server's description lists", () => {
+    const description = JSON.parse(
+      readFileSync(new URL("../../crates/vcon-server/openapi.json", import.meta.url), "utf8"),
+    );
+    expect(format.REVEAL_PARTS).toEqual(description.components.parameters.reveal.schema.enum);
+  });
+  test("the list of parts cannot be changed by the page that reads it", () => {
+    expect(() => format.REVEAL_PARTS.push("everything")).toThrow(TypeError);
+    expect(format.REVEAL_PARTS).toHaveLength(6);
   });
 });

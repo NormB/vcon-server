@@ -6,6 +6,37 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A read of a vCon can be marked as a reveal of one part of it:
+  `GET /vcons/{uuid}?reveal=<part>`, and the same parameter on
+  `GET /legal/vcons/{uuid}` and
+  `GET /legal/vcons/{uuid}/versions/{version}`, with the part `parties`,
+  `subject`, `dialog`, `analysis`, `links` or `all`. The answer is the one
+  the read gives without the parameter, and the key needs the same scope:
+  the parameter only changes the action the audit log records, to
+  `reveal_<part>`, or `legal_reveal_<part>` on a legal route. A `reveal`
+  that is not the only parameter, is given twice or names no part is
+  refused with `bad-query` (400). A read without the parameter is recorded
+  as `read` or `legal_read`, as before. The audit-logs page has the how-to
+  for listing who revealed what.
+
+### Changed
+
+- **Breaking for a reader of the audit log that knows a fixed list of
+  actions, or that counts the console's reveals as `read`.** The console
+  now marks each Reveal, so the tenant log holds `reveal_parties`,
+  `reveal_subject`, `reveal_dialog`, `reveal_analysis`, `reveal_links` or
+  `reveal_all` where 0.4.2 wrote `read`, and the `legal_reveal_` actions
+  with the same six endings where it wrote `legal_read`. Opening a vCon and
+  **Download** are still `read`. Upgrade steps: before installing the new
+  binary, add the twelve action names to any rule, parser or report that
+  lists actions; to keep a count of every read of content, count the
+  actions that start with `reveal_` together with `read`, and those that
+  start with `legal_reveal_` together with `legal_read`. The record's
+  fields, the catalogs' schema version and every API answer are unchanged,
+  and no other client is affected.
+
 ## [0.4.2] - 2026-11-10
 
 Nothing in this release breaks a 0.4.1 deployment, and an upgrade from

@@ -9,6 +9,7 @@ use super::{Caller, Store, StoreError, Stored, Tx, commit, version_row};
 use crate::audit::{Action, Actor, Entry};
 use crate::clock::from_nanos;
 use crate::ids::VersionId;
+use crate::reveal::Part;
 
 /// A version as a legal read returns it, and whether its uuid is deleted.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,11 +78,36 @@ impl Store {
         uuid: Uuid,
         version: Option<VersionId>,
     ) -> Result<Legal, StoreError> {
+        self.legal_read_as(who, uuid, version, Action::LegalRead)
+    }
+
+    /// Reads as [`Store::legal_get`] does, for a caller about to show
+    /// `part` of the version: the same answer, recorded under the legal
+    /// reveal action of that part.
+    pub fn legal_reveal(
+        &self,
+        who: &Caller,
+        uuid: Uuid,
+        version: Option<VersionId>,
+        part: Part,
+    ) -> Result<Legal, StoreError> {
+        self.legal_read_as(who, uuid, version, Action::LegalReveal(part))
+    }
+
+    /// The read behind `legal_get` and `legal_reveal`: the answer is
+    /// recorded as `action`.
+    fn legal_read_as(
+        &self,
+        who: &Caller,
+        uuid: Uuid,
+        version: Option<VersionId>,
+        action: Action,
+    ) -> Result<Legal, StoreError> {
         let mut tx = self.catalog.immediate()?;
         let answer = self.legal_read(&mut tx, uuid, version);
         let entry = Entry {
             actor: Actor::Key(who.key),
-            action: Action::LegalRead,
+            action,
             target: Some(uuid.to_string()),
             version: answer.as_ref().ok().map(|read| read.stored.version),
             status: status(&answer, 200),
@@ -252,6 +278,7 @@ mod legal_tests {
     use crate::fs::Fs;
     use crate::ids::VersionId;
     use crate::retention::Retention;
+    use crate::reveal::Part;
     use crate::store::{Created, StoreError, Stored};
 
     const UUID: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bc46";
@@ -617,6 +644,142 @@ mod legal_tests {
         assert!(
             kept.iter().all(|v| v.hidden_at.is_some()),
             "the version written first is hidden again"
+        );
+    }
+
+    /// The last record: its action, status and version.
+    fn last_of_all(f: &Fixture) -> (String, Value, Value) {
+        let records = f.store.records();
+        let last = records.last().expect("a record");
+        (
+            last["action"].as_str().expect("an action").to_owned(),
+            last["status"].clone(),
+            last["version"].clone(),
+        )
+    }
+
+    #[test]
+    fn a_legal_reveal_reads_what_a_legal_read_does_and_is_recorded_under_its_part() {
+        let f = fixture();
+        let (version, _) = stored(&f, UUID, "first");
+        let read = f.store.legal_get(&f.caller, uuid(), None).expect("read");
+        for part in Part::ALL {
+            let revealed = f
+                .store
+                .legal_reveal(&f.caller, uuid(), None, part)
+                .expect("read");
+            assert_eq!(revealed, read, "{part:?}");
+            assert_eq!(
+                last_of_all(&f),
+                (
+                    format!("legal_reveal_{}", part.name()),
+                    200.into(),
+                    version.to_string().into()
+                ),
+                "{part:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_legal_reveal_of_a_named_version_records_that_version() {
+        let f = fixture();
+        let (first, body) = stored(&f, UUID, "first");
+        replaced(&f, first, "second");
+        let revealed = f
+            .store
+            .legal_reveal(&f.caller, uuid(), Some(first), Part::Dialog)
+            .expect("read");
+        assert_eq!(
+            (revealed.stored.version, revealed.stored.body),
+            (first, body),
+            "the body"
+        );
+        assert_eq!(
+            last_of_all(&f),
+            (
+                "legal_reveal_dialog".to_owned(),
+                200.into(),
+                first.to_string().into()
+            ),
+            "the record"
+        );
+    }
+
+    #[test]
+    fn a_legal_reveal_of_a_deleted_vcon_reads_its_latest_kept_version() {
+        let f = fixture();
+        let (version, body) = stored(&f, UUID, "first");
+        f.store
+            .delete(&f.caller, uuid(), Retention::Years(7))
+            .expect("deleted");
+        let revealed = f
+            .store
+            .legal_reveal(&f.caller, uuid(), None, Part::Parties)
+            .expect("read");
+        assert!(revealed.deleted, "its state");
+        assert_eq!(revealed.stored.body, body, "the body");
+        assert_eq!(
+            last_of_all(&f),
+            (
+                "legal_reveal_parties".to_owned(),
+                200.into(),
+                version.to_string().into()
+            ),
+            "the record"
+        );
+    }
+
+    #[test]
+    fn a_legal_reveal_of_a_purged_uuid_is_gone_and_recorded_as_the_reveal() {
+        let f = fixture();
+        stored(&f, UUID, "first");
+        f.store
+            .delete(&f.caller, uuid(), Retention::Days(0))
+            .expect("deleted and purged");
+        assert_eq!(
+            f.store.legal_reveal(&f.caller, uuid(), None, Part::All),
+            Err(StoreError::Gone),
+            "the answer"
+        );
+        assert_eq!(
+            last_of_all(&f),
+            ("legal_reveal_all".to_owned(), 410.into(), Value::Null),
+            "the record"
+        );
+    }
+
+    #[test]
+    fn a_legal_reveal_of_a_version_of_another_uuid_is_not_found_and_recorded() {
+        let f = fixture();
+        stored(&f, UUID, "first");
+        let (theirs, _) = stored(&f, OTHER, "other");
+        assert_eq!(
+            f.store
+                .legal_reveal(&f.caller, uuid(), Some(theirs), Part::Links),
+            Err(StoreError::NotFound),
+            "the answer"
+        );
+        assert_eq!(
+            last_of_all(&f),
+            ("legal_reveal_links".to_owned(), 404.into(), Value::Null),
+            "the record"
+        );
+    }
+
+    #[test]
+    fn a_legal_reveal_of_a_uuid_never_stored_is_not_found_and_recorded() {
+        let f = fixture();
+        assert_eq!(
+            f.store
+                .legal_reveal(&f.caller, uuid(), None, Part::Analysis),
+            Err(StoreError::NotFound),
+            "the answer"
+        );
+        assert_eq!(
+            last_of_all(&f),
+            ("legal_reveal_analysis".to_owned(), 404.into(), Value::Null),
+            "the record"
         );
     }
 }

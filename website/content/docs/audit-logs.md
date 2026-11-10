@@ -51,10 +51,22 @@ action through MCP is recorded as its HTTP route records it.
 | `create` | a vCon stored (`POST /vcons`) | the tenant's |
 | `replace` | a vCon replaced by a new version (`PUT /vcons/{uuid}`) | the tenant's |
 | `read` | a vCon read (`GET /vcons/{uuid}`) | the tenant's |
+| `reveal_parties` | a vCon read as a [reveal](#reveals) of the parties (`GET /vcons/{uuid}?reveal=parties`) | the tenant's |
+| `reveal_subject` | a vCon read as a [reveal](#reveals) of the subject (`GET /vcons/{uuid}?reveal=subject`) | the tenant's |
+| `reveal_dialog` | a vCon read as a [reveal](#reveals) of the dialog (`GET /vcons/{uuid}?reveal=dialog`) | the tenant's |
+| `reveal_analysis` | a vCon read as a [reveal](#reveals) of the analysis (`GET /vcons/{uuid}?reveal=analysis`) | the tenant's |
+| `reveal_links` | a vCon read as a [reveal](#reveals) of the links (`GET /vcons/{uuid}?reveal=links`) | the tenant's |
+| `reveal_all` | a vCon read as a [reveal](#reveals) of the whole vCon (`GET /vcons/{uuid}?reveal=all`) | the tenant's |
 | `delete` | a vCon deleted (`DELETE /vcons/{uuid}`) | the tenant's |
 | `list` | a page of the vCon list (`GET /vcons`) | the tenant's |
 | `purge` | a version erased, by the purge sweep (actor `sweep`), or at once by a delete when the period is `0d` | the tenant's |
 | `legal_read` | a read through the legal routes of the latest kept version or of one version (`GET /legal/vcons/{uuid}`, `GET /legal/vcons/{uuid}/versions/{version}`) | the tenant's |
+| `legal_reveal_parties` | a legal read as a [reveal](#reveals) of the parties (`?reveal=parties` on either legal read route) | the tenant's |
+| `legal_reveal_subject` | a legal read as a [reveal](#reveals) of the subject (`?reveal=subject` on either legal read route) | the tenant's |
+| `legal_reveal_dialog` | a legal read as a [reveal](#reveals) of the dialog (`?reveal=dialog` on either legal read route) | the tenant's |
+| `legal_reveal_analysis` | a legal read as a [reveal](#reveals) of the analysis (`?reveal=analysis` on either legal read route) | the tenant's |
+| `legal_reveal_links` | a legal read as a [reveal](#reveals) of the links (`?reveal=links` on either legal read route) | the tenant's |
+| `legal_reveal_all` | a legal read as a [reveal](#reveals) of the whole vCon (`?reveal=all` on either legal read route) | the tenant's |
 | `legal_versions` | a read of a vCon's version history | the tenant's |
 | `restore` | a deleted vCon made live again | the tenant's |
 | `hold` | a legal hold placed | the tenant's |
@@ -79,6 +91,70 @@ action through MCP is recorded as its HTTP route records it.
 | `rekey_tenant` | a tenant key rotated (`vcon-server rekey tenant`) | admin |
 | `rekey_master` | the master key rotated (`vcon-server rekey master`) | admin |
 | `backup` | a run of `vcon-server backup`, with its outcome | admin |
+
+## Reveals
+
+A client that shows a vCon masked, as the [console](@/docs/console.md)
+does, reads it once for its summary and again each time a person chooses
+to see a part of it. That second read carries a marker, `?reveal=<part>`,
+and is recorded as `reveal_<part>` in place of `read`, or as
+`legal_reveal_<part>` in place of `legal_read` on the legal read routes.
+The parts are `parties`, `subject`, `dialog`, `analysis`, `links` and `all`
+(the whole vCon).
+
+The marker changes the record's action and nothing else. The route, the
+scope the key needs and the answer are those of the read without it: the
+answer is the whole vCon either way, so a marker gives a key nothing it
+could not already read, and a read without a marker is recorded as `read`,
+as before. A record still holds no content: it names the part, never what
+the part held. The server records what the client says it showed; a client
+that reads without the marker and shows everything is recorded as a `read`.
+
+### See who revealed what
+
+**Purpose:** list the reveals of one vCon, with the key that made each and
+the part it showed.
+
+**Prerequisites:**
+
+- A tenant key with the `audit` scope, in `$KEY` (see
+  [tenants and keys](@/docs/tenants-and-keys.md)).
+- The uuid of the vCon, in `$UUID`.
+- `curl` and `jq` on the machine you read from. Nothing changes on any
+  other system.
+
+**Steps:**
+
+1. Read the tenant's log and keep the reveals of that uuid:
+
+   ```sh
+   curl -s "https://vcon.example.com/audit?limit=10000" -H "Authorization: Bearer $KEY" |
+     jq -c --arg uuid "$UUID" 'select(.target == $uuid and (.action | test("^(legal_)?reveal_")))'
+   ```
+
+2. Read each line: `actor` is the id of the key that revealed, `action`
+   ends with the part, `at` is when, `version` is the version read and
+   `status` is what the server answered.
+3. If the answer held 10,000 lines, read on from the last `seq` with
+   `after=<seq>` (see [reading the logs](#reading-the-logs)).
+
+**Verify:** open the vCon in the console, choose **Reveal parties**, and
+run step 1 again. One more line appears, with the action `reveal_parties`,
+the status `200` and the id of the key you signed in with.
+
+**Troubleshoot:**
+
+- *No line appears after a reveal in the console:* the console in the
+  browser is older than the server. Reload the page. A console from before
+  this change reads without the marker, and its reveals are `read` records.
+- *A line has status `410` or `404` and no version:* the reveal was
+  refused. The vCon was deleted or was never stored, and the record shows
+  what was asked for.
+- *The answer is `(403)`:* the key has no `audit` scope.
+- *A request answers `(400)` [`bad-query`](@/problems/bad-query.md):* the
+  marker was not the only parameter, was given twice or names no part. The
+  refusal is recorded as a `read` (or `legal_read`) with status 400, and
+  no vCon is sent.
 
 ## Counted records
 

@@ -347,3 +347,24 @@ export function refusalText(status, title) {
   const what = typeof title === "string" && title !== "" ? `${title} (${status})` : `HTTP ${status}`;
   return `${what}. ${advice(status)}`;
 }
+
+/** The parts a reveal can name, as the server's `reveal` parameter lists them. */
+export const REVEAL_PARTS = Object.freeze(["parties", "subject", "dialog", "analysis", "links", "all"]);
+
+/**
+ * The path a reveal of `part` reads: `path` with the marker the server
+ * records the read by. A null part is a read that reveals nothing, and has
+ * no marker. A part the server does not list is never sent.
+ */
+export function revealPath(path, part) {
+  if (part === null) {
+    return path;
+  }
+  if (!REVEAL_PARTS.includes(part)) {
+    throw new RangeError(`not a part a reveal can name: ${part}`);
+  }
+  if (path.includes("?") || path.includes("#")) {
+    throw new RangeError("a reveal is the only parameter of its read");
+  }
+  return `${path}?reveal=${part}`;
+}
