@@ -198,8 +198,10 @@ played.
 - A key with the `read` scope, or the `legal` scope for the Legal view.
 - The recording is inside the vCon: the dialog has a `body` encoded as
   `base64url` (or `base64`) and a `mediatype` of `audio/wav`,
-  `audio/mpeg`, `audio/ogg` or `audio/opus`, and is at most 104,857,600
-  bytes. A recording the dialog only links to (`url`) is never played,
+  `audio/mpeg`, `audio/ogg` or `audio/opus`, or one of the other names in
+  the table below, and is at most 104,857,600 bytes. The type is read
+  without its case or its parameters, so `Audio/X-WAV; codecs=1` is
+  `audio/x-wav`. A recording the dialog only links to (`url`) is never played,
   because the console never loads a link from a vCon.
 - The browser lets this site open a tab. The player is a tab of its own;
   a browser set to block pop-ups must allow them for the server's address.
@@ -208,6 +210,17 @@ played.
   `/console/player.js`, and must pass the `Content-Security-Policy` header
   of each answer unchanged. Nothing changes on the server: there is no
   setting.
+
+| Declared as | Played as | Its bytes must start as |
+|---|---|---|
+| `audio/wav`, `audio/x-wav`, `audio/wave`, `audio/vnd.wave` | `audio/wav` | a RIFF file of the WAVE kind |
+| `audio/mpeg`, `audio/mp3`, `audio/x-mp3` | `audio/mpeg` | an ID3 tag or an MPEG audio frame |
+| `audio/ogg`, `audio/x-ogg` | `audio/ogg` | an Ogg stream |
+| `audio/opus` | `audio/opus` | an Ogg stream whose first packet is an Opus header |
+
+A type that is not in the table is not played. `application/ogg` is not
+in it: that name does not say whether the stream is audio or video, and
+the console does not read far enough into a stream to tell.
 
 **Steps:**
 
@@ -237,14 +250,19 @@ leaves one `reveal_audio` record for the vCon's uuid, or
 **Troubleshoot:**
 
 - *There is no Play button for a dialog:* its recording is at a link, or
-  its body is not declared as one of the four audio types, is not encoded
-  as `base64url` or `base64`, or is over the size limit. **Download** has
-  the whole vCon.
+  its body is not declared as a type in the table above, is not encoded as
+  `base64url` or `base64`, or is over the size limit. **Download** has
+  the whole vCon. The IETF draft's example vCons are of the first kind:
+  each keeps its recording at a link (`url`), declared `audio/x-mp3`, so
+  they have no Play button as published; with the recording put inside
+  the dialog, they play.
 - *`The browser blocked the player's tab. Allow pop-ups for this site, then choose Play again.`:*
   allow pop-ups for the server's address in the browser's settings. Nothing
   was read, and nothing is recorded.
 - *`Dialog 1's recording is declared as audio/wav, but its bytes are not audio/wav.`:*
-  the bytes do not start as that kind of file does. The console hands
+  the bytes do not start as that kind of file does. For another name the
+  line gives both, such as
+  `declared as audio/x-mp3, but its bytes are not audio/mpeg`. The console hands
   nothing to the player. The read is recorded, because the console had to
   read the vCon to find out.
 - *The player says `The browser could not play this recording.`:* the bytes

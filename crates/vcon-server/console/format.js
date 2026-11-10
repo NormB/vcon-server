@@ -441,8 +441,9 @@ function bytesOf(body) {
 
 /**
  * What a dialog says it holds, read without decoding it: `{ ok: true,
- * type }` for an inline recording of a type and size the console plays,
- * or `{ ok: false, reason }`.
+ * type, declared }` for an inline recording of a type and size the
+ * console plays, with the type it plays as and the name it was declared
+ * under, or `{ ok: false, reason }`.
  */
 function offered(dialog, index, limit) {
   const what = `Dialog ${index + 1}'s recording`;
@@ -459,7 +460,13 @@ function offered(dialog, index, limit) {
   if (type === "") {
     return refused(`${what} does not say what type it is, so the console does not play it. Download the vCon to examine it.`);
   }
-  if (!AUDIO_TYPES.includes(type)) {
+  let played;
+  if (AUDIO_TYPES.includes(type)) {
+    played = type;
+  } else if (Object.hasOwn(AUDIO_ALIASES, type)) {
+    played = AUDIO_ALIASES[type];
+  }
+  if (played === undefined) {
     const named = type.length > TYPE_SHOWN ? `${type.slice(0, TYPE_SHOWN)}…` : type;
     return refused(
       `${what} is declared as ${named}, which the console does not play. ` +
@@ -474,7 +481,7 @@ function offered(dialog, index, limit) {
         "Download the vCon to hear it another way.",
     );
   }
-  return { ok: true, type };
+  return { ok: true, type: played, declared: type };
 }
 
 /**
@@ -503,7 +510,7 @@ export function recording(text, index, limit = AUDIO_LIMIT) {
   }
   if (!isDeclared(bytes, offer.type)) {
     return refused(
-      `${what} is declared as ${offer.type}, but its bytes are not ${offer.type}. ` +
+      `${what} is declared as ${offer.declared}, but its bytes are not ${offer.type}. ` +
         "The console does not play it. Download the vCon to examine the recording.",
     );
   }
@@ -558,6 +565,20 @@ function refused(reason) {
  * default limit on a whole vCon once inflated.
  */
 export const AUDIO_LIMIT = 100 * 1024 * 1024;
+
+/**
+ * Other names producers give the types the console plays, each with the
+ * type it is a name for. A recording declared under one is checked and
+ * played as that type; a name not here is not played.
+ */
+export const AUDIO_ALIASES = Object.freeze({
+  "audio/x-wav": "audio/wav",
+  "audio/wave": "audio/wav",
+  "audio/vnd.wave": "audio/wav",
+  "audio/x-mp3": "audio/mpeg",
+  "audio/mp3": "audio/mpeg",
+  "audio/x-ogg": "audio/ogg",
+});
 
 /** The audio types the console plays, and no other. */
 export const AUDIO_TYPES = Object.freeze(["audio/wav", "audio/mpeg", "audio/ogg", "audio/opus"]);

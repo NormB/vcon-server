@@ -494,7 +494,7 @@ test.describe("recordings", () => {
     expect(Array.from(got.bytes)).toEqual(Array.from(wav()));
   });
   test("a recording declared as a type the console does not play is refused, and the reason names the type", () => {
-    for (const type of ["image/svg+xml", "text/html", "video/mp4", "audio/x-wav", "audio/wave", "application/octet-stream"]) {
+    for (const type of ["image/svg+xml", "text/html", "video/mp4", "audio/aac", "audio/flac", "application/octet-stream"]) {
       expect(format.recording(withDialogs(inline(wav(), type)), 0), type).toEqual({
         ok: false,
         reason:
@@ -729,5 +729,103 @@ test.describe("whose message is taken", () => {
   test("a page with no window to hear from takes no message, one with no source too", () => {
     expect(format.accepts({ origin, source: null }, null, origin)).toBe(false);
     expect(format.accepts({ origin, source: undefined }, undefined, origin)).toBe(false);
+  });
+});
+
+test.describe("other names for the audio types", () => {
+  /** Each other name the console knows, what it is a name for, and bytes of that type. */
+  const ALIASES = [
+    ["audio/x-wav", "audio/wav", wav],
+    ["audio/wave", "audio/wav", wav],
+    ["audio/vnd.wave", "audio/wav", wav],
+    ["audio/x-mp3", "audio/mpeg", mp3],
+    ["audio/mp3", "audio/mpeg", mp3],
+    ["audio/x-ogg", "audio/ogg", ogg],
+  ];
+
+  for (const [alias, type, bytes] of ALIASES) {
+    test(`a recording declared as ${alias} plays as ${type}`, () => {
+      const got = format.recording(withDialogs(inline(bytes(), alias)), 0);
+      expect(got.ok).toBe(true);
+      expect(got.type).toBe(type);
+      expect(Array.from(got.bytes)).toEqual(Array.from(bytes()));
+    });
+  }
+  test("a recording under another name whose bytes are not that type is refused, and the reason gives both names", () => {
+    const svg = Uint8Array.from(Buffer.from("<svg xmlns='http://www.w3.org/2000/svg' onload='alert(1)'/>"));
+    for (const [alias, type, bytes] of [["audio/x-wav", "audio/wav", mp3()], ["audio/x-mp3", "audio/mpeg", svg], ["audio/mp3", "audio/mpeg", wav()], ["audio/x-ogg", "audio/ogg", mp3()], ["audio/vnd.wave", "audio/wav", svg]]) {
+      expect(format.recording(withDialogs(inline(bytes, alias)), 0), alias).toEqual({
+        ok: false,
+        reason:
+          `Dialog 1's recording is declared as ${alias}, but its bytes are not ${type}. ` +
+          "The console does not play it. Download the vCon to examine the recording.",
+      });
+    }
+  });
+  test("a name the console does not know is refused, an x- name too", () => {
+    for (const type of ["audio/x-aiff", "audio/x-ms-wma", "audio/x-flac", "audio/basic", "audio/x-wave", "audio/x-mpeg", "audio/mpeg3", "application/ogg", "video/ogg", "audio/x-pn-realaudio"]) {
+      const got = format.recording(withDialogs(inline(wav(), type)), 0);
+      expect(got.ok, type).toBe(false);
+      expect(got.reason, type).toContain(`is declared as ${type}, which the console does not play.`);
+      expect(format.recordings(withDialogs(inline(wav(), type))), type).toEqual([]);
+    }
+  });
+  test("the table of other names maps each to a type the console plays, and names none of those types", () => {
+    const table = Object.entries(format.AUDIO_ALIASES);
+    expect(table.map(([alias]) => alias).sort()).toEqual(ALIASES.map(([alias]) => alias).sort());
+    for (const [alias, type] of table) {
+      expect(format.AUDIO_TYPES, alias).toContain(type);
+      expect(format.AUDIO_TYPES, alias).not.toContain(alias);
+      expect(alias, alias).toBe(alias.toLowerCase());
+    }
+    expect(Object.isFrozen(format.AUDIO_ALIASES)).toBe(true);
+  });
+  test("a declared type that is the name of something every object has is not another name for audio", () => {
+    for (const type of ["constructor", "tostring", "__proto__", "hasownproperty", "valueof"]) {
+      const got = format.recording(withDialogs(inline(wav(), type)), 0);
+      expect(got.ok, type).toBe(false);
+      expect(got.reason, type).toContain(`is declared as ${type}, which the console does not play.`);
+    }
+  });
+  test("another name is read without its case, and with its parameters set aside", () => {
+    for (const declared of ["Audio/X-WAV; codecs=1", "AUDIO/X-WAV", "audio/x-wav;rate=8000", " audio/x-wav ; a=b ; c=d", 'audio/x-wav; note="a;b"', "audio/X-Wav\t;x=1"]) {
+      const got = format.recording(withDialogs(inline(wav(), declared)), 0);
+      expect(got.ok, declared).toBe(true);
+      expect(got.type, declared).toBe("audio/wav");
+    }
+  });
+  test("a declared type that is not written as a media type is refused", () => {
+    for (const declared of ["audio/x-wav extra", "audio / x-wav", "audio/x-wav/x", "/x-wav", "audio/", "x-wav", "audio/x-wav,audio/wav", '"audio/x-wav"']) {
+      expect(format.recording(withDialogs(inline(wav(), declared)), 0).ok, declared).toBe(false);
+    }
+  });
+  test("the IETF example's recording dialog, with the recording inside it, plays as audio/mpeg", () => {
+    const example = JSON.parse(readFileSync(new URL("../../crates/vcon/tests/fixtures/ietf/ab_call_ext_rec.vcon", import.meta.url), "utf8"));
+    expect(example.dialog[0].mediatype).toBe("audio/x-mp3");
+    const { url, content_hash: hash, ...dialog } = example.dialog[0];
+    expect(typeof url).toBe("string");
+    example.dialog[0] = { ...dialog, encoding: "base64url", body: Buffer.from(mp3()).toString("base64url") };
+    const text = JSON.stringify(example);
+    expect(format.recordings(text)).toEqual([{ index: 0, type: "audio/mpeg" }]);
+    const got = format.recording(text, 0);
+    expect(got.ok).toBe(true);
+    expect(got.type).toBe("audio/mpeg");
+  });
+  test("the IETF example as published keeps its recording at a link, which is never played", () => {
+    const text = readFileSync(new URL("../../crates/vcon/tests/fixtures/ietf/ab_call_ext_rec.vcon", import.meta.url), "utf8");
+    expect(format.recordings(text)).toEqual([]);
+    expect(format.recording(text, 0)).toEqual({
+      ok: false,
+      reason: "Dialog 1's recording is at a link outside the server, which the console never loads.",
+    });
+  });
+  test("what is handed to the player names the type played, and the player takes no other name", () => {
+    const found = format.recording(withDialogs(inline(mp3(), "audio/x-mp3")), 0);
+    const message = format.handOver(found, "0199e5c6-0d7a-7c11-8000-000000000001", 0);
+    expect(message.type).toBe("audio/mpeg");
+    expect(message.label).toBe("Dialog 1 of 0199e5c6-0d7a-7c11-8000-000000000001, audio/mpeg");
+    expect(format.handed(message)).not.toBeNull();
+    expect(format.handed({ ...message, type: "audio/x-mp3" })).toBeNull();
+    expect(format.handed({ ...message, type: "audio/mp3" })).toBeNull();
   });
 });

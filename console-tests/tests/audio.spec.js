@@ -460,3 +460,19 @@ test("Play and the player need only the keyboard, and focus goes to the player's
   await Promise.all([player.waitForEvent("close"), player.keyboard.down("Enter").catch(() => {})]);
   expect(player.isClosed()).toBe(true);
 });
+
+test("a recording declared under another name for WAV plays, and the player is told the type played", async ({ page, request, tenant }) => {
+  const uuid = await opened(page, request, tenant, [inline(wav(), "Audio/X-WAV; codecs=1")]);
+  const player = await play(page);
+  await expect(player.locator("#playing")).toHaveText(ready(uuid, 1, "audio/wav"));
+  await expect.poll(() => player.locator("#audio").evaluate((audio) => audio.duration)).toBeCloseTo(0.2, 2);
+});
+
+test("a recording under another name whose bytes are not that type is refused in the console", async ({ page, request, tenant }) => {
+  await opened(page, request, tenant, [inline(wav(), "audio/x-mp3")]);
+  const player = await play(page);
+  await expect(page.locator("#vcon-recordings-state")).toHaveText(
+    "Dialog 1's recording is declared as audio/x-mp3, but its bytes are not audio/mpeg. The console does not play it. Download the vCon to examine the recording.",
+  );
+  await expect.poll(() => player.isClosed()).toBe(true);
+});

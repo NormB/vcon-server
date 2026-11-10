@@ -18,6 +18,26 @@ CI runs every command on this page on each change. It installs the previous
 release, sets it up as [getting started](@/docs/getting-started.md) does,
 upgrades it to the server built from the change, and goes back again.
 
+## After 0.4.2
+
+These are on `main` only, in no release yet; they apply to the release
+that follows 0.4.2. The upgrade is the binary alone: the catalogs keep
+their schema version, and the configuration is as it was. Two things need
+a look before it.
+
+- **Readers of the audit log.** The console marks each Reveal, so a
+  tenant's log holds `reveal_parties`, `reveal_subject`, `reveal_dialog`,
+  `reveal_analysis`, `reveal_links`, `reveal_all` and `reveal_audio`
+  where 0.4.2 wrote `read`, and the `legal_reveal_` actions with the same
+  seven endings where it wrote `legal_read`. Before you install the new
+  binary, add the fourteen names to any rule, parser or report that lists
+  actions; see [reveals](@/docs/audit-logs.md#reveals).
+- **A proxy that passes the console's paths by name.** The console has two
+  more files, `/console/player.html` and `/console/player.js`, for its
+  [recording player](@/docs/console.md#play-a-recording). Pass both, and
+  pass each answer's `Content-Security-Policy` header unchanged: the
+  player's page has a policy of its own.
+
 ## From 0.4.1 to 0.4.2
 
 Nothing in 0.4.2 needs a step of its own: the steps below, with the new

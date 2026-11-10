@@ -11,7 +11,11 @@ All notable changes to this project are recorded here. The format follows
 - The console plays a recording that a vCon holds inside a dialog: one
   **Play** button for each dialog whose `body` is `base64url` or `base64`
   and whose `mediatype` is `audio/wav`, `audio/mpeg`, `audio/ogg` or
-  `audio/opus`, up to 104,857,600 bytes. The player is a page of its own,
+  `audio/opus`, up to 104,857,600 bytes. Six other names are read as the
+  type each stands for: `audio/x-wav`, `audio/wave` and `audio/vnd.wave`
+  as `audio/wav`; `audio/x-mp3` and `audio/mp3` as `audio/mpeg`; and
+  `audio/x-ogg` as `audio/ogg`. `application/ogg` is not played, because
+  the name does not say whether the stream is audio. The player is a page of its own,
   `/console/player.html`, opened in a new tab. Its content-security policy
   alone has `media-src blob:`, and has `connect-src 'none'`; the policy of
   every other console answer is unchanged. The console reads the vCon with
@@ -52,6 +56,12 @@ All notable changes to this project are recorded here. The format follows
   start with `legal_reveal_` together with `legal_read`. The record's
   fields, the catalogs' schema version and every API answer are unchanged,
   and no other client is affected.
+- The console is made of two more files, `/console/player.html` and
+  `/console/player.js`. A reverse proxy or firewall that passes the
+  console's paths by name must pass both, and must pass each answer's
+  `Content-Security-Policy` header unchanged: the player's page has a
+  policy of its own. A proxy that passes everything under `/console/`
+  needs no change.
 
 ### Fixed
 
