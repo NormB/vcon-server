@@ -91,6 +91,8 @@ pub struct HttpApi {
     token: Zeroizing<String>,
     client: reqwest::Client,
     runtime: tokio::runtime::Runtime,
+    /// How long one request may take; [`TIMEOUT`] outside tests.
+    timeout: Duration,
 }
 
 /// The address only: the token is never written.
@@ -123,6 +125,7 @@ impl HttpApi {
             token: Zeroizing::new(token),
             client,
             runtime,
+            timeout: TIMEOUT,
         })
     }
 
@@ -150,12 +153,12 @@ impl HttpApi {
             answer(status, &body)
         };
         self.runtime.block_on(async {
-            tokio::time::timeout(TIMEOUT, exchange)
+            tokio::time::timeout(self.timeout, exchange)
                 .await
                 .unwrap_or_else(|_| {
                     Err(ApiError::Unreachable(format!(
                         "no answer within {} seconds",
-                        TIMEOUT.as_secs()
+                        self.timeout.as_secs()
                     )))
                 })
         })
@@ -348,5 +351,268 @@ mod tests {
             },
             "empty and last"
         );
+    }
+
+    // The HTTPS client, against a TLS server on loopback.
+
+    use std::io::{Read, Write};
+    use std::path::Path;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use super::HttpApi;
+    use crate::mcp::stdio::ClientConfig;
+
+    const TOKEN: &str = "vcs_0011223344556677_secret";
+
+    type Certificate = rcgen::CertifiedKey<rcgen::KeyPair>;
+
+    fn certificate() -> Certificate {
+        rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).expect("a certificate")
+    }
+
+    /// A TLS server for one test: it answers every request with `reply`, a
+    /// whole HTTP/1.1 response, and keeps each request's head.
+    fn server(cert: &Certificate, reply: Vec<u8>) -> (u16, Arc<Mutex<Vec<String>>>) {
+        let chain = vec![cert.cert.der().clone()];
+        let key = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let mut config = rustls::ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .expect("versions")
+            .with_no_client_auth()
+            .with_single_cert(chain, key)
+            .expect("a server config");
+        config.alpn_protocols = vec![b"http/1.1".to_vec()];
+        let config = Arc::new(config);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("binds");
+        let port = listener.local_addr().expect("an address").port();
+        let heads = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&heads);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(tcp) = stream else { return };
+                let conn =
+                    rustls::ServerConnection::new(Arc::clone(&config)).expect("a connection");
+                let mut tls = rustls::StreamOwned::new(conn, tcp);
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    match tls.read(&mut byte) {
+                        Ok(1) => head.push(byte[0]),
+                        _ => break,
+                    }
+                }
+                if !head.is_empty() {
+                    seen.lock()
+                        .expect("the lock")
+                        .push(String::from_utf8_lossy(&head).to_ascii_lowercase());
+                }
+                // A client that stops reading early closes; that is its
+                // test's point, not a failure here.
+                drop(tls.write_all(&reply));
+                tls.conn.send_close_notify();
+                drop(tls.flush());
+            }
+        });
+        (port, heads)
+    }
+
+    /// An HTTP/1.1 response with a JSON body.
+    fn response(status: &str, body: &str) -> Vec<u8> {
+        format!(
+            "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .into_bytes()
+    }
+
+    /// A client file's values for the server on `port`, trusting `ca`, with
+    /// the token in a file of `mode`.
+    fn client(dir: &Path, port: u16, ca: &Certificate, mode: u32) -> ClientConfig {
+        use std::os::unix::fs::PermissionsExt;
+        let ca_file = dir.join("ca.pem");
+        std::fs::write(&ca_file, ca.cert.pem()).expect("write the CA");
+        let key_file = dir.join("tui.token");
+        std::fs::write(&key_file, format!("{TOKEN}\n")).expect("write the key file");
+        std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(mode)).expect("chmod");
+        ClientConfig {
+            url: format!("https://localhost:{port}/"),
+            key_file,
+            ca: Some(ca_file),
+        }
+    }
+
+    #[test]
+    fn the_key_request_carries_the_token_as_a_bearer_and_its_answer_is_read() {
+        let cert = certificate();
+        let (port, heads) = server(
+            &cert,
+            response(
+                "200 OK",
+                r#"{"id":"0011223344556677","tenant":"t_example","scopes":["read"]}"#,
+            ),
+        );
+        let dir = tempfile::tempdir().expect("temp dir");
+        let api = HttpApi::new(&client(dir.path(), port, &cert, 0o600)).expect("a client");
+        let info = api.key().expect("the key's answer");
+        assert_eq!(
+            info.tenant.as_deref(),
+            Some("t_example"),
+            "the answer is read"
+        );
+        let heads = heads.lock().expect("the lock");
+        assert!(
+            heads[0].starts_with("get /key http/1.1"),
+            "the route: {}",
+            heads[0]
+        );
+        assert!(
+            heads[0].contains(&format!("authorization: bearer {TOKEN}")),
+            "the token goes in the Authorization header: {}",
+            heads[0]
+        );
+    }
+
+    #[test]
+    fn the_page_request_carries_the_limit_and_the_cursor() {
+        let cert = certificate();
+        let (port, heads) = server(&cert, response("200 OK", r#"{"next":null,"vcons":[]}"#));
+        let dir = tempfile::tempdir().expect("temp dir");
+        let api = HttpApi::new(&client(dir.path(), port, &cert, 0o600)).expect("a client");
+        api.page(Some("abc")).expect("a page");
+        let heads = heads.lock().expect("the lock");
+        assert!(
+            heads[0].starts_with("get /vcons?limit=100&cursor=abc http/1.1"),
+            "one slash, the limit and the cursor: {}",
+            heads[0]
+        );
+    }
+
+    #[test]
+    fn a_refusal_from_the_server_is_its_status_and_title() {
+        let cert = certificate();
+        let (port, _) = server(
+            &cert,
+            response(
+                "401 Unauthorized",
+                r#"{"title":"unauthorized","status":401}"#,
+            ),
+        );
+        let dir = tempfile::tempdir().expect("temp dir");
+        let api = HttpApi::new(&client(dir.path(), port, &cert, 0o600)).expect("a client");
+        assert_eq!(
+            api.key(),
+            Err(ApiError::Status(401, Some("unauthorized".to_owned()))),
+            "the refusal is carried, not hidden"
+        );
+    }
+
+    #[test]
+    fn a_certificate_the_ca_does_not_cover_gets_no_request_and_no_token() {
+        let served = certificate();
+        let trusted = certificate();
+        let (port, heads) = server(&served, response("200 OK", "{}"));
+        let dir = tempfile::tempdir().expect("temp dir");
+        let api = HttpApi::new(&client(dir.path(), port, &trusted, 0o600)).expect("a client");
+        let outcome = api.key();
+        assert!(
+            matches!(outcome, Err(ApiError::Unreachable(_))),
+            "the certificate is verified: {outcome:?}"
+        );
+        assert_eq!(
+            *heads.lock().expect("the lock"),
+            Vec::<String>::new(),
+            "nothing, the token least of all, is sent to a server that is not trusted"
+        );
+    }
+
+    #[test]
+    fn a_port_nothing_listens_on_is_unreachable() {
+        let cert = certificate();
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("binds");
+            listener.local_addr().expect("an address").port()
+        };
+        let dir = tempfile::tempdir().expect("temp dir");
+        let api = HttpApi::new(&client(dir.path(), port, &cert, 0o600)).expect("a client");
+        let outcome = api.page(None);
+        assert!(
+            matches!(outcome, Err(ApiError::Unreachable(_))),
+            "no server, no answer: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn an_answer_longer_than_the_limit_is_given_up() {
+        let cert = certificate();
+        let (port, _) = server(&cert, response("200 OK", &" ".repeat(2 * super::MAX_BODY)));
+        let dir = tempfile::tempdir().expect("temp dir");
+        let api = HttpApi::new(&client(dir.path(), port, &cert, 0o600)).expect("a client");
+        let outcome = api.page(None);
+        assert!(
+            matches!(&outcome, Err(ApiError::Malformed(why)) if why.contains("longer than")),
+            "the body is not buffered whole: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn a_server_that_never_answers_is_given_up_after_the_timeout() {
+        let cert = certificate();
+        // Connections are taken by the kernel and never answered.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("binds");
+        let port = listener.local_addr().expect("an address").port();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut api = HttpApi::new(&client(dir.path(), port, &cert, 0o600)).expect("a client");
+        api.timeout = Duration::from_millis(300);
+        let outcome = api.key();
+        assert!(
+            matches!(&outcome, Err(ApiError::Unreachable(why)) if why.contains("no answer within")),
+            "the request ends: {outcome:?}"
+        );
+        drop(listener);
+    }
+
+    #[test]
+    fn a_key_file_other_users_may_read_is_refused_before_any_request() {
+        let cert = certificate();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let refused = HttpApi::new(&client(dir.path(), 1, &cert, 0o644))
+            .expect_err("a world-readable key file");
+        assert!(refused.contains("key_file"), "the file is named: {refused}");
+        assert!(
+            !refused.contains(TOKEN),
+            "the token is not in the message: {refused}"
+        );
+    }
+
+    #[test]
+    fn a_ca_file_with_no_certificate_is_refused() {
+        let cert = certificate();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config = client(dir.path(), 1, &cert, 0o600);
+        std::fs::write(
+            config.ca.as_ref().expect("a CA file"),
+            "not a certificate\n",
+        )
+        .expect("overwrite the CA");
+        let refused = HttpApi::new(&config).expect_err("no certificate to trust");
+        assert!(
+            refused.starts_with("ca: "),
+            "the setting is named: {refused}"
+        );
+    }
+
+    #[test]
+    fn the_debug_form_never_holds_the_token() {
+        let cert = certificate();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let api = HttpApi::new(&client(dir.path(), 1, &cert, 0o600)).expect("a client");
+        let shown = format!("{api:?}");
+        assert!(
+            shown.contains("https://localhost:1"),
+            "the address is shown: {shown}"
+        );
+        assert!(!shown.contains("secret"), "the token is not: {shown}");
     }
 }
