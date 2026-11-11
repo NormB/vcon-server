@@ -12,4 +12,5 @@ A key request names an unknown scope, a scope twice, no scope, or `admin`.
 
 ## What to do
 
-Name one or more of `write`, `read`, `delete` and `legal`, each once.
+Name one or more of `write`, `read`, `delete`, `legal`, `audit` and
+`tenant_admin`, each once.
