@@ -11,7 +11,7 @@ workflow, composite action and shell script:
   apt-get update / install                                  with -o Acquire::Retries=N
   curl (as a command) fetching from another host            with --retry
 
-  dnf / yum / microdnf install                             retried, with dnf clean metadata between tries
+  dnf / yum / microdnf install                             through scripts/dnf_install.py, and nowhere else
 
 A release asset (a github.com/<owner>/<repo>/releases/download/ URL) is
 more than a download: it is a pinned tool. Each one goes through ONE rule,
@@ -29,9 +29,15 @@ the action keeps its one-rule shape. Fewer
 than MIN_RELEASE_DOWNLOADS release downloads through the rule fails too, so
 a reading that lost the steps cannot pass.
 
-dnf's own retries cover a failed download, not a mirror that serves an
-empty repomd.xml (a parse error, seen on 2026-10-28 in Release's
-almalinux:9 job), so a retry must start again from fresh metadata.
+dnf's own retries cover a failed download, not a mirror that serves a
+repomd.xml it cannot parse (seen on 2026-10-28 in Release's almalinux:9
+job). A retry from fresh metadata was the rule until 2026-11-11, when five
+such tries in that job each read the same mirror and failed the same way.
+scripts/dnf_install.py follows a failed try with one from another source,
+so no other form of `dnf install` passes, and fewer than
+MIN_DNF_RULE_CALLS installs through it fails. A job in a container has no
+`run:` step before its checkout: no repository script exists there, so
+such a step could install only with the package manager's own command.
 actions/setup-* download through the actions toolkit, which retries.
 
 Run with: python3 -I scripts/check_workflow_downloads.py
@@ -88,21 +94,27 @@ def unretried(path, text):
             m = rule.search(code)
             if m and "retry.sh" not in code[: m.start()]:
                 problems.append(f"{path}:{n}: {label} without scripts/retry.sh")
-        for m in DNF.finditer(code):
-            # A retry that starts again from fresh metadata: scripts/retry.sh
-            # with RETRY_BETWEEN cleaning it, or (before the checkout, where
-            # no script exists yet) an inline loop that cleans it.
-            before = code[: m.start()]
-            through_script = "retry.sh" in before and "RETRY_BETWEEN" in before and "dnf clean metadata" in before
-            inline_loop = re.search(r"\bfor\b", before) is not None and "break" in code and "dnf clean metadata" in code
-            if not (through_script or inline_loop):
-                problems.append(f"{path}:{n}: dnf without a retry that cleans its metadata")
+        for _ in DNF.finditer(code):
+            # No form of it passes: a retry of the same command reads the
+            # same mirror, whatever is cleaned in between.
+            problems.append(f"{path}:{n}: dnf install outside scripts/dnf_install.py, which tries a second source")
         for m in APT.finditer(code):
             if "Acquire::Retries" not in m.group(0):
                 problems.append(f"{path}:{n}: apt-get without -o Acquire::Retries")
         if CURL.search(code) and "--retry" not in code and REMOTE_URL.search(code):
             problems.append(f"{path}:{n}: curl without --retry")
     return problems
+
+
+DNF_RULE = re.compile(r"\bpython3\s+-I\s+(?:\S*/)?scripts/dnf_install\.py\s+\S")
+# release.yml's smoke job, and scripts/release-build-env.sh, which
+# release.yml's build job and reproducible.yml's job run.
+MIN_DNF_RULE_CALLS = 2
+
+
+def dnf_rule_calls(text):
+    """How many command lines in `text` install through scripts/dnf_install.py."""
+    return sum(1 for _, line in logical_lines(text) if _code(line) and DNF_RULE.search(line))
 
 
 RELEASE_ASSET = re.compile(r"/releases/download(?:/|\b)")
@@ -128,7 +140,13 @@ def _code(line):
 
 def steps(text):
     """(first line number, lines) for each item of every `steps:` list."""
-    out = []
+    return [step for found in step_lists(text) for step in found]
+
+
+def step_lists(text):
+    """Each `steps:` list (a job's, or a composite action's) as its own list
+    of (first line number, lines)."""
+    lists = []
     lines = text.splitlines()
     i = 0
     while i < len(lines):
@@ -138,6 +156,8 @@ def steps(text):
             continue
         item = None  # the column of this list's "-"
         current = None
+        out = []
+        lists.append(out)
         while i < len(lines):
             line = lines[i]
             if not line.strip() or line.strip().startswith("#"):
@@ -157,7 +177,58 @@ def steps(text):
             elif current is not None:
                 current[1].append(line)
             i += 1
-    return out
+    return lists
+
+
+CHECKOUT = re.compile(r"^\s*(?:-\s+)?uses:\s*actions/checkout@")
+RUN_KEY = re.compile(r"^\s*(?:-\s+)?run\s*:")
+
+
+def _in_container(lines, first_step):
+    """Whether the job whose first step starts at line `first_step` (from
+    1) has a `container:` key beside its `steps:` key."""
+    i = first_step - 2
+    while i >= 0 and not STEPS_KEY.match(lines[i]):
+        i -= 1
+    if i < 0:
+        return False
+    column = len(STEPS_KEY.match(lines[i]).group("indent"))
+    key = re.compile(rf"^ {{{column}}}container\s*:")
+    # The job's other keys are above its steps here and could be below.
+    for step in (-1, 1):
+        j = i + step
+        while 0 <= j < len(lines):
+            line = lines[j]
+            if line.strip() and not line.strip().startswith("#"):
+                if len(line) - len(line.lstrip(" ")) < column:
+                    break
+                if key.match(line):
+                    return True
+            j += step
+    return False
+
+
+def runs_before_checkout(path, text):
+    """One line per `run:` step that comes before the checkout of its own
+    job, in a job that runs in a container. No repository script exists there, so such a step can only install
+    a package with the package manager's own command, from one source: the
+    "Install git" step that failed on 2026-11-11 was one."""
+    problems = []
+    lines = text.splitlines()
+    for found in step_lists(text):
+        if not found or not _in_container(lines, found[0][0]):
+            # A runner's own system has git and the other tools.
+            continue
+        early = []
+        for n, body in found:
+            code = [l for l in body if _code(l)]
+            if any(CHECKOUT.match(l) for l in code):
+                # Only a job that checks out has scripts to wait for.
+                problems += early
+                break
+            if any(RUN_KEY.match(l) for l in code):
+                early.append(f"{path}:{n}: a run step before the job's checkout: no repository script exists there")
+    return problems
 
 
 def release_problems(path, text):
@@ -282,6 +353,7 @@ def check(root):
         else:
             problems += release_problems(rel, text)[0]
             problems += cache_problems(rel, text)
+            problems += runs_before_checkout(rel, text)
     action = root / ".github/actions/pinned-download/action.yml"
     if action.is_file():
         problems += [f"{action.relative_to(root).as_posix()}: {p}" for p in pinned_action_problems(action.read_text(encoding="utf-8"))]
@@ -290,6 +362,9 @@ def check(root):
     count = release_downloads(root)
     if count < MIN_RELEASE_DOWNLOADS:
         problems.append(f"found {count} release downloads through the one rule; expected at least {MIN_RELEASE_DOWNLOADS}. A reading that lost the steps cannot pass")
+    calls = sum(dnf_rule_calls(p.read_text(encoding="utf-8")) for p in files(root))
+    if calls < MIN_DNF_RULE_CALLS:
+        problems.append(f"found {calls} installs through scripts/dnf_install.py; expected at least {MIN_DNF_RULE_CALLS}. A reading that lost the steps cannot pass")
     return problems
 
 

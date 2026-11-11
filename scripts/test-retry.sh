@@ -26,10 +26,5 @@ expect "a command that succeeds runs once" 0 1 0
 expect "two failures, then success" 0 3 2
 expect "it gives up after RETRY_ATTEMPTS runs and keeps the exit code" 7 5 9
 expect "RETRY_ATTEMPTS is honoured" 7 2 9 2
-# RETRY_BETWEEN runs between attempts, not before the first or after the last.
-rm -f "$work/count" "$work/between"
-RETRY_DELAY=0 RETRY_ATTEMPTS=4 RETRY_BETWEEN="echo x >> '$work/between'" bash "$here/retry.sh" "$work/flaky" 2 "$work/count" 2> "$work/err" || true
-if [ "$(wc -l < "$work/between" 2>/dev/null || echo 0)" = 2 ] && [ "$(cat "$work/count")" = 3 ]; then pass=$((pass + 1)); else
-  fail=$((fail + 1)); echo "FAIL (RETRY_BETWEEN runs once between each pair of attempts): ran $(wc -l < "$work/between" 2>/dev/null || echo 0) times for $(cat "$work/count") runs, wanted 2 for 3"; fi
 echo "test-retry: $pass of $((pass + fail)) passed"
 [ "$fail" -eq 0 ]

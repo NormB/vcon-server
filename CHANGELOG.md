@@ -212,6 +212,18 @@ All notable changes to this project are recorded here. The format follows
   data directory, and a server that cannot take them does not start
   (`the stop signals cannot be taken`), where before it started and then
   stopped at once.
+- The release build no longer depends on one package mirror. Its
+  AlmaLinux 9 container installed git and the build tools with
+  `dnf install`, retried five times; on 2026-11-11 each of the five tries
+  read the same mirror, whose `repomd.xml` dnf could not parse, and the
+  build job failed. dnf asks the next mirror only when a download fails,
+  not when a file arrives and does not parse. `scripts/dnf_install.py` now
+  follows a failed try with one from the address each repository file
+  names in its commented `baseurl` line, the distribution's own server,
+  and takes turns between the two sources for at most five tries. Packages
+  are checked against the distribution's key as before. The build jobs
+  check out twice, the first time for the script and the second, with git
+  installed, for `.git`.
 
 ## [0.4.2] - 2026-11-10
 

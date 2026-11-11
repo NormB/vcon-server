@@ -6,16 +6,12 @@
 # reproducible check's cmp and diff, and rustup, pinned by
 # sha256, with the toolchain rust-toolchain.toml names. release.yml and
 # reproducible.yml both run it, so both build in the same environment.
-# git is installed before the checkout, which needs it to keep .git.
+# It installs git too: the image has none, so the workflows fetch the files
+# without it, run this, and check out again to have .git.
 #
-# Usage, as root in the container, from the checkout:
+# Usage, as root in the container, from the repository's files:
 #   scripts/release-build-env.sh
 set -euo pipefail
-
-# The checkout belongs to the runner's user, not root, and git refuses
-# another user's repository unless told it is safe. The build reads the
-# commit's time from it.
-git config --global --add safe.directory "${GITHUB_WORKSPACE:-$PWD}"
 
 RUSTUP_VERSION=1.29.2
 case "$(uname -m)" in
@@ -25,9 +21,15 @@ case "$(uname -m)" in
 esac
 
 # perl-core: OpenSSL's Configure needs modules the minimal perl leaves out.
-RETRY_BETWEEN='dnf clean metadata' scripts/retry.sh \
-  dnf install -y --setopt=install_weak_deps=False gcc make perl-core binutils diffutils python3 xz >&2
+# One install, through the rule that tries a second source when a mirror
+# serves a repomd.xml dnf cannot parse (scripts/dnf_install.py).
+python3 -I scripts/dnf_install.py git-core gcc make perl-core binutils diffutils python3 xz >&2
 ldd --version | sed -n 1p >&2
+
+# The checkout belongs to the runner's user, not root, and git refuses
+# another user's repository unless told it is safe. The build reads the
+# commit's time from it.
+git config --global --add safe.directory "${GITHUB_WORKSPACE:-$PWD}"
 
 curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o /tmp/rustup-init \
   "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${triple}/rustup-init"

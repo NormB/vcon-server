@@ -58,24 +58,134 @@ class Playwright(unittest.TestCase):
 
 class Dnf(unittest.TestCase):
     def test_a_bare_dnf_install_is_found(self):
-        self.assertEqual(found("        run: dnf install -y git-core\n"), [".github/workflows/x.yml:1: dnf without a retry that cleans its metadata"])
+        self.assertEqual(
+            found("        run: dnf install -y git-core\n"),
+            [".github/workflows/x.yml:1: dnf install outside scripts/dnf_install.py, which tries a second source"],
+        )
         self.assertEqual(len(found("            yum install -y jq\n            microdnf install -y jq\n")), 2)
 
-    def test_dnf_through_the_retry_script_cleaning_metadata_passes(self):
-        self.assertEqual(found("          RETRY_BETWEEN='dnf clean metadata' scripts/retry.sh dnf install -y jq\n"), [])
+    def test_dnf_through_the_rule_passes(self):
+        self.assertEqual(found("        run: python3 -I scripts/dnf_install.py git-core\n"), [])
+        self.assertEqual(found("python3 -I scripts/dnf_install.py gcc make perl-core >&2\n", "scripts/x.sh"), [])
+
+    def test_dnf_through_the_retry_script_cleaning_metadata_is_found(self):
+        # The rule until 2026-11-11, when five such tries read the same
+        # mirror's bad repomd.xml: cleaning does not change the mirror.
+        self.assertEqual(len(found("          RETRY_BETWEEN='dnf clean metadata' scripts/retry.sh dnf install -y jq\n")), 1)
+        self.assertEqual(len(found("RETRY_BETWEEN='dnf clean metadata' scripts/retry.sh \\\n  dnf install -y jq\n", "scripts/x.sh")), 1)
 
     def test_dnf_through_the_retry_script_without_cleaning_is_found(self):
-        # An empty repomd.xml is a parse error, not a failed download, so a
-        # second try must start from fresh metadata.
         self.assertEqual(len(found("          scripts/retry.sh dnf install -y jq\n")), 1)
 
     def test_cleaning_once_without_a_retry_is_found(self):
         self.assertEqual(len(found("          dnf clean metadata && dnf install -y jq\n")), 1)
 
-    def test_an_inline_loop_that_cleans_metadata_passes(self):
-        # Before the checkout no repository script exists yet.
+    def test_an_inline_loop_that_cleans_metadata_is_found(self):
+        # The step that failed: before the checkout, where no script exists.
         line = "        run: for i in 1 2 3 4 5; do dnf install -y git-core && break; [ \"$i\" = 5 ] && exit 1; dnf clean metadata; sleep $((i * 10)); done\n"
-        self.assertEqual(found(line), [])
+        self.assertEqual(len(found(line)), 1)
+
+    def test_an_install_with_options_before_the_word_is_found(self):
+        self.assertEqual(len(found("          dnf -y --setopt=install_weak_deps=False install jq\n")), 1)
+
+    def test_dnf_commands_that_install_nothing_pass(self):
+        self.assertEqual(found("          dnf clean metadata\n          dnf --version\n          rpm -q dnf\n"), [])
+
+    def test_a_step_that_names_the_rule_and_also_runs_dnf_is_found(self):
+        self.assertEqual(len(found("          python3 -I scripts/dnf_install.py jq || dnf install -y jq\n")), 1)
+
+    def test_the_rule_is_counted_where_it_is_called(self):
+        text = "      - run: python3 -I scripts/dnf_install.py git-core\n      # python3 -I scripts/dnf_install.py git-core\n      - name: python3 -I scripts/dnf_install.py jq\n"
+        self.assertEqual(check.dnf_rule_calls(text), 1)
+        self.assertEqual(check.dnf_rule_calls("      - run: echo dnf_install\n"), 0)
+
+    def test_a_tree_with_fewer_calls_of_the_rule_than_the_floor_fails(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            (root / ".github/workflows").mkdir(parents=True)
+            (root / "scripts").mkdir()
+            (root / ".github/workflows/release.yml").write_text("    steps:\n      - run: python3 -I scripts/dnf_install.py git-core\n", encoding="utf-8")
+            problems = check.check(root)
+            (root / "scripts/x.sh").write_text("python3 -I scripts/dnf_install.py gcc\n", encoding="utf-8")
+            enough = check.check(root)
+        self.assertTrue(any("found 1 installs through scripts/dnf_install.py; expected at least 2" in p for p in problems), problems)
+        self.assertFalse(any("scripts/dnf_install.py" in p for p in enough), enough)
+
+    def test_the_real_tree_calls_the_rule_at_each_known_place(self):
+        root = HERE.parent
+        calls = {p.relative_to(root).as_posix(): check.dnf_rule_calls(p.read_text(encoding="utf-8")) for p in check.files(root)}
+        self.assertEqual(
+            {k: v for k, v in calls.items() if v},
+            {".github/workflows/release.yml": 1, "scripts/release-build-env.sh": 1},
+        )
+        # Both build jobs prepare their container with that script.
+        for name in ("release.yml", "reproducible.yml"):
+            self.assertIn("run: bash scripts/release-build-env.sh\n", (root / ".github/workflows" / name).read_text(encoding="utf-8"), name)
+        self.assertTrue((root / "scripts/dnf_install.py").is_file())
+
+    def test_the_whole_check_reports_a_run_step_before_a_container_job_s_checkout(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            (root / ".github/workflows").mkdir(parents=True)
+            text = "jobs:\n  build:\n" + self.IN_CONTAINER + "    steps:\n      - run: echo hello\n" + self.CHECKOUT
+            (root / ".github/workflows/release.yml").write_text(text, encoding="utf-8")
+            problems = check.check(root)
+        self.assertIn(".github/workflows/release.yml:6: a run step before the job's checkout: no repository script exists there", problems)
+
+    def test_no_job_runs_a_command_before_its_checkout_in_an_almalinux_container(self):
+        # A step before the checkout cannot use a repository script, so it
+        # could only install from one source.
+        root = HERE.parent
+        for name in ("release.yml", "reproducible.yml"):
+            text = (root / ".github/workflows" / name).read_text(encoding="utf-8")
+            self.assertEqual(check.runs_before_checkout(name, text), [])
+
+    CHECKOUT = "      - uses: actions/checkout@0000000000000000000000000000000000000000 # v7\n"
+    IN_CONTAINER = "    container:\n      image: almalinux:9\n"
+
+    def test_a_run_step_before_the_checkout_is_found(self):
+        text = "jobs:\n  build:\n" + self.IN_CONTAINER + "    steps:\n      - name: Install git\n        run: echo hello\n" + self.CHECKOUT + "      - run: echo after\n"
+        self.assertEqual(check.runs_before_checkout("x.yml", text), ["x.yml:6: a run step before the job's checkout: no repository script exists there"])
+
+    def test_a_container_named_on_one_line_or_below_the_steps_counts(self):
+        early = "    steps:\n      - run: echo hello\n" + self.CHECKOUT
+        self.assertEqual(len(check.runs_before_checkout("x.yml", "jobs:\n  build:\n    container: almalinux:9\n" + early)), 1)
+        self.assertEqual(len(check.runs_before_checkout("x.yml", "jobs:\n  build:\n" + early + self.IN_CONTAINER)), 1)
+        # A comment at the margin between the two keys ends nothing.
+        self.assertEqual(len(check.runs_before_checkout("x.yml", "jobs:\n  build:\n    container: almalinux:9\n# why\n" + early)), 1)
+
+    def test_a_job_on_the_runner_s_own_system_may_run_commands_first(self):
+        text = "jobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hello\n" + self.CHECKOUT
+        self.assertEqual(check.runs_before_checkout("x.yml", text), [])
+
+    def test_another_job_s_container_does_not_count(self):
+        text = "jobs:\n  a:\n" + self.IN_CONTAINER + "    steps:\n" + self.CHECKOUT + "  b:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo b\n" + self.CHECKOUT
+        self.assertEqual(check.runs_before_checkout("x.yml", text), [])
+
+    def test_a_container_named_in_a_comment_or_under_services_does_not_count(self):
+        text = "jobs:\n  b:\n    # container: almalinux:9\n    services:\n      db:\n        container: x\n    steps:\n      - run: echo b\n" + self.CHECKOUT
+        self.assertEqual(check.runs_before_checkout("x.yml", text), [])
+
+    def test_a_job_with_no_checkout_may_run_commands(self):
+        text = "jobs:\n  build:\n" + self.IN_CONTAINER + "    steps:\n      - run: echo hello\n"
+        self.assertEqual(check.runs_before_checkout("x.yml", text), [])
+
+    def test_a_uses_step_before_the_checkout_passes(self):
+        text = "jobs:\n  build:\n" + self.IN_CONTAINER + "    steps:\n      - uses: actions/setup-node@0000000000000000000000000000000000000000 # v6\n" + self.CHECKOUT + "      - run: echo after\n"
+        self.assertEqual(check.runs_before_checkout("x.yml", text), [])
+
+    def test_a_run_step_between_two_checkouts_passes(self):
+        # The build jobs: files first, then git through the rule, then the
+        # checkout that keeps .git.
+        text = "jobs:\n  build:\n" + self.IN_CONTAINER + "    steps:\n" + self.CHECKOUT + "      - run: python3 -I scripts/dnf_install.py git-core\n" + self.CHECKOUT
+        self.assertEqual(check.runs_before_checkout("x.yml", text), [])
+
+    def test_each_job_s_steps_are_judged_on_their_own(self):
+        text = (
+            "jobs:\n  a:\n" + self.IN_CONTAINER + "    steps:\n" + self.CHECKOUT + "      - run: echo a\n"
+            "  b:\n" + self.IN_CONTAINER + "    steps:\n      - run: echo b\n      - run: echo c\n" + self.CHECKOUT
+        )
+        self.assertEqual([p.split(":")[1] for p in check.runs_before_checkout("x.yml", text)], ["12", "13"])
 
 
 class Apt(unittest.TestCase):

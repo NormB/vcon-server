@@ -24,6 +24,7 @@ on:
       - 'rust-toolchain.toml'
       - 'scripts/reproducible-build.sh'
       - 'scripts/release-build-env.sh'
+      - 'scripts/dnf_install.py'
       - '.github/workflows/reproducible.yml'
       - '.github/workflows/release.yml'
 
@@ -49,16 +50,18 @@ jobs:
     container:
       image: almalinux:9@sha256:1dc2f882fd8c5c1eb4747953cf8516e0f36d4d4aeba6a17f97e7b12d495e8547
     steps:
-      - name: Install git
-        # No repository script exists before the checkout, so the retry is
-        # inline; it cleans dnf's metadata between tries, since an empty
-        # repomd.xml from a mirror is a parse error dnf does not retry.
-        run: for i in 1 2 3 4 5; do dnf install -y git-core && break; [ "$i" = 5 ] && exit 1; dnf clean metadata; sleep $((i * 10)); done
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Two checkouts, as in release.yml's build job: the files first, for
+      # the script that installs git and the build tools; then, with git
+      # there, the checkout that keeps .git.
+      - name: Fetch the files (no git yet)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
       - name: Prepare the build container
         run: bash scripts/release-build-env.sh
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       # No build cache: the point is two builds from nothing.
       - name: Build twice and compare
         run: bash scripts/reproducible-build.sh check x86_64-unknown-linux-gnu "$RUNNER_TEMP/reproducible"

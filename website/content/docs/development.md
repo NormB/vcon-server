@@ -545,6 +545,24 @@ job and the commit hook check it (see
 `scripts/check_workflow_downloads.py` (see
 [pinned tool downloads](#pinned-tool-downloads)).
 
+The release build and the reproducible-build check run in an AlmaLinux 9
+container, which has neither git nor a C compiler. Every `dnf install`
+there goes through `scripts/dnf_install.py <package>...`. dnf asks the next
+mirror of its list when a download fails, but it stops at a mirror whose
+`repomd.xml` arrives and does not parse, and a second try of the same
+command reads the same mirror. The script follows a failed try with one
+that reads each enabled repository from the address its file names in a
+commented `baseurl` line (the distribution's own server), and takes turns
+between the two sources for at most five tries, with the metadata cleaned
+and a wait of 5 to 40 seconds between them. It never changes `gpgcheck`.
+Because the script is in the repository, those jobs check out before they
+install anything: the build jobs fetch the files, run
+`scripts/release-build-env.sh` (which installs git too), and check out
+again to have `.git`. `scripts/check_workflow_downloads.py` fails a
+`dnf install` anywhere else in a workflow, an action or a shell script,
+and a `run:` step before the checkout of a job that runs in a container.
+`scripts/test_dnf_install.py` tests the rule without a mirror.
+
 ## Pinned tool downloads
 
 CI installs cargo-nextest, DuckDB, MinIO, cargo-llvm-cov, cargo-deny, Zola,
