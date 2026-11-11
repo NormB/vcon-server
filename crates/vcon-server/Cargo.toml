@@ -53,7 +53,7 @@ libc = "0.2.191"
 # the column writer and the page reader only. No Arrow, and
 # no compression codec: a sealed body is AES-GCM ciphertext, which does not
 # compress, and the metadata columns are small.
-parquet = { version = "=60.0.0", default-features = false }
+parquet = { version = "=60.1.0", default-features = false }
 # The terminal UI (cargo feature tui, on by default): the widgets, and
 # through them crossterm for the terminal itself.
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"], optional = true }

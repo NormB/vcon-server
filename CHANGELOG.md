@@ -112,6 +112,10 @@ All notable changes to this project are recorded here. The format follows
   pages had is still there, so a link to one still lands on it.
 - The PostgreSQL catalog guide's commands are run by CI on each change, as
   the other guides' are.
+- The `parquet` crate, which writes `export parquet` files and the pack
+  files of Parquet storage, goes from 60.0.0 to 60.1.0. The files written
+  and read are checked as before: the export round trip, the DuckDB reads
+  and Parquet storage on an S3 store all pass unchanged.
 
 ### Fixed
 

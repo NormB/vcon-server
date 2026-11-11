@@ -11,7 +11,7 @@ updates:
   # The Cargo workspace at the repository root (both crates, one Cargo.lock)
   # and the fuzz package, a workspace of its own with its own Cargo.lock.
   # One entry for both: the fuzz package takes both crates by path, so a
-  # bump of a requirement in crates/vcon-server/Cargo.toml (the =60.0.0
+  # bump of a requirement in crates/vcon-server/Cargo.toml (the exact
   # parquet pin, or any major bump) must update both lockfiles in one pull
   # request. With an entry each, #142 and #143 each updated one lockfile and
   # left the other behind, so every --locked build failed (2026-11-07).
