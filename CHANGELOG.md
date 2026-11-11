@@ -67,8 +67,41 @@ All notable changes to this project are recorded here. The format follows
   refused with `bad-query` (400). A read without the parameter is recorded
   as `read` or `legal_read`, as before. The audit-logs page has the how-to
   for listing who revealed what.
+- Reports of a broken console policy. Both of the console's
+  content-security policies now end with
+  `report-uri /console/csp-report`, so a browser that blocks something in
+  a console page reports it to the server. The policies do not use
+  `report-to`: in the browser tests Chromium, given `report-to`, sent no
+  report to the test server within 100 seconds, and with `report-uri`
+  alone it sent one within a second. The new route `POST /console/csp-report` takes no key, since a
+  browser sends a report with none. It reads at most 16384 bytes, checks
+  that the body is JSON of the shape its media type names
+  (`application/csp-report` or `application/reports+json`), stores and
+  logs nothing of it, and answers 204; a request it refuses is answered
+  415, 413, 408 or 400. Each request is counted in the admin audit log
+  under the new action `csp_report` and the status that answered it, one
+  record for each status and minute. Two new configuration keys bound the
+  writes that a sender without a key can cause: a listener takes at most
+  `limits.csp_reports` requests at the route in a minute (default 120)
+  and `limits.csp_reports_per_address` from one source address (default
+  20). A request past either is answered 429 with a `Retry-After` header
+  and no write of its own; the refusals of a minute are written as one
+  record with status 429. The console page says how to list
+  them.
 
 ### Changed
+
+- **Breaking for a check that holds the console's content-security policy
+  byte for byte, and for a reader of the audit log that knows a fixed list
+  of actions.** Both policies gained the reporting directive named above
+  and no other change; such a reader must add `csp_report`. A proxy that
+  passes only listed paths must pass `POST /console/csp-report`.
+- For users of the `vcon-server` library: `console` has a new constant
+  `REPORT_PATH`, `console::router()` answers a report at that path with
+  204 and counts nothing, `audit::Action` has a new variant `CspReport`,
+  `config::Config` has a new field `reports`, `api::App` has a new field
+  `reports` (an `api::ReportGate` made from `api::ReportLimits`), and
+  `audit` has a new function `count_many`.
 
 - **Breaking for a reader of the audit log that knows a fixed list of
   actions, or that counts the console's reveals as `read`.** The console

@@ -8,12 +8,14 @@ use crate::console;
 /// written out so that a change to any answer's policy fails here.
 const STRICT: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; \
      connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; \
-     require-trusted-types-for 'script'; trusted-types 'none'";
+     require-trusted-types-for 'script'; trusted-types 'none'; \
+     report-uri /console/csp-report";
 
 /// The policy of the player's page, written out.
 const PLAYER: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; \
      connect-src 'none'; media-src blob:; base-uri 'none'; form-action 'none'; \
-     frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'";
+     frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'; \
+     report-uri /console/csp-report";
 
 #[tokio::test]
 async fn the_players_page_is_served_with_the_policy_that_plays_a_blob() {

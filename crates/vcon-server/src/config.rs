@@ -49,6 +49,10 @@ pub struct Config {
     pub supported_critical: BTreeSet<String>,
     /// The MCP server's limits.
     pub mcp: crate::mcp::Limits,
+    /// How many reports of a content-security-policy violation a listener
+    /// takes in a minute, from every address and from one
+    /// (`limits.csp_reports` and `limits.csp_reports_per_address`).
+    pub reports: crate::api::ReportLimits,
     /// Where the data is kept.
     pub storage: Storage,
     /// How `export parquet` reaches a bucket: the `[export]` table.
@@ -377,6 +381,7 @@ pub fn parse(text: &str) -> Result<Config, ConfigError> {
         connection: connection_limits(&raw.limits)?,
         supported_critical: raw.supported_critical.into_iter().collect(),
         mcp: mcp_limits(&raw.mcp)?,
+        reports: report_limits(&raw.limits)?,
         storage,
         export: Export {
             s3: raw.export.s3.map(export_s3).transpose()?,
@@ -815,6 +820,51 @@ fn positive(key: &str, value: u64) -> Result<u64, ConfigError> {
 /// none in practice.
 pub const CONNECTION_LIMIT_MAX: u64 = 3600;
 
+/// The most reports a minute `limits.csp_reports` and
+/// `limits.csp_reports_per_address` may be set to. Each report taken costs
+/// one write to the registry, so a larger number would bound nothing.
+pub const CSP_REPORTS_MAX: u64 = 6000;
+
+/// How many reports of a content-security-policy violation a listener
+/// takes in a minute (`limits.csp_reports`) and from one address
+/// (`limits.csp_reports_per_address`), or the defaults for those not
+/// written. More from one address than from all is refused: the second
+/// number could never be reached.
+fn report_limits(limits: &RawLimits) -> Result<crate::api::ReportLimits, ConfigError> {
+    let default = crate::api::ReportLimits::DEFAULT;
+    let read = |key: &str, value: Option<u64>, default: u32| -> Result<u32, ConfigError> {
+        let Some(value) = value else {
+            return Ok(default);
+        };
+        let value = positive(key, value)?;
+        u32::try_from(value)
+            .ok()
+            .filter(|_| value <= CSP_REPORTS_MAX)
+            .ok_or_else(|| {
+                ConfigError(format!(
+                    "{key} must be at most {CSP_REPORTS_MAX}, and is {value}"
+                ))
+            })
+    };
+    let per_minute = read("limits.csp_reports", limits.csp_reports, default.per_minute)?;
+    // A minute's number set under the default for one address lowers that
+    // default with it, so that setting one key alone is never refused.
+    let per_address = read(
+        "limits.csp_reports_per_address",
+        limits.csp_reports_per_address,
+        default.per_address.min(per_minute),
+    )?;
+    if per_address > per_minute {
+        return Err(ConfigError(format!(
+            "limits.csp_reports_per_address ({per_address}) must be at most limits.csp_reports ({per_minute})"
+        )));
+    }
+    Ok(crate::api::ReportLimits {
+        per_minute,
+        per_address,
+    })
+}
+
 /// The most connections `limits.connections` may be set to: a bound that
 /// keeps a mistyped number from asking for millions of file descriptors.
 pub const CONNECTIONS_MAX: u64 = 65_536;
@@ -1013,6 +1063,8 @@ struct RawLimits {
     body: Option<u64>,
     inflated: Option<u64>,
     connections: Option<u64>,
+    csp_reports: Option<u64>,
+    csp_reports_per_address: Option<u64>,
     #[serde(default)]
     timeouts: RawTimeouts,
 }
@@ -1055,6 +1107,8 @@ key = "/etc/vcon-server/operator-key.pem"
 body = 10485760
 inflated = 104857600
 connections = 64
+csp_reports = 300
+csp_reports_per_address = 30
 
 [limits.timeouts]
 read = 30
@@ -1147,6 +1201,10 @@ lock_timeout = 20
                     calls_per_second: 20,
                     concurrent: 8,
                     response_bytes: 262_144,
+                },
+                reports: crate::api::ReportLimits {
+                    per_minute: 300,
+                    per_address: 30,
                 },
                 storage: Storage {
                     objects: ObjectStore::S3(S3Settings {
@@ -1662,6 +1720,146 @@ lock_timeout = 20
         /// The least configuration with `line` in a `[limits]` table.
         fn with_limit(line: &str) -> Result<Config, ConfigError> {
             parse(&format!("{LEAST}\n[limits]\n{line}\n"))
+        }
+
+        #[test]
+        fn a_listener_takes_120_reports_a_minute_and_20_from_one_address_unless_told() {
+            let reports = parse(LEAST).expect("parses").reports;
+            assert_eq!(
+                (reports.per_minute, reports.per_address),
+                (120, 20),
+                "the defaults"
+            );
+            assert_eq!(reports, crate::api::ReportLimits::DEFAULT, "the gate's own");
+        }
+
+        #[test]
+        fn both_report_limits_are_read() {
+            let reports = with_limit("csp_reports = 300\ncsp_reports_per_address = 30")
+                .expect("parses")
+                .reports;
+            assert_eq!(
+                (reports.per_minute, reports.per_address),
+                (300, 30),
+                "as written"
+            );
+        }
+
+        #[test]
+        fn the_minutes_number_alone_is_read_and_one_addresss_stays() {
+            let reports = with_limit("csp_reports = 500").expect("parses").reports;
+            assert_eq!(
+                (reports.per_minute, reports.per_address),
+                (500, 20),
+                "one key"
+            );
+        }
+
+        #[test]
+        fn one_addresss_number_alone_is_read_and_the_minutes_stays() {
+            let reports = with_limit("csp_reports_per_address = 7")
+                .expect("parses")
+                .reports;
+            assert_eq!(
+                (reports.per_minute, reports.per_address),
+                (120, 7),
+                "one key"
+            );
+        }
+
+        #[test]
+        fn a_minutes_number_under_20_lowers_one_addresss_default_with_it() {
+            let reports = with_limit("csp_reports = 5").expect("parses").reports;
+            assert_eq!(
+                (reports.per_minute, reports.per_address),
+                (5, 5),
+                "never more than all"
+            );
+        }
+
+        #[test]
+        fn the_bounds_of_the_report_limits_are_taken() {
+            let least = with_limit("csp_reports = 1\ncsp_reports_per_address = 1")
+                .expect("the least")
+                .reports;
+            assert_eq!((least.per_minute, least.per_address), (1, 1), "the least");
+            let most = with_limit("csp_reports = 6000\ncsp_reports_per_address = 6000")
+                .expect("the most")
+                .reports;
+            assert_eq!(
+                (most.per_minute, most.per_address),
+                (6000, 6000),
+                "the most"
+            );
+        }
+
+        #[test]
+        fn the_report_limits_change_no_other_limit() {
+            let config = with_limit("csp_reports = 300").expect("parses");
+            let base = parse(LEAST).expect("parses");
+            assert_eq!(config.connection, base.connection, "the connection limits");
+            assert_eq!(config.body_limit, base.body_limit, "the body limit");
+        }
+
+        #[test]
+        fn no_reports_at_all_is_refused_by_name() {
+            for key in ["csp_reports", "csp_reports_per_address"] {
+                let error = with_limit(&format!("{key} = 0")).expect_err("zero");
+                assert_eq!(
+                    error.0,
+                    format!("limits.{key} must be more than 0"),
+                    "{key}"
+                );
+            }
+        }
+
+        #[test]
+        fn more_reports_than_6000_is_refused_by_name_with_the_bound() {
+            for key in ["csp_reports", "csp_reports_per_address"] {
+                for value in [6001_u64, 1_000_000, u64::from(u32::MAX) + 1] {
+                    let error = with_limit(&format!("{key} = {value}")).expect_err("too many");
+                    assert_eq!(
+                        error.0,
+                        format!("limits.{key} must be at most 6000, and is {value}"),
+                        "{key} = {value}"
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn more_from_one_address_than_from_all_is_refused_with_both_numbers() {
+            let error =
+                with_limit("csp_reports = 10\ncsp_reports_per_address = 11").expect_err("more");
+            assert_eq!(
+                error.0,
+                "limits.csp_reports_per_address (11) must be at most limits.csp_reports (10)",
+                "the two numbers"
+            );
+            let error =
+                with_limit("csp_reports_per_address = 121").expect_err("more than the default");
+            assert!(
+                error
+                    .0
+                    .contains("(121) must be at most limits.csp_reports (120)"),
+                "{error}"
+            );
+        }
+
+        #[test]
+        fn a_report_limit_that_is_not_a_whole_number_is_refused() {
+            for key in ["csp_reports", "csp_reports_per_address"] {
+                for value in ["-1", "1.5", "\"ten\"", "true"] {
+                    let error = with_limit(&format!("{key} = {value}")).expect_err(value);
+                    assert!(error.0.contains(key), "{key} = {value}: {error}");
+                }
+            }
+        }
+
+        #[test]
+        fn a_report_limit_written_outside_the_limits_table_is_refused() {
+            let error = parse(&format!("{LEAST}\ncsp_reports = 5\n")).expect_err("the wrong table");
+            assert!(error.0.contains("csp_reports"), "{error}");
         }
 
         #[test]
@@ -2540,7 +2738,7 @@ key = "/etc/vcon-server/key.pem"
             let defaults = parse(LEAST).expect("least");
             let mut all = Vec::new();
             keys(&FULL.parse::<toml::Table>().expect("toml"), "", &mut all);
-            assert_eq!(all.len(), 59, "{all:?}");
+            assert_eq!(all.len(), 61, "{all:?}");
             let pg = catalog::postgres_least();
             for key in all {
                 let default = match key.as_str() {
@@ -2556,6 +2754,10 @@ key = "/etc/vcon-server/key.pem"
                     "limits.body" => format!("`{}`", defaults.body_limit),
                     "limits.inflated" => format!("`{}`", defaults.inflated_limit),
                     "limits.connections" => format!("`{}`", defaults.connection.max),
+                    "limits.csp_reports" => format!("`{}`", defaults.reports.per_minute),
+                    "limits.csp_reports_per_address" => {
+                        format!("`{}`", defaults.reports.per_address)
+                    }
                     "limits.timeouts.read" => format!("`{}`", defaults.read_timeout.as_secs()),
                     "limits.timeouts.handshake" => {
                         format!("`{}`", defaults.connection.handshake.as_secs())

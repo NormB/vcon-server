@@ -106,6 +106,20 @@ that wait have not been taken. The listener goes on whether or not the
 count could be written. The action is on `main` only, in no
 release yet.
 
+A browser's report that a [console](@/docs/console.md) page broke the
+page's content-security policy, sent to `POST /console/csp-report`, is
+counted in the admin log as action `csp_report`, with an empty actor and
+no target, under the status that answered it: 204 for a report taken,
+429 for the reports refused in a minute past `limits.csp_reports` or
+`limits.csp_reports_per_address` (written once for the minute, not for
+each request), or
+400, 408, 413 or 415 for a request refused. A browser sends a report with
+no key, so the route takes none; one record for each status and minute is
+all a sender can add. Nothing a report says is stored. The request is
+answered whether or not the count could be written. See
+[reports of a broken policy](@/docs/console.md#reports-of-a-broken-policy).
+The action is on `main` only, in no release yet.
+
 ## Reading the logs
 
 `vcon-server audit export (--tenant <id> | --admin) [--since <seq>]` writes a

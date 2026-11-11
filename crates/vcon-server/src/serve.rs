@@ -462,6 +462,7 @@ fn app_from(config: &Config, tenants: Arc<Tenants>, plane: Plane) -> App {
         retention_default: config.retention_default,
         mcp: config.mcp,
         plane,
+        reports: crate::api::ReportGate::new(config.reports),
     }
 }
 
@@ -615,6 +616,7 @@ mod tests {
                 concurrent: 4,
                 response_bytes: 5,
             },
+            reports: crate::api::ReportLimits::DEFAULT,
             storage: crate::config::Storage::default(),
             export: crate::config::Export::default(),
             catalog: crate::config::CatalogStore::Local,

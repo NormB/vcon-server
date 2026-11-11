@@ -83,6 +83,7 @@ pub(super) async fn serving_on(
         retention_default: Retention::Years(7),
         mcp: limits,
         plane,
+        reports: api::ReportGate::new(api::ReportLimits::DEFAULT),
     });
     let made =
         rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).expect("a certificate");

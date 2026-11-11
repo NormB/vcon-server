@@ -880,6 +880,25 @@ impl Tenants {
         commit(tx)
     }
 
+    /// Counts `times` events of the minute of `at` in the admin log, in
+    /// one transaction: what was added up in memory, written once.
+    pub(crate) fn count_admin_many(
+        &self,
+        entry: &Entry,
+        at: OffsetDateTime,
+        times: u64,
+    ) -> Result<(), TenantError> {
+        let mut tx = self.registry.immediate()?;
+        tx.count_many(entry, at, times)
+            .map_err(|_| TenantError::AuditFailed)?;
+        commit(tx)
+    }
+
+    /// The time on the clock the registry and the stores read.
+    pub(crate) fn now(&self) -> OffsetDateTime {
+        self.clock.now()
+    }
+
     fn record(&self, tx: &mut RTx, entry: &Entry) -> Result<(), TenantError> {
         tx.record(entry, self.clock.now())
             .map_err(|_| TenantError::AuditFailed)

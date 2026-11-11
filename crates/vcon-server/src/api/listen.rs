@@ -50,6 +50,10 @@ impl Accept for TcpListener {
     }
 }
 
+/// The address a connection came from, on each of its requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Peer(pub(crate) std::net::IpAddr);
+
 /// The least time between two log lines that say a listener is full.
 const FULL_LOG_EVERY: Duration = Duration::from_secs(60);
 
@@ -219,6 +223,7 @@ pub async fn serve_observed(
 /// One connection, from its handshake to its end. Its own errors end only
 /// the connection.
 async fn connection(tcp: TcpStream, acceptor: TlsAcceptor, app: Router, limits: ConnectionLimits) {
+    let peer = tcp.peer_addr().ok().map(|peer| peer.ip());
     let Ok(Ok(stream)) = tokio::time::timeout(limits.handshake, acceptor.accept(tcp)).await else {
         return;
     };
@@ -228,18 +233,25 @@ async fn connection(tcp: TcpStream, acceptor: TlsAcceptor, app: Router, limits: 
     let seen = held.clone();
     let app = Router::new()
         .fallback_service(app)
-        .layer(middleware::from_fn(move |request: Request, next: Next| {
-            let request_in_flight = seen.begin(request.version() == Version::HTTP_2);
-            async move {
-                let answer = next.run(request).await;
-                answer.map(|body| {
-                    Body::new(Answering {
-                        body,
-                        _request: request_in_flight,
+        .layer(middleware::from_fn(
+            move |mut request: Request, next: Next| {
+                // Where the connection comes from, for a route that counts by
+                // source address.
+                if let Some(peer) = peer {
+                    request.extensions_mut().insert(Peer(peer));
+                }
+                let request_in_flight = seen.begin(request.version() == Version::HTTP_2);
+                async move {
+                    let answer = next.run(request).await;
+                    answer.map(|body| {
+                        Body::new(Answering {
+                            body,
+                            _request: request_in_flight,
+                        })
                     })
-                })
-            }
-        }));
+                }
+            },
+        ));
     let mut builder = auto::Builder::new(TokioExecutor::new());
     // The limits on a request head are kept here, by `held`: hyper's own
     // limit on a head also counts the wait for the head to begin.

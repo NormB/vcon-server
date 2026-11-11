@@ -140,6 +140,7 @@ impl World {
             retention_default: Retention::Years(7),
             mcp: vcon_server::mcp::Limits::DEFAULT,
             plane: vcon_server::access::Plane::Both,
+            reports: vcon_server::api::ReportGate::new(vcon_server::api::ReportLimits::DEFAULT),
         };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_time()

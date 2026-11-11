@@ -434,7 +434,7 @@ its own script, loads nothing from another site, cannot be shown inside
 another site's frame and is not cached:
 
 ```text
-Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'
+Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'; report-uri /console/csp-report
 X-Frame-Options: DENY
 X-Content-Type-Options: nosniff
 Referrer-Policy: no-referrer
@@ -450,8 +450,79 @@ may play a blob it made (`media-src blob:`) and may make no request at all
 (`connect-src 'none'`):
 
 ```text
-Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none'; media-src blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'
+Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none'; media-src blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'; report-uri /console/csp-report
 ```
+
+### Reports of a broken policy
+
+The last directive of both policies, `report-uri`, tells the browser where
+to report a page that breaks the policy: `POST /console/csp-report` on the
+same server. The console's own code breaks no rule, so a report means that
+something else ran in a console page: a browser extension, a proxy that
+changed the page, or a defect. Reporting is on `main` only, in no release
+yet.
+
+The policies do not use the newer `report-to` directive. A browser that
+knows `report-to` does not act on a `report-uri` beside it, and in this
+project's browser tests Chromium, given `report-to` and a
+`Reporting-Endpoints` header, sent no report to the test server within 100
+seconds; given `report-uri` alone, it sent the report within a second, from
+the console's page and from the player's. The route takes the reports of
+either directive, so a proxy in front of the server may add `report-to`.
+
+A browser sends a report with no key, so the route takes none, and it is
+limited for that reason:
+
+- The body may hold at most 16384 bytes and must be JSON of the shape its
+  media type names: one object for `application/csp-report`, an array for
+  `application/reports+json`. Any other media type is refused with 415, a
+  larger body with 413, a body that is not that JSON with 400, and a body
+  that does not arrive within
+  `limits.timeouts.read` seconds ([configuration](@/docs/configuration.md))
+  with 408.
+- Nothing a report says is stored or logged. A report can hold the address
+  of the page and of what was blocked, and an address can hold a secret;
+  the server reads the body only to check its shape, and keeps the count
+  and the status that answered and nothing else.
+- Each request is [counted](@/docs/audit-logs.md#counted-records) in the
+  admin audit log as action `csp_report`, under the status that answered
+  it: one record for each status and minute, however many requests came.
+- A listener takes at most `limits.csp_reports` requests at this route in
+  one minute (120 unless set), and at most
+  `limits.csp_reports_per_address` of them from one source address (20
+  unless set). Each request taken costs one write to the registry, and
+  these two numbers bound the writes. A request past either number is
+  answered 429 with no body and a `Retry-After` header of the seconds left
+  in the minute, before its body is read, and is not written by itself:
+  the requests refused in a minute are added up in memory and written as
+  one record with status 429 when the minute ends, or when the first
+  request of a later minute comes. A flood therefore shows as one record
+  whose `count` is the number refused. A server that stops before the
+  minute ends does not write that minute's number.
+- The source address is the one the connection comes from. Behind a
+  reverse proxy that is the proxy's address for every browser, so
+  `limits.csp_reports_per_address` then bounds all of them together; set
+  it to the value of `limits.csp_reports` there. The server reads no
+  forwarding header, which a sender without a key could write as it likes.
+
+A browser reports a violation once for each thing a page was refused, so a
+console page with a misbehaving extension sends a few reports for each
+load. The defaults take several such loads a minute from one address and
+six such addresses at once. See
+[configuration](@/docs/configuration.md#keys) for the two keys.
+
+To see whether browsers have reported anything, list the records on the
+server's host:
+
+```sh
+vcon-server audit export --admin --config /etc/vcon-server/config.toml \
+  | jq -c 'select(.action == "csp_report") | {at, status, count}'
+```
+
+A record with status 204 is that many reports taken in that minute, and
+one with status 429 is that many refused for the listener's number. The
+server does not keep what was blocked: open the browser's developer
+console on the page to read the violation itself.
 
 The server sets no cookie and sends no cross-origin (CORS) headers, so a page
 on another site cannot send your key or read an answer. The console cannot

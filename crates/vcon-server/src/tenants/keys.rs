@@ -95,6 +95,36 @@ impl Tenants {
         });
     }
 
+    /// Counts one report of a content-security-policy violation sent to
+    /// the console, in the admin log: action `csp_report`, no actor (a
+    /// browser sends a report with no key), no target, and the status that
+    /// answered it. Nothing of the report is kept. A failure to count
+    /// changes nothing for the sender.
+    pub(crate) fn count_csp_report(&self, status: u16) {
+        let _ = self.count_admin(&Entry {
+            actor: Actor::Unparsed,
+            action: Action::CspReport,
+            target: None,
+            version: None,
+            status,
+        });
+    }
+
+    /// Counts the reports the listener refused in the minute of `minute`
+    /// because it had taken its number for that minute
+    /// (`limits.csp_reports`): `refused` of them, in one write, as action
+    /// `csp_report` with status 429.
+    pub(crate) fn count_csp_refused(&self, minute: time::OffsetDateTime, refused: u64) {
+        let entry = Entry {
+            actor: Actor::Unparsed,
+            action: Action::CspReport,
+            target: None,
+            version: None,
+            status: 429,
+        };
+        let _ = self.count_admin_many(&entry, minute, refused);
+    }
+
     /// Counts a request refused before any route saw it, as `action` with
     /// `status`.
     fn count_refusal(&self, action: Action, status: u16, known: Option<(KeyId, Option<TenantId>)>) {

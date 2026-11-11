@@ -10,7 +10,7 @@ use axum::http::header::{CONTENT_SECURITY_POLICY, CONTENT_TYPE, LOCATION};
 use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{any, get};
+use axum::routing::{MethodRouter, any, get, post};
 
 /// One console file: its name under `/console/` (empty for the page),
 /// its bytes as built into the binary, and its media type.
@@ -73,7 +73,8 @@ pub const HEADERS: [(&str, &str); 7] = [
         "content-security-policy",
         "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; \
          connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; \
-         require-trusted-types-for 'script'; trusted-types 'none'",
+         require-trusted-types-for 'script'; trusted-types 'none'; \
+         report-uri /console/csp-report",
     ),
     ("x-frame-options", "DENY"),
     ("x-content-type-options", "nosniff"),
@@ -89,7 +90,8 @@ pub const HEADERS: [(&str, &str); 7] = [
 /// player the bytes; the player fetches nothing.
 pub const PLAYER_POLICY: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; \
      connect-src 'none'; media-src blob:; base-uri 'none'; form-action 'none'; \
-     frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'";
+     frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'; \
+     report-uri /console/csp-report";
 
 /// The path of the player's page, the one console answer with a policy
 /// of its own.
@@ -108,8 +110,24 @@ pub fn policy_for(path: &str) -> &'static str {
 
 /// The console's routes, merged into the API's router: its files,
 /// `/console` sent on to `/console/`, and 404 for any other path under
-/// it, each answer with the headers.
+/// it, each answer with the headers. A report sent to [`REPORT_PATH`] is
+/// answered 204 and dropped; the server's own router counts each one
+/// (`api::router`).
 pub fn router<S: Clone + Send + Sync + 'static>() -> Router<S> {
+    router_with(post(dropped))
+}
+
+/// The public router's answer to a report: taken, and dropped.
+async fn dropped() -> StatusCode {
+    StatusCode::NO_CONTENT
+}
+
+/// The path the policies tell a browser to send its reports of a
+/// violation to.
+pub const REPORT_PATH: &str = "/console/csp-report";
+
+/// [`router`], with `report` serving [`REPORT_PATH`].
+pub(crate) fn router_with<S: Clone + Send + Sync + 'static>(report: MethodRouter<S>) -> Router<S> {
     let mut router = Router::new().route(
         "/console",
         get(|| async { (StatusCode::PERMANENT_REDIRECT, [(LOCATION, "/console/")]) }),
@@ -118,6 +136,7 @@ pub fn router<S: Clone + Send + Sync + 'static>() -> Router<S> {
         router = router.route(&path_of(name), get(move || file(body, media_type)));
     }
     router
+        .route(REPORT_PATH, report)
         .route("/console/{*other}", any(|| async { StatusCode::NOT_FOUND }))
         // On the console's own routes only, so the API's answers and its
         // fallback are left as they are.
@@ -266,6 +285,14 @@ mod tests {
         ] {
             assert_eq!(csp.get(directive), Some(&sources.to_vec()), "{directive}");
         }
+        // Where violations are reported is a path on the console's own
+        // origin; it lets a page load or do nothing.
+        let mut csp = csp;
+        assert_eq!(
+            csp.remove("report-uri"),
+            Some(vec!["/console/csp-report"]),
+            "report-uri names a path, so the console's own origin"
+        );
         for (directive, sources) in &csp {
             assert!(
                 sources
@@ -402,7 +429,8 @@ mod tests {
     /// shipped, written out here so a change to it fails a test.
     const STRICT: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; \
          connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; \
-         require-trusted-types-for 'script'; trusted-types 'none'";
+         require-trusted-types-for 'script'; trusted-types 'none'; \
+         report-uri /console/csp-report";
 
     /// The player's page may play a recording the console hands it, from
     /// a blob made in the page, and may make no request of its own. Every
@@ -419,11 +447,115 @@ mod tests {
         );
     }
 
+    /// The console's policy, byte for byte: what a browser is sent.
+    #[test]
+    fn the_strict_policy_is_the_one_written_out() {
+        assert_eq!(
+            super::HEADERS[0].0,
+            "content-security-policy",
+            "the first header"
+        );
+        assert_eq!(super::HEADERS[0].1, STRICT, "the console's policy");
+    }
+
+    /// Both policies tell a browser where to report a violation, with
+    /// `report-uri` and the path.
+    #[test]
+    fn both_policies_report_violations_to_the_report_path() {
+        for path in ["/console/", super::PLAYER_PATH] {
+            let policy = directives(super::policy_for(path));
+            assert_eq!(policy["report-uri"], [super::REPORT_PATH], "{path}");
+        }
+    }
+
+    /// The reporting directive comes last, so the rules a reader looks
+    /// for first are where they were.
+    #[test]
+    fn the_reporting_directive_ends_both_policies() {
+        for path in ["/console/", super::PLAYER_PATH] {
+            let policy = super::policy_for(path);
+            assert!(
+                policy.ends_with("'none'; report-uri /console/csp-report"),
+                "{path}: {policy}"
+            );
+        }
+    }
+
+    /// Neither policy has `report-to`, and no answer has the
+    /// `Reporting-Endpoints` header it would need. A browser that knows
+    /// `report-to` does not act on `report-uri` beside it, and in the
+    /// browser tests Chromium, given `report-to`, sent no report to the
+    /// test server in 100 seconds, where with `report-uri` alone it sent
+    /// one in a second (console-tests/tests/csp-report.spec.js).
+    #[test]
+    fn no_policy_names_a_reporting_api_endpoint() {
+        for path in ["/console/", super::PLAYER_PATH] {
+            let policy = directives(super::policy_for(path));
+            assert_eq!(policy.get("report-to"), None, "{path}");
+        }
+        for (name, _) in super::HEADERS {
+            assert_ne!(name, "reporting-endpoints", "no endpoint is named");
+            assert_ne!(name, "report-to", "nor in the header's older form");
+        }
+    }
+
+    /// The report path is under the console's, is no file's path, and is
+    /// answered with the console's policy, not the player's.
+    #[test]
+    fn the_report_path_is_the_consoles_and_no_files() {
+        assert_eq!(super::REPORT_PATH, "/console/csp-report", "the path");
+        for (name, _, _) in super::FILES {
+            assert_ne!(super::path_of(name), super::REPORT_PATH, "{name}");
+        }
+        assert_eq!(super::policy_for(super::REPORT_PATH), STRICT, "its policy");
+    }
+
+    /// Reporting adds nothing a page may do: but for the reporting
+    /// directive, the policies are the ones the console shipped with.
+    #[test]
+    fn but_for_reporting_the_policies_are_as_they_were() {
+        let before = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; \
+             connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; \
+             require-trusted-types-for 'script'; trusted-types 'none'";
+        let mut expected = directives(before);
+        let mut now = directives(super::HEADERS[0].1);
+        assert_eq!(
+            now.remove("report-uri"),
+            Some(vec![super::REPORT_PATH]),
+            "report-uri"
+        );
+        assert_eq!(now, expected, "the console's policy");
+        expected.insert("connect-src", vec!["'none'"]);
+        expected.insert("media-src", vec!["blob:"]);
+        let mut now = directives(super::PLAYER_POLICY);
+        assert_eq!(
+            now.remove("report-uri"),
+            Some(vec![super::REPORT_PATH]),
+            "report-uri"
+        );
+        assert_eq!(now, expected, "the player's policy");
+    }
+
+    /// The public router, which has no log to count in, still takes a
+    /// report at the path its policies name.
+    #[tokio::test]
+    async fn the_public_routers_answer_to_a_report_is_204() {
+        // Its place in the router, and the headers on it, are the same
+        // route's that api::csp_report tests over HTTPS.
+        assert_eq!(
+            super::dropped().await,
+            super::StatusCode::NO_CONTENT,
+            "the status"
+        );
+        let _: super::Router<()> = super::router();
+    }
+
     /// Only the player's page, by its exact path, has the player's policy:
     /// a path that is nearly it, holds it or adds to it has the console's.
     #[test]
     fn a_path_that_is_not_exactly_the_players_has_the_strict_policy() {
         for path in [
+            "/console/csp-report",
             "/console/",
             "/console/console.js",
             "/console/player.js",

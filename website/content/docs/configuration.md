@@ -61,6 +61,8 @@ allowed a group to write them. To check a host before an upgrade, see
 | `limits.body` | Largest request body, in bytes | `16777216` (16 MiB) |
 | `limits.inflated` | Most bytes gzip inflation may produce while one body is checked | `67108864` (64 MiB) |
 | `limits.connections` | Most connections a listener holds at once, from 1 to 65536. At that number the listener takes no more until one ends | `512` |
+| `limits.csp_reports` | Most [reports of a broken console policy](@/docs/console.md#reports-of-a-broken-policy) a listener takes in one minute, from 1 to 6000; a report past it is refused with 429 | `120` |
+| `limits.csp_reports_per_address` | Most such reports a listener takes in one minute from one source address, from 1 to `limits.csp_reports`. Unset, it is 20, or `limits.csp_reports` when that is less | `20` |
 | `limits.timeouts.read` | Seconds a request body may take to arrive | `60` |
 | `limits.timeouts.handshake` | Seconds a connection may take over its TLS handshake, from 1 to 3600; a connection that takes longer is closed | `10` |
 | `limits.timeouts.first_head` | Seconds from the end of the handshake to the whole head of the connection's first request, on HTTP/1.1 and HTTP/2, from 1 to 3600; a connection that has sent no request by then is closed | `30` |
@@ -220,6 +222,8 @@ key = "/etc/vcon-server/key.pem"
 body = 16777216
 inflated = 67108864
 connections = 512
+csp_reports = 120
+csp_reports_per_address = 20
 
 [limits.timeouts]
 read = 60

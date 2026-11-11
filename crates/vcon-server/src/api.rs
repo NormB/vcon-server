@@ -34,10 +34,13 @@ use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 use vcon::read::{Inspection, Rejection};
 
+mod csp_report;
 mod listen;
+mod report_gate;
 pub use listen::{
     Accept, AfterFailure, ConnectionLimits, after_failure, serve, serve_observed, serve_within,
 };
+pub use report_gate::{Gate as ReportGate, ReportLimits};
 
 /// The limits from configuration that the API applies to every request.
 #[derive(Debug, Clone, Copy)]
@@ -62,6 +65,9 @@ pub struct App {
     pub mcp: crate::mcp::Limits,
     /// Which keys the listener this serves on admits.
     pub plane: Plane,
+    /// How many reports of a content-security-policy violation the
+    /// listener takes in a minute (`limits.csp_reports`).
+    pub reports: ReportGate,
 }
 
 /// The routes, served from `app`.
@@ -87,7 +93,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/admin/tenants/{id}/metadata", put(tenant_metadata))
         .route("/admin/tenants/{id}/keys", post(key_create).get(key_list))
         .route("/admin/keys/{id}", axum::routing::delete(key_revoke))
-        .merge(crate::console::router())
+        .merge(crate::console::router_with(post(csp_report::receive)))
         .with_state(app.clone())
         .merge(crate::mcp::router(app))
         .layer(axum::middleware::from_fn(log_request))
@@ -1828,6 +1834,7 @@ mod tests {
             addr: SocketAddr,
             pub(crate) clock: Arc<TestClock>,
             pub(crate) tenants: Arc<Tenants>,
+            pub(crate) app: Arc<App>,
             pub(crate) tenant: TenantId,
             stop: Option<tokio::sync::oneshot::Sender<()>>,
         }
@@ -1869,6 +1876,20 @@ mod tests {
             retention_default: Retention,
             plane: Plane,
         ) -> Server {
+            server_built(supported, retention_default, plane, ReportLimits::DEFAULT).await
+        }
+
+        /// A server that takes the reports `reports` allows.
+        pub(crate) async fn server_limiting(reports: ReportLimits) -> Server {
+            server_built(&[], Retention::Years(7), Plane::Both, reports).await
+        }
+
+        async fn server_built(
+            supported: &[&str],
+            retention_default: Retention,
+            plane: Plane,
+            reports: ReportLimits,
+        ) -> Server {
             let dir = tempfile::tempdir().expect("temp dir");
             let clock = Arc::new(TestClock(std::sync::Mutex::new(START)));
             let tenants = Arc::new(
@@ -1892,13 +1913,14 @@ mod tests {
                 retention_default,
                 mcp: crate::mcp::Limits::DEFAULT,
                 plane,
+                reports: ReportGate::new(reports),
             });
             let certificate = certificate();
             let tls = tls_config(&certificate.cert, &certificate.key).expect("tls");
             let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
             let addr = listener.local_addr().expect("addr");
             let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-            tokio::spawn(serve(listener, tls, router(app), async {
+            tokio::spawn(serve(listener, tls, router(app.clone()), async {
                 stopped.await.ok();
             }));
             Server {
@@ -1907,6 +1929,7 @@ mod tests {
                 addr,
                 clock,
                 tenants,
+                app,
                 tenant,
                 stop: Some(stop),
             }
@@ -1972,6 +1995,17 @@ mod tests {
             /// caller's and the bytes given, keeping the connection open.
             /// Returns the status line.
             async fn raw(&self, token: &str, header: &str, body: &[u8]) -> String {
+                let head = format!(
+                    "POST /vcons HTTP/1.1\r\nhost: localhost\r\nauthorization: Bearer {token}\r\n\
+                     content-type: application/vcon\r\n{header}\r\n\r\n"
+                );
+                self.raw_request(&head, body).await
+            }
+
+            /// Sends a request head as written, then the bytes given, over
+            /// HTTP/1.1, keeping the connection open. Returns the status
+            /// line.
+            pub(crate) async fn raw_request(&self, head: &str, body: &[u8]) -> String {
                 let mut roots = rustls::RootCertStore::empty();
                 for cert in CertificateDer::pem_slice_iter(self.certificate.pem.as_bytes()) {
                     roots.add(cert.expect("pem")).expect("a root");
@@ -1990,10 +2024,6 @@ mod tests {
                     .connect("localhost".try_into().expect("name"), tcp)
                     .await
                     .expect("handshake");
-                let head = format!(
-                    "POST /vcons HTTP/1.1\r\nhost: localhost\r\nauthorization: Bearer {token}\r\n\
-                     content-type: application/vcon\r\n{header}\r\n\r\n"
-                );
                 tls.write_all(head.as_bytes()).await.expect("head");
                 // The server may answer and stop reading before all is sent.
                 let _ = tls.write_all(body).await;

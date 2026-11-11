@@ -1129,6 +1129,88 @@
         }
       }
     },
+    "/console/csp-report": {
+      "post": {
+        "operationId": "consoleCspReport",
+        "summary": "Takes a browser's report that a console page broke its content-security policy; the report is counted in the admin log (action csp_report) and not stored",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "description": "At most 16384 bytes",
+          "content": {
+            "application/csp-report": {
+              "schema": {
+                "type": "object"
+              }
+            },
+            "application/reports+json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "The report was counted"
+          },
+          "400": {
+            "description": "The body is not JSON of the shape its media type names: bad-body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "The body did not arrive in time: timeout",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is over 16384 bytes: too-large",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The media type is not a report's: unsupported-media-type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The listener has taken its number of reports for this minute, or for this source address (limits.csp_reports, limits.csp_reports_per_address); no body",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the minute ends",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/console/{other}": {
       "parameters": [
         {

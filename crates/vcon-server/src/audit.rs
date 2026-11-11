@@ -90,6 +90,10 @@ pub enum Action {
     /// A listener that found every one of its places held
     /// (`limits.connections`); counted (`count`), not recorded.
     ListenerFull,
+    /// A report of a content-security-policy violation that a browser
+    /// sent to the console (`POST /console/csp-report`), under the status
+    /// that answered it; counted (`count`), not recorded.
+    CspReport,
 }
 
 impl Action {
@@ -143,6 +147,7 @@ impl Action {
             Action::Mcp => "mcp",
             Action::WrongListener => "wrong_listener",
             Action::ListenerFull => "listener_full",
+            Action::CspReport => "csp_report",
         }
     }
 }
@@ -220,6 +225,23 @@ pub fn record(tx: &Connection, entry: &Entry, now: OffsetDateTime) -> Result<(),
 /// of `now`, making it if needed. For requests that could otherwise grow a
 /// log one row each: failed authentications and health checks.
 pub fn count(tx: &Connection, entry: &Entry, now: OffsetDateTime) -> Result<(), AuditError> {
+    count_many(tx, entry, now, 1)
+}
+
+/// Adds `times` to the record for this actor, action and status in the
+/// minute of `now`, making it if needed: [`count`] for what was added up
+/// before it is written, so that many requests cost one write.
+pub fn count_many(
+    tx: &Connection,
+    entry: &Entry,
+    now: OffsetDateTime,
+    times: u64,
+) -> Result<(), AuditError> {
+    // A count of nothing makes no record.
+    if times == 0 {
+        return Ok(());
+    }
+    let times = i64::try_from(times).unwrap_or(i64::MAX);
     let minute = now
         .to_offset(time::UtcOffset::UTC)
         .replace_second(0)
@@ -232,9 +254,10 @@ pub fn count(tx: &Connection, entry: &Entry, now: OffsetDateTime) -> Result<(), 
         entry.target,
         entry.version.map(|v| v.to_string()),
         entry.status,
+        times,
     ];
     let added = tx.execute(
-        "UPDATE audit SET count = count + 1
+        "UPDATE audit SET count = count + ?7
          WHERE at = ?1 AND actor = ?2 AND action = ?3 AND target IS ?4 AND version IS ?5
            AND status = ?6",
         fields,
@@ -242,7 +265,7 @@ pub fn count(tx: &Connection, entry: &Entry, now: OffsetDateTime) -> Result<(), 
     if added == 0 {
         tx.execute(
             "INSERT INTO audit (at, actor, action, target, version, status, count)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             fields,
         )?;
     }
@@ -668,6 +691,7 @@ mod tests {
             Action::Mcp => "mcp",
             Action::WrongListener => "wrong_listener",
             Action::ListenerFull => "listener_full",
+            Action::CspReport => "csp_report",
         };
         let every = [
             Action::Create,
@@ -717,6 +741,7 @@ mod tests {
             Action::Mcp,
             Action::WrongListener,
             Action::ListenerFull,
+            Action::CspReport,
         ];
         let mut seen = std::collections::BTreeSet::new();
         for action in every {

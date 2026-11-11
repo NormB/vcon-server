@@ -526,6 +526,13 @@ pub trait RegistryTx {
     fn record_times(&mut self, action: Action, status: u16) -> Result<Vec<String>, TenantError>;
     fn record(&mut self, entry: &Entry, now: OffsetDateTime) -> Result<(), AuditError>;
     fn count(&mut self, entry: &Entry, now: OffsetDateTime) -> Result<(), AuditError>;
+    /// Adds `times` to a counted audit record in the minute of `now`.
+    fn count_many(
+        &mut self,
+        entry: &Entry,
+        now: OffsetDateTime,
+        times: u64,
+    ) -> Result<(), AuditError>;
     fn audit_lines(
         &mut self,
         after: i64,

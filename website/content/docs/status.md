@@ -147,6 +147,12 @@ release holds yet. Release 0.4.2 does not have these:
   a configuration that has one: it takes every connection it is offered
   and keeps each for as long as the client does. See
   [connection limits](@/docs/configuration.md#connection-limits).
+- **Reports of a broken console policy.** Both console policies name
+  `POST /console/csp-report` as the place a browser reports a page that
+  breaks them, and each report is counted in the admin audit log as
+  `csp_report`. Release 0.4.2 sends policies with no reporting directive
+  and answers 404 at that path. See
+  [reports of a broken policy](@/docs/console.md#reports-of-a-broken-policy).
 
 ## Being built
 

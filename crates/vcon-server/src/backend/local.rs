@@ -1504,6 +1504,15 @@ impl RegistryTx for LocalRegistryTx<'_> {
         audit::count(&self.conn, entry, now)
     }
 
+    fn count_many(
+        &mut self,
+        entry: &Entry,
+        now: OffsetDateTime,
+        times: u64,
+    ) -> Result<(), AuditError> {
+        audit::count_many(&self.conn, entry, now, times)
+    }
+
     fn audit_lines(
         &mut self,
         after: i64,

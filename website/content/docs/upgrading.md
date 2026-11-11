@@ -59,6 +59,14 @@ need a look before it, and a fourth is new and optional.
   log that knows a fixed list of actions must add `listener_full`, and
   must take `null` as that action's `status`. See
   [connection limits](@/docs/configuration.md#connection-limits).
+- **A proxy or a monitor that holds the console's headers, and readers of
+  the audit log.** Both `Content-Security-Policy` values of the console
+  now end with `; report-uri /console/csp-report`. A check that compares
+  either policy byte for byte needs the new value; a proxy that passes only
+  listed paths must pass `POST /console/csp-report`, which takes no key. A
+  reader of the audit log that knows a fixed list of actions must add
+  `csp_report`. See
+  [reports of a broken policy](@/docs/console.md#reports-of-a-broken-policy).
 - **The operator listener, if you turn it on.** A configuration without an
   `[operator]` table serves as before: one listener, both kinds of key.
   With the table, operator keys work only at the new address, so every
