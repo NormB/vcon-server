@@ -253,6 +253,19 @@ All notable changes to this project are recorded here. The format follows
   request for the list of buckets to answer 200, for at most 60 seconds,
   and the MinIO job and the two jobs with a RustFS service use it.
 
+### Security
+
+- rustix goes from 1.1.5 to 1.1.6 (RUSTSEC-2026-0486). Before 1.1.6,
+  rustix's extended-attribute functions (`getxattr`, `listxattr` and their
+  `l` and `f` forms) marked bytes as initialized that the operating system
+  had not written when they were given a zero-length buffer, which is
+  undefined behavior reachable from safe code. vcon-server takes rustix
+  through crossterm, for the terminal UI, and through tempfile, in tests.
+  No source file of vcon-server, of crossterm 0.29.0 or of tempfile 3.27.0
+  names an extended-attribute function, so no call to the affected
+  functions was found; the bump removes the affected version from the
+  build all the same.
+
 ## [0.4.2] - 2026-11-10
 
 Nothing in this release breaks a 0.4.1 deployment, and an upgrade from
