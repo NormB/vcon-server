@@ -40,6 +40,15 @@ MIN_DNF_RULE_CALLS installs through it fails. A job in a container has no
 such a step could install only with the package manager's own command.
 actions/setup-* download through the actions toolkit, which retries.
 
+apt's retries ask the same host again, and a container's image names one
+host for each package source: on 2026-11-10 archive.ubuntu.com did not
+answer on port 80 and an `apt-get update` in an ubuntu container did not
+end. scripts/apt-mirror-setup.sh gives apt a list of hosts that answer,
+from the table in scripts/apt-mirrors.txt. So an apt-get update or install
+in a job that runs in a container comes after a run of that script in the
+same job, and one in a composite action or a shell script after a run of it
+in the same file; fewer than MIN_APT_RULE_CALLS runs of it fails.
+
 Run with: python3 -I scripts/check_workflow_downloads.py
 (from anywhere in the repository). Exits 1 naming each step that does not
 retry.
@@ -115,6 +124,54 @@ MIN_DNF_RULE_CALLS = 2
 def dnf_rule_calls(text):
     """How many command lines in `text` install through scripts/dnf_install.py."""
     return sum(1 for _, line in logical_lines(text) if _code(line) and DNF_RULE.search(line))
+
+
+# scripts/apt-mirror-setup.sh run as a command, by bash: the script needs it.
+APT_RULE = re.compile(r"""\bbash\s+["']?(?:[^\s"']*/)?scripts/apt-mirror-setup\.sh(?=["'\s]|$)""")
+# release.yml's smoke job.
+MIN_APT_RULE_CALLS = 1
+
+
+def apt_rule_calls(text):
+    """How many command lines in `text` run scripts/apt-mirror-setup.sh."""
+    return sum(1 for _, line in logical_lines(text) if _code(line) and APT_RULE.search(line))
+
+
+def _apt_before_rule(path, numbered):
+    """One line per apt-get update or install in the (line number, text)
+    pairs `numbered` that no run of scripts/apt-mirror-setup.sh comes
+    before."""
+    problems = []
+    ready = False
+    for n, line in numbered:
+        if not _code(line):
+            continue
+        events = [(m.start(), True) for m in APT_RULE.finditer(line)] + [(m.start(), False) for m in APT.finditer(line)]
+        for _, is_rule in sorted(events):
+            if is_rule:
+                ready = True
+            elif not ready:
+                problems.append(f"{path}:{n}: apt-get before scripts/apt-mirror-setup.sh: its apt reads each source from one host")
+    return problems
+
+
+def apt_outside_rule(path, text):
+    """One line per apt-get update or install that reads each source from
+    the one host its system names: in a workflow, one in a job that runs in
+    a container, before any run of scripts/apt-mirror-setup.sh in that job;
+    in a composite action or a shell script, whose system this check cannot
+    see, one before any run of it in that file. A job on a runner's own
+    system keeps the sources its runner image has."""
+    if "/workflows/" not in f"/{path}":
+        return _apt_before_rule(path, logical_lines(text))
+    problems = []
+    lines = text.splitlines()
+    for found in step_lists(text):
+        if not found or not _in_container(lines, found[0][0]):
+            continue
+        numbered = [(first + n - 1, line) for first, body in found for n, line in logical_lines("\n".join(body))]
+        problems += _apt_before_rule(path, numbered)
+    return problems
 
 
 RELEASE_ASSET = re.compile(r"/releases/download(?:/|\b)")
@@ -345,6 +402,7 @@ def check(root):
     for path in files(root):
         rel, text = path.relative_to(root).as_posix(), path.read_text(encoding="utf-8")
         problems += unretried(rel, text)
+        problems += apt_outside_rule(rel, text)
         if path.suffix == ".sh":
             # A test script drives a script against file:// fixtures: it
             # names a release URL to check one, and fetches none.
@@ -365,6 +423,9 @@ def check(root):
     calls = sum(dnf_rule_calls(p.read_text(encoding="utf-8")) for p in files(root))
     if calls < MIN_DNF_RULE_CALLS:
         problems.append(f"found {calls} installs through scripts/dnf_install.py; expected at least {MIN_DNF_RULE_CALLS}. A reading that lost the steps cannot pass")
+    calls = sum(apt_rule_calls(p.read_text(encoding="utf-8")) for p in files(root))
+    if calls < MIN_APT_RULE_CALLS:
+        problems.append(f"found {calls} runs of scripts/apt-mirror-setup.sh; expected at least {MIN_APT_RULE_CALLS}. A reading that lost the steps cannot pass")
     return problems
 
 

@@ -490,7 +490,8 @@ right:
   download and gives up one that stalls.
 - A container with apt reads its packages from a list of mirrors, not from
   one host. Before the scenario starts, the runner asks each mirror in
-  `APT_MIRRORS` in `scripts/docs_test.py` for its index, with a time limit
+  `scripts/apt-mirrors.txt` (a source a line: the address the image names,
+  then its mirrors in the order apt tries them) for its index, with a time limit
   of 5 seconds, and writes those that answer, in order, to a list that
   apt's `mirror+file:` method reads. The log names them in a line that
   starts `docs-test: packages from`. Signatures are checked as before. The
@@ -562,6 +563,24 @@ again to have `.git`. `scripts/check_workflow_downloads.py` fails a
 `dnf install` anywhere else in a workflow, an action or a shell script,
 and a `run:` step before the checkout of a job that runs in a container.
 `scripts/test_dnf_install.py` tests the rule without a mirror.
+
+The release's smoke job runs the built binary in debian:12 and
+ubuntu:22.04 containers, where it installs curl and jq with `apt-get`.
+Each image names one host for each package source, and apt's retries ask
+that host again. So the job runs `bash scripts/apt-mirror-setup.sh` before
+its first `apt-get`. The script needs bash and coreutils only, because the
+images have no curl and no python3 yet. It reads `scripts/apt-mirrors.txt`,
+the table the how-to runner reads, asks each mirror of each source the
+system's files name for `<mirror>/dists/` with a time limit of 5 seconds,
+and writes those that answer 200, in the table's order, to the list apt's
+`mirror+file:` method reads: the files the how-to runner writes. It ends
+with exit code 3 when no mirror of a source answers and with 4 when no
+source of the system is in the table, and changes nothing in either case.
+`scripts/check_workflow_downloads.py` fails an `apt-get update` or
+`install` that comes before a run of the script: in a workflow, within a
+job that runs in a container, and in a composite action or a shell script,
+within the file. `scripts/test_apt_mirror_setup.py` tests the script
+against a server on the same machine.
 
 ## Pinned tool downloads
 

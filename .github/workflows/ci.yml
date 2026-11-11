@@ -562,6 +562,7 @@ jobs:
           scripts/test-retry.sh
           python3 -I scripts/test_workflow_downloads.py
           python3 -I scripts/test_dnf_install.py
+          python3 -I scripts/test_apt_mirror_setup.py
           python3 -I scripts/test_fetch_pinned.py
       # A tag or a branch can be moved to other code; a commit id cannot
       # (scripts/check_action_pins.py).

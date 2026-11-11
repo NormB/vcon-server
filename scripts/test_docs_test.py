@@ -1403,6 +1403,62 @@ class Stop(Exception):
     """Raised by a test's stand-in to end a run at the point under test."""
 
 
+class MirrorTable(unittest.TestCase):
+    """The table of mirrors is one file, scripts/apt-mirrors.txt, read here
+    and by scripts/apt-mirror-setup.sh, which the release's smoke containers
+    run: two tables would name different hosts one day."""
+
+    A = "http://a.example.com/debian"
+    B = "http://b.example.com/debian"
+
+    def refused(self, text, said):
+        with self.assertRaises(dt.PageError) as caught:
+            dt.load_apt_mirrors(text, "scripts/apt-mirrors.txt")
+        self.assertIn(said, str(caught.exception), "what the refusal says")
+
+    def test_a_line_is_an_origin_and_its_mirrors_in_their_order(self):
+        self.assertEqual(dt.load_apt_mirrors(f"{self.A} {self.B} {self.A}\n", "t"), {self.A: (self.B, self.A)}, "one line")
+
+    def test_the_origins_keep_the_order_of_the_lines(self):
+        table = dt.load_apt_mirrors(f"{self.B} {self.B} {self.A}\n{self.A} {self.A} {self.B}\n", "t")
+        self.assertEqual(list(table), [self.B, self.A], "the order of the origins")
+
+    def test_comments_empty_lines_and_runs_of_spaces_are_passed_over(self):
+        table = dt.load_apt_mirrors(f"# why\n\n  # indented\n{self.A}   {self.A}\t{self.B}  \n", "t")
+        self.assertEqual(table, {self.A: (self.A, self.B)}, "the table")
+
+    def test_the_real_file_is_the_runner_s_table(self):
+        with open(os.path.join(dt.ROOT, dt.APT_MIRRORS_NAME), encoding="utf-8") as f:
+            table = dt.load_apt_mirrors(f.read(), dt.APT_MIRRORS_NAME)
+        self.assertEqual(dt.APT_MIRRORS_NAME, "scripts/apt-mirrors.txt", "the file's name")
+        self.assertEqual(table, dt.APT_MIRRORS, "the file and APT_MIRRORS")
+        self.assertEqual(list(table), [UBUNTU, UBUNTU_SECURITY, UBUNTU_PORTS, DEBIAN, DEBIAN_SECURITY], "the origins")
+
+    def test_the_runner_holds_no_second_table(self):
+        with open(dt.__file__, encoding="utf-8") as f:
+            source = f.read()
+        for host in ("azure.archive.ubuntu.com", "ftp.us.debian.org", "mirrors.edge.kernel.org", "security.debian.org"):
+            self.assertNotIn(host, source, f"{host} is written in docs_test.py and in the table")
+
+    def test_an_origin_with_no_mirror_is_refused_with_its_line(self):
+        self.refused(f"# one\n{self.A}\n", f"scripts/apt-mirrors.txt:2: {self.A} has no mirror")
+
+    def test_an_origin_written_twice_is_refused(self):
+        self.refused(f"{self.A} {self.A} {self.B}\n{self.A} {self.B} {self.A}\n", f"scripts/apt-mirrors.txt:2: {self.A} is written twice")
+
+    def test_an_origin_that_is_not_one_of_its_mirrors_is_refused(self):
+        self.refused(f"{self.A} {self.B} http://c.example.com/debian\n", f"scripts/apt-mirrors.txt:1: {self.A} is not among its own mirrors")
+
+    def test_an_origin_on_one_host_is_refused(self):
+        self.refused(f"{self.A} {self.A} {self.A}\n", f"scripts/apt-mirrors.txt:1: {self.A} has one host")
+
+    def test_a_mirror_that_is_not_an_http_address_is_refused(self):
+        self.refused(f"{self.A} {self.A} https://b.example.com/debian\n", "scripts/apt-mirrors.txt:1: https://b.example.com/debian is not an http:// address")
+
+    def test_a_table_with_no_origin_is_refused(self):
+        self.refused("# nothing yet\n", "scripts/apt-mirrors.txt: no origin")
+
+
 class PackageMirrors(unittest.TestCase):
     """A scenario's container must not depend on one outside host for its
     packages: the runner gives apt a list of mirrors that answer now, and

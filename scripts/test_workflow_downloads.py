@@ -196,6 +196,190 @@ class Apt(unittest.TestCase):
         self.assertEqual(found("            apt-get -o Acquire::Retries=5 update -qq\n"), [])
 
 
+class AptMirrors(unittest.TestCase):
+    """apt's retries ask the same host again. A container's image names one
+    host for each source, so an apt-get there comes after
+    scripts/apt-mirror-setup.sh, which gives apt a list of hosts: release.yml's
+    smoke job ran apt-get in debian:12 and ubuntu:22.04 against one host until
+    2026-11-11, the failure the how-to runner had on 2026-11-10."""
+
+    JOB = "jobs:\n  smoke:\n    container:\n      image: debian:12\n    steps:\n"
+    ON_A_RUNNER = "jobs:\n  lint:\n    runs-on: ubuntu-latest\n    steps:\n"
+    SETUP = "          bash scripts/apt-mirror-setup.sh\n"
+    UPDATE = "          apt-get -o Acquire::Retries=3 update -qq\n"
+    INSTALL = "          DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 install -y -qq curl >/dev/null\n"
+    SAID = "apt-get before scripts/apt-mirror-setup.sh: its apt reads each source from one host"
+
+    def problems(self, text, path=".github/workflows/x.yml"):
+        return check.apt_outside_rule(path, text)
+
+    def step(self, *lines):
+        return "      - name: Install\n        run: |\n" + "".join(lines)
+
+    # Success.
+
+    def test_an_apt_get_after_the_setup_in_its_step_passes(self):
+        self.assertEqual(self.problems(self.JOB + self.step(self.SETUP, self.UPDATE, self.INSTALL)), [], "setup, update, install")
+
+    def test_an_apt_get_after_the_setup_in_an_earlier_step_of_its_job_passes(self):
+        text = self.JOB + "      - run: bash scripts/apt-mirror-setup.sh\n" + self.step(self.UPDATE, self.INSTALL)
+        self.assertEqual(self.problems(text), [], "the setup in a step of its own")
+
+    def test_an_apt_get_on_a_runner_s_own_system_passes(self):
+        self.assertEqual(self.problems(self.ON_A_RUNNER + self.step(self.UPDATE, self.INSTALL)), [], "a job with no container")
+
+    def test_the_setup_with_options_counts(self):
+        text = self.JOB + self.step("          bash scripts/apt-mirror-setup.sh --timeout 10\n", self.UPDATE)
+        self.assertEqual(self.problems(text), [], "the setup with a time limit")
+        self.assertEqual(check.apt_rule_calls(text), 1, "calls of the rule")
+
+    def test_the_setup_inside_a_branch_counts(self):
+        text = self.JOB + self.step("          if command -v apt-get >/dev/null; then\n", "  " + self.SETUP, "  " + self.UPDATE, "          fi\n")
+        self.assertEqual(self.problems(text), [], "the smoke job's own shape")
+
+    def test_an_apt_command_that_fetches_nothing_passes(self):
+        text = self.JOB + self.step("          apt-get clean\n", "          apt-cache policy curl\n", "          command -v apt-get\n")
+        self.assertEqual(self.problems(text), [], "clean, apt-cache and command -v")
+
+    def test_a_shell_script_that_sets_up_first_passes(self):
+        text = '"$root/scripts/apt-mirror-setup.sh"\napt-get -o Acquire::Retries=3 update\n'
+        self.assertEqual(self.problems('bash ' + text, "scripts/x.sh"), [], "a script that runs the setup by its path")
+
+    def test_a_call_of_the_rule_is_counted_once_a_line(self):
+        self.assertEqual(check.apt_rule_calls(self.JOB + self.step(self.SETUP, self.UPDATE)), 1, "one call")
+        self.assertEqual(check.apt_rule_calls(self.JOB + self.step(self.SETUP) + self.step(self.SETUP)), 2, "two calls")
+
+    def test_the_real_tree_has_no_apt_get_before_the_setup(self):
+        root = HERE.parent
+        for p in check.files(root):
+            rel = p.relative_to(root).as_posix()
+            self.assertEqual(check.apt_outside_rule(rel, p.read_text(encoding="utf-8")), [], rel)
+
+    def test_the_real_tree_calls_the_rule_in_the_release_s_smoke_job(self):
+        root = HERE.parent
+        calls = {p.relative_to(root).as_posix(): check.apt_rule_calls(p.read_text(encoding="utf-8")) for p in check.files(root)}
+        self.assertEqual({k: v for k, v in calls.items() if v}, {".github/workflows/release.yml": 1}, "where the rule is called")
+        text = (root / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        self.assertLess(text.index("bash scripts/apt-mirror-setup.sh\n"), text.index("apt-get -o Acquire::Retries="), "the setup comes first")
+        self.assertTrue((root / "scripts/apt-mirror-setup.sh").is_file(), "the script")
+        self.assertTrue((root / "scripts/apt-mirrors.txt").is_file(), "its table")
+
+    def test_the_real_smoke_job_is_in_a_container_and_would_be_found_without_the_setup(self):
+        text = (HERE.parent / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        without = text.replace("            bash scripts/apt-mirror-setup.sh\n", "")
+        self.assertNotEqual(without, text, "the setup line as the test expects it")
+        self.assertEqual(len(self.problems(without, ".github/workflows/release.yml")), 2, "update and install")
+
+    def test_a_tree_that_calls_the_rule_meets_the_floor(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            (root / ".github/workflows").mkdir(parents=True)
+            (root / ".github/workflows/release.yml").write_text(self.JOB + self.step(self.SETUP, self.UPDATE), encoding="utf-8")
+            problems = check.check(root)
+        self.assertFalse(any("apt-mirror-setup.sh" in p for p in problems), problems)
+
+    # Failure.
+
+    def test_an_apt_get_update_in_a_container_without_the_setup_is_found(self):
+        self.assertEqual(self.problems(self.JOB + self.step(self.UPDATE)), [f".github/workflows/x.yml:8: {self.SAID}"], "update alone")
+
+    def test_update_and_install_are_each_found(self):
+        self.assertEqual(
+            self.problems(self.JOB + self.step(self.UPDATE, self.INSTALL)),
+            [f".github/workflows/x.yml:8: {self.SAID}", f".github/workflows/x.yml:9: {self.SAID}"],
+            "update and install",
+        )
+
+    def test_the_setup_after_the_apt_get_does_not_count(self):
+        self.assertEqual(self.problems(self.JOB + self.step(self.UPDATE, self.SETUP, self.INSTALL)), [f".github/workflows/x.yml:8: {self.SAID}"], "update, setup, install")
+
+    def test_the_setup_of_another_job_does_not_count(self):
+        text = self.JOB + self.step(self.SETUP) + "  other:\n    container: ubuntu:22.04\n    steps:\n" + self.step(self.UPDATE)
+        self.assertEqual(self.problems(text), [f".github/workflows/x.yml:14: {self.SAID}"], "the second job")
+
+    def test_the_setup_in_a_comment_does_not_count(self):
+        text = self.JOB + self.step("          # bash scripts/apt-mirror-setup.sh\n", self.UPDATE)
+        self.assertEqual(len(self.problems(text)), 1, "a comment that names the setup")
+        self.assertEqual(check.apt_rule_calls(text), 0, "calls of the rule")
+
+    def test_the_setup_in_a_step_s_name_does_not_count(self):
+        text = self.JOB + "      - name: bash scripts/apt-mirror-setup.sh\n        run: |\n" + self.UPDATE
+        self.assertEqual(len(self.problems(text)), 1, "a name that names the setup")
+        self.assertEqual(check.apt_rule_calls(text), 0, "calls of the rule")
+
+    def test_the_script_only_named_does_not_count(self):
+        text = self.JOB + self.step("          ls scripts/apt-mirror-setup.sh\n", "          cat scripts/apt-mirrors.txt\n", self.UPDATE)
+        self.assertEqual(len(self.problems(text)), 1, "the script listed, not run")
+        self.assertEqual(check.apt_rule_calls(text), 0, "calls of the rule")
+
+    def test_a_shell_script_with_an_apt_get_and_no_setup_is_found(self):
+        self.assertEqual(self.problems("set -eu\napt-get -o Acquire::Retries=3 install -y jq\n", "scripts/x.sh"), [f"scripts/x.sh:2: {self.SAID}"], "a script")
+
+    def test_a_composite_action_with_an_apt_get_and_no_setup_is_found(self):
+        text = "runs:\n  using: composite\n  steps:\n    - shell: bash\n      run: apt-get -o Acquire::Retries=3 update\n"
+        self.assertEqual(self.problems(text, ".github/actions/x/action.yml"), [f".github/actions/x/action.yml:5: {self.SAID}"], "an action")
+
+    def test_the_whole_check_reports_an_apt_get_before_the_setup(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            (root / ".github/workflows").mkdir(parents=True)
+            (root / ".github/workflows/release.yml").write_text(self.JOB + self.step(self.UPDATE, self.SETUP), encoding="utf-8")
+            problems = check.check(root)
+        self.assertIn(f".github/workflows/release.yml:8: {self.SAID}", problems, "the whole check")
+
+    def test_a_tree_that_never_calls_the_rule_fails_the_floor(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            (root / ".github/workflows").mkdir(parents=True)
+            (root / ".github/workflows/release.yml").write_text(self.ON_A_RUNNER + self.step("          echo hello\n"), encoding="utf-8")
+            problems = check.check(root)
+        self.assertTrue(any("found 0 runs of scripts/apt-mirror-setup.sh; expected at least 1" in p for p in problems), problems)
+
+    def test_an_apt_get_with_a_variable_before_it_and_options_is_found(self):
+        self.assertEqual(len(self.problems(self.JOB + self.step(self.INSTALL))), 1, "DEBIAN_FRONTEND=... apt-get -o ... install")
+
+    def test_sh_does_not_run_the_setup(self):
+        text = self.JOB + self.step("          sh scripts/apt-mirror-setup.sh\n", self.UPDATE)
+        self.assertEqual(len(self.problems(text)), 1, "the script needs bash")
+
+    # Edge.
+
+    def test_a_continued_apt_get_is_reported_at_its_first_line(self):
+        text = self.JOB + self.step("          apt-get -o Acquire::Retries=3 \\\n", "            install -y curl\n")
+        self.assertEqual(self.problems(text), [f".github/workflows/x.yml:8: {self.SAID}"], "a command over two lines")
+
+    def test_a_container_named_on_one_line_counts(self):
+        text = "jobs:\n  smoke:\n    container: debian:12\n    steps:\n" + self.step(self.UPDATE)
+        self.assertEqual(self.problems(text), [f".github/workflows/x.yml:7: {self.SAID}"], "container: on one line")
+
+    def test_a_container_under_services_is_not_the_job_s_container(self):
+        text = "jobs:\n  db:\n    runs-on: ubuntu-latest\n    services:\n      pg:\n        container: postgres:17\n    steps:\n" + self.step(self.UPDATE)
+        self.assertEqual(self.problems(text), [], "a service's container")
+
+    def test_of_two_container_jobs_only_the_one_without_the_setup_is_found(self):
+        text = self.JOB + self.step(self.SETUP, self.UPDATE) + "  other:\n    container: ubuntu:22.04\n    steps:\n" + self.step(self.INSTALL)
+        self.assertEqual(self.problems(text), [f".github/workflows/x.yml:15: {self.SAID}"], "the second job")
+
+    def test_two_apt_gets_on_one_line_are_each_found(self):
+        text = self.JOB + "      - run: apt-get -o Acquire::Retries=3 update && apt-get -o Acquire::Retries=3 install -y jq\n"
+        self.assertEqual(len(self.problems(text)), 2, "update && install")
+
+    def test_the_setup_and_the_apt_get_on_one_line_pass_in_that_order_only(self):
+        ok = self.JOB + "      - run: bash scripts/apt-mirror-setup.sh && apt-get -o Acquire::Retries=3 update\n"
+        late = self.JOB + "      - run: apt-get -o Acquire::Retries=3 update && bash scripts/apt-mirror-setup.sh\n"
+        self.assertEqual(self.problems(ok), [], "setup && update")
+        self.assertEqual(len(self.problems(late)), 1, "update && setup")
+
+    def test_a_workflow_with_no_steps_has_no_problem(self):
+        self.assertEqual(self.problems("on: push\n"), [], "no job")
+        self.assertEqual(self.problems(""), [], "an empty file")
+
+    def test_a_script_named_like_the_setup_is_not_the_setup(self):
+        text = self.JOB + self.step("          bash scripts/apt-mirror-setup.sh.old\n", "          bash scripts/my-apt-mirror-setup.sh\n", self.UPDATE)
+        self.assertEqual(len(self.problems(text)), 1, "other scripts")
+        self.assertEqual(check.apt_rule_calls(text), 0, "calls of the rule")
+
+
 class Curl(unittest.TestCase):
     def test_curl_without_retry_is_found(self):
         self.assertEqual(found("          curl -fsSL -o x.tgz https://example.com/x.tgz\n"), [".github/workflows/x.yml:1: curl without --retry"])

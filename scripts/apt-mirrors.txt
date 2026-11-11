@@ -1,0 +1,18 @@
+# Each package source an image's apt reads (an origin), and the hosts that
+# hold the same files: the origin itself and at least one other, in the
+# order apt tries them.
+#
+# One source a line: the origin, then its mirrors, separated by spaces. The
+# origin is written as the image's source files write it; a mirror is an
+# http:// address (a container has no certificates before its first
+# install). Azure's mirror is the one GitHub's own runner images use. Each
+# was read on port 80 from this project's host on 2026-11-10.
+#
+# Read by scripts/docs_test.py (the how-to runner, which asks each mirror
+# from the host) and by scripts/apt-mirror-setup.sh (which a container runs
+# before its first apt-get).
+http://archive.ubuntu.com/ubuntu/ http://azure.archive.ubuntu.com/ubuntu/ http://archive.ubuntu.com/ubuntu/ http://mirrors.edge.kernel.org/ubuntu/ http://mirror.math.princeton.edu/pub/ubuntu/
+http://security.ubuntu.com/ubuntu/ http://security.ubuntu.com/ubuntu/ http://azure.archive.ubuntu.com/ubuntu/ http://mirrors.edge.kernel.org/ubuntu/ http://mirror.math.princeton.edu/pub/ubuntu/
+http://ports.ubuntu.com/ubuntu-ports/ http://ports.ubuntu.com/ubuntu-ports/ http://azure.ports.ubuntu.com/ubuntu-ports/
+http://deb.debian.org/debian http://deb.debian.org/debian http://ftp.us.debian.org/debian http://ftp.debian.org/debian
+http://deb.debian.org/debian-security http://deb.debian.org/debian-security http://security.debian.org/debian-security

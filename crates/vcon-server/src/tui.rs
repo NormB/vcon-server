@@ -69,20 +69,43 @@ pub fn run(config: &ClientConfig) -> Result<(), String> {
         std::env::var("NO_COLOR").ok().as_deref(),
         std::env::var("TERM").ok().as_deref(),
     );
+    with_terminal(|terminal| {
+        let (answers, inbox) = mpsc::channel();
+        let mut dispatch = |effects: Vec<Effect>| send(&api, effects, &answers);
+        drive(
+            terminal,
+            &client::base(&config.url),
+            theme,
+            &mut Keyboard,
+            &inbox,
+            &mut dispatch,
+            &OffsetDateTime::now_utc,
+        )
+        .map(|_| ())
+    })?
+}
+
+/// Runs `body` with this process's terminal taken for a UI (keys one at a
+/// time and not echoed, the alternate screen), and puts the terminal back
+/// when `body` returns and when it panics (through the hook
+/// `ratatui::try_init` installs, which runs before the panic's message is
+/// written). Returns what `body` returned.
+///
+/// It is the one place the terminal is taken and put back, apart from the
+/// UI's loop, so that a test can put a body of its own on a terminal
+/// (`tests/tui_terminal.rs`).
+///
+/// # Errors
+///
+/// A sentence with the terminal's error when it cannot be taken; `body`
+/// has then not run.
+pub fn with_terminal<T>(
+    body: impl FnOnce(&mut ratatui::DefaultTerminal) -> T,
+) -> Result<T, String> {
     let mut terminal = ratatui::try_init().map_err(|e| format!("the terminal: {e}"))?;
-    let (answers, inbox) = mpsc::channel();
-    let mut dispatch = |effects: Vec<Effect>| send(&api, effects, &answers);
-    let result = drive(
-        &mut terminal,
-        &client::base(&config.url),
-        theme,
-        &mut Keyboard,
-        &inbox,
-        &mut dispatch,
-        &OffsetDateTime::now_utc,
-    );
+    let value = body(&mut terminal);
     ratatui::restore();
-    result.map(|_| ())
+    Ok(value)
 }
 
 /// Whether the UI can start: it reads keys from standard input and draws

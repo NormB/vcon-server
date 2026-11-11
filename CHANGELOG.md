@@ -224,6 +224,28 @@ All notable changes to this project are recorded here. The format follows
   are checked against the distribution's key as before. The build jobs
   check out twice, the first time for the script and the second, with git
   installed, for `.git`.
+- The release's smoke job no longer depends on one host for each package
+  source. In its debian:12 and ubuntu:22.04 containers it ran `apt-get`
+  against the one host the image names for each source, and apt's retries
+  ask that host again: the failure the how-to runner had on 2026-11-10,
+  when archive.ubuntu.com did not answer on port 80. The job now runs
+  `scripts/apt-mirror-setup.sh` before its first `apt-get`. The script
+  asks each mirror of each source the system reads for its index, keeps
+  those that answer within five seconds, and gives apt that list through
+  its `mirror+file:` method; when no mirror of a source answers it changes
+  nothing and ends with exit code 3. The mirrors are one table,
+  `scripts/apt-mirrors.txt`, which the how-to runner reads too.
+  `scripts/check_workflow_downloads.py` refuses an `apt-get update` or
+  `install` in a container job that comes before the script.
+- `vcon-server tui` is now tested on a terminal. Until now the part of it
+  that takes the terminal (keys one at a time and not echoed, the alternate
+  screen), reads the keyboard and starts a thread for each request had been
+  run by hand only. `tests/tui_terminal.rs` runs the binary on a
+  pseudo-terminal and checks the terminal's modes and screen while it runs
+  and after `q`, Ctrl-C, a new size, a failed request and a start that
+  fails. A new library function, `tui::with_terminal`, is the one place the
+  terminal is taken and put back; the tests use it to check that a panic
+  puts the terminal back before its message is written.
 
 ## [0.4.2] - 2026-11-10
 

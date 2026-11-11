@@ -1010,30 +1010,42 @@ DOCS_TEST_EOF
 
 # Each package source an image's apt reads (an origin), and the hosts that
 # hold the same files: the origin itself and at least one other, in the
-# order apt tries them. Azure's mirror is the one GitHub's own runner images
-# use. Each was read on port 80 from this project's host on 2026-11-10.
-_UBUNTU_MIRRORS = (
-    "http://azure.archive.ubuntu.com/ubuntu/",
-    "http://mirrors.edge.kernel.org/ubuntu/",
-    "http://mirror.math.princeton.edu/pub/ubuntu/",
-)
-APT_MIRRORS = {
-    "http://archive.ubuntu.com/ubuntu/": (_UBUNTU_MIRRORS[0], "http://archive.ubuntu.com/ubuntu/", *_UBUNTU_MIRRORS[1:]),
-    "http://security.ubuntu.com/ubuntu/": ("http://security.ubuntu.com/ubuntu/", *_UBUNTU_MIRRORS),
-    "http://ports.ubuntu.com/ubuntu-ports/": (
-        "http://ports.ubuntu.com/ubuntu-ports/",
-        "http://azure.ports.ubuntu.com/ubuntu-ports/",
-    ),
-    "http://deb.debian.org/debian": (
-        "http://deb.debian.org/debian",
-        "http://ftp.us.debian.org/debian",
-        "http://ftp.debian.org/debian",
-    ),
-    "http://deb.debian.org/debian-security": (
-        "http://deb.debian.org/debian-security",
-        "http://security.debian.org/debian-security",
-    ),
-}
+# order apt tries them. The table is a file of its own because
+# scripts/apt-mirror-setup.sh reads it too, in a container that has no
+# python3 yet (the release's smoke job).
+APT_MIRRORS_NAME = "scripts/apt-mirrors.txt"
+
+
+def load_apt_mirrors(text: str, where: str = APT_MIRRORS_NAME) -> dict:
+    """The table of mirrors in `text`: {origin: (mirror, ...)}, a line an
+    origin, in the order of the lines. A table that would leave an origin
+    on one host is refused."""
+    table = {}
+    for n, line in enumerate(text.splitlines(), 1):
+        if not line.strip() or line.strip().startswith("#"):
+            continue
+        origin, *mirrors = line.split()
+        if not mirrors:
+            raise PageError(f"{where}:{n}: {origin} has no mirror")
+        if origin in table:
+            raise PageError(f"{where}:{n}: {origin} is written twice")
+        for m in mirrors:
+            # A container has no certificates before its first install, and
+            # apt-mirror-setup.sh asks over bash's /dev/tcp.
+            if not m.startswith("http://"):
+                raise PageError(f"{where}:{n}: {m} is not an http:// address")
+        if origin not in mirrors:
+            raise PageError(f"{where}:{n}: {origin} is not among its own mirrors")
+        if len(set(mirrors)) < 2:
+            raise PageError(f"{where}:{n}: {origin} has one host; an origin needs itself and at least one other")
+        table[origin] = tuple(mirrors)
+    if not table:
+        raise PageError(f"{where}: no origin")
+    return table
+
+
+with open(os.path.join(ROOT, APT_MIRRORS_NAME), encoding="utf-8") as _f:
+    APT_MIRRORS = load_apt_mirrors(_f.read())
 
 
 class MirrorError(PageError):
