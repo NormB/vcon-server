@@ -11,7 +11,7 @@ fn the_schema_version_is_the_number_of_migrations() {
         MIGRATIONS.len(),
         "the binary's version is its last migration's"
     );
-    assert_eq!(SCHEMA_VERSION, 3, "three migrations so far");
+    assert_eq!(SCHEMA_VERSION, 4, "four migrations so far");
 }
 
 #[test]
@@ -52,7 +52,7 @@ mod on_a_server {
         let db = Db::fresh().await;
         assert_eq!(
             db.migrate().await,
-            Migrated { from: 0, to: 3 },
+            Migrated { from: 0, to: 4 },
             "from nothing to this binary's version"
         );
         let admin = db.admin().await;
@@ -82,7 +82,7 @@ mod on_a_server {
         );
         assert_eq!(
             value(&admin, "SELECT max(version) FROM vcon.schema_version").await,
-            "3",
+            "4",
             "the version is recorded for the migrating role that owns the table"
         );
     }
@@ -92,7 +92,7 @@ mod on_a_server {
         let db = Db::migrated().await;
         assert_eq!(
             db.migrate().await,
-            Migrated { from: 3, to: 3 },
+            Migrated { from: 4, to: 4 },
             "nothing to do"
         );
         assert_eq!(
@@ -101,7 +101,7 @@ mod on_a_server {
                 "SELECT count(*) FROM vcon.schema_version"
             )
             .await,
-            3,
+            4,
             "one row for each version, and no second row for any"
         );
     }
@@ -315,10 +315,10 @@ mod on_a_server {
         let report = super::super::super::super::migrate(&settings)
             .await
             .expect("migrates");
-        assert_eq!(report, Migrated { from: 0, to: 3 }, "the versions");
+        assert_eq!(report, Migrated { from: 0, to: 4 }, "the versions");
         assert_eq!(
             report.message(),
-            "schema version 0 to schema version 3",
+            "schema version 0 to schema version 4",
             "the line it prints"
         );
         let (_dir, settings) = db.settings("vcon_migrate");
@@ -327,7 +327,7 @@ mod on_a_server {
             .expect("no change");
         assert_eq!(
             again.message(),
-            "already at schema version 3",
+            "already at schema version 4",
             "a run at the same version says so"
         );
     }
@@ -353,7 +353,7 @@ mod on_a_server {
             .expect("releases");
         assert_eq!(
             db.migrate().await,
-            Migrated { from: 3, to: 3 },
+            Migrated { from: 4, to: 4 },
             "works once it is free"
         );
     }

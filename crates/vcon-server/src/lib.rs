@@ -72,6 +72,7 @@ pub(crate) mod secret_file;
     reason = "the Rust style rules, met module by module"
 )]
 pub mod serve;
+pub mod settings;
 #[expect(
     missing_docs,
     missing_debug_implementations,

@@ -101,6 +101,20 @@ const POLICY: &[(&str, &str, Needs)] = &[
         Needs::Scope(Scope::Admin),
     ),
     ("DELETE", "/admin/keys/{id}", Needs::Scope(Scope::Admin)),
+    ("GET", "/tenant/settings", Needs::Scope(Scope::TenantAdmin)),
+    ("PUT", "/tenant/settings", Needs::Scope(Scope::TenantAdmin)),
+    ("GET", "/tenant/keys", Needs::Scope(Scope::TenantAdmin)),
+    ("POST", "/tenant/keys", Needs::Scope(Scope::TenantAdmin)),
+    (
+        "DELETE",
+        "/tenant/keys/{id}",
+        Needs::Scope(Scope::TenantAdmin),
+    ),
+    (
+        "GET",
+        "/tenant/memberships",
+        Needs::Scope(Scope::TenantAdmin),
+    ),
 ];
 
 fn policy() -> Vec<(&'static str, &'static str, Needs)> {
@@ -121,6 +135,7 @@ fn path(template: &str) -> String {
         .replace("{uuid}", "0195a1f0-7c3e-7d4a-8b21-3f5e6a7b8c9d")
         .replace("{version}", "0123456789abcdef0123456789abcdef")
         .replace("/admin/keys/{id}", "/admin/keys/0123456789abcdef")
+        .replace("/tenant/keys/{id}", "/tenant/keys/0123456789abcdef")
         .replace("{id}", "00000000000000000000000000000000")
         .replace("{other}", "nothing")
 }
@@ -239,15 +254,13 @@ async fn every_tenant_role_together_reaches_every_route_but_the_admin_ones() {
 }
 
 #[test]
-fn each_scope_but_tenant_admin_is_needed_by_a_route() {
+fn each_scope_is_needed_by_a_route() {
     for scope in Scope::ALL {
         let routes = policy()
             .into_iter()
             .filter(|(_, _, needs)| *needs == Needs::Scope(scope))
             .count();
-        // No route needs tenant_admin yet: the tenant routes that do are
-        // not in this build.
-        assert_eq!(routes > 0, scope != Scope::TenantAdmin, "{scope:?}");
+        assert!(routes > 0, "{scope:?}");
     }
 }
 
@@ -281,7 +294,7 @@ fn the_roles_reach_the_routes_the_plan_gives_them() {
     };
     assert_eq!(
         Role::ALL.map(opened),
-        [2, 2, 1, 6, 1, 0, 9],
+        [2, 2, 1, 6, 1, 6, 9],
         "reader, producer, records, legal, auditor, tenant-admin, operator"
     );
 }
@@ -303,13 +316,21 @@ async fn the_keyless_routes_answer_with_no_key() {
 // What must be refused.
 
 #[tokio::test]
-async fn a_tenant_admin_reaches_no_route_that_needs_a_scope() {
+async fn a_tenant_admin_reaches_the_tenant_routes_and_no_vcon() {
     let scopes = Role::TenantAdmin.scopes();
+    let reached: Vec<&str> = policy()
+        .into_iter()
+        .filter(|(_, _, needs)| matches!(needs, Needs::Scope(_)) && reaches(scopes, *needs))
+        .map(|(_, route, _)| route)
+        .collect();
+    assert_eq!(
+        reached.len(),
+        6,
+        "the six routes under /tenant: {reached:?}"
+    );
     assert!(
-        policy()
-            .into_iter()
-            .all(|(_, _, needs)| !matches!(needs, Needs::Scope(_)) || !reaches(scopes, needs)),
-        "the table gives tenant_admin no route"
+        reached.iter().all(|route| route.starts_with("/tenant/")),
+        "and no route of a vCon, a log or the operator: {reached:?}"
     );
     held_to_the_table(scopes, "tenant-admin").await;
 }

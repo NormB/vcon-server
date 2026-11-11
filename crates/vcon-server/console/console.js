@@ -763,7 +763,7 @@ function legalView(view) {
 const AUDIT_PAGE = 50;
 
 /** The scope names a tenant key may hold, in their fixed order. */
-const TENANT_SCOPES = ["write", "read", "delete", "legal", "audit"];
+const TENANT_SCOPES = ["write", "read", "delete", "legal", "audit", "tenant_admin"];
 
 /** Asks the user, through the browser's own dialog, before a change. */
 function confirmed(question) {

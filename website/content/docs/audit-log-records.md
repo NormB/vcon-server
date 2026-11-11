@@ -20,7 +20,7 @@ shows how to read them.
 | `at` | when, RFC 3339 in UTC |
 | `actor` | the key id; `sweep` for the purge sweep; `cli` for a command on the host; empty for a token that did not parse or names no known key |
 | `action` | what was asked: one of the [actions](#every-action) below |
-| `target` | the uuid, tenant id, key id or user id acted on, if any; for `listener_full`, the configuration key of the listener, `listen` or `operator.listen`; for `membership_grant` and `membership_revoke`, the user id, then the tenant id or `operator`, then the roles the command named if it named any, joined by `/`; for `role_cap_set`, the tenant id, then the cap's roles or `all`, joined by `/` |
+| `target` | the uuid, tenant id, key id or user id acted on, if any; for `listener_full`, the configuration key of the listener, `listen` or `operator.listen`; for `membership_grant` and `membership_revoke`, the user id, then the tenant id or `operator`, then the roles the command named if it named any, joined by `/`; for `role_cap_set`, the tenant id, then the cap's roles or `all`, joined by `/`; for `settings_set`, the tenant id, then after a `/` the names of the settings changed, joined by `,`, and never a value |
 | `version` | the version id involved, if any |
 | `status` | the HTTP status answered, or `null` for a record that answers no request (`listener_full`) |
 | `count` | how many requests the record stands for; for `listener_full`, how many times the listener became full, not how many connections waited |
@@ -73,9 +73,9 @@ action through MCP is recorded as its HTTP route records it.
 | `wrong_listener` | a valid key refused because it came to the listener that serves the other kind of key, on a server with an [operator listener](@/docs/operator-listener.md), [counted](@/docs/audit-logs.md#counted-records) | the admin log for an operator key; the tenant's for a tenant key, or the admin log when the tenant's cannot be opened |
 | `listener_full` | a listener that held [`limits.connections`](@/docs/configuration.md#the-most-connections-at-once) connections and took no more until one ended. The record describes a state of the listener and answers no request: its actor is empty, its `status` is `null`, and its `count` is the times the listener became full in the minute, not the connections that waited; [counted](@/docs/audit-logs.md#counted-records) | admin |
 | `csp_report` | a request to `POST /console/csp-report`, where a browser reports that a [console](@/docs/console.md#reports-of-a-broken-policy) page broke its content-security policy. The route takes no key, so the actor is empty; `status` is 204 for a report taken, 400, 408, 413 or 415 for a request refused, or 429 for the requests refused in the minute past the listener's number of reports (one record, written when the minute ends); nothing the report says is kept; [counted](@/docs/audit-logs.md#counted-records) | admin |
-| `key_create` | a key made, over the admin API or by `vcon-server key create` | admin, copied to the tenant's for a tenant key |
-| `key_revoke` | a key revoked | admin, copied to the tenant's for a tenant key |
-| `key_list` | the keys listed | admin |
+| `key_create` | a key made, over the admin API, at `POST /tenant/keys` or by `vcon-server key create` | admin, copied to the tenant's for a tenant key |
+| `key_revoke` | a key revoked, over the admin API, at `DELETE /tenant/keys/{id}` or by `vcon-server key revoke` | admin, copied to the tenant's for a tenant key, and for a refusal at `DELETE /tenant/keys/{id}` to the log of the tenant whose key asked |
+| `key_list` | the keys listed | admin, copied to the tenant's for `GET /tenant/keys` |
 | `user_add` | a user made by `vcon-server user add`; the target is the new user's id, and a refused one has none | admin |
 | `user_list` | the users listed by `vcon-server user list` | admin |
 | `user_deactivate` | a user deactivated and its memberships removed, by `vcon-server user deactivate` | admin, copied to the log of each tenant the user held a membership in |
@@ -83,6 +83,9 @@ action through MCP is recorded as its HTTP route records it.
 | `membership_revoke` | roles taken from a user's membership, by `vcon-server membership revoke` | admin, copied to the tenant's for a tenant membership |
 | `role_cap_set` | a tenant's role cap set or removed, by `vcon-server tenant set-role-cap` | admin, copied to the tenant's |
 | `role_cap_read` | a tenant's role cap read, by `vcon-server tenant role-cap` | admin |
+| `settings_read` | a tenant's settings read, at `GET /tenant/settings`; the target is the tenant id | admin, copied to the tenant's |
+| `settings_set` | a tenant's settings changed, at `PUT /tenant/settings`; a refused change is recorded too | admin, copied to the tenant's |
+| `membership_list` | a tenant's memberships listed, at `GET /tenant/memberships`; the target is the tenant id | admin, copied to the tenant's |
 | `tenant_create` | a tenant made | admin |
 | `tenant_list` | the tenants listed | admin |
 | `tenant_retention` | a tenant's retention period changed | admin |

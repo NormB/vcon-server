@@ -31,8 +31,10 @@ TENANT=$(sudo -u vcon vcon-server tenant list --config $CONFIG | jq -r 'select(.
 ## Make a key for each scope
 
 A tenant key belongs to one tenant and holds any of `write`, `read`,
-`delete`, `legal`, `audit` and `tenant_admin`. No route needs `tenant_admin`
-yet, so this page leaves it out. Make one key for each of the others, labeled with its
+`delete`, `legal`, `audit` and `tenant_admin`. `tenant_admin` is the scope of a
+tenant's administrator and has
+[a how-to of its own](@/docs/tenant-administration.md), so this page leaves it out.
+Make one key for each of the others, labeled with its
 scope. `key create` runs beside the server:
 
 ```sh

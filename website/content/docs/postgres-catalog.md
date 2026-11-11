@@ -591,8 +591,8 @@ primary in `hosts`; a standby before it is passed over.
 
 ```text
 vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database has no vCon schema: run vcon-server migrate
-vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is version 1, older than this binary's 3: run vcon-server migrate
-vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is newer than this binary (version 4, this binary 3): upgrade this server
+vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is version 1, older than this binary's 4: run vcon-server migrate
+vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is newer than this binary (version 5, this binary 4): upgrade this server
 ```
 
 Run `vcon-server migrate` with `vcon_migrate`'s configuration, or upgrade

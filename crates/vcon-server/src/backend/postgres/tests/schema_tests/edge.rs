@@ -55,7 +55,7 @@ mod on_a_server {
                 "SELECT count(*) FROM vcon.schema_version"
             )
             .await,
-            3,
+            4,
             "one row for each version"
         );
     }
@@ -67,7 +67,7 @@ mod on_a_server {
         db.admin()
             .await
             .batch_execute(
-                "SET ROLE vcon_owner; INSERT INTO vcon.schema_version (version) VALUES (4); RESET ROLE",
+                "SET ROLE vcon_owner; INSERT INTO vcon.schema_version (version) VALUES (5); RESET ROLE",
             )
             .await
             .expect("adds a version");

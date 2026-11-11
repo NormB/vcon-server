@@ -279,10 +279,10 @@ See [audit log records](@/docs/audit-log-records.md) for every action.
 - **`the user has no such membership`:** there is nothing to revoke:
   `user list` shows the memberships the user holds.
 - **`the user is deactivated`:** add a new user for the person.
-- **`the registry cannot be opened: … schema version 6 is not one this
+- **`the registry cannot be opened: … schema version 7 is not one this
   build knows`:** an older binary is reading a data directory that a newer
   one has opened. See
-  [upgrade](@/docs/upgrading.md#schema-version-6-and-no-way-back-without-the-copy).
+  [upgrade](@/docs/upgrading.md#schema-version-7-and-no-way-back-without-the-copy).
 
 ## Clean up
 

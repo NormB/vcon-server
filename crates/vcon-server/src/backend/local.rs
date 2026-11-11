@@ -1165,7 +1165,12 @@ pub struct LocalRegistry {
 impl LocalRegistry {
     /// Opens `<dir>/server.sqlite` under `catalog_key`, making it if new.
     pub fn open(dir: &Path, catalog_key: Key) -> Result<LocalRegistry, RegistryError> {
-        let schema = format!("{REGISTRY_TABLES}{}{}", catalog::USER_TABLES, audit::SCHEMA);
+        let schema = format!(
+            "{REGISTRY_TABLES}{}{}{}",
+            catalog::USER_TABLES,
+            catalog::TENANT_SETTINGS,
+            audit::SCHEMA
+        );
         let path = dir.join("server.sqlite");
         let conn = catalog::open(&path, &catalog_key, &schema).map_err(|e| match e {
             catalog::CatalogError::WrongKey => RegistryError::WrongKey,
@@ -1676,6 +1681,50 @@ impl RegistryTx for LocalRegistryTx<'_> {
     fn delete_memberships_in(&mut self, tenant: TenantId) -> Result<(), TenantError> {
         self.conn
             .execute("DELETE FROM membership WHERE tenant = ?1", [tenant.0])
+            .map_err(tenant_io)?;
+        Ok(())
+    }
+
+    fn settings(&mut self, tenant: TenantId) -> Result<Vec<(String, String)>, TenantError> {
+        let mut rows = self
+            .conn
+            .prepare("SELECT name, value FROM tenant_setting WHERE tenant = ?1 ORDER BY name")
+            .map_err(tenant_io)?;
+        rows.query_map([tenant.0], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(tenant_io)?
+            .map(|row| row.map_err(tenant_io))
+            .collect()
+    }
+
+    fn put_setting(
+        &mut self,
+        tenant: TenantId,
+        name: &str,
+        value: &str,
+    ) -> Result<(), TenantError> {
+        self.conn
+            .execute(
+                "INSERT INTO tenant_setting (tenant, name, value) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (tenant, name) DO UPDATE SET value = excluded.value",
+                params![tenant.0, name, value],
+            )
+            .map_err(tenant_io)?;
+        Ok(())
+    }
+
+    fn delete_setting(&mut self, tenant: TenantId, name: &str) -> Result<(), TenantError> {
+        self.conn
+            .execute(
+                "DELETE FROM tenant_setting WHERE tenant = ?1 AND name = ?2",
+                params![tenant.0, name],
+            )
+            .map_err(tenant_io)?;
+        Ok(())
+    }
+
+    fn delete_settings_in(&mut self, tenant: TenantId) -> Result<(), TenantError> {
+        self.conn
+            .execute("DELETE FROM tenant_setting WHERE tenant = ?1", [tenant.0])
             .map_err(tenant_io)?;
         Ok(())
     }

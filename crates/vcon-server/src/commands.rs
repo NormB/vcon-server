@@ -321,6 +321,9 @@ impl fmt::Display for CommandError {
                 TenantError::AuditFailed => "the audit record could not be written",
                 TenantError::Closing => "the tenant is being removed",
                 TenantError::CliOnly => "only the command line may do this",
+                TenantError::BadSetting(_) => {
+                    "a setting's name or value is not one the tenant may set"
+                }
                 TenantError::WrongKey => unreachable!("matched above"),
                 TenantError::Io => "the data could not be read or written",
             }),
@@ -1924,6 +1927,7 @@ mod tests {
                 TenantError::Closing => "being removed",
                 TenantError::CliOnly => "command line",
                 TenantError::BadScopes => "scopes",
+                TenantError::BadSetting(_) => "setting",
                 // Display folds a registry made under another master key
                 // into WrongMasterKey's message.
                 TenantError::WrongKey => "is not the one server.sqlite was made under",
@@ -2200,6 +2204,7 @@ mod tests {
             TenantError::Closing,
             TenantError::CliOnly,
             TenantError::BadScopes,
+            TenantError::BadSetting(crate::settings::SettingError::UnknownName),
             TenantError::WrongKey,
             TenantError::Io,
         ]

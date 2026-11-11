@@ -370,6 +370,7 @@ HOWTO = (
     "operator-listener.md",
     "users-and-memberships.md",
     "roles-and-scopes.md",
+    "tenant-administration.md",
     "upgrading.md",
 )
 # docs/upgrading.md installs the binary it names as NEW: the one under test.

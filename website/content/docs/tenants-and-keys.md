@@ -50,7 +50,7 @@ A **tenant key** belongs to one tenant and holds any of six scopes:
 | `delete` | `DELETE /vcons/{uuid}` |
 | `legal` | the `/legal/` routes: reads of deleted vCons and old versions, restore, legal holds |
 | `audit` | `GET /audit`: the tenant's own [audit log](@/docs/audit-logs.md) |
-| `tenant_admin` | no route yet: the scope of a tenant's administrator, which the role `tenant-admin` gives; see [roles and scopes](@/docs/roles-and-scopes.md) |
+| `tenant_admin` | the `/tenant/` routes: a tenant's settings, its keys and its memberships, for the tenant's administrator; the role `tenant-admin` gives it; see [administer a tenant with a key](@/docs/tenant-administration.md) |
 
 An **operator key** belongs to no tenant and holds only `admin`, which allows
 the `/admin/` routes: tenants, their keys and the admin audit log. A tenant key can never hold

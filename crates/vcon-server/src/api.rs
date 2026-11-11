@@ -37,6 +37,7 @@ use vcon::read::{Inspection, Rejection};
 mod csp_report;
 mod listen;
 mod report_gate;
+mod tenant_plane;
 pub use listen::{
     Accept, AfterFailure, ConnectionLimits, after_failure, serve, serve_observed, serve_within,
 };
@@ -93,6 +94,19 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/admin/tenants/{id}/metadata", put(tenant_metadata))
         .route("/admin/tenants/{id}/keys", post(key_create).get(key_list))
         .route("/admin/keys/{id}", axum::routing::delete(key_revoke))
+        .route(
+            "/tenant/settings",
+            get(tenant_plane::settings_read).put(tenant_plane::settings_set),
+        )
+        .route(
+            "/tenant/keys",
+            get(tenant_plane::key_list).post(tenant_plane::key_create),
+        )
+        .route(
+            "/tenant/keys/{id}",
+            axum::routing::delete(tenant_plane::key_revoke),
+        )
+        .route("/tenant/memberships", get(tenant_plane::member_list))
         .merge(crate::console::router_with(post(csp_report::receive)))
         .with_state(app.clone())
         .merge(crate::mcp::router(app))
@@ -1476,7 +1490,9 @@ impl Problem {
                 TenantError::NameTaken | TenantError::HoldsVcons | TenantError::UnderHold => {
                     StatusCode::CONFLICT
                 }
-                TenantError::BadName | TenantError::BadScopes => StatusCode::UNPROCESSABLE_ENTITY,
+                TenantError::BadName | TenantError::BadScopes | TenantError::BadSetting(_) => {
+                    StatusCode::UNPROCESSABLE_ENTITY
+                }
                 TenantError::CliOnly => StatusCode::FORBIDDEN,
                 TenantError::LimitReached | TenantError::AuditFailed | TenantError::Closing => {
                     StatusCode::SERVICE_UNAVAILABLE
@@ -1581,6 +1597,10 @@ impl Problem {
                     ("under-hold", "A vCon of the tenant is under a legal hold")
                 }
                 TenantError::BadScopes => ("bad-scopes", "A tenant key cannot hold these scopes"),
+                TenantError::BadSetting(_) => (
+                    "bad-setting",
+                    "A setting's name or value is not one a tenant may set",
+                ),
                 TenantError::CliOnly => ("forbidden", "The key does not allow this"),
                 TenantError::LimitReached => ("master-key-limit", "The master key must be rotated"),
                 TenantError::AuditFailed => {
@@ -2306,6 +2326,11 @@ mod tests {
             (TenantError::Closing, 503, "unavailable"),
             (TenantError::CliOnly, 403, "forbidden"),
             (TenantError::BadScopes, 422, "bad-scopes"),
+            (
+                TenantError::BadSetting(crate::settings::SettingError::UnknownName),
+                422,
+                "bad-setting",
+            ),
             (TenantError::WrongKey, 500, "internal"),
             (TenantError::Io, 500, "internal"),
         ];
@@ -5098,6 +5123,9 @@ mod plane_routes;
 mod policy_tests;
 
 #[cfg(test)]
+mod tenant_routes;
+
+#[cfg(test)]
 mod site_pages {
     use std::collections::BTreeSet;
     use std::path::PathBuf;
@@ -5228,6 +5256,7 @@ mod site_pages {
             TenantError::Closing,
             TenantError::CliOnly,
             TenantError::BadScopes,
+            TenantError::BadSetting(crate::settings::SettingError::UnknownName),
             TenantError::WrongKey,
             TenantError::Io,
         ];
@@ -5243,6 +5272,7 @@ mod site_pages {
                 | TenantError::Closing
                 | TenantError::CliOnly
                 | TenantError::BadScopes
+                | TenantError::BadSetting(_)
                 | TenantError::WrongKey
                 | TenantError::Io => all.push(Problem::Tenant(error)),
             }

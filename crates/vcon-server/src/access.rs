@@ -101,6 +101,12 @@ impl Scopes {
         Scopes(self.0 | other.0)
     }
 
+    /// Whether `other` holds every scope of this set.
+    #[must_use]
+    pub fn within(self, other: Scopes) -> bool {
+        self.0 & !other.0 == 0
+    }
+
     /// The scopes a list names, or None when one is unknown or named twice,
     /// so a list means one thing. Which scopes a key may hold is Tenants'
     /// rule.

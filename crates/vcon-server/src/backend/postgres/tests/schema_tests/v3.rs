@@ -2,12 +2,10 @@
 //! the registry's tenant table. Each live test starts from a database at
 //! version 2, as a build of `main` before the role cap left one.
 
-use super::super::super::schema::{MIGRATIONS, SCHEMA_VERSION, version_refusal};
+use super::super::super::schema::{MIGRATIONS, version_refusal};
 
 #[test]
-fn version_3_is_the_third_migration_and_this_binarys() {
-    assert_eq!(MIGRATIONS.len(), 3, "the migrations");
-    assert_eq!(SCHEMA_VERSION, 3, "this binary's version");
+fn version_3_is_the_third_migration() {
     assert!(
         MIGRATIONS[2].contains("ALTER TABLE vcon.tenant ADD COLUMN role_cap_sealed bytea;"),
         "the third adds the column, which takes NULL"
@@ -18,7 +16,7 @@ fn version_3_is_the_third_migration_and_this_binarys() {
 fn a_version_2_database_is_refused_with_the_command_that_upgrades_it() {
     let why = version_refusal(Some(2)).expect("refused");
     assert!(
-        why.contains("version 2, older than this binary's 3")
+        why.contains("version 2, older than this binary's 4")
             && why.contains("vcon-server migrate"),
         "the versions and the command: {why}"
     );
@@ -55,15 +53,6 @@ fn version_3_is_one_statement() {
         statements,
         ["ALTER TABLE vcon.tenant ADD COLUMN role_cap_sealed bytea;"],
         "the whole migration, besides its comments"
-    );
-}
-
-#[test]
-fn a_database_newer_than_version_3_is_refused_as_newer() {
-    let why = version_refusal(Some(4)).expect("refused");
-    assert!(
-        why.contains("version 4") && why.contains("upgrade this server"),
-        "a newer database: {why}"
     );
 }
 
@@ -121,8 +110,8 @@ mod on_a_server {
         .expect("a tenant, written before the upgrade");
         assert_eq!(
             db.migrate().await,
-            Migrated { from: 2, to: 3 },
-            "only the third migration runs"
+            Migrated { from: 2, to: 4 },
+            "every migration after the second runs"
         );
         assert_eq!(
             read(&db, "SELECT count(*) FROM vcon.tenant")
@@ -185,17 +174,17 @@ mod on_a_server {
         db.migrate().await;
         assert!(
             db.connect("vcon_app", Purpose::Serve).await.is_ok(),
-            "accepted at version 3"
+            "accepted at this binary's version"
         );
     }
 
     #[tokio::test]
-    async fn a_new_database_reaches_version_3_with_the_column() {
+    async fn a_new_database_has_the_column() {
         let db = Db::fresh().await;
         assert_eq!(
             db.migrate().await,
-            Migrated { from: 0, to: 3 },
-            "all three migrations"
+            Migrated { from: 0, to: 4 },
+            "every migration"
         );
         assert_eq!(count(&db.admin().await, COLUMN).await, 1, "the column");
     }
@@ -292,7 +281,7 @@ mod on_a_server {
         db.migrate().await;
         assert_eq!(
             db.migrate().await,
-            Migrated { from: 3, to: 3 },
+            Migrated { from: 4, to: 4 },
             "nothing left to do"
         );
         assert_eq!(
@@ -301,7 +290,7 @@ mod on_a_server {
                 "SELECT count(*) FROM vcon.schema_version"
             )
             .await,
-            3,
+            4,
             "one row for each version"
         );
     }

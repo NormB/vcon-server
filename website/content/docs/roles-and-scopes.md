@@ -50,14 +50,14 @@ ACME=$(sudo -u vcon vcon-server tenant list --config $CONFIG | jq -r 'select(.na
 | `records` | `delete` | `DELETE /vcons/{uuid}` |
 | `legal` | `legal` | the `/legal/` routes |
 | `auditor` | `audit` | `GET /audit` |
-| `tenant-admin` | `tenant_admin` | no route yet |
+| `tenant-admin` | `tenant_admin` | the `/tenant/` routes |
 | `operator` | `admin` | the `/admin/` routes |
 
 The first six are the roles of a membership in a tenant; `operator` is the
 one role of an operator membership. The role is spelled `tenant-admin` and
 its scope `tenant_admin`. A tenant key may hold `tenant_admin` too
-(`key create --scope tenant_admin`); no route needs it yet, so it reaches
-only what any key reaches.
+(`key create --scope tenant_admin`), and such a key reaches the `/tenant/`
+routes: see [administer a tenant with a key](@/docs/tenant-administration.md).
 
 ## Read a membership's scopes
 
@@ -236,10 +236,10 @@ See [audit log records](@/docs/audit-log-records.md) for every action.
 - **`a tenant key's scopes are one or more of write, read, delete, legal,
   audit and tenant_admin, each named once`:** a key takes the scope's name,
   `tenant_admin`, not the role's, `tenant-admin`.
-- **`the registry cannot be opened: … schema version 6 is not one this
+- **`the registry cannot be opened: … schema version 7 is not one this
   build knows`:** an older binary is reading a data directory that a newer
   one has opened. See
-  [upgrade](@/docs/upgrading.md#schema-version-6-and-no-way-back-without-the-copy).
+  [upgrade](@/docs/upgrading.md#schema-version-7-and-no-way-back-without-the-copy).
 
 ## Clean up
 

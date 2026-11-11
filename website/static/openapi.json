@@ -144,7 +144,7 @@
             }
           },
           "422": {
-            "description": "The body is refused: invalid-body, bad-scopes, path-uuid-mismatch or a format refusal",
+            "description": "The body is refused: invalid-body, bad-scopes, bad-setting, path-uuid-mismatch or a format refusal",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -566,7 +566,7 @@
             }
           },
           "422": {
-            "description": "The body is refused: invalid-body, bad-scopes, path-uuid-mismatch or a format refusal",
+            "description": "The body is refused: invalid-body, bad-scopes, bad-setting, path-uuid-mismatch or a format refusal",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2320,7 +2320,7 @@
             }
           },
           "422": {
-            "description": "The body is refused: invalid-body, bad-scopes, path-uuid-mismatch or a format refusal",
+            "description": "The body is refused: invalid-body, bad-scopes, bad-setting, path-uuid-mismatch or a format refusal",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2544,7 +2544,7 @@
             }
           },
           "422": {
-            "description": "The body is refused: invalid-body, bad-scopes, path-uuid-mismatch or a format refusal",
+            "description": "The body is refused: invalid-body, bad-scopes, bad-setting, path-uuid-mismatch or a format refusal",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2783,7 +2783,7 @@
             }
           },
           "422": {
-            "description": "The body is refused: invalid-body, bad-scopes, path-uuid-mismatch or a format refusal",
+            "description": "The body is refused: invalid-body, bad-scopes, bad-setting, path-uuid-mismatch or a format refusal",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2920,7 +2920,7 @@
             }
           },
           "422": {
-            "description": "The body is refused: invalid-body, bad-scopes, path-uuid-mismatch or a format refusal",
+            "description": "The body is refused: invalid-body, bad-scopes, bad-setting, path-uuid-mismatch or a format refusal",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3085,6 +3085,678 @@
         "responses": {
           "204": {
             "description": "Revoked, also when already revoked"
+          },
+          "400": {
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid bearer key: unauthorized",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key does not allow this, or this listener does not serve this kind of key: forbidden, wrong-listener",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found: not-found, unknown-tenant or unknown-key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "The body did not arrive in time: timeout",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is over the size limit: too-large",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed or a version is damaged: damaged or internal",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service cannot answer now: unavailable, audit-failed, limit-reached or master-key-limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tenant/settings": {
+      "get": {
+        "operationId": "readSettings",
+        "summary": "Every setting of the key's tenant, each with what was set or its default",
+        "description": "Needs a key of a tenant with the tenant_admin scope; it works in that key's tenant.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The settings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Settings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid bearer key: unauthorized",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key does not allow this, or this listener does not serve this kind of key: forbidden, wrong-listener",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found: not-found, unknown-tenant or unknown-key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "The body did not arrive in time: timeout",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is over the size limit: too-large",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed or a version is damaged: damaged or internal",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service cannot answer now: unavailable, audit-failed, limit-reached or master-key-limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "setSettings",
+        "summary": "Change the settings the body names; null puts a name back to its default",
+        "description": "Needs a key of a tenant with the tenant_admin scope; it works in that key's tenant.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every setting after the change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Settings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid bearer key: unauthorized",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key does not allow this, or this listener does not serve this kind of key: forbidden, wrong-listener",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found: not-found, unknown-tenant or unknown-key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "The body did not arrive in time: timeout",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is over the size limit: too-large",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body is refused: invalid-body, bad-scopes, bad-setting, path-uuid-mismatch or a format refusal",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed or a version is damaged: damaged or internal",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service cannot answer now: unavailable, audit-failed, limit-reached or master-key-limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingsChange"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tenant/keys": {
+      "post": {
+        "operationId": "createTenantKey",
+        "summary": "Make a key for the caller's tenant, within the tenant's role cap; its token is shown this once",
+        "description": "Needs a key of a tenant with the tenant_admin scope; it works in that key's tenant.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Made",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NewKey"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "description": "no-store",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid bearer key: unauthorized",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key does not allow this, or this listener does not serve this kind of key: forbidden, wrong-listener",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found: not-found, unknown-tenant or unknown-key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "The body did not arrive in time: timeout",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is over the size limit: too-large",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body is refused: invalid-body, bad-scopes, bad-setting, path-uuid-mismatch or a format refusal",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed or a version is damaged: damaged or internal",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service cannot answer now: unavailable, audit-failed, limit-reached or master-key-limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewTenantKeyRequest"
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "listTenantKeys",
+        "summary": "The keys of the caller's tenant, oldest first; never a token",
+        "description": "Needs a key of a tenant with the tenant_admin scope; it works in that key's tenant.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The keys",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/KeyInfo"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid bearer key: unauthorized",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key does not allow this, or this listener does not serve this kind of key: forbidden, wrong-listener",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found: not-found, unknown-tenant or unknown-key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "The body did not arrive in time: timeout",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is over the size limit: too-large",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed or a version is damaged: damaged or internal",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service cannot answer now: unavailable, audit-failed, limit-reached or master-key-limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tenant/keys/{id}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/keyId"
+        }
+      ],
+      "delete": {
+        "operationId": "revokeTenantKey",
+        "summary": "Revoke a key of the caller's tenant",
+        "description": "Needs a key of a tenant with the tenant_admin scope; it works in that key's tenant.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked, also when already revoked"
+          },
+          "400": {
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid bearer key: unauthorized",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key does not allow this, or this listener does not serve this kind of key: forbidden, wrong-listener",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found: not-found, unknown-tenant or unknown-key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "The body did not arrive in time: timeout",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is over the size limit: too-large",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed or a version is damaged: damaged or internal",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service cannot answer now: unavailable, audit-failed, limit-reached or master-key-limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tenant/memberships": {
+      "get": {
+        "operationId": "listMemberships",
+        "summary": "The memberships in the caller's tenant, oldest first",
+        "description": "Needs a key of a tenant with the tenant_admin scope; it works in that key's tenant.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The memberships",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Member"
+                  }
+                }
+              }
+            }
           },
           "400": {
             "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
@@ -3345,6 +4017,7 @@
               "https://vcon-server.com/problems/bad-payload",
               "https://vcon-server.com/problems/bad-query",
               "https://vcon-server.com/problems/bad-scopes",
+              "https://vcon-server.com/problems/bad-setting",
               "https://vcon-server.com/problems/bad-uuid",
               "https://vcon-server.com/problems/conflict",
               "https://vcon-server.com/problems/damaged",
@@ -3732,6 +4405,183 @@
               "counts",
               "full"
             ]
+          }
+        }
+      },
+      "Settings": {
+        "type": "object",
+        "description": "Every setting of a tenant. A masking name is true while the console masks personal data for a user holding the role. session.idle_seconds is never above session.absolute_seconds.",
+        "required": [
+          "masking.reader",
+          "masking.producer",
+          "masking.records",
+          "masking.legal",
+          "masking.auditor",
+          "masking.tenant-admin",
+          "session.idle_seconds",
+          "session.absolute_seconds"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "masking.reader": {
+            "type": "boolean"
+          },
+          "masking.producer": {
+            "type": "boolean"
+          },
+          "masking.records": {
+            "type": "boolean"
+          },
+          "masking.legal": {
+            "type": "boolean"
+          },
+          "masking.auditor": {
+            "type": "boolean"
+          },
+          "masking.tenant-admin": {
+            "type": "boolean"
+          },
+          "session.idle_seconds": {
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 900
+          },
+          "session.absolute_seconds": {
+            "type": "integer",
+            "minimum": 300,
+            "maximum": 28800
+          }
+        }
+      },
+      "SettingsChange": {
+        "type": "object",
+        "description": "The names to change, each with its new value or null for its default. A name left out is not changed.",
+        "additionalProperties": false,
+        "properties": {
+          "masking.reader": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "masking.producer": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "masking.records": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "masking.legal": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "masking.auditor": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "masking.tenant-admin": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "session.idle_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 60,
+            "maximum": 900
+          },
+          "session.absolute_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 300,
+            "maximum": 28800
+          }
+        }
+      },
+      "NewTenantKeyRequest": {
+        "type": "object",
+        "required": [
+          "scopes",
+          "label"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "scopes": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": [
+                "write",
+                "read",
+                "delete",
+                "legal",
+                "audit"
+              ]
+            }
+          },
+          "label": {
+            "type": "string"
+          }
+        }
+      },
+      "Member": {
+        "type": "object",
+        "required": [
+          "user",
+          "label",
+          "roles",
+          "scopes",
+          "granted_at"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "user": {
+            "type": "string",
+            "description": "The user's id"
+          },
+          "label": {
+            "type": "string"
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "reader",
+                "producer",
+                "records",
+                "legal",
+                "auditor",
+                "tenant-admin"
+              ]
+            }
+          },
+          "scopes": {
+            "type": "array",
+            "description": "The scopes the roles give under the tenant's role cap",
+            "items": {
+              "type": "string"
+            }
+          },
+          "granted_at": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       }

@@ -28,6 +28,7 @@
 - [Get a Let's Encrypt certificate](https://vcon-server.com/docs/lets-encrypt/): certbot by HTTP-01 or DNS-01, a deploy hook that installs each renewal and restarts the server, no CA file for clients
 - [Add users and memberships](https://vcon-server.com/docs/users-and-memberships/): users made on the host, roles in a tenant or the operator role, each change in the audit logs; no request reads them yet
 - [Roles, scopes and a tenant's role cap](https://vcon-server.com/docs/roles-and-scopes/): the scope each role of a membership gives, a membership's scopes, and the roles a tenant's memberships may be given; no request reads them yet
+- [Administer a tenant with a key](https://vcon-server.com/docs/tenant-administration/): a key with the scope tenant_admin reads and changes its tenant's settings, issues and revokes the tenant's keys within its role cap, and lists its memberships
 
 ## Concepts
 

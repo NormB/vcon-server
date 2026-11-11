@@ -33,33 +33,51 @@ All notable changes to this project are recorded here. The format follows
   the cap allows it again. The two commands are recorded as `role_cap_set`
   (in the admin audit log and the tenant's) and `role_cap_read` (in the
   admin audit log). See the how-to "Roles, scopes and a tenant's role cap".
+- Routes for a tenant's administrator. A key of a tenant that holds the scope
+  `tenant_admin` reads and changes the tenant's settings (`GET` and
+  `PUT /tenant/settings`), makes, lists and revokes the tenant's keys
+  (`POST` and `GET /tenant/keys`, `DELETE /tenant/keys/{id}`) and lists the
+  tenant's memberships (`GET /tenant/memberships`). Each route works in the
+  tenant of the key that asks; an operator key is refused. The settings are
+  a fixed list: `masking.<role>` for each of the six tenant roles (`true`
+  or `false`, `true` while unset), `session.idle_seconds` (60 to 900) and
+  `session.absolute_seconds` (300 to 28800), with the idle limit never above
+  the absolute one; a change outside the list is refused with the new
+  problem `bad-setting`. Nothing reads a setting yet: sessions and the
+  console's masking will, in a later release. A key made at
+  `POST /tenant/keys` holds scopes within the tenant's role cap and never
+  `tenant_admin` or `admin`. Each call is recorded in the admin audit log
+  and the tenant's, as `settings_read`, `settings_set`, `key_create`,
+  `key_list`, `key_revoke` or `membership_list`; a `settings_set` record
+  names the settings changed and never a value. The console's key form
+  offers `tenant_admin`. See the how-to "Administer a tenant with a key".
 
 ### Changed
 
-- **No downgrade: the catalogs move to schema version 6.** The first time
+- **No downgrade: the catalogs move to schema version 7.** The first time
   this server or one of its commands opens a data directory, it brings
-  `server.sqlite` from schema version 4 to 6, and each tenant's catalog at
+  `server.sqlite` from schema version 4 to 7, and each tenant's catalog at
   that tenant's first use, each in one transaction. Version 5 adds the
   tables `user_account` and `membership` to `server.sqlite`, and lets every
   audit log hold a record with no status: the number 0 that a version-4
   log kept for a `listener_full` record becomes no status, under the same
   sequence numbers, and readers see `null` as before. Version 6 adds the
   column `role_cap` to the `tenant` table of `server.sqlite`, empty for
-  every tenant. Release 0.4.3
-  and earlier refuse a catalog at version 6 (`schema version 6 is not one
+  every tenant. Version 7 adds the table `tenant_setting` to
+  `server.sqlite`, empty. Release 0.4.3
+  and earlier refuse a catalog at version 7 (`schema version 7 is not one
   this build knows`), so the way back is the copy of the data directory
   taken before the upgrade. With the PostgreSQL catalog preview, run
-  `vcon-server migrate` to bring the database from schema version 1 to 3
-  before a server starts. See "Schema version 6" on the upgrade page.
+  `vcon-server migrate` to bring the database from schema version 1 to 4
+  before a server starts. See "Schema version 7" on the upgrade page.
 - **Breaking for a reader of the audit log that knows a fixed list of
-  actions:** add the five actions named above, and `role_cap_set` and
-  `role_cap_read`.
+  actions:** add the five actions named above, and `role_cap_set`,
+  `role_cap_read`, `settings_read`, `settings_set` and `membership_list`.
 - **`user list` prints each membership's `scopes`** beside its `roles`:
   what the membership lets its user do, under the tenant's role cap.
 - **A tenant key may hold the scope `tenant_admin`.** `key create --scope`
   and `POST /admin/tenants/{id}/keys` take the name with the five there
-  were. No route needs the scope yet, so such a key reaches only the
-  routes any key reaches.
+  were. Such a key reaches the routes under `/tenant`.
 
 ## [0.4.3] - 2026-11-11
 

@@ -18,7 +18,7 @@ use crate::backend::local::LocalRegistry;
 use crate::envelope::Key;
 
 /// The users and memberships tables of schema version 5.
-const USERS_V5: &str = "
+pub(super) const USERS_V5: &str = "
 CREATE TABLE user_account (
     id BLOB PRIMARY KEY NOT NULL,
     label TEXT NOT NULL,
@@ -44,7 +44,7 @@ CREATE INDEX membership_of_tenant ON membership (tenant);
 ";
 
 /// Every catalog's audit log at schema version 5.
-const AUDIT_V5: &str = "
+pub(super) const AUDIT_V5: &str = "
 CREATE TABLE audit (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     at TEXT NOT NULL,
@@ -60,7 +60,7 @@ CREATE INDEX audit_counted ON audit (actor, action, status, at);
 
 /// Rows a version-5 server.sqlite could hold besides those of version 4:
 /// a second tenant, a user, and the user's membership in the first tenant.
-const ROWS_V5: &str = "
+pub(super) const ROWS_V5: &str = "
 INSERT INTO tenant VALUES (x'b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2', 'beta', NULL, 8, x'0505050505050505',
     x'feed', NULL, 8, NULL);
 INSERT INTO user_account VALUES (x'c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3', 'Reader', NULL, NULL, 12, NULL);
@@ -82,7 +82,7 @@ const TENANT_READ: &str = "SELECT id, name, retention, created_at, tenant_key_id
      wrapped_tenant_key, pending_wrapped_tenant_key, key_since, metadata FROM tenant ORDER BY id";
 
 /// The columns of a table, in order.
-fn columns(conn: &Connection, table: &str) -> Vec<String> {
+pub(super) fn columns(conn: &Connection, table: &str) -> Vec<String> {
     rows(
         conn,
         &format!("SELECT name FROM pragma_table_info('{table}')"),
@@ -94,7 +94,11 @@ fn columns(conn: &Connection, table: &str) -> Vec<String> {
 #[test]
 fn a_version_5_registry_gains_the_role_cap_column() {
     let conn = registry().upgraded();
-    assert_eq!(version(&conn), 6, "the upgraded registry's version");
+    assert_eq!(
+        version(&conn),
+        SCHEMA_VERSION,
+        "the upgraded registry's version"
+    );
     assert_eq!(
         columns(&conn, "tenant").last().map(String::as_str),
         Some("role_cap"),
@@ -153,7 +157,7 @@ fn a_new_registry_is_made_at_version_6_with_the_column() {
     let dir = tempfile::tempdir().expect("temp dir");
     let new = LocalRegistry::open(dir.path(), Key::generate().expect("key")).expect("a new one");
     let conn = new.local_conn();
-    assert_eq!(version(&conn), 6, "a new registry's version");
+    assert_eq!(version(&conn), SCHEMA_VERSION, "a new registry's version");
     assert!(
         columns(&conn, "tenant").contains(&"role_cap".to_owned()),
         "the column is in a new registry"
@@ -189,7 +193,7 @@ fn the_column_of_an_upgraded_registry_takes_a_cap_and_gives_it_up() {
 fn a_0_4_2_registry_reaches_version_6_in_one_step() {
     let old = Old::registry();
     let conn = old.upgraded();
-    assert_eq!(version(&conn), 6, "from version 4");
+    assert_eq!(version(&conn), SCHEMA_VERSION, "from version 4");
     assert!(
         tables(&conn).contains(&"membership".to_owned()),
         "version 5's tables"
@@ -209,7 +213,7 @@ fn registries_stamped_with_every_older_version_gain_the_column() {
             .execute_batch("CREATE TABLE tenant (id BLOB PRIMARY KEY NOT NULL)")
             .expect("a tenant table");
         let conn = old.upgraded();
-        assert_eq!(version(&conn), 6, "from {from}");
+        assert_eq!(version(&conn), SCHEMA_VERSION, "from {from}");
         assert!(
             columns(&conn, "tenant").contains(&"role_cap".to_owned()),
             "from {from}"
@@ -230,7 +234,11 @@ fn a_re_encrypted_upgraded_registry_keeps_the_column_and_a_cap() {
     let new_key = Key::generate().expect("key");
     super::reencrypt(&old.path(), &old.key, &new_key).expect("re-encrypted");
     let conn = open(&old.path(), &new_key, "").expect("opens under the new key");
-    assert_eq!(version(&conn), 6, "the version after re-encryption");
+    assert_eq!(
+        version(&conn),
+        SCHEMA_VERSION,
+        "the version after re-encryption"
+    );
     assert_eq!(
         rows(&conn, "SELECT name, role_cap FROM tenant ORDER BY name"),
         ["acme|NULL", "beta|legal"],
@@ -341,14 +349,15 @@ fn a_wrong_key_upgrades_no_version_5_registry() {
 }
 
 #[test]
-fn version_7_is_refused_and_left_as_it_was() {
-    let old = Old::at(7, &[REGISTRY_V4, USERS_V5, AUDIT_V5]);
+fn the_version_after_this_builds_is_refused_and_left_as_it_was() {
+    let next = SCHEMA_VERSION + 1;
+    let old = Old::at(next, &[REGISTRY_V4, USERS_V5, AUDIT_V5]);
     let before = declared(&old.raw());
     assert!(
-        matches!(old.open(), Err(CatalogError::UnknownSchema(7))),
+        matches!(old.open(), Err(CatalogError::UnknownSchema(n)) if n == next),
         "a version this build does not know"
     );
-    assert_eq!(version(&old.raw()), 7, "the number is left");
+    assert_eq!(version(&old.raw()), next, "the number is left");
     assert_eq!(declared(&old.raw()), before, "the tables are left");
 }
 
@@ -358,7 +367,6 @@ fn this_build_makes_a_version_a_version_5_build_refuses() {
     // number, so it cannot write a tenant row without the column's place.
     let conn = registry().upgraded();
     assert!(version(&conn) > 5, "the number: {}", version(&conn));
-    assert_eq!(SCHEMA_VERSION, 6, "this build's version");
 }
 
 #[test]
@@ -385,7 +393,7 @@ fn a_version_5_tenant_catalog_changes_only_its_number() {
     let old = Old::at(5, &[TENANT_V4, AUDIT_V5]);
     let before = declared(&old.raw());
     let conn = old.upgraded();
-    assert_eq!(version(&conn), 6, "the number");
+    assert_eq!(version(&conn), SCHEMA_VERSION, "the number");
     assert_eq!(
         declared(&conn),
         before,
@@ -409,7 +417,7 @@ fn a_version_5_catalog_with_no_tenant_table_changes_only_its_number() {
     let old = Old::at(5, &["CREATE TABLE note (text TEXT)"]);
     let before = declared(&old.raw());
     let conn = old.upgraded();
-    assert_eq!(version(&conn), 6, "the number");
+    assert_eq!(version(&conn), SCHEMA_VERSION, "the number");
     assert_eq!(declared(&conn), before, "nothing else");
 }
 

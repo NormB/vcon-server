@@ -579,6 +579,16 @@ pub trait RegistryTx {
     fn delete_memberships_of_user(&mut self, user: UserId) -> Result<(), TenantError>;
     /// Removes every membership in a tenant.
     fn delete_memberships_in(&mut self, tenant: TenantId) -> Result<(), TenantError>;
+    /// The settings a tenant has set, as (name, value) by name. The table
+    /// does not know tenants or names: the caller checks both.
+    fn settings(&mut self, tenant: TenantId) -> Result<Vec<(String, String)>, TenantError>;
+    /// Sets one of a tenant's settings, over the value it had.
+    fn put_setting(&mut self, tenant: TenantId, name: &str, value: &str)
+    -> Result<(), TenantError>;
+    /// Removes one of a tenant's settings, if it was set.
+    fn delete_setting(&mut self, tenant: TenantId, name: &str) -> Result<(), TenantError>;
+    /// Removes every setting of a tenant.
+    fn delete_settings_in(&mut self, tenant: TenantId) -> Result<(), TenantError>;
     /// The times of the admin records of `action` with `status`, as
     /// stored.
     fn record_times(&mut self, action: Action, status: u16) -> Result<Vec<String>, TenantError>;

@@ -14,10 +14,11 @@ use crate::envelope::Key;
 /// 4 added the places of packed versions and the pack tables to a tenant
 /// catalog; version 5 added the users and memberships tables to
 /// server.sqlite, and lets every catalog's audit log hold no status;
-/// version 6 added each tenant's role cap to server.sqlite.
+/// version 6 added each tenant's role cap to server.sqlite; version 7 added
+/// the table of the settings a tenant's administrator sets.
 /// A build refuses every version it does not know, so a catalog this
 /// build has opened is refused by release 0.4.3 and earlier.
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 /// The users and their memberships in server.sqlite, as a new registry
 /// and an upgraded one both make them. A user is a person who signs in:
@@ -98,6 +99,19 @@ const TENANT_METADATA: &str = "ALTER TABLE tenant ADD COLUMN metadata TEXT;";
 /// Brings server.sqlite from version 5 to 6: each tenant's role cap, NULL
 /// (no cap: every tenant role is allowed) for every tenant there is.
 const TENANT_ROLE_CAP: &str = "ALTER TABLE tenant ADD COLUMN role_cap TEXT;";
+
+/// The settings a tenant's administrator has set, as a new registry and an
+/// upgraded one both make them (version 7): one row for each name a tenant
+/// has set, the name and the value as `crate::settings` writes them. A
+/// name with no row has its default.
+pub(crate) const TENANT_SETTINGS: &str = "
+CREATE TABLE tenant_setting (
+    tenant BLOB NOT NULL,
+    name TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (tenant, name)
+);
+";
 
 /// The tables of a tenant catalog's pack files, as a new catalog and an
 /// upgraded one both make them. A pack file's row records its UTC store
@@ -241,7 +255,7 @@ pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogE
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
         }
-        from @ 1..=5 => {
+        from @ 1..=6 => {
             // One transaction, so a failed upgrade leaves the old version
             // whole. A tenant catalog has a vcon table, server.sqlite a
             // tenant table, and both an audit log.
@@ -271,6 +285,9 @@ pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogE
             }
             if from < 6 && has("tenant")? {
                 tx.execute_batch(TENANT_ROLE_CAP)?;
+            }
+            if from < 7 && has("tenant")? {
+                tx.execute_batch(TENANT_SETTINGS)?;
             }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
@@ -467,6 +484,9 @@ mod v5_tests;
 
 #[cfg(test)]
 mod v6_tests;
+
+#[cfg(test)]
+mod v7_tests;
 
 #[cfg(test)]
 pub(crate) mod testing {

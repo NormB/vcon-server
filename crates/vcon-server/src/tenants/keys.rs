@@ -4,7 +4,7 @@
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use super::{Slot, TenantError, Tenants, commit};
+use super::{RTx, Slot, TenantError, Tenants, commit};
 use crate::access::{self, Scope, Scopes};
 use crate::audit::{Action, Actor, Entry};
 use crate::backend::KeyRow;
@@ -42,6 +42,20 @@ impl KeyInfo {
             "revoked_at": revoked_at,
         }))
     }
+}
+
+/// A key's row as a list shows it. Scopes or a time that do not read back
+/// are damage, not none.
+pub(super) fn key_info(row: KeyRow) -> Result<KeyInfo, TenantError> {
+    let time = |at| from_nanos(at).ok_or(TenantError::Io);
+    Ok(KeyInfo {
+        id: row.id,
+        tenant: row.tenant,
+        scopes: Scopes::parse(&row.scopes).ok_or(TenantError::Io)?,
+        label: row.label,
+        created_at: time(row.created_at)?,
+        revoked_at: row.revoked_at.map(time).transpose()?,
+    })
 }
 
 /// A key just made. Its token is shown this once and never stored.
@@ -201,6 +215,26 @@ impl Tenants {
             commit(tx)?;
             return Err(error);
         }
+        let new = self.insert_key(&mut tx, tenant, scopes, label)?;
+        let made = entry(201, Some(new.id.to_string()));
+        self.record(&mut tx, &made)?;
+        // The copy opens the tenant's Store, which reads the registry.
+        commit(tx)?;
+        if let Some(t) = tenant {
+            self.copy_to_tenant(t, &made)?;
+        }
+        Ok(new)
+    }
+
+    /// Writes the row of a new key, made now, and gives its id and token.
+    /// Whether the key may be made is its caller's rule.
+    pub(super) fn insert_key(
+        &self,
+        tx: &mut RTx<'_>,
+        tenant: Option<TenantId>,
+        scopes: Scopes,
+        label: &str,
+    ) -> Result<NewKey, TenantError> {
         let (id, token) = access::new_token();
         tx.insert_key(&KeyRow {
             id,
@@ -211,13 +245,6 @@ impl Tenants {
             created_at: nanos(self.clock.now()),
             revoked_at: None,
         })?;
-        let made = entry(201, Some(id.to_string()));
-        self.record(&mut tx, &made)?;
-        // The copy opens the tenant's Store, which reads the registry.
-        commit(tx)?;
-        if let Some(t) = tenant {
-            self.copy_to_tenant(t, &made)?;
-        }
         Ok(NewKey { id, token })
     }
 
@@ -245,18 +272,7 @@ impl Tenants {
         let keys = tx
             .keys(tenant)?
             .into_iter()
-            .map(|row| {
-                let time = |at| from_nanos(at).ok_or(TenantError::Io);
-                Ok(KeyInfo {
-                    id: row.id,
-                    tenant: row.tenant,
-                    // Scopes that do not read back are damage, not none.
-                    scopes: Scopes::parse(&row.scopes).ok_or(TenantError::Io)?,
-                    label: row.label,
-                    created_at: time(row.created_at)?,
-                    revoked_at: row.revoked_at.map(time).transpose()?,
-                })
-            })
+            .map(key_info)
             .collect::<Result<Vec<_>, TenantError>>()?;
         self.record(&mut tx, &entry(200))?;
         commit(tx)?;

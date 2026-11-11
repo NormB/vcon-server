@@ -18,7 +18,7 @@ fn version_2_is_the_second_migration() {
 fn a_version_1_database_is_refused_with_the_command_that_upgrades_it() {
     let why = version_refusal(Some(1)).expect("refused");
     assert!(
-        why.contains("version 1, older than this binary's 3")
+        why.contains("version 1, older than this binary's 4")
             && why.contains("vcon-server migrate"),
         "the versions and the command: {why}"
     );
@@ -116,7 +116,7 @@ mod on_a_server {
         }
         assert_eq!(
             db.migrate().await,
-            Migrated { from: 1, to: 3 },
+            Migrated { from: 1, to: 4 },
             "every migration after the first runs"
         );
         let app = db.app().await;
@@ -136,7 +136,7 @@ mod on_a_server {
                 "SELECT max(version) FROM vcon.schema_version"
             )
             .await,
-            "3",
+            "4",
             "the version recorded"
         );
     }
@@ -421,7 +421,7 @@ mod on_a_server {
         db.migrate().await;
         assert_eq!(
             db.migrate().await,
-            Migrated { from: 3, to: 3 },
+            Migrated { from: 4, to: 4 },
             "nothing left to do"
         );
         assert_eq!(
@@ -430,7 +430,7 @@ mod on_a_server {
                 "SELECT count(*) FROM vcon.schema_version"
             )
             .await,
-            3,
+            4,
             "one row for each version"
         );
     }

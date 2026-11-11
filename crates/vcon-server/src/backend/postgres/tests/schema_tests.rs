@@ -10,6 +10,7 @@ mod failure;
 mod success;
 mod v2;
 mod v3;
+mod v4;
 
 #[cfg(feature = "backend-tests")]
 pub(super) mod live {
@@ -49,6 +50,7 @@ pub(super) mod live {
         "master_key_use",
         "membership",
         "tenant",
+        "tenant_setting",
         "user_account",
     ];
 
@@ -244,6 +246,7 @@ pub(super) mod live {
             "admin_audit" => "INSERT INTO vcon.admin_audit (at, actor, action, status, count) VALUES ('t', 'a', 'b', 1, 1)".to_owned(),
             "user_account" => "INSERT INTO vcon.user_account (id, label_sealed, created_at) VALUES ('\\x01', '\\x02', 1)".to_owned(),
             "membership" => "INSERT INTO vcon.membership (user_id, roles_sealed, granted_at) VALUES ('\\x01', '\\x02', 1)".to_owned(),
+            "tenant_setting" => "INSERT INTO vcon.tenant_setting (tenant, name, value_sealed) VALUES ('\\x01', 'n', '\\x02')".to_owned(),
             other => panic!("no insert for {other}"),
         }
     }

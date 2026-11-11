@@ -215,9 +215,30 @@ Refusals: [`unknown-tenant`](@/problems/unknown-tenant.md),
 
 A tenant name is 1 to 128 characters, with no control characters and no
 space at either end. A tenant key's scopes are one or more of `write`,
-`read`, `delete`, `legal`, `audit` and `tenant_admin`, each named once. No
-route needs `tenant_admin` yet; see
+`read`, `delete`, `legal`, `audit` and `tenant_admin`, each named once; see
 [roles and scopes](@/docs/roles-and-scopes.md).
+
+## Tenant administration
+
+All need a key of a tenant that holds the scope `tenant_admin`, and each
+works in that key's tenant: no route takes a tenant's id. An operator key
+and a tenant key without the scope get
+[`forbidden`](@/problems/forbidden.md). See
+[administer a tenant with a key](@/docs/tenant-administration.md).
+
+| Route | Takes | Answers |
+|---|---|---|
+| `GET /tenant/settings` | | `200` an object of every setting: `masking.<role>` for the six tenant roles (`true` or `false`), `session.idle_seconds` and `session.absolute_seconds` |
+| `PUT /tenant/settings` | an object of the settings to change, each with its new value or `null` for its default, such as `{"masking.legal": false, "session.idle_seconds": 300}` | `200` every setting after the change |
+| `POST /tenant/keys` | `{"scopes": ["read"], "label": "reports"}`; scopes within the tenant's role cap, never `tenant_admin` | `201` `{"id", "token"}` with `Cache-Control: no-store` |
+| `GET /tenant/keys` | | `200` `[{"id", "tenant", "scopes", "label", "created_at", "revoked_at"}]`, oldest first; never a token |
+| `DELETE /tenant/keys/{id}` | | `204`, also when already revoked; a key of another tenant is `404` |
+| `GET /tenant/memberships` | | `200` `[{"user", "label", "roles", "scopes", "granted_at"}]`, oldest first |
+
+Refusals: [`bad-setting`](@/problems/bad-setting.md),
+[`bad-scopes`](@/problems/bad-scopes.md),
+[`invalid-body`](@/problems/invalid-body.md),
+[`unknown-key`](@/problems/unknown-key.md).
 
 ## Audit logs
 

@@ -280,6 +280,7 @@ fn a_0_4_2_registry_gains_the_user_and_membership_tables_empty() {
             "master_key_use",
             "membership",
             "tenant",
+            "tenant_setting",
             "user_account"
         ],
         "the registry's tables after the upgrade"

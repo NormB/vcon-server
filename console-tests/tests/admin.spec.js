@@ -89,6 +89,31 @@ test("keys: a new token is shown once, revoking works, both recorded as by the A
   expect(recorded).toEqual(await about(request, apiKey));
 });
 
+test("keys: the form offers every scope a tenant key may hold, tenant_admin last", async ({ page, tenant }) => {
+  await signIn(page, operatorKey);
+  await openView(page, "tenants");
+  await page.locator(`#tenants tbody tr:has-text("${tenant.id}") button.keys`).click();
+  const offered = await page.locator("#key-scopes input[name=scope]").evaluateAll((boxes) => boxes.map((box) => box.value));
+  expect(offered).toEqual(["write", "read", "delete", "legal", "audit", "tenant_admin"]);
+});
+
+test("keys: a tenant administrator's key issued in the console administers its tenant", async ({ page, request, tenant }) => {
+  await signIn(page, operatorKey);
+  await openView(page, "tenants");
+  await page.locator(`#tenants tbody tr:has-text("${tenant.id}") button.keys`).click();
+  await page.check('#key-create input[value="tenant_admin"]');
+  await page.fill("#key-label", "tenant-administrator");
+  await page.click("#key-create button[type=submit]");
+  await expect(page.locator("#new-token")).toHaveText(/^vcs_/);
+  const token = (await page.locator("#new-token").textContent()).trim();
+  const headers = { Authorization: `Bearer ${token}` };
+  const own = await request.get("/key", { headers });
+  expect(await own.json()).toMatchObject({ tenant: tenant.id, scopes: ["tenant_admin"] });
+  const settings = await request.get("/tenant/settings", { headers });
+  expect(settings.status()).toBe(200);
+  expect(await settings.json()).toMatchObject({ "masking.reader": true, "session.idle_seconds": 900 });
+});
+
 test("a tenant key gets no admin view", async ({ page, tenant }) => {
   await signIn(page, await tenant.key(["write", "read", "delete", "legal", "audit"]));
   await expect(page.locator('#views button[data-view="vcons"]')).toBeVisible();

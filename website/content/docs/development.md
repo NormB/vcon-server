@@ -27,6 +27,7 @@ crates/
         ├── tui.rs         the terminal UI, a client of a running server
         ├── reveal.rs      the reveal marker on a read, for the audit log
         ├── roles.rs       the roles a membership holds, and the scope each gives
+        ├── settings.rs    the settings a tenant's administrator sets, and what each may hold
         ├── access.rs      tokens, scopes, authentication
         ├── store.rs       one tenant's vCons: versions, deletes, purges, legal reads
         ├── backend.rs     where the data is kept: local files, an S3 bucket, PostgreSQL

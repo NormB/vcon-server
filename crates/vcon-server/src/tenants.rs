@@ -27,6 +27,7 @@ mod examine;
 mod keys;
 mod rekey;
 mod role_cap;
+mod tenant_admin;
 mod users;
 
 pub use backup::{Backup, BackupError};
@@ -34,6 +35,7 @@ pub use examine::{KeyOrder, RegistryExamination, RotationBacklog, TenantExaminat
 pub use keys::{KeyInfo, NewKey};
 pub(crate) use rekey::MasterStep;
 pub use rekey::rekey_master;
+pub use tenant_admin::MemberInfo;
 #[cfg(test)]
 pub(crate) use tests::{Fixture, fixture};
 pub use users::{Identity, MembershipInfo, UserError, UserInfo};
@@ -76,8 +78,10 @@ pub enum TenantError {
     Closing,
     /// Only the command line may do this: make an operator key.
     CliOnly,
-    /// Scopes a key of its kind cannot hold.
+    /// Scopes a key of its kind, or made by this caller, cannot hold.
     BadScopes,
+    /// A change to a tenant's settings that the list of settings refuses.
+    BadSetting(crate::settings::SettingError),
     /// server.sqlite was made under another master key.
     WrongKey,
     Io,
@@ -678,8 +682,10 @@ impl Tenants {
         {
             let mut tx = self.registry.immediate()?;
             tx.delete_tenant(id, nanos(self.clock.now()))?;
-            // A membership is in a tenant: none outlives its tenant.
+            // A membership and a setting are in a tenant: none outlives
+            // its tenant.
             tx.delete_memberships_in(id)?;
+            tx.delete_settings_in(id)?;
             self.record(&mut tx, &entry(204))?;
             commit(tx)?;
         }
@@ -1142,6 +1148,7 @@ mod tests {
                 "membership",
                 "sqlite_sequence",
                 "tenant",
+                "tenant_setting",
                 "user_account"
             ]
         );
@@ -2254,7 +2261,8 @@ mod tests {
                 .execute_batch(&format!(
                     "ALTER TABLE tenant DROP COLUMN role_cap;
                      ALTER TABLE tenant DROP COLUMN metadata; DROP TABLE membership;
-                     DROP TABLE user_account; PRAGMA user_version = {from};"
+                     DROP TABLE user_account; DROP TABLE tenant_setting;
+                     PRAGMA user_version = {from};"
                 ))
                 .expect("back to the old schema");
             f.restart();
