@@ -82,8 +82,8 @@ impl Tenants {
     /// Counts one time that a listener found every one of its places held
     /// (`limits.connections`), in the admin log: action `listener_full`,
     /// no actor, the listener's configuration key (`listen` or
-    /// `operator.listen`) as the target, and status 503, though a
-    /// connection that waits is sent no answer. A failure to count changes
+    /// `operator.listen`) as the target, and no status: the record is of
+    /// a listener's state and answers no request. A failure to count changes
     /// nothing for the listener.
     pub(crate) fn count_listener_full(&self, listener: &str) {
         let _ = self.count_admin(&Entry {
@@ -91,7 +91,7 @@ impl Tenants {
             action: Action::ListenerFull,
             target: Some(listener.to_owned()),
             version: None,
-            status: 503,
+            status: crate::audit::NO_ANSWER,
         });
     }
 
@@ -719,8 +719,9 @@ mod tests {
         assert_eq!(counted[0]["actor"], "", "no caller: none was taken");
         assert_eq!(counted[0]["target"], "listen", "the listener's key");
         assert_eq!(
-            counted[0]["status"], 503,
-            "the status of a server that cannot serve now"
+            counted[0]["status"],
+            serde_json::Value::Null,
+            "no status: a listener that filled answered no request"
         );
         assert_eq!(counted[0]["count"], 1, "one time");
     }

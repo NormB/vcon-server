@@ -6,7 +6,7 @@ import { utc } from "../../crates/vcon-server/console/format.js";
 
 /** The rows of the audit table, as the records' fields in column order. */
 function fields(r) {
-  return [r.seq, utc(r.at), r.actor, r.action, r.target ?? "", r.version ?? "", r.status, r.count].map(String);
+  return [r.seq, utc(r.at), r.actor, r.action, r.target ?? "", r.version ?? "", r.status ?? "", r.count].map(String);
 }
 
 test("an audit key reads its tenant's log, a page at a time", async ({ page, request, tenant }) => {
@@ -53,6 +53,23 @@ test("an operator key reads the admin log", async ({ page, tenant }) => {
   const seqs = (await rows.locator("td:first-child").allTextContents()).map(Number);
   expect(new Set(seqs).size, "each record is shown once").toBe(seqs.length);
   await expect(page.locator(`#audit-log tbody tr:has-text("${tenant.id}")`).first()).toContainText("tenant_create");
+});
+
+test("a record with no status, such as a listener that filled, has an empty status cell", async ({ page }) => {
+  // The admin log as the server writes it when a listener filled: the
+  // record answers no request, so its status is null.
+  const filled = { seq: 1, at: "2026-10-23T12:34:00Z", actor: "", action: "listener_full", target: "listen", version: null, status: null, count: 3 };
+  const answered = { seq: 2, at: "2026-10-23T12:35:00Z", actor: "cli", action: "tenant_list", target: null, version: null, status: 200, count: 1 };
+  await page.route("**/admin/audit?*", (route) =>
+    route.fulfill({ status: 200, contentType: "application/jsonl", body: `${JSON.stringify(filled)}\n${JSON.stringify(answered)}\n` }),
+  );
+  await signIn(page, operatorKey);
+  await openView(page, "audit");
+  const rows = page.locator("#audit-log tbody tr");
+  await expect(rows).toHaveCount(2);
+  expect(await rows.nth(0).locator("td").allTextContents(), "nothing where the status would be").toEqual(fields(filled));
+  expect(await rows.nth(0).locator("td").nth(6).textContent(), "not the word null, and not a number").toBe("");
+  expect(await rows.nth(1).locator("td").nth(6).textContent(), "a record with a status still shows it").toBe("200");
 });
 
 test("a key without audit gets no audit view", async ({ page, tenant }) => {

@@ -175,9 +175,12 @@ A listener that is full shows in two places:
 
 - The admin audit log counts each time a listener filled, as action
   [`listener_full`](@/docs/audit-log-records.md#every-action): one record for
-  each listener and minute, whose `count` is the number of times in that
-  minute, whose `target` is the listener's key (`listen` or
-  `operator.listen`), and whose `status` is 503. To list them:
+  each listener and minute, whose `target` is the listener's key (`listen`
+  or `operator.listen`) and whose `status` is `null`, since the record
+  answers no request. Its `count` is a count of the times the listener
+  became full in that minute, not of the connections that waited: a
+  listener that takes its last free place is full whether or not another
+  connection is waiting behind it. To list them:
 
   ```sh
   vcon-server audit export --admin --config /etc/vcon-server/config.toml \

@@ -161,8 +161,12 @@ All notable changes to this project are recorded here. The format follows
   files. A listener that fills logs one warning, at most one a minute,
   with its own address and the limit, and each time it fills is counted
   in the admin audit log under the new action `listener_full`, with the
-  listener's configuration key as the target; a reader of the audit log
-  that knows a fixed list of actions must add `listener_full`.
+  listener's configuration key as the target. The record answers no
+  request, so its `status` is `null`, the first record whose status is not
+  a number; its `count` is the times the listener became full, not the
+  connections that waited. A reader of the audit log that knows a fixed
+  list of actions must add `listener_full`, and one that reads `status`
+  as a number must take `null` for it.
 - A connection that waits for its next request is closed after
   `limits.timeouts.idle` seconds, 120 unless the configuration says
   another number from 1 to 3600. Before, an HTTP/2 connection that had
@@ -173,7 +177,9 @@ All notable changes to this project are recorded here. The format follows
   that moment is still answered, and the connection is closed five seconds
   later if the client has not ended it. No limit runs while a request is
   being answered. A client finds the connection closed and opens another,
-  as HTTP clients do without being told.
+  as HTTP clients do without being told. An idle HTTP/1.1 connection is
+  kept up to 120 seconds; `idle = 30` in `[limits.timeouts]` closes it
+  after 30, as `limits.timeouts.head` did on `main` before this change.
 - For users of the `vcon-server` library: `api::ConnectionLimits` has
   three new members, `max`, `idle` and `goodbye`; `api::serve_observed`
   is `api::serve_within` with a function called each time the listener

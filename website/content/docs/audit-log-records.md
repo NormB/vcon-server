@@ -22,8 +22,8 @@ shows how to read them.
 | `action` | what was asked: one of the [actions](#every-action) below |
 | `target` | the uuid, tenant id or key id acted on, if any; for `listener_full`, the configuration key of the listener, `listen` or `operator.listen` |
 | `version` | the version id involved, if any |
-| `status` | the HTTP status answered; for `listener_full`, 503, though a connection that waits is sent no answer |
-| `count` | how many requests the record stands for; for `listener_full`, how many times the listener filled |
+| `status` | the HTTP status answered, or `null` for a record that answers no request (`listener_full`) |
+| `count` | how many requests the record stands for; for `listener_full`, how many times the listener became full, not how many connections waited |
 
 A record holds no vCon content, no token and no client address.
 
@@ -70,7 +70,7 @@ action through MCP is recorded as its HTTP route records it.
 | `auth_failed` | a request whose token was refused, [counted](@/docs/audit-logs.md#counted-records) | the key's tenant's when the key is known, otherwise the admin log with an empty actor |
 | `mcp` | a request to `/mcp`, [counted](@/docs/audit-logs.md#counted-records) | the key's |
 | `wrong_listener` | a valid key refused because it came to the listener that serves the other kind of key, on a server with an [operator listener](@/docs/operator-listener.md), [counted](@/docs/audit-logs.md#counted-records) | the admin log for an operator key; the tenant's for a tenant key, or the admin log when the tenant's cannot be opened |
-| `listener_full` | a listener that held [`limits.connections`](@/docs/configuration.md#the-most-connections-at-once) connections and took no more until one ended, once for each time it filled, with an empty actor, [counted](@/docs/audit-logs.md#counted-records) | admin |
+| `listener_full` | a listener that held [`limits.connections`](@/docs/configuration.md#the-most-connections-at-once) connections and took no more until one ended. The record describes a state of the listener and answers no request: its actor is empty, its `status` is `null`, and its `count` is the times the listener became full in the minute, not the connections that waited; [counted](@/docs/audit-logs.md#counted-records) | admin |
 | `key_create` | a key made, over the admin API or by `vcon-server key create` | admin, copied to the tenant's for a tenant key |
 | `key_revoke` | a key revoked | admin, copied to the tenant's for a tenant key |
 | `key_list` | the keys listed | admin |

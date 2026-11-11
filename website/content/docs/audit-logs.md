@@ -95,11 +95,15 @@ written. The action is on `main` only, in no release yet.
 Each time a listener fills, that is, holds
 [`limits.connections`](@/docs/configuration.md#the-most-connections-at-once)
 connections and takes no more until one ends, is counted in the admin log
-as action `listener_full`, with an empty actor, status 503 and the
-listener's configuration key (`listen` or `operator.listen`) as the target:
-one record for each listener and minute. No caller is recorded, since the
-connections that wait have not been taken. The listener goes on whether or
-not the count could be written. The action is on `main` only, in no
+as action `listener_full`, with an empty actor and the listener's
+configuration key (`listen` or `operator.listen`) as the target: one
+record for each listener and minute. The record describes a state of the
+listener and answers no request, so its `status` is `null`, where every
+other record has a number. Its `count` is the times the listener became
+full, not the connections that waited: the listener cannot see how many
+wait in the system's queue. No caller is recorded, since the connections
+that wait have not been taken. The listener goes on whether or not the
+count could be written. The action is on `main` only, in no
 release yet.
 
 ## Reading the logs

@@ -49,8 +49,15 @@ need a look before it, and a fourth is new and optional.
   `limits.connections`, and keep the process's limit on open files above
   it. A proxy that keeps idle connections to the server should keep them
   for less than 120 seconds, or `limits.timeouts.idle` should be raised
-  above the proxy's own time. A reader of the audit log that knows a fixed
-  list of actions must add `listener_full`. See
+  above the proxy's own time. An idle HTTP/1.1 connection is kept up to
+  120 seconds. Release 0.4.2 set no time on it. A server built from `main`
+  after the first connection limits and before this one closed it after
+  30 seconds, under `limits.timeouts.head`; that key now covers only a
+  request head that has begun. To close idle connections after 30 seconds
+  as those builds did, set `idle = 30` in `[limits.timeouts]`; to keep
+  them as long as the key allows, set `idle = 3600`. A reader of the audit
+  log that knows a fixed list of actions must add `listener_full`, and
+  must take `null` as that action's `status`. See
   [connection limits](@/docs/configuration.md#connection-limits).
 - **The operator listener, if you turn it on.** A configuration without an
   `[operator]` table serves as before: one listener, both kinds of key.

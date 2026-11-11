@@ -664,7 +664,10 @@ async fn serve_logs_a_full_listener_once_and_counts_each_time() {
     );
     for record in &records {
         assert_eq!(record["actor"], "", "no caller: {record}");
-        assert_eq!(record["status"], 503, "{record}");
+        assert!(
+            record["status"].is_null(),
+            "no status, since no request was answered: {record}"
+        );
         assert_eq!(record["target"], "listen", "the listener's key: {record}");
     }
     assert_eq!(

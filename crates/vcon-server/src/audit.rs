@@ -156,9 +156,16 @@ pub struct Entry {
     pub target: Option<String>,
     /// The version written, read or purged, if there is one.
     pub version: Option<VersionId>,
-    /// The HTTP status answered, or the command's result.
+    /// The HTTP status answered, or the command's result; [`NO_ANSWER`]
+    /// for a record of something that answers no request.
     pub status: u16,
 }
+
+/// The `status` of a record that answers no request, such as a listener
+/// that filled. No HTTP status is 0. The log's column holds this number,
+/// since every catalog's schema asks for one; a record read back
+/// (`export`, `page`) has `null` there, never the number.
+pub const NO_ANSWER: u16 = 0;
 
 /// Why a record could not be written or exported.
 #[derive(Debug)]
@@ -257,6 +264,8 @@ fn lines(log: &Connection, after: i64, limit: i64, out: &mut dyn Write) -> Resul
     )?;
     let mut rows = rows.query(params![after, limit])?;
     while let Some(row) = rows.next()? {
+        // A record that answers no request has no status to show.
+        let status = Some(row.get::<_, u16>(6)?).filter(|status| *status != NO_ANSWER);
         let record = json!({
             "seq": row.get::<_, i64>(0)?,
             "at": row.get::<_, String>(1)?,
@@ -264,7 +273,7 @@ fn lines(log: &Connection, after: i64, limit: i64, out: &mut dyn Write) -> Resul
             "action": row.get::<_, String>(3)?,
             "target": row.get::<_, Option<String>>(4)?,
             "version": row.get::<_, Option<String>>(5)?,
-            "status": row.get::<_, u16>(6)?,
+            "status": status,
             "count": row.get::<_, i64>(7)?,
         });
         writeln!(out, "{record}").map_err(AuditError::Write)?;
@@ -423,6 +432,114 @@ mod tests {
         .expect("record");
         tx.commit().expect("commit");
         assert_eq!(exported(&log.conn, None)[0]["at"], "2026-10-23T12:34:56Z");
+    }
+
+    /// A listener that filled: a record that answers no request.
+    fn filled(target: &str) -> Entry {
+        Entry {
+            actor: Actor::Unparsed,
+            action: Action::ListenerFull,
+            target: Some(target.to_owned()),
+            version: None,
+            status: NO_ANSWER,
+        }
+    }
+
+    #[test]
+    fn a_record_that_answers_no_request_is_read_back_with_no_status() {
+        let mut log = log();
+        let tx = log.conn.transaction().expect("tx");
+        count(&tx, &filled("listen"), datetime!(2026-10-23 12:34:56 UTC)).expect("count");
+        tx.commit().expect("commit");
+        assert_eq!(
+            exported(&log.conn, None),
+            [json!({"seq": 1, "at": "2026-10-23T12:34:00Z", "actor": "",
+                       "action": "listener_full", "target": "listen",
+                       "version": null, "status": null, "count": 1}),],
+            "null, not a status no caller was sent"
+        );
+    }
+
+    #[test]
+    fn a_record_with_no_status_is_written_as_a_json_null_in_export_and_in_a_page() {
+        let mut log = log();
+        let tx = log.conn.transaction().expect("tx");
+        count(&tx, &filled("listen"), datetime!(2026-10-23 12:34:56 UTC)).expect("count");
+        tx.commit().expect("commit");
+        for text in [exported_text(&log.conn, None), paged(&log.conn, 0, 10)] {
+            assert!(
+                text.contains(r#""status":null"#),
+                "the member is there: {text}"
+            );
+            assert!(!text.contains(r#""status":0"#), "and is no number: {text}");
+        }
+    }
+
+    #[test]
+    fn records_with_no_status_are_counted_by_the_minute_like_any_other() {
+        let mut log = log();
+        let tx = log.conn.transaction().expect("tx");
+        for second in [0, 20, 40] {
+            let now = datetime!(2026-10-23 12:34:00 UTC) + time::Duration::seconds(second);
+            count(&tx, &filled("listen"), now).expect("count");
+        }
+        count(
+            &tx,
+            &filled("operator.listen"),
+            datetime!(2026-10-23 12:34:30 UTC),
+        )
+        .expect("count");
+        tx.commit().expect("commit");
+        let rows: Vec<_> = exported(&log.conn, None)
+            .iter()
+            .map(|r| (r["target"].clone(), r["status"].clone(), r["count"].clone()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("listen".into(), Value::Null, 3.into()),
+                ("operator.listen".into(), Value::Null, 1.into()),
+            ],
+            "one row for each target, each with no status"
+        );
+    }
+
+    #[test]
+    fn a_record_with_a_status_keeps_it_beside_one_with_none() {
+        let mut log = log();
+        let tx = log.conn.transaction().expect("tx");
+        let health = Entry {
+            action: Action::Health,
+            target: None,
+            status: 200,
+            ..filled("listen")
+        };
+        count(&tx, &health, datetime!(2026-10-23 12:34:00 UTC)).expect("count");
+        count(&tx, &filled("listen"), datetime!(2026-10-23 12:34:00 UTC)).expect("count");
+        let failed = Entry {
+            status: 503,
+            ..health.clone()
+        };
+        count(&tx, &failed, datetime!(2026-10-23 12:34:00 UTC)).expect("count");
+        tx.commit().expect("commit");
+        let statuses: Vec<_> = exported(&log.conn, None)
+            .iter()
+            .map(|r| r["status"].clone())
+            .collect();
+        assert_eq!(
+            statuses,
+            [200.into(), Value::Null, 503.into()],
+            "only the record that answers no request has none"
+        );
+    }
+
+    #[test]
+    fn no_http_status_is_the_number_kept_for_no_answer() {
+        assert_eq!(NO_ANSWER, 0, "the number the log's column holds");
+        assert!(
+            axum::http::StatusCode::from_u16(NO_ANSWER).is_err(),
+            "it is not a status a server can answer"
+        );
     }
 
     #[test]
