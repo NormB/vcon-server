@@ -13,7 +13,7 @@ signed or encrypted), whether it is gzipped, its uuid, and whether it needs
 extensions the caller does not support. Reading does no I/O and returns no
 bytes. The API may change in any release before 1.0.
 
-This page describes vcon 0.4.2. In 0.1.0, the first release,
+This page describes vcon 0.4.3. In 0.1.0, the first release,
 `inspect`, `Inspection`, `Limits`, `Rejection`,
 `MAX_SIGNED_LAYERS` and `MAX_JSON_DEPTH` are at the crate root rather than in
 `vcon::read`, and limits are written `Limits { inflated: 1 << 20 }`.

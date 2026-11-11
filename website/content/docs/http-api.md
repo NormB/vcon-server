@@ -20,7 +20,7 @@ group = "reference"
   address in `listen` serves tenant keys only and the address in
   `operator.listen` serves operator keys only; a valid key at the other
   address is [`wrong-listener`](@/problems/wrong-listener.md) (403) on
-  every route. The operator listener is on `main` only, in no release yet.
+  every route. The operator listener is new in 0.4.3.
 - **A key names its tenant.** No route takes a tenant id for vCons; the
   key decides.
 - **MCP** is served at `POST /mcp` on the same listener, with the same keys:
@@ -132,9 +132,8 @@ done
 
 ## Reveals
 
-The `reveal` parameter is on `main` only, in no release yet: release 0.4.2
-passes the query over and records each of these reads as `read` or
-`legal_read`.
+The `reveal` parameter is new in 0.4.3: release 0.4.2 passes the query
+over and records each of these reads as `read` or `legal_read`.
 
 The three routes that read a vCon, `GET /vcons/{uuid}`,
 `GET /legal/vcons/{uuid}` and `GET /legal/vcons/{uuid}/versions/{version}`,

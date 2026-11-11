@@ -6,6 +6,49 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-11-11
+
+An upgrade from 0.4.2 is the binary alone: the catalogs keep their schema
+version, a 0.4.2 configuration is read as it was, and 0.4.2 opens a data
+directory that 0.4.3 has served. Five changes can break something around a
+0.4.2 deployment, and one breaks code that uses the library; each is under
+Added, Changed or Fixed below, and the Upgrade page's "From 0.4.2 to
+0.4.3" has the steps.
+
+- **Readers of the audit log.** Seventeen action names are new: the
+  fourteen reveal actions (`reveal_parties`, `reveal_subject`,
+  `reveal_dialog`, `reveal_analysis`, `reveal_links`, `reveal_all`,
+  `reveal_audio`, and `legal_reveal_` with the same seven endings),
+  `wrong_listener`, `listener_full` and `csp_report`. A `listener_full`
+  record has `null` as its `status`.
+- **Reverse proxies and firewalls that pass the console's paths by name.**
+  Pass `/console/player.html`, `/console/player.js` and
+  `POST /console/csp-report` as well as `/console/format.js`, and pass
+  each answer's `Content-Security-Policy` header unchanged.
+- **A check that holds the console's content-security policy byte for
+  byte.** Both policies end with a reporting directive,
+  `report-uri /console/csp-report`.
+- **Clients and proxies that hold many connections, or hold them idle.** A
+  listener holds at most `limits.connections` connections (512), and a
+  connection is closed after `limits.timeouts.idle` seconds without a
+  request (120), after a TLS handshake longer than
+  `limits.timeouts.handshake` (10), and after a request head slower than
+  `limits.timeouts.first_head` or `limits.timeouts.head` (30 each). 0.4.2
+  set none of these limits and refuses a configuration that has one of the
+  five keys.
+- **Operator keys, only with the new `[operator]` table.** They then work
+  at `operator.listen` alone. Without the table nothing changes.
+- **Code that uses the `vcon-server` library.** `config::Config` has three
+  new members, `operator`, `connection` and `reports`, and `api::App` two,
+  `plane` and `reports`, so a struct literal of either must set them, and
+  `audit::Action` has five new variants (`Reveal`, `LegalReveal`,
+  `WrongListener`, `ListenerFull` and `CspReport`), which a `match` that
+  lists every variant must take. `console::FILES` holds six
+  files, so its type is `[File; 6]`, where it was `[File; 4]`.
+  `api::serve` takes any `api::Accept` where it took a
+  `tokio::net::TcpListener`, which implements it. No public item is
+  removed.
+
 ### Added
 
 - An operator listener. With an `[operator]` table in the configuration,
@@ -177,8 +220,9 @@ All notable changes to this project are recorded here. The format follows
 - The documentation's sidebar and index list the pages under five group
   headings, starting with install, getting started and the first vCon; no
   two pages share a place in the order, as five pairs did. Each how-to guide says what
-  to do when a step fails, `llms.txt` links every page once, and the
-  status page lists what is on `main` and in no release.
+  to do when a step fails, `llms.txt` links every page once, and between
+  releases the status page lists what the newest release does not hold
+  yet.
 - Seven words on the site were not in US spelling, and the
   tenants-and-keys page left `GET /key` out of the routes any valid key
   may ask.
@@ -229,12 +273,15 @@ All notable changes to this project are recorded here. The format follows
   being answered. A client finds the connection closed and opens another,
   as HTTP clients do without being told. An idle HTTP/1.1 connection is
   kept up to 120 seconds; `idle = 30` in `[limits.timeouts]` closes it
-  after 30, as `limits.timeouts.head` did on `main` before this change.
-- For users of the `vcon-server` library: `api::ConnectionLimits` has
-  three new members, `max`, `idle` and `goodbye`; `api::serve_observed`
-  is `api::serve_within` with a function called each time the listener
-  fills; and `api::Accept` has a new method with a default, `local`, the
-  listener's address for the log.
+  after 30.
+- For users of the `vcon-server` library, all new in this release:
+  `api::ConnectionLimits` holds the limits (`max`, `handshake`,
+  `first_head`, `head`, `idle`, `goodbye` and `accept_pause`);
+  `api::serve_within` is `api::serve` with limits given;
+  `api::serve_observed` is `api::serve_within` with a function called each
+  time the listener fills; and `api::Accept`, what a listener must do, has
+  `accept` and a method with a default, `local`, the listener's address
+  for the log.
 - The server no longer stops when the system cannot hand it a connection.
   Before, one failed accept, such as the one a process out of file
   descriptors gets, ended `serve` with `serving failed`. Now the listener
@@ -871,7 +918,8 @@ Nothing in this release breaks a 0.4.1 deployment, and an upgrade from
   stack and abort the server. `vcon::MAX_SIGNED_LAYERS`,
   `vcon::MAX_JSON_DEPTH` and `vcon::Rejection::TooDeep` name the limits.
 
-[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/NormB/vcon-server/releases/tag/v0.4.3
 [0.4.2]: https://github.com/NormB/vcon-server/releases/tag/v0.4.2
 [0.4.1]: https://github.com/NormB/vcon-server/releases/tag/v0.4.1
 [0.4.0]: https://github.com/NormB/vcon-server/releases/tag/v0.4.0

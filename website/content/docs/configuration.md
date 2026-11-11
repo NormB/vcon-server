@@ -113,8 +113,8 @@ allowed a group to write them. To check a host before an upgrade, see
 
 The four connection limits close a connection that stalls or sits unused,
 so that it does not hold a file descriptor for as long as the other side
-likes. They and `limits.connections` are on `main` only, in no release
-yet: release 0.4.2 refuses a configuration that has one of the five keys.
+likes. They and `limits.connections` are new in 0.4.3: release 0.4.2
+refuses a configuration that has one of the five keys.
 Each limit applies to one part of a connection's life:
 
 1. `handshake`: from the moment the listener takes the connection to the

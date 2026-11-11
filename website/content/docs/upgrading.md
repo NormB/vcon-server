@@ -18,12 +18,12 @@ CI runs every command on this page on each change. It installs the previous
 release, sets it up as [getting started](@/docs/getting-started.md) does,
 upgrades it to the server built from the change, and goes back again.
 
-## After 0.4.2
+## From 0.4.2 to 0.4.3
 
-These are on `main` only, in no release yet; they apply to the release
-that follows 0.4.2. The upgrade is the binary alone: the catalogs keep
-their schema version, and the configuration is as it was. Three things
-need a look before it, and a fourth is new and optional.
+The upgrade is the binary alone: the catalogs keep their schema version, so
+0.4.2 opens a data directory that 0.4.3 has served, and a 0.4.2
+configuration is read as it was. Four things need a look before it, and a
+fifth is new and optional.
 
 - **Readers of the audit log.** The console marks each Reveal, so a
   tenant's log holds `reveal_parties`, `reveal_subject`, `reveal_dialog`,
@@ -50,12 +50,11 @@ need a look before it, and a fourth is new and optional.
   it. A proxy that keeps idle connections to the server should keep them
   for less than 120 seconds, or `limits.timeouts.idle` should be raised
   above the proxy's own time. An idle HTTP/1.1 connection is kept up to
-  120 seconds. Release 0.4.2 set no time on it. A server built from `main`
-  after the first connection limits and before this one closed it after
-  30 seconds, under `limits.timeouts.head`; that key now covers only a
-  request head that has begun. To close idle connections after 30 seconds
-  as those builds did, set `idle = 30` in `[limits.timeouts]`; to keep
-  them as long as the key allows, set `idle = 3600`. A reader of the audit
+  120 seconds. Release 0.4.2 set no time on it. To close idle connections
+  sooner, for example after 30 seconds, set `idle = 30` in
+  `[limits.timeouts]`; to keep them as long as the key allows, set
+  `idle = 3600`. `limits.timeouts.head` covers only a request head that
+  has begun. A reader of the audit
   log that knows a fixed list of actions must add `listener_full`, and
   must take `null` as that action's `status`. See
   [connection limits](@/docs/configuration.md#connection-limits).
@@ -193,7 +192,7 @@ but do not install it yet. The commands use their own variable names, so
 they do not change the ones from install:
 
 ```sh
-NEW_VERSION=0.4.2
+NEW_VERSION=0.4.3
 NEW_ARCHIVE=vcon-server-$NEW_VERSION-$(uname -m)-unknown-linux-gnu.tar.gz
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/$NEW_ARCHIVE
 curl -fsSL -o SHA256SUMS-$NEW_VERSION.txt https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/SHA256SUMS.txt

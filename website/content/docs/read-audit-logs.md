@@ -70,9 +70,9 @@ curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/
 200
 ```
 
-The `reveal` parameter is on `main` only, in no release yet. Release 0.4.2
-answers the third request the same way and records it as a second `read`,
-so with 0.4.2 each `reveal_parties` below is a `read`.
+The `reveal` parameter is new in 0.4.3. Release 0.4.2 answers the third
+request the same way and records it as a second `read`, so with 0.4.2 each
+`reveal_parties` below is a `read`.
 
 ## Export a log on the host
 

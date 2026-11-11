@@ -25,8 +25,8 @@ who can reach only the address tenants use, and the operator listener can
 sit on an address the internet does not reach: the loopback address, behind
 an SSH tunnel, or a management network.
 
-The operator listener is on `main` only, in no release yet: release 0.4.2
-refuses a configuration with an `[operator]` table as an unknown key.
+The operator listener is new in 0.4.3: release 0.4.2 refuses a
+configuration with an `[operator]` table as an unknown key.
 
 Without the table nothing changes: one listener serves both kinds of key,
 as in every release so far.
@@ -313,9 +313,9 @@ curl -sS -o /dev/null -w '%{http_code}\n' --cacert $CA "$URL/admin/tenants" -H "
 - **`vcon-server: the operator listener's TLS certificate or key cannot be
   used`:** the message names the key and the file; the fix is the one for
   `tls.key` in [getting started](@/docs/getting-started.md).
-- **`unknown field `operator``, from a release binary:** release 0.4.2 and
-  earlier do not have the operator listener. Take the table out, or
-  install a build from `main`.
+- **`unknown field `operator``:** release 0.4.2 and earlier do not have
+  the operator listener. Take the table out, or
+  [upgrade](@/docs/upgrading.md) to 0.4.3 or later.
 - **Connection refused from another machine:** the operator listener is on
   the loopback address, which only the host reaches. Use a tunnel
   ([from another machine](#reach-it-from-another-machine)), or put the

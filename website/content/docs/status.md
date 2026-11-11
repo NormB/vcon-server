@@ -7,7 +7,7 @@ weight = 60
 group = "project"
 +++
 
-vcon-server 0.4.2 is released: the `vcon` and `vcon-server` crates are on
+vcon-server 0.4.3 is released: the `vcon` and `vcon-server` crates are on
 crates.io, and the server for Linux on x86_64 and aarch64 is on
 [GitHub](https://github.com/NormB/vcon-server/releases). It is not yet for
 production. This page says what works today; each other page describes only
@@ -74,6 +74,41 @@ what is built, unless it says otherwise.
   0.4.2 on, lists the vCons of one key's tenant and shows each one's uuid,
   version and times, read over the HTTP API with a `read` key. It reads
   only, and never a vCon's content. See [the terminal UI](@/docs/tui.md).
+- **Reveals in the audit log**, from 0.4.3:
+  `GET /vcons/{uuid}?reveal=<part>`, and the same parameter on the two
+  legal read routes, records the read as `reveal_<part>` or
+  `legal_reveal_<part>`, and the console marks each of its reveals that
+  way. Release 0.4.2 has no `reveal` parameter: it passes the query over
+  and records `read` or `legal_read`. See
+  [reveals](@/docs/http-api.md#reveals).
+- **An operator listener**, from 0.4.3: with an `[operator]` table in the
+  configuration, the server listens on a second address that serves
+  operator keys only, and `listen` serves tenant keys only; a valid key at
+  the other address is refused with `wrong-listener`. Release 0.4.2 has
+  one listener for both kinds of key, and refuses a configuration with
+  that table. See [the operator listener](@/docs/operator-listener.md).
+- **A recording player in the console**, from 0.4.3: a dialog's recording
+  that is inside the vCon plays in a tab of its own,
+  `/console/player.html`, whose policy alone lets a blob play and lets the
+  page make no request. Each Play is recorded as `reveal_audio` or
+  `legal_reveal_audio`. Release 0.4.2 has no Play button and no such page.
+  See [play a recording](@/docs/console.md#play-a-recording).
+- **Connection limits**, from 0.4.3: a listener holds at most
+  `limits.connections` connections at once, and closes a connection that
+  stalls in its TLS handshake or in a request head, or that waits longer
+  than `limits.timeouts.idle` for its next request; a listener that fills
+  is logged and counted in the admin audit log as `listener_full`. Release
+  0.4.2 has none of the five keys (`limits.connections` and
+  `limits.timeouts.handshake`, `first_head`, `head` and `idle`) and refuses
+  a configuration that has one: it takes every connection it is offered
+  and keeps each for as long as the client does. See
+  [connection limits](@/docs/configuration.md#connection-limits).
+- **Reports of a broken console policy**, from 0.4.3: both console
+  policies name `POST /console/csp-report` as the place a browser reports
+  a page that breaks them, and each report is counted in the admin audit
+  log as `csp_report`. Release 0.4.2 sends policies with no reporting
+  directive and answers 404 at that path. See
+  [reports of a broken policy](@/docs/console.md#reports-of-a-broken-policy).
 - **Tenants and keys.** Scoped bearer keys, revocation, tenant removal that
   never passes a legal hold.
 - **Retention.** Calendar periods per tenant or server-wide, the purge sweep
@@ -113,46 +148,6 @@ what is built, unless it says otherwise.
   checksums, every file with a signed build provenance attestation; from
   0.3.0 also a Sigstore signature over the checksums and the provenance as a
   file. The release workflow also publishes both crates to crates.io.
-
-## On `main` only
-
-The site is built from the `main` branch, so a page can describe what no
-release holds yet. Release 0.4.2 does not have these:
-
-- **Reveals in the audit log.** `GET /vcons/{uuid}?reveal=<part>`, and the
-  same parameter on the two legal read routes, records the read as
-  `reveal_<part>` or `legal_reveal_<part>`, and the console marks each of
-  its reveals that way. Release 0.4.2 has no `reveal` parameter: it passes
-  the query over and records `read` or `legal_read`. See
-  [reveals](@/docs/http-api.md#reveals).
-- **An operator listener.** With an `[operator]` table in the
-  configuration, the server listens on a second address that serves
-  operator keys only, and `listen` serves tenant keys only; a valid key at
-  the other address is refused with `wrong-listener`. Release 0.4.2 has
-  one listener for both kinds of key, and refuses a configuration with
-  that table. See [the operator listener](@/docs/operator-listener.md).
-- **A recording player in the console.** A dialog's recording that is
-  inside the vCon plays in a tab of its own, `/console/player.html`, whose
-  policy alone lets a blob play and lets the page make no request. Each
-  Play is recorded as `reveal_audio` or `legal_reveal_audio`. Release 0.4.2
-  has no Play button and no such page. See
-  [play a recording](@/docs/console.md#play-a-recording).
-- **Connection limits.** A listener holds at most `limits.connections`
-  connections at once, and closes a connection that stalls in its TLS
-  handshake or in a request head, or that waits longer than
-  `limits.timeouts.idle` for its next request; a listener that fills is
-  logged and counted in the admin audit log as `listener_full`. Release
-  0.4.2 has none of the five keys (`limits.connections` and
-  `limits.timeouts.handshake`, `first_head`, `head` and `idle`) and refuses
-  a configuration that has one: it takes every connection it is offered
-  and keeps each for as long as the client does. See
-  [connection limits](@/docs/configuration.md#connection-limits).
-- **Reports of a broken console policy.** Both console policies name
-  `POST /console/csp-report` as the place a browser reports a page that
-  breaks them, and each report is counted in the admin audit log as
-  `csp_report`. Release 0.4.2 sends policies with no reporting directive
-  and answers 404 at that path. See
-  [reports of a broken policy](@/docs/console.md#reports-of-a-broken-policy).
 
 ## Being built
 

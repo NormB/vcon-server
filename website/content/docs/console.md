@@ -27,11 +27,10 @@ request it makes is checked and recorded in the
   must pass `/console/` and the files under it, and each answer's headers,
   unchanged.
 
-Three things on this page are on `main` only, in no release yet. Release
-0.4.2 records each Reveal as `read` or `legal_read`, not under a reveal
-action, it has no [recording player](#play-a-recording), and it has no
-[operator listener](@/docs/operator-listener.md). The
-[status](@/docs/status.md) page lists what no release holds.
+Three things on this page are new in 0.4.3. Release 0.4.2 records each
+Reveal as `read` or `legal_read`, not under a reveal action, it has no
+[recording player](#play-a-recording), and it has no
+[operator listener](@/docs/operator-listener.md).
 
 ## Open it
 
@@ -148,9 +147,9 @@ part of the console page the server already serves, and needs no setting.
 **Verify:** read the tenant's [audit log](@/docs/audit-logs.md) with an
 `audit` key, in the **Audit log** view or over the API. Opening a vCon
 leaves one `read` record for its uuid, and each **Download** leaves one
-more. On `main` only, in no release yet (release 0.4.2 records each Reveal
-as one more `read` or `legal_read`), each Reveal leaves a record that
-names the part it showed:
+more. From 0.4.3 on (release 0.4.2 records each Reveal as one more `read`
+or `legal_read`), each Reveal leaves a record that names the part it
+showed:
 `reveal_parties`, `reveal_subject`, `reveal_dialog`, `reveal_analysis`,
 `reveal_links`, or `reveal_all` for the whole vCon. In the Legal view each
 find and each version opened leaves a `legal_read` record, and each Reveal
@@ -187,8 +186,8 @@ not do.
 
 ## Play a recording
 
-The player is on `main` only, in no release yet: release 0.4.2 has no Play
-button and no player page.
+The player is new in 0.4.3: release 0.4.2 has no Play button and no player
+page.
 
 **Purpose:** hear a recording that a vCon holds inside one of its dialogs,
 in the browser, without saving the vCon, and leave a record that it was
@@ -459,8 +458,7 @@ The last directive of both policies, `report-uri`, tells the browser where
 to report a page that breaks the policy: `POST /console/csp-report` on the
 same server. The console's own code breaks no rule, so a report means that
 something else ran in a console page: a browser extension, a proxy that
-changed the page, or a defect. Reporting is on `main` only, in no release
-yet.
+changed the page, or a defect. Reporting is new in 0.4.3.
 
 The policies do not use the newer `report-to` directive. A browser that
 knows `report-to` does not act on a `report-uri` beside it, and in this

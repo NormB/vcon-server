@@ -47,9 +47,9 @@ action, what it records and which log holds it.
 
 ## Reveals
 
-Reveals are on `main` only, in no release yet: release 0.4.2 records each
-of these reads as `read` or `legal_read`, and never writes a `reveal_` or
-`legal_reveal_` action.
+Reveals are new in 0.4.3: release 0.4.2 records each of these reads as
+`read` or `legal_read`, and never writes a `reveal_` or `legal_reveal_`
+action.
 
 A client that shows a vCon masked, as the [console](@/docs/console.md)
 does, reads it once for its summary and again each time a person chooses
@@ -90,7 +90,7 @@ On a server with an [operator listener](@/docs/operator-listener.md), a
 valid key refused because it came to the listener that serves the other
 kind of key is counted as action `wrong_listener`, with status 403, under
 the key's id. The request is refused whether or not the count could be
-written. The action is on `main` only, in no release yet.
+written. The action is new in 0.4.3.
 
 Each time a listener fills, that is, holds
 [`limits.connections`](@/docs/configuration.md#the-most-connections-at-once)
@@ -103,8 +103,7 @@ other record has a number. Its `count` is the times the listener became
 full, not the connections that waited: the listener cannot see how many
 wait in the system's queue. No caller is recorded, since the connections
 that wait have not been taken. The listener goes on whether or not the
-count could be written. The action is on `main` only, in no
-release yet.
+count could be written. The action is new in 0.4.3.
 
 A browser's report that a [console](@/docs/console.md) page broke the
 page's content-security policy, sent to `POST /console/csp-report`, is
@@ -118,7 +117,7 @@ no key, so the route takes none; one record for each status and minute is
 all a sender can add. Nothing a report says is stored. The request is
 answered whether or not the count could be written. See
 [reports of a broken policy](@/docs/console.md#reports-of-a-broken-policy).
-The action is on `main` only, in no release yet.
+The action is new in 0.4.3.
 
 ## Reading the logs
 
