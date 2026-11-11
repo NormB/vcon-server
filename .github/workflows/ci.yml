@@ -150,14 +150,9 @@ jobs:
           unzip -q "$ARCHIVE" -d .duckdb
           "$VCON_TEST_DUCKDB" --version
       - name: Wait for RustFS
-        # It answers 403 to a request without a signature once it listens.
-        run: |
-          for _ in $(seq 1 60); do
-            curl -s -o /dev/null "$VCON_TEST_S3_ENDPOINT/" && exit 0
-            sleep 1
-          done
-          echo "RustFS never answered" >&2
-          exit 1
+        # A store listens before it can serve: the script waits for a
+        # signed request to answer 200.
+        run: scripts/wait-for-s3.sh RustFS
       - name: Clippy with the backend tests, and without the default features (S3, the terminal UI)
         run: |
           cargo clippy -p vcon-server --all-targets --locked --features backend-tests -- -D warnings
@@ -234,7 +229,8 @@ jobs:
           url: https://github.com/minio/minio/releases/download/${{ env.MINIO_RELEASE }}/minio.linux-amd64.${{ env.MINIO_RELEASE }}
           file: minio
       - name: Start MinIO
-        # It answers 403 to a request without a signature once it listens.
+        # It listens before it is initialized and answers 503 until it is:
+        # the script waits for a signed request to answer 200.
         env:
           MINIO_BINARY: ${{ steps.minio.outputs.path }}
         run: |
@@ -245,13 +241,7 @@ jobs:
           MINIO_ROOT_USER="$VCON_TEST_S3_ACCESS_KEY" MINIO_ROOT_PASSWORD="$VCON_TEST_S3_SECRET_KEY" \
             nohup "$RUNNER_TEMP/minio" server "$RUNNER_TEMP/minio-data" --address 127.0.0.1:9000 \
             --console-address 127.0.0.1:9001 > "$RUNNER_TEMP/minio.log" 2>&1 &
-          for _ in $(seq 1 60); do
-            curl -s -o /dev/null "$VCON_TEST_S3_ENDPOINT/" && exit 0
-            sleep 1
-          done
-          cat "$RUNNER_TEMP/minio.log" >&2
-          echo "MinIO never answered" >&2
-          exit 1
+          scripts/wait-for-s3.sh MinIO "$RUNNER_TEMP/minio.log"
       - name: The service refuses a second write with If-None-Match
         run: |
           set -euo pipefail
@@ -320,14 +310,9 @@ jobs:
         # the action fetches it through the one pinned-download rule.
         uses: ./.github/actions/nextest
       - name: Wait for RustFS
-        # It answers 403 to a request without a signature once it listens.
-        run: |
-          for _ in $(seq 1 60); do
-            curl -s -o /dev/null "$VCON_TEST_S3_ENDPOINT/" && exit 0
-            sleep 1
-          done
-          echo "RustFS never answered" >&2
-          exit 1
+        # A store listens before it can serve: the script waits for a
+        # signed request to answer 200.
+        run: scripts/wait-for-s3.sh RustFS
       - name: Start PostgreSQL ${{ matrix.postgres.major }}
         # The script records each container and the network it makes, for
         # the last step; its env file names the servers for the tests.
@@ -563,6 +548,7 @@ jobs:
           python3 -I scripts/test_workflow_downloads.py
           python3 -I scripts/test_dnf_install.py
           python3 -I scripts/test_apt_mirror_setup.py
+          python3 -I scripts/test_wait_for_s3.py
           python3 -I scripts/test_fetch_pinned.py
       # A tag or a branch can be moved to other code; a commit id cannot
       # (scripts/check_action_pins.py).

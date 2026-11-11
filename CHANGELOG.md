@@ -246,6 +246,12 @@ All notable changes to this project are recorded here. The format follows
   fails. A new library function, `tui::with_terminal`, is the one place the
   terminal is taken and put back; the tests use it to check that a panic
   puts the terminal back before its message is written.
+- CI's object-store jobs wait until the store is ready, not until it first
+  answers. MinIO listens before it is initialized and answers 503 until it
+  is; on 2026-11-11 the MinIO job took that first answer as ready and
+  failed at its first write. `scripts/wait-for-s3.sh` waits for a signed
+  request for the list of buckets to answer 200, for at most 60 seconds,
+  and the MinIO job and the two jobs with a RustFS service use it.
 
 ## [0.4.2] - 2026-11-10
 
