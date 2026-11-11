@@ -252,6 +252,16 @@ All notable changes to this project are recorded here. The format follows
   failed at its first write. `scripts/wait-for-s3.sh` waits for a signed
   request for the list of buckets to answer 200, for at most 60 seconds,
   and the MinIO job and the two jobs with a RustFS service use it.
+- The tests of the commit hook no longer run every script's own test once
+  per case. `scripts/test-hooks.sh` commits one change per case, and each
+  commit the scan accepts runs the whole hook, which runs the 23 script
+  tests; CI's "git hooks" job runs that twice and took 15 minutes of its 20
+  on 2026-11-11, after a 12-second script test had ended it at the limit.
+  The fixture's first commit still runs every script test as it is. After
+  it, `scripts/hook_fixture.py` replaces each one no case exercises with a
+  stand-in that records its name and passes, and the test checks that the
+  hook ran each stand-in once. The list is read from the hook, so a script
+  test added to the hook needs no change there.
 
 ### Security
 

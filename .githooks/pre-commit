@@ -58,6 +58,7 @@ scripts/test-nextest.sh
 scripts/test-cc-lld.sh
 python3 -I scripts/test_check_test_runner.py
 python3 -I scripts/test_check_required_checks.py
+python3 -I scripts/test_hook_fixture.py
 # Always a directory of its own: a test binary records the directory it was
 # built from, so sharing the caller's target directory would leave binaries
 # there that read files from this deleted copy.

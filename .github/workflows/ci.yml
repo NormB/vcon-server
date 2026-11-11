@@ -618,6 +618,10 @@ jobs:
       # The tests make their own repositories; this one must not change.
       - name: Note this repository's config
         run: cp .git/config "$RUNNER_TEMP/config.before"
+      # The hook tests run every script's own test once, then stand-ins:
+      # the rule that replaces them, and what a stand-in records.
+      - name: The hook tests' fixture
+        run: python3 -I scripts/test_hook_fixture.py
       - name: The commit hooks
         run: scripts/test-hooks.sh
       # Reported even when the commit hooks' test failed.

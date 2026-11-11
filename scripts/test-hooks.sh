@@ -92,6 +92,14 @@ git commit -q -m "Start the fixture" >"$work/first" 2>&1 || { echo "FAIL: the cl
 if [ -d "$CARGO_TARGET_DIR/debug" ] || [ ! -d "$CARGO_TARGET_DIR/pre-commit/debug" ]; then
   echo "FAIL: the hook did not build in \$CARGO_TARGET_DIR/pre-commit"; exit 1
 fi
+# That first commit ran every script's own test as it is. From here each one
+# no case exercises is a stand-in that records its name and passes
+# (scripts/hook_fixture.py): run for real once per case, each second a
+# script test takes cost this test about 25 seconds, and CI runs it twice.
+export HOOK_FIXTURE_CALLS="$work/calls"
+python3 -I "$src/scripts/hook_fixture.py" stub "$repo" >"$work/stubbed" || { echo "FAIL: the script tests were not replaced"; exit 1; }
+git add -A scripts
+git commit -q --no-verify -m "Replace the script tests with stand-ins"
 
 pass=0
 fail=0
@@ -128,6 +136,9 @@ sur="br""andinger"
 robot="$(printf '\xf0\x9f\xa4\x96')"
 
 expect accept "clean change" notes.txt "plain words"
+# The hook that accepted it ran each stand-in once: no script test was left
+# out of the hook's run, and none ran twice.
+python3 -I "$src/scripts/hook_fixture.py" check "$repo" "$work/calls" 1 || { echo "FAIL: the hook did not run each script test once for the clean change"; exit 1; }
 why='notes.txt: AI tool name:' expect refuse "AI tool named" notes.txt "written by ${ai_word^}"
 why='notes.txt: AI company name:' expect refuse "AI company named" notes.txt "see ${ai_co}.com"
 why='notes.txt: robot emoji:' expect refuse "robot emoji" notes.txt "done $robot"
