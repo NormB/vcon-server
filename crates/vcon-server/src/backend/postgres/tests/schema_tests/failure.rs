@@ -119,6 +119,8 @@ mod on_a_server {
                 "tenant" => "name_mac",
                 "master_key_use" => "master_key_id",
                 "api_key" => "token_hash",
+                "user_account" => "label_sealed",
+                "membership" => "roles_sealed",
                 other => panic!("{other}"),
             };
             let result = no_scope(
@@ -315,7 +317,7 @@ mod on_a_server {
         db.admin()
             .await
             .batch_execute(
-                "SET ROLE vcon_owner; INSERT INTO vcon.schema_version (version) VALUES (2); RESET ROLE",
+                "SET ROLE vcon_owner; INSERT INTO vcon.schema_version (version) VALUES (3); RESET ROLE",
             )
             .await
             .expect("adds a version");
@@ -466,7 +468,7 @@ mod on_a_server {
         db.admin()
             .await
             .batch_execute(
-                "SET ROLE vcon_owner; INSERT INTO vcon.schema_version (version) VALUES (2); RESET ROLE",
+                "SET ROLE vcon_owner; INSERT INTO vcon.schema_version (version) VALUES (3); RESET ROLE",
             )
             .await
             .expect("adds a version");

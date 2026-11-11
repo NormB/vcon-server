@@ -6,6 +6,41 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Users and memberships, the first part of sign-in. `server.sqlite` keeps
+  users (a label, and for a user of an identity provider its issuer and
+  subject) and memberships (a user's roles in one tenant, or the operator
+  role). Five commands on the host make and change them, beside a running
+  server: `user add`, `user list`, `user deactivate`, `membership grant`
+  and `membership revoke`. The tenant roles are `reader`, `producer`,
+  `records`, `legal`, `auditor` and `tenant-admin`. Each command is
+  recorded in the admin audit log as `user_add`, `user_list`,
+  `user_deactivate`, `membership_grant` or `membership_revoke`, and a
+  change to a tenant membership is copied to that tenant's log; a record
+  names ids and role names, never a label, an issuer or a subject. There
+  is no route for either, and no request reads them yet: nobody can sign
+  in as a user until a later release adds sessions. See the how-to
+  "Add users and memberships".
+
+### Changed
+
+- **No downgrade: the catalogs move to schema version 5.** The first time
+  this server or one of its commands opens a data directory, it brings
+  `server.sqlite` from schema version 4 to 5, and each tenant's catalog at
+  that tenant's first use, each in one transaction. Version 5 adds the
+  tables `user_account` and `membership` to `server.sqlite`, and lets every
+  audit log hold a record with no status: the number 0 that a version-4
+  log kept for a `listener_full` record becomes no status, under the same
+  sequence numbers, and readers see `null` as before. Release 0.4.3
+  and earlier refuse a catalog at version 5 (`schema version 5 is not one
+  this build knows`), so the way back is the copy of the data directory
+  taken before the upgrade. With the PostgreSQL catalog preview, run
+  `vcon-server migrate` to bring the database from schema version 1 to 2
+  before a server starts. See "Schema version 5" on the upgrade page.
+- **Breaking for a reader of the audit log that knows a fixed list of
+  actions:** add the five actions named above.
+
 ## [0.4.3] - 2026-11-11
 
 An upgrade from 0.4.2 is the binary alone: the catalogs keep their schema

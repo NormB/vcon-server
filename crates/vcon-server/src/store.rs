@@ -2643,7 +2643,9 @@ pub(crate) mod tests {
                 "manifest.seq",
                 "manifest.published_at",
                 "audit.target",
-                "audit.version"
+                "audit.version",
+                // A record that answers no request has no status.
+                "audit.status"
             ]
         );
     }

@@ -26,11 +26,12 @@ crates/
         ├── mcp.rs         the MCP server at /mcp; mcp/stdio.rs, the stdio command
         ├── tui.rs         the terminal UI, a client of a running server
         ├── reveal.rs      the reveal marker on a read, for the audit log
+        ├── roles.rs       the roles a membership holds, by name
         ├── access.rs      tokens, scopes, authentication
         ├── store.rs       one tenant's vCons: versions, deletes, purges, legal reads
         ├── backend.rs     where the data is kept: local files, an S3 bucket, PostgreSQL
         ├── export.rs      export parquet: a tenant's versions as Parquet files
-        ├── tenants.rs     the registry: tenants, their keys, API keys, the admin log
+        ├── tenants.rs     the registry: tenants, their keys, API keys, users, memberships, the admin log
         ├── envelope.rs    keys in locked memory; seal, wrap, HKDF
         ├── catalog.rs     SQLCipher catalogs
         ├── audit.rs       the audit log

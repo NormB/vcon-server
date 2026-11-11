@@ -12,8 +12,72 @@ use crate::envelope::Key;
 /// time each uuid was first stored to a tenant catalog's vcon table;
 /// version 3 added each tenant's metadata level to server.sqlite; version
 /// 4 added the places of packed versions and the pack tables to a tenant
-/// catalog.
-pub const SCHEMA_VERSION: i64 = 4;
+/// catalog; version 5 added the users and memberships tables to
+/// server.sqlite, and lets every catalog's audit log hold no status.
+/// A build refuses every version it does not know, so a catalog this
+/// build has opened is refused by release 0.4.3 and earlier.
+pub const SCHEMA_VERSION: i64 = 5;
+
+/// The users and their memberships in server.sqlite, as a new registry
+/// and an upgraded one both make them. A user is a person who signs in:
+/// a display label, and the identity an identity provider knows the
+/// person by (its issuer and the subject it gives), or neither for a local
+/// account. An identity belongs to one active user; a deactivated user
+/// keeps its row, for the logs that name its id. A membership gives a user
+/// roles in one tenant, or as an operator (no tenant): at most one for
+/// each, which the two indexes hold, since a UNIQUE over a NULL tenant
+/// holds nothing. Times are nanoseconds since the epoch.
+pub(crate) const USER_TABLES: &str = "
+CREATE TABLE user_account (
+    id BLOB PRIMARY KEY NOT NULL,
+    label TEXT NOT NULL,
+    issuer TEXT,
+    subject TEXT,
+    created_at INTEGER NOT NULL,
+    deactivated_at INTEGER,
+    CHECK ((issuer IS NULL) = (subject IS NULL))
+);
+CREATE UNIQUE INDEX user_account_identity ON user_account (issuer, subject)
+    WHERE issuer IS NOT NULL AND deactivated_at IS NULL;
+CREATE TABLE membership (
+    user BLOB NOT NULL,
+    tenant BLOB,
+    roles TEXT NOT NULL,
+    granted_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX membership_in_tenant ON membership (user, tenant)
+    WHERE tenant IS NOT NULL;
+CREATE UNIQUE INDEX membership_as_operator ON membership (user)
+    WHERE tenant IS NULL;
+CREATE INDEX membership_of_tenant ON membership (tenant);
+";
+
+/// Brings a version-4 audit log to version 5: the same records under the
+/// same numbers, in a table whose status may be NULL, with NULL where
+/// version 4 wrote 0 for a record that answers no request
+/// (`audit::NO_ANSWER`). SQLite cannot drop a NOT NULL from a column, so
+/// the table is made again, by the text a new catalog makes it with, and
+/// the rows copied. The highest number the old log ever gave is carried
+/// over, so no number is given twice: the copy leaves the new table's
+/// counter at the highest number copied (SQLite writes the counter's row
+/// even when it copies no record), and the UPDATE raises it to the old
+/// table's, which is past that when the old log's last records are gone. A
+/// log that never held a record has no old counter, and keeps the new one.
+fn audit_without_zero() -> String {
+    format!(
+        "ALTER TABLE audit RENAME TO audit_v4;
+DROP INDEX audit_counted;
+{}
+INSERT INTO audit (seq, at, actor, action, target, version, status, count)
+    SELECT seq, at, actor, action, target, version, nullif(status, 0), count
+    FROM audit_v4 ORDER BY seq;
+UPDATE sqlite_sequence
+    SET seq = coalesce((SELECT seq FROM sqlite_sequence WHERE name = 'audit_v4'), seq)
+    WHERE name = 'audit';
+DROP TABLE audit_v4;",
+        crate::audit::SCHEMA
+    )
+}
 
 /// Brings a version-1 tenant catalog to version 2: each uuid's first store
 /// time, taken from its earliest kept version (the closest record left of
@@ -172,10 +236,10 @@ pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogE
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
         }
-        from @ 1..=3 => {
+        from @ 1..=4 => {
             // One transaction, so a failed upgrade leaves the old version
             // whole. A tenant catalog has a vcon table, server.sqlite a
-            // tenant table.
+            // tenant table, and both an audit log.
             let tx = conn.unchecked_transaction()?;
             let has = |table: &str| -> rusqlite::Result<bool> {
                 tx.query_row(
@@ -193,6 +257,12 @@ pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogE
             if from < 4 && has("version")? {
                 tx.execute_batch(VERSION_PLACES)?;
                 tx.execute_batch(PACK_TABLES)?;
+            }
+            if from < 5 && has("tenant")? {
+                tx.execute_batch(USER_TABLES)?;
+            }
+            if from < 5 && has("audit")? {
+                tx.execute_batch(&audit_without_zero())?;
             }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
@@ -384,6 +454,9 @@ fn set_key(conn: &Connection, key: &Key) -> Result<(), CatalogError> {
 }
 
 /// Checks on a catalog's schema, for tests.
+#[cfg(test)]
+mod v5_tests;
+
 #[cfg(test)]
 pub(crate) mod testing {
     use rusqlite::Connection;

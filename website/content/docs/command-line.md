@@ -81,6 +81,36 @@ A token is printed once and never again; the server keeps only its hash.
 what the admin routes need. `key list` without `--tenant` lists every key,
 operator keys included (their `tenant` is `null`).
 
+## Users and memberships
+
+On `main` only; release 0.4.3 does not have these commands. A user is a
+person who will sign in; a membership gives a user roles in a tenant, or
+the operator role. These commands are the only way to make either, and no
+request reads them yet. See
+[add users and memberships](@/docs/users-and-memberships.md).
+
+| Command | Prints | Runs beside `serve` |
+|---|---|---|
+| `user add <label> [--issuer <url> --subject <subject>]` | `{"id"}` | yes |
+| `user list` | `{"id", "label", "issuer", "subject", "created_at", "deactivated_at", "memberships"}` per user, oldest first | yes |
+| `user deactivate <id>` | nothing | yes |
+| `membership grant <user> --tenant <id> --role <r> [--role <r>...]` | `{"user", "tenant", "roles"}` | yes |
+| `membership grant <user> --operator` | `{"user", "tenant", "roles"}` | yes |
+| `membership revoke <user> --tenant <id> [--role <r>...]` | `{"user", "tenant", "roles"}` | yes |
+| `membership revoke <user> --operator` | `{"user", "tenant", "roles"}` | yes |
+
+`--issuer` and `--subject` go together: the issuer of an identity provider
+and the subject it gives the user. Without them the user is a local
+account. A tenant role is `reader`, `producer`, `records`, `legal`,
+`auditor` or `tenant-admin`; an operator membership holds `operator` alone.
+`membership grant` and `membership revoke` print the roles the membership
+holds afterwards, and `tenant` is `null` for the operator membership.
+`membership revoke` without `--role` takes every role. A membership with no
+role left is removed. `user deactivate` removes the user's memberships;
+the user stays in `user list`, and its issuer and subject may be given to
+a new user. Each entry of `memberships` is `{"tenant", "roles",
+"granted_at"}`.
+
 ## Audit logs
 
 | Command | Prints | Runs beside `serve` |

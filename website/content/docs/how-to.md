@@ -77,6 +77,9 @@ shows. `scripts/docs_test.py` runs them. See
 - [Give operator keys their own listener](@/docs/operator-listener.md): a
   second address that serves operator keys only, so the address tenants
   use refuses them, with what to change in proxies and clients.
+- [Add users and memberships](@/docs/users-and-memberships.md): users made
+  on the host, roles in a tenant or the operator role, and each change in
+  the audit logs. No request reads them yet.
 
 ## Connect an AI agent
 

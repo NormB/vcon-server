@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
-use vcon_server::commands::{self, Log, Owner};
+use vcon_server::commands::{self, Log, Owner, Place};
 use vcon_server::{config, envelope, serve};
 
 /// A vCon server: stores IETF vCons, encrypted at rest.
@@ -30,6 +30,13 @@ enum Command {
     /// Makes, lists and revokes keys.
     #[command(subcommand)]
     Key(KeyCommand),
+    /// Makes, lists and deactivates users. Runs on the host only.
+    #[command(subcommand)]
+    User(UserCommand),
+    /// Grants and revokes a user's roles in a tenant or as an operator. Runs on
+    /// the host only.
+    #[command(subcommand)]
+    Membership(MembershipCommand),
     /// Reads the audit logs.
     #[command(subcommand)]
     Audit(AuditCommand),
@@ -242,6 +249,144 @@ enum KeyCommand {
 }
 
 #[derive(Subcommand)]
+enum UserCommand {
+    /// Makes a user, a person who signs in, and prints its id.
+    Add {
+        #[command(flatten)]
+        config: ConfigArg,
+        /// What the user is shown as.
+        label: String,
+        /// The issuer of the identity provider that knows the user. With
+        /// neither this nor --subject, the user is a local account.
+        #[arg(long, requires = "subject")]
+        issuer: Option<String>,
+        /// The subject the identity provider gives the user.
+        #[arg(long, requires = "issuer")]
+        subject: Option<String>,
+    },
+    /// Lists users, each with its memberships.
+    List {
+        #[command(flatten)]
+        config: ConfigArg,
+    },
+    /// Deactivates a user and removes its memberships.
+    Deactivate {
+        #[command(flatten)]
+        config: ConfigArg,
+        /// The user's id.
+        id: String,
+    },
+}
+
+#[derive(Args)]
+struct PlaceArgs {
+    /// The tenant the membership is in.
+    #[arg(
+        long,
+        required_unless_present = "operator",
+        conflicts_with = "operator"
+    )]
+    tenant: Option<String>,
+    /// The operator membership, which holds the operator role.
+    #[arg(long)]
+    operator: bool,
+}
+
+#[derive(Subcommand)]
+enum MembershipCommand {
+    /// Gives a user roles in a tenant, or the operator role, and prints
+    /// the roles the membership then holds.
+    Grant {
+        #[command(flatten)]
+        config: ConfigArg,
+        /// The user's id.
+        user: String,
+        #[command(flatten)]
+        place: PlaceArgs,
+        /// A role in the tenant: reader, producer, records, legal, auditor
+        /// or tenant-admin. Repeat it for each role.
+        #[arg(
+            long = "role",
+            required_unless_present = "operator",
+            conflicts_with = "operator"
+        )]
+        roles: Vec<String>,
+    },
+    /// Takes roles from a user's membership and prints the roles it still
+    /// holds. With no --role, the membership is removed.
+    Revoke {
+        #[command(flatten)]
+        config: ConfigArg,
+        /// The user's id.
+        user: String,
+        #[command(flatten)]
+        place: PlaceArgs,
+        /// A role to take. Repeat it for each role.
+        #[arg(long = "role", conflicts_with = "operator")]
+        roles: Vec<String>,
+    },
+}
+
+impl PlaceArgs {
+    fn place(self, roles: Vec<String>) -> Place {
+        match self.tenant {
+            Some(id) => Place::Tenant { id, roles },
+            None => Place::Operator,
+        }
+    }
+}
+
+fn user(command: UserCommand) -> (ConfigArg, commands::Command) {
+    match command {
+        UserCommand::Add {
+            config,
+            label,
+            issuer,
+            subject,
+        } => (
+            config,
+            commands::Command::UserAdd {
+                label,
+                identity: issuer.zip(subject),
+            },
+        ),
+        UserCommand::List { config } => (config, commands::Command::UserList),
+        UserCommand::Deactivate { config, id } => {
+            (config, commands::Command::UserDeactivate { id })
+        }
+    }
+}
+
+fn membership(command: MembershipCommand) -> (ConfigArg, commands::Command) {
+    match command {
+        MembershipCommand::Grant {
+            config,
+            user,
+            place,
+            roles,
+        } => (
+            config,
+            commands::Command::MembershipGrant {
+                user,
+                place: place.place(roles),
+            },
+        ),
+        MembershipCommand::Revoke {
+            config,
+            user,
+            place,
+            roles,
+        } => (
+            config,
+            commands::Command::MembershipRevoke {
+                user,
+                place: place.place(roles),
+            },
+        ),
+    }
+}
+
+#[derive(Subcommand)]
 enum AuditCommand {
     /// Writes an audit log as JSON lines, oldest first.
     Export {
@@ -279,6 +424,8 @@ fn main() -> ExitCode {
         Command::Tui { config } => return tui(&config),
         Command::Tenant(c) => tenant(c),
         Command::Key(c) => key(c),
+        Command::User(c) => user(c),
+        Command::Membership(c) => membership(c),
         Command::Rekey(RekeyCommand::Tenant { config, id }) => {
             (config, commands::Command::RekeyTenant { id })
         }

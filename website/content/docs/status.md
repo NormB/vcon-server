@@ -149,6 +149,23 @@ what is built, unless it says otherwise.
   0.3.0 also a Sigstore signature over the checksums and the provenance as a
   file. The release workflow also publishes both crates to crates.io.
 
+## On `main` only
+
+The site is built from the `main` branch, so a page can describe what no
+release holds yet. Release 0.4.3 does not have these:
+
+- **Users and memberships, and schema version 5.** The commands
+  `user add`, `user list`, `user deactivate`, `membership grant` and
+  `membership revoke` keep a list of people and their roles in a tenant or
+  as an operator, on the host, in `server.sqlite`, with each change in the
+  audit logs. No request reads the list yet, so nobody can
+  sign in as a user. The catalogs move from schema version 4 to 5, which
+  release 0.4.3 refuses to open: there is no downgrade without the copy
+  taken before the upgrade. Release 0.4.3 has neither command and keeps
+  schema version 4. See
+  [add users and memberships](@/docs/users-and-memberships.md) and
+  [schema version 5](@/docs/upgrading.md#schema-version-5-and-no-way-back-without-the-copy).
+
 ## Being built
 
 - **A PostgreSQL catalog**, a preview behind the `postgres` cargo feature:

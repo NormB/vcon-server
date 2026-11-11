@@ -26,6 +26,7 @@ mod backup;
 mod examine;
 mod keys;
 mod rekey;
+mod users;
 
 pub use backup::{Backup, BackupError};
 pub use examine::{KeyOrder, RegistryExamination, RotationBacklog, TenantExamination, Unexamined};
@@ -34,6 +35,7 @@ pub(crate) use rekey::MasterStep;
 pub use rekey::rekey_master;
 #[cfg(test)]
 pub(crate) use tests::{Fixture, fixture};
+pub use users::{Identity, MembershipInfo, UserError, UserInfo};
 
 /// A tenant's metadata column as read: NULL is `none`, and a level this
 /// build does not know is damage.
@@ -674,6 +676,8 @@ impl Tenants {
         {
             let mut tx = self.registry.immediate()?;
             tx.delete_tenant(id, nanos(self.clock.now()))?;
+            // A membership is in a tenant: none outlives its tenant.
+            tx.delete_memberships_in(id)?;
             self.record(&mut tx, &entry(204))?;
             commit(tx)?;
         }
@@ -1018,7 +1022,7 @@ mod tests {
 
         /// A crash, then a start: what was not synced is lost, and the
         /// registry is opened again.
-        fn restart(&mut self) {
+        pub(crate) fn restart(&mut self) {
             self.fs.crash();
             let tenants = self.open().expect("opens again");
             drop(std::mem::replace(&mut self.tenants, tenants));
@@ -1133,8 +1137,10 @@ mod tests {
                 "api_key",
                 "audit",
                 "master_key_use",
+                "membership",
                 "sqlite_sequence",
-                "tenant"
+                "tenant",
+                "user_account"
             ]
         );
     }
@@ -2244,7 +2250,8 @@ mod tests {
             let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
             f.conn()
                 .execute_batch(&format!(
-                    "ALTER TABLE tenant DROP COLUMN metadata; PRAGMA user_version = {from};"
+                    "ALTER TABLE tenant DROP COLUMN metadata; DROP TABLE membership;
+                     DROP TABLE user_account; PRAGMA user_version = {from};"
                 ))
                 .expect("back to the old schema");
             f.restart();

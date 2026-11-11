@@ -713,3 +713,538 @@ fn the_command_line_page_names_the_members_each_command_prints() {
         "command-line.md has fallen behind: {wrong:#?}"
     );
 }
+
+// Users and memberships.
+
+const NOBODY: &str = "00000000000000000000000000000000";
+
+fn id_of(lines: &[Value]) -> String {
+    lines[0]["id"].as_str().expect("an id").to_owned()
+}
+
+/// A tenant and a local user.
+fn tenant_and_user(s: &Setup) -> (String, String) {
+    (
+        id_of(&s.ok(&["tenant", "create", "acme"])),
+        id_of(&s.ok(&["user", "add", "Night shift lead"])),
+    )
+}
+
+/// The records of `action` in the log `args` name: target and status.
+fn logged(s: &Setup, args: &[&str], action: &str) -> Vec<(Value, Value)> {
+    let mut export = vec!["audit", "export"];
+    export.extend_from_slice(args);
+    s.ok(&export)
+        .into_iter()
+        .filter(|r| r["action"] == action)
+        .map(|r| (r["target"].clone(), r["status"].clone()))
+        .collect()
+}
+
+#[test]
+fn users_are_added_listed_and_deactivated() {
+    let s = setup();
+    let local = id_of(&s.ok(&["user", "add", "Night shift lead"]));
+    assert_eq!(local.len(), 32, "a user id is 32 hex digits: {local}");
+    let sso = id_of(&s.ok(&[
+        "user",
+        "add",
+        "Auditor",
+        "--issuer",
+        "https://idp.example.com",
+        "--subject",
+        "subject-1",
+    ]));
+    let listed = s.ok(&["user", "list"]);
+    assert_eq!(listed.len(), 2, "one line for each user");
+    assert_eq!(
+        (&listed[0]["id"], &listed[0]["label"], &listed[0]["issuer"]),
+        (
+            &Value::from(local.as_str()),
+            &Value::from("Night shift lead"),
+            &Value::Null
+        ),
+        "the local user's line"
+    );
+    assert_eq!(
+        (&listed[1]["issuer"], &listed[1]["subject"]),
+        (
+            &Value::from("https://idp.example.com"),
+            &Value::from("subject-1")
+        ),
+        "the other user's identity"
+    );
+    assert_eq!(
+        s.ok(&["user", "deactivate", &sso]),
+        Vec::<Value>::new(),
+        "deactivate prints nothing"
+    );
+    let listed = s.ok(&["user", "list"]);
+    assert!(
+        listed[1]["deactivated_at"].is_string() && listed[0]["deactivated_at"].is_null(),
+        "only the deactivated user has a time: {listed:?}"
+    );
+}
+
+#[test]
+fn memberships_are_granted_and_revoked_and_each_prints_the_roles_held() {
+    let s = setup();
+    let (tenant, user) = tenant_and_user(&s);
+    let granted = s.ok(&[
+        "membership",
+        "grant",
+        &user,
+        "--tenant",
+        &tenant,
+        "--role",
+        "legal",
+        "--role",
+        "reader",
+    ]);
+    assert_eq!(
+        granted,
+        [serde_json::json!({"user": user, "tenant": tenant, "roles": ["reader", "legal"]})],
+        "the line a grant prints"
+    );
+    let operator = s.ok(&["membership", "grant", &user, "--operator"]);
+    assert_eq!(
+        operator,
+        [serde_json::json!({"user": user, "tenant": null, "roles": ["operator"]})],
+        "the line an operator grant prints"
+    );
+    let left = s.ok(&[
+        "membership",
+        "revoke",
+        &user,
+        "--tenant",
+        &tenant,
+        "--role",
+        "legal",
+    ]);
+    assert_eq!(
+        left[0]["roles"],
+        serde_json::json!(["reader"]),
+        "what a revoke of one role leaves"
+    );
+    let none = s.ok(&["membership", "revoke", &user, "--operator"]);
+    assert_eq!(
+        none[0]["roles"],
+        serde_json::json!([]),
+        "what a revoke of the membership leaves"
+    );
+    let listed = s.ok(&["user", "list"]);
+    assert_eq!(
+        listed[0]["memberships"]
+            .as_array()
+            .expect("memberships")
+            .iter()
+            .map(|m| (m["tenant"].clone(), m["roles"].clone()))
+            .collect::<Vec<_>>(),
+        [(Value::from(tenant), serde_json::json!(["reader"]))],
+        "the one membership left"
+    );
+}
+
+#[test]
+fn user_and_membership_commands_are_in_the_admin_log_and_the_tenants() {
+    let s = setup();
+    let (tenant, user) = tenant_and_user(&s);
+    s.ok(&[
+        "membership",
+        "grant",
+        &user,
+        "--tenant",
+        &tenant,
+        "--role",
+        "auditor",
+    ]);
+    s.ok(&["user", "list"]);
+    s.ok(&["membership", "revoke", &user, "--tenant", &tenant]);
+    s.ok(&["user", "deactivate", &user]);
+    let grant = [(
+        Value::from(format!("{user}/{tenant}/auditor")),
+        Value::from(200),
+    )];
+    let revoke = [(Value::from(format!("{user}/{tenant}")), Value::from(200))];
+    let admin = ["--admin"];
+    assert_eq!(
+        logged(&s, &admin, "user_add"),
+        [(Value::from(user.as_str()), Value::from(201))],
+        "user add"
+    );
+    assert_eq!(
+        logged(&s, &admin, "user_list"),
+        [(Value::Null, Value::from(200))],
+        "user list"
+    );
+    assert_eq!(logged(&s, &admin, "membership_grant"), grant, "the grant");
+    assert_eq!(
+        logged(&s, &admin, "membership_revoke"),
+        revoke,
+        "the revoke"
+    );
+    assert_eq!(
+        logged(&s, &admin, "user_deactivate"),
+        [(Value::from(user.as_str()), Value::from(204))],
+        "user deactivate"
+    );
+    let own = ["--tenant", tenant.as_str()];
+    assert_eq!(
+        logged(&s, &own, "membership_grant"),
+        grant,
+        "the tenant's copy of the grant"
+    );
+    assert_eq!(
+        logged(&s, &own, "membership_revoke"),
+        revoke,
+        "the tenant's copy of the revoke"
+    );
+}
+
+#[test]
+fn user_and_membership_commands_run_beside_a_server() {
+    let s = setup();
+    let (tenant, user) = tenant_and_user(&s);
+    let server = datadir::lock(&s.data, Sharing::Serve).expect("a server");
+    let other = id_of(&s.ok(&["user", "add", "Beside"]));
+    s.ok(&[
+        "membership",
+        "grant",
+        &user,
+        "--tenant",
+        &tenant,
+        "--role",
+        "reader",
+    ]);
+    s.ok(&["membership", "revoke", &user, "--tenant", &tenant]);
+    s.ok(&["user", "deactivate", &other]);
+    assert_eq!(s.ok(&["user", "list"]).len(), 2, "both users");
+    drop(server);
+}
+
+#[test]
+fn each_user_and_membership_refusal_exits_1_and_says_why() {
+    let s = setup();
+    let (tenant, user) = tenant_and_user(&s);
+    let gone = id_of(&s.ok(&["user", "add", "Leaver"]));
+    s.ok(&["user", "deactivate", &gone]);
+    s.ok(&[
+        "user",
+        "add",
+        "Taken",
+        "--issuer",
+        "https://idp.example.com",
+        "--subject",
+        "s-1",
+    ]);
+    let t = tenant.as_str();
+    for (args, words) in [
+        (vec!["user", "add", " outer space"], "a user label is"),
+        (
+            vec![
+                "user",
+                "add",
+                "L",
+                "--issuer",
+                "http://idp.example.com",
+                "--subject",
+                "s",
+            ],
+            "https://",
+        ),
+        (
+            vec![
+                "user",
+                "add",
+                "L",
+                "--issuer",
+                "https://idp.example.com",
+                "--subject",
+                "s-1",
+            ],
+            "an active user has this issuer and subject",
+        ),
+        (vec!["user", "deactivate", NOBODY], "no user has this id"),
+        (
+            vec!["user", "deactivate", "not-an-id"],
+            "no user has this id",
+        ),
+        (
+            vec![
+                "membership",
+                "grant",
+                NOBODY,
+                "--tenant",
+                t,
+                "--role",
+                "reader",
+            ],
+            "no user has this id",
+        ),
+        (
+            vec![
+                "membership",
+                "grant",
+                &user,
+                "--tenant",
+                NOBODY,
+                "--role",
+                "reader",
+            ],
+            "no tenant has this id",
+        ),
+        (
+            vec![
+                "membership",
+                "grant",
+                &user,
+                "--tenant",
+                "nope",
+                "--role",
+                "reader",
+            ],
+            "no tenant has this id",
+        ),
+        (
+            vec![
+                "membership",
+                "grant",
+                &user,
+                "--tenant",
+                t,
+                "--role",
+                "owner",
+            ],
+            "reader, producer, records, legal, auditor and tenant-admin",
+        ),
+        (
+            vec![
+                "membership",
+                "grant",
+                &user,
+                "--tenant",
+                t,
+                "--role",
+                "operator",
+            ],
+            "reader, producer, records, legal, auditor and tenant-admin",
+        ),
+        (
+            vec![
+                "membership",
+                "grant",
+                &gone,
+                "--tenant",
+                t,
+                "--role",
+                "reader",
+            ],
+            "the user is deactivated",
+        ),
+        (
+            vec!["membership", "grant", &gone, "--operator"],
+            "the user is deactivated",
+        ),
+        (
+            vec!["membership", "revoke", &user, "--tenant", t],
+            "the user has no such membership",
+        ),
+        (
+            vec!["membership", "revoke", &user, "--operator"],
+            "the user has no such membership",
+        ),
+        (
+            vec![
+                "membership",
+                "revoke",
+                &user,
+                "--tenant",
+                t,
+                "--role",
+                "owner",
+            ],
+            "reader, producer, records, legal, auditor and tenant-admin",
+        ),
+    ] {
+        let said = s.refused(&args);
+        assert!(said.contains(words), "{args:?}: {said}");
+    }
+    assert_eq!(
+        s.ok(&["user", "list"])
+            .iter()
+            .map(|u| u["memberships"].as_array().map(Vec::len))
+            .collect::<Vec<_>>(),
+        [Some(0), Some(0), Some(0)],
+        "no refusal made a membership"
+    );
+    // Text that is no id, and a name that is no role's, are refused before
+    // the registry is asked, so they leave no record; a real role in the
+    // wrong kind of membership is refused by the registry, and recorded.
+    assert_eq!(
+        logged(&s, &["--admin"], "user_deactivate"),
+        [
+            (Value::from(gone.as_str()), Value::from(204)),
+            (Value::from(NOBODY), Value::from(404)),
+        ],
+        "the deactivation, and the refusal of an id no user has"
+    );
+    assert_eq!(
+        logged(&s, &["--admin"], "membership_grant")
+            .into_iter()
+            .filter(|(_, status)| status.as_u64() == Some(422))
+            .collect::<Vec<_>>(),
+        [(
+            Value::from(format!("{user}/{t}/operator")),
+            Value::from(422)
+        )],
+        "the one refusal of roles the registry saw"
+    );
+    assert_eq!(
+        logged(&s, &["--admin"], "membership_revoke")
+            .into_iter()
+            .filter(|(_, status)| status.as_u64() == Some(422))
+            .count(),
+        0,
+        "a revoke that names no role's name asks the registry nothing"
+    );
+}
+
+#[test]
+fn a_user_or_membership_command_line_that_does_not_parse_exits_2() {
+    for args in [
+        vec!["user", "add", "--config", "c"],
+        vec![
+            "user",
+            "add",
+            "L",
+            "--issuer",
+            "https://idp.example.com",
+            "--config",
+            "c",
+        ],
+        vec!["user", "add", "L", "--subject", "s", "--config", "c"],
+        vec!["user", "deactivate", "--config", "c"],
+        vec!["user", "list"],
+        vec!["user", "remove", "u", "--config", "c"],
+        vec![
+            "membership",
+            "grant",
+            "u",
+            "--role",
+            "reader",
+            "--config",
+            "c",
+        ],
+        vec!["membership", "grant", "u", "--tenant", "t", "--config", "c"],
+        vec![
+            "membership",
+            "grant",
+            "u",
+            "--tenant",
+            "t",
+            "--operator",
+            "--role",
+            "reader",
+            "--config",
+            "c",
+        ],
+        vec![
+            "membership",
+            "grant",
+            "u",
+            "--operator",
+            "--role",
+            "operator",
+            "--config",
+            "c",
+        ],
+        vec!["membership", "grant", "--operator", "--config", "c"],
+        vec!["membership", "revoke", "u", "--config", "c"],
+        vec![
+            "membership",
+            "revoke",
+            "u",
+            "--tenant",
+            "t",
+            "--operator",
+            "--config",
+            "c",
+        ],
+        vec![
+            "membership",
+            "revoke",
+            "u",
+            "--operator",
+            "--role",
+            "operator",
+            "--config",
+            "c",
+        ],
+        vec!["membership", "list", "--config", "c"],
+    ] {
+        usage_error(&args);
+    }
+}
+
+#[test]
+fn a_role_named_twice_is_held_once_and_an_identity_is_free_after_deactivation() {
+    let s = setup();
+    let (tenant, user) = tenant_and_user(&s);
+    let granted = s.ok(&[
+        "membership",
+        "grant",
+        &user,
+        "--tenant",
+        &tenant,
+        "--role",
+        "reader",
+        "--role",
+        "reader",
+        "--role",
+        "tenant-admin",
+    ]);
+    assert_eq!(
+        granted[0]["roles"],
+        serde_json::json!(["reader", "tenant-admin"]),
+        "each role once, in the fixed order"
+    );
+    let identity = [
+        "--issuer",
+        "https://idp.example.com/realms/a",
+        "--subject",
+        "s | 1",
+    ];
+    let mut add = vec!["user", "add", "First"];
+    add.extend_from_slice(&identity);
+    let first = id_of(&s.ok(&add));
+    s.ok(&["user", "deactivate", &first]);
+    s.ok(&["user", "deactivate", &first]);
+    let again = id_of(&s.ok(&add));
+    assert_ne!(first, again, "the identity under a new id");
+}
+
+#[test]
+fn removing_a_tenant_takes_its_memberships_with_it() {
+    let s = setup();
+    let (tenant, user) = tenant_and_user(&s);
+    s.ok(&[
+        "membership",
+        "grant",
+        &user,
+        "--tenant",
+        &tenant,
+        "--role",
+        "reader",
+    ]);
+    s.ok(&["tenant", "remove", &tenant]);
+    assert_eq!(
+        s.ok(&["user", "list"])[0]["memberships"],
+        serde_json::json!([]),
+        "the user is left with no membership"
+    );
+    assert!(
+        s.refused(&["membership", "revoke", &user, "--tenant", &tenant])
+            .contains("the user has no such membership"),
+        "and there is none to revoke"
+    );
+}

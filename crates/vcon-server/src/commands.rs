@@ -16,12 +16,13 @@ use crate::config::{Config, StorageError};
 use crate::datadir::{self, LockError, Sharing, Work};
 use crate::envelope::{Key, KeyError};
 use crate::fs::OsFs;
-use crate::ids::{KeyId, TenantId};
+use crate::ids::{KeyId, TenantId, UserId};
 use crate::retention::Retention;
+use crate::roles::{Role, Roles};
 use crate::store::ExamineError;
 use crate::tenants::{
-    self, BackupError, OpenFailure, RegistryError, Removal, TenantError, TenantExamination,
-    Tenants, Unexamined,
+    self, BackupError, Identity, OpenFailure, RegistryError, Removal, TenantError,
+    TenantExamination, Tenants, Unexamined, UserError,
 };
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -72,6 +73,27 @@ pub enum Command {
     KeyRevoke {
         id: String,
     },
+    /// Makes a user. `identity` is the issuer and subject an identity
+    /// provider knows the user by; None makes a local account.
+    UserAdd {
+        label: String,
+        identity: Option<(String, String)>,
+    },
+    UserList,
+    UserDeactivate {
+        id: String,
+    },
+    /// Gives a user roles in a tenant, or the operator role.
+    MembershipGrant {
+        user: String,
+        place: Place,
+    },
+    /// Takes roles from a user's membership; with no role named, all of
+    /// them.
+    MembershipRevoke {
+        user: String,
+        place: Place,
+    },
     AuditExport {
         log: Log,
         since: Option<i64>,
@@ -100,6 +122,14 @@ pub enum Owner {
     Operator,
 }
 
+/// Where a membership is: in a tenant, with the roles the command names,
+/// or as an operator, whose one role the command does not name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Place {
+    Tenant { id: String, roles: Vec<String> },
+    Operator,
+}
+
 /// Which audit log `audit export` writes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Log {
@@ -121,6 +151,11 @@ impl Command {
             Command::KeyCreate { .. } => Work::KeyCreate,
             Command::KeyList { .. } => Work::KeyList,
             Command::KeyRevoke { .. } => Work::KeyRevoke,
+            Command::UserAdd { .. } => Work::UserAdd,
+            Command::UserList => Work::UserList,
+            Command::UserDeactivate { .. } => Work::UserDeactivate,
+            Command::MembershipGrant { .. } => Work::MembershipGrant,
+            Command::MembershipRevoke { .. } => Work::MembershipRevoke,
             Command::AuditExport { .. } => Work::AuditExport,
             Command::RekeyTenant { .. } => Work::RekeyTenant,
             Command::RekeyMaster { .. } => Work::RekeyMaster,
@@ -145,6 +180,8 @@ pub enum CommandError {
     Open(RegistryError),
     /// No key has this id.
     UnknownKey,
+    /// A user or membership command was refused.
+    User(UserError),
     /// The output could not be written.
     Output(io::Error),
     /// The new master key is the one already in use.
@@ -193,6 +230,25 @@ impl fmt::Display for CommandError {
                 "{text:?} is not a period such as 7y, 18m or 90d (or, for set-retention, default)"
             ),
             CommandError::UnknownKey => f.write_str("no key has this id"),
+            CommandError::User(e) => f.write_str(match e {
+                UserError::CliOnly => "only the command line may do this",
+                UserError::BadLabel => {
+                    "a user label is 1 to 128 characters, with no control characters and no space at either end"
+                }
+                UserError::BadIdentity => {
+                    "an issuer is an https:// URL of at most 255 bytes with no query or fragment, and a subject is 1 to 255 ASCII characters with no space at either end"
+                }
+                UserError::IdentityTaken => "an active user has this issuer and subject",
+                UserError::NoUser => "no user has this id",
+                UserError::Deactivated => "the user is deactivated",
+                UserError::NoTenant => "no tenant has this id",
+                UserError::Closing => "the tenant is being removed",
+                UserError::BadRoles => {
+                    "a tenant membership's roles are one or more of reader, producer, records, legal, auditor and tenant-admin; an operator membership holds operator alone"
+                }
+                UserError::NoMembership => "the user has no such membership",
+                UserError::Registry(_) => "the data could not be read or written",
+            }),
             CommandError::Output(e) => write!(f, "the output could not be written: {e}"),
             CommandError::SameMasterKey => {
                 f.write_str("the new master key is the one already in use")
@@ -377,6 +433,44 @@ pub fn run(config: &Config, command: &Command, out: &mut dyn Write) -> Result<()
                 other => CommandError::Tenant(other),
             })
         }
+        Command::UserAdd { label, identity } => {
+            let identity = identity.as_ref().map(|(issuer, subject)| Identity {
+                issuer: issuer.clone(),
+                subject: subject.clone(),
+            });
+            let id = tenants.add_user(who, label, identity.as_ref())?;
+            line(out, &serde_json::json!({ "id": id.to_string() }))
+        }
+        Command::UserList => {
+            for user in tenants.list_users(who)? {
+                let shown = user
+                    .to_json()
+                    .ok_or(CommandError::Tenant(TenantError::Io))?;
+                line(out, &shown)?;
+            }
+            Ok(())
+        }
+        Command::UserDeactivate { id } => Ok(tenants.deactivate_user(who, user_id(id)?)?),
+        Command::MembershipGrant { user, place } => {
+            let user = user_id(user)?;
+            let (tenant, roles) = match place {
+                Place::Tenant { id, roles } => (Some(tenant_id(id)?), named_roles(roles)?),
+                Place::Operator => (None, Roles::of(&[Role::Operator])),
+            };
+            let held = tenants.grant_membership(who, user, tenant, roles)?;
+            membership_line(out, user, tenant, held)
+        }
+        Command::MembershipRevoke { user, place } => {
+            let user = user_id(user)?;
+            // No role named takes every role the membership holds.
+            let (tenant, roles) = match place {
+                Place::Tenant { id, roles } if roles.is_empty() => (Some(tenant_id(id)?), None),
+                Place::Tenant { id, roles } => (Some(tenant_id(id)?), Some(named_roles(roles)?)),
+                Place::Operator => (None, None),
+            };
+            let left = tenants.revoke_membership(who, user, tenant, roles)?;
+            membership_line(out, user, tenant, left)
+        }
         Command::TenantSetMetadata { id, metadata } => {
             let level = crate::export::Metadata::parse(metadata)
                 .ok_or_else(|| CommandError::BadLevel(metadata.clone()))?;
@@ -439,6 +533,45 @@ impl From<TenantError> for CommandError {
     fn from(e: TenantError) -> CommandError {
         CommandError::Tenant(e)
     }
+}
+
+impl From<UserError> for CommandError {
+    /// A registry failure is the error every other command gives for it.
+    fn from(e: UserError) -> CommandError {
+        match e {
+            UserError::Registry(e) => CommandError::Tenant(e),
+            other => CommandError::User(other),
+        }
+    }
+}
+
+/// A user id as written; text that is no id names no user.
+fn user_id(text: &str) -> Result<UserId, CommandError> {
+    UserId::parse(text).ok_or(CommandError::User(UserError::NoUser))
+}
+
+/// The roles `names` name; a name that is no role's is refused as roles
+/// no membership can hold.
+fn named_roles(names: &[String]) -> Result<Roles, CommandError> {
+    Roles::named(names).ok_or(CommandError::User(UserError::BadRoles))
+}
+
+/// The line a membership command prints: the user, the tenant (null for
+/// an operator membership) and the roles the membership now holds.
+fn membership_line(
+    out: &mut dyn Write,
+    user: UserId,
+    tenant: Option<TenantId>,
+    roles: Roles,
+) -> Result<(), CommandError> {
+    line(
+        out,
+        &serde_json::json!({
+            "user": user.to_string(),
+            "tenant": tenant.map(|t| t.to_string()),
+            "roles": roles.names(),
+        }),
+    )
 }
 
 /// Exports a tenant's kept versions as Parquet files and prints what was
@@ -1605,6 +1738,36 @@ mod tests {
         assert!(!text.contains("k3y"), "{text}");
     }
 
+    /// A user or membership command that fails in the registry says what
+    /// every other command says for the same failure.
+    #[test]
+    fn a_user_commands_registry_failure_is_the_registrys_error() {
+        for (failure, words) in [
+            (
+                TenantError::AuditFailed,
+                "the audit record could not be written",
+            ),
+            (
+                TenantError::WrongKey,
+                "is not the one server.sqlite was made under",
+            ),
+        ] {
+            let error = CommandError::from(UserError::Registry(failure));
+            assert!(
+                matches!(error, CommandError::Tenant(e) if e == failure),
+                "{failure:?} is carried as the registry's error: {error:?}"
+            );
+            assert!(error.to_string().contains(words), "{error}");
+        }
+        assert!(
+            matches!(
+                CommandError::from(UserError::NoUser),
+                CommandError::User(UserError::NoUser)
+            ),
+            "a refusal stays a user error"
+        );
+    }
+
     #[test]
     fn a_wrong_master_key_is_named() {
         let s = setup();
@@ -1671,6 +1834,19 @@ mod tests {
             CommandError::WrongMasterKey => "is not the one server.sqlite was made under",
             CommandError::BadPeriod(_) => "\"7w\" is not a period",
             CommandError::UnknownKey => "no key has this id",
+            CommandError::User(e) => match e {
+                UserError::CliOnly => "command line",
+                UserError::BadLabel => "a user label is",
+                UserError::BadIdentity => "an issuer is an https:// URL",
+                UserError::IdentityTaken => "an active user has this issuer and subject",
+                UserError::NoUser => "no user has this id",
+                UserError::Deactivated => "the user is deactivated",
+                UserError::NoTenant => "no tenant has this id",
+                UserError::Closing => "being removed",
+                UserError::BadRoles => "reader, producer, records, legal, auditor and tenant-admin",
+                UserError::NoMembership => "the user has no such membership",
+                UserError::Registry(_) => "could not be read or written",
+            },
             CommandError::Output(_) => "the output could not be written",
             CommandError::SameMasterKey => "already in use",
             CommandError::CheckFound(_) => "check found 2 problem(s)",
@@ -2012,7 +2188,21 @@ mod tests {
                 why: "the bucket could not be written".to_owned(),
             },
         ];
-        for error in tenant.into_iter().chain(backup).chain(rest) {
+        let user = [
+            UserError::CliOnly,
+            UserError::BadLabel,
+            UserError::BadIdentity,
+            UserError::IdentityTaken,
+            UserError::NoUser,
+            UserError::Deactivated,
+            UserError::NoTenant,
+            UserError::Closing,
+            UserError::BadRoles,
+            UserError::NoMembership,
+            UserError::Registry(TenantError::Io),
+        ]
+        .map(CommandError::User);
+        for error in tenant.into_iter().chain(backup).chain(rest).chain(user) {
             let text = error.to_string();
             assert!(text.contains(says(&error)), "{error:?}: {text}");
         }

@@ -8,6 +8,7 @@
 mod edge;
 mod failure;
 mod success;
+mod v2;
 
 #[cfg(feature = "backend-tests")]
 pub(super) mod live {
@@ -41,8 +42,14 @@ pub(super) mod live {
     ];
 
     /// The registry's tables.
-    pub(crate) const REGISTRY_TABLES: &[&str] =
-        &["admin_audit", "api_key", "master_key_use", "tenant"];
+    pub(crate) const REGISTRY_TABLES: &[&str] = &[
+        "admin_audit",
+        "api_key",
+        "master_key_use",
+        "membership",
+        "tenant",
+        "user_account",
+    ];
 
     /// A database of a test's own, made empty.
     pub(crate) struct Db {
@@ -234,6 +241,8 @@ pub(super) mod live {
             "master_key_use" => "INSERT INTO vcon.master_key_use (master_key_id, wraps, since) VALUES ('\\x01', 1, 1)".to_owned(),
             "api_key" => "INSERT INTO vcon.api_key (id, token_hash, scopes_sealed, label_sealed, created_at) VALUES ('\\x01', '\\x02', '\\x03', '\\x04', 1)".to_owned(),
             "admin_audit" => "INSERT INTO vcon.admin_audit (at, actor, action, status, count) VALUES ('t', 'a', 'b', 1, 1)".to_owned(),
+            "user_account" => "INSERT INTO vcon.user_account (id, label_sealed, created_at) VALUES ('\\x01', '\\x02', 1)".to_owned(),
+            "membership" => "INSERT INTO vcon.membership (user_id, roles_sealed, granted_at) VALUES ('\\x01', '\\x02', 1)".to_owned(),
             other => panic!("no insert for {other}"),
         }
     }

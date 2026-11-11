@@ -21,7 +21,7 @@ use uuid::Uuid;
 use crate::audit::{Action, AuditError, Entry};
 use crate::clock::Clock;
 use crate::envelope::Key;
-use crate::ids::{FileId, KeyId, TenantId, VersionId};
+use crate::ids::{FileId, KeyId, TenantId, UserId, VersionId};
 use crate::store::{OpenError, Store, StoreError};
 use crate::tenants::TenantError;
 
@@ -470,7 +470,31 @@ pub struct KeyRow {
     pub revoked_at: Option<i64>,
 }
 
-/// The registry: tenants, access keys, master-key use and the admin log.
+/// A user's row in the registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserRow {
+    pub id: UserId,
+    pub label: String,
+    /// The identity provider's issuer and its subject for the user; None
+    /// for a local account.
+    pub identity: Option<(String, String)>,
+    pub created_at: i64,
+    pub deactivated_at: Option<i64>,
+}
+
+/// A membership's row in the registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MembershipRow {
+    pub user: UserId,
+    /// None for an operator membership.
+    pub tenant: Option<TenantId>,
+    /// The roles, as `Roles` writes them.
+    pub roles: String,
+    pub granted_at: i64,
+}
+
+/// The registry: tenants, access keys, users and their memberships,
+/// master-key use and the admin log.
 pub trait Registry: Send + Sync {
     /// A transaction that writes: one at a time.
     fn immediate(&self) -> Result<Box<dyn RegistryTx + '_>, TenantError>;
@@ -521,6 +545,35 @@ pub trait RegistryTx {
     fn insert_key(&mut self, row: &KeyRow) -> Result<(), TenantError>;
     /// Revokes a key at `at` unless it is revoked already.
     fn revoke_key(&mut self, id: KeyId, at: i64) -> Result<(), TenantError>;
+    fn user(&mut self, id: UserId) -> Result<Option<UserRow>, TenantError>;
+    /// Every user, oldest first.
+    fn users(&mut self) -> Result<Vec<UserRow>, TenantError>;
+    /// Whether an active user has this identity.
+    fn identity_taken(&mut self, issuer: &str, subject: &str) -> Result<bool, TenantError>;
+    fn insert_user(&mut self, row: &UserRow) -> Result<(), TenantError>;
+    /// Deactivates a user at `at` unless it is deactivated already.
+    fn deactivate_user(&mut self, id: UserId, at: i64) -> Result<(), TenantError>;
+    /// The user's membership in `tenant`, or as an operator for None.
+    fn membership(
+        &mut self,
+        user: UserId,
+        tenant: Option<TenantId>,
+    ) -> Result<Option<MembershipRow>, TenantError>;
+    /// Every membership, each user's oldest first.
+    fn memberships(&mut self) -> Result<Vec<MembershipRow>, TenantError>;
+    fn insert_membership(&mut self, row: &MembershipRow) -> Result<(), TenantError>;
+    /// Sets the roles of the membership `row` names by its user and
+    /// tenant.
+    fn set_roles(&mut self, row: &MembershipRow) -> Result<(), TenantError>;
+    fn delete_membership(
+        &mut self,
+        user: UserId,
+        tenant: Option<TenantId>,
+    ) -> Result<(), TenantError>;
+    /// Removes every membership a user holds.
+    fn delete_memberships_of_user(&mut self, user: UserId) -> Result<(), TenantError>;
+    /// Removes every membership in a tenant.
+    fn delete_memberships_in(&mut self, tenant: TenantId) -> Result<(), TenantError>;
     /// The times of the admin records of `action` with `status`, as
     /// stored.
     fn record_times(&mut self, action: Action, status: u16) -> Result<Vec<String>, TenantError>;

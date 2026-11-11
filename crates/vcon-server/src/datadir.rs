@@ -35,6 +35,11 @@ pub enum Work {
     KeyCreate,
     KeyList,
     KeyRevoke,
+    UserAdd,
+    UserList,
+    UserDeactivate,
+    MembershipGrant,
+    MembershipRevoke,
     RekeyTenant,
     RekeyMaster,
     AuditExport,
@@ -59,6 +64,11 @@ impl Work {
             | Work::KeyCreate
             | Work::KeyList
             | Work::KeyRevoke
+            | Work::UserAdd
+            | Work::UserList
+            | Work::UserDeactivate
+            | Work::MembershipGrant
+            | Work::MembershipRevoke
             | Work::AuditExport
             | Work::Backup
             | Work::TenantSetMetadata
@@ -163,6 +173,11 @@ mod tests {
             Work::KeyCreate => Sharing::Beside,
             Work::KeyList => Sharing::Beside,
             Work::KeyRevoke => Sharing::Beside,
+            Work::UserAdd => Sharing::Beside,
+            Work::UserList => Sharing::Beside,
+            Work::UserDeactivate => Sharing::Beside,
+            Work::MembershipGrant => Sharing::Beside,
+            Work::MembershipRevoke => Sharing::Beside,
             Work::RekeyTenant => Sharing::Alone,
             Work::RekeyMaster => Sharing::Alone,
             Work::AuditExport => Sharing::Beside,
@@ -181,6 +196,11 @@ mod tests {
             Work::KeyCreate,
             Work::KeyList,
             Work::KeyRevoke,
+            Work::UserAdd,
+            Work::UserList,
+            Work::UserDeactivate,
+            Work::MembershipGrant,
+            Work::MembershipRevoke,
             Work::RekeyTenant,
             Work::RekeyMaster,
             Work::AuditExport,

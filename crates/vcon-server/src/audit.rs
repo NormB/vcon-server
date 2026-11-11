@@ -22,7 +22,7 @@ CREATE TABLE audit (
     action TEXT NOT NULL,
     target TEXT,
     version TEXT,
-    status INTEGER NOT NULL,
+    status INTEGER,
     count INTEGER NOT NULL
 );
 CREATE INDEX audit_counted ON audit (actor, action, status, at);
@@ -94,6 +94,16 @@ pub enum Action {
     /// sent to the console (`POST /console/csp-report`), under the status
     /// that answered it; counted (`count`), not recorded.
     CspReport,
+    /// A user made, in the admin log.
+    UserAdd,
+    /// The users listed, in the admin log.
+    UserList,
+    /// A user deactivated and its memberships removed.
+    UserDeactivate,
+    /// Roles given to a user in a tenant, or as an operator.
+    MembershipGrant,
+    /// Roles taken from a user in a tenant, or as an operator.
+    MembershipRevoke,
 }
 
 impl Action {
@@ -148,6 +158,11 @@ impl Action {
             Action::WrongListener => "wrong_listener",
             Action::ListenerFull => "listener_full",
             Action::CspReport => "csp_report",
+            Action::UserAdd => "user_add",
+            Action::UserList => "user_list",
+            Action::UserDeactivate => "user_deactivate",
+            Action::MembershipGrant => "membership_grant",
+            Action::MembershipRevoke => "membership_revoke",
         }
     }
 }
@@ -167,10 +182,17 @@ pub struct Entry {
 }
 
 /// The `status` of a record that answers no request, such as a listener
-/// that filled. No HTTP status is 0. The log's column holds this number,
-/// since every catalog's schema asks for one; a record read back
-/// (`export`, `page`) has `null` there, never the number.
+/// that filled. No HTTP status is 0. The number is an entry's only: the
+/// log's column holds NULL for it (`stored`), and a record read back
+/// (`export`, `page`) has `null` there. Catalogs before schema version 5
+/// held the number, and the upgrade to 5 replaces it.
 pub const NO_ANSWER: u16 = 0;
+
+/// What the log's column holds for an entry's `status`: the status, or
+/// NULL for [`NO_ANSWER`]. The one place the number becomes no status.
+fn stored(status: u16) -> Option<u16> {
+    Some(status).filter(|status| *status != NO_ANSWER)
+}
 
 /// Why a record could not be written or exported.
 #[derive(Debug)]
@@ -215,7 +237,7 @@ pub fn record(tx: &Connection, entry: &Entry, now: OffsetDateTime) -> Result<(),
             entry.action.as_str(),
             entry.target,
             entry.version.map(|v| v.to_string()),
-            entry.status,
+            stored(entry.status),
         ],
     )?;
     Ok(())
@@ -253,13 +275,13 @@ pub fn count_many(
         entry.action.as_str(),
         entry.target,
         entry.version.map(|v| v.to_string()),
-        entry.status,
+        stored(entry.status),
         times,
     ];
     let added = tx.execute(
         "UPDATE audit SET count = count + ?7
          WHERE at = ?1 AND actor = ?2 AND action = ?3 AND target IS ?4 AND version IS ?5
-           AND status = ?6",
+           AND status IS ?6",
         fields,
     )?;
     if added == 0 {
@@ -288,7 +310,7 @@ fn lines(log: &Connection, after: i64, limit: i64, out: &mut dyn Write) -> Resul
     let mut rows = rows.query(params![after, limit])?;
     while let Some(row) = rows.next()? {
         // A record that answers no request has no status to show.
-        let status = Some(row.get::<_, u16>(6)?).filter(|status| *status != NO_ANSWER);
+        let status = row.get::<_, Option<u16>>(6)?;
         let record = json!({
             "seq": row.get::<_, i64>(0)?,
             "at": row.get::<_, String>(1)?,
@@ -558,7 +580,7 @@ mod tests {
 
     #[test]
     fn no_http_status_is_the_number_kept_for_no_answer() {
-        assert_eq!(NO_ANSWER, 0, "the number the log's column holds");
+        assert_eq!(NO_ANSWER, 0, "the number an entry holds in memory");
         assert!(
             axum::http::StatusCode::from_u16(NO_ANSWER).is_err(),
             "it is not a status a server can answer"
@@ -692,6 +714,11 @@ mod tests {
             Action::WrongListener => "wrong_listener",
             Action::ListenerFull => "listener_full",
             Action::CspReport => "csp_report",
+            Action::UserAdd => "user_add",
+            Action::UserList => "user_list",
+            Action::UserDeactivate => "user_deactivate",
+            Action::MembershipGrant => "membership_grant",
+            Action::MembershipRevoke => "membership_revoke",
         };
         let every = [
             Action::Create,
@@ -742,6 +769,11 @@ mod tests {
             Action::WrongListener,
             Action::ListenerFull,
             Action::CspReport,
+            Action::UserAdd,
+            Action::UserList,
+            Action::UserDeactivate,
+            Action::MembershipGrant,
+            Action::MembershipRevoke,
         ];
         let mut seen = std::collections::BTreeSet::new();
         for action in every {

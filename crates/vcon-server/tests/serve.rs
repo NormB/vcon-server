@@ -1672,8 +1672,8 @@ mod postgres {
             .expect("runs");
         let printed = String::from_utf8_lossy(&out.stdout).into_owned();
         assert!(
-            out.status.success() && printed.contains("\"to\":1"),
-            "migrate succeeded and left version 1: {printed} {}",
+            out.status.success() && printed.contains("\"to\":2"),
+            "migrate succeeded and left version 2: {printed} {}",
             String::from_utf8_lossy(&out.stderr)
         );
     }

@@ -45,6 +45,30 @@ impl TenantId {
     }
 }
 
+/// A user: a person who signs in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct UserId(pub [u8; 16]);
+
+impl UserId {
+    /// A new random user id.
+    #[must_use]
+    pub fn generate() -> UserId {
+        UserId(random())
+    }
+
+    /// Reads a user id written by `Display`: exactly 32 lowercase hex
+    /// digits.
+    pub fn parse(text: &str) -> Option<UserId> {
+        unhex(text).map(UserId)
+    }
+}
+
+impl fmt::Display for UserId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        hex(&self.0, f)
+    }
+}
+
 /// One stored version of a vCon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VersionId(pub [u8; 16]);

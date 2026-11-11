@@ -13,16 +13,16 @@ use uuid::Uuid;
 
 use super::{
     Catalog, CatalogTx, CommitError, ExaminedRow, ExportedRow, HiddenRow, KeptRow, KeyRow,
-    ListedRow, NewPackFile, NewVersion, ObjectError, ObjectPlace, Objects, PackFileRow, Packed,
-    PageQuery, Registry, RegistryTx, TenantRow, TenantSpace, Under, UnpackedRow, VconRow,
-    VersionRow, WrappedRow,
+    ListedRow, MembershipRow, NewPackFile, NewVersion, ObjectError, ObjectPlace, Objects,
+    PackFileRow, Packed, PageQuery, Registry, RegistryTx, TenantRow, TenantSpace, Under,
+    UnpackedRow, UserRow, VconRow, VersionRow, WrappedRow,
 };
 use crate::audit::{self, Action, Actor, AuditError, Entry};
 use crate::catalog;
 use crate::clock::{Clock, nanos};
 use crate::envelope::{self, Context, Key};
 use crate::fs::Fs;
-use crate::ids::{FileId, KeyId, TenantId, VersionId};
+use crate::ids::{FileId, KeyId, TenantId, UserId, VersionId};
 use crate::store::{OpenError, Store, StoreError};
 use crate::tenants::{OpenStep, RegistryError, TenantError};
 
@@ -1162,7 +1162,7 @@ pub struct LocalRegistry {
 impl LocalRegistry {
     /// Opens `<dir>/server.sqlite` under `catalog_key`, making it if new.
     pub fn open(dir: &Path, catalog_key: Key) -> Result<LocalRegistry, RegistryError> {
-        let schema = format!("{REGISTRY_TABLES}{}", audit::SCHEMA);
+        let schema = format!("{REGISTRY_TABLES}{}{}", catalog::USER_TABLES, audit::SCHEMA);
         let path = dir.join("server.sqlite");
         let conn = catalog::open(&path, &catalog_key, &schema).map_err(|e| match e {
             catalog::CatalogError::WrongKey => RegistryError::WrongKey,
@@ -1275,6 +1275,32 @@ fn key_row(r: &rusqlite::Row) -> rusqlite::Result<KeyRow> {
         label: r.get(4)?,
         created_at: r.get(5)?,
         revoked_at: r.get(6)?,
+    })
+}
+
+const USER_COLUMNS: &str = "id, label, issuer, subject, created_at, deactivated_at";
+
+fn user_row(r: &rusqlite::Row) -> rusqlite::Result<UserRow> {
+    let issuer: Option<String> = r.get(2)?;
+    let subject: Option<String> = r.get(3)?;
+    Ok(UserRow {
+        id: UserId(r.get(0)?),
+        label: r.get(1)?,
+        // The table's CHECK holds that both are there or neither is.
+        identity: issuer.zip(subject),
+        created_at: r.get(4)?,
+        deactivated_at: r.get(5)?,
+    })
+}
+
+const MEMBERSHIP_COLUMNS: &str = "user, tenant, roles, granted_at";
+
+fn membership_row(r: &rusqlite::Row) -> rusqlite::Result<MembershipRow> {
+    Ok(MembershipRow {
+        user: UserId(r.get(0)?),
+        tenant: r.get::<_, Option<[u8; 16]>>(1)?.map(TenantId),
+        roles: r.get(2)?,
+        granted_at: r.get(3)?,
     })
 }
 
@@ -1481,6 +1507,158 @@ impl RegistryTx for LocalRegistryTx<'_> {
                 "UPDATE api_key SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL",
                 params![id.bytes(), at],
             )
+            .map_err(tenant_io)?;
+        Ok(())
+    }
+
+    fn user(&mut self, id: UserId) -> Result<Option<UserRow>, TenantError> {
+        self.conn
+            .query_row(
+                &format!("SELECT {USER_COLUMNS} FROM user_account WHERE id = ?1"),
+                [id.0],
+                user_row,
+            )
+            .optional()
+            .map_err(tenant_io)
+    }
+
+    fn users(&mut self) -> Result<Vec<UserRow>, TenantError> {
+        let mut rows = self
+            .conn
+            .prepare(&format!(
+                "SELECT {USER_COLUMNS} FROM user_account ORDER BY created_at, id"
+            ))
+            .map_err(tenant_io)?;
+        rows.query_map([], user_row)
+            .map_err(tenant_io)?
+            .map(|row| row.map_err(tenant_io))
+            .collect()
+    }
+
+    fn identity_taken(&mut self, issuer: &str, subject: &str) -> Result<bool, TenantError> {
+        self.conn
+            .query_row(
+                "SELECT count(*) > 0 FROM user_account
+                 WHERE issuer = ?1 AND subject = ?2 AND deactivated_at IS NULL",
+                params![issuer, subject],
+                |r| r.get(0),
+            )
+            .map_err(tenant_io)
+    }
+
+    fn insert_user(&mut self, row: &UserRow) -> Result<(), TenantError> {
+        let (issuer, subject) = match &row.identity {
+            Some((issuer, subject)) => (Some(issuer), Some(subject)),
+            None => (None, None),
+        };
+        self.conn
+            .execute(
+                &format!(
+                    "INSERT INTO user_account ({USER_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+                ),
+                params![
+                    row.id.0,
+                    row.label,
+                    issuer,
+                    subject,
+                    row.created_at,
+                    row.deactivated_at,
+                ],
+            )
+            .map_err(tenant_io)?;
+        Ok(())
+    }
+
+    fn deactivate_user(&mut self, id: UserId, at: i64) -> Result<(), TenantError> {
+        self.conn
+            .execute(
+                "UPDATE user_account SET deactivated_at = ?2
+                 WHERE id = ?1 AND deactivated_at IS NULL",
+                params![id.0, at],
+            )
+            .map_err(tenant_io)?;
+        Ok(())
+    }
+
+    fn membership(
+        &mut self,
+        user: UserId,
+        tenant: Option<TenantId>,
+    ) -> Result<Option<MembershipRow>, TenantError> {
+        self.conn
+            .query_row(
+                &format!(
+                    "SELECT {MEMBERSHIP_COLUMNS} FROM membership WHERE user = ?1 AND tenant IS ?2"
+                ),
+                params![user.0, tenant.map(|t| t.0)],
+                membership_row,
+            )
+            .optional()
+            .map_err(tenant_io)
+    }
+
+    fn memberships(&mut self) -> Result<Vec<MembershipRow>, TenantError> {
+        let mut rows = self
+            .conn
+            .prepare(&format!(
+                "SELECT {MEMBERSHIP_COLUMNS} FROM membership ORDER BY user, granted_at, tenant"
+            ))
+            .map_err(tenant_io)?;
+        rows.query_map([], membership_row)
+            .map_err(tenant_io)?
+            .map(|row| row.map_err(tenant_io))
+            .collect()
+    }
+
+    fn insert_membership(&mut self, row: &MembershipRow) -> Result<(), TenantError> {
+        self.conn
+            .execute(
+                &format!("INSERT INTO membership ({MEMBERSHIP_COLUMNS}) VALUES (?1, ?2, ?3, ?4)"),
+                params![
+                    row.user.0,
+                    row.tenant.map(|t| t.0),
+                    row.roles,
+                    row.granted_at
+                ],
+            )
+            .map_err(tenant_io)?;
+        Ok(())
+    }
+
+    fn set_roles(&mut self, row: &MembershipRow) -> Result<(), TenantError> {
+        self.conn
+            .execute(
+                "UPDATE membership SET roles = ?3 WHERE user = ?1 AND tenant IS ?2",
+                params![row.user.0, row.tenant.map(|t| t.0), row.roles],
+            )
+            .map_err(tenant_io)?;
+        Ok(())
+    }
+
+    fn delete_membership(
+        &mut self,
+        user: UserId,
+        tenant: Option<TenantId>,
+    ) -> Result<(), TenantError> {
+        self.conn
+            .execute(
+                "DELETE FROM membership WHERE user = ?1 AND tenant IS ?2",
+                params![user.0, tenant.map(|t| t.0)],
+            )
+            .map_err(tenant_io)?;
+        Ok(())
+    }
+
+    fn delete_memberships_of_user(&mut self, user: UserId) -> Result<(), TenantError> {
+        self.conn
+            .execute("DELETE FROM membership WHERE user = ?1", [user.0])
+            .map_err(tenant_io)?;
+        Ok(())
+    }
+
+    fn delete_memberships_in(&mut self, tenant: TenantId) -> Result<(), TenantError> {
+        self.conn
+            .execute("DELETE FROM membership WHERE tenant = ?1", [tenant.0])
             .map_err(tenant_io)?;
         Ok(())
     }
