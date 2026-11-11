@@ -18,7 +18,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 import unittest
 
 sys.dont_write_bytecode = True
@@ -36,6 +35,9 @@ class Store(http.server.BaseHTTPRequestHandler):
         # The line as it was sent: http.server folds a path that starts // into /.
         Store.requests.append((self.raw_requestline.decode("ascii").split()[1], self.headers.get("Authorization", "")))
         status = Store.statuses.pop(0) if len(Store.statuses) > 1 else Store.statuses[0]
+        if status == 0:
+            self.close_connection = True
+            return
         body = b"<Error><Code>XMinioServerNotInitialized</Code></Error>" if status == 503 else b"<ListAllMyBucketsResult/>"
         self.send_response(status)
         self.send_header("Content-Length", str(len(body)))
@@ -58,13 +60,21 @@ def free_port():
 
 
 class Case(unittest.TestCase):
+    # One server for a class, and a short poll: a server's shutdown waits
+    # one poll, and the commit hook's own tests run this file many times.
+    @classmethod
+    def setUpClass(cls):
+        cls.server = Server(("127.0.0.1", 0), Store)
+        cls.endpoint = f"http://127.0.0.1:{cls.server.server_address[1]}"
+        threading.Thread(target=cls.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+
     def setUp(self):
         Store.requests = []
-        self.server = Server(("127.0.0.1", 0), Store)
-        self.endpoint = f"http://127.0.0.1:{self.server.server_address[1]}"
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        self.addCleanup(self.server.server_close)
-        self.addCleanup(self.server.shutdown)
 
     def wait(self, statuses, *args, endpoint=None, tries="5", env=None, name="MinIO"):
         """The script's (exit code, stdout, stderr) against a store that
@@ -76,7 +86,7 @@ class Case(unittest.TestCase):
             "VCON_TEST_S3_ACCESS_KEY": "vcontest",
             "VCON_TEST_S3_SECRET_KEY": "not-a-real-secret",
             "WAIT_FOR_S3_TRIES": tries,
-            "WAIT_FOR_S3_INTERVAL": "0.05",
+            "WAIT_FOR_S3_INTERVAL": "0.01",
         }
         full.update(env or {})
         full = {k: v for k, v in full.items() if v is not None}
@@ -106,23 +116,12 @@ class Success(Case):
         self.assertTrue(authorization.startswith("AWS4-HMAC-SHA256 Credential=vcontest/"), authorization)
         self.assertIn("/us-east-1/s3/aws4_request", authorization, "the region and the service")
 
-    def test_a_store_that_starts_listening_later_is_waited_for(self):
-        port = free_port()
-        late = []
-
-        def start():
-            time.sleep(0.4)
-            late.append(Server(("127.0.0.1", port), Store))
-            late[0].serve_forever()
-
-        threading.Thread(target=start, daemon=True).start()
-        rc, out, err = self.wait([200], endpoint=f"http://127.0.0.1:{port}", tries="200")
-        if late:
-            late[0].shutdown()
-            late[0].server_close()
+    def test_a_store_that_takes_a_connection_and_sends_nothing_is_waited_for(self):
+        # 0: the connection is closed with no answer, which curl ends with
+        # an exit code of its own and no status.
+        rc, out, err = self.wait([0, 0, 200])
         self.assertEqual(rc, 0, err)
-        self.assertIn("answered a signed request with 200 at try ", out, "stdout")
-        self.assertNotIn("at try 1\n", out, "it was ready before it listened")
+        self.assertEqual(out, "wait-for-s3: MinIO answered a signed request with 200 at try 3\n", "stdout")
 
     def test_an_endpoint_with_a_last_slash_is_asked_the_same(self):
         rc, _, err = self.wait([200], endpoint=self.endpoint + "/")

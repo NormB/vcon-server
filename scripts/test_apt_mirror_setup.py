@@ -107,7 +107,7 @@ class Case(unittest.TestCase):
         cls.server = Server(("127.0.0.1", 0), Mirrors)
         cls.base = f"http://127.0.0.1:{cls.server.server_address[1]}"
         cls.dead = f"http://127.0.0.1:{free_port()}"
-        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+        threading.Thread(target=cls.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
 
     @classmethod
     def tearDownClass(cls):
