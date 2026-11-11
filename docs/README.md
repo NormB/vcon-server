@@ -30,6 +30,7 @@ below open each page's source in the repository.
 - [Add a second tenant](../website/content/docs/second-tenant.md): Make a second tenant over the admin API while the server runs, give it a key, see that its data and acme's stay apart, change its retention period, and remove it.
 - [Operator listener](../website/content/docs/operator-listener.md): Give operator keys a listener of their own, on an address only operators reach, so the address tenants use serves tenant keys only: the configuration, the restart, the checks, and what to change in proxies and clients.
 - [Add users and memberships](../website/content/docs/users-and-memberships.md): Make a user on the server's host, give it roles in a tenant or the operator role, list the users, take roles away, deactivate a user, and find each change in the audit logs.
+- [Roles, scopes and a tenant's role cap](../website/content/docs/roles-and-scopes.md): See which scope each role of a membership gives, read a membership's scopes, set the roles a tenant's memberships may be given, and find each change in the audit logs.
 - [The vcon library](../website/content/docs/library.md): Read, check and write vCons in your own Rust code with the vcon crate.
 - [Command line](../website/content/docs/command-line.md): Every vcon-server command: what it does, what it prints, its exit codes, and which may run beside a serving server.
 - [Configuration](../website/content/docs/configuration.md): Every key of the configuration file, its default, and why the default is what it is.

@@ -192,6 +192,27 @@ enum TenantCommand {
         /// none (the default), counts, or full, which holds personal data.
         metadata: String,
     },
+    /// Sets the roles a membership in a tenant may be given: its role cap.
+    SetRoleCap {
+        #[command(flatten)]
+        config: ConfigArg,
+        /// The tenant's id.
+        id: String,
+        /// A role the cap allows: reader, producer, records, legal, auditor
+        /// or tenant-admin. Repeat it for each role.
+        #[arg(long = "role", required_unless_present = "all", conflicts_with = "all")]
+        roles: Vec<String>,
+        /// Removes the cap, so every tenant role is allowed.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Prints a tenant's role cap.
+    RoleCap {
+        #[command(flatten)]
+        config: ConfigArg,
+        /// The tenant's id.
+        id: String,
+    },
     /// Removes a tenant. Runs only while no server does.
     Remove {
         #[command(flatten)]
@@ -220,8 +241,8 @@ enum KeyCommand {
             conflicts_with = "operator"
         )]
         tenant: Option<String>,
-        /// A scope the tenant key holds: write, read, delete, legal or audit.
-        /// Repeat it for each scope.
+        /// A scope the tenant key holds: write, read, delete, legal, audit or
+        /// tenant_admin. Repeat it for each scope.
         #[arg(long = "scope", requires = "tenant", conflicts_with = "operator")]
         scopes: Vec<String>,
         /// Makes an operator key, holding the admin scope.
@@ -499,6 +520,19 @@ fn tenant(command: TenantCommand) -> (ConfigArg, commands::Command) {
             config,
             commands::Command::TenantSetMetadata { id, metadata },
         ),
+        TenantCommand::SetRoleCap {
+            config,
+            id,
+            roles,
+            all,
+        } => (
+            config,
+            commands::Command::TenantSetRoleCap {
+                id,
+                roles: (!all).then_some(roles),
+            },
+        ),
+        TenantCommand::RoleCap { config, id } => (config, commands::Command::TenantRoleCap { id }),
         TenantCommand::Remove {
             config,
             id,

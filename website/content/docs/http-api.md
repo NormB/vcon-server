@@ -215,7 +215,9 @@ Refusals: [`unknown-tenant`](@/problems/unknown-tenant.md),
 
 A tenant name is 1 to 128 characters, with no control characters and no
 space at either end. A tenant key's scopes are one or more of `write`,
-`read`, `delete`, `legal` and `audit`, each named once.
+`read`, `delete`, `legal`, `audit` and `tenant_admin`, each named once. No
+route needs `tenant_admin` yet; see
+[roles and scopes](@/docs/roles-and-scopes.md).
 
 ## Audit logs
 

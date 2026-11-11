@@ -16,7 +16,7 @@ use crate::backend::local::{LocalCatalog, LocalRegistry};
 use crate::envelope::Key;
 
 /// server.sqlite's tables in release 0.4.2, besides the audit log.
-const REGISTRY_V4: &str = "
+pub(super) const REGISTRY_V4: &str = "
 CREATE TABLE tenant (
     id BLOB PRIMARY KEY NOT NULL,
     name TEXT NOT NULL UNIQUE,
@@ -46,7 +46,7 @@ CREATE INDEX api_key_tenant ON api_key (tenant);
 ";
 
 /// A tenant catalog's tables in release 0.4.2, besides the audit log.
-const TENANT_V4: &str = "
+pub(super) const TENANT_V4: &str = "
 CREATE TABLE vcon (
     uuid BLOB PRIMARY KEY NOT NULL,
     current BLOB,
@@ -114,7 +114,7 @@ CREATE INDEX audit_counted ON audit (actor, action, status, at);
 
 /// Rows a 0.4.2 server.sqlite could hold: a tenant, a wrap count, a
 /// tenant key and an operator key.
-const REGISTRY_ROWS: &str = "
+pub(super) const REGISTRY_ROWS: &str = "
 INSERT INTO tenant VALUES (x'a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1', 'acme', '30d', 7, x'0101010101010101',
     x'beef', NULL, 7, 'counts');
 INSERT INTO master_key_use VALUES (x'0202020202020202', 3, 5);
@@ -137,18 +137,18 @@ INSERT INTO audit (at, actor, action, target, version, status, count) VALUES
 ";
 
 /// A catalog as release 0.4.2 left it.
-struct Old {
-    dir: tempfile::TempDir,
-    key: Key,
+pub(super) struct Old {
+    pub(super) dir: tempfile::TempDir,
+    pub(super) key: Key,
 }
 
 impl Old {
     /// A catalog file of `sql` at schema version 4, under a new key.
-    fn of(sql: &[&str]) -> Old {
+    pub(super) fn of(sql: &[&str]) -> Old {
         Old::at(4, sql)
     }
 
-    fn at(version: i64, sql: &[&str]) -> Old {
+    pub(super) fn at(version: i64, sql: &[&str]) -> Old {
         let old = Old {
             dir: tempfile::tempdir().expect("temp dir"),
             key: Key::generate().expect("key"),
@@ -164,7 +164,7 @@ impl Old {
         old
     }
 
-    fn registry() -> Old {
+    pub(super) fn registry() -> Old {
         Old::of(&[REGISTRY_V4, AUDIT_V4, REGISTRY_ROWS, AUDIT_ROWS])
     }
 
@@ -172,12 +172,12 @@ impl Old {
         Old::of(&[TENANT_V4, AUDIT_V4, AUDIT_ROWS])
     }
 
-    fn path(&self) -> std::path::PathBuf {
+    pub(super) fn path(&self) -> std::path::PathBuf {
         self.dir.path().join("server.sqlite")
     }
 
     /// The file under its key, with no upgrade.
-    fn raw(&self) -> Connection {
+    pub(super) fn raw(&self) -> Connection {
         let conn = Connection::open(self.path()).expect("opens the file");
         conn.execute_batch("PRAGMA cipher_log_level = NONE")
             .expect("quiet");
@@ -186,26 +186,26 @@ impl Old {
     }
 
     /// The file as this build opens it.
-    fn open(&self) -> Result<Connection, CatalogError> {
+    pub(super) fn open(&self) -> Result<Connection, CatalogError> {
         open(&self.path(), &self.key, "")
     }
 
-    fn upgraded(&self) -> Connection {
+    pub(super) fn upgraded(&self) -> Connection {
         self.open().expect("the upgrade")
     }
 }
 
-fn version(conn: &Connection) -> i64 {
+pub(super) fn version(conn: &Connection) -> i64 {
     conn.pragma_query_value(None, "user_version", |r| r.get(0))
         .expect("version")
 }
 
-fn number(conn: &Connection, sql: &str) -> i64 {
+pub(super) fn number(conn: &Connection, sql: &str) -> i64 {
     conn.query_row(sql, [], |r| r.get(0)).expect(sql)
 }
 
 /// Each row of `sql` as text, its columns joined with `|`, NULL as `NULL`.
-fn rows(conn: &Connection, sql: &str) -> Vec<String> {
+pub(super) fn rows(conn: &Connection, sql: &str) -> Vec<String> {
     let mut statement = conn.prepare(sql).expect(sql);
     let columns = statement.column_count();
     statement
@@ -230,7 +230,7 @@ fn rows(conn: &Connection, sql: &str) -> Vec<String> {
 }
 
 /// Every table and index a catalog declares, with its text.
-fn declared(conn: &Connection) -> Vec<String> {
+pub(super) fn declared(conn: &Connection) -> Vec<String> {
     rows(
         conn,
         "SELECT type, name, tbl_name, sql FROM sqlite_master
@@ -238,7 +238,7 @@ fn declared(conn: &Connection) -> Vec<String> {
     )
 }
 
-fn tables(conn: &Connection) -> Vec<String> {
+pub(super) fn tables(conn: &Connection) -> Vec<String> {
     rows(
         conn,
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
@@ -267,7 +267,11 @@ const USER: &str =
 #[test]
 fn a_0_4_2_registry_gains_the_user_and_membership_tables_empty() {
     let conn = Old::registry().upgraded();
-    assert_eq!(version(&conn), 5, "the upgraded registry's version");
+    assert_eq!(
+        version(&conn),
+        SCHEMA_VERSION,
+        "the upgraded registry's version"
+    );
     assert_eq!(
         tables(&conn),
         [
@@ -297,7 +301,12 @@ fn a_0_4_2_registry_keeps_its_tenants_keys_and_wrap_counts() {
     let old = Old::registry();
     let read = |conn: &Connection| {
         [
-            rows(conn, "SELECT * FROM tenant ORDER BY id"),
+            // The columns of version 4: a later version adds its own.
+            rows(
+                conn,
+                "SELECT id, name, retention, created_at, tenant_key_id, wrapped_tenant_key,
+                     pending_wrapped_tenant_key, key_since, metadata FROM tenant ORDER BY id",
+            ),
             rows(conn, "SELECT * FROM master_key_use ORDER BY master_key_id"),
             rows(conn, "SELECT * FROM api_key ORDER BY id"),
         ]
@@ -357,7 +366,11 @@ fn a_tenant_catalog_gains_no_user_tables_and_its_log_changes_the_same_way() {
     let old = Old::tenant();
     let before = tables(&old.raw());
     let conn = old.upgraded();
-    assert_eq!(version(&conn), 5, "the tenant catalog's version");
+    assert_eq!(
+        version(&conn),
+        SCHEMA_VERSION,
+        "the tenant catalog's version"
+    );
     assert_eq!(tables(&conn), before, "the same tables");
     assert_eq!(
         rows(&conn, "SELECT seq, status FROM audit ORDER BY seq"),
@@ -440,7 +453,7 @@ fn registries_of_every_older_version_gain_the_tables() {
             .execute_batch("CREATE TABLE tenant (id BLOB PRIMARY KEY NOT NULL)")
             .expect("a tenant table");
         let conn = old.upgraded();
-        assert_eq!(version(&conn), 5, "from {from}");
+        assert_eq!(version(&conn), SCHEMA_VERSION, "from {from}");
         assert!(
             tables(&conn).contains(&"user_account".to_owned()),
             "from {from}"
@@ -454,13 +467,17 @@ fn registries_of_every_older_version_gain_the_tables() {
 }
 
 #[test]
-fn a_re_encrypted_upgraded_registry_keeps_version_5_and_its_tables() {
+fn a_re_encrypted_upgraded_registry_keeps_its_version_and_its_tables() {
     let old = Old::registry();
     drop(old.upgraded());
     let new_key = Key::generate().expect("key");
     super::reencrypt(&old.path(), &old.key, &new_key).expect("re-encrypts");
     let conn = open(&old.path(), &new_key, "").expect("opens under the new key");
-    assert_eq!(version(&conn), 5, "the version after re-encryption");
+    assert_eq!(
+        version(&conn),
+        SCHEMA_VERSION,
+        "the version after re-encryption"
+    );
     assert!(
         tables(&conn).contains(&"membership".to_owned()),
         "the tables after re-encryption"
@@ -495,12 +512,11 @@ fn the_upgraded_catalog_carries_a_version_0_4_2_does_not_know() {
         "a number release 0.4.2 refuses: {}",
         version(&conn)
     );
-    assert_eq!(SCHEMA_VERSION, 5, "this build's version");
 }
 
 #[test]
 fn a_catalog_from_a_newer_build_is_refused_and_left_as_it_was() {
-    for newer in [6, 7, 1000] {
+    for newer in [SCHEMA_VERSION + 1, SCHEMA_VERSION + 2, 1000] {
         let old = Old::at(newer, &[REGISTRY_V4, AUDIT_V4, AUDIT_ROWS]);
         let before = declared(&old.raw());
         assert!(
@@ -745,7 +761,7 @@ fn a_catalog_with_no_log_and_no_tenant_table_changes_only_its_number() {
     let old = Old::of(&["CREATE TABLE note (text TEXT)"]);
     let before = declared(&old.raw());
     let conn = old.upgraded();
-    assert_eq!(version(&conn), 5, "the number");
+    assert_eq!(version(&conn), SCHEMA_VERSION, "the number");
     assert_eq!(declared(&conn), before, "nothing else");
 }
 

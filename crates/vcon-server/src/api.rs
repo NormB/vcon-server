@@ -5095,6 +5095,9 @@ mod player_routes;
 mod plane_routes;
 
 #[cfg(test)]
+mod policy_tests;
+
+#[cfg(test)]
 mod site_pages {
     use std::collections::BTreeSet;
     use std::path::PathBuf;

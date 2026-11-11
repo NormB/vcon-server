@@ -13,10 +13,11 @@ use crate::envelope::Key;
 /// version 3 added each tenant's metadata level to server.sqlite; version
 /// 4 added the places of packed versions and the pack tables to a tenant
 /// catalog; version 5 added the users and memberships tables to
-/// server.sqlite, and lets every catalog's audit log hold no status.
+/// server.sqlite, and lets every catalog's audit log hold no status;
+/// version 6 added each tenant's role cap to server.sqlite.
 /// A build refuses every version it does not know, so a catalog this
 /// build has opened is refused by release 0.4.3 and earlier.
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// The users and their memberships in server.sqlite, as a new registry
 /// and an upgraded one both make them. A user is a person who signs in:
@@ -93,6 +94,10 @@ CREATE INDEX vcon_listed ON vcon (stored_at, uuid);
 /// Brings server.sqlite from version 2 to 3: each tenant's metadata level,
 /// NULL (`none`) for every tenant there is.
 const TENANT_METADATA: &str = "ALTER TABLE tenant ADD COLUMN metadata TEXT;";
+
+/// Brings server.sqlite from version 5 to 6: each tenant's role cap, NULL
+/// (no cap: every tenant role is allowed) for every tenant there is.
+const TENANT_ROLE_CAP: &str = "ALTER TABLE tenant ADD COLUMN role_cap TEXT;";
 
 /// The tables of a tenant catalog's pack files, as a new catalog and an
 /// upgraded one both make them. A pack file's row records its UTC store
@@ -236,7 +241,7 @@ pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogE
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
         }
-        from @ 1..=4 => {
+        from @ 1..=5 => {
             // One transaction, so a failed upgrade leaves the old version
             // whole. A tenant catalog has a vcon table, server.sqlite a
             // tenant table, and both an audit log.
@@ -263,6 +268,9 @@ pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogE
             }
             if from < 5 && has("audit")? {
                 tx.execute_batch(&audit_without_zero())?;
+            }
+            if from < 6 && has("tenant")? {
+                tx.execute_batch(TENANT_ROLE_CAP)?;
             }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
@@ -456,6 +464,9 @@ fn set_key(conn: &Connection, key: &Key) -> Result<(), CatalogError> {
 /// Checks on a catalog's schema, for tests.
 #[cfg(test)]
 mod v5_tests;
+
+#[cfg(test)]
+mod v6_tests;
 
 #[cfg(test)]
 pub(crate) mod testing {

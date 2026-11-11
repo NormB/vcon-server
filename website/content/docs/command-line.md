@@ -56,6 +56,9 @@ key, the data directory, the certificate or the storage cannot be used.
 | `tenant list` | `{"id", "name", "retention", "metadata"}` per tenant, by name | yes |
 | `tenant set-retention <id> <period or default>` | `{"id", "retention"}` | yes |
 | `tenant set-metadata <id> <none, counts or full>` | `{"id", "metadata"}` | yes |
+| `tenant set-role-cap <id> --role <r> [--role <r>...]` | `{"id", "role_cap"}` | yes |
+| `tenant set-role-cap <id> --all` | `{"id", "role_cap"}` | yes |
+| `tenant role-cap <id>` | `{"id", "role_cap"}` | yes |
 | `tenant remove <id> [--force [--override-holds]]` | nothing | no |
 
 `tenant remove` without `--force` removes only a tenant that keeps no
@@ -66,6 +69,11 @@ never over HTTP, and only with the server stopped.
 `tenant set-metadata` sets which clear columns the tenant's Parquet exports
 carry: `none` (the default), `counts` or `full`. See
 [export to Parquet](@/docs/export-parquet.md#choose-the-metadata-level).
+
+`tenant set-role-cap` sets the roles a membership in the tenant may be
+given, and `--all` removes the cap; `tenant role-cap` prints it. `role_cap`
+is the cap's roles, or `null` for a tenant with no cap. See
+[roles, scopes and a tenant's role cap](@/docs/roles-and-scopes.md).
 
 ## Keys
 
@@ -108,8 +116,9 @@ holds afterwards, and `tenant` is `null` for the operator membership.
 `membership revoke` without `--role` takes every role. A membership with no
 role left is removed. `user deactivate` removes the user's memberships;
 the user stays in `user list`, and its issuer and subject may be given to
-a new user. Each entry of `memberships` is `{"tenant", "roles",
-"granted_at"}`.
+a new user. Each entry of `memberships` is `{"tenant", "roles", "scopes",
+"granted_at"}`: `scopes` are what the membership lets its user do, the scopes
+of those of its roles that the tenant's role cap allows.
 
 ## Audit logs
 

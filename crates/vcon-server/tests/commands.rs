@@ -680,6 +680,18 @@ fn the_command_line_page_names_the_members_each_command_prints() {
         "tenant set-metadata",
         &s.ok(&["tenant", "set-metadata", &tenant, "counts"])[0],
     );
+    hold(
+        "tenant set-role-cap <id> --role",
+        &s.ok(&["tenant", "set-role-cap", &tenant, "--role", "reader"])[0],
+    );
+    hold(
+        "tenant set-role-cap <id> --all",
+        &s.ok(&["tenant", "set-role-cap", &tenant, "--all"])[0],
+    );
+    hold(
+        "tenant role-cap",
+        &s.ok(&["tenant", "role-cap", &tenant])[0],
+    );
     let key = s.ok(&[
         "key", "create", "--tenant", &tenant, "--scope", "read", "--label", "a",
     ]);
@@ -1246,5 +1258,273 @@ fn removing_a_tenant_takes_its_memberships_with_it() {
         s.refused(&["membership", "revoke", &user, "--tenant", &tenant])
             .contains("the user has no such membership"),
         "and there is none to revoke"
+    );
+}
+
+// Roles, scopes and a tenant's role cap.
+
+fn grant<'a>(user: &'a str, tenant: &'a str, role: &'a str) -> [&'a str; 7] {
+    [
+        "membership",
+        "grant",
+        user,
+        "--tenant",
+        tenant,
+        "--role",
+        role,
+    ]
+}
+
+#[test]
+fn a_role_cap_is_shown_set_and_removed() {
+    let s = setup();
+    let (tenant, _) = tenant_and_user(&s);
+    let none = [serde_json::json!({ "id": tenant, "role_cap": null })];
+    assert_eq!(s.ok(&["tenant", "role-cap", &tenant]), none, "a new tenant");
+    let capped = [serde_json::json!({ "id": tenant, "role_cap": ["reader", "auditor"] })];
+    assert_eq!(
+        s.ok(&[
+            "tenant",
+            "set-role-cap",
+            &tenant,
+            "--role",
+            "auditor",
+            "--role",
+            "reader",
+        ]),
+        capped,
+        "the roles in the fixed order, however they were named"
+    );
+    assert_eq!(s.ok(&["tenant", "role-cap", &tenant]), capped, "read back");
+    assert_eq!(
+        s.ok(&["tenant", "set-role-cap", &tenant, "--all"]),
+        none,
+        "removed"
+    );
+    assert_eq!(s.ok(&["tenant", "role-cap", &tenant]), none, "read back");
+}
+
+#[test]
+fn user_list_shows_each_memberships_scopes_under_the_cap() {
+    let s = setup();
+    let (tenant, user) = tenant_and_user(&s);
+    s.ok(&grant(&user, &tenant, "reader"));
+    s.ok(&grant(&user, &tenant, "tenant-admin"));
+    s.ok(&["membership", "grant", &user, "--operator"]);
+    let scopes = |s: &Setup| -> Vec<Value> {
+        s.ok(&["user", "list"])[0]["memberships"]
+            .as_array()
+            .expect("memberships")
+            .iter()
+            .map(|m| m["scopes"].clone())
+            .collect()
+    };
+    assert_eq!(
+        scopes(&s),
+        [
+            serde_json::json!(["read", "tenant_admin"]),
+            serde_json::json!(["admin"])
+        ],
+        "each role's scope"
+    );
+    s.ok(&["tenant", "set-role-cap", &tenant, "--role", "reader"]);
+    assert_eq!(
+        scopes(&s),
+        [serde_json::json!(["read"]), serde_json::json!(["admin"])],
+        "the cap takes tenant_admin and leaves the operator membership"
+    );
+    assert_eq!(
+        s.ok(&["user", "list"])[0]["memberships"][0]["roles"],
+        serde_json::json!(["reader", "tenant-admin"]),
+        "the roles granted are kept"
+    );
+}
+
+#[test]
+fn a_grant_outside_the_cap_exits_1_and_says_why() {
+    let s = setup();
+    let (tenant, user) = tenant_and_user(&s);
+    s.ok(&["tenant", "set-role-cap", &tenant, "--role", "reader"]);
+    assert!(
+        s.refused(&grant(&user, &tenant, "legal"))
+            .contains("outside the tenant's role cap"),
+        "the refusal names the cap"
+    );
+    assert_eq!(
+        s.ok(&grant(&user, &tenant, "reader"))[0]["roles"],
+        serde_json::json!(["reader"]),
+        "a role in the cap is granted"
+    );
+}
+
+#[test]
+fn each_role_cap_refusal_exits_1_and_says_why() {
+    let s = setup();
+    let (tenant, _) = tenant_and_user(&s);
+    let t = tenant.as_str();
+    for (args, said) in [
+        (
+            vec!["tenant", "set-role-cap", t, "--role", "operator"],
+            "a role cap is one or more of reader, producer, records, legal, auditor and tenant-admin",
+        ),
+        (
+            vec!["tenant", "set-role-cap", t, "--role", "owner"],
+            "a role cap is one or more of",
+        ),
+        (
+            vec!["tenant", "set-role-cap", t, "--role", "tenant_admin"],
+            "a role cap is one or more of",
+        ),
+        (
+            vec!["tenant", "set-role-cap", NOBODY, "--role", "reader"],
+            "no tenant has this id",
+        ),
+        (
+            vec!["tenant", "set-role-cap", NOBODY, "--all"],
+            "no tenant has this id",
+        ),
+        (
+            vec!["tenant", "set-role-cap", "nope", "--all"],
+            "no tenant has this id",
+        ),
+        (vec!["tenant", "role-cap", NOBODY], "no tenant has this id"),
+        (vec!["tenant", "role-cap", "nope"], "no tenant has this id"),
+    ] {
+        let message = s.refused(&args);
+        assert!(message.contains(said), "{args:?}: {message}");
+    }
+    assert_eq!(
+        s.ok(&["tenant", "role-cap", t]),
+        [serde_json::json!({ "id": t, "role_cap": null })],
+        "no refused command set a cap"
+    );
+}
+
+#[test]
+fn a_role_cap_command_line_that_does_not_parse_exits_2() {
+    for args in [
+        vec!["tenant", "set-role-cap", "t", "--config", "c"],
+        vec!["tenant", "set-role-cap", "--all", "--config", "c"],
+        vec![
+            "tenant",
+            "set-role-cap",
+            "t",
+            "--all",
+            "--role",
+            "reader",
+            "--config",
+            "c",
+        ],
+        vec!["tenant", "set-role-cap", "t", "--role", "--config", "c"],
+        vec!["tenant", "set-role-cap", "t", "--all"],
+        vec!["tenant", "role-cap", "--config", "c"],
+        vec![
+            "tenant", "role-cap", "t", "--role", "reader", "--config", "c",
+        ],
+        vec!["tenant", "role-cap", "t"],
+    ] {
+        let said = usage_error(&args);
+        assert!(said.starts_with("error:"), "{args:?}: {said}");
+    }
+}
+
+#[test]
+fn role_cap_commands_are_in_the_admin_log_and_a_change_in_the_tenants() {
+    let s = setup();
+    let (tenant, _) = tenant_and_user(&s);
+    s.ok(&["tenant", "set-role-cap", &tenant, "--role", "legal"]);
+    s.ok(&["tenant", "role-cap", &tenant]);
+    s.ok(&["tenant", "set-role-cap", &tenant, "--all"]);
+    s.refused(&["tenant", "set-role-cap", &tenant, "--role", "operator"]);
+    let set = [
+        (
+            serde_json::json!(format!("{tenant}/legal")),
+            serde_json::json!(200),
+        ),
+        (
+            serde_json::json!(format!("{tenant}/all")),
+            serde_json::json!(200),
+        ),
+    ];
+    let mut all = set.to_vec();
+    all.push((
+        serde_json::json!(format!("{tenant}/operator")),
+        serde_json::json!(422),
+    ));
+    assert_eq!(
+        logged(&s, &["--admin"], "role_cap_set"),
+        all,
+        "the admin log, with the refused cap"
+    );
+    assert_eq!(
+        logged(&s, &["--tenant", &tenant], "role_cap_set"),
+        set,
+        "the tenant's log"
+    );
+    assert_eq!(
+        logged(&s, &["--admin"], "role_cap_read"),
+        [(serde_json::json!(tenant), serde_json::json!(200))],
+        "the read, in the admin log"
+    );
+    assert_eq!(
+        logged(&s, &["--tenant", &tenant], "role_cap_read"),
+        [],
+        "and not in the tenant's"
+    );
+}
+
+#[test]
+fn role_cap_commands_run_beside_a_server() {
+    let s = setup();
+    let (tenant, user) = tenant_and_user(&s);
+    let server = datadir::lock(&s.data, Sharing::Serve).expect("a server");
+    s.ok(&["tenant", "set-role-cap", &tenant, "--role", "reader"]);
+    assert_eq!(
+        s.ok(&["tenant", "role-cap", &tenant])[0]["role_cap"],
+        serde_json::json!(["reader"]),
+        "set and read beside a server"
+    );
+    assert!(
+        s.refused(&grant(&user, &tenant, "records"))
+            .contains("outside the tenant's role cap"),
+        "and it holds at once"
+    );
+    drop(server);
+}
+
+#[test]
+fn a_tenant_key_may_hold_tenant_admin_and_the_roles_spelling_is_refused() {
+    let s = setup();
+    let (tenant, _) = tenant_and_user(&s);
+    s.ok(&[
+        "key",
+        "create",
+        "--tenant",
+        &tenant,
+        "--scope",
+        "tenant_admin",
+        "--scope",
+        "read",
+        "--label",
+        "admin",
+    ]);
+    assert_eq!(
+        s.ok(&["key", "list"])[0]["scopes"],
+        serde_json::json!(["read", "tenant_admin"]),
+        "the scopes the key holds"
+    );
+    assert!(
+        s.refused(&[
+            "key",
+            "create",
+            "--tenant",
+            &tenant,
+            "--scope",
+            "tenant-admin",
+            "--label",
+            "x",
+        ])
+        .contains("tenant_admin"),
+        "the role's spelling is refused, and the message names the scope"
     );
 }

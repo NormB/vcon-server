@@ -154,17 +154,26 @@ what is built, unless it says otherwise.
 The site is built from the `main` branch, so a page can describe what no
 release holds yet. Release 0.4.3 does not have these:
 
-- **Users and memberships, and schema version 5.** The commands
+- **Users and memberships, and schema version 6.** The commands
   `user add`, `user list`, `user deactivate`, `membership grant` and
   `membership revoke` keep a list of people and their roles in a tenant or
   as an operator, on the host, in `server.sqlite`, with each change in the
   audit logs. No request reads the list yet, so nobody can
-  sign in as a user. The catalogs move from schema version 4 to 5, which
+  sign in as a user. The catalogs move from schema version 4 to 6, which
   release 0.4.3 refuses to open: there is no downgrade without the copy
   taken before the upgrade. Release 0.4.3 has neither command and keeps
   schema version 4. See
   [add users and memberships](@/docs/users-and-memberships.md) and
-  [schema version 5](@/docs/upgrading.md#schema-version-5-and-no-way-back-without-the-copy).
+  [schema version 6](@/docs/upgrading.md#schema-version-6-and-no-way-back-without-the-copy).
+- **Roles as scopes, and a tenant's role cap.** Each role of a membership
+  gives one scope, and `user list` prints a membership's `scopes` beside
+  its `roles`. The commands `tenant set-role-cap` and `tenant role-cap` set
+  and print the roles a membership in a tenant may be given, recorded as
+  `role_cap_set` and `role_cap_read`. A tenant key may hold the new scope
+  `tenant_admin`, which the role `tenant-admin` gives; no route needs it
+  yet. Release 0.4.3 has neither command, and refuses `tenant_admin` as a
+  key's scope. See
+  [roles, scopes and a tenant's role cap](@/docs/roles-and-scopes.md).
 
 ## Being built
 

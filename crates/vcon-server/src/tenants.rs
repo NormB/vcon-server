@@ -26,6 +26,7 @@ mod backup;
 mod examine;
 mod keys;
 mod rekey;
+mod role_cap;
 mod users;
 
 pub use backup::{Backup, BackupError};
@@ -480,6 +481,7 @@ impl Tenants {
                 name: name.to_owned(),
                 retention: retention.map(|r| r.to_string()),
                 metadata: None,
+                role_cap: None,
                 created_at: now,
                 tenant_key_id: key_id,
                 wrapped: wrapped.clone(),
@@ -2250,7 +2252,8 @@ mod tests {
             let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
             f.conn()
                 .execute_batch(&format!(
-                    "ALTER TABLE tenant DROP COLUMN metadata; DROP TABLE membership;
+                    "ALTER TABLE tenant DROP COLUMN role_cap;
+                     ALTER TABLE tenant DROP COLUMN metadata; DROP TABLE membership;
                      DROP TABLE user_account; PRAGMA user_version = {from};"
                 ))
                 .expect("back to the old schema");

@@ -32,17 +32,21 @@ pub enum Scope {
     Audit,
     /// Manages tenants and keys; held only by an operator key.
     Admin,
+    /// Administers the key's own tenant; held only by a tenant key. The
+    /// role `tenant-admin` gives it ([`crate::roles`]).
+    TenantAdmin,
 }
 
 impl Scope {
     /// Every scope, in the order a key's scopes are written.
-    const ALL: [Scope; 6] = [
+    pub const ALL: [Scope; 7] = [
         Scope::Write,
         Scope::Read,
         Scope::Delete,
         Scope::Legal,
         Scope::Audit,
         Scope::Admin,
+        Scope::TenantAdmin,
     ];
 
     /// The scope with this exact name.
@@ -63,6 +67,7 @@ impl Scope {
             Scope::Legal => "legal",
             Scope::Audit => "audit",
             Scope::Admin => "admin",
+            Scope::TenantAdmin => "tenant_admin",
         }
     }
 }
@@ -88,6 +93,12 @@ impl Scopes {
     #[must_use]
     pub fn is_empty(self) -> bool {
         self.0 == 0
+    }
+
+    /// The scopes of either set.
+    #[must_use]
+    pub fn with(self, other: Scopes) -> Scopes {
+        Scopes(self.0 | other.0)
     }
 
     /// The scopes a list names, or None when one is unknown or named twice,
@@ -508,7 +519,7 @@ mod tests {
         );
         assert_eq!(
             Scopes::of(&Scope::ALL).to_string(),
-            "write,read,delete,legal,audit,admin",
+            "write,read,delete,legal,audit,admin,tenant_admin",
             "every scope, in the fixed order"
         );
         assert_eq!(
@@ -526,6 +537,180 @@ mod tests {
             Some(all),
             "parse reads every scope back from its written form"
         );
+    }
+
+    /// The scope of a tenant's administrator, which the role
+    /// `tenant-admin` gives.
+    mod tenant_admin {
+        use super::*;
+
+        fn holder(tenant: Option<TenantId>, scopes: &[Scope]) -> Caller {
+            Caller {
+                key: KeyId([5; 8]),
+                tenant,
+                scopes: Scopes::of(scopes),
+            }
+        }
+
+        const TENANT: Option<TenantId> = Some(TenantId([6; 16]));
+
+        #[test]
+        fn the_scope_is_named_with_an_underscore() {
+            assert_eq!(
+                Scope::named("tenant_admin"),
+                Some(Scope::TenantAdmin),
+                "the name a key's scopes are given by"
+            );
+            assert_eq!(
+                Scopes::of(&[Scope::TenantAdmin]).to_string(),
+                "tenant_admin",
+                "the name a row keeps"
+            );
+        }
+
+        #[test]
+        fn the_roles_spelling_and_other_spellings_name_no_scope() {
+            for name in [
+                "tenant-admin",
+                "tenantadmin",
+                "Tenant_Admin",
+                "tenant_admin ",
+                "tenant",
+            ] {
+                assert_eq!(Scope::named(name), None, "{name:?}");
+            }
+        }
+
+        #[test]
+        fn it_is_written_last_after_admin() {
+            assert_eq!(
+                Scopes::of(&[Scope::TenantAdmin, Scope::Audit, Scope::Write]).names(),
+                ["write", "audit", "tenant_admin"],
+                "the fixed order ends with tenant_admin"
+            );
+            assert_eq!(
+                Scope::ALL.last(),
+                Some(&Scope::TenantAdmin),
+                "the scopes of every earlier release keep their places"
+            );
+        }
+
+        #[test]
+        fn it_reads_back_alone_and_with_the_other_tenant_scopes() {
+            for text in [
+                "tenant_admin",
+                "read,tenant_admin",
+                "write,audit,tenant_admin",
+            ] {
+                assert_eq!(
+                    Scopes::parse(text).map(|s| s.to_string()),
+                    Some(text.to_owned()),
+                    "{text}"
+                );
+            }
+            assert_eq!(
+                Scopes::parse("tenant_admin,read"),
+                None,
+                "only the written order is read"
+            );
+        }
+
+        #[test]
+        fn a_tenant_key_holding_it_is_let_through() {
+            let caller = holder(TENANT, &[Scope::TenantAdmin]);
+            assert_eq!(
+                require(&caller, Scope::TenantAdmin),
+                Ok(()),
+                "a tenant key with the scope"
+            );
+            assert_eq!(
+                tenant_for(&caller, Scope::TenantAdmin),
+                Ok(TenantId([6; 16])),
+                "and it acts in its own tenant"
+            );
+        }
+
+        #[test]
+        fn it_gives_none_of_the_other_scopes() {
+            let caller = holder(TENANT, &[Scope::TenantAdmin]);
+            for scope in Scope::ALL {
+                if scope != Scope::TenantAdmin {
+                    assert_eq!(
+                        require(&caller, scope),
+                        Err(AuthError::Forbidden(scope)),
+                        "{scope:?}"
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn none_of_the_other_scopes_gives_it() {
+            let others = [
+                Scope::Write,
+                Scope::Read,
+                Scope::Delete,
+                Scope::Legal,
+                Scope::Audit,
+            ];
+            assert_eq!(
+                require(&holder(TENANT, &others), Scope::TenantAdmin),
+                Err(AuthError::Forbidden(Scope::TenantAdmin)),
+                "every other tenant scope together"
+            );
+            assert_eq!(
+                require(&holder(TENANT, &[]), Scope::TenantAdmin),
+                Err(AuthError::Forbidden(Scope::TenantAdmin)),
+                "no scope"
+            );
+        }
+
+        /// It is a tenant key's scope, as audit is: a key with no tenant
+        /// is refused it whatever its row says.
+        #[test]
+        fn a_key_with_no_tenant_is_refused_it() {
+            for scopes in [
+                &[Scope::Admin][..],
+                &[Scope::TenantAdmin][..],
+                &[Scope::Admin, Scope::TenantAdmin][..],
+            ] {
+                let caller = holder(None, scopes);
+                assert_eq!(
+                    require(&caller, Scope::TenantAdmin),
+                    Err(AuthError::Forbidden(Scope::TenantAdmin)),
+                    "{scopes:?}"
+                );
+                assert_eq!(
+                    tenant_for(&caller, Scope::TenantAdmin),
+                    Err(AuthError::Forbidden(Scope::TenantAdmin)),
+                    "{scopes:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn it_does_not_give_admin_to_a_tenant_key() {
+            assert_eq!(
+                require(
+                    &holder(TENANT, &[Scope::TenantAdmin, Scope::Admin]),
+                    Scope::Admin
+                ),
+                Err(AuthError::Forbidden(Scope::Admin)),
+                "admin is an operator key's"
+            );
+        }
+
+        #[test]
+        fn the_sets_of_two_keys_join_with_each_scope_once() {
+            let joined = Scopes::of(&[Scope::Read, Scope::Audit])
+                .with(Scopes::of(&[Scope::Read, Scope::TenantAdmin]));
+            assert_eq!(joined.to_string(), "read,audit,tenant_admin", "the union");
+            assert_eq!(
+                Scopes::default().with(Scopes::default()),
+                Scopes::default(),
+                "two empty sets join to the empty set"
+            );
+        }
     }
 
     #[test]

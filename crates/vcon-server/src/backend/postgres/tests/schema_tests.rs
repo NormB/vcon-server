@@ -9,6 +9,7 @@ mod edge;
 mod failure;
 mod success;
 mod v2;
+mod v3;
 
 #[cfg(feature = "backend-tests")]
 pub(super) mod live {

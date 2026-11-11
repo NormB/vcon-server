@@ -415,6 +415,70 @@ mod tests {
     }
 
     #[test]
+    fn a_tenant_key_may_hold_tenant_admin_alone_or_with_the_others() {
+        let f = fixture();
+        let t = tenant(&f, "acme");
+        for scopes in [
+            Scopes::of(&[Scope::TenantAdmin]),
+            Scopes::of(&[Scope::Read, Scope::TenantAdmin]),
+            Scopes::of(&[
+                Scope::Write,
+                Scope::Read,
+                Scope::Delete,
+                Scope::Legal,
+                Scope::Audit,
+                Scope::TenantAdmin,
+            ]),
+        ] {
+            let key = f
+                .tenants
+                .create_key(Actor::Cli, Some(t), scopes, "admin")
+                .unwrap_or_else(|e| panic!("{scopes}: {e:?}"));
+            let listed = f.tenants.list_keys(Actor::Cli, Some(t)).expect("listed");
+            let row = listed.iter().find(|k| k.id == key.id).expect("the new key");
+            assert_eq!(row.scopes, scopes, "the scopes read back");
+        }
+    }
+
+    #[test]
+    fn an_operator_key_never_holds_tenant_admin() {
+        let f = fixture();
+        for scopes in [
+            Scopes::of(&[Scope::TenantAdmin]),
+            Scopes::of(&[Scope::Admin, Scope::TenantAdmin]),
+        ] {
+            assert_eq!(
+                f.tenants.create_key(Actor::Cli, None, scopes, "x").err(),
+                Some(TenantError::BadScopes),
+                "{scopes}"
+            );
+        }
+        assert_eq!(
+            f.tenants.list_keys(Actor::Cli, None).map(|k| k.len()),
+            Ok(0),
+            "no operator key was made"
+        );
+    }
+
+    #[test]
+    fn tenant_admin_does_not_let_a_tenant_key_hold_admin() {
+        let f = fixture();
+        let t = tenant(&f, "acme");
+        assert_eq!(
+            f.tenants
+                .create_key(
+                    Actor::Cli,
+                    Some(t),
+                    Scopes::of(&[Scope::TenantAdmin, Scope::Admin]),
+                    "x"
+                )
+                .err(),
+            Some(TenantError::BadScopes),
+            "admin stays an operator key's"
+        );
+    }
+
+    #[test]
     fn a_tenant_key_holds_only_vcon_scopes() {
         let f = fixture();
         let t = tenant(&f, "acme");

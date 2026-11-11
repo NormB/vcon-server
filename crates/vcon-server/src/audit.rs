@@ -104,6 +104,10 @@ pub enum Action {
     MembershipGrant,
     /// Roles taken from a user in a tenant, or as an operator.
     MembershipRevoke,
+    /// A tenant's role cap set or removed.
+    RoleCapSet,
+    /// A tenant's role cap read, in the admin log.
+    RoleCapRead,
 }
 
 impl Action {
@@ -163,6 +167,8 @@ impl Action {
             Action::UserDeactivate => "user_deactivate",
             Action::MembershipGrant => "membership_grant",
             Action::MembershipRevoke => "membership_revoke",
+            Action::RoleCapSet => "role_cap_set",
+            Action::RoleCapRead => "role_cap_read",
         }
     }
 }
@@ -719,6 +725,8 @@ mod tests {
             Action::UserDeactivate => "user_deactivate",
             Action::MembershipGrant => "membership_grant",
             Action::MembershipRevoke => "membership_revoke",
+            Action::RoleCapSet => "role_cap_set",
+            Action::RoleCapRead => "role_cap_read",
         };
         let every = [
             Action::Create,
@@ -774,6 +782,8 @@ mod tests {
             Action::UserDeactivate,
             Action::MembershipGrant,
             Action::MembershipRevoke,
+            Action::RoleCapSet,
+            Action::RoleCapRead,
         ];
         let mut seen = std::collections::BTreeSet::new();
         for action in every {

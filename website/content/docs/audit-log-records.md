@@ -20,7 +20,7 @@ shows how to read them.
 | `at` | when, RFC 3339 in UTC |
 | `actor` | the key id; `sweep` for the purge sweep; `cli` for a command on the host; empty for a token that did not parse or names no known key |
 | `action` | what was asked: one of the [actions](#every-action) below |
-| `target` | the uuid, tenant id, key id or user id acted on, if any; for `listener_full`, the configuration key of the listener, `listen` or `operator.listen`; for `membership_grant` and `membership_revoke`, the user id, then the tenant id or `operator`, then the roles the command named if it named any, joined by `/` |
+| `target` | the uuid, tenant id, key id or user id acted on, if any; for `listener_full`, the configuration key of the listener, `listen` or `operator.listen`; for `membership_grant` and `membership_revoke`, the user id, then the tenant id or `operator`, then the roles the command named if it named any, joined by `/`; for `role_cap_set`, the tenant id, then the cap's roles or `all`, joined by `/` |
 | `version` | the version id involved, if any |
 | `status` | the HTTP status answered, or `null` for a record that answers no request (`listener_full`) |
 | `count` | how many requests the record stands for; for `listener_full`, how many times the listener became full, not how many connections waited |
@@ -81,6 +81,8 @@ action through MCP is recorded as its HTTP route records it.
 | `user_deactivate` | a user deactivated and its memberships removed, by `vcon-server user deactivate` | admin, copied to the log of each tenant the user held a membership in |
 | `membership_grant` | roles given to a user in a tenant, or the operator role, by `vcon-server membership grant` | admin, copied to the tenant's for a tenant membership |
 | `membership_revoke` | roles taken from a user's membership, by `vcon-server membership revoke` | admin, copied to the tenant's for a tenant membership |
+| `role_cap_set` | a tenant's role cap set or removed, by `vcon-server tenant set-role-cap` | admin, copied to the tenant's |
+| `role_cap_read` | a tenant's role cap read, by `vcon-server tenant role-cap` | admin |
 | `tenant_create` | a tenant made | admin |
 | `tenant_list` | the tenants listed | admin |
 | `tenant_retention` | a tenant's retention period changed | admin |

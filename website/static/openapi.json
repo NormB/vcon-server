@@ -3605,7 +3605,8 @@
                 "read",
                 "delete",
                 "legal",
-                "audit"
+                "audit",
+                "tenant_admin"
               ]
             }
           },

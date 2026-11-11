@@ -50,6 +50,16 @@ pub enum Command {
         id: String,
         metadata: String,
     },
+    /// Sets the roles a membership in the tenant may be given; `roles`
+    /// None removes the cap.
+    TenantSetRoleCap {
+        id: String,
+        roles: Option<Vec<String>>,
+    },
+    /// Prints the tenant's role cap.
+    TenantRoleCap {
+        id: String,
+    },
     /// Moves every tenant's sealed objects from the data directory to the
     /// bucket `storage.objects = "s3"` names. Runs only while no server
     /// does.
@@ -146,6 +156,8 @@ impl Command {
             Command::TenantSetRetention { .. } => Work::TenantSetRetention,
             Command::TenantRemove { .. } => Work::TenantRemove,
             Command::TenantSetMetadata { .. } => Work::TenantSetMetadata,
+            Command::TenantSetRoleCap { .. } => Work::TenantSetRoleCap,
+            Command::TenantRoleCap { .. } => Work::TenantRoleCap,
             Command::ExportParquet { .. } => Work::ExportParquet,
             Command::StorageMoveObjects => Work::StorageMoveObjects,
             Command::KeyCreate { .. } => Work::KeyCreate,
@@ -246,6 +258,10 @@ impl fmt::Display for CommandError {
                 UserError::BadRoles => {
                     "a tenant membership's roles are one or more of reader, producer, records, legal, auditor and tenant-admin; an operator membership holds operator alone"
                 }
+                UserError::OverCap => "a role named is outside the tenant's role cap",
+                UserError::BadCap => {
+                    "a role cap is one or more of reader, producer, records, legal, auditor and tenant-admin"
+                }
                 UserError::NoMembership => "the user has no such membership",
                 UserError::Registry(_) => "the data could not be read or written",
             }),
@@ -297,7 +313,7 @@ impl fmt::Display for CommandError {
                     "a vCon of the tenant is under a legal hold; only --override-holds removes it"
                 }
                 TenantError::BadScopes => {
-                    "a tenant key's scopes are one or more of write, read, delete, legal and audit, each named once"
+                    "a tenant key's scopes are one or more of write, read, delete, legal, audit and tenant_admin, each named once"
                 }
                 TenantError::LimitReached => {
                     "the master key has wrapped all the tenant keys it may; run rekey master"
@@ -481,6 +497,22 @@ pub fn run(config: &Config, command: &Command, out: &mut dyn Write) -> Result<()
                 &serde_json::json!({ "id": id.to_string(), "metadata": level.as_str() }),
             )
         }
+        Command::TenantSetRoleCap { id, roles } => {
+            // A name that is no role's is refused as a cap that names
+            // operator is: neither can be a cap.
+            let cap = roles
+                .as_ref()
+                .map(|names| Roles::named(names).ok_or(CommandError::User(UserError::BadCap)))
+                .transpose()?;
+            let id = tenant_id(id)?;
+            tenants.set_role_cap(who, id, cap)?;
+            role_cap_line(out, id, cap)
+        }
+        Command::TenantRoleCap { id } => {
+            let id = tenant_id(id)?;
+            let cap = tenants.role_cap(who, id)?;
+            role_cap_line(out, id, cap)
+        }
         Command::ExportParquet {
             tenant,
             to,
@@ -554,6 +586,22 @@ fn user_id(text: &str) -> Result<UserId, CommandError> {
 /// no membership can hold.
 fn named_roles(names: &[String]) -> Result<Roles, CommandError> {
     Roles::named(names).ok_or(CommandError::User(UserError::BadRoles))
+}
+
+/// The line a role cap command prints: the tenant, and the roles of its
+/// cap or null for no cap.
+fn role_cap_line(
+    out: &mut dyn Write,
+    tenant: TenantId,
+    cap: Option<Roles>,
+) -> Result<(), CommandError> {
+    line(
+        out,
+        &serde_json::json!({
+            "id": tenant.to_string(),
+            "role_cap": cap.map(Roles::names),
+        }),
+    )
 }
 
 /// The line a membership command prints: the user, the tenant (null for
@@ -1844,6 +1892,8 @@ mod tests {
                 UserError::NoTenant => "no tenant has this id",
                 UserError::Closing => "being removed",
                 UserError::BadRoles => "reader, producer, records, legal, auditor and tenant-admin",
+                UserError::OverCap => "outside the tenant's role cap",
+                UserError::BadCap => "a role cap is one or more of",
                 UserError::NoMembership => "the user has no such membership",
                 UserError::Registry(_) => "could not be read or written",
             },

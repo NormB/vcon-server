@@ -22,13 +22,13 @@ upgrades it to the server built from the change, and goes back again.
 
 These are on `main` only, in no release yet; they apply to the release
 that follows 0.4.3. The configuration is as it was. The catalogs change:
-see [schema version 5](#schema-version-5-and-no-way-back-without-the-copy)
+see [schema version 6](#schema-version-6-and-no-way-back-without-the-copy)
 first.
 
-### Schema version 5, and no way back without the copy
+### Schema version 6, and no way back without the copy
 
 The new binary brings every catalog from schema version 4 to schema version
-5, each in one transaction: `server.sqlite` the first time `serve`, `check`
+6, each in one transaction: `server.sqlite` the first time `serve`, `check`
 or any other command opens it, and each tenant's catalog the first time
 that tenant's data is opened after it. A catalog whose change fails stays
 whole at version 4, and the command says why.
@@ -36,6 +36,9 @@ whole at version 4, and the command says why.
 - `server.sqlite` gains two tables, `user_account` and `membership`, for
   [users and memberships](@/docs/users-and-memberships.md). Both start
   empty.
+- The `tenant` table of `server.sqlite` gains the column `role_cap`, for a
+  tenant's [role cap](@/docs/roles-and-scopes.md). It starts empty for every
+  tenant: no cap, so every tenant role may be granted, as before.
 - Every audit log, the admin log and each tenant's, can hold a record
   with no status. A log at schema version 4 could not. Release 0.4.3
   writes one for a listener that filled (`listener_full`), and at version 4
@@ -48,10 +51,10 @@ whole at version 4, and the command says why.
   have free space of at least twice the size of the largest catalog file.
 
 Release 0.4.3, and every release before it, refuses a catalog at schema
-version 5. Once the new binary has opened a data directory, 0.4.3's
+version 6. Once the new binary has opened a data directory, 0.4.3's
 `check`, `serve` and every other command stop with `vcon-server: the
 registry cannot be opened: opening /var/lib/vcon-server/server.sqlite
-failed: schema version 5 is not one this build knows`. There is no
+failed: schema version 6 is not one this build knows`. There is no
 downgrade. The only way back is the copy of the data directory taken
 before the upgrade, as in
 [go back to the old version](#go-back-to-the-old-version); everything
@@ -64,12 +67,13 @@ stored after the copy is lost. Before you install the new binary, keep:
 - the 0.4.3 binary, to go back to.
 
 With the [PostgreSQL catalog preview](@/docs/postgres-catalog.md), the
-database's schema goes from version 1 to version 2, and only
+database's schema goes from version 1 to version 3, and only
 `vcon-server migrate` changes it: run it after you install the new binary
 and before you start a server. Until then a server stops with `the database
-schema is version 1, older than this binary's 2: run vcon-server migrate`.
+schema is version 1, older than this binary's 3: run vcon-server migrate`.
 Version 2 adds the same two tables and lets both audit tables hold no
-status. A 0.4.3 binary refuses a database at version 2 as `newer than this
+status, and version 3 adds the role cap's column to the tenant table. A
+0.4.3 binary refuses a database at version 2 or 3 as `newer than this
 binary`; the way back is a copy of the database taken before `migrate`.
 
 ## From 0.4.2 to 0.4.3
@@ -469,7 +473,7 @@ CI runs this page with the objects in the data directory only.
   a secret file that other users may read, that its group may change, or
   that another user owns stops the server; see
   [from 0.4.0 to 0.4.1](#from-0-4-0-to-0-4-1-the-secret-file-rule).
-- **The old binary stops with `schema version 5 is not one this build knows`
+- **The old binary stops with `schema version 6 is not one this build knows`
   (or `schema version 4` or `3`, for a binary older than 0.4.0):**
   a newer binary has opened the data directory. The old one reads only the
   copy taken before the upgrade; see

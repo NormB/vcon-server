@@ -57,8 +57,8 @@ each stolen part gives.
 - **Deny by default, complete mediation:** every request needs a key, and
   every route checks the key's scopes; a request without the scope is
   refused with [`forbidden`](@/problems/forbidden.md) and recorded.
-- **Least privilege:** five tenant scopes (`write`, `read`, `delete`,
-  `legal`, `audit`), each given only where needed; an operator key cannot
+- **Least privilege:** six tenant scopes (`write`, `read`, `delete`,
+  `legal`, `audit`, `tenant_admin`), each given only where needed; an operator key cannot
   read a vCon or make another operator key
   ([Tenants and keys](@/docs/tenants-and-keys.md)).
 - **Separation:** each tenant's data is sealed under its own keys, and a

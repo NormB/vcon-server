@@ -27,10 +27,11 @@
 - [Operator listener](https://vcon-server.com/docs/operator-listener/): a second listener for operator keys only, its configuration, checks and what to change in proxies and clients
 - [Get a Let's Encrypt certificate](https://vcon-server.com/docs/lets-encrypt/): certbot by HTTP-01 or DNS-01, a deploy hook that installs each renewal and restarts the server, no CA file for clients
 - [Add users and memberships](https://vcon-server.com/docs/users-and-memberships/): users made on the host, roles in a tenant or the operator role, each change in the audit logs; no request reads them yet
+- [Roles, scopes and a tenant's role cap](https://vcon-server.com/docs/roles-and-scopes/): the scope each role of a membership gives, a membership's scopes, and the roles a tenant's memberships may be given; no request reads them yet
 
 ## Concepts
 
-- [Tenants and keys](https://vcon-server.com/docs/tenants-and-keys/): tenants, the scopes write, read, delete, legal and audit of a tenant key, and admin of an operator key
+- [Tenants and keys](https://vcon-server.com/docs/tenants-and-keys/): tenants, the scopes write, read, delete, legal, audit and tenant_admin of a tenant key, and admin of an operator key
 - [Storing vCons](https://vcon-server.com/docs/storing-vcons/): accepted forms and media types, checks, versions, ETag and If-Match
 - [Retention and legal holds](https://vcon-server.com/docs/retention-and-holds/): the purge rule, retention periods, legal holds and the legal routes
 - [Audit logs](https://vcon-server.com/docs/audit-logs/): what is recorded, where, and what never is recorded

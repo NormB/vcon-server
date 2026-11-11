@@ -1,0 +1,13 @@
+-- Version 3 of the catalog schema, applied by `vcon-server migrate` as
+-- vcon_owner in one transaction, to a database at version 2.
+--
+-- It adds a tenant's role cap: the roles a membership in the tenant may
+-- be given, sealed as the tenant's other settings are. NULL is no cap:
+-- every tenant role is allowed, as before this version. The same change
+-- is schema version 6 of the local catalogs (crate::catalog).
+--
+-- The column is the registry's, under the row-level security and the
+-- grants version 1 gave the table, so a tenant's transaction cannot read
+-- or change it. No row is changed: a column added with no default is
+-- NULL in every row there is.
+ALTER TABLE vcon.tenant ADD COLUMN role_cap_sealed bytea;

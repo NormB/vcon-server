@@ -22,24 +22,44 @@ All notable changes to this project are recorded here. The format follows
   is no route for either, and no request reads them yet: nobody can sign
   in as a user until a later release adds sessions. See the how-to
   "Add users and memberships".
+- Roles as sets of scopes, and a role cap for each tenant. Each role gives
+  one scope: `reader` gives `read`, `producer` `write`, `records` `delete`,
+  `legal` `legal`, `auditor` `audit`, `tenant-admin` the new scope
+  `tenant_admin`, and `operator` `admin`; a membership's scopes are those
+  of its roles. `tenant set-role-cap` sets the roles a membership in a
+  tenant may be given, and `tenant role-cap` prints them; both run on the
+  host, beside a running server. A grant of a role outside the cap is
+  refused, and a role granted before the cap was set stops counting until
+  the cap allows it again. The two commands are recorded as `role_cap_set`
+  (in the admin audit log and the tenant's) and `role_cap_read` (in the
+  admin audit log). See the how-to "Roles, scopes and a tenant's role cap".
 
 ### Changed
 
-- **No downgrade: the catalogs move to schema version 5.** The first time
+- **No downgrade: the catalogs move to schema version 6.** The first time
   this server or one of its commands opens a data directory, it brings
-  `server.sqlite` from schema version 4 to 5, and each tenant's catalog at
+  `server.sqlite` from schema version 4 to 6, and each tenant's catalog at
   that tenant's first use, each in one transaction. Version 5 adds the
   tables `user_account` and `membership` to `server.sqlite`, and lets every
   audit log hold a record with no status: the number 0 that a version-4
   log kept for a `listener_full` record becomes no status, under the same
-  sequence numbers, and readers see `null` as before. Release 0.4.3
-  and earlier refuse a catalog at version 5 (`schema version 5 is not one
+  sequence numbers, and readers see `null` as before. Version 6 adds the
+  column `role_cap` to the `tenant` table of `server.sqlite`, empty for
+  every tenant. Release 0.4.3
+  and earlier refuse a catalog at version 6 (`schema version 6 is not one
   this build knows`), so the way back is the copy of the data directory
   taken before the upgrade. With the PostgreSQL catalog preview, run
-  `vcon-server migrate` to bring the database from schema version 1 to 2
-  before a server starts. See "Schema version 5" on the upgrade page.
+  `vcon-server migrate` to bring the database from schema version 1 to 3
+  before a server starts. See "Schema version 6" on the upgrade page.
 - **Breaking for a reader of the audit log that knows a fixed list of
-  actions:** add the five actions named above.
+  actions:** add the five actions named above, and `role_cap_set` and
+  `role_cap_read`.
+- **`user list` prints each membership's `scopes`** beside its `roles`:
+  what the membership lets its user do, under the tenant's role cap.
+- **A tenant key may hold the scope `tenant_admin`.** `key create --scope`
+  and `POST /admin/tenants/{id}/keys` take the name with the five there
+  were. No route needs the scope yet, so such a key reaches only the
+  routes any key reaches.
 
 ## [0.4.3] - 2026-11-11
 

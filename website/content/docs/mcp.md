@@ -624,14 +624,14 @@ A call and its result, from a test server:
 
 ### `admin_key_create`
 
-Makes a key for the tenant holding these scopes (write, read, delete, legal, audit) with this label, and returns its id and its token. The token is returned this once; only its hash is kept.
+Makes a key for the tenant holding these scopes (write, read, delete, legal, audit, tenant_admin) with this label, and returns its id and its token. The token is returned this once; only its hash is kept.
 
 Scope: admin. Hints: none.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|
 | `label` | string | yes | Who holds the key. |
-| `scopes` | array | yes | The scopes it holds: write, read, delete, legal, audit. |
+| `scopes` | array | yes | The scopes it holds: write, read, delete, legal, audit, tenant_admin. |
 | `tenant` | string | yes | The tenant the key belongs to. |
 
 A call and its result, from a test server:

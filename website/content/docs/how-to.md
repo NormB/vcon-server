@@ -80,6 +80,9 @@ shows. `scripts/docs_test.py` runs them. See
 - [Add users and memberships](@/docs/users-and-memberships.md): users made
   on the host, roles in a tenant or the operator role, and each change in
   the audit logs. No request reads them yet.
+- [Roles, scopes and a tenant's role cap](@/docs/roles-and-scopes.md): the
+  scope each role gives, a membership's scopes, and the roles a tenant's
+  memberships may be given. No request reads them yet.
 
 ## Connect an AI agent
 

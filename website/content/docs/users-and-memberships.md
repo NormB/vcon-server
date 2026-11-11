@@ -153,7 +153,8 @@ sudo -u vcon vcon-server user list --config $CONFIG \
 ```
 
 Each line also holds the user's `id` and `created_at`, and each membership
-its `tenant` (`null` for the operator membership) and `granted_at`. The
+its `tenant` (`null` for the operator membership), `scopes` (see
+[roles and scopes](@/docs/roles-and-scopes.md)) and `granted_at`. The
 labels, issuers and subjects are in `server.sqlite`, which is encrypted
 under the master key, and in this command's output; they are in no audit
 record.
@@ -278,10 +279,10 @@ See [audit log records](@/docs/audit-log-records.md) for every action.
 - **`the user has no such membership`:** there is nothing to revoke:
   `user list` shows the memberships the user holds.
 - **`the user is deactivated`:** add a new user for the person.
-- **`the registry cannot be opened: … schema version 5 is not one this
+- **`the registry cannot be opened: … schema version 6 is not one this
   build knows`:** an older binary is reading a data directory that a newer
   one has opened. See
-  [upgrade](@/docs/upgrading.md#schema-version-5-and-no-way-back-without-the-copy).
+  [upgrade](@/docs/upgrading.md#schema-version-6-and-no-way-back-without-the-copy).
 
 ## Clean up
 

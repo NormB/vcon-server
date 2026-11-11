@@ -67,8 +67,8 @@ pub(super) fn specs() -> Vec<Spec> {
         spec::<KeyCreateArgs>(
             "admin_key_create",
             "Makes a key for the tenant holding these scopes (write, read, delete, legal, \
-             audit) with this label, and returns its id and its token. The token is returned \
-             this once; only its hash is kept.",
+             audit, tenant_admin) with this label, and returns its id and its token. The token \
+             is returned this once; only its hash is kept.",
             Hints::NONE,
             Action::KeyCreate,
             key_create,
@@ -283,7 +283,7 @@ fn tenant_remove<'a>(server: &'a Server, caller: Caller, args: JsonObject) -> Ru
 pub(super) struct KeyCreateArgs {
     /// The tenant the key belongs to.
     tenant: String,
-    /// The scopes it holds: write, read, delete, legal, audit.
+    /// The scopes it holds: write, read, delete, legal, audit, tenant_admin.
     scopes: Vec<String>,
     /// Who holds the key.
     label: String,

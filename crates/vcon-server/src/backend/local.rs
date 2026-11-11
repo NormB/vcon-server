@@ -1122,6 +1122,9 @@ fn io<E>(_: E) -> StoreError {
 /// one hold NULL. Times are nanoseconds since the epoch. A retention period
 /// is written as `Retention` writes it; NULL means the server default. A
 /// metadata level is written as `Metadata` writes it; NULL means `none`.
+/// A role cap is written as `Roles` writes it; NULL means no cap. Its column
+/// is declared after the closing line break of `metadata` because that is
+/// the text SQLite keeps for a column an upgrade adds to a table.
 pub(crate) const REGISTRY_TABLES: &str = "
 CREATE TABLE tenant (
     id BLOB PRIMARY KEY NOT NULL,
@@ -1133,7 +1136,7 @@ CREATE TABLE tenant (
     pending_wrapped_tenant_key BLOB,
     key_since INTEGER NOT NULL,
     metadata TEXT
-);
+, role_cap TEXT);
 CREATE TABLE master_key_use (
     master_key_id BLOB PRIMARY KEY NOT NULL,
     wraps INTEGER NOT NULL,
@@ -1248,7 +1251,7 @@ impl Drop for LocalRegistryTx<'_> {
 }
 
 const TENANT_COLUMNS: &str = "id, name, retention, created_at, tenant_key_id,
-    wrapped_tenant_key, pending_wrapped_tenant_key, key_since, metadata";
+    wrapped_tenant_key, pending_wrapped_tenant_key, key_since, metadata, role_cap";
 
 fn tenant_row(r: &rusqlite::Row) -> rusqlite::Result<TenantRow> {
     Ok(TenantRow {
@@ -1261,6 +1264,7 @@ fn tenant_row(r: &rusqlite::Row) -> rusqlite::Result<TenantRow> {
         pending: r.get(6)?,
         key_since: r.get(7)?,
         metadata: r.get(8)?,
+        role_cap: r.get(9)?,
     })
 }
 
@@ -1342,8 +1346,9 @@ impl RegistryTx for LocalRegistryTx<'_> {
         self.conn
             .execute(
                 "INSERT INTO tenant (id, name, retention, created_at, tenant_key_id,
-                     wrapped_tenant_key, pending_wrapped_tenant_key, key_since, metadata)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                     wrapped_tenant_key, pending_wrapped_tenant_key, key_since, metadata,
+                     role_cap)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     row.id.0,
                     row.name,
@@ -1354,10 +1359,22 @@ impl RegistryTx for LocalRegistryTx<'_> {
                     row.pending,
                     row.key_since,
                     row.metadata,
+                    row.role_cap,
                 ],
             )
             .map_err(tenant_io)?;
         Ok(())
+    }
+
+    fn set_role_cap(&mut self, id: TenantId, cap: Option<&str>) -> Result<bool, TenantError> {
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE tenant SET role_cap = ?2 WHERE id = ?1",
+                params![id.0, cap],
+            )
+            .map_err(tenant_io)?;
+        Ok(changed != 0)
     }
 
     fn set_metadata(&mut self, id: TenantId, level: Option<&str>) -> Result<bool, TenantError> {

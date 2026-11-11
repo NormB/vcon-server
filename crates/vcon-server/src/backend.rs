@@ -450,6 +450,8 @@ pub struct TenantRow {
     pub retention: Option<String>,
     /// The metadata level as `Metadata` writes it; None is `none`.
     pub metadata: Option<String>,
+    /// The role cap as `Roles` writes it; None is no cap.
+    pub role_cap: Option<String>,
     pub created_at: i64,
     pub tenant_key_id: KeyId,
     pub wrapped: Vec<u8>,
@@ -529,6 +531,9 @@ pub trait RegistryTx {
     -> Result<bool, TenantError>;
     /// Sets a tenant's metadata level; false if no tenant has the id.
     fn set_metadata(&mut self, id: TenantId, level: Option<&str>) -> Result<bool, TenantError>;
+    /// Sets a tenant's role cap, or with None removes it; false if no tenant
+    /// has the id.
+    fn set_role_cap(&mut self, id: TenantId, cap: Option<&str>) -> Result<bool, TenantError>;
     /// Removes a tenant's row and revokes its access keys at `at`.
     fn delete_tenant(&mut self, id: TenantId, at: i64) -> Result<(), TenantError>;
     fn set_pending(&mut self, id: TenantId, pending: &[u8]) -> Result<(), TenantError>;

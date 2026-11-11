@@ -10,7 +10,9 @@
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
+use super::role_cap::stored_cap;
 use super::{Slot, TenantError, Tenants, commit, good_name};
+use crate::access::Scopes;
 use crate::audit::{Action, Actor, Entry};
 use crate::backend::{MembershipRow, UserRow};
 use crate::clock::{from_nanos, nanos};
@@ -56,7 +58,11 @@ impl Identity {
 pub struct MembershipInfo {
     /// None for an operator membership.
     pub tenant: Option<TenantId>,
+    /// The roles granted, as the membership's row keeps them.
     pub roles: Roles,
+    /// What the membership lets its user do: the scopes of those of its
+    /// roles that the tenant's role cap allows.
+    pub scopes: Scopes,
     pub granted_at: OffsetDateTime,
 }
 
@@ -76,8 +82,8 @@ pub struct UserInfo {
 impl UserInfo {
     /// The user as the command line shows it: id, label, issuer and
     /// subject (both null for a local account), times in RFC 3339, and
-    /// each membership's tenant (null for an operator membership), roles
-    /// and time. None when a time cannot be written so.
+    /// each membership's tenant (null for an operator membership), roles,
+    /// scopes and time. None when a time cannot be written so.
     #[must_use]
     pub fn to_json(&self) -> Option<serde_json::Value> {
         let time = |at: OffsetDateTime| at.format(&Rfc3339).ok();
@@ -92,6 +98,7 @@ impl UserInfo {
                 Some(serde_json::json!({
                     "tenant": m.tenant.map(|t| t.to_string()),
                     "roles": m.roles.names(),
+                    "scopes": m.scopes.names(),
                     "granted_at": time(m.granted_at)?,
                 }))
             })
@@ -132,6 +139,11 @@ pub enum UserError {
     /// holds `operator` alone, a tenant membership one or more of the
     /// others.
     BadRoles,
+    /// A role named is outside the tenant's role cap.
+    OverCap,
+    /// Roles that cannot be a tenant's role cap: a cap is one or more of
+    /// the roles a tenant membership may hold.
+    BadCap,
     /// The user has no such membership.
     NoMembership,
     /// The registry failed, or the audit record could not be written.
@@ -146,12 +158,16 @@ impl From<TenantError> for UserError {
 
 impl UserError {
     /// The status a refusal is recorded under.
-    fn status(self) -> u16 {
+    pub(super) fn status(self) -> u16 {
         match self {
             UserError::CliOnly => 403,
             UserError::NoUser | UserError::NoTenant | UserError::NoMembership => 404,
             UserError::IdentityTaken | UserError::Deactivated => 409,
-            UserError::BadLabel | UserError::BadIdentity | UserError::BadRoles => 422,
+            UserError::BadCap
+            | UserError::BadLabel
+            | UserError::BadIdentity
+            | UserError::BadRoles
+            | UserError::OverCap => 422,
             UserError::Closing => 503,
             UserError::Registry(_) => 500,
         }
@@ -235,6 +251,16 @@ impl Tenants {
             return Err(UserError::CliOnly);
         }
         let time = |at| from_nanos(at).ok_or(TenantError::Io);
+        let caps = tx
+            .tenants()?
+            .into_iter()
+            .map(|row| Ok((row.id, stored_cap(row.role_cap.as_deref())?)))
+            .collect::<Result<Vec<_>, TenantError>>()?;
+        let cap_of = |tenant: Option<TenantId>| {
+            caps.iter()
+                .find(|(id, _)| Some(*id) == tenant)
+                .and_then(|(_, cap)| *cap)
+        };
         let memberships = tx.memberships()?;
         let users = tx
             .users()?
@@ -244,10 +270,12 @@ impl Tenants {
                     .iter()
                     .filter(|m| m.user == row.id)
                     .map(|m| {
+                        // Roles that do not read back are damage.
+                        let roles = Roles::parse(&m.roles).ok_or(TenantError::Io)?;
                         Ok(MembershipInfo {
                             tenant: m.tenant,
-                            // Roles that do not read back are damage.
-                            roles: Roles::parse(&m.roles).ok_or(TenantError::Io)?,
+                            roles,
+                            scopes: roles.within(cap_of(m.tenant)).scopes(),
                             granted_at: time(m.granted_at)?,
                         })
                     })
@@ -340,9 +368,21 @@ impl Tenants {
             match (tx.user(user)?, tenant) {
                 (None, _) => Some(UserError::NoUser),
                 (Some(row), _) if row.deactivated_at.is_some() => Some(UserError::Deactivated),
-                (Some(_), Some(t)) if tx.tenant(t)?.is_none() => Some(UserError::NoTenant),
-                (Some(_), Some(_)) if closing => Some(UserError::Closing),
-                _ => None,
+                (Some(_), Some(t)) => match tx.tenant(t)? {
+                    None => Some(UserError::NoTenant),
+                    Some(_) if closing => Some(UserError::Closing),
+                    // The cap is asked of the roles this call names; a
+                    // cap that does not read back is damage, not no cap.
+                    Some(row)
+                        if !roles
+                            .outside(stored_cap(row.role_cap.as_deref())?)
+                            .is_empty() =>
+                    {
+                        Some(UserError::OverCap)
+                    }
+                    Some(_) => None,
+                },
+                (Some(_), None) => None,
             }
         };
         if let Some(error) = refused {
@@ -617,6 +657,10 @@ mod tests {
             [MembershipInfo {
                 tenant: Some(t),
                 roles: roles(&[Role::Reader, Role::Auditor]),
+                scopes: crate::access::Scopes::of(&[
+                    crate::access::Scope::Read,
+                    crate::access::Scope::Audit,
+                ]),
                 granted_at: datetime!(2026-10-23 13:00 UTC),
             }],
             "the membership as listed"
@@ -809,6 +853,7 @@ mod tests {
                 "memberships": [{
                     "tenant": t.to_string(),
                     "roles": ["reader", "tenant-admin"],
+                    "scopes": ["read", "tenant_admin"],
                     "granted_at": "2026-10-23T12:00:00Z",
                 }],
             })),

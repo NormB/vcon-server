@@ -26,7 +26,7 @@ crates/
         ├── mcp.rs         the MCP server at /mcp; mcp/stdio.rs, the stdio command
         ├── tui.rs         the terminal UI, a client of a running server
         ├── reveal.rs      the reveal marker on a read, for the audit log
-        ├── roles.rs       the roles a membership holds, by name
+        ├── roles.rs       the roles a membership holds, and the scope each gives
         ├── access.rs      tokens, scopes, authentication
         ├── store.rs       one tenant's vCons: versions, deletes, purges, legal reads
         ├── backend.rs     where the data is kept: local files, an S3 bucket, PostgreSQL

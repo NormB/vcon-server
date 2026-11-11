@@ -31,6 +31,8 @@ pub enum Work {
     TenantSetRetention,
     TenantRemove,
     TenantSetMetadata,
+    TenantSetRoleCap,
+    TenantRoleCap,
     ExportParquet,
     KeyCreate,
     KeyList,
@@ -72,6 +74,8 @@ impl Work {
             | Work::AuditExport
             | Work::Backup
             | Work::TenantSetMetadata
+            | Work::TenantSetRoleCap
+            | Work::TenantRoleCap
             | Work::ExportParquet => Sharing::Beside,
         }
     }
@@ -184,6 +188,8 @@ mod tests {
             Work::Check => Sharing::Alone,
             Work::Backup => Sharing::Beside,
             Work::TenantSetMetadata => Sharing::Beside,
+            Work::TenantSetRoleCap => Sharing::Beside,
+            Work::TenantRoleCap => Sharing::Beside,
             Work::ExportParquet => Sharing::Beside,
             Work::StorageMoveObjects => Sharing::Alone,
         };
@@ -207,6 +213,8 @@ mod tests {
             Work::Check,
             Work::Backup,
             Work::TenantSetMetadata,
+            Work::TenantSetRoleCap,
+            Work::TenantRoleCap,
             Work::ExportParquet,
             Work::StorageMoveObjects,
         ] {
