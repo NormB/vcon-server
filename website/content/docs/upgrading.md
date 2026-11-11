@@ -22,8 +22,8 @@ upgrades it to the server built from the change, and goes back again.
 
 These are on `main` only, in no release yet; they apply to the release
 that follows 0.4.2. The upgrade is the binary alone: the catalogs keep
-their schema version, and the configuration is as it was. Two things need
-a look before it, and a third is new and optional.
+their schema version, and the configuration is as it was. Three things
+need a look before it, and a fourth is new and optional.
 
 - **Readers of the audit log.** The console marks each Reveal, so a
   tenant's log holds `reveal_parties`, `reveal_subject`, `reveal_dialog`,
@@ -37,6 +37,21 @@ a look before it, and a third is new and optional.
   [recording player](@/docs/console.md#play-a-recording). Pass both, and
   pass each answer's `Content-Security-Policy` header unchanged: the
   player's page has a policy of its own.
+- **Clients that hold many connections, or hold them long.** Release 0.4.2
+  kept every connection for as long as the client did, and took as many as
+  it was offered. The server now holds at most 512 connections on a
+  listener, closes one that has waited 120 seconds for its next request
+  (an HTTP/2 connection after a GOAWAY frame), and closes one whose TLS
+  handshake takes more than 10 seconds or whose request head more than 30.
+  An HTTP client opens a new connection when it finds one closed, so most
+  need no change. Before you install the new binary, count the connections
+  your clients and proxies hold open at once: for more than 512, set
+  `limits.connections`, and keep the process's limit on open files above
+  it. A proxy that keeps idle connections to the server should keep them
+  for less than 120 seconds, or `limits.timeouts.idle` should be raised
+  above the proxy's own time. A reader of the audit log that knows a fixed
+  list of actions must add `listener_full`. See
+  [connection limits](@/docs/configuration.md#connection-limits).
 - **The operator listener, if you turn it on.** A configuration without an
   `[operator]` table serves as before: one listener, both kinds of key.
   With the table, operator keys work only at the new address, so every

@@ -79,6 +79,22 @@ impl Tenants {
         self.count_refusal(Action::WrongListener, 403, Some((key, tenant)));
     }
 
+    /// Counts one time that a listener found every one of its places held
+    /// (`limits.connections`), in the admin log: action `listener_full`,
+    /// no actor, the listener's configuration key (`listen` or
+    /// `operator.listen`) as the target, and status 503, though a
+    /// connection that waits is sent no answer. A failure to count changes
+    /// nothing for the listener.
+    pub(crate) fn count_listener_full(&self, listener: &str) {
+        let _ = self.count_admin(&Entry {
+            actor: Actor::Unparsed,
+            action: Action::ListenerFull,
+            target: Some(listener.to_owned()),
+            version: None,
+            status: 503,
+        });
+    }
+
     /// Counts a request refused before any route saw it, as `action` with
     /// `status`.
     fn count_refusal(&self, action: Action, status: u16, known: Option<(KeyId, Option<TenantId>)>) {
@@ -690,6 +706,112 @@ mod tests {
         }
         assert_eq!(revoked_at(&f, theirs), None);
         assert_eq!(revoked_at(&f, operator), None);
+    }
+
+    // A listener that is full.
+
+    #[test]
+    fn a_full_listener_is_counted_in_the_admin_log_under_its_configuration_key() {
+        let f = fixture();
+        f.tenants.count_listener_full("listen");
+        let counted = f.admin_records("listener_full");
+        assert_eq!(counted.len(), 1, "{counted:?}");
+        assert_eq!(counted[0]["actor"], "", "no caller: none was taken");
+        assert_eq!(counted[0]["target"], "listen", "the listener's key");
+        assert_eq!(
+            counted[0]["status"], 503,
+            "the status of a server that cannot serve now"
+        );
+        assert_eq!(counted[0]["count"], 1, "one time");
+    }
+
+    #[test]
+    fn the_times_a_listener_was_full_in_one_minute_share_a_record() {
+        let f = fixture();
+        for _ in 0..7 {
+            f.tenants.count_listener_full("listen");
+        }
+        let counted = f.admin_records("listener_full");
+        assert_eq!(counted.len(), 1, "one record for the minute: {counted:?}");
+        assert_eq!(counted[0]["count"], 7, "seven times");
+        assert_eq!(counted[0]["at"], "2026-10-23T12:00:00Z", "the minute");
+    }
+
+    #[test]
+    fn a_listener_full_in_another_minute_has_another_record() {
+        let f = fixture();
+        f.tenants.count_listener_full("listen");
+        f.clock.set(datetime!(2026-10-23 12:01:30 UTC));
+        f.tenants.count_listener_full("listen");
+        f.tenants.count_listener_full("listen");
+        let counts: Vec<_> = f
+            .admin_records("listener_full")
+            .iter()
+            .map(|r| (r["at"].clone(), r["count"].clone()))
+            .collect();
+        assert_eq!(
+            counts,
+            [
+                ("2026-10-23T12:00:00Z".into(), 1.into()),
+                ("2026-10-23T12:01:00Z".into(), 2.into()),
+            ],
+            "a record for each minute"
+        );
+    }
+
+    #[test]
+    fn each_listener_has_a_record_of_its_own() {
+        let f = fixture();
+        f.tenants.count_listener_full("listen");
+        f.tenants.count_listener_full("operator.listen");
+        f.tenants.count_listener_full("operator.listen");
+        let mut counts: Vec<_> = f
+            .admin_records("listener_full")
+            .iter()
+            .map(|r| {
+                (
+                    r["target"].as_str().expect("a target").to_owned(),
+                    r["count"].as_u64().expect("a count"),
+                )
+            })
+            .collect();
+        counts.sort();
+        assert_eq!(
+            counts,
+            [("listen".to_owned(), 1), ("operator.listen".to_owned(), 2)],
+            "each under its own key"
+        );
+    }
+
+    #[test]
+    fn a_full_listener_is_in_no_tenants_log() {
+        let f = fixture();
+        let t = tenant(&f, "acme");
+        f.tenants.count_listener_full("listen");
+        assert_eq!(
+            tenant_records(&f, t, "listener_full"),
+            Vec::<serde_json::Value>::new(),
+            "the listener is the server's, not a tenant's"
+        );
+    }
+
+    #[test]
+    fn a_count_that_cannot_be_written_is_passed_over() {
+        let f = fixture();
+        f.conn()
+            .execute_batch(
+                "CREATE TRIGGER no_audit BEFORE INSERT ON audit
+                 BEGIN SELECT RAISE(ABORT, 'no audit'); END",
+            )
+            .expect("a trigger");
+        // Nothing to assert on but that the call returns.
+        f.tenants.count_listener_full("listen");
+        f.conn()
+            .execute_batch("DROP TRIGGER no_audit")
+            .expect("drop trigger");
+        assert_eq!(f.admin_records("listener_full").len(), 0, "none written");
+        f.tenants.count_listener_full("listen");
+        assert_eq!(f.admin_records("listener_full").len(), 1, "and the next is");
     }
 
     impl Fixture {

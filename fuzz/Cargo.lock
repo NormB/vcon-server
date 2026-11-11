@@ -2379,6 +2379,7 @@ dependencies = [
  "clap",
  "flate2",
  "form_urlencoded",
+ "http-body",
  "http-body-util",
  "hyper-util",
  "libc",

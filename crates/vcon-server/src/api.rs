@@ -35,7 +35,9 @@ use uuid::Uuid;
 use vcon::read::{Inspection, Rejection};
 
 mod listen;
-pub use listen::{Accept, AfterFailure, ConnectionLimits, after_failure, serve, serve_within};
+pub use listen::{
+    Accept, AfterFailure, ConnectionLimits, after_failure, serve, serve_observed, serve_within,
+};
 
 /// The limits from configuration that the API applies to every request.
 #[derive(Debug, Clone, Copy)]

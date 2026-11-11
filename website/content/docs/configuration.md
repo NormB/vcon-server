@@ -60,10 +60,12 @@ allowed a group to write them. To check a host before an upgrade, see
 | `rotation_warn` | Seconds the oldest work may wait for key rotation before a warning is logged | `2592000` (30 days) |
 | `limits.body` | Largest request body, in bytes | `16777216` (16 MiB) |
 | `limits.inflated` | Most bytes gzip inflation may produce while one body is checked | `67108864` (64 MiB) |
+| `limits.connections` | Most connections a listener holds at once, from 1 to 65536. At that number the listener takes no more until one ends | `512` |
 | `limits.timeouts.read` | Seconds a request body may take to arrive | `60` |
 | `limits.timeouts.handshake` | Seconds a connection may take over its TLS handshake, from 1 to 3600; a connection that takes longer is closed | `10` |
 | `limits.timeouts.first_head` | Seconds from the end of the handshake to the whole head of the connection's first request, on HTTP/1.1 and HTTP/2, from 1 to 3600; a connection that has sent no request by then is closed | `30` |
-| `limits.timeouts.head` | Seconds an HTTP/1.1 request head may take to arrive, from 1 to 3600. For a request after the first this includes the wait for it, so it is also how long an idle HTTP/1.1 connection is kept open | `30` |
+| `limits.timeouts.head` | Seconds an HTTP/1.1 request head may take to arrive, counted from its first bytes, from 1 to 3600; a connection whose head takes longer is closed. The wait for a request is not counted here: it is under `limits.timeouts.idle` | `30` |
+| `limits.timeouts.idle` | Seconds a connection that has had a request may wait for the next, from 1 to 3600: an HTTP/1.1 connection between requests, an HTTP/2 connection with no stream open. The connection is then closed, an HTTP/2 connection after a GOAWAY frame | `120` |
 | `supported_critical` | Extension names accepted in a vCon's `critical` list, for all tenants | none |
 | `mcp.calls_per_second` | MCP tool calls one key may make in each one-second window | `100` |
 | `mcp.concurrent` | MCP tool calls running at once on the server | `100` |
@@ -105,16 +107,88 @@ allowed a group to write them. To check a host before an upgrade, see
 | `catalog.postgres.statement_timeout` | Seconds a statement may run (PostgreSQL's `statement_timeout`), at most `2147483` | `30` |
 | `catalog.postgres.lock_timeout` | Seconds a statement may wait for a lock (PostgreSQL's `lock_timeout`), at most `2147483` | `10` |
 
-The three connection limits close a connection that stalls, so that it
-does not hold a file descriptor for as long as the other side likes. A
-client that keeps an HTTP/1.1 connection idle for longer than
-`limits.timeouts.head` finds it closed and opens another, as HTTP clients
-do without being told; raise the key for clients that keep connections
-longer. The first request of an HTTP/1.1 connection is under both
-`first_head` and `head`, so the lesser applies to it. A request whose head
-arrived in time may take as long as it needs, and its body is under
-`limits.timeouts.read`. The default of 30 seconds for a head is the
-default header timeout of hyper, the HTTP library the server is built on.
+### Connection limits
+
+The four connection limits close a connection that stalls or sits unused,
+so that it does not hold a file descriptor for as long as the other side
+likes. They and `limits.connections` are on `main` only, in no release
+yet: release 0.4.2 refuses a configuration that has one of the five keys.
+Each limit applies to one part of a connection's life:
+
+1. `handshake`: from the moment the listener takes the connection to the
+   end of its TLS handshake.
+2. `first_head`: from the end of the handshake to the whole head of the
+   first request, on HTTP/1.1 and HTTP/2.
+3. `head`: from the first bytes of an HTTP/1.1 request head to its end.
+   The first request of an HTTP/1.1 connection is under both `first_head`
+   and `head`, so the lesser applies to it.
+4. `idle`: from the end of one answer to the next request, on a connection
+   that has had at least one request. On HTTP/2 that is the time with no
+   stream open; a ping or a settings frame does not start it again.
+
+A request whose head arrived in time may take as long as it needs: no
+connection limit runs while a request is being answered, and the request's
+body is under `limits.timeouts.read`. The default of 30 seconds for a head
+is the default header timeout of hyper, the HTTP library the server is
+built on.
+
+A connection that reaches `idle` is closed in order. An HTTP/2 connection
+is sent a GOAWAY frame with the code `NO_ERROR`, a request that arrives at
+that moment is still answered, and the connection is closed five seconds
+later if the client has not ended it; that wait has no key. An HTTP/1.1
+connection is closed between requests. A client finds the connection
+closed and opens another for its next request, as HTTP clients do without
+being told. Raise `idle` for clients that keep connections longer between
+requests, and lower it to free places sooner.
+
+### The most connections at once
+
+`limits.connections` bounds how many connections a listener holds at once,
+so that connections alone cannot use up the process's file descriptors.
+Each listener has that many places of its own: with an
+[operator listener](@/docs/operator-listener.md), connections to the
+tenant listener take no place from it. Keep the number below the process's
+limit on open files (`ulimit -n`, or `LimitNOFILE` in a systemd unit), with
+room for the files the server itself opens.
+
+At the limit the listener takes no more connections until one that is held
+ends or is closed by a limit above. A connection that arrives then waits in
+the system's queue for the listening socket. The server asks the system
+for a queue of 128 connections, the number the Rust standard library uses,
+and Linux uses the lesser of that and `net.core.somaxconn`. A client in
+that queue has a TCP connection and no answer to its TLS hello, so it sees
+a connection that is slow to start; `limits.timeouts.handshake` starts for
+it only when the listener takes it. When the queue is full as well, Linux
+leaves further connection attempts unanswered: on a Linux host with a
+queue of 128, 129 connections completed and the rest ended at the client's
+own connect timeout. A client that gives up before it is taken costs the
+server nothing.
+
+A listener that is full shows in two places:
+
+- The log has a warning, at most one a minute for each listener, with the
+  listener's address and the limit:
+
+  ```text
+  <time>  WARN vcon_server::api::listen: the listener is full: it holds limits.connections connections and takes no more until one ends listener=0.0.0.0:8443 connections=512
+  ```
+
+- The admin audit log counts each time a listener filled, as action
+  [`listener_full`](@/docs/audit-log-records.md#every-action): one record for
+  each listener and minute, whose `count` is the number of times in that
+  minute, whose `target` is the listener's key (`listen` or
+  `operator.listen`), and whose `status` is 503. To list them:
+
+  ```sh
+  vcon-server audit export --admin --config /etc/vcon-server/config.toml \
+    | jq -c 'select(.action == "listener_full") | {at, target, count}'
+  ```
+
+A listener that fills now and then under a burst of clients needs nothing.
+One that is full minute after minute is either too small for its clients,
+in which case raise `limits.connections` and the limit on open files with
+it, or is held by connections that do nothing, in which case lower
+`limits.timeouts.idle`.
 
 When the system cannot hand the server a connection, such as when the
 process is out of file descriptors, the server logs a warning, waits one
@@ -142,12 +216,14 @@ key = "/etc/vcon-server/key.pem"
 [limits]
 body = 16777216
 inflated = 67108864
+connections = 512
 
 [limits.timeouts]
 read = 60
 handshake = 10
 first_head = 30
 head = 30
+idle = 120
 
 [mcp]
 calls_per_second = 100

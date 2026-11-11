@@ -259,19 +259,33 @@ pub async fn run(config: &Config, shutdown: impl Future<Output = ()>) -> Result<
         // An error is the sender dropped: halted as well.
         let _ = halted.changed().await;
     };
+    // Each time a listener finds every place held, that is counted in the
+    // admin log under the listener's configuration key. The count is
+    // written off the listener's task, which goes on to wait for a place.
+    let counted = tenants.clone();
+    let counts_full = move |key: &'static str| {
+        let tenants = counted.clone();
+        move || {
+            let tenants = tenants.clone();
+            tokio::task::spawn_blocking(move || tenants.count_listener_full(key));
+        }
+    };
     let both = async {
         let Some((operator_listener, operator_tls, operator_bound)) = operator else {
+            let full = counts_full("listen");
             let app = app_from(config, tenants, Plane::Both);
             tracing::info!(listen = %bound, "serving");
-            return api::serve_within(
+            return api::serve_observed(
                 listener,
                 tls,
                 api::router(Arc::new(app)),
                 until_halted(halted),
                 config.connection,
+                full,
             )
             .await;
         };
+        let (tenant_full, operator_full) = (counts_full("listen"), counts_full("operator.listen"));
         let tenant_app = app_from(config, tenants.clone(), Plane::Tenant);
         let operator_app = app_from(config, tenants, Plane::Operator);
         // Before the serving line: whoever waits for that line finds both
@@ -279,19 +293,21 @@ pub async fn run(config: &Config, shutdown: impl Future<Output = ()>) -> Result<
         tracing::info!(operator_listen = %operator_bound, "the operator listener is bound");
         tracing::info!(listen = %bound, "serving");
         let (tenant, operator) = tokio::join!(
-            api::serve_within(
+            api::serve_observed(
                 listener,
                 tls,
                 api::router(Arc::new(tenant_app)),
                 until_halted(halted.clone()),
                 config.connection,
+                tenant_full,
             ),
-            api::serve_within(
+            api::serve_observed(
                 operator_listener,
                 operator_tls,
                 api::router(Arc::new(operator_app)),
                 until_halted(halted),
                 config.connection,
+                operator_full,
             ),
         );
         tenant.and(operator)

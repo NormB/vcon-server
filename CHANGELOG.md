@@ -149,9 +149,36 @@ All notable changes to this project are recorded here. The format follows
 - On the site, the search box's edge had a contrast of 1.2 to 1 against the
   page (WCAG 1.4.11 asks 3 to 1), and the focus ring of the sidebar's links
   and of the home page's code blocks was cut off by the box around them.
-
-### Fixed
-
+- A listener holds at most `limits.connections` connections at once, 512
+  unless the configuration says another number from 1 to 65536. Before,
+  it took every connection it was offered, so connections alone could use
+  up the process's file descriptors, and with them the catalogs and
+  objects the server must open to answer anyone. At the limit the
+  listener takes no more until one ends or a time limit closes it; a new
+  connection waits in the system's queue. Each listener has its own
+  places, so connections to the tenant listener take none from an
+  operator listener. Keep the number below the process's limit on open
+  files. A listener that fills logs one warning, at most one a minute,
+  with its own address and the limit, and each time it fills is counted
+  in the admin audit log under the new action `listener_full`, with the
+  listener's configuration key as the target; a reader of the audit log
+  that knows a fixed list of actions must add `listener_full`.
+- A connection that waits for its next request is closed after
+  `limits.timeouts.idle` seconds, 120 unless the configuration says
+  another number from 1 to 3600. Before, an HTTP/2 connection that had
+  sent one request was kept for as long as the other side kept it, with
+  its file descriptor. The limit applies to an HTTP/2 connection with no
+  stream open and to an HTTP/1.1 connection between requests. An HTTP/2
+  connection is sent GOAWAY with `NO_ERROR`, a request that arrives at
+  that moment is still answered, and the connection is closed five seconds
+  later if the client has not ended it. No limit runs while a request is
+  being answered. A client finds the connection closed and opens another,
+  as HTTP clients do without being told.
+- For users of the `vcon-server` library: `api::ConnectionLimits` has
+  three new members, `max`, `idle` and `goodbye`; `api::serve_observed`
+  is `api::serve_within` with a function called each time the listener
+  fills; and `api::Accept` has a new method with a default, `local`, the
+  listener's address for the log.
 - The server no longer stops when the system cannot hand it a connection.
   Before, one failed accept, such as the one a process out of file
   descriptors gets, ended `serve` with `serving failed`. Now the listener
@@ -162,15 +189,12 @@ All notable changes to this project are recorded here. The format follows
   as the other side kept it, with its file descriptor. A connection is
   closed when its TLS handshake is not done 10 seconds after it was taken,
   when no request head has arrived 30 seconds after the handshake, and when
-  an HTTP/1.1 request head on it takes more than 30 seconds, which
-  includes the wait for the next request on a connection kept open. A
-  client that keeps an HTTP/1.1 connection idle for more than 30 seconds
-  finds it closed and opens another, as HTTP clients do without being
-  told. The three limits are new configuration keys,
+  an HTTP/1.1 request head on it takes more than 30 seconds from its first
+  bytes. The three limits are new configuration keys,
   `limits.timeouts.handshake`, `limits.timeouts.first_head` and
   `limits.timeouts.head`, each from 1 to 3600 seconds, with those
-  defaults; a deployment whose clients keep idle HTTP/1.1 connections
-  longer raises `limits.timeouts.head`. For users of the `vcon-server`
+  defaults. The wait for the next request on a connection kept open is
+  under its own key, `limits.timeouts.idle`. For users of the `vcon-server`
   library: `config::Config` has a new member, `connection`, and
   `api::serve` takes any `api::Accept`, which `tokio::net::TcpListener`
   implements.

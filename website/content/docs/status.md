@@ -137,6 +137,16 @@ release holds yet. Release 0.4.2 does not have these:
   Play is recorded as `reveal_audio` or `legal_reveal_audio`. Release 0.4.2
   has no Play button and no such page. See
   [play a recording](@/docs/console.md#play-a-recording).
+- **Connection limits.** A listener holds at most `limits.connections`
+  connections at once, and closes a connection that stalls in its TLS
+  handshake or in a request head, or that waits longer than
+  `limits.timeouts.idle` for its next request; a listener that fills is
+  logged and counted in the admin audit log as `listener_full`. Release
+  0.4.2 has none of the five keys (`limits.connections` and
+  `limits.timeouts.handshake`, `first_head`, `head` and `idle`) and refuses
+  a configuration that has one: it takes every connection it is offered
+  and keeps each for as long as the client does. See
+  [connection limits](@/docs/configuration.md#connection-limits).
 
 ## Being built
 

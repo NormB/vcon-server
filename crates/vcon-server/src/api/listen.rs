@@ -3,32 +3,55 @@
 
 use std::future::Future;
 use std::io;
+use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use axum::Router;
+use axum::body::{Body, Bytes, HttpBody};
 use axum::extract::Request;
+use axum::http::Version;
 use axum::middleware::{self, Next};
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
 use rustls::ServerConfig;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Notify;
+use tokio::sync::Semaphore;
+use tokio::time::Instant;
 use tokio_rustls::TlsAcceptor;
+
+mod held;
+
+use held::{End, Held, InFlight, Sparse};
 
 /// Where connections come from: a bound socket, or in a test one that
 /// fails first.
 pub trait Accept {
     /// The next connection, or why none could be taken.
     fn accept(&self) -> impl Future<Output = io::Result<TcpStream>> + Send;
+
+    /// The address the connections come to, for the log, when it is known.
+    fn local(&self) -> Option<SocketAddr> {
+        None
+    }
 }
 
 impl Accept for TcpListener {
     async fn accept(&self) -> io::Result<TcpStream> {
         TcpListener::accept(self).await.map(|(tcp, _)| tcp)
     }
+
+    fn local(&self) -> Option<SocketAddr> {
+        self.local_addr().ok()
+    }
 }
+
+/// The least time between two log lines that say a listener is full.
+const FULL_LOG_EVERY: Duration = Duration::from_secs(60);
 
 /// How long a connection may take over each step before it is closed, and
 /// how long the listener waits after it could take no connection.
@@ -39,12 +62,20 @@ pub struct ConnectionLimits {
     /// The head of the connection's first request, counted from the end
     /// of the handshake, on HTTP/1.1 and HTTP/2.
     pub first_head: Duration,
-    /// The head of each HTTP/1.1 request, which for a request after the
-    /// first includes the wait for it on a connection kept open.
+    /// The head of each HTTP/1.1 request, from its first bytes to its end.
     pub head: Duration,
+    /// The wait for the next request on a connection that has had one: on
+    /// HTTP/1.1 between requests, on HTTP/2 while no stream is open. The
+    /// connection is then told to close, with GOAWAY on HTTP/2.
+    pub idle: Duration,
+    /// How long a connection told to close has to end before it is closed.
+    pub goodbye: Duration,
     /// The wait after the system refused to hand over a connection, such
     /// as when the process is out of file descriptors.
     pub accept_pause: Duration,
+    /// The most connections the listener holds at once. At that number it
+    /// takes no more until one ends; the system keeps those that wait.
+    pub max: usize,
 }
 
 impl Default for ConnectionLimits {
@@ -53,7 +84,10 @@ impl Default for ConnectionLimits {
             handshake: Duration::from_secs(10),
             first_head: Duration::from_secs(30),
             head: Duration::from_secs(30),
+            idle: Duration::from_secs(120),
+            goodbye: Duration::from_secs(5),
             accept_pause: Duration::from_secs(1),
+            max: 512,
         }
     }
 }
@@ -95,8 +129,10 @@ pub async fn serve(
 /// listener goes on, after `limits.accept_pause` when the failure is the
 /// system's ([`after_failure`]). A connection is closed when its
 /// handshake is not done within `limits.handshake`, when no request head
-/// has arrived within `limits.first_head` of the handshake, and when an
-/// HTTP/1.1 request head takes longer than `limits.head`.
+/// has arrived within `limits.first_head` of the handshake, when an
+/// HTTP/1.1 request head takes longer than `limits.head` from its first
+/// bytes, and when it has waited `limits.idle` for its next request. The
+/// listener holds at most `limits.max` connections at once.
 pub async fn serve_within(
     listener: impl Accept,
     tls: Arc<ServerConfig>,
@@ -104,9 +140,55 @@ pub async fn serve_within(
     shutdown: impl Future<Output = ()>,
     limits: ConnectionLimits,
 ) -> io::Result<()> {
+    serve_observed(listener, tls, app, shutdown, limits, || {}).await
+}
+
+/// [`serve_within`], calling `full` each time the listener finds every
+/// one of its places held: once for each time it fills, however long it
+/// stays full and however many connections wait. The listener also logs
+/// a warning then, at most once a minute.
+pub async fn serve_observed(
+    listener: impl Accept,
+    tls: Arc<ServerConfig>,
+    app: Router,
+    shutdown: impl Future<Output = ()>,
+    limits: ConnectionLimits,
+    full: impl Fn(),
+) -> io::Result<()> {
     let acceptor = TlsAcceptor::from(tls);
     let mut shutdown = std::pin::pin!(shutdown);
+    // One place for each connection held. The listener takes a place
+    // before it takes a connection, so at `limits.max` it takes none: the
+    // system keeps those that wait, as many as its own queue holds.
+    let places = Arc::new(Semaphore::new(limits.max));
+    let mut said = Sparse::default();
     loop {
+        let place = if let Ok(place) = places.clone().try_acquire_owned() {
+            place
+        } else {
+            full();
+            if said.due(Instant::now(), FULL_LOG_EVERY) {
+                // The listener's own address, and no caller's: none of
+                // those that wait was taken.
+                let listener = listener
+                    .local()
+                    .map_or_else(String::new, |addr| addr.to_string());
+                tracing::warn!(
+                    %listener,
+                    connections = limits.max,
+                    "the listener is full: it holds limits.connections connections and takes no more until one ends"
+                );
+            }
+            let place = tokio::select! {
+                place = places.clone().acquire_owned() => place,
+                () = &mut shutdown => return Ok(()),
+            };
+            // An error is the places closed, which nothing here does.
+            let Ok(place) = place else {
+                return Ok(());
+            };
+            place
+        };
         let accepted = tokio::select! {
             accepted = listener.accept() => accepted,
             () = &mut shutdown => return Ok(()),
@@ -125,7 +207,12 @@ pub async fn serve_within(
                 continue;
             }
         };
-        tokio::spawn(connection(tcp, acceptor.clone(), app.clone(), limits));
+        let (acceptor, app) = (acceptor.clone(), app.clone());
+        tokio::spawn(async move {
+            connection(tcp, acceptor, app, limits).await;
+            // The connection has ended: its place is free.
+            drop(place);
+        });
     }
 }
 
@@ -135,31 +222,138 @@ async fn connection(tcp: TcpStream, acceptor: TlsAcceptor, app: Router, limits: 
     let Ok(Ok(stream)) = tokio::time::timeout(limits.handshake, acceptor.accept(tcp)).await else {
         return;
     };
-    // Told when the connection's first request head has arrived.
-    let first = Arc::new(Notify::new());
-    let seen = first.clone();
+    // What the connection is doing: told of the bytes that arrive, of
+    // each request and of the end of each answer.
+    let held = Held::new(stream.get_ref().1.alpn_protocol() == Some(b"h2"));
+    let seen = held.clone();
     let app = Router::new()
         .fallback_service(app)
         .layer(middleware::from_fn(move |request: Request, next: Next| {
-            seen.notify_one();
-            next.run(request)
+            let request_in_flight = seen.begin(request.version() == Version::HTTP_2);
+            async move {
+                let answer = next.run(request).await;
+                answer.map(|body| {
+                    Body::new(Answering {
+                        body,
+                        _request: request_in_flight,
+                    })
+                })
+            }
         }));
     let mut builder = auto::Builder::new(TokioExecutor::new());
+    // The limits on a request head are kept here, by `held`: hyper's own
+    // limit on a head also counts the wait for the head to begin.
     builder
         .http1()
         .timer(TokioTimer::new())
-        .header_read_timeout(limits.head);
+        .header_read_timeout(None);
+    let stream = Watched {
+        stream,
+        held: held.clone(),
+    };
     let served = builder.serve_connection(TokioIo::new(stream), TowerToHyperService::new(app));
     let mut served = std::pin::pin!(served);
-    tokio::select! {
-        _ = &mut served => return,
-        arrived = tokio::time::timeout(limits.first_head, first.notified()) => {
-            if arrived.is_err() {
-                return;
+    loop {
+        let limit = held.due(&limits);
+        let reached = async {
+            match limit {
+                Some((at, _)) => tokio::time::sleep_until(at).await,
+                None => std::future::pending().await,
             }
+        };
+        tokio::select! {
+            _ = &mut served => return,
+            () = held.changed() => {}
+            // What the connection is doing may have changed while the
+            // limit ran out: it is read again.
+            () = reached => match held.reached(&limits) {
+                Some(End::Close) => return,
+                Some(End::Goodbye) => {
+                    served.as_mut().graceful_shutdown();
+                    held.tell();
+                }
+                None => {}
+            },
         }
     }
-    let _ = served.await;
+}
+
+/// A connection's stream, which tells [`Held`] when bytes arrive on it.
+struct Watched<S> {
+    stream: S,
+    held: Arc<Held>,
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for Watched<S> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let before = buf.filled().len();
+        let read = Pin::new(&mut self.stream).poll_read(cx, buf);
+        if buf.filled().len() > before {
+            self.held.bytes();
+        }
+        read
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for Watched<S> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.stream).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.stream).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.stream).poll_shutdown(cx)
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.stream).poll_write_vectored(cx, bufs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.stream.is_write_vectored()
+    }
+}
+
+/// The body of an answer. The request it answers is in flight until the
+/// body has been sent whole or is dropped.
+struct Answering {
+    body: Body,
+    _request: InFlight,
+}
+
+impl HttpBody for Answering {
+    type Data = Bytes;
+    type Error = axum::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Bytes>, axum::Error>>> {
+        Pin::new(&mut self.body).poll_frame(cx)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.body.is_end_stream()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.body.size_hint()
+    }
 }
 
 #[cfg(test)]
@@ -167,6 +361,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::net::SocketAddr;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Instant;
 
     use axum::routing::get;
@@ -182,6 +377,8 @@ mod tests {
     struct Failing {
         socket: TcpListener,
         failures: Mutex<VecDeque<io::Error>>,
+        /// How many connections it has handed over.
+        taken: Arc<AtomicUsize>,
     }
 
     impl Accept for Failing {
@@ -189,7 +386,11 @@ mod tests {
             let failure = self.failures.lock().expect("the failures").pop_front();
             match failure {
                 Some(failure) => Err(failure),
-                None => Accept::accept(&self.socket).await,
+                None => {
+                    let tcp = Accept::accept(&self.socket).await?;
+                    self.taken.fetch_add(1, Ordering::SeqCst);
+                    Ok(tcp)
+                }
             }
         }
     }
@@ -199,7 +400,10 @@ mod tests {
         handshake: Duration::from_secs(3600),
         first_head: Duration::from_secs(3600),
         head: Duration::from_secs(3600),
+        idle: Duration::from_secs(3600),
+        goodbye: Duration::from_secs(3600),
         accept_pause: Duration::from_secs(3600),
+        max: 10_000,
     };
 
     /// The longest a test waits for the server to do what it should.
@@ -213,9 +417,36 @@ mod tests {
         pem: String,
         stop: Option<tokio::sync::oneshot::Sender<()>>,
         server: tokio::task::JoinHandle<io::Result<()>>,
+        /// How many connections the listener has taken.
+        taken: Arc<AtomicUsize>,
+        /// How many times the listener found every place held.
+        full: Arc<AtomicUsize>,
     }
 
     impl Running {
+        fn taken(&self) -> usize {
+            self.taken.load(Ordering::SeqCst)
+        }
+
+        fn full(&self) -> usize {
+            self.full.load(Ordering::SeqCst)
+        }
+
+        /// A client that speaks HTTP/1.1 only.
+        fn client_http1(&self) -> reqwest::Client {
+            reqwest::Client::builder()
+                .http1_only()
+                .tls_certs_only([reqwest::Certificate::from_pem(self.pem.as_bytes()).expect("pem")])
+                .resolve("localhost", self.addr)
+                .no_proxy()
+                .build()
+                .expect("a client")
+        }
+
+        fn url(&self, path: &str) -> String {
+            format!("https://localhost:{}{path}", self.addr.port())
+        }
+
         /// Stops the server and gives what `serve_within` returned.
         async fn stopped(mut self) -> io::Result<()> {
             self.stop.take().expect("not yet stopped").send(()).ok();
@@ -296,9 +527,12 @@ mod tests {
         let tls = crate::api::tls_config(&cert, &key).expect("loads");
         let socket = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = socket.local_addr().expect("addr");
+        let taken = Arc::new(AtomicUsize::new(0));
+        let full = Arc::new(AtomicUsize::new(0));
         let listener = Failing {
             socket,
             failures: Mutex::new(failures.into()),
+            taken: taken.clone(),
         };
         let app = Router::new()
             .route("/ping", get(|| async { "pong" }))
@@ -310,7 +544,8 @@ mod tests {
                 }),
             );
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-        let server = tokio::spawn(serve_within(
+        let found_full = full.clone();
+        let server = tokio::spawn(serve_observed(
             listener,
             tls,
             app,
@@ -318,12 +553,17 @@ mod tests {
                 stopped.await.ok();
             },
             limits,
+            move || {
+                found_full.fetch_add(1, Ordering::SeqCst);
+            },
         ));
         Running {
             addr,
             pem,
             stop: Some(stop),
             server,
+            taken,
+            full,
         }
     }
 
@@ -721,9 +961,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_connection_idle_after_its_answer_is_closed_at_the_head_limit() {
+    async fn a_connection_idle_after_its_answer_is_closed_at_the_idle_limit() {
         let limits = ConnectionLimits {
-            head: SHORT,
+            idle: SHORT,
             ..NEVER
         };
         let s = running(limits, vec![]).await;
@@ -847,6 +1087,880 @@ mod tests {
         s.stopped().await.expect("serving ended without an error");
     }
 
+    // The most connections at once.
+
+    /// Whether a new connection gets through its handshake within `wait`.
+    async fn taken_within(s: &Running, wait: Duration) -> Option<TlsStream<TcpStream>> {
+        tokio::time::timeout(wait, s.tls(b"http/1.1")).await.ok()
+    }
+
+    #[tokio::test]
+    async fn a_connection_past_the_most_at_once_waits_until_one_ends() {
+        let limits = ConnectionLimits { max: 2, ..NEVER };
+        let s = running(limits, vec![]).await;
+        let first = s.tls(b"http/1.1").await;
+        let _second = s.tls(b"http/1.1").await;
+        assert!(
+            taken_within(&s, SHORT * 2).await.is_none(),
+            "a third is not taken while two are held"
+        );
+        drop(first);
+        assert!(
+            taken_within(&s, PATIENCE).await.is_some(),
+            "taken once one of the two ended"
+        );
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    #[tokio::test]
+    async fn connections_up_to_the_most_at_once_are_all_taken() {
+        let limits = ConnectionLimits { max: 3, ..NEVER };
+        let s = running(limits, vec![]).await;
+        let mut held = Vec::new();
+        for n in 0..3 {
+            held.push(
+                taken_within(&s, PATIENCE)
+                    .await
+                    .unwrap_or_else(|| panic!("connection {n} of 3 is taken")),
+            );
+        }
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    #[tokio::test]
+    async fn one_at_a_time_serves_one_request_after_another() {
+        let limits = ConnectionLimits { max: 1, ..NEVER };
+        let s = running(limits, vec![]).await;
+        for n in 0..5 {
+            // A new client each time: a new connection each time.
+            assert_eq!(s.ping().await.0, 200, "request {n}");
+        }
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    #[tokio::test]
+    async fn a_connection_closed_at_the_handshake_limit_gives_its_place_back() {
+        let limits = ConnectionLimits {
+            max: 1,
+            handshake: SHORT,
+            ..NEVER
+        };
+        let s = running(limits, vec![]).await;
+        let _silent = s.tcp().await;
+        // The silent connection holds the one place until its limit.
+        assert_eq!(s.ping().await.0, 200, "served after the limit closed it");
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    #[tokio::test]
+    async fn a_silent_connection_holds_a_place_until_its_limit() {
+        let limits = ConnectionLimits { max: 1, ..NEVER };
+        let s = running(limits, vec![]).await;
+        let silent = s.tcp().await;
+        // Time for the listener to take the silent connection.
+        tokio::time::sleep(SHORT).await;
+        assert!(
+            taken_within(&s, SHORT * 2).await.is_none(),
+            "the one place is held"
+        );
+        drop(silent);
+        assert!(
+            taken_within(&s, PATIENCE).await.is_some(),
+            "taken once the silent one went away"
+        );
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    #[tokio::test]
+    async fn a_failed_accept_takes_no_place() {
+        let limits = ConnectionLimits {
+            max: 1,
+            accept_pause: Duration::from_millis(10),
+            ..NEVER
+        };
+        let failures = vec![
+            out_of_descriptors(),
+            io::Error::from(io::ErrorKind::ConnectionAborted),
+            out_of_descriptors(),
+        ];
+        let s = running(limits, failures).await;
+        assert_eq!(
+            s.ping().await.0,
+            200,
+            "the one place is free after three failures"
+        );
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    #[tokio::test]
+    async fn a_stop_while_every_place_is_held_ends_serving() {
+        let limits = ConnectionLimits { max: 1, ..NEVER };
+        let s = running(limits, vec![]).await;
+        let _held = s.tls(b"http/1.1").await;
+        let _waiting = s.tcp().await;
+        tokio::time::sleep(SHORT).await;
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    #[tokio::test]
+    async fn a_connection_that_waited_for_a_place_is_served_whole() {
+        let limits = ConnectionLimits { max: 1, ..NEVER };
+        let s = running(limits, vec![]).await;
+        let held = s.tls(b"http/1.1").await;
+        let waiting = tokio::spawn({
+            let client = s.client();
+            let url = format!("https://localhost:{}/ping", s.addr.port());
+            async move { client.get(url).send().await }
+        });
+        tokio::time::sleep(SHORT).await;
+        assert!(!waiting.is_finished(), "it waits while the place is held");
+        drop(held);
+        let answer = tokio::time::timeout(PATIENCE, waiting)
+            .await
+            .expect("answered once the place was free")
+            .expect("joins")
+            .expect("an answer");
+        assert_eq!(answer.text().await.expect("a body"), "pong", "the answer");
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    // A connection that waits between requests.
+
+    /// An HTTP/2 client that writes its own frames, so a test decides what
+    /// it answers and when.
+    struct H2 {
+        stream: TlsStream<TcpStream>,
+        /// The stream the next request opens.
+        next: u32,
+    }
+
+    /// One HTTP/2 frame.
+    #[derive(Debug, PartialEq, Eq)]
+    struct Frame {
+        kind: u8,
+        flags: u8,
+        stream: u32,
+        payload: Vec<u8>,
+    }
+
+    const DATA: u8 = 0;
+    const HEADERS: u8 = 1;
+    const SETTINGS: u8 = 4;
+    const PING: u8 = 6;
+    const GOAWAY: u8 = 7;
+    const ACK: u8 = 1;
+
+    impl H2 {
+        /// A connection that has sent the client preface and its settings.
+        async fn open(s: &Running) -> Self {
+            Self::open_offering(s, b"h2").await
+        }
+
+        /// [`H2::open`], offering `alpn` in the handshake, or no protocol
+        /// when it is empty: HTTP/2 by its preface alone.
+        async fn open_offering(s: &Running, alpn: &[u8]) -> Self {
+            let mut stream = s.tls(alpn).await;
+            stream
+                .write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+                .await
+                .expect("the preface");
+            let mut h2 = Self { stream, next: 1 };
+            h2.send(SETTINGS, 0, 0, &[]).await;
+            h2
+        }
+
+        async fn send(&mut self, kind: u8, flags: u8, stream: u32, payload: &[u8]) {
+            let length = u32::try_from(payload.len()).expect("a short frame");
+            let mut frame = length.to_be_bytes()[1..].to_vec();
+            frame.extend([kind, flags]);
+            frame.extend(stream.to_be_bytes());
+            frame.extend(payload);
+            self.stream.write_all(&frame).await.expect("a frame sent");
+            self.stream.flush().await.expect("flushed");
+        }
+
+        /// Sends `GET path` with no body, and gives the stream it opened.
+        async fn get(&mut self, path: &str) -> u32 {
+            // HPACK: `:method: GET` and `:scheme: https` by index, then
+            // `:path` and `:authority` as literals.
+            let mut block = vec![0x82, 0x87, 0x44];
+            block.push(u8::try_from(path.len()).expect("a short path"));
+            block.extend(path.as_bytes());
+            block.extend([0x41, 9]);
+            block.extend(b"localhost");
+            let stream = self.next;
+            self.next += 2;
+            // END_STREAM and END_HEADERS.
+            self.send(HEADERS, 0x5, stream, &block).await;
+            stream
+        }
+
+        /// The next frame, or None once the server closed the connection.
+        /// A polite client acknowledges settings and pings.
+        async fn frame(&mut self, polite: bool) -> Option<Frame> {
+            let read = tokio::time::timeout(PATIENCE, async {
+                let mut head = [0; 9];
+                self.stream.read_exact(&mut head).await.ok()?;
+                let length = u32::from_be_bytes([0, head[0], head[1], head[2]]);
+                let mut payload = vec![0; length as usize];
+                self.stream.read_exact(&mut payload).await.ok()?;
+                Some(Frame {
+                    kind: head[3],
+                    flags: head[4],
+                    stream: u32::from_be_bytes([head[5], head[6], head[7], head[8]]) & 0x7fff_ffff,
+                    payload,
+                })
+            })
+            .await
+            .expect("a frame or the connection's end in time");
+            if let Some(frame) = &read
+                && polite
+                && frame.flags & ACK == 0
+            {
+                if frame.kind == SETTINGS {
+                    self.send(SETTINGS, ACK, 0, &[]).await;
+                } else if frame.kind == PING {
+                    let payload = frame.payload.clone();
+                    // The server may have closed since: the answer is lost.
+                    let mut answer = vec![0, 0, 8, PING, ACK, 0, 0, 0, 0];
+                    answer.extend(payload);
+                    let _ = self.stream.write_all(&answer).await;
+                    let _ = self.stream.flush().await;
+                }
+            }
+            read
+        }
+
+        /// The body of the answer on `stream`, read to its end.
+        async fn body(&mut self, stream: u32, polite: bool) -> String {
+            let mut body = Vec::new();
+            loop {
+                let frame = self.frame(polite).await.expect("open until answered");
+                if frame.stream != stream {
+                    continue;
+                }
+                if frame.kind == DATA {
+                    body.extend(&frame.payload);
+                }
+                // END_STREAM.
+                if matches!(frame.kind, DATA | HEADERS) && frame.flags & 0x1 != 0 {
+                    return String::from_utf8(body).expect("text");
+                }
+            }
+        }
+
+        /// Every frame from now until the server closes the connection,
+        /// and how long that took.
+        async fn rest(&mut self, polite: bool) -> (Vec<Frame>, Duration) {
+            let started = Instant::now();
+            let mut frames = Vec::new();
+            while let Some(frame) = self.frame(polite).await {
+                frames.push(frame);
+            }
+            (frames, started.elapsed())
+        }
+    }
+
+    /// The error codes of the GOAWAY frames among `frames`.
+    fn goaways(frames: &[Frame]) -> Vec<u32> {
+        frames
+            .iter()
+            .filter(|frame| frame.kind == GOAWAY)
+            .map(|frame| u32::from_be_bytes(frame.payload[4..8].try_into().expect("four bytes")))
+            .collect()
+    }
+
+    /// An HTTP/1.1 connection that has had `GET /ping` answered.
+    async fn answered_http1(s: &Running) -> TlsStream<TcpStream> {
+        let mut kept = s.tls(b"http/1.1").await;
+        kept.write_all(b"GET /ping HTTP/1.1\r\nhost: localhost\r\n\r\n")
+            .await
+            .expect("sent");
+        let mut answer = [0; 1024];
+        let mut read = 0;
+        while !answer[..read].ends_with(b"pong") {
+            read += tokio::time::timeout(PATIENCE, kept.read(&mut answer[read..]))
+                .await
+                .expect("answered")
+                .expect("read");
+        }
+        assert!(answer.starts_with(b"HTTP/1.1 200 OK"), "answered first");
+        kept
+    }
+
+    #[tokio::test]
+    async fn an_idle_http2_connection_is_sent_goaway_and_closed_at_the_idle_limit() {
+        let limits = ConnectionLimits {
+            idle: SHORT * 2,
+            ..NEVER
+        };
+        let s = running(limits, vec![]).await;
+        let mut h2 = H2::open(&s).await;
+        let stream = h2.get("/ping").await;
+        assert_eq!(h2.body(stream, true).await, "pong", "answered first");
+        let (frames, after) = h2.rest(true).await;
+        assert!(
+            after >= SHORT * 2 - Duration::from_millis(50),
+            "not before the limit: {after:?}"
+        );
+        let codes = goaways(&frames);
+        assert!(!codes.is_empty(), "told with GOAWAY: {frames:?}");
+        assert!(
+            codes.iter().all(|code| *code == 0),
+            "NO_ERROR, an orderly close: {codes:?}"
+        );
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    #[tokio::test]
+    async fn an_http2_connection_is_kept_until_the_idle_limit() {
+        let limits = ConnectionLimits {
+            idle: SHORT * 8,
+            ..NEVER
+        };
+        let s = running(limits, vec![]).await;
+        let mut h2 = H2::open(&s).await;
+        let stream = h2.get("/ping").await;
+        assert_eq!(h2.body(stream, true).await, "pong", "answered first");
+        assert!(
+            open_after(&mut h2.stream, SHORT * 2).await,
+            "kept: a quarter of the limit has passed"
+        );
+        // And it still serves.
+        let stream = h2.get("/ping").await;
+        assert_eq!(h2.body(stream, true).await, "pong", "served again");
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    #[tokio::test]
+    async fn an_http2_connection_with_a_stream_open_is_not_closed_at_the_idle_limit() {
+        let limits = ConnectionLimits {
+            idle: SHORT,
+            ..NEVER
+        };
+        let s = running(limits, vec![]).await;
+        let mut h2 = H2::open(&s).await;
+        let first = h2.get("/ping").await;
+        assert_eq!(h2.body(first, true).await, "pong", "answered first");
+        // The answer takes three times the idle limit.
+        let slow = h2.get("/slow").await;
+        let started = Instant::now();
+        assert_eq!(
+            h2.body(slow, true).await,
+            "done",
+            "the stream in flight was answered whole"
+        );
+        assert!(
+            started.elapsed() >= SHORT * 2,
+            "the answer outlasted the idle limit: {:?}",
+            started.elapsed()
+        );
+        // Idle from the end of that answer, it is then closed.
+        let (frames, after) = h2.rest(true).await;
+        assert!(
+            after >= SHORT - Duration::from_millis(50),
+            "idle is counted from the end of the answer: {after:?}"
+        );
+        assert!(!goaways(&frames).is_empty(), "then told to close");
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    #[tokio::test]
+    async fn an_idle_http2_connection_gives_its_place_back() {
+        let limits = ConnectionLimits {
+            max: 1,
+            idle: SHORT,
+            goodbye: SHORT,
+            ..NEVER
+        };
+        let s = running(limits, vec![]).await;
+        let mut h2 = H2::open(&s).await;
+        let stream = h2.get("/ping").await;
+        assert_eq!(h2.body(stream, true).await, "pong", "answered first");
+        // The client keeps its side open and says nothing more.
+        assert_eq!(
+            s.ping().await.0,
+            200,
+            "the one place was free once the idle limit closed it"
+        );
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    #[tokio::test]
+    async fn an_http2_client_that_reconnects_after_goaway_is_served() {
+        let limits = ConnectionLimits {
+            idle: SHORT,
+            ..NEVER
+        };
+        let s = running(limits, vec![]).await;
+        let client = s.client();
+        let first = client.get(s.url("/ping")).send().await.expect("an answer");
+        assert_eq!(first.version(), reqwest::Version::HTTP_2, "over h2");
+        assert_eq!(
+            first.text().await.expect("a body"),
+            "pong",
+            "the first answer"
+        );
+        tokio::time::sleep(SHORT * 4).await;
+        let second = tokio::time::timeout(PATIENCE, client.get(s.url("/ping")).send())
+            .await
+            .expect("in time")
+            .expect("an answer on a new connection");
+        assert_eq!(
+            second.text().await.expect("a body"),
+            "pong",
+            "the second answer"
+        );
+        assert_eq!(s.taken(), 2, "the client opened a second connection");
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    #[tokio::test]
+    async fn requests_inside_the_idle_limit_share_one_connection() {
+        for http1 in [false, true] {
+            let limits = ConnectionLimits {
+                idle: Duration::from_secs(30),
+                ..NEVER
+            };
+            let s = running(limits, vec![]).await;
+            let client = if http1 { s.client_http1() } else { s.client() };
+            for n in 0..3 {
+                let answer = client.get(s.url("/ping")).send().await.expect("an answer");
+                assert_eq!(answer.text().await.expect("a body"), "pong", "{n}");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            assert_eq!(s.taken(), 1, "http1 {http1}: the connection was kept");
+            s.stopped().await.expect("serving ended without an error");
+        }
+    }
+
+    #[tokio::test]
+    async fn pings_do_not_keep_an_idle_http2_connection_open() {
+        // The client below reads nothing, so it never answers the ping an
+        // orderly close waits for: the goodbye wait ends the connection.
+        let limits = ConnectionLimits {
+            idle: SHORT * 2,
+            goodbye: SHORT,
+            ..NEVER
+        };
+        let s = running(limits, vec![]).await;
+        let mut h2 = H2::open(&s).await;
+        let stream = h2.get("/ping").await;
+        assert_eq!(h2.body(stream, true).await, "pong", "answered first");
+        let started = Instant::now();
+        let closed = tokio::time::timeout(PATIENCE, async {
+            loop {
+                // A ping each 50 ms: bytes arrive, and no stream is open.
+                let ping = [0, 0, 8, PING, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8];
+                if h2.stream.write_all(&ping).await.is_err() || h2.stream.flush().await.is_err() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        assert!(closed.is_ok(), "closed although pings kept arriving");
+        assert!(
+            started.elapsed() >= SHORT * 2 - Duration::from_millis(50),
+            "not before the limit: {:?}",
+            started.elapsed()
+        );
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    #[tokio::test]
+    async fn an_http2_connection_that_agreed_no_protocol_is_idle_like_any_other() {
+        // No protocol in the handshake: the server learns that this is
+        // HTTP/2 from the preface. Frames that arrive between requests
+        // are then no request head, and the idle limit applies.
+        let limits = ConnectionLimits {
+            idle: SHORT * 2,
+            goodbye: SHORT,
+            ..NEVER
+        };
+        let s = running(limits, vec![]).await;
+        let mut h2 = H2::open_offering(&s, b"").await;
+        let stream = h2.get("/ping").await;
+        assert_eq!(h2.body(stream, true).await, "pong", "served over HTTP/2");
+        h2.send(PING, 0, 0, &[1, 2, 3, 4, 5, 6, 7, 8]).await;
+        let (frames, after) = h2.rest(true).await;
+        assert!(
+            after >= SHORT * 2 - Duration::from_millis(50),
+            "not before the idle limit: {after:?}"
+        );
+        assert!(!goaways(&frames).is_empty(), "told to close: {frames:?}");
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    #[tokio::test]
+    async fn an_http2_peer_that_does_not_answer_the_goodbye_is_closed_after_the_wait() {
+        let limits = ConnectionLimits {
+            max: 1,
+            idle: SHORT,
+            goodbye: SHORT,
+            ..NEVER
+        };
+        let s = running(limits, vec![]).await;
+        let mut h2 = H2::open(&s).await;
+        let stream = h2.get("/ping").await;
+        assert_eq!(h2.body(stream, false).await, "pong", "answered first");
+        // It reads what it is sent and answers nothing, not even the ping
+        // an orderly close waits for.
+        let (frames, after) = h2.rest(false).await;
+        assert!(!goaways(&frames).is_empty(), "told to close: {frames:?}");
+        assert!(
+            after >= SHORT - Duration::from_millis(50),
+            "not before the idle limit: {after:?}"
+        );
+        assert_eq!(s.ping().await.0, 200, "and its place is free");
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    #[tokio::test]
+    async fn a_connection_that_has_sent_no_request_is_not_under_the_idle_limit() {
+        for alpn in [&b"http/1.1"[..], &b"h2"[..]] {
+            let limits = ConnectionLimits {
+                idle: SHORT,
+                ..NEVER
+            };
+            let s = running(limits, vec![]).await;
+            let mut silent = s.tls(alpn).await;
+            if alpn == b"h2" {
+                silent
+                    .write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\0\0\0\x04\0\0\0\0\0")
+                    .await
+                    .expect("the preface and settings");
+            }
+            assert!(
+                open_after(&mut silent, SHORT * 3).await,
+                "kept: the limit on the first head is an hour"
+            );
+            s.stopped().await.expect("serving ended without an error");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_idle_http1_connection_is_kept_until_the_idle_limit() {
+        let limits = ConnectionLimits {
+            idle: SHORT * 8,
+            ..NEVER
+        };
+        let s = running(limits, vec![]).await;
+        let mut kept = answered_http1(&s).await;
+        assert!(
+            open_after(&mut kept, SHORT * 2).await,
+            "kept: a quarter of the limit has passed"
+        );
+        kept.write_all(b"GET /ping HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n\r\n")
+            .await
+            .expect("sent");
+        let mut answer = Vec::new();
+        tokio::time::timeout(PATIENCE, kept.read_to_end(&mut answer))
+            .await
+            .expect("answered")
+            .ok();
+        assert!(
+            String::from_utf8_lossy(&answer).starts_with("HTTP/1.1 200 OK"),
+            "and it still serves"
+        );
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    #[tokio::test]
+    async fn an_idle_http1_connection_is_not_closed_before_the_idle_limit() {
+        let limits = ConnectionLimits {
+            idle: SHORT * 2,
+            ..NEVER
+        };
+        let s = running(limits, vec![]).await;
+        let mut kept = answered_http1(&s).await;
+        let after = closed_after(&mut kept).await;
+        assert!(
+            after >= SHORT * 2 - Duration::from_millis(50),
+            "not before the limit: {after:?}"
+        );
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    #[tokio::test]
+    async fn the_head_limit_alone_does_not_close_a_connection_that_waits_between_requests() {
+        let limits = ConnectionLimits {
+            head: SHORT,
+            ..NEVER
+        };
+        let s = running(limits, vec![]).await;
+        let mut kept = answered_http1(&s).await;
+        assert!(
+            open_after(&mut kept, SHORT * 3).await,
+            "kept: no head has begun, and the idle limit is an hour"
+        );
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    #[tokio::test]
+    async fn a_later_head_begun_and_left_is_closed_at_the_head_limit() {
+        let limits = ConnectionLimits {
+            head: SHORT,
+            ..NEVER
+        };
+        let s = running(limits, vec![]).await;
+        let mut kept = answered_http1(&s).await;
+        kept.write_all(b"GET /ping HTTP/1.1\r\nhost: loc")
+            .await
+            .expect("sent");
+        kept.flush().await.expect("flushed");
+        let mut rest = Vec::new();
+        let started = Instant::now();
+        tokio::time::timeout(PATIENCE, kept.read_to_end(&mut rest))
+            .await
+            .expect("closed at the head limit, with the idle limit an hour")
+            .ok();
+        assert!(
+            started.elapsed() >= SHORT - Duration::from_millis(50),
+            "not before the limit: {:?}",
+            started.elapsed()
+        );
+        assert!(
+            !String::from_utf8_lossy(&rest).contains("200 OK"),
+            "an unfinished head is not served"
+        );
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    #[tokio::test]
+    async fn a_later_head_begun_before_the_idle_limit_has_the_head_limit_to_arrive() {
+        let limits = ConnectionLimits {
+            idle: SHORT * 2,
+            head: Duration::from_secs(10),
+            ..NEVER
+        };
+        let s = running(limits, vec![]).await;
+        let mut kept = answered_http1(&s).await;
+        tokio::time::sleep(SHORT).await;
+        kept.write_all(b"GET /ping HTTP/1.1\r\n")
+            .await
+            .expect("sent");
+        kept.flush().await.expect("flushed");
+        // Past the idle limit, inside the head limit.
+        tokio::time::sleep(SHORT * 3).await;
+        kept.write_all(b"host: localhost\r\nconnection: close\r\n\r\n")
+            .await
+            .expect("the head's end is taken");
+        let mut answer = Vec::new();
+        tokio::time::timeout(PATIENCE, kept.read_to_end(&mut answer))
+            .await
+            .expect("answered")
+            .ok();
+        let answer = String::from_utf8_lossy(&answer);
+        assert!(answer.starts_with("HTTP/1.1 200 OK"), "served: {answer}");
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    #[tokio::test]
+    async fn an_idle_http1_connection_gives_its_place_back() {
+        let limits = ConnectionLimits {
+            max: 1,
+            idle: SHORT,
+            ..NEVER
+        };
+        let s = running(limits, vec![]).await;
+        let _kept = answered_http1(&s).await;
+        assert_eq!(
+            s.ping().await.0,
+            200,
+            "the one place was free once the idle limit closed it"
+        );
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    #[tokio::test]
+    async fn an_http1_client_that_reconnects_after_an_idle_close_is_served() {
+        let limits = ConnectionLimits {
+            idle: SHORT,
+            ..NEVER
+        };
+        let s = running(limits, vec![]).await;
+        let client = s.client_http1();
+        let first = client.get(s.url("/ping")).send().await.expect("an answer");
+        assert_eq!(first.version(), reqwest::Version::HTTP_11, "over HTTP/1.1");
+        assert_eq!(
+            first.text().await.expect("a body"),
+            "pong",
+            "the first answer"
+        );
+        tokio::time::sleep(SHORT * 4).await;
+        let second = tokio::time::timeout(PATIENCE, client.get(s.url("/ping")).send())
+            .await
+            .expect("in time")
+            .expect("an answer on a new connection");
+        assert_eq!(
+            second.text().await.expect("a body"),
+            "pong",
+            "the second answer"
+        );
+        assert_eq!(s.taken(), 2, "the client opened a second connection");
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    #[tokio::test]
+    async fn an_answer_that_takes_longer_than_the_idle_limit_is_still_given() {
+        // The limit is on the wait between requests, not on a request's work.
+        for http1 in [false, true] {
+            let limits = ConnectionLimits {
+                idle: SHORT,
+                ..NEVER
+            };
+            let s = running(limits, vec![]).await;
+            let client = if http1 { s.client_http1() } else { s.client() };
+            // One answered request first, so the connection can be idle.
+            let first = client.get(s.url("/ping")).send().await.expect("an answer");
+            assert_eq!(
+                first.text().await.expect("a body"),
+                "pong",
+                "the first answer"
+            );
+            let slow = tokio::time::timeout(PATIENCE, client.get(s.url("/slow")).send())
+                .await
+                .expect("in time")
+                .expect("the connection was kept while the request ran");
+            assert_eq!(slow.text().await.expect("a body"), "done", "http1 {http1}");
+            assert_eq!(s.taken(), 1, "http1 {http1}: on the one connection");
+            s.stopped().await.expect("serving ended without an error");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_idle_limit_of_an_http1_connection_counts_from_the_end_of_its_answer() {
+        let limits = ConnectionLimits {
+            idle: SHORT * 2,
+            ..NEVER
+        };
+        let s = running(limits, vec![]).await;
+        let mut kept = answered_http1(&s).await;
+        // An answer that takes longer than the idle limit.
+        kept.write_all(b"GET /slow HTTP/1.1\r\nhost: localhost\r\n\r\n")
+            .await
+            .expect("sent");
+        let mut answer = [0; 1024];
+        let mut read = 0;
+        while !answer[..read].ends_with(b"done") {
+            read += tokio::time::timeout(PATIENCE, kept.read(&mut answer[read..]))
+                .await
+                .expect("answered")
+                .expect("read");
+        }
+        let after = closed_after(&mut kept).await;
+        assert!(
+            after >= SHORT * 2 - Duration::from_millis(50),
+            "the whole idle limit after the answer: {after:?}"
+        );
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    // The body of an answer.
+
+    /// `body` as the listener sends it, for a request of `held`.
+    fn answering(held: &Arc<Held>, body: Body) -> Answering {
+        Answering {
+            body,
+            _request: held.begin(false),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_answers_body_keeps_its_length() {
+        let held = Held::new(false);
+        let body = answering(&held, Body::from("pong"));
+        assert_eq!(
+            body.size_hint().exact(),
+            Some(4),
+            "the length is known, so the answer is not sent in chunks"
+        );
+        assert!(!body.is_end_stream(), "four bytes are still to come");
+    }
+
+    #[tokio::test]
+    async fn an_answer_with_no_body_is_at_its_end_from_the_start() {
+        let held = Held::new(false);
+        let body = answering(&held, Body::empty());
+        assert!(body.is_end_stream(), "nothing to send");
+        assert_eq!(body.size_hint().exact(), Some(0), "and its length is none");
+    }
+
+    #[tokio::test]
+    async fn an_answers_body_arrives_whole_and_the_request_is_in_flight_until_it_is_dropped() {
+        use http_body_util::BodyExt;
+        let held = Held::new(false);
+        let mut body = answering(&held, Body::from("pong"));
+        assert_eq!(held.due(&NEVER), None, "in flight while the body waits");
+        let frame = body.frame().await.expect("a frame").expect("no error");
+        assert_eq!(frame.into_data().expect("data"), "pong", "the bytes");
+        assert!(body.frame().await.is_none(), "and then its end");
+        assert_eq!(held.due(&NEVER), None, "in flight until it is dropped");
+        drop(body);
+        assert_eq!(
+            held.due(&NEVER).map(|(_, end)| end),
+            Some(End::Goodbye),
+            "idle once the body is gone"
+        );
+    }
+
+    // A listener that is full.
+
+    #[tokio::test]
+    async fn a_listener_below_its_limit_is_never_found_full() {
+        let limits = ConnectionLimits { max: 3, ..NEVER };
+        let s = running(limits, vec![]).await;
+        let _first = s.tls(b"http/1.1").await;
+        let _second = s.tls(b"http/1.1").await;
+        tokio::time::sleep(SHORT).await;
+        assert_eq!(s.full(), 0, "two of three places are held");
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    #[tokio::test]
+    async fn a_listener_at_its_limit_is_found_full_once() {
+        let limits = ConnectionLimits { max: 2, ..NEVER };
+        let s = running(limits, vec![]).await;
+        let _first = s.tls(b"http/1.1").await;
+        let _second = s.tls(b"http/1.1").await;
+        tokio::time::sleep(SHORT).await;
+        assert_eq!(s.full(), 1, "every place is held");
+        // More that wait add nothing: it is the same time of being full.
+        let _waiting = [s.tcp().await, s.tcp().await, s.tcp().await];
+        tokio::time::sleep(SHORT).await;
+        assert_eq!(s.full(), 1, "still the one time");
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    #[tokio::test]
+    async fn a_listener_is_found_full_again_each_time_it_fills() {
+        let limits = ConnectionLimits { max: 1, ..NEVER };
+        let s = running(limits, vec![]).await;
+        for time in 1..=3 {
+            let held = s.tls(b"http/1.1").await;
+            tokio::time::sleep(SHORT).await;
+            assert_eq!(s.full(), time, "full for the {time}. time");
+            drop(held);
+            // Time for the listener to see the place free.
+            tokio::time::sleep(SHORT).await;
+        }
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    #[tokio::test]
+    async fn a_failed_accept_does_not_make_a_listener_full() {
+        let limits = ConnectionLimits {
+            max: 1,
+            accept_pause: Duration::from_millis(10),
+            ..NEVER
+        };
+        let s = running(limits, vec![out_of_descriptors(), out_of_descriptors()]).await;
+        tokio::time::sleep(SHORT).await;
+        assert_eq!(s.full(), 0, "no connection is held");
+        s.stopped().await.expect("serving ended without an error");
+    }
+
     #[test]
     fn the_default_limits_are_ten_seconds_thirty_seconds_and_one_second() {
         assert_eq!(
@@ -855,7 +1969,10 @@ mod tests {
                 handshake: Duration::from_secs(10),
                 first_head: Duration::from_secs(30),
                 head: Duration::from_secs(30),
+                idle: Duration::from_secs(120),
+                goodbye: Duration::from_secs(5),
                 accept_pause: Duration::from_secs(1),
+                max: 512,
             },
             "the limits serve applies"
         );

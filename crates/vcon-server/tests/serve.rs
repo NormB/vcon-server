@@ -459,6 +459,248 @@ fn serve_closes_a_silent_connection_at_the_configured_handshake_limit() {
     );
 }
 
+/// The most connections at once comes from the configuration: with one
+/// place, a silent connection holds it, and a request is answered only
+/// once the handshake limit of two seconds has closed that connection.
+#[tokio::test(flavor = "multi_thread")]
+async fn serve_holds_as_many_connections_at_once_as_the_configuration_says() {
+    let s = setup();
+    let text = std::fs::read_to_string(&s.config)
+        .expect("read")
+        .replace("[limits]\n", "[limits]\nconnections = 1\n")
+        .replace("read = 30\n", "read = 30\nhandshake = 2\n");
+    assert!(text.contains("connections = 1"), "the key was written");
+    assert!(text.contains("handshake = 2"), "the key was written");
+    std::fs::write(&s.config, text).expect("write");
+    let started = start(serve(&s));
+    let _silent = std::net::TcpStream::connect(started.addr).expect("connects");
+    // Time for the listener to take the silent connection.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let begun = Instant::now();
+    let answer = started
+        .client(&s)
+        .get(started.url("/key"))
+        .bearer_auth(&s.token)
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+        .expect("an answer once the place is free");
+    assert_eq!(answer.status(), 200, "served");
+    assert!(
+        begun.elapsed() >= Duration::from_millis(1200),
+        "it waited for the one place: {:?}",
+        begun.elapsed()
+    );
+}
+
+/// `setup`, with `limits` written at the head of the `[limits]` table and
+/// `timeouts` at the head of `[limits.timeouts]`.
+fn setup_with_limits(limits: &str, timeouts: &str) -> Setup {
+    let s = setup();
+    let text = std::fs::read_to_string(&s.config)
+        .expect("read")
+        .replace("[limits]\n", &format!("[limits]\n{limits}"))
+        .replace("read = 30\n", &format!("read = 30\n{timeouts}"));
+    assert!(text.contains(limits), "the [limits] keys were written");
+    assert!(text.contains(timeouts), "the timeouts were written");
+    std::fs::write(&s.config, text).expect("write");
+    s
+}
+
+/// The idle limit comes from the configuration. With one place and an
+/// idle limit of one second, a client that keeps its connection after its
+/// answer holds the place, and a second client is answered once the idle
+/// limit has closed that connection: well inside the 15 seconds it waits,
+/// where the default of 120 seconds would leave it without an answer.
+async fn an_idle_connection_gives_its_place_up(http1: bool) {
+    let s = setup_with_limits("connections = 1\n", "idle = 1\n");
+    let started = start(serve(&s));
+    let client = |http1: bool| {
+        let builder = reqwest::Client::builder()
+            .tls_certs_only([reqwest::Certificate::from_pem(s.pem.as_bytes()).expect("pem")])
+            .resolve("localhost", started.addr)
+            .no_proxy()
+            .timeout(Duration::from_secs(15));
+        if http1 { builder.http1_only() } else { builder }
+            .build()
+            .expect("a client")
+    };
+    let keeps = client(http1);
+    let first = keeps
+        .get(started.url("/key"))
+        .bearer_auth(&s.token)
+        .send()
+        .await
+        .expect("an answer");
+    assert_eq!(first.status(), 200, "the first client is served");
+    let version = first.version();
+    assert_eq!(
+        version == reqwest::Version::HTTP_11,
+        http1,
+        "the protocol asked for: {version:?}"
+    );
+    drop(first.bytes().await);
+    // `keeps` is alive, and its connection with it.
+    let begun = Instant::now();
+    let second = client(http1)
+        .get(started.url("/key"))
+        .bearer_auth(&s.token)
+        .send()
+        .await
+        .expect("an answer once the idle connection was closed");
+    assert_eq!(second.status(), 200, "the second client is served");
+    assert!(
+        begun.elapsed() >= Duration::from_millis(500),
+        "it waited for the place the idle connection held: {:?}",
+        begun.elapsed()
+    );
+    // The client whose connection was closed opens another and is served.
+    let again = keeps
+        .get(started.url("/key"))
+        .bearer_auth(&s.token)
+        .send()
+        .await
+        .expect("an answer on a new connection");
+    assert_eq!(again.status(), 200, "served after the close");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn serve_closes_an_idle_http2_connection_at_the_configured_idle_limit() {
+    an_idle_connection_gives_its_place_up(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn serve_closes_an_idle_http1_connection_at_the_configured_idle_limit() {
+    an_idle_connection_gives_its_place_up(true).await;
+}
+
+/// The `listener_full` records of the admin log, as `audit export` writes
+/// them beside the running server.
+fn listener_full_records(s: &Setup) -> Vec<serde_json::Value> {
+    String::from_utf8(beside(s, &["audit", "export", "--admin"]))
+        .expect("text")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("JSON"))
+        .filter(|record| record["action"] == "listener_full")
+        .collect()
+}
+
+/// [`listener_full_records`], once they say `listener` was full `times`
+/// times or more, or as they are after ten seconds: the server writes a
+/// count off the listener's task, a moment after the listener filled.
+fn listener_full_records_at(s: &Setup, listener: &str, times: u64) -> Vec<serde_json::Value> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let records = listener_full_records(s);
+        if times_full(&records, listener) >= times || Instant::now() >= deadline {
+            return records;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// How many times the records say `listener` was full.
+fn times_full(records: &[serde_json::Value], listener: &str) -> u64 {
+    records
+        .iter()
+        .filter(|record| record["target"] == listener)
+        .map(|record| record["count"].as_u64().expect("a count"))
+        .sum()
+}
+
+/// A full listener can be seen: one warning in the log, however often it
+/// fills inside a minute, and each time counted in the admin log.
+#[tokio::test(flavor = "multi_thread")]
+async fn serve_logs_a_full_listener_once_and_counts_each_time() {
+    let s = setup_with_limits("connections = 1\n", "handshake = 1\n");
+    let mut started = start(serve(&s));
+    assert_eq!(
+        listener_full_records(&s),
+        Vec::<serde_json::Value>::new(),
+        "nothing before a connection"
+    );
+    // One connection fills a listener of one place.
+    let silent = std::net::TcpStream::connect(started.addr).expect("connects");
+    let line = started
+        .line_with("the listener is full", Duration::from_secs(10))
+        .expect("a warning that the listener is full");
+    assert!(
+        line.contains(
+            " WARN vcon_server::api::listen: the listener is full: it holds \
+             limits.connections connections and takes no more until one ends listener="
+        ),
+        "the line the configuration page shows: {line}"
+    );
+    assert!(
+        line.ends_with(" connections=1"),
+        "the limit comes last: {line}"
+    );
+    assert!(line.contains("connections=1"), "the limit: {line}");
+    assert!(
+        line.contains(&format!("listener={}", started.addr)),
+        "the listener's address: {line}"
+    );
+    assert!(
+        !line.contains(&silent.local_addr().expect("an address").to_string()),
+        "no caller's address: {line}"
+    );
+    drop(silent);
+    // Each request is a connection that fills the listener again.
+    for n in 0..3 {
+        let answer = started
+            .client(&s)
+            .get(started.url("/key"))
+            .bearer_auth(&s.token)
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await
+            .expect("an answer");
+        assert_eq!(answer.status(), 200, "request {n}");
+    }
+    let records = listener_full_records_at(&s, "listen", 4);
+    assert!(
+        times_full(&records, "listen") >= 4,
+        "the silent connection and three requests: {records:?}"
+    );
+    for record in &records {
+        assert_eq!(record["actor"], "", "no caller: {record}");
+        assert_eq!(record["status"], 503, "{record}");
+        assert_eq!(record["target"], "listen", "the listener's key: {record}");
+    }
+    assert_eq!(
+        started.line_with("the listener is full", Duration::from_secs(1)),
+        None,
+        "one line a minute, though it filled four times"
+    );
+}
+
+/// A server whose listener is never full says nothing of it.
+#[tokio::test(flavor = "multi_thread")]
+async fn serve_neither_logs_nor_counts_a_listener_that_is_not_full() {
+    let s = setup();
+    let mut started = start(serve(&s));
+    for n in 0..3 {
+        let answer = started
+            .client(&s)
+            .get(started.url("/key"))
+            .bearer_auth(&s.token)
+            .send()
+            .await
+            .expect("an answer");
+        assert_eq!(answer.status(), 200, "request {n}");
+    }
+    assert_eq!(
+        listener_full_records(&s),
+        Vec::<serde_json::Value>::new(),
+        "512 places, three connections"
+    );
+    assert_eq!(
+        started.line_with("the listener is full", Duration::from_secs(1)),
+        None,
+        "no warning"
+    );
+}
+
 #[test]
 fn a_wrong_master_key_stops_the_start() {
     let s = setup();
@@ -1795,5 +2037,86 @@ mod operator_listener {
         let (s, _) = setup_with("\n[operator]\n");
         let text = stderr(&refused(serve(&s)));
         assert!(text.contains("`listen`"), "{text}");
+    }
+
+    /// Each listener has its own places: with one connection at once, a
+    /// silent connection that holds the tenant listener's place takes
+    /// nothing from the operator listener.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_full_tenant_listener_takes_no_place_from_the_operator_listener() {
+        let (s, operator) = setup_with(TABLE);
+        let text = std::fs::read_to_string(&s.config)
+            .expect("read")
+            .replace("[limits]\n", "[limits]\nconnections = 1\n");
+        assert!(text.contains("connections = 1"), "the key was written");
+        std::fs::write(&s.config, text).expect("write");
+        let mut started = start(serve(&s));
+        let (tenant_addr, operator_addr) = (started.addr, operator_addr(&mut started));
+        let _silent = std::net::TcpStream::connect(tenant_addr).expect("connects");
+        // Time for the tenant listener to take the silent connection.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let begun = Instant::now();
+        assert_eq!(
+            get(&s.pem, operator_addr, "/key", &operator).await.0,
+            200,
+            "the operator listener answers"
+        );
+        assert!(
+            begun.elapsed() < Duration::from_secs(5),
+            "at once, not after the tenant listener's handshake limit: {:?}",
+            begun.elapsed()
+        );
+        let waiting = client(&s.pem, tenant_addr)
+            .get(format!("https://localhost:{}/key", tenant_addr.port()))
+            .bearer_auth(&s.token)
+            .timeout(Duration::from_secs(2))
+            .send()
+            .await;
+        assert!(
+            waiting.is_err(),
+            "the tenant listener's one place is held: {waiting:?}"
+        );
+        stop(&mut started);
+    }
+
+    /// Each listener's times of being full are counted under its own
+    /// configuration key, and logged with its own address.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn each_listener_that_is_full_is_counted_under_its_own_key() {
+        for operator_is_full in [true, false] {
+            let (s, _operator) = setup_with(TABLE);
+            let text = std::fs::read_to_string(&s.config)
+                .expect("read")
+                .replace("[limits]\n", "[limits]\nconnections = 1\n");
+            assert!(text.contains("connections = 1"), "the key was written");
+            std::fs::write(&s.config, text).expect("write");
+            let mut started = start(serve(&s));
+            let (tenant_addr, operator_addr) = (started.addr, operator_addr(&mut started));
+            let (full, other, key, other_key) = if operator_is_full {
+                (operator_addr, tenant_addr, "operator.listen", "listen")
+            } else {
+                (tenant_addr, operator_addr, "listen", "operator.listen")
+            };
+            let _silent = std::net::TcpStream::connect(full).expect("connects");
+            let line = started
+                .line_with("the listener is full", Duration::from_secs(10))
+                .expect("a warning that a listener is full");
+            assert!(
+                line.contains(&format!("listener={full}")),
+                "the full listener's address: {line}"
+            );
+            assert!(
+                !line.contains(&format!("listener={other}")),
+                "not the other's: {line}"
+            );
+            let records = listener_full_records_at(&s, key, 1);
+            assert_eq!(times_full(&records, key), 1, "{key}: {records:?}");
+            assert_eq!(
+                times_full(&records, other_key),
+                0,
+                "{other_key}: {records:?}"
+            );
+            stop(&mut started);
+        }
     }
 }

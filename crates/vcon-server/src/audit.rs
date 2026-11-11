@@ -87,6 +87,9 @@ pub enum Action {
     /// A valid key refused because the listener it came to serves the
     /// other kind of key; counted (`count`), not recorded.
     WrongListener,
+    /// A listener that found every one of its places held
+    /// (`limits.connections`); counted (`count`), not recorded.
+    ListenerFull,
 }
 
 impl Action {
@@ -139,6 +142,7 @@ impl Action {
             Action::Metadata => "metadata",
             Action::Mcp => "mcp",
             Action::WrongListener => "wrong_listener",
+            Action::ListenerFull => "listener_full",
         }
     }
 }
@@ -546,6 +550,7 @@ mod tests {
             Action::Metadata => "metadata",
             Action::Mcp => "mcp",
             Action::WrongListener => "wrong_listener",
+            Action::ListenerFull => "listener_full",
         };
         let every = [
             Action::Create,
@@ -594,6 +599,7 @@ mod tests {
             Action::Metadata,
             Action::Mcp,
             Action::WrongListener,
+            Action::ListenerFull,
         ];
         let mut seen = std::collections::BTreeSet::new();
         for action in every {
