@@ -149,6 +149,19 @@ All notable changes to this project are recorded here. The format follows
   files of Parquet storage, goes from 60.0.0 to 60.1.0. The files written
   and read are checked as before: the export round trip, the DuckDB reads
   and Parquet storage on an S3 store all pass unchanged.
+- rusqlite goes from 0.41.0 to 0.41.1, and every dependency now comes from
+  crates.io. rusqlite 0.41.0's pragma helpers refused SQLCipher's own
+  pragma names, so the server set `cipher_log_level` as plain SQL, and the
+  tests used a fork of rusqlite from github.com to check that the helpers
+  would read the same values. 0.41.1 takes the names: the server sets and
+  reads SQLCipher's settings through the helpers, and the fork, the
+  `[patch]` that gave it the server's libsqlite3-sys, and its entry in
+  cargo-deny's allowed sources are gone. A build from source, tests
+  included, no longer fetches from github.com; with a mirror of crates.io
+  or `cargo vendor` it needs no other host. Dependabot proposes rusqlite
+  updates again, which the fork had made it skip. The catalogs are opened
+  with the same settings as before, and tests hold the manifests, both
+  lockfiles and the pages to having no git source.
 
 ### Fixed
 

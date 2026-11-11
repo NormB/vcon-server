@@ -147,9 +147,7 @@ pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogE
     conn.busy_timeout(BUSY_TIMEOUT)?;
     // SQLCipher otherwise writes its own error lines to standard error, a
     // wrong key among them; this program says what went wrong itself.
-    // SQLCipher's settings are not in SQLite's pragma list, which rusqlite's
-    // pragma helpers check names against, so they go as plain SQL.
-    conn.execute_batch("PRAGMA cipher_log_level = NONE")?;
+    conn.pragma_update(None, "cipher_log_level", "NONE")?;
     set_key(&conn, key)?;
     // SQLCipher reads nothing until the first query, so a wrong key shows
     // here, as a file that is not a database.
@@ -234,7 +232,7 @@ pub fn backup(source: &Connection, to: &Path, key: &Key) -> Result<(), CatalogEr
     make_file(to)?;
     {
         let mut copy = Connection::open(to)?;
-        copy.execute_batch("PRAGMA cipher_log_level = NONE")?;
+        copy.pragma_update(None, "cipher_log_level", "NONE")?;
         set_key(&copy, key)?;
         let backup = rusqlite::backup::Backup::new(source, &mut copy)?;
         // A negative count copies every remaining page in this one step.
@@ -433,10 +431,9 @@ pub(crate) mod tests {
         dir.path().join("catalog.sqlite")
     }
 
-    /// Reads one of SQLCipher's own settings, which rusqlite's pragma
-    /// helpers refuse by name.
+    /// Reads one of SQLCipher's own settings.
     pub(crate) fn cipher_setting(conn: &Connection, name: &str) -> String {
-        conn.query_row(&format!("PRAGMA {name}"), [], |r| r.get(0))
+        conn.pragma_query_value(None, name, |r| r.get(0))
             .expect(name)
     }
 
@@ -462,32 +459,30 @@ pub(crate) mod tests {
 
     /// The SQLCipher settings a catalog runs with, read back through
     /// rusqlite's pragma helpers on a second connection to the same file,
-    /// equal what the plain SQL that `open` and `cipher_setting` use reads.
-    /// crates.io rusqlite 0.41.0 refuses these names in its helpers, so
-    /// this runs on the fork that accepts them; the values must not differ
-    /// between the two ways of setting and reading them.
+    /// equal what plain SQL reads on the first. `open` and `cipher_setting`
+    /// use the helpers, so the values must not differ between the two ways
+    /// of setting and reading them.
     #[test]
     fn sqlcipher_settings_read_the_same_through_the_pragma_helpers() {
         let dir = tempfile::tempdir().expect("temp dir");
         let key = Key::generate().expect("key");
         let conn = open(&path(&dir), &key, SCHEMA).expect("opens");
         let names = ["cipher_log_level", "cipher_provider", "cipher_page_size"];
-        let plain: Vec<String> = names.iter().map(|n| cipher_setting(&conn, n)).collect();
+        let plain: Vec<String> = names
+            .iter()
+            .map(|n| {
+                conn.query_row(&format!("PRAGMA {n}"), [], |r| r.get(0))
+                    .unwrap_or_else(|e| panic!("{n} as plain SQL: {e}"))
+            })
+            .collect();
 
-        let helpers = rusqlite_fork::Connection::open(path(&dir)).expect("opens again");
-        let literal = key.sqlcipher_raw();
-        let len = c_int::try_from(literal.len()).expect("a 67-byte literal");
-        // SAFETY: the handle is this open connection's, and the pointer and
-        // length are the literal's, which outlives the call.
-        let rc = unsafe {
-            rusqlite_fork::ffi::sqlite3_key(helpers.handle(), literal.as_ptr().cast(), len)
-        };
-        assert_eq!(rc, rusqlite_fork::ffi::SQLITE_OK);
-        // Keyed first: the helper reads SQLite's pragma list, which an
-        // encrypted file without its key cannot answer.
+        let helpers = Connection::open(path(&dir)).expect("opens again");
+        // Before the key, as `open` does it: the helper must not need to
+        // read an encrypted file to take the name.
         helpers
             .pragma_update(None, "cipher_log_level", "NONE")
             .expect("cipher_log_level through pragma_update");
+        set_key(&helpers, &key).expect("keyed");
         let notes: i64 = helpers
             .query_row("SELECT count(*) FROM note", [], |r| r.get(0))
             .expect("the key opens the same catalog");
@@ -502,31 +497,37 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(read, plain);
         assert_eq!(plain[0], "NONE");
+        let ours: Vec<String> = names.iter().map(|n| cipher_setting(&conn, n)).collect();
+        assert_eq!(ours, plain, "cipher_setting reads what plain SQL reads");
     }
 
-    /// The server's rusqlite still refuses SQLCipher's pragma names in its
-    /// helpers. When a rusqlite release accepts them, this fails: the plain
-    /// SQL in `open` and `cipher_setting`, the rusqlite fork and its patch
-    /// are then no longer needed.
+    /// rusqlite's pragma helpers take SQLCipher's pragma names, which
+    /// rusqlite 0.41.0 refused with "Invalid pragma" (0.41.1 stopped
+    /// checking names in a SQLCipher build). `open` and `backup` set
+    /// `cipher_log_level` through a helper, so a rusqlite that refuses the
+    /// name again must fail here, by name, not in every test that opens a
+    /// catalog.
     #[test]
-    fn crates_io_rusqlite_refuses_sqlcipher_names() {
+    fn rusqlite_takes_sqlcipher_names_in_its_pragma_helpers() {
         let conn = Connection::open_in_memory().expect("opens");
-        let refused = conn.pragma_update(None, "cipher_log_level", "NONE");
+        let taken = conn.pragma_update(None, "cipher_log_level", "NONE");
         assert!(
-            matches!(&refused, Err(rusqlite::Error::SqliteFailure(_, Some(m)))
-                if m == "Invalid pragma \"cipher_log_level\""),
-            "this rusqlite accepts SQLCipher's pragma names ({refused:?}): set them with \
-             its pragma helpers in catalog::open and cipher_setting, and remove the \
-             rusqlite_fork dev-dependency and its patch (see the Development page)"
+            taken.is_ok(),
+            "this rusqlite refuses SQLCipher's pragma names ({taken:?}): catalog::open and \
+             catalog::backup set cipher_log_level through pragma_update"
         );
+        let level: String = conn
+            .pragma_query_value(None, "cipher_log_level", |r| r.get(0))
+            .expect("cipher_log_level through pragma_query_value");
+        assert_eq!(level, "NONE", "and reads back what was set");
     }
 
-    /// The rusqlite fork is a test-only dependency, and the Development and
-    /// Getting started pages say so with the commit Cargo.toml pins.
-    mod fork_docs {
+    /// Every dependency comes from crates.io. Until rusqlite 0.41.1 the
+    /// tests used a git fork of rusqlite, with a `[patch]` for its
+    /// libsqlite3-sys, so every build fetched from github.com; these hold
+    /// the manifests, the lockfiles and the pages to the state without it.
+    mod sources {
         use std::path::PathBuf;
-
-        const FORK: &str = "https://github.com/NormB/rusqlite";
 
         fn read(relative: &str) -> String {
             let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative);
@@ -537,100 +538,113 @@ pub(crate) mod tests {
             text.parse().expect("toml")
         }
 
-        /// The commit the dev-dependency pins, after checking that only the
-        /// tests take rusqlite from the fork.
-        fn pinned() -> String {
+        /// The dependencies of `manifest` that name a git repository, as
+        /// `<table>.<name>`, from the three dependency tables.
+        fn git_dependencies(manifest: &toml::Table) -> Vec<String> {
+            ["dependencies", "dev-dependencies", "build-dependencies"]
+                .iter()
+                .filter_map(|kind| Some((kind, manifest.get(*kind)?.as_table()?)))
+                .flat_map(|(kind, deps)| {
+                    deps.iter()
+                        .filter(|(_, spec)| spec.get("git").is_some())
+                        .map(move |(name, _)| format!("{kind}.{name}"))
+                })
+                .collect()
+        }
+
+        #[test]
+        fn the_git_dependency_reader_finds_one_in_any_table() {
+            let manifest = table(
+                "[dependencies]\nplain = \"1\"\n\
+                 [dev-dependencies]\nforked = { package = \"plain\", git = \"https://example.com/forked\" }\n\
+                 [build-dependencies]\nother = { git = \"https://example.com/other\", rev = \"abc\" }\n",
+            );
+            assert_eq!(
+                git_dependencies(&manifest),
+                ["dev-dependencies.forked", "build-dependencies.other"],
+                "each git dependency, with its table"
+            );
+            assert!(
+                git_dependencies(&table("[dependencies]\nplain = \"1\"\n")).is_empty(),
+                "a crates.io dependency is not one"
+            );
+            assert!(
+                git_dependencies(&table("[package]\nname = \"none\"\n")).is_empty(),
+                "a manifest with no dependency table has none"
+            );
+        }
+
+        #[test]
+        fn no_dependency_comes_from_a_git_repository() {
             let manifest = table(&read("Cargo.toml"));
+            assert_eq!(
+                git_dependencies(&manifest),
+                [] as [&str; 0],
+                "vcon-server's Cargo.toml"
+            );
             let server = &manifest["dependencies"]["rusqlite"];
             assert!(
-                server.get("version").is_some(),
-                "the server's rusqlite has a version"
-            );
-            assert!(
-                server.get("git").is_none() && server.get("path").is_none(),
+                server.get("version").is_some()
+                    && server.get("git").is_none()
+                    && server.get("path").is_none(),
                 "the server's rusqlite comes from crates.io"
             );
-            let fork = &manifest["dev-dependencies"]["rusqlite_fork"];
-            assert_eq!(fork["package"].as_str(), Some("rusqlite"));
-            assert_eq!(fork["git"].as_str(), Some(FORK));
-            let rev = fork["rev"].as_str().expect("a rev").to_owned();
             assert!(
-                rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit()),
-                "a full commit id: {rev}"
+                manifest["dev-dependencies"].get("rusqlite_fork").is_none(),
+                "the fork is gone"
             );
-            rev
         }
 
         #[test]
-        fn only_the_fork_is_patched() {
-            pinned();
+        fn the_workspace_patches_nothing() {
             let workspace = table(&read("../../Cargo.toml"));
-            let patch = workspace["patch"].as_table().expect("a patch table");
-            assert_eq!(
-                patch.keys().collect::<Vec<_>>(),
-                [FORK],
-                "no crates-io patch"
+            assert!(
+                workspace.get("patch").is_none(),
+                "no [patch] table: {:?}",
+                workspace.get("patch")
             );
-            let sys: Vec<&String> = patch[FORK].as_table().expect("a table").keys().collect();
-            assert_eq!(sys, ["libsqlite3-sys"]);
         }
 
         #[test]
-        fn the_development_page_names_the_pinned_commit() {
-            let page = read("../../website/content/docs/development.md");
-            let section = page
-                .split("\n## ")
-                .find(|s| s.starts_with("Test dependency from a fork\n"))
-                .expect("a section on the fork");
-            assert!(
-                section.contains(&format!("`{}`", pinned())),
-                "the pinned commit"
-            );
-            assert!(section.contains(FORK), "the fork's address");
-            let lock = read("../../Cargo.lock");
-            let version = lock
-                .split("[[package]]")
-                .find(|p| p.contains(&format!("source = \"git+{FORK}?rev=")))
-                .and_then(|p| p.lines().find_map(|l| l.strip_prefix("version = \"")))
-                .map(|v| v.trim_end_matches('"'))
-                .expect("the fork in Cargo.lock");
-            assert!(
-                section.contains(&format!("`{version}`")),
-                "the fork's version {version}"
-            );
-            let source = include_str!("catalog.rs");
-            for test in [
-                "sqlcipher_settings_read_the_same_through_the_pragma_helpers",
-                "crates_io_rusqlite_refuses_sqlcipher_names",
-            ] {
-                assert!(section.contains(&format!("`{test}`")), "names {test}");
-                assert!(source.contains(&format!("fn {test}()")), "{test} exists");
+        fn no_lockfile_names_a_git_source() {
+            for lockfile in ["../../Cargo.lock", "../../fuzz/Cargo.lock"] {
+                let lock = read(lockfile);
+                let git: Vec<&str> = lock
+                    .lines()
+                    .filter(|l| l.starts_with("source = \"git+"))
+                    .collect();
+                assert_eq!(git, [] as [&str; 0], "{lockfile}");
             }
         }
 
         #[test]
-        fn the_install_page_says_what_a_build_fetches() {
-            let page = read("../../website/content/docs/install.md");
-            let build = page
+        fn the_pages_name_no_fork() {
+            let development = read("../../website/content/docs/development.md");
+            assert!(
+                !development.contains("\n## Test dependency from a fork\n"),
+                "the Development page's section on the fork is gone"
+            );
+            let install = read("../../website/content/docs/install.md");
+            let build = install
                 .split("\n## ")
                 .find(|s| s.starts_with("Build from source\n"))
                 .expect("a Build from source section");
-            assert!(
-                build.contains(FORK.trim_start_matches("https://")),
-                "names the fork Cargo.toml pins, from the one constant both checks read"
-            );
             assert!(
                 build.contains("mkdir -p .cargo && cargo vendor >> .cargo/config.toml\n"),
                 "the vendoring command"
             );
             assert!(build.contains("cargo build --release --offline\n"));
-            let release = page
+            for page in [&development, &install] {
+                assert!(!page.contains("NormB/rusqlite"), "no page names the fork");
+                assert!(!page.contains("rusqlite fork"), "no page speaks of a fork");
+            }
+            let release = install
                 .split("\n## ")
                 .find(|s| s.starts_with("Download a release\n"))
                 .expect("a release section");
             assert!(
                 release.contains("crates.io"),
-                "says which rusqlite a release holds"
+                "says where the release's rusqlite comes from"
             );
         }
     }

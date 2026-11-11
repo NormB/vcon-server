@@ -67,7 +67,9 @@ rmcp = { version = "3.9.0", default-features = false, features = [
     "transport-streamable-http-client-reqwest",
     "reqwest",
 ] }
-rusqlite = { version = "0.41.0", features = ["backup", "bundled-sqlcipher-vendored-openssl"] }
+# 0.41.1 is the first whose pragma helpers take SQLCipher's own pragma names
+# (cipher_log_level and the rest); catalog.rs sets and reads them that way.
+rusqlite = { version = "0.41.1", features = ["backup", "bundled-sqlcipher-vendored-openssl"] }
 rustls = "0.23.46"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
@@ -107,15 +109,6 @@ postgres = ["s3", "dep:tokio-postgres", "dep:tokio-postgres-rustls", "dep:rustls
 tui = ["dep:ratatui"]
 
 [dev-dependencies]
-# rusqlite 0.41.0's pragma helpers refuse SQLCipher's own pragma names
-# (cipher_log_level and the rest), so the server sets them as plain SQL.
-# This fork adds those names and nothing else; the tests use it to check
-# that the plain SQL reads back what the helpers do. It is for tests only:
-# the server builds against crates.io rusqlite. Remove it, its patch in the
-# workspace Cargo.toml and the plain SQL once a crates.io rusqlite accepts
-# the names (the test catalog::tests::crates_io_rusqlite_refuses_sqlcipher_names
-# fails then).
-rusqlite_fork = { package = "rusqlite", git = "https://github.com/NormB/rusqlite", rev = "a2936ca6190f54e7ab54375385877cc96eebebe5", features = ["bundled-sqlcipher-vendored-openssl"] }
 rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "aws_lc_rs"] }
 reqwest = "0.13.5"
 tempfile = "3.27.0"

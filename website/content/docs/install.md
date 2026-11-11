@@ -73,9 +73,7 @@ these files:
 
 Every file also carries a signed build provenance attestation. The attestation
 ties the file to the workflow run and the commit that built it. The binary has
-SQLCipher, OpenSSL and rusqlite from crates.io compiled in. Nothing in it comes
-from the rusqlite fork the tests use (see
-[building without network access](#building-without-network-access)).
+SQLCipher, OpenSSL and rusqlite from crates.io compiled in.
 
 ### What to install first
 
@@ -461,13 +459,11 @@ vcon-server <version>
 
 ### Building without network access
 
-The server is built with rusqlite from crates.io. The tests also use a fork
-of rusqlite from `github.com/NormB/rusqlite` (see
-[development](@/docs/development.md#test-dependency-from-a-fork)). Cargo
-compiles the fork only for the tests. Every build of this checkout fetches
-it, `cargo build --release` included, because `Cargo.lock` lists it. A build
-needs access to github.com as well as crates.io. To build without network
-access, copy every source into the checkout once, while online:
+Every dependency of the server and of its tests comes from crates.io, so a
+build needs access to crates.io, or to a mirror of it, and to nothing else.
+A build of 0.4.2 or an earlier release also fetched a fork of rusqlite from
+github.com, which only the tests used. To build without network access, copy every source into
+the checkout once, while online:
 
 <!-- docs-test: skip the runner does not build offline -->
 ```sh
@@ -475,16 +471,15 @@ mkdir -p .cargo && cargo vendor >> .cargo/config.toml
 cargo build --release --offline
 ```
 
-`cargo vendor` copies the fork with the other sources, and the tests then
-build offline from the copy as well. A build that reads crates.io through a
-mirror still needs github.com for the fork, or the vendored copy.
+`cargo vendor` copies the sources of the tests' dependencies too, so the
+tests then build offline from the copy as well.
 
 ### When a step fails
 
 The failures of [cargo install](#install-with-cargo) apply here too. Also:
 
 - **`git: command not found`.** Install `git`, as shown above.
-- **A build with no access to github.com.** See
+- **A build with no access to crates.io.** See
   [building without network access](#building-without-network-access).
 
 ## Next

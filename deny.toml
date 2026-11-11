@@ -63,8 +63,7 @@ wildcards = "deny"
 allow-wildcard-paths = true
 
 [sources]
-# crates.io only, and one git repository: the rusqlite fork the tests use
-# (crates/vcon-server/Cargo.toml says why and when it goes).
+# crates.io only, and no git repository.
 unknown-registry = "deny"
 unknown-git = "deny"
-allow-git = ["https://github.com/NormB/rusqlite"]
+allow-git = []

@@ -44,10 +44,3 @@ allow_attributes_without_reason = "deny"
 # each would publish and refuses if one is missing or says publish = false.
 [workspace.metadata]
 published = ["vcon", "vcon-server"]
-
-# The rusqlite fork, a test-only dependency of vcon-server, would bring its
-# own copy of libsqlite3-sys, and only one package may link SQLite. This
-# gives it crates.io's 0.39.1, the one the server's rusqlite uses. Remove it
-# with the fork (see crates/vcon-server/Cargo.toml).
-[patch."https://github.com/NormB/rusqlite"]
-libsqlite3-sys = "0.39.1"

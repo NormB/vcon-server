@@ -25,16 +25,6 @@ updates:
     cooldown:
       default-days: 14
     open-pull-requests-limit: 10
-    ignore:
-      # vcon-server's tests use a git fork of rusqlite that keeps the name
-      # rusqlite (rusqlite_fork in crates/vcon-server/Cargo.toml). Bumping
-      # crates.io rusqlite rewrote the fork's requirement too, so the update
-      # job failed (2026-11-03). The fork and crates.io rusqlite, in both
-      # lockfiles, are updated by hand, after a dated check of upstream
-      # rusqlite releases and the SQLCipher and RustSec advisories.
-      # scripts/check_dependabot.py fails while a git package is not ignored
-      # here, or after the fork is gone.
-      - dependency-name: "rusqlite"
     groups:
       # Minor and patch bumps in one pull request; a major bump gets its own.
       cargo-minor-patch:
