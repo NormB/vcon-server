@@ -24,6 +24,7 @@ use crate::store::{OpenError, Store};
 
 mod backup;
 mod examine;
+pub(crate) mod key_life;
 mod keys;
 mod rekey;
 mod role_cap;
@@ -33,6 +34,7 @@ mod users;
 
 pub use backup::{Backup, BackupError};
 pub use examine::{KeyOrder, RegistryExamination, RotationBacklog, TenantExamination, Unexamined};
+pub use key_life::KeyLife;
 pub use keys::{KeyInfo, NewKey};
 pub(crate) use rekey::MasterStep;
 pub use rekey::rekey_master;
@@ -82,6 +84,10 @@ pub enum TenantError {
     CliOnly,
     /// Scopes a key of its kind, or made by this caller, cannot hold.
     BadScopes,
+    /// An expiry a new key cannot have: a number of days outside 1 to
+    /// 365, days and no expiry asked together, or no expiry where the
+    /// configuration refuses it (`keys.no_expiry`).
+    BadExpiry,
     /// A change to a tenant's settings that the list of settings refuses.
     BadSetting(crate::settings::SettingError),
     /// server.sqlite was made under another master key.
@@ -298,6 +304,8 @@ pub struct Tenants {
     beside: bool,
     fs: Arc<dyn Fs>,
     clock: Arc<dyn Clock>,
+    /// Whether a key may be made with no expiry (`keys.no_expiry`).
+    no_expiry: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     hooks: tests::Hooks,
 }
@@ -395,6 +403,7 @@ impl Tenants {
             beside,
             fs,
             clock,
+            no_expiry: std::sync::atomic::AtomicBool::new(true),
             #[cfg(test)]
             hooks: tests::Hooks::default(),
         }
@@ -2268,6 +2277,8 @@ mod tests {
                      ALTER TABLE tenant DROP COLUMN metadata; DROP TABLE membership;
                      DROP TABLE user_account; DROP TABLE tenant_setting;
                      DROP TABLE session;
+                     ALTER TABLE api_key DROP COLUMN last_used_at;
+                     ALTER TABLE api_key DROP COLUMN expires_at;
                      PRAGMA user_version = {from};"
                 ))
                 .expect("back to the old schema");

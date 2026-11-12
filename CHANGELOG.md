@@ -96,6 +96,22 @@ All notable changes to this project are recorded here. The format follows
   tests: passkeys and single sign-on will, in a later release. The routes
   that take a key take no session yet. See the how-to "Set a listener's
   public origin for sessions".
+- Key expiry and last-used time. A key now has an expiry, `expires_at`:
+  90 days after it is made by default, 1 to 365 days with
+  `expires_in_days` (`key create --expires-days`), or none with
+  `"no_expiry": true` (`key create --no-expiry`). The new configuration
+  key `keys.no_expiry` (default `true`) lets an operator refuse new keys
+  with no expiry. The answer that makes a key carries `expires_at`. A
+  request by an expired key is refused with the new problem `key-expired`
+  (401) and counted as `auth_failed`; an expiry a key cannot have is the
+  new problem `bad-expiry` (422). Every list of keys (`key list`, `GET
+  /admin/tenants/{id}/keys`, `GET /tenant/keys`, `admin_key_list`) shows
+  `expires_at` and `last_used_at`. The last-used time is the start of the
+  minute of an accepted request, and the server writes it at most once a
+  minute for each key; a failure to write it refuses no request. The
+  console's key form takes the days, and its key table shows both times.
+  See the how-to "Administer a tenant with a key", under "Set a key's
+  expiry and see when it was last used".
 
 ### Changed
 
@@ -109,9 +125,9 @@ All notable changes to this project are recorded here. The format follows
   `session_read` and `session_end` are new. `auth_failed` records may have
   the status 400 or 403.
 
-- **No downgrade: the catalogs move to schema version 8.** The first time
+- **No downgrade: the catalogs move to schema version 9.** The first time
   this server or one of its commands opens a data directory, it brings
-  `server.sqlite` from schema version 4 to 8, and each tenant's catalog at
+  `server.sqlite` from schema version 4 to 9, and each tenant's catalog at
   that tenant's first use, each in one transaction. Version 5 adds the
   tables `user_account` and `membership` to `server.sqlite`, and lets every
   audit log hold a record with no status: the number 0 that a version-4
@@ -120,12 +136,23 @@ All notable changes to this project are recorded here. The format follows
   column `role_cap` to the `tenant` table of `server.sqlite`, empty for
   every tenant. Version 7 adds the table `tenant_setting` to
   `server.sqlite`, empty. Version 8 adds the table `session`, empty.
+  Version 9 adds the columns `expires_at` and `last_used_at` to the
+  `api_key` table, empty for every key there is.
   Release 0.4.3
-  and earlier refuse a catalog at version 8 (`schema version 8 is not one
+  and earlier refuse a catalog at version 9 (`schema version 9 is not one
   this build knows`), so the way back is the copy of the data directory
   taken before the upgrade. With the PostgreSQL catalog preview, run
-  `vcon-server migrate` to bring the database from schema version 1 to 5
-  before a server starts. See "Schema version 8" on the upgrade page.
+  `vcon-server migrate` to bring the database from schema version 1 to 6
+  before a server starts. See "Schema version 9" on the upgrade page.
+- **A new key expires 90 days after it is made, unless its request says
+  otherwise.** This holds for `key create`, `POST
+  /admin/tenants/{id}/keys`, `POST /tenant/keys` and the MCP tool
+  `admin_key_create`. A script that makes a key and never replaces it
+  stops working 90 days later with 401 `key-expired`: replace its key on a
+  schedule, or make it with `--no-expiry` (`"no_expiry": true`). Keys made
+  before the upgrade are not changed: they have no expiry and keep
+  working. See "Keys made before the upgrade have no expiry" on the
+  upgrade page.
 - **Breaking for a reader of the audit log that knows a fixed list of
   actions:** add the five actions named above, and `role_cap_set`,
   `role_cap_read`, `settings_read`, `settings_set` and `membership_list`.

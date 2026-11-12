@@ -146,6 +146,110 @@ fn keys_are_made_for_a_tenant_or_the_operator_listed_and_revoked() {
     assert!(s.ok(&["key", "list"])[0]["revoked_at"].is_string());
 }
 
+/// `key create` for a tenant key that reads, with these further arguments.
+fn key_create<'a>(tenant: &'a str, more: &[&'a str]) -> Vec<&'a str> {
+    let mut args = vec![
+        "key", "create", "--tenant", tenant, "--scope", "read", "--label", "dated",
+    ];
+    args.extend_from_slice(more);
+    args
+}
+
+fn rfc3339(value: &Value) -> time::OffsetDateTime {
+    time::OffsetDateTime::parse(
+        value.as_str().expect("a time as text"),
+        &time::format_description::well_known::Rfc3339,
+    )
+    .expect("RFC 3339")
+}
+
+#[test]
+fn key_create_takes_the_days_until_the_key_expires_or_no_expiry() {
+    let s = setup();
+    let tenant = id_of(&s.ok(&["tenant", "create", "acme"]));
+    let default = s.ok(&key_create(&tenant, &[]));
+    let week = s.ok(&key_create(&tenant, &["--expires-days", "7"]));
+    let never = s.ok(&key_create(&tenant, &["--no-expiry"]));
+    let listed = s.ok(&["key", "list"]);
+    assert_eq!(listed.len(), 3, "three keys");
+    assert_eq!(
+        rfc3339(&default[0]["expires_at"]) - rfc3339(&listed[0]["created_at"]),
+        time::Duration::days(90),
+        "with neither argument a key expires in 90 days"
+    );
+    assert_eq!(
+        rfc3339(&week[0]["expires_at"]) - rfc3339(&listed[1]["created_at"]),
+        time::Duration::days(7),
+        "--expires-days 7"
+    );
+    assert!(never[0]["expires_at"].is_null(), "--no-expiry prints null");
+    assert!(listed[2]["expires_at"].is_null(), "and the list shows null");
+    assert!(
+        listed.iter().all(|key| key["last_used_at"].is_null()),
+        "no key was used"
+    );
+}
+
+#[test]
+fn key_create_refuses_days_outside_1_to_365_and_says_the_range() {
+    let s = setup();
+    let tenant = id_of(&s.ok(&["tenant", "create", "acme"]));
+    for days in ["0", "366"] {
+        let why = s.refused(&key_create(&tenant, &["--expires-days", days]));
+        assert!(why.contains("1 to 365 days"), "{days} days: {why}");
+    }
+    assert_eq!(s.ok(&["key", "list"]).len(), 0, "no key was made");
+}
+
+#[test]
+fn key_create_with_days_and_no_expiry_or_days_that_are_no_number_exits_2() {
+    for more in [
+        vec!["--expires-days", "7", "--no-expiry"],
+        vec!["--expires-days", "-1"],
+        vec!["--expires-days", "soon"],
+        vec!["--expires-days"],
+    ] {
+        let mut args = vec!["key", "create", "--operator", "--label", "ops"];
+        args.extend_from_slice(&more);
+        args.extend_from_slice(&["--config", "/nonexistent"]);
+        let why = usage_error(&args);
+        assert!(
+            why.contains("--expires-days")
+                || why.contains("--no-expiry")
+                || why.contains("unexpected argument"),
+            "{more:?}: {why}"
+        );
+    }
+}
+
+#[test]
+fn key_create_refuses_no_expiry_where_the_configuration_says_so() {
+    let s = setup();
+    let tenant = id_of(&s.ok(&["tenant", "create", "acme"]));
+    let mut text = std::fs::read_to_string(&s.config).expect("the configuration");
+    text.push_str("\n[keys]\nno_expiry = false\n");
+    std::fs::write(&s.config, text).expect("written");
+    let why = s.refused(&key_create(&tenant, &["--no-expiry"]));
+    assert!(why.contains("keys.no_expiry"), "names the key: {why}");
+    let why = s.refused(&[
+        "key",
+        "create",
+        "--operator",
+        "--label",
+        "ops",
+        "--no-expiry",
+    ]);
+    assert!(
+        why.contains("keys.no_expiry"),
+        "for an operator key too: {why}"
+    );
+    assert_eq!(
+        s.ok(&key_create(&tenant, &["--expires-days", "365"])).len(),
+        1,
+        "a key for a year is still made"
+    );
+}
+
 #[test]
 fn audit_export_writes_the_admin_log_or_a_tenants() {
     let s = setup();

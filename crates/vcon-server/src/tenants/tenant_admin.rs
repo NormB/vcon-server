@@ -18,7 +18,7 @@ use time::format_description::well_known::Rfc3339;
 
 use super::keys::{KeyInfo, NewKey, key_info};
 use super::role_cap::stored_cap;
-use super::{RTx, Slot, TenantError, Tenants, commit};
+use super::{KeyLife, RTx, Slot, TenantError, Tenants, commit};
 use crate::access::Scopes;
 use crate::audit::{Action, Actor, Entry};
 use crate::backend::TenantRow;
@@ -160,15 +160,30 @@ impl Tenants {
         Ok(after)
     }
 
-    /// Makes a key for the tenant, as its administrator may: with at
-    /// least one scope, all among those the tenant's role cap gives a key and
-    /// never `tenant_admin`.
+    /// Makes a key for the tenant with the default life, as
+    /// [`Tenants::create_tenant_key_for`] makes one with
+    /// [`KeyLife::Default`].
     pub fn create_tenant_key(
         &self,
         who: Actor,
         tenant: TenantId,
         scopes: Scopes,
         label: &str,
+    ) -> Result<NewKey, TenantError> {
+        self.create_tenant_key_for(who, tenant, scopes, label, KeyLife::Default)
+    }
+
+    /// Makes a key for the tenant, as its administrator may: with at
+    /// least one scope, all among those the tenant's role cap gives a key and
+    /// never `tenant_admin`. The key expires as `life` says; a life the key
+    /// cannot have is refused after its scopes are.
+    pub fn create_tenant_key_for(
+        &self,
+        who: Actor,
+        tenant: TenantId,
+        scopes: Scopes,
+        label: &str,
+        life: KeyLife,
     ) -> Result<NewKey, TenantError> {
         let entry = |status, target: String| Entry {
             actor: who,
@@ -183,7 +198,12 @@ impl Tenants {
             self.end(tx, tenant, &entry(422, tenant.to_string()))?;
             return Err(TenantError::BadScopes);
         }
-        let made = self.insert_key(&mut tx, Some(tenant), scopes, label)?;
+        let now = nanos(self.clock.now());
+        if let Err(refused) = life.expires_at(now, self.no_expiry_allowed()) {
+            self.end(tx, tenant, &entry(422, tenant.to_string()))?;
+            return Err(refused);
+        }
+        let made = self.insert_key(&mut tx, Some(tenant), scopes, label, life)?;
         self.end(tx, tenant, &entry(201, made.id.to_string()))?;
         Ok(made)
     }
@@ -939,6 +959,85 @@ mod tests {
                 "admin is the operator's: {asked}"
             );
         }
+    }
+
+    #[test]
+    fn an_administrators_key_expires_in_90_days_unless_a_life_is_asked() {
+        let f = fixture();
+        let (t, who) = administered(&f, "acme");
+        f.tenants
+            .create_tenant_key(who, t, scopes(&[Scope::Read]), "default")
+            .expect("made");
+        f.tenants
+            .create_tenant_key_for(who, t, scopes(&[Scope::Read]), "week", KeyLife::Days(7))
+            .expect("made");
+        f.tenants
+            .create_tenant_key_for(who, t, scopes(&[Scope::Read]), "forever", KeyLife::Never)
+            .expect("made");
+        let keys = f.tenants.tenant_keys(who, t).expect("listed");
+        let life = |label: &str| {
+            let key = keys.iter().find(|k| k.label == label).expect("the key");
+            key.expires_at.map(|at| (at - key.created_at).whole_days())
+        };
+        assert_eq!(life("default"), Some(90), "no life asked");
+        assert_eq!(life("week"), Some(7), "seven days asked");
+        assert_eq!(life("forever"), None, "no expiry asked");
+    }
+
+    #[test]
+    fn an_expiry_the_configuration_refuses_is_refused_and_recorded_in_both_logs() {
+        let f = fixture();
+        let (t, who) = administered(&f, "acme");
+        f.tenants.allow_no_expiry(false);
+        let before = f.tenants.tenant_keys(who, t).expect("listed").len();
+        assert!(
+            matches!(
+                f.tenants.create_tenant_key_for(
+                    who,
+                    t,
+                    scopes(&[Scope::Read]),
+                    "forever",
+                    KeyLife::Never
+                ),
+                Err(TenantError::BadExpiry)
+            ),
+            "no expiry where keys.no_expiry is false"
+        );
+        assert!(
+            matches!(
+                f.tenants.create_tenant_key_for(
+                    who,
+                    t,
+                    scopes(&[Scope::Read]),
+                    "long",
+                    KeyLife::Days(366)
+                ),
+                Err(TenantError::BadExpiry)
+            ),
+            "more than 365 days"
+        );
+        let refusal = (actor(who), json!(t.to_string()), json!(422));
+        assert_eq!(
+            in_tenant(&f, t, "key_create")
+                .iter()
+                .filter(|record| **record == refusal)
+                .count(),
+            2,
+            "both refusals are in the tenant's log, under the administrator's key"
+        );
+        assert_eq!(
+            admin(&f, "key_create")
+                .iter()
+                .filter(|record| **record == refusal)
+                .count(),
+            2,
+            "and in the admin log"
+        );
+        assert_eq!(
+            f.tenants.tenant_keys(who, t).expect("listed").len(),
+            before,
+            "no key was made"
+        );
     }
 
     #[test]

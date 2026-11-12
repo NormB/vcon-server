@@ -60,6 +60,7 @@ allowed a group to write them. To check a host before an upgrade, see
 | `retention_default` | Retention period for tenants that set none: years, months or days, written `7y`, `18m` or `90d` | `7y` |
 | `purge_interval` | Seconds between purge sweeps | `3600` (1 hour) |
 | `rotation_warn` | Seconds the oldest work may wait for key rotation before a warning is logged | `2592000` (30 days) |
+| `keys.no_expiry` | Whether a key may be made with no expiry (`"no_expiry": true`, or `key create --no-expiry`). With `false`, such a request is refused with [`bad-expiry`](@/problems/bad-expiry.md), and every new key expires within 365 days. Keys made earlier are not changed | `true` |
 | `limits.body` | Largest request body, in bytes | `16777216` (16 MiB) |
 | `limits.inflated` | Most bytes gzip inflation may produce while one body is checked | `67108864` (64 MiB) |
 | `limits.connections` | Most connections a listener holds at once, from 1 to 65536. At that number the listener takes no more until one ends | `512` |

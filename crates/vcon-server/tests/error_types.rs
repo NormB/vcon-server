@@ -35,6 +35,7 @@ fn displayed() -> Vec<(String, String)> {
         Box::new(AuthError::Malformed),
         Box::new(AuthError::Unknown),
         Box::new(AuthError::Revoked),
+        Box::new(AuthError::Expired),
         Box::new(AuthError::Io),
         Box::new(KeyError::Memory(io::Error::other("no locked memory left"))),
         Box::new(KeyError::Read(io::Error::other("permission denied"))),

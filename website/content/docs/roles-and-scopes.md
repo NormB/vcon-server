@@ -236,10 +236,10 @@ See [audit log records](@/docs/audit-log-records.md) for every action.
 - **`a tenant key's scopes are one or more of write, read, delete, legal,
   audit and tenant_admin, each named once`:** a key takes the scope's name,
   `tenant_admin`, not the role's, `tenant-admin`.
-- **`the registry cannot be opened: … schema version 8 is not one this
+- **`the registry cannot be opened: … schema version 9 is not one this
   build knows`:** an older binary is reading a data directory that a newer
   one has opened. See
-  [upgrade](@/docs/upgrading.md#schema-version-8-and-no-way-back-without-the-copy).
+  [upgrade](@/docs/upgrading.md#schema-version-9-and-no-way-back-without-the-copy).
 
 ## Clean up
 

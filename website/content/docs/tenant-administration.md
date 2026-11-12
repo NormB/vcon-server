@@ -221,6 +221,69 @@ The id of a key of another tenant, or of an operator key, is answered `404`
 nothing is revoked. An administrator may revoke any key of its tenant, its
 own included.
 
+## Set a key's expiry and see when it was last used
+
+A key expires 90 days after it is made. The body of `POST /tenant/keys`
+may name another life with `expires_in_days`, from 1 to 365, or ask for a
+key that never expires with `"no_expiry": true`. The answer carries the
+expiry as `expires_at`, in UTC, and `null` for a key that never expires.
+Make a key that lives 30 days:
+
+```sh
+CREATED=$(curl -sS --cacert $CA "$URL/tenant/keys" -H "Authorization: Bearer $ADMIN" \
+  -H 'Content-Type: application/json' -d '{"scopes":["read"],"label":"monthly-report","expires_in_days":30}')
+MONTHLY=$(echo "$CREATED" | jq -r .token)
+MONTHLY_ID=$(echo "$CREATED" | jq -r .id)
+echo "$CREATED" | jq -c '{has_expiry: (.expires_at != null)}'
+unset CREATED
+```
+
+```text
+{"has_expiry":true}
+```
+
+The list shows each key's `expires_at` and `last_used_at`. The server
+writes `last_used_at` when it accepts a request by the key: the start of
+the minute of the request, at most once a minute for one key. It is
+`null` until the key's first request:
+
+```sh
+curl -sS --cacert $CA "$URL/tenant/keys" -H "Authorization: Bearer $ADMIN" \
+  | jq -r --arg id "$MONTHLY_ID" '.[] | select(.id == $id) | "\(.label) \(.last_used_at)"'
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert $CA "$URL/key" -H "Authorization: Bearer $MONTHLY"
+curl -sS --cacert $CA "$URL/tenant/keys" -H "Authorization: Bearer $ADMIN" \
+  | jq -r --arg id "$MONTHLY_ID" '.[] | select(.id == $id) | "\(.label) \(.last_used_at != null)"'
+```
+
+```text
+monthly-report null
+200
+monthly-report true
+```
+
+A life outside 1 to 365 days is refused with `422` and the problem
+[`bad-expiry`](@/problems/bad-expiry.md), and no key is made:
+
+```sh
+curl -sS --cacert $CA "$URL/tenant/keys" -H "Authorization: Bearer $ADMIN" \
+  -H 'Content-Type: application/json' -d '{"scopes":["read"],"label":"too-long","expires_in_days":366}' \
+  | jq -r '"\(.status) \(.type)"'
+```
+
+```text
+422 https://vcon-server.com/problems/bad-expiry
+```
+
+From its expiry on, a key's requests are answered `401` with the problem
+[`key-expired`](@/problems/key-expired.md). Before that day, make the
+client a new key and revoke the old one, as in
+[rotate keys](@/docs/rotate-keys.md). The operator can refuse keys that
+never expire: with `no_expiry = false` in the `[keys]` table of the
+[configuration](@/docs/configuration.md), a body with `"no_expiry": true`
+is also `bad-expiry`. A key made by release 0.4.3 or earlier has no
+expiry; see
+[keys made before the upgrade have no expiry](@/docs/upgrading.md#keys-made-before-the-upgrade-have-no-expiry).
+
 ## List the tenant's memberships
 
 A [membership](@/docs/users-and-memberships.md) gives a user roles in the
@@ -272,6 +335,10 @@ key_create 422
 key_create 422
 key_list 200
 key_revoke 204
+key_create 201
+key_list 200
+key_list 200
+key_create 422
 membership_list 200
 ```
 
@@ -304,23 +371,35 @@ See [audit log records](@/docs/audit-log-records.md) for every action.
 - **`422` [`bad-scopes`](@/problems/bad-scopes.md):** the key asked for
   holds `tenant_admin`, `admin`, no scope, or a scope outside the tenant's
   role cap. `vcon-server tenant role-cap` prints the cap on the host.
+- **`422` [`bad-expiry`](@/problems/bad-expiry.md):** `expires_in_days`
+  is outside 1 to 365, is sent with `"no_expiry": true`, or the server's
+  configuration sets `keys.no_expiry` to `false` and the body asks for no
+  expiry.
+- **`401` [`key-expired`](@/problems/key-expired.md):** the key is past
+  its `expires_at`. The operator makes the administrator a new key with
+  `key create`; an expired key cannot make its own replacement.
+- **`last_used_at` is `null` after a request:** the request was refused,
+  or the list was read by another key in the same minute before the
+  request. The server writes the time when it accepts a request, to the
+  minute.
 - **`422` [`invalid-body`](@/problems/invalid-body.md):** the body is not
   JSON, or a key's body lacks `scopes` or `label`.
 - **`key create` refuses `--scope tenant_admin`:** the binary
   is release 0.4.3 or older.
-- **`the registry cannot be opened: … schema version 8 is not one this
+- **`the registry cannot be opened: … schema version 9 is not one this
   build knows`:** an older binary is reading a data directory that a newer
   one has opened. See
-  [upgrade](@/docs/upgrading.md#schema-version-8-and-no-way-back-without-the-copy).
+  [upgrade](@/docs/upgrading.md#schema-version-9-and-no-way-back-without-the-copy).
 
 ## Clean up
 
-Put the setting changed above back to its default, revoke the
-administrator's key, and deactivate the example user:
+Put the setting changed above back to its default, revoke the 30-day key
+and the administrator's key, and deactivate the example user:
 
 ```sh
 curl -sS --cacert $CA -X PUT "$URL/tenant/settings" -H "Authorization: Bearer $ADMIN" \
   -H 'Content-Type: application/json' -d '{"masking.legal":null}' | jq -c '."masking.legal"'
+sudo -u vcon vcon-server key revoke $MONTHLY_ID --config $CONFIG
 sudo -u vcon vcon-server key revoke $ADMIN_ID --config $CONFIG
 sudo -u vcon vcon-server user deactivate $AUDITOR --config $CONFIG
 curl -sS -o /dev/null -w '%{http_code}\n' --cacert $CA "$URL/tenant/settings" -H "Authorization: Bearer $ADMIN"

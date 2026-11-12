@@ -12,7 +12,7 @@ use crate::api::{self, Problem};
 use crate::audit::{Action, Actor, AuditQuery};
 use crate::ids::{KeyId, TenantId};
 use crate::retention::Retention;
-use crate::tenants::{KeyInfo, Removal, TenantError, TenantInfo};
+use crate::tenants::{KeyInfo, KeyLife, Removal, TenantError, TenantInfo};
 
 /// The admin tools.
 pub(super) fn specs() -> Vec<Spec> {
@@ -67,8 +67,9 @@ pub(super) fn specs() -> Vec<Spec> {
         spec::<KeyCreateArgs>(
             "admin_key_create",
             "Makes a key for the tenant holding these scopes (write, read, delete, legal, \
-             audit, tenant_admin) with this label, and returns its id and its token. The token \
-             is returned this once; only its hash is kept.",
+             audit, tenant_admin) with this label, and returns its id, its token and its \
+             expiry. The token is returned this once; only its hash is kept. The key expires \
+             in 90 days, or in expires_in_days days (1 to 365), or never with no_expiry.",
             Hints::NONE,
             Action::KeyCreate,
             key_create,
@@ -76,8 +77,8 @@ pub(super) fn specs() -> Vec<Spec> {
         spec::<KeyListArgs>(
             "admin_key_list",
             "Returns the tenant's keys, oldest first: each id, tenant, scopes, label between \
-             untrusted-vcon-data markers, and times made and revoked (RFC 3339); never a \
-             token. From cursor, within max_bytes, with next_cursor when more follow.",
+             untrusted-vcon-data markers, and times made, revoked, of expiry and of last use (RFC \
+             3339, null for a time the key does not have); never a token. From cursor, within max_bytes, with next_cursor when more follow.",
             read,
             Action::KeyList,
             key_list,
@@ -287,6 +288,13 @@ pub(super) struct KeyCreateArgs {
     scopes: Vec<String>,
     /// Who holds the key.
     label: String,
+    /// The days until the key expires, from 1 to 365; 90 when absent.
+    #[serde(default)]
+    expires_in_days: Option<i64>,
+    /// True for a key that never expires, where the configuration allows
+    /// one.
+    #[serde(default)]
+    no_expiry: Option<bool>,
 }
 
 fn key_create<'a>(server: &'a Server, caller: Caller, args: JsonObject) -> Running<'a> {
@@ -295,13 +303,21 @@ fn key_create<'a>(server: &'a Server, caller: Caller, args: JsonObject) -> Runni
         let tenant = tenant_id(&args.tenant)?;
         let scopes = Scopes::named(&args.scopes)
             .ok_or(Outcome::Refused(Problem::Tenant(TenantError::BadScopes)))?;
+        let life = KeyLife::asked(args.expires_in_days, args.no_expiry);
         let tenants = server.app.tenants.clone();
         let made = api::blocking(move || {
-            tenants.create_key(Actor::Key(caller.key), Some(tenant), scopes, &args.label)
+            tenants.create_key_for(
+                Actor::Key(caller.key),
+                Some(tenant),
+                scopes,
+                &args.label,
+                life,
+            )
         })
         .await
         .map_err(answered)?;
-        Ok(json!({"id": made.id.to_string(), "token": made.token}))
+        made.to_json()
+            .ok_or(Outcome::Refused(Problem::Tenant(TenantError::Io)))
     })
 }
 

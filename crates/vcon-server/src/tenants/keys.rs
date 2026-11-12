@@ -4,7 +4,7 @@
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use super::{RTx, Slot, TenantError, Tenants, commit};
+use super::{KeyLife, RTx, Slot, TenantError, Tenants, commit};
 use crate::access::{self, Scope, Scopes};
 use crate::audit::{Action, Actor, Entry};
 use crate::backend::KeyRow;
@@ -21,17 +21,23 @@ pub struct KeyInfo {
     pub label: String,
     pub created_at: OffsetDateTime,
     pub revoked_at: Option<OffsetDateTime>,
+    /// From when the key is refused; None for a key with no expiry.
+    pub expires_at: Option<OffsetDateTime>,
+    /// The minute of the key's latest accepted request that was written;
+    /// None for a key no request has used.
+    pub last_used_at: Option<OffsetDateTime>,
 }
 
 impl KeyInfo {
     /// The key as the admin API and the command line show it, never its
     /// token: id, tenant (null for an operator key), scopes, label and
-    /// times in RFC 3339. None when a time cannot be written so.
+    /// times in RFC 3339, with null for a time the key does not have. None
+    /// when a time cannot be written so.
     pub fn to_json(&self) -> Option<serde_json::Value> {
         let time = |at: OffsetDateTime| at.format(&Rfc3339).ok();
-        let revoked_at = match self.revoked_at {
-            Some(at) => Some(time(at)?),
-            None => None,
+        let optional = |at: Option<OffsetDateTime>| match at {
+            Some(at) => time(at).map(Some),
+            None => Some(None),
         };
         Some(serde_json::json!({
             "id": self.id.to_string(),
@@ -39,7 +45,9 @@ impl KeyInfo {
             "scopes": self.scopes.names(),
             "label": self.label,
             "created_at": time(self.created_at)?,
-            "revoked_at": revoked_at,
+            "revoked_at": optional(self.revoked_at)?,
+            "expires_at": optional(self.expires_at)?,
+            "last_used_at": optional(self.last_used_at)?,
         }))
     }
 }
@@ -55,6 +63,8 @@ pub(super) fn key_info(row: KeyRow) -> Result<KeyInfo, TenantError> {
         label: row.label,
         created_at: time(row.created_at)?,
         revoked_at: row.revoked_at.map(time).transpose()?,
+        expires_at: row.expires_at.map(time).transpose()?,
+        last_used_at: row.last_used_at.map(time).transpose()?,
     })
 }
 
@@ -63,6 +73,25 @@ pub(super) fn key_info(row: KeyRow) -> Result<KeyInfo, TenantError> {
 pub struct NewKey {
     pub id: KeyId,
     pub token: String,
+    /// From when the key is refused; None for a key with no expiry.
+    pub expires_at: Option<OffsetDateTime>,
+}
+
+impl NewKey {
+    /// The key as the answer that makes it shows it: its id, its token
+    /// and its expiry in RFC 3339, or null for no expiry. None when the
+    /// time cannot be written so.
+    pub fn to_json(&self) -> Option<serde_json::Value> {
+        let expires_at = match self.expires_at {
+            Some(at) => Some(at.format(&Rfc3339).ok()?),
+            None => None,
+        };
+        Some(serde_json::json!({
+            "id": self.id.to_string(),
+            "token": self.token,
+            "expires_at": expires_at,
+        }))
+    }
 }
 
 /// A key as `access` checks it.
@@ -72,6 +101,8 @@ pub(crate) struct StoredKey {
     pub(crate) tenant: Option<TenantId>,
     pub(crate) scopes: Scopes,
     pub(crate) revoked: bool,
+    pub(crate) expires_at: Option<i64>,
+    pub(crate) last_used_at: Option<i64>,
 }
 
 impl Tenants {
@@ -172,20 +203,36 @@ impl Tenants {
                 // Scopes that do not read back are damage, not none.
                 scopes: Scopes::parse(&row.scopes).ok_or(TenantError::Io)?,
                 revoked: row.revoked_at.is_some(),
+                expires_at: row.expires_at,
+                last_used_at: row.last_used_at,
             })
         })
         .transpose()
     }
 
-    /// Makes a key. A tenant key holds any of write, read, delete, legal
-    /// and audit; a key with no tenant is an operator key, holds only admin,
-    /// and only the command line may make one.
+    /// Makes a key with the default life, as [`Tenants::create_key_for`]
+    /// makes one with [`KeyLife::Default`].
     pub fn create_key(
         &self,
         who: Actor,
         tenant: Option<TenantId>,
         scopes: Scopes,
         label: &str,
+    ) -> Result<NewKey, TenantError> {
+        self.create_key_for(who, tenant, scopes, label, KeyLife::Default)
+    }
+
+    /// Makes a key. A tenant key holds any of write, read, delete, legal
+    /// and audit; a key with no tenant is an operator key, holds only admin,
+    /// and only the command line may make one. The key expires as `life`
+    /// says; a life the key cannot have is refused after its scopes are.
+    pub fn create_key_for(
+        &self,
+        who: Actor,
+        tenant: Option<TenantId>,
+        scopes: Scopes,
+        label: &str,
+        life: KeyLife,
     ) -> Result<NewKey, TenantError> {
         let entry = |status, target: Option<String>| Entry {
             actor: who,
@@ -202,6 +249,8 @@ impl Tenants {
             }
             _ => None,
         };
+        let expires_at = life.expires_at(nanos(self.clock.now()), self.no_expiry_allowed());
+        let shape = shape.or(expires_at.err().map(|refused| (422, refused)));
         let closing = tenant.is_some_and(|t| matches!(self.stores().get(&t), Some(Slot::Closing)));
         let mut tx = self.registry.immediate()?;
         let refused = match (shape, tenant) {
@@ -215,7 +264,7 @@ impl Tenants {
             commit(tx)?;
             return Err(error);
         }
-        let new = self.insert_key(&mut tx, tenant, scopes, label)?;
+        let new = self.insert_key(&mut tx, tenant, scopes, label, life)?;
         let made = entry(201, Some(new.id.to_string()));
         self.record(&mut tx, &made)?;
         // The copy opens the tenant's Store, which reads the registry.
@@ -227,14 +276,19 @@ impl Tenants {
     }
 
     /// Writes the row of a new key, made now, and gives its id and token.
-    /// Whether the key may be made is its caller's rule.
+    /// Whether the key may be made is its caller's rule, but for its life:
+    /// a life the key cannot have is [`TenantError::BadExpiry`] here, with
+    /// nothing written.
     pub(super) fn insert_key(
         &self,
         tx: &mut RTx<'_>,
         tenant: Option<TenantId>,
         scopes: Scopes,
         label: &str,
+        life: KeyLife,
     ) -> Result<NewKey, TenantError> {
+        let now = nanos(self.clock.now());
+        let expires_at = life.expires_at(now, self.no_expiry_allowed())?;
         let (id, token) = access::new_token();
         tx.insert_key(&KeyRow {
             id,
@@ -242,10 +296,18 @@ impl Tenants {
             token_hash: access::token_hash(&token).to_vec(),
             scopes: scopes.to_string(),
             label: label.to_owned(),
-            created_at: nanos(self.clock.now()),
+            created_at: now,
             revoked_at: None,
+            expires_at,
+            last_used_at: None,
         })?;
-        Ok(NewKey { id, token })
+        Ok(NewKey {
+            id,
+            token,
+            expires_at: expires_at
+                .map(|at| from_nanos(at).ok_or(TenantError::Io))
+                .transpose()?,
+        })
     }
 
     /// The keys of one tenant, or with None every key, oldest first.
@@ -600,6 +662,8 @@ mod tests {
                     label: "first".to_owned(),
                     created_at: datetime!(2026-10-23 12:00 UTC),
                     revoked_at: None,
+                    expires_at: Some(datetime!(2027-01-21 12:00 UTC)),
+                    last_used_at: None,
                 },
                 KeyInfo {
                     id: second.id,
@@ -608,6 +672,8 @@ mod tests {
                     label: "second".to_owned(),
                     created_at: datetime!(2026-10-23 14:00 UTC),
                     revoked_at: Some(datetime!(2026-10-23 14:00 UTC)),
+                    expires_at: Some(datetime!(2027-01-21 14:00 UTC)),
+                    last_used_at: None,
                 },
             ]
         );

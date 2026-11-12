@@ -74,7 +74,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -144,7 +144,7 @@
             }
           },
           "422": {
-            "description": "The body is refused: invalid-body, bad-scopes, bad-setting, path-uuid-mismatch or a format refusal",
+            "description": "The body is refused: invalid-body, bad-scopes, bad-expiry, bad-setting, path-uuid-mismatch or a format refusal",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -230,7 +230,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -363,7 +363,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -476,7 +476,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -566,7 +566,7 @@
             }
           },
           "422": {
-            "description": "The body is refused: invalid-body, bad-scopes, bad-setting, path-uuid-mismatch or a format refusal",
+            "description": "The body is refused: invalid-body, bad-scopes, bad-expiry, bad-setting, path-uuid-mismatch or a format refusal",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -660,7 +660,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -764,7 +764,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -828,7 +828,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -900,7 +900,7 @@
             "description": "Not one JSON-RPC message, protocol headers that do not match it, or a key beside a session cookie (key-and-session)"
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -994,7 +994,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1336,7 +1336,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1438,7 +1438,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1575,7 +1575,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1697,7 +1697,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1839,7 +1839,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1959,7 +1959,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2081,7 +2081,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2186,7 +2186,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2300,7 +2300,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2350,7 +2350,7 @@
             }
           },
           "422": {
-            "description": "The body is refused: invalid-body, bad-scopes, bad-setting, path-uuid-mismatch or a format refusal",
+            "description": "The body is refused: invalid-body, bad-scopes, bad-expiry, bad-setting, path-uuid-mismatch or a format refusal",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2425,7 +2425,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2524,7 +2524,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2574,7 +2574,7 @@
             }
           },
           "422": {
-            "description": "The body is refused: invalid-body, bad-scopes, bad-setting, path-uuid-mismatch or a format refusal",
+            "description": "The body is refused: invalid-body, bad-scopes, bad-expiry, bad-setting, path-uuid-mismatch or a format refusal",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2639,7 +2639,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2763,7 +2763,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2813,7 +2813,7 @@
             }
           },
           "422": {
-            "description": "The body is refused: invalid-body, bad-scopes, bad-setting, path-uuid-mismatch or a format refusal",
+            "description": "The body is refused: invalid-body, bad-scopes, bad-expiry, bad-setting, path-uuid-mismatch or a format refusal",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2900,7 +2900,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2950,7 +2950,7 @@
             }
           },
           "422": {
-            "description": "The body is refused: invalid-body, bad-scopes, bad-setting, path-uuid-mismatch or a format refusal",
+            "description": "The body is refused: invalid-body, bad-scopes, bad-expiry, bad-setting, path-uuid-mismatch or a format refusal",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3025,7 +3025,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3127,7 +3127,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3231,7 +3231,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3333,7 +3333,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3383,7 +3383,7 @@
             }
           },
           "422": {
-            "description": "The body is refused: invalid-body, bad-scopes, bad-setting, path-uuid-mismatch or a format refusal",
+            "description": "The body is refused: invalid-body, bad-scopes, bad-expiry, bad-setting, path-uuid-mismatch or a format refusal",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3465,7 +3465,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3515,7 +3515,7 @@
             }
           },
           "422": {
-            "description": "The body is refused: invalid-body, bad-scopes, bad-setting, path-uuid-mismatch or a format refusal",
+            "description": "The body is refused: invalid-body, bad-scopes, bad-expiry, bad-setting, path-uuid-mismatch or a format refusal",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3590,7 +3590,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3692,7 +3692,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3799,7 +3799,7 @@
             }
           },
           "401": {
-            "description": "No valid bearer key: unauthorized",
+            "description": "No valid bearer key: unauthorized, or key-expired for a key past its expiry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4258,6 +4258,7 @@
               "https://vcon-server.com/problems/bad-payload",
               "https://vcon-server.com/problems/bad-query",
               "https://vcon-server.com/problems/bad-scopes",
+              "https://vcon-server.com/problems/bad-expiry",
               "https://vcon-server.com/problems/bad-setting",
               "https://vcon-server.com/problems/bad-uuid",
               "https://vcon-server.com/problems/conflict",
@@ -4266,6 +4267,7 @@
               "https://vcon-server.com/problems/forbidden",
               "https://vcon-server.com/problems/wrong-listener",
               "https://vcon-server.com/problems/key-and-session",
+              "https://vcon-server.com/problems/key-expired",
               "https://vcon-server.com/problems/no-session",
               "https://vcon-server.com/problems/bad-origin",
               "https://vcon-server.com/problems/bad-csrf",
@@ -4530,6 +4532,16 @@
           },
           "label": {
             "type": "string"
+          },
+          "expires_in_days": {
+            "description": "The days until the key expires. Absent, the key expires in 90 days.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 365
+          },
+          "no_expiry": {
+            "description": "True for a key that never expires; refused with bad-expiry when sent with expires_in_days, or when the configuration sets keys.no_expiry to false.",
+            "type": "boolean"
           }
         }
       },
@@ -4562,7 +4574,8 @@
         "type": "object",
         "required": [
           "id",
-          "token"
+          "token",
+          "expires_at"
         ],
         "properties": {
           "id": {
@@ -4570,6 +4583,14 @@
           },
           "token": {
             "type": "string"
+          },
+          "expires_at": {
+            "description": "From when the key is refused with key-expired; null for a key that never expires.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
           }
         }
       },
@@ -4581,7 +4602,9 @@
           "scopes",
           "label",
           "created_at",
-          "revoked_at"
+          "revoked_at",
+          "expires_at",
+          "last_used_at"
         ],
         "properties": {
           "id": {
@@ -4607,6 +4630,22 @@
             "format": "date-time"
           },
           "revoked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "expires_at": {
+            "description": "From when the key is refused with key-expired; null for a key that never expires.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "last_used_at": {
+            "description": "The start of the minute of an accepted request by the key, written at most once a minute; null for a key no request has used.",
             "type": [
               "string",
               "null"

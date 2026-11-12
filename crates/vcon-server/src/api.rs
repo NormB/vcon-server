@@ -29,7 +29,7 @@ use crate::query::BadQuery;
 use crate::retention::Retention;
 use crate::reveal::Part;
 use crate::store::{Caller as StoreCaller, Created, ListQuery, Store, StoreError};
-use crate::tenants::{KeyInfo, Removal, TenantError, TenantInfo, Tenants};
+use crate::tenants::{KeyInfo, KeyLife, Removal, TenantError, TenantInfo, Tenants};
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 use vcon::read::{Inspection, Rejection};
@@ -1000,17 +1000,36 @@ fn removal(query: Option<&str>) -> Option<Removal> {
     }
 }
 
-/// The body of `POST /admin/tenants/{id}/keys`.
+/// The body of `POST /admin/tenants/{id}/keys` and of `POST
+/// /tenant/keys`.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NewKeyBody {
     scopes: Vec<String>,
     label: String,
+    /// The days the key lives, from 1 to 365; 90 when absent.
+    #[serde(default)]
+    expires_in_days: Option<i64>,
+    /// True for a key with no expiry.
+    #[serde(default)]
+    no_expiry: Option<bool>,
+}
+
+impl NewKeyBody {
+    /// The scopes and the life the body asks for; the refusal when a
+    /// scope has no name. A life no key can have is refused where the key
+    /// is made, after its scopes.
+    fn asked(&self) -> Result<(Scopes, KeyLife), TenantError> {
+        let scopes = Scopes::named(&self.scopes).ok_or(TenantError::BadScopes)?;
+        Ok((scopes, KeyLife::asked(self.expires_in_days, self.no_expiry)))
+    }
 }
 
 /// `POST /admin/tenants/{id}/keys`: makes a key for the tenant and
-/// answers 201 with its id and token. The token is shown this once; only
-/// its hash is kept.
+/// answers 201 with its id, its token and its expiry. The token is shown
+/// this once; only its hash is kept. The key expires in `expires_in_days`
+/// days (1 to 365; 90 when absent), or never with `no_expiry` where the
+/// configuration allows it; any other expiry is 422 `bad-expiry`.
 async fn key_create(
     State(app): State<Arc<App>>,
     UriPath(id): UriPath<String>,
@@ -1025,26 +1044,35 @@ async fn key_create(
             return Err(refuse(Problem::Tenant(TenantError::NotFound)).await);
         };
         let new: NewKeyBody = admin_body(&app, key, action, &body).await?;
-        let Some(scopes) = Scopes::named(&new.scopes) else {
-            return Err(refuse(Problem::Tenant(TenantError::BadScopes)).await);
+        let (scopes, life) = match new.asked() {
+            Ok(asked) => asked,
+            Err(refused) => return Err(refuse(Problem::Tenant(refused)).await),
         };
         let tenants = app.tenants.clone();
         // Tenants records its own outcomes.
-        blocking(move || tenants.create_key(Actor::Key(key), Some(id), scopes, &new.label))
-            .await
-            .map_err(Problem::Tenant)
+        blocking(move || {
+            tenants.create_key_for(Actor::Key(key), Some(id), scopes, &new.label, life)
+        })
+        .await
+        .map_err(Problem::Tenant)
     };
     match made.await {
-        Ok(made) => {
-            let body = serde_json::json!({ "id": made.id.to_string(), "token": made.token });
-            let mut answer = json_answer(StatusCode::CREATED, &body);
-            answer
-                .headers_mut()
-                .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
-            answer
-        }
+        Ok(made) => new_key_answer(&made),
         Err(refused) => refused.into_response(),
     }
+}
+
+/// The answer that shows a new key: 201 with its id, its token and its
+/// expiry, never stored by a cache.
+fn new_key_answer(made: &crate::tenants::NewKey) -> Response {
+    let Some(body) = made.to_json() else {
+        return Problem::Tenant(TenantError::Io).into_response();
+    };
+    let mut answer = json_answer(StatusCode::CREATED, &body);
+    answer
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    answer
 }
 
 /// `GET /admin/tenants/{id}/keys`: the tenant's keys, oldest first, with
@@ -1306,6 +1334,7 @@ pub(crate) async fn authenticated(app: &Arc<App>, headers: &HeaderMap) -> Result
         let caller =
             access::authenticate(&tenants, authorization.as_deref()).map_err(|e| match e {
                 AuthError::Io => Problem::Unavailable,
+                AuthError::Expired => Problem::KeyExpired,
                 _ => Problem::Unauthorized,
             })?;
         if plane.admits(&caller) {
@@ -1387,6 +1416,8 @@ pub(crate) enum Problem {
     Unavailable,
     AuditFailed,
     UnsupportedMediaType,
+    /// The key's secret is right and the key is past its expiry.
+    KeyExpired,
     /// The request carries both a key and the session cookie.
     KeyAndSession,
     /// A route of a session was asked with no cookie, or with one that
@@ -1486,7 +1517,7 @@ impl Problem {
             Problem::UnknownKey => StatusCode::NOT_FOUND,
             Problem::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Problem::Timeout => StatusCode::REQUEST_TIMEOUT,
-            Problem::NoSession => StatusCode::UNAUTHORIZED,
+            Problem::NoSession | Problem::KeyExpired => StatusCode::UNAUTHORIZED,
             Problem::BadOrigin | Problem::BadCsrf => StatusCode::FORBIDDEN,
             Problem::BadBody
             | Problem::BadPathUuid
@@ -1520,9 +1551,10 @@ impl Problem {
                 TenantError::NameTaken | TenantError::HoldsVcons | TenantError::UnderHold => {
                     StatusCode::CONFLICT
                 }
-                TenantError::BadName | TenantError::BadScopes | TenantError::BadSetting(_) => {
-                    StatusCode::UNPROCESSABLE_ENTITY
-                }
+                TenantError::BadName
+                | TenantError::BadScopes
+                | TenantError::BadExpiry
+                | TenantError::BadSetting(_) => StatusCode::UNPROCESSABLE_ENTITY,
                 TenantError::CliOnly => StatusCode::FORBIDDEN,
                 TenantError::LimitReached | TenantError::AuditFailed | TenantError::Closing => {
                     StatusCode::SERVICE_UNAVAILABLE
@@ -1546,6 +1578,7 @@ impl Problem {
                 "The request carries both a key and a session cookie",
             ),
             Problem::NoSession => ("no-session", "A live session is needed"),
+            Problem::KeyExpired => ("key-expired", "The key has expired"),
             Problem::BadOrigin => (
                 "bad-origin",
                 "The request does not come from this listener's own pages",
@@ -1637,6 +1670,7 @@ impl Problem {
                     ("under-hold", "A vCon of the tenant is under a legal hold")
                 }
                 TenantError::BadScopes => ("bad-scopes", "A tenant key cannot hold these scopes"),
+                TenantError::BadExpiry => ("bad-expiry", "A key cannot have this expiry"),
                 TenantError::BadSetting(_) => (
                     "bad-setting",
                     "A setting's name or value is not one a tenant may set",
@@ -1679,7 +1713,7 @@ impl IntoResponse for Problem {
             .into_response();
         // A 401 names what the route takes: a key, or a session.
         let challenge = match self {
-            Problem::Unauthorized => Some("Bearer"),
+            Problem::Unauthorized | Problem::KeyExpired => Some("Bearer"),
             Problem::NoSession => Some("Session"),
             _ => None,
         };
@@ -2396,6 +2430,7 @@ mod tests {
             (TenantError::Closing, 503, "unavailable"),
             (TenantError::CliOnly, 403, "forbidden"),
             (TenantError::BadScopes, 422, "bad-scopes"),
+            (TenantError::BadExpiry, 422, "bad-expiry"),
             (
                 TenantError::BadSetting(crate::settings::SettingError::UnknownName),
                 422,
@@ -3637,7 +3672,12 @@ mod tests {
             let made = json(answer).await;
             let id = made["id"].as_str().expect("an id").to_owned();
             let token = made["token"].as_str().expect("a token").to_owned();
-            assert_eq!(made, json!({ "id": id, "token": token }), "nothing else");
+            assert!(made["expires_at"].is_string(), "the expiry of the new key");
+            assert_eq!(
+                made.as_object().expect("an object").len(),
+                3,
+                "id, token and expires_at, nothing else"
+            );
             assert_eq!(key_id(&token).to_string(), id, "the token names its key");
             (id, token)
         }
@@ -3688,8 +3728,10 @@ mod tests {
                 fields,
                 [
                     "created_at",
+                    "expires_at",
                     "id",
                     "label",
+                    "last_used_at",
                     "revoked_at",
                     "scopes",
                     "tenant"
@@ -5199,6 +5241,9 @@ mod tenant_routes;
 mod session_tests;
 
 #[cfg(test)]
+mod key_life_tests;
+
+#[cfg(test)]
 mod site_pages {
     use std::collections::BTreeSet;
     use std::path::PathBuf;
@@ -5219,6 +5264,7 @@ mod site_pages {
             Problem::Unavailable,
             Problem::AuditFailed,
             Problem::UnsupportedMediaType,
+            Problem::KeyExpired,
             Problem::KeyAndSession,
             Problem::NoSession,
             Problem::BadOrigin,
@@ -5246,6 +5292,7 @@ mod site_pages {
                 | Problem::Unavailable
                 | Problem::AuditFailed
                 | Problem::UnsupportedMediaType
+                | Problem::KeyExpired
                 | Problem::KeyAndSession
                 | Problem::NoSession
                 | Problem::BadOrigin
@@ -5337,6 +5384,7 @@ mod site_pages {
             TenantError::Closing,
             TenantError::CliOnly,
             TenantError::BadScopes,
+            TenantError::BadExpiry,
             TenantError::BadSetting(crate::settings::SettingError::UnknownName),
             TenantError::WrongKey,
             TenantError::Io,
@@ -5353,6 +5401,7 @@ mod site_pages {
                 | TenantError::Closing
                 | TenantError::CliOnly
                 | TenantError::BadScopes
+                | TenantError::BadExpiry
                 | TenantError::BadSetting(_)
                 | TenantError::WrongKey
                 | TenantError::Io => all.push(Problem::Tenant(error)),

@@ -7,8 +7,9 @@ use aws_lc_rs::digest::{SHA256, digest};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
+use crate::clock::nanos;
 use crate::ids::{KeyId, TenantId};
-use crate::tenants::Tenants;
+use crate::tenants::{Tenants, key_life};
 
 /// The fixed start of every token, so secret scanners can spot a leaked
 /// one.
@@ -230,6 +231,8 @@ pub enum AuthError {
     Unknown,
     /// The key was revoked.
     Revoked,
+    /// The key is past its expiry.
+    Expired,
     /// The key table could not be read, so nothing is let through.
     Io,
 }
@@ -246,6 +249,7 @@ impl fmt::Display for AuthError {
             }
             AuthError::Unknown => f.write_str("no key has this id and secret"),
             AuthError::Revoked => f.write_str("the key was revoked"),
+            AuthError::Expired => f.write_str("the key has expired"),
             AuthError::Io => f.write_str("the key table could not be read"),
         }
     }
@@ -268,7 +272,11 @@ impl std::error::Error for AuthError {}
 /// [`AuthError::Io`] when the key table cannot be read.
 pub fn authenticate(keys: &Tenants, authorization: Option<&str>) -> Result<Caller, AuthError> {
     match check(keys, authorization) {
-        Ok(caller) => Ok(caller),
+        Ok((caller, last_used)) => {
+            // A failure to write the time does not refuse the request.
+            let _ = keys.key_used(caller.key, last_used);
+            Ok(caller)
+        }
         Err((error, known)) => {
             if error != AuthError::Io {
                 keys.count_auth_failure(known);
@@ -281,7 +289,8 @@ pub fn authenticate(keys: &Tenants, authorization: Option<&str>) -> Result<Calle
 /// A failed check, with the key it named if that key is known.
 type Failure = (AuthError, Option<(KeyId, Option<TenantId>)>);
 
-fn check(keys: &Tenants, authorization: Option<&str>) -> Result<Caller, Failure> {
+/// The caller a header names, with the last-used time stored for its key.
+fn check(keys: &Tenants, authorization: Option<&str>) -> Result<(Caller, Option<i64>), Failure> {
     let unknown = |error| (error, None);
     let header = authorization.ok_or(unknown(AuthError::Missing))?;
     let token = bearer(header).ok_or(unknown(AuthError::Malformed))?;
@@ -295,14 +304,19 @@ fn check(keys: &Tenants, authorization: Option<&str>) -> Result<Caller, Failure>
     // nothing about the key.
     constant_time::verify_slices_are_equal(&token_hash(token), &key.hash)
         .map_err(|_| known(AuthError::Unknown))?;
+    // Revocation is told before expiry: a key that is both stays revoked.
     if key.revoked {
         return Err(known(AuthError::Revoked));
     }
-    Ok(Caller {
+    if key_life::expired(key.expires_at, nanos(keys.now())) {
+        return Err(known(AuthError::Expired));
+    }
+    let caller = Caller {
         key: id,
         tenant: key.tenant,
         scopes: key.scopes,
-    })
+    };
+    Ok((caller, key.last_used_at))
 }
 
 /// Refuses a caller whose key does not hold `scope`. Admin belongs only to

@@ -624,13 +624,15 @@ A call and its result, from a test server:
 
 ### `admin_key_create`
 
-Makes a key for the tenant holding these scopes (write, read, delete, legal, audit, tenant_admin) with this label, and returns its id and its token. The token is returned this once; only its hash is kept.
+Makes a key for the tenant holding these scopes (write, read, delete, legal, audit, tenant_admin) with this label, and returns its id, its token and its expiry. The token is returned this once; only its hash is kept. The key expires in 90 days, or in expires_in_days days (1 to 365), or never with no_expiry.
 
 Scope: admin. Hints: none.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|
+| `expires_in_days` | integer | no | The days until the key expires, from 1 to 365; 90 when absent. |
 | `label` | string | yes | Who holds the key. |
+| `no_expiry` | boolean | no | True for a key that never expires, where the configuration allows one. |
 | `scopes` | array | yes | The scopes it holds: write, read, delete, legal, audit, tenant_admin. |
 | `tenant` | string | yes | The tenant the key belongs to. |
 
@@ -651,6 +653,7 @@ A call and its result, from a test server:
 
 ```json
 {
+  "expires_at": "2027-01-23T12:00:00Z",
   "id": "9c55ce1f43c2da8c",
   "token": "vcs_9c55ce1f43c2da8c_aShPX8ohqSmZ7iPf_8mmbctooWO5xQZSxSQeUc7T0IE"
 }
@@ -658,7 +661,7 @@ A call and its result, from a test server:
 
 ### `admin_key_list`
 
-Returns the tenant's keys, oldest first: each id, tenant, scopes, label between untrusted-vcon-data markers, and times made and revoked (RFC 3339); never a token. From cursor, within max_bytes, with next_cursor when more follow.
+Returns the tenant's keys, oldest first: each id, tenant, scopes, label between untrusted-vcon-data markers, and times made, revoked, of expiry and of last use (RFC 3339, null for a time the key does not have); never a token. From cursor, within max_bytes, with next_cursor when more follow.
 
 Scope: admin. Hints: read-only, idempotent.
 
@@ -684,8 +687,10 @@ A call and its result, from a test server:
   "keys": [
     {
       "created_at": "2026-10-25T12:00:00Z",
+      "expires_at": "2027-01-23T12:00:00Z",
       "id": "9c55ce1f43c2da8c",
       "label": "⟦untrusted-vcon-data⟧transcriber⟦/untrusted-vcon-data⟧",
+      "last_used_at": null,
       "revoked_at": null,
       "scopes": [
         "read"

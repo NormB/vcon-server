@@ -22,13 +22,14 @@ upgrades it to the server built from the change, and goes back again.
 
 These are on `main` only, in no release yet; they apply to the release
 that follows 0.4.3. The configuration is as it was. The catalogs change:
-see [schema version 8](#schema-version-8-and-no-way-back-without-the-copy)
-first.
+see [schema version 9](#schema-version-9-and-no-way-back-without-the-copy)
+first. New keys expire: see
+[keys made before the upgrade have no expiry](#keys-made-before-the-upgrade-have-no-expiry).
 
-### Schema version 8, and no way back without the copy
+### Schema version 9, and no way back without the copy
 
 The new binary brings every catalog from schema version 4 to schema version
-8, each in one transaction: `server.sqlite` the first time `serve`, `check`
+9, each in one transaction: `server.sqlite` the first time `serve`, `check`
 or any other command opens it, and each tenant's catalog the first time
 that tenant's data is opened after it. A catalog whose change fails stays
 whole at version 4, and the command says why.
@@ -46,6 +47,9 @@ whole at version 4, and the command says why.
   [sessions](@/docs/session-origin.md) of users who signed in. It starts
   empty, and holds the SHA-256 of each session's id and of its CSRF
   token, never the id or the token.
+- The `api_key` table of `server.sqlite` gains the columns `expires_at`
+  and `last_used_at`. Both start empty for every key there is: no expiry,
+  and no last-used time until the key's next request.
 - Every audit log, the admin log and each tenant's, can hold a record
   with no status. A log at schema version 4 could not. Release 0.4.3
   writes one for a listener that filled (`listener_full`), and at version 4
@@ -58,10 +62,10 @@ whole at version 4, and the command says why.
   have free space of at least twice the size of the largest catalog file.
 
 Release 0.4.3, and every release before it, refuses a catalog at schema
-version 8. Once the new binary has opened a data directory, 0.4.3's
+version 9. Once the new binary has opened a data directory, 0.4.3's
 `check`, `serve` and every other command stop with `vcon-server: the
 registry cannot be opened: opening /var/lib/vcon-server/server.sqlite
-failed: schema version 8 is not one this build knows`. There is no
+failed: schema version 9 is not one this build knows`. There is no
 downgrade. The only way back is the copy of the data directory taken
 before the upgrade, as in
 [go back to the old version](#go-back-to-the-old-version); everything
@@ -74,16 +78,40 @@ stored after the copy is lost. Before you install the new binary, keep:
 - the 0.4.3 binary, to go back to.
 
 With the [PostgreSQL catalog preview](@/docs/postgres-catalog.md), the
-database's schema goes from version 1 to version 5, and only
+database's schema goes from version 1 to version 6, and only
 `vcon-server migrate` changes it: run it after you install the new binary
 and before you start a server. Until then a server stops with `the database
-schema is version 1, older than this binary's 5: run vcon-server migrate`.
+schema is version 1, older than this binary's 6: run vcon-server migrate`.
 Version 2 adds the same two tables and lets both audit tables hold no
 status, version 3 adds the role cap's column to the tenant table, version
-4 adds the table of the settings a tenant's administrator sets, and version
-5 adds the table of sessions. A 0.4.3
-binary refuses a database at version 2, 3, 4 or 5 as `newer than this
+4 adds the table of the settings a tenant's administrator sets, version
+5 adds the table of sessions, and version 6 adds the two columns of a
+key's expiry and last-used time. A 0.4.3
+binary refuses a database at version 2, 3, 4, 5 or 6 as `newer than this
 binary`; the way back is a copy of the database taken before `migrate`.
+
+### Keys made before the upgrade have no expiry
+
+From this version a new key expires. `key create`, `POST
+/admin/tenants/{id}/keys`, `POST /tenant/keys` and the MCP tool
+`admin_key_create` make a key that expires 90 days after it is made,
+unless the request names 1 to 365 days or asks for no expiry. A request
+by an expired key is answered `401`
+[`key-expired`](@/problems/key-expired.md).
+
+The upgrade changes no key that exists. Every key made by 0.4.3 or
+earlier keeps working after the upgrade with no expiry, and `key list`
+shows its `expires_at` as `null`. No client is refused because of the
+upgrade. To put such a key under an expiry, make a new key, move the
+client to it and revoke the old one, as in
+[rotate keys](@/docs/rotate-keys.md).
+
+A script that makes a key and never replaces it stops working 90 days
+later. Either replace its key on a schedule shorter than the key's life,
+or make its key with `--no-expiry` (`"no_expiry": true` over HTTP). To
+refuse keys with no expiry, set `no_expiry = false` in the `[keys]` table
+of the [configuration](@/docs/configuration.md); keys made earlier are
+not changed by that setting.
 
 ## From 0.4.2 to 0.4.3
 
@@ -482,7 +510,7 @@ CI runs this page with the objects in the data directory only.
   a secret file that other users may read, that its group may change, or
   that another user owns stops the server; see
   [from 0.4.0 to 0.4.1](#from-0-4-0-to-0-4-1-the-secret-file-rule).
-- **The old binary stops with `schema version 8 is not one this build knows`
+- **The old binary stops with `schema version 9 is not one this build knows`
   (or `schema version 4` or `3`, for a binary older than 0.4.0):**
   a newer binary has opened the data directory. The old one reads only the
   copy taken before the upgrade; see

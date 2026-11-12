@@ -470,6 +470,11 @@ pub struct KeyRow {
     pub label: String,
     pub created_at: i64,
     pub revoked_at: Option<i64>,
+    /// From when the key is refused; None for a key with no expiry.
+    pub expires_at: Option<i64>,
+    /// The start of the minute of the key's latest accepted request that
+    /// was written; None for a key no request has used.
+    pub last_used_at: Option<i64>,
 }
 
 /// A user's row in the registry.
@@ -577,6 +582,9 @@ pub trait RegistryTx {
     fn insert_key(&mut self, row: &KeyRow) -> Result<(), TenantError>;
     /// Revokes a key at `at` unless it is revoked already.
     fn revoke_key(&mut self, id: KeyId, at: i64) -> Result<(), TenantError>;
+    /// Sets a key's last-used time to `at` unless the key already has that
+    /// time or a later one; whether a row was changed.
+    fn touch_key(&mut self, id: KeyId, at: i64) -> Result<bool, TenantError>;
     fn user(&mut self, id: UserId) -> Result<Option<UserRow>, TenantError>;
     /// Every user, oldest first.
     fn users(&mut self) -> Result<Vec<UserRow>, TenantError>;

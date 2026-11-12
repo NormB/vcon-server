@@ -10,7 +10,7 @@
 use rusqlite::Connection;
 
 use super::v5_tests::{
-    Old, REGISTRY_ROWS, REGISTRY_V4, TENANT_V4, declared, number, rows, tables, version,
+    KEYS_V4, Old, REGISTRY_ROWS, REGISTRY_V4, TENANT_V4, declared, number, rows, tables, version,
 };
 use super::v6_tests::{AUDIT_V5, ROWS_V5, USERS_V5, columns};
 use super::{CatalogError, SCHEMA_VERSION, open};
@@ -22,7 +22,7 @@ use crate::tenants::TenantError;
 
 /// What versions 6 and 7 added to a registry, and a setting a version-7
 /// build could have kept.
-const ADDED_V7: &str = "
+pub(super) const ADDED_V7: &str = "
 ALTER TABLE tenant ADD COLUMN role_cap TEXT;
 CREATE TABLE tenant_setting (
     tenant BLOB NOT NULL,
@@ -135,7 +135,7 @@ fn a_version_7_registry_keeps_every_row_it_had() {
             rows(conn, "SELECT * FROM tenant ORDER BY id"),
             rows(conn, "SELECT * FROM user_account ORDER BY id"),
             rows(conn, "SELECT * FROM membership ORDER BY user"),
-            rows(conn, "SELECT * FROM api_key ORDER BY id"),
+            rows(conn, KEYS_V4),
             rows(conn, "SELECT * FROM tenant_setting"),
             rows(conn, "SELECT * FROM audit ORDER BY seq"),
         ]
@@ -396,7 +396,8 @@ fn a_version_7_tenant_catalog_changes_only_its_number() {
 
 #[test]
 fn registries_stamped_with_every_older_version_gain_the_table() {
-    for from in 1..SCHEMA_VERSION {
+    // Every version before 8: a registry at 8 or later has the table.
+    for from in 1..8 {
         let old = Old::at(from, &[]);
         old.raw()
             .execute_batch("CREATE TABLE tenant (id BLOB PRIMARY KEY NOT NULL)")
