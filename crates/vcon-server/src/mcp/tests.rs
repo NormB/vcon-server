@@ -84,6 +84,7 @@ pub(super) async fn serving_on(
         mcp: limits,
         plane,
         reports: api::ReportGate::new(api::ReportLimits::DEFAULT),
+        origin: None,
     });
     let made =
         rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).expect("a certificate");

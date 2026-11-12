@@ -330,6 +330,7 @@ impl Tenants {
             .collect();
         tx.deactivate_user(id, nanos(self.clock.now()))?;
         tx.delete_memberships_of_user(id)?;
+        tx.delete_sessions_of_user(id)?;
         let done = entry(204);
         self.record(&mut tx, &done)?;
         // The copies open each tenant's Store, which reads the registry.
@@ -410,6 +411,9 @@ impl Tenants {
                 roles
             }
         };
+        // A session holds the scopes its membership gave when it started,
+        // so a change of roles ends every session of the user.
+        tx.delete_sessions_of_user(user)?;
         let done = entry(200);
         self.record(&mut tx, &done)?;
         // The copy opens the tenant's Store, which reads the registry.
@@ -470,6 +474,8 @@ impl Tenants {
                 ..row
             })?;
         }
+        // As a grant does: a change of roles ends the user's sessions.
+        tx.delete_sessions_of_user(user)?;
         let done = entry(200);
         self.record(&mut tx, &done)?;
         // The copy opens the tenant's Store, which reads the registry.

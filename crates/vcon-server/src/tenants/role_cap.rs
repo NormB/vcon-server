@@ -67,6 +67,9 @@ impl Tenants {
             return Err(error);
         }
         tx.set_role_cap(id, text.as_deref())?;
+        // A session's scopes were given under the cap as it was, so a
+        // change of the cap ends every session in the tenant.
+        tx.delete_sessions_in(id)?;
         let done = entry(200);
         self.record(&mut tx, &done)?;
         // The copy opens the tenant's Store, which reads the registry.

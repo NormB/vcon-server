@@ -11,6 +11,7 @@ use serde::Deserialize;
 
 use crate::api::ConnectionLimits;
 use crate::retention::Retention;
+use crate::session::Origin;
 
 /// The configuration `serve` runs with. Durations are written in whole
 /// seconds and sizes in bytes; each must be more than zero, and each has a
@@ -62,6 +63,10 @@ pub struct Config {
     /// The operator listener: the `[operator]` table. Without it, the one
     /// listener serves operator keys too.
     pub operator: Option<Operator>,
+    /// The origin a browser reaches `listen` at (`public_origin`), which a
+    /// request by session must come from. Without it, `listen` serves no
+    /// session.
+    pub public_origin: Option<Origin>,
 }
 
 /// The operator listener: the `[operator]` table. With it, `serve` listens
@@ -77,6 +82,10 @@ pub struct Operator {
     /// Its private key (`operator.tls.key`), or `tls.key` when the table
     /// has no `[operator.tls]`.
     pub tls_key: PathBuf,
+    /// The origin a browser reaches the operator listener at
+    /// (`operator.public_origin`). Without it, that listener serves no
+    /// session.
+    pub public_origin: Option<Origin>,
 }
 
 /// Whether two listening addresses would take the same socket: the same
@@ -355,6 +364,7 @@ pub fn parse(text: &str) -> Result<Config, ConfigError> {
         })?,
     };
     let tls = (raw.tls.cert, raw.tls.key);
+    let public_origin = origin("public_origin", raw.public_origin)?;
     Ok(Config {
         listen: raw.listen,
         tls_cert: tls.0.clone(),
@@ -387,8 +397,22 @@ pub fn parse(text: &str) -> Result<Config, ConfigError> {
             s3: raw.export.s3.map(export_s3).transpose()?,
         },
         catalog,
-        operator: operator(raw.operator, raw.listen, &tls)?,
+        operator: operator(raw.operator, raw.listen, &tls, public_origin.as_ref())?,
+        public_origin,
     })
+}
+
+/// A listener's public origin, if `key` is written.
+fn origin(key: &str, raw: Option<String>) -> Result<Option<Origin>, ConfigError> {
+    raw.map(|text| {
+        Origin::parse(&text).ok_or_else(|| {
+            ConfigError(format!(
+                "{key}: {text:?} is not an origin: write https://, a host in lower case and, \
+                 unless it is 443, a port, with nothing after, such as https://vcon.example.com"
+            ))
+        })
+    })
+    .transpose()
 }
 
 /// The `[operator]` table, checked against the tenant listener.
@@ -396,6 +420,7 @@ fn operator(
     raw: Option<RawOperator>,
     listen: SocketAddr,
     tls: &(PathBuf, PathBuf),
+    tenant_origin: Option<&Origin>,
 ) -> Result<Option<Operator>, ConfigError> {
     let Some(raw) = raw else {
         return Ok(None);
@@ -411,10 +436,23 @@ fn operator(
         Some(own) => (own.cert, own.key),
         None => tls.clone(),
     };
+    let public_origin = origin("operator.public_origin", raw.public_origin)?;
+    // A browser keeps a cookie by host and not by port, so two listeners
+    // on one host would each be sent the other's session cookie.
+    if let (Some(own), Some(tenant)) = (&public_origin, tenant_origin)
+        && own.host() == tenant.host()
+    {
+        return Err(ConfigError(format!(
+            "operator.public_origin: {own} has the host of `public_origin` ({tenant}); a browser \
+             keeps a session cookie by host and not by port, so the operator listener needs a \
+             host name of its own"
+        )));
+    }
     Ok(Some(Operator {
         listen: raw.listen,
         tls_cert,
         tls_key,
+        public_origin,
     }))
 }
 
@@ -952,6 +990,7 @@ struct Raw {
     #[serde(default)]
     catalog: RawCatalog,
     operator: Option<RawOperator>,
+    public_origin: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -959,6 +998,7 @@ struct Raw {
 struct RawOperator {
     listen: SocketAddr,
     tls: Option<RawTls>,
+    public_origin: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -1091,6 +1131,7 @@ retention_default = "18m"
 purge_interval = 1800
 rotation_warn = 604800
 supported_critical = ["known", "other"]
+public_origin = "https://vcon.example.com"
 
 [tls]
 cert = "/etc/vcon-server/cert.pem"
@@ -1098,6 +1139,7 @@ key = "/etc/vcon-server/key.pem"
 
 [operator]
 listen = "127.0.0.1:8444"
+public_origin = "https://ops.example.com:8444"
 
 [operator.tls]
 cert = "/etc/vcon-server/operator-cert.pem"
@@ -1258,7 +1300,9 @@ lock_timeout = 20
                     listen: "127.0.0.1:8444".parse().expect("address"),
                     tls_cert: "/etc/vcon-server/operator-cert.pem".into(),
                     tls_key: "/etc/vcon-server/operator-key.pem".into(),
+                    public_origin: Origin::parse("https://ops.example.com:8444"),
                 }),
+                public_origin: Origin::parse("https://vcon.example.com"),
             }),
             "every key the file writes is read into its field"
         );
@@ -1294,6 +1338,7 @@ lock_timeout = 20
                     listen: address("127.0.0.1:8444"),
                     tls_cert: "/etc/vcon-server/cert.pem".into(),
                     tls_key: "/etc/vcon-server/key.pem".into(),
+                    public_origin: None,
                 }),
                 "tls.cert and tls.key serve both listeners"
             );
@@ -1312,6 +1357,7 @@ lock_timeout = 20
                     listen: address("127.0.0.1:8444"),
                     tls_cert: "/etc/vcon-server/ops.pem".into(),
                     tls_key: "/etc/vcon-server/ops.key".into(),
+                    public_origin: None,
                 }),
                 "the operator listener's own pair"
             );
@@ -1524,6 +1570,206 @@ lock_timeout = 20
                 assert!(!same_socket(address(a), address(b)), "{a} and {b}");
                 assert!(!same_socket(address(b), address(a)), "{b} and {a}");
             }
+        }
+    }
+
+    mod public_origins {
+        use super::*;
+        use crate::session::Origin;
+
+        const OPERATOR: &str = "[operator]\nlisten = \"127.0.0.1:8444\"\n";
+
+        /// The least configuration with `public_origin` set to `tenant`,
+        /// and an `[operator]` table that ends with the lines `operator`.
+        fn with(tenant: Option<&str>, operator: &str) -> Result<Config, ConfigError> {
+            let first = tenant.map_or_else(String::new, |o| format!("public_origin = {o}\n"));
+            parse(&format!("{first}{LEAST}\n{OPERATOR}{operator}"))
+        }
+
+        fn origin(text: &str) -> Option<Origin> {
+            Some(Origin::parse(text).expect("an origin"))
+        }
+
+        fn operators(config: &Config) -> Option<Origin> {
+            config
+                .operator
+                .as_ref()
+                .expect("an operator listener")
+                .public_origin
+                .clone()
+        }
+
+        // What must work.
+
+        #[test]
+        fn without_the_keys_no_listener_has_a_public_origin() {
+            let config = with(None, "").expect("parses");
+            assert_eq!(config.public_origin, None, "sessions are off on `listen`");
+            assert_eq!(operators(&config), None, "and on `operator.listen`");
+            assert_eq!(
+                parse(LEAST).expect("parses").public_origin,
+                None,
+                "the least"
+            );
+        }
+
+        #[test]
+        fn public_origin_is_the_tenant_listener_s() {
+            let config = with(Some("\"https://vcon.example.com\""), "").expect("parses");
+            assert_eq!(
+                config.public_origin,
+                origin("https://vcon.example.com"),
+                "the tenant listener's"
+            );
+            assert_eq!(operators(&config), None, "the operator listener has none");
+        }
+
+        #[test]
+        fn operator_public_origin_is_the_operator_listener_s() {
+            let config = with(
+                Some("\"https://vcon.example.com\""),
+                "public_origin = \"https://ops.example.com:8444\"\n",
+            )
+            .expect("parses");
+            assert_eq!(
+                config.public_origin,
+                origin("https://vcon.example.com"),
+                "the tenant listener's"
+            );
+            assert_eq!(
+                operators(&config),
+                origin("https://ops.example.com:8444"),
+                "the operator listener's"
+            );
+        }
+
+        #[test]
+        fn a_server_with_one_listener_takes_public_origin_alone() {
+            let text = format!("public_origin = \"https://vcon.example.com:8443\"\n{LEAST}");
+            let config = parse(&text).expect("parses");
+            assert_eq!(
+                config.public_origin,
+                origin("https://vcon.example.com:8443"),
+                "the one listener's"
+            );
+            assert_eq!(config.operator, None, "no operator listener");
+        }
+
+        // What must be refused.
+
+        #[test]
+        fn a_public_origin_that_is_not_https_and_a_host_is_refused_by_its_key() {
+            for bad in [
+                "http://vcon.example.com",
+                "https://vcon.example.com/",
+                "https://vcon.example.com/console",
+                "vcon.example.com",
+                "https://Vcon.example.com",
+                "",
+            ] {
+                let error = with(Some(&format!("{bad:?}")), "").expect_err(bad);
+                assert!(
+                    error.0.starts_with("public_origin: ") && error.0.contains(bad),
+                    "{error}"
+                );
+            }
+        }
+
+        #[test]
+        fn an_operator_public_origin_that_is_not_an_origin_is_refused_by_its_key() {
+            let error = with(None, "public_origin = \"https://ops.example.com/admin\"\n")
+                .expect_err("a path");
+            assert!(
+                error.0.starts_with("operator.public_origin: "),
+                "the key is named: {error}"
+            );
+        }
+
+        #[test]
+        fn two_public_origins_on_one_host_are_refused_whatever_their_ports() {
+            for (tenant, operator) in [
+                ("https://vcon.example.com", "https://vcon.example.com"),
+                ("https://vcon.example.com", "https://vcon.example.com:8444"),
+                (
+                    "https://vcon.example.com:8443",
+                    "https://vcon.example.com:8444",
+                ),
+                ("https://[2001:db8::7]:8443", "https://[2001:db8::7]:8444"),
+            ] {
+                let error = with(
+                    Some(&format!("{tenant:?}")),
+                    &format!("public_origin = {operator:?}\n"),
+                )
+                .expect_err("one host");
+                assert!(
+                    error.0.starts_with("operator.public_origin: ") && error.0.contains("host"),
+                    "{tenant} and {operator}: {error}"
+                );
+            }
+        }
+
+        #[test]
+        fn a_public_origin_that_is_not_a_string_is_refused() {
+            assert!(with(Some("8443"), "").is_err(), "a number");
+            assert!(
+                with(Some("[\"https://a.example.com\"]"), "").is_err(),
+                "a list"
+            );
+            assert!(with(None, "public_origin = true\n").is_err(), "a flag");
+        }
+
+        // Limits and odd inputs.
+
+        #[test]
+        fn the_operator_listener_may_have_a_public_origin_when_the_tenant_s_has_none() {
+            let config =
+                with(None, "public_origin = \"https://ops.example.com\"\n").expect("parses");
+            assert_eq!(config.public_origin, None, "sessions off for tenants");
+            assert_eq!(
+                operators(&config),
+                origin("https://ops.example.com"),
+                "the operator listener's"
+            );
+        }
+
+        #[test]
+        fn two_public_origins_on_two_hosts_may_share_a_port() {
+            let config = with(
+                Some("\"https://vcon.example.com:8443\""),
+                "public_origin = \"https://ops.example.com:8443\"\n",
+            )
+            .expect("two hosts");
+            assert_eq!(
+                operators(&config),
+                origin("https://ops.example.com:8443"),
+                "the operator listener's"
+            );
+        }
+
+        #[test]
+        fn a_public_origin_may_be_an_address_or_localhost() {
+            for text in [
+                "https://localhost:8443",
+                "https://192.0.2.7:8443",
+                "https://[2001:db8::7]:8443",
+            ] {
+                let config = with(Some(&format!("{text:?}")), "").expect(text);
+                assert_eq!(config.public_origin, origin(text), "{text}");
+            }
+        }
+
+        #[test]
+        fn a_host_that_is_another_s_prefix_is_another_host() {
+            let config = with(
+                Some("\"https://vcon.example.com\""),
+                "public_origin = \"https://vcon.example.com.example.net\"\n",
+            )
+            .expect("two hosts");
+            assert_eq!(
+                operators(&config),
+                origin("https://vcon.example.com.example.net"),
+                "the operator listener's"
+            );
         }
     }
 
@@ -2738,7 +2984,7 @@ key = "/etc/vcon-server/key.pem"
             let defaults = parse(LEAST).expect("least");
             let mut all = Vec::new();
             keys(&FULL.parse::<toml::Table>().expect("toml"), "", &mut all);
-            assert_eq!(all.len(), 61, "{all:?}");
+            assert_eq!(all.len(), 63, "{all:?}");
             let pg = catalog::postgres_least();
             for key in all {
                 let default = match key.as_str() {
@@ -2748,6 +2994,10 @@ key = "/etc/vcon-server/key.pem"
                     "operator.listen" => "none: `listen` serves both".to_owned(),
                     "operator.tls.cert" => "`tls.cert`".to_owned(),
                     "operator.tls.key" => "`tls.key`".to_owned(),
+                    "public_origin" | "operator.public_origin" => {
+                        assert_eq!(defaults.public_origin, None, "the page says none");
+                        "none: the listener serves no session".to_owned()
+                    }
                     "retention_default" => format!("`{}`", defaults.retention_default),
                     "purge_interval" => format!("`{}`", defaults.purge_interval.as_secs()),
                     "rotation_warn" => format!("`{}`", defaults.rotation_warn.as_secs()),

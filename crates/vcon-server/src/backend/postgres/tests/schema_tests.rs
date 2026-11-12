@@ -11,6 +11,7 @@ mod success;
 mod v2;
 mod v3;
 mod v4;
+mod v5;
 
 #[cfg(feature = "backend-tests")]
 pub(super) mod live {
@@ -49,6 +50,7 @@ pub(super) mod live {
         "api_key",
         "master_key_use",
         "membership",
+        "session",
         "tenant",
         "tenant_setting",
         "user_account",
@@ -247,6 +249,7 @@ pub(super) mod live {
             "user_account" => "INSERT INTO vcon.user_account (id, label_sealed, created_at) VALUES ('\\x01', '\\x02', 1)".to_owned(),
             "membership" => "INSERT INTO vcon.membership (user_id, roles_sealed, granted_at) VALUES ('\\x01', '\\x02', 1)".to_owned(),
             "tenant_setting" => "INSERT INTO vcon.tenant_setting (tenant, name, value_sealed) VALUES ('\\x01', 'n', '\\x02')".to_owned(),
+            "session" => "INSERT INTO vcon.session (id_hash, user_id, scopes_sealed, created_at, last_seen_at, idle_expires_at, expires_at, idle_seconds, amr_sealed, csrf_hash) VALUES (decode(repeat('01', 32), 'hex'), '\\x01', '\\x02', 1, 1, 2, 3, 1, '\\x03', decode(repeat('04', 32), 'hex'))".to_owned(),
             other => panic!("no insert for {other}"),
         }
     }

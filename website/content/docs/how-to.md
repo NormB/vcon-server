@@ -87,6 +87,10 @@ shows. `scripts/docs_test.py` runs them. See
 - [Administer a tenant with a key](@/docs/tenant-administration.md): a key
   with the scope `tenant_admin` reads and changes its tenant's settings,
   issues and revokes the tenant's keys, and lists its memberships.
+- [Set a listener's public origin for sessions](@/docs/session-origin.md):
+  the configuration key a listener needs before it serves a session, what
+  a request by session must carry, and each refusal. No sign-in method
+  starts a session yet.
 
 ## Connect an AI agent
 

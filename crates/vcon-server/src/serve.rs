@@ -463,6 +463,20 @@ fn app_from(config: &Config, tenants: Arc<Tenants>, plane: Plane) -> App {
         mcp: config.mcp,
         plane,
         reports: crate::api::ReportGate::new(config.reports),
+        origin: origin_for(config, plane),
+    }
+}
+
+/// The public origin of the listener of `plane`: `operator.public_origin`
+/// for the operator listener, `public_origin` for the tenant listener and
+/// for the one listener of a server with no operator listener.
+fn origin_for(config: &Config, plane: Plane) -> Option<crate::session::Origin> {
+    match plane {
+        Plane::Both | Plane::Tenant => config.public_origin.clone(),
+        Plane::Operator => config
+            .operator
+            .as_ref()
+            .and_then(|operator| operator.public_origin.clone()),
     }
 }
 
@@ -621,6 +635,7 @@ mod tests {
             export: crate::config::Export::default(),
             catalog: crate::config::CatalogStore::Local,
             operator: None,
+            public_origin: None,
         };
         let app = app_from(&config, tenants.clone(), Plane::Tenant);
         assert_eq!(app.plane, Plane::Tenant, "the plane it was given");
@@ -631,6 +646,64 @@ mod tests {
         assert_eq!(app.supported, config.supported_critical);
         assert_eq!(app.retention_default, config.retention_default);
         assert_eq!(app.mcp, config.mcp);
+        assert_eq!(app.origin, None, "no public origin is configured");
+    }
+
+    /// A configuration with these lines before and after the least one.
+    fn configured(first: &str, last: &str) -> Config {
+        let text = format!(
+            "{first}listen = \"127.0.0.1:8443\"\ndata_dir = \"/var/lib/vcon-server\"\n\
+             master_key = \"/etc/vcon-server/master.key\"\n[tls]\ncert = \"/c.pem\"\n\
+             key = \"/k.pem\"\n{last}"
+        );
+        crate::config::parse(&text).expect("a configuration")
+    }
+
+    const OPERATOR: &str =
+        "[operator]\nlisten = \"127.0.0.1:8444\"\npublic_origin = \"https://ops.example.com\"\n";
+
+    #[test]
+    fn each_listener_takes_its_own_public_origin() {
+        let config = configured("public_origin = \"https://vcon.example.com\"\n", OPERATOR);
+        let origin = |plane| origin_for(&config, plane).map(|o| o.as_str().to_owned());
+        assert_eq!(
+            origin(Plane::Tenant).as_deref(),
+            Some("https://vcon.example.com"),
+            "`listen` takes public_origin"
+        );
+        assert_eq!(
+            origin(Plane::Operator).as_deref(),
+            Some("https://ops.example.com"),
+            "`operator.listen` takes operator.public_origin"
+        );
+    }
+
+    #[test]
+    fn the_one_listener_of_a_server_takes_public_origin_for_both_planes() {
+        let config = configured("public_origin = \"https://vcon.example.com\"\n", "");
+        assert_eq!(
+            origin_for(&config, Plane::Both),
+            crate::session::Origin::parse("https://vcon.example.com"),
+            "tenants' and operators' sessions come from the one origin"
+        );
+    }
+
+    #[test]
+    fn a_listener_with_no_public_origin_has_none_and_does_not_take_the_other_s() {
+        let config = configured("", OPERATOR);
+        assert_eq!(
+            origin_for(&config, Plane::Tenant),
+            None,
+            "not the operator's"
+        );
+        let config = configured("public_origin = \"https://vcon.example.com\"\n", "");
+        assert_eq!(
+            origin_for(&config, Plane::Operator),
+            None,
+            "not the tenant's"
+        );
+        let config = configured("", "");
+        assert_eq!(origin_for(&config, Plane::Both), None, "none is configured");
     }
 
     mod sweeps {

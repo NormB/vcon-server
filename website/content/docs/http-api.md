@@ -11,6 +11,8 @@ group = "reference"
 
 - **TLS only**, HTTP/2 or HTTP/1.1.
 - **Every request carries a bearer key:** `Authorization: Bearer vcs_…`.
+  The two [session routes](#sessions) alone take a session's cookie
+  in its place.
   A missing, malformed, unknown or revoked key is
   [`unauthorized`](@/problems/unauthorized.md) (401); a key without the
   route's scope is [`forbidden`](@/problems/forbidden.md) (403). See
@@ -239,6 +241,30 @@ Refusals: [`bad-setting`](@/problems/bad-setting.md),
 [`bad-scopes`](@/problems/bad-scopes.md),
 [`invalid-body`](@/problems/invalid-body.md),
 [`unknown-key`](@/problems/unknown-key.md).
+
+## Sessions
+
+These two routes take a session's cookie, `__Host-vcs_session`, and no
+key. A listener serves them once its public origin is configured; see
+[set a listener's public origin for sessions](@/docs/session-origin.md).
+No sign-in method starts a session yet.
+
+| Route | Takes | Answers |
+|---|---|---|
+| `GET /session` | the cookie and `Sec-Fetch-Site: same-origin`; an `Origin` header, when sent, equal to the listener's public origin | `200` `{"user", "tenant", "scopes", "amr", "created_at", "last_seen_at", "idle_expires_at", "expires_at", "csrf_token"}` with `Cache-Control: no-store`; `tenant` is `null` for an operator's session |
+| `POST /session/logout` | the cookie, an `Origin` header equal to the listener's public origin, and the session's `csrf_token` in `X-CSRF-Token`; the body is not read | `204` with a `Set-Cookie` header that removes the cookie |
+
+Refusals: [`no-session`](@/problems/no-session.md) (401, with
+`WWW-Authenticate: Session`), [`bad-origin`](@/problems/bad-origin.md),
+[`bad-csrf`](@/problems/bad-csrf.md),
+[`wrong-listener`](@/problems/wrong-listener.md) for a session of the
+other plane, and [`key-and-session`](@/problems/key-and-session.md).
+
+A request that carries both an `Authorization` header and the session
+cookie is refused with `key-and-session` (400) on every route of this
+page. The routes above this section take a key and no session: a request
+with the cookie alone is `401` [`unauthorized`](@/problems/unauthorized.md)
+on them.
 
 ## Audit logs
 

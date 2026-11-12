@@ -11,7 +11,6 @@ fn the_schema_version_is_the_number_of_migrations() {
         MIGRATIONS.len(),
         "the binary's version is its last migration's"
     );
-    assert_eq!(SCHEMA_VERSION, 4, "four migrations so far");
 }
 
 #[test]
@@ -40,7 +39,7 @@ fn the_two_advisory_locks_are_different_numbers() {
 #[cfg(feature = "backend-tests")]
 mod on_a_server {
     use super::super::super::super::connect::Purpose;
-    use super::super::super::super::schema::{MIGRATIONS, Migrated};
+    use super::super::super::super::schema::{MIGRATIONS, Migrated, SCHEMA_VERSION};
     use super::super::super::live::value;
     use super::super::live::{
         Db, REGISTRY_TABLES, TENANT_A, TENANT_B, TENANT_TABLES, count, in_scope,
@@ -52,7 +51,10 @@ mod on_a_server {
         let db = Db::fresh().await;
         assert_eq!(
             db.migrate().await,
-            Migrated { from: 0, to: 4 },
+            Migrated {
+                from: 0,
+                to: SCHEMA_VERSION
+            },
             "from nothing to this binary's version"
         );
         let admin = db.admin().await;
@@ -82,7 +84,7 @@ mod on_a_server {
         );
         assert_eq!(
             value(&admin, "SELECT max(version) FROM vcon.schema_version").await,
-            "4",
+            SCHEMA_VERSION.to_string(),
             "the version is recorded for the migrating role that owns the table"
         );
     }
@@ -92,7 +94,10 @@ mod on_a_server {
         let db = Db::migrated().await;
         assert_eq!(
             db.migrate().await,
-            Migrated { from: 4, to: 4 },
+            Migrated {
+                from: SCHEMA_VERSION,
+                to: SCHEMA_VERSION
+            },
             "nothing to do"
         );
         assert_eq!(
@@ -101,7 +106,7 @@ mod on_a_server {
                 "SELECT count(*) FROM vcon.schema_version"
             )
             .await,
-            4,
+            i64::from(SCHEMA_VERSION),
             "one row for each version, and no second row for any"
         );
     }
@@ -315,10 +320,11 @@ mod on_a_server {
         let report = super::super::super::super::migrate(&settings)
             .await
             .expect("migrates");
-        assert_eq!(report, Migrated { from: 0, to: 4 }, "the versions");
+        let now = SCHEMA_VERSION;
+        assert_eq!(report, Migrated { from: 0, to: now }, "the versions");
         assert_eq!(
             report.message(),
-            "schema version 0 to schema version 4",
+            format!("schema version 0 to schema version {now}"),
             "the line it prints"
         );
         let (_dir, settings) = db.settings("vcon_migrate");
@@ -327,7 +333,7 @@ mod on_a_server {
             .expect("no change");
         assert_eq!(
             again.message(),
-            "already at schema version 4",
+            format!("already at schema version {now}"),
             "a run at the same version says so"
         );
     }
@@ -353,7 +359,10 @@ mod on_a_server {
             .expect("releases");
         assert_eq!(
             db.migrate().await,
-            Migrated { from: 4, to: 4 },
+            Migrated {
+                from: SCHEMA_VERSION,
+                to: SCHEMA_VERSION
+            },
             "works once it is free"
         );
     }

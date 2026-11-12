@@ -27,6 +27,7 @@ mod examine;
 mod keys;
 mod rekey;
 mod role_cap;
+mod sessions;
 mod tenant_admin;
 mod users;
 
@@ -35,6 +36,7 @@ pub use examine::{KeyOrder, RegistryExamination, RotationBacklog, TenantExaminat
 pub use keys::{KeyInfo, NewKey};
 pub(crate) use rekey::MasterStep;
 pub use rekey::rekey_master;
+pub use sessions::{Proof, SessionError, SessionInfo, Started};
 pub use tenant_admin::MemberInfo;
 #[cfg(test)]
 pub(crate) use tests::{Fixture, fixture};
@@ -682,10 +684,11 @@ impl Tenants {
         {
             let mut tx = self.registry.immediate()?;
             tx.delete_tenant(id, nanos(self.clock.now()))?;
-            // A membership and a setting are in a tenant: none outlives
-            // its tenant.
+            // A membership, a setting and a session are in a tenant: none
+            // outlives its tenant.
             tx.delete_memberships_in(id)?;
             tx.delete_settings_in(id)?;
+            tx.delete_sessions_in(id)?;
             self.record(&mut tx, &entry(204))?;
             commit(tx)?;
         }
@@ -1054,7 +1057,8 @@ mod tests {
             self.fs.list(&self.tenants_dir()).expect("list tenants")
         }
 
-        fn count(&self, sql: &str) -> i64 {
+        /// The one number a statement on server.sqlite answers.
+        pub(crate) fn count(&self, sql: &str) -> i64 {
             self.conn().query_row(sql, [], |r| r.get(0)).expect(sql)
         }
 
@@ -1146,6 +1150,7 @@ mod tests {
                 "audit",
                 "master_key_use",
                 "membership",
+                "session",
                 "sqlite_sequence",
                 "tenant",
                 "tenant_setting",
@@ -2262,6 +2267,7 @@ mod tests {
                     "ALTER TABLE tenant DROP COLUMN role_cap;
                      ALTER TABLE tenant DROP COLUMN metadata; DROP TABLE membership;
                      DROP TABLE user_account; DROP TABLE tenant_setting;
+                     DROP TABLE session;
                      PRAGMA user_version = {from};"
                 ))
                 .expect("back to the old schema");

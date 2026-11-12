@@ -43,20 +43,57 @@ All notable changes to this project are recorded here. The format follows
   or `false`, `true` while unset), `session.idle_seconds` (60 to 900) and
   `session.absolute_seconds` (300 to 28800), with the idle limit never above
   the absolute one; a change outside the list is refused with the new
-  problem `bad-setting`. Nothing reads a setting yet: sessions and the
-  console's masking will, in a later release. A key made at
+  problem `bad-setting`. Sessions read the two limits; nothing reads the
+  masking settings yet: the console will, in a later release. A key made at
   `POST /tenant/keys` holds scopes within the tenant's role cap and never
   `tenant_admin` or `admin`. Each call is recorded in the admin audit log
   and the tenant's, as `settings_read`, `settings_set`, `key_create`,
   `key_list`, `key_revoke` or `membership_list`; a `settings_set` record
   names the settings changed and never a value. The console's key form
   offers `tenant_admin`. See the how-to "Administer a tenant with a key".
+- Sessions and their CSRF protection, the fourth part of sign-in.
+  `server.sqlite` keeps a session for a user's membership: the SHA-256 of
+  a random 256-bit id, the user, the tenant (none for an operator), the
+  scopes the membership gave when the session started, its times and the
+  SHA-256 of its CSRF token. The id travels in the cookie
+  `__Host-vcs_session` (`Secure`, `HttpOnly`, `SameSite=Strict`, `Path=/`).
+  A session ends when it has not been seen for its idle limit, at its
+  absolute limit, when its user signs out, when a role of its user is
+  granted or taken or the user is deactivated, when its tenant's role cap
+  changes, and with its tenant. The limits are the tenant's settings
+  `session.idle_seconds` and `session.absolute_seconds` as they are when
+  the session starts (15 minutes and 8 hours unless set, and for an
+  operator). Two routes take the cookie and no key: `GET /session` answers
+  the session and its CSRF token to a request with
+  `Sec-Fetch-Site: same-origin`, and `POST /session/logout` ends it for a
+  request with the listener's `Origin` and the token in `X-CSRF-Token`.
+  The origin is the new configuration key `public_origin`, and
+  `operator.public_origin` for the operator listener; a listener without
+  it serves no session, and the two must name different hosts. New problem
+  types: `no-session` (401), `bad-origin` and `bad-csrf` (403), and
+  `key-and-session` (400). New audit actions: `session_start`,
+  `session_end` and the counted `session_read`, with the actor
+  `user:<id>`; a refused request by session is counted as `auth_failed`.
+  No sign-in method exists yet, so nothing starts a session outside the
+  tests: passkeys and single sign-on will, in a later release. The routes
+  that take a key take no session yet. See the how-to "Set a listener's
+  public origin for sessions".
 
 ### Changed
 
-- **No downgrade: the catalogs move to schema version 7.** The first time
+- **A request with both a key and the session cookie is refused.** Every
+  route answers 400 `key-and-session` to a request that carries an
+  `Authorization` header and a cookie named `__Host-vcs_session`, before
+  either is read. No release set that cookie, so a client is affected only
+  if it sends a cookie of that name itself.
+- **Breaking for a reader of the audit log:** the `actor` of a record may
+  be `user:` and a user id, and the actions `session_start`,
+  `session_read` and `session_end` are new. `auth_failed` records may have
+  the status 400 or 403.
+
+- **No downgrade: the catalogs move to schema version 8.** The first time
   this server or one of its commands opens a data directory, it brings
-  `server.sqlite` from schema version 4 to 7, and each tenant's catalog at
+  `server.sqlite` from schema version 4 to 8, and each tenant's catalog at
   that tenant's first use, each in one transaction. Version 5 adds the
   tables `user_account` and `membership` to `server.sqlite`, and lets every
   audit log hold a record with no status: the number 0 that a version-4
@@ -64,12 +101,13 @@ All notable changes to this project are recorded here. The format follows
   sequence numbers, and readers see `null` as before. Version 6 adds the
   column `role_cap` to the `tenant` table of `server.sqlite`, empty for
   every tenant. Version 7 adds the table `tenant_setting` to
-  `server.sqlite`, empty. Release 0.4.3
-  and earlier refuse a catalog at version 7 (`schema version 7 is not one
+  `server.sqlite`, empty. Version 8 adds the table `session`, empty.
+  Release 0.4.3
+  and earlier refuse a catalog at version 8 (`schema version 8 is not one
   this build knows`), so the way back is the copy of the data directory
   taken before the upgrade. With the PostgreSQL catalog preview, run
-  `vcon-server migrate` to bring the database from schema version 1 to 4
-  before a server starts. See "Schema version 7" on the upgrade page.
+  `vcon-server migrate` to bring the database from schema version 1 to 5
+  before a server starts. See "Schema version 8" on the upgrade page.
 - **Breaking for a reader of the audit log that knows a fixed list of
   actions:** add the five actions named above, and `role_cap_set`,
   `role_cap_read`, `settings_read`, `settings_set` and `membership_list`.

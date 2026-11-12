@@ -37,6 +37,7 @@ use vcon::read::{Inspection, Rejection};
 mod csp_report;
 mod listen;
 mod report_gate;
+mod session_routes;
 mod tenant_plane;
 pub use listen::{
     Accept, AfterFailure, ConnectionLimits, after_failure, serve, serve_observed, serve_within,
@@ -69,6 +70,10 @@ pub struct App {
     /// How many reports of a content-security-policy violation the
     /// listener takes in a minute (`limits.csp_reports`).
     pub reports: ReportGate,
+    /// The listener's public origin (`public_origin` or
+    /// `operator.public_origin`), which a request by session must come
+    /// from. With None the listener serves no session.
+    pub origin: Option<crate::session::Origin>,
 }
 
 /// The routes, served from `app`.
@@ -107,6 +112,8 @@ pub fn router(app: Arc<App>) -> Router {
             axum::routing::delete(tenant_plane::key_revoke),
         )
         .route("/tenant/memberships", get(tenant_plane::member_list))
+        .route("/session", get(session_routes::session_read))
+        .route("/session/logout", post(session_routes::session_end))
         .merge(crate::console::router_with(post(csp_report::receive)))
         .with_state(app.clone())
         .merge(crate::mcp::router(app))
@@ -1280,11 +1287,21 @@ async fn admit(
 /// key, 503 when the key table cannot be read, and 403 `wrong-listener`
 /// for a valid key of the kind this listener does not serve
 /// ([`Plane::admits`]), counted in the audit.
+///
+/// A request that carries a key and the session cookie is refused with
+/// 400 `key-and-session` before the key is read, and counted in the audit
+/// as a failed authentication with no actor: a script uses a key and a
+/// browser a session, and a request with both is neither.
 pub(crate) async fn authenticated(app: &Arc<App>, headers: &HeaderMap) -> Result<Caller, Problem> {
     let authorization = headers
         .get(AUTHORIZATION)
         .map(|v| v.to_str().unwrap_or_default().to_owned());
     let (tenants, plane) = (app.tenants.clone(), app.plane);
+    if authorization.is_some() && crate::session::cookie(headers) != crate::session::Cookie::Absent
+    {
+        blocking(move || tenants.count_session(Action::AuthFailed, 400, None)).await;
+        return Err(Problem::KeyAndSession);
+    }
     blocking(move || {
         let caller =
             access::authenticate(&tenants, authorization.as_deref()).map_err(|e| match e {
@@ -1370,6 +1387,16 @@ pub(crate) enum Problem {
     Unavailable,
     AuditFailed,
     UnsupportedMediaType,
+    /// The request carries both a key and the session cookie.
+    KeyAndSession,
+    /// A route of a session was asked with no cookie, or with one that
+    /// names no live session.
+    NoSession,
+    /// A request by session does not come from the listener's public
+    /// origin, or the listener has none.
+    BadOrigin,
+    /// A request by session has no CSRF token, or not the session's.
+    BadCsrf,
     /// A uuid in the path is not in RFC 9562 text form.
     BadPathUuid,
     /// A version in the path is not a version id.
@@ -1459,10 +1486,13 @@ impl Problem {
             Problem::UnknownKey => StatusCode::NOT_FOUND,
             Problem::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Problem::Timeout => StatusCode::REQUEST_TIMEOUT,
+            Problem::NoSession => StatusCode::UNAUTHORIZED,
+            Problem::BadOrigin | Problem::BadCsrf => StatusCode::FORBIDDEN,
             Problem::BadBody
             | Problem::BadPathUuid
             | Problem::BadPathVersion
-            | Problem::BadQuery => StatusCode::BAD_REQUEST,
+            | Problem::BadQuery
+            | Problem::KeyAndSession => StatusCode::BAD_REQUEST,
             Problem::PreconditionRequired => StatusCode::PRECONDITION_REQUIRED,
             Problem::PathUuidMismatch => StatusCode::UNPROCESSABLE_ENTITY,
             Problem::Unavailable | Problem::AuditFailed | Problem::AtCapacity => {
@@ -1511,6 +1541,16 @@ impl Problem {
                 "wrong-listener",
                 "This listener does not serve this kind of key",
             ),
+            Problem::KeyAndSession => (
+                "key-and-session",
+                "The request carries both a key and a session cookie",
+            ),
+            Problem::NoSession => ("no-session", "A live session is needed"),
+            Problem::BadOrigin => (
+                "bad-origin",
+                "The request does not come from this listener's own pages",
+            ),
+            Problem::BadCsrf => ("bad-csrf", "The session's CSRF token is missing or wrong"),
             Problem::TooLarge => ("too-large", "The body is over the size limit"),
             Problem::Timeout => ("timeout", "The body did not arrive in time"),
             Problem::BadBody => ("bad-body", "The body could not be read"),
@@ -1637,10 +1677,16 @@ impl IntoResponse for Problem {
             body.to_string(),
         )
             .into_response();
-        if self == Problem::Unauthorized {
+        // A 401 names what the route takes: a key, or a session.
+        let challenge = match self {
+            Problem::Unauthorized => Some("Bearer"),
+            Problem::NoSession => Some("Session"),
+            _ => None,
+        };
+        if let Some(challenge) = challenge {
             answer
                 .headers_mut()
-                .insert(WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+                .insert(WWW_AUTHENTICATE, HeaderValue::from_static(challenge));
         }
         answer
     }
@@ -1904,12 +1950,37 @@ mod tests {
             server_built(&[], Retention::Years(7), Plane::Both, reports).await
         }
 
+        /// A server whose listener has no public origin, so it serves no
+        /// session.
+        pub(crate) async fn server_without_origin() -> Server {
+            let reports = ReportLimits::DEFAULT;
+            server_made(&[], Retention::Years(7), Plane::Both, reports, false).await
+        }
+
         async fn server_built(
             supported: &[&str],
             retention_default: Retention,
             plane: Plane,
             reports: ReportLimits,
         ) -> Server {
+            server_made(supported, retention_default, plane, reports, true).await
+        }
+
+        /// The server every other maker here makes. With `origin`, its
+        /// public origin is the address its clients reach it at.
+        async fn server_made(
+            supported: &[&str],
+            retention_default: Retention,
+            plane: Plane,
+            reports: ReportLimits,
+            origin: bool,
+        ) -> Server {
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let addr = listener.local_addr().expect("addr");
+            let origin = origin.then(|| {
+                crate::session::Origin::parse(&format!("https://localhost:{}", addr.port()))
+                    .expect("an origin")
+            });
             let dir = tempfile::tempdir().expect("temp dir");
             let clock = Arc::new(TestClock(std::sync::Mutex::new(START)));
             let tenants = Arc::new(
@@ -1934,11 +2005,10 @@ mod tests {
                 mcp: crate::mcp::Limits::DEFAULT,
                 plane,
                 reports: ReportGate::new(reports),
+                origin,
             });
             let certificate = certificate();
             let tls = tls_config(&certificate.cert, &certificate.key).expect("tls");
-            let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-            let addr = listener.local_addr().expect("addr");
             let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
             tokio::spawn(serve(listener, tls, router(app.clone()), async {
                 stopped.await.ok();
@@ -5126,6 +5196,9 @@ mod policy_tests;
 mod tenant_routes;
 
 #[cfg(test)]
+mod session_tests;
+
+#[cfg(test)]
 mod site_pages {
     use std::collections::BTreeSet;
     use std::path::PathBuf;
@@ -5146,6 +5219,10 @@ mod site_pages {
             Problem::Unavailable,
             Problem::AuditFailed,
             Problem::UnsupportedMediaType,
+            Problem::KeyAndSession,
+            Problem::NoSession,
+            Problem::BadOrigin,
+            Problem::BadCsrf,
             Problem::BadPathUuid,
             Problem::BadPathVersion,
             Problem::PreconditionRequired,
@@ -5169,6 +5246,10 @@ mod site_pages {
                 | Problem::Unavailable
                 | Problem::AuditFailed
                 | Problem::UnsupportedMediaType
+                | Problem::KeyAndSession
+                | Problem::NoSession
+                | Problem::BadOrigin
+                | Problem::BadCsrf
                 | Problem::BadPathUuid
                 | Problem::BadPathVersion
                 | Problem::PreconditionRequired
@@ -5434,11 +5515,12 @@ mod description {
     }
 
     /// Whether the operation needs a key: it does unless it says
-    /// `security: []`.
+    /// `security: []`, or names a way that is not the bearer key, as the
+    /// session routes do.
     pub(super) fn keyed(method: &str, path: &str) -> bool {
         parsed()["paths"][path][method.to_ascii_lowercase()]["security"]
             .as_array()
-            .is_none_or(|s| !s.is_empty())
+            .is_none_or(|ways| ways.iter().any(|way| way.get("bearer").is_some()))
     }
 
     /// Every path and its methods, as the description names them.

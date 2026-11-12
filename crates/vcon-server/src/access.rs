@@ -202,10 +202,17 @@ impl Plane {
     /// Whether a listener of this plane serves `caller`.
     #[must_use]
     pub fn admits(self, caller: &Caller) -> bool {
+        self.serves(caller.tenant)
+    }
+
+    /// Whether a listener of this plane serves a key or a session of
+    /// `tenant`, or the operator's for None.
+    #[must_use]
+    pub fn serves(self, tenant: Option<TenantId>) -> bool {
         match self {
             Plane::Both => true,
-            Plane::Tenant => caller.tenant.is_some(),
-            Plane::Operator => caller.tenant.is_none(),
+            Plane::Tenant => tenant.is_some(),
+            Plane::Operator => tenant.is_none(),
         }
     }
 }

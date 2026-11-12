@@ -141,6 +141,10 @@ impl World {
             mcp: vcon_server::mcp::Limits::DEFAULT,
             plane: vcon_server::access::Plane::Both,
             reports: vcon_server::api::ReportGate::new(vcon_server::api::ReportLimits::DEFAULT),
+            // No public origin: the listener serves no session, so a
+            // request with a session cookie is refused before the registry
+            // is read.
+            origin: None,
         };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_time()

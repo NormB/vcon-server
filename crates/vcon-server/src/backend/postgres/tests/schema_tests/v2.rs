@@ -2,7 +2,7 @@
 //! logs that hold no status. Each test starts from a database at version
 //! 1, as the first preview release left one.
 
-use super::super::super::schema::{MIGRATIONS, version_refusal};
+use super::super::super::schema::{MIGRATIONS, SCHEMA_VERSION, version_refusal};
 
 #[test]
 fn version_2_is_the_second_migration() {
@@ -18,8 +18,9 @@ fn version_2_is_the_second_migration() {
 fn a_version_1_database_is_refused_with_the_command_that_upgrades_it() {
     let why = version_refusal(Some(1)).expect("refused");
     assert!(
-        why.contains("version 1, older than this binary's 4")
-            && why.contains("vcon-server migrate"),
+        why.contains(&format!(
+            "version 1, older than this binary's {SCHEMA_VERSION}"
+        )) && why.contains("vcon-server migrate"),
         "the versions and the command: {why}"
     );
 }
@@ -42,7 +43,7 @@ fn version_2_changes_no_row_of_version_1() {
 #[cfg(feature = "backend-tests")]
 mod on_a_server {
     use super::super::super::super::connect::Purpose;
-    use super::super::super::super::schema::{MIGRATIONS, Migrated};
+    use super::super::super::super::schema::{MIGRATIONS, Migrated, SCHEMA_VERSION};
     use super::super::super::live::value;
     use super::super::live::{
         Db, TENANT_A, TENANT_B, count, in_scope, insert_registry_row, insert_tenant_row,
@@ -116,7 +117,10 @@ mod on_a_server {
         }
         assert_eq!(
             db.migrate().await,
-            Migrated { from: 1, to: 4 },
+            Migrated {
+                from: 1,
+                to: SCHEMA_VERSION
+            },
             "every migration after the first runs"
         );
         let app = db.app().await;
@@ -136,7 +140,7 @@ mod on_a_server {
                 "SELECT max(version) FROM vcon.schema_version"
             )
             .await,
-            "4",
+            SCHEMA_VERSION.to_string(),
             "the version recorded"
         );
     }
@@ -421,7 +425,10 @@ mod on_a_server {
         db.migrate().await;
         assert_eq!(
             db.migrate().await,
-            Migrated { from: 4, to: 4 },
+            Migrated {
+                from: SCHEMA_VERSION,
+                to: SCHEMA_VERSION
+            },
             "nothing left to do"
         );
         assert_eq!(
@@ -430,7 +437,7 @@ mod on_a_server {
                 "SELECT count(*) FROM vcon.schema_version"
             )
             .await,
-            4,
+            i64::from(SCHEMA_VERSION),
             "one row for each version"
         );
     }

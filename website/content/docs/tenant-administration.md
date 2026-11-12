@@ -19,9 +19,10 @@ key that asks, and nowhere else. The operator's key is refused on all of
 them.
 
 This is the third part of sign-in. The settings are stored and answered
-now, and nothing reads them yet: sessions, which a later release adds, will
-read the two session limits, and the console will read the masking
-settings. Until then, set them to decide them ahead of time.
+now. A [session](@/docs/session-origin.md) takes the two session limits
+when it starts, and no sign-in method starts one yet; nothing reads the
+masking settings yet, and the console will. Until then, set them to decide
+them ahead of time.
 
 The routes are on `main` only; release 0.4.3 does not have them. CI runs
 every command on this page against a live server, after
@@ -307,10 +308,10 @@ See [audit log records](@/docs/audit-log-records.md) for every action.
   JSON, or a key's body lacks `scopes` or `label`.
 - **`key create` refuses `--scope tenant_admin`:** the binary
   is release 0.4.3 or older.
-- **`the registry cannot be opened: … schema version 7 is not one this
+- **`the registry cannot be opened: … schema version 8 is not one this
   build knows`:** an older binary is reading a data directory that a newer
   one has opened. See
-  [upgrade](@/docs/upgrading.md#schema-version-7-and-no-way-back-without-the-copy).
+  [upgrade](@/docs/upgrading.md#schema-version-8-and-no-way-back-without-the-copy).
 
 ## Clean up
 

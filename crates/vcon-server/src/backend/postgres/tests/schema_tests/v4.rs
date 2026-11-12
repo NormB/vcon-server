@@ -19,9 +19,7 @@ fn statements(migration: &str) -> Vec<String> {
 }
 
 #[test]
-fn version_4_is_the_fourth_migration_and_this_binarys() {
-    assert_eq!(MIGRATIONS.len(), 4, "the migrations");
-    assert_eq!(SCHEMA_VERSION, 4, "this binary's version");
+fn version_4_is_the_fourth_migration() {
     assert!(
         MIGRATIONS[3].contains("CREATE TABLE vcon.tenant_setting ("),
         "the fourth makes the table"
@@ -32,8 +30,9 @@ fn version_4_is_the_fourth_migration_and_this_binarys() {
 fn a_version_3_database_is_refused_with_the_command_that_upgrades_it() {
     let why = version_refusal(Some(3)).expect("refused");
     assert!(
-        why.contains("version 3, older than this binary's 4")
-            && why.contains("vcon-server migrate"),
+        why.contains(&format!(
+            "version 3, older than this binary's {SCHEMA_VERSION}"
+        )) && why.contains("vcon-server migrate"),
         "the versions and the command: {why}"
     );
 }
@@ -70,23 +69,28 @@ fn version_4_is_the_table_its_row_level_security_and_its_grant() {
 }
 
 #[test]
-fn a_database_newer_than_version_4_is_refused_as_newer() {
-    let why = version_refusal(Some(5)).expect("refused");
+fn a_database_newer_than_this_binary_s_version_is_refused_as_newer() {
+    let newer = SCHEMA_VERSION + 1;
+    let why = version_refusal(Some(newer)).expect("refused");
     assert!(
-        why.contains("version 5") && why.contains("upgrade this server"),
+        why.contains(&format!("version {newer}")) && why.contains("upgrade this server"),
         "a newer database: {why}"
     );
 }
 
 #[test]
-fn a_database_at_version_4_is_not_refused() {
-    assert_eq!(version_refusal(Some(4)), None, "this binary's version");
+fn a_database_at_this_binary_s_version_is_not_refused() {
+    assert_eq!(
+        version_refusal(Some(SCHEMA_VERSION)),
+        None,
+        "this binary's version"
+    );
 }
 
 #[cfg(feature = "backend-tests")]
 mod on_a_server {
     use super::super::super::super::connect::Purpose;
-    use super::super::super::super::schema::{MIGRATIONS, Migrated};
+    use super::super::super::super::schema::{MIGRATIONS, Migrated, SCHEMA_VERSION};
     use super::super::super::live::value;
     use super::super::live::{Db, TENANT_A, count, in_scope, insert_registry_row};
 
@@ -144,8 +148,11 @@ mod on_a_server {
         .expect("and its cap");
         assert_eq!(
             db.migrate().await,
-            Migrated { from: 3, to: 4 },
-            "only the fourth migration runs"
+            Migrated {
+                from: 3,
+                to: SCHEMA_VERSION
+            },
+            "the migrations after the third run"
         );
         assert_eq!(
             read(
@@ -232,8 +239,11 @@ mod on_a_server {
         let db = Db::fresh().await;
         assert_eq!(
             db.migrate().await,
-            Migrated { from: 0, to: 4 },
-            "all four migrations"
+            Migrated {
+                from: 0,
+                to: SCHEMA_VERSION
+            },
+            "every migration"
         );
         assert_eq!(count(&db.admin().await, TABLE).await, 1, "the table");
     }
@@ -360,10 +370,15 @@ mod on_a_server {
     #[tokio::test]
     async fn migrating_twice_from_version_3_does_the_work_once() {
         let db = at_version_3().await;
-        assert_eq!(db.migrate().await, Migrated { from: 3, to: 4 }, "the first");
+        let now = SCHEMA_VERSION;
         assert_eq!(
             db.migrate().await,
-            Migrated { from: 4, to: 4 },
+            Migrated { from: 3, to: now },
+            "the first"
+        );
+        assert_eq!(
+            db.migrate().await,
+            Migrated { from: now, to: now },
             "the second finds nothing to do"
         );
         assert_eq!(count(&db.admin().await, TABLE).await, 1, "one table");

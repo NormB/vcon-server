@@ -57,7 +57,9 @@ fn a_role_that_cannot_set_the_owner_is_named_with_the_grant() {
 #[cfg(feature = "backend-tests")]
 mod on_a_server {
     use super::super::super::super::connect::Purpose;
-    use super::super::super::super::schema::{COMMANDS_LOCK, MIGRATIONS, SERVERS_LOCK};
+    use super::super::super::super::schema::{
+        COMMANDS_LOCK, MIGRATIONS, SCHEMA_VERSION, SERVERS_LOCK,
+    };
     use super::super::super::live::{standby, value};
     use super::super::super::why;
     use super::super::live::{
@@ -122,6 +124,7 @@ mod on_a_server {
                 "user_account" => "label_sealed",
                 "membership" => "roles_sealed",
                 "tenant_setting" => "value_sealed",
+                "session" => "scopes_sealed",
                 other => panic!("{other}"),
             };
             let result = no_scope(
@@ -317,9 +320,11 @@ mod on_a_server {
         let db = Db::migrated().await;
         db.admin()
             .await
-            .batch_execute(
-                "SET ROLE vcon_owner; INSERT INTO vcon.schema_version (version) VALUES (5); RESET ROLE",
-            )
+            .batch_execute(&format!(
+                "SET ROLE vcon_owner; INSERT INTO vcon.schema_version (version) VALUES ({}); \
+                 RESET ROLE",
+                SCHEMA_VERSION + 1
+            ))
             .await
             .expect("adds a version");
         let why = why(db
@@ -468,9 +473,11 @@ mod on_a_server {
         let db = Db::migrated().await;
         db.admin()
             .await
-            .batch_execute(
-                "SET ROLE vcon_owner; INSERT INTO vcon.schema_version (version) VALUES (5); RESET ROLE",
-            )
+            .batch_execute(&format!(
+                "SET ROLE vcon_owner; INSERT INTO vcon.schema_version (version) VALUES ({}); \
+                 RESET ROLE",
+                SCHEMA_VERSION + 1
+            ))
             .await
             .expect("adds a version");
         let e = db.migrate_with(MIGRATIONS).await.expect_err("refused");

@@ -19,7 +19,7 @@ fn the_highest_version_is_refused_without_overflow() {
 #[cfg(feature = "backend-tests")]
 mod on_a_server {
     use super::super::super::super::connect::Purpose;
-    use super::super::super::super::schema::{MIGRATIONS, Migrated};
+    use super::super::super::super::schema::{MIGRATIONS, Migrated, SCHEMA_VERSION};
     use super::super::super::live::value;
     use super::super::live::{Db, TENANT_A, count, in_scope, insert_tenant_row, no_scope};
 
@@ -55,7 +55,7 @@ mod on_a_server {
                 "SELECT count(*) FROM vcon.schema_version"
             )
             .await,
-            4,
+            i64::from(SCHEMA_VERSION),
             "one row for each version"
         );
     }
@@ -66,9 +66,11 @@ mod on_a_server {
         let open = db.app().await;
         db.admin()
             .await
-            .batch_execute(
-                "SET ROLE vcon_owner; INSERT INTO vcon.schema_version (version) VALUES (5); RESET ROLE",
-            )
+            .batch_execute(&format!(
+                "SET ROLE vcon_owner; INSERT INTO vcon.schema_version (version) VALUES ({}); \
+                 RESET ROLE",
+                SCHEMA_VERSION + 1
+            ))
             .await
             .expect("adds a version");
         assert!(

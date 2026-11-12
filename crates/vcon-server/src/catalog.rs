@@ -15,10 +15,35 @@ use crate::envelope::Key;
 /// catalog; version 5 added the users and memberships tables to
 /// server.sqlite, and lets every catalog's audit log hold no status;
 /// version 6 added each tenant's role cap to server.sqlite; version 7 added
-/// the table of the settings a tenant's administrator sets.
+/// the table of the settings a tenant's administrator sets; version 8
+/// added the table of the sessions of users who signed in.
 /// A build refuses every version it does not know, so a catalog this
 /// build has opened is refused by release 0.4.3 and earlier.
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
+
+/// The sessions of the users who signed in, as a new registry and an
+/// upgraded one both make them (version 8): one row for each live session,
+/// found by the SHA-256 of its id. Neither the id nor the CSRF token is
+/// kept, only the hash of each. The times are in nanoseconds, as every
+/// time in the registry is. A session is removed when it ends, when its
+/// user's roles change or its user is deactivated, and with its tenant.
+pub(crate) const SESSIONS: &str = "
+CREATE TABLE session (
+    id_hash BLOB PRIMARY KEY NOT NULL CHECK (length(id_hash) = 32),
+    user BLOB NOT NULL,
+    tenant BLOB,
+    scopes TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    idle_expires_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    idle_seconds INTEGER NOT NULL,
+    amr TEXT NOT NULL,
+    csrf_hash BLOB NOT NULL CHECK (length(csrf_hash) = 32)
+);
+CREATE INDEX session_of_user ON session (user);
+CREATE INDEX session_in_tenant ON session (tenant);
+";
 
 /// The users and their memberships in server.sqlite, as a new registry
 /// and an upgraded one both make them. A user is a person who signs in:
@@ -255,7 +280,7 @@ pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogE
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
         }
-        from @ 1..=6 => {
+        from @ 1..=7 => {
             // One transaction, so a failed upgrade leaves the old version
             // whole. A tenant catalog has a vcon table, server.sqlite a
             // tenant table, and both an audit log.
@@ -288,6 +313,9 @@ pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogE
             }
             if from < 7 && has("tenant")? {
                 tx.execute_batch(TENANT_SETTINGS)?;
+            }
+            if from < 8 && has("tenant")? {
+                tx.execute_batch(SESSIONS)?;
             }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
@@ -487,6 +515,9 @@ mod v6_tests;
 
 #[cfg(test)]
 mod v7_tests;
+
+#[cfg(test)]
+mod v8_tests;
 
 #[cfg(test)]
 pub(crate) mod testing {

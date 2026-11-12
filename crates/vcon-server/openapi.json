@@ -3,7 +3,7 @@
   "info": {
     "title": "vcon-server",
     "version": "0.4.3",
-    "description": "Stores vCons encrypted at rest and returns them to authorized readers. Every route needs a bearer key; errors are RFC 9457 problem documents.",
+    "description": "Stores vCons encrypted at rest and returns them to authorized readers. Every route needs a bearer key, but for the console's files and the two session routes, which need a session's cookie; errors are RFC 9457 problem documents.",
     "license": {
       "name": "MIT OR Apache-2.0",
       "identifier": "MIT OR Apache-2.0"
@@ -64,7 +64,7 @@
             }
           },
           "400": {
-            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version, bad-query or key-and-session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -220,7 +220,7 @@
             }
           },
           "400": {
-            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version, bad-query or key-and-session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -353,7 +353,7 @@
             }
           },
           "400": {
-            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version, bad-query or key-and-session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -466,7 +466,7 @@
             }
           },
           "400": {
-            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version, bad-query or key-and-session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -650,7 +650,7 @@
             "description": "Deleted, also when already deleted or purged"
           },
           "400": {
-            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version, bad-query or key-and-session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -753,6 +753,16 @@
               }
             }
           },
+          "400": {
+            "description": "The request carries both a key and a session cookie: key-and-session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "401": {
             "description": "No valid bearer key: unauthorized",
             "content": {
@@ -803,6 +813,16 @@
               "application/json": {
                 "schema": {
                   "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request carries both a key and a session cookie: key-and-session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -877,7 +897,7 @@
             "description": "A notification, taken"
           },
           "400": {
-            "description": "Not one JSON-RPC message, or protocol headers that do not match it"
+            "description": "Not one JSON-RPC message, protocol headers that do not match it, or a key beside a session cookie (key-and-session)"
           },
           "401": {
             "description": "No valid bearer key: unauthorized",
@@ -959,6 +979,16 @@
                 "description": "no-store",
                 "schema": {
                   "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request carries both a key and a session cookie: key-and-session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -1296,7 +1326,7 @@
             }
           },
           "400": {
-            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version, bad-query or key-and-session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1398,7 +1428,7 @@
             }
           },
           "400": {
-            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version, bad-query or key-and-session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1535,7 +1565,7 @@
             }
           },
           "400": {
-            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version, bad-query or key-and-session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1657,7 +1687,7 @@
             }
           },
           "400": {
-            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version, bad-query or key-and-session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1799,7 +1829,7 @@
             }
           },
           "400": {
-            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version, bad-query or key-and-session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1919,7 +1949,7 @@
             }
           },
           "400": {
-            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version, bad-query or key-and-session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2041,7 +2071,7 @@
             "description": "Held"
           },
           "400": {
-            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version, bad-query or key-and-session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2146,7 +2176,7 @@
             "description": "Released"
           },
           "400": {
-            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version, bad-query or key-and-session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2260,7 +2290,7 @@
             }
           },
           "400": {
-            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version, bad-query or key-and-session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2385,7 +2415,7 @@
             }
           },
           "400": {
-            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version, bad-query or key-and-session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2484,7 +2514,7 @@
             }
           },
           "400": {
-            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version, bad-query or key-and-session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2599,7 +2629,7 @@
             "description": "Removed"
           },
           "400": {
-            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version, bad-query or key-and-session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2723,7 +2753,7 @@
             }
           },
           "400": {
-            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version, bad-query or key-and-session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2860,7 +2890,7 @@
             }
           },
           "400": {
-            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version, bad-query or key-and-session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2985,7 +3015,7 @@
             }
           },
           "400": {
-            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version, bad-query or key-and-session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3087,7 +3117,7 @@
             "description": "Revoked, also when already revoked"
           },
           "400": {
-            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version, bad-query or key-and-session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3191,7 +3221,7 @@
             }
           },
           "400": {
-            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version, bad-query or key-and-session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3293,7 +3323,7 @@
             }
           },
           "400": {
-            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version, bad-query or key-and-session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3425,7 +3455,7 @@
             }
           },
           "400": {
-            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version, bad-query or key-and-session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3550,7 +3580,7 @@
             }
           },
           "400": {
-            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version, bad-query or key-and-session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3652,7 +3682,7 @@
             "description": "Revoked, also when already revoked"
           },
           "400": {
-            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version, bad-query or key-and-session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3759,7 +3789,7 @@
             }
           },
           "400": {
-            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version or bad-query",
+            "description": "A bad request: bad-body, bad-path-uuid, bad-path-version, bad-query or key-and-session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3840,6 +3870,211 @@
           }
         }
       }
+    },
+    "/session": {
+      "get": {
+        "operationId": "readSession",
+        "summary": "The session of the request's cookie, with its CSRF token",
+        "description": "Needs the session cookie and the header Sec-Fetch-Site: same-origin, which a browser sets on a request a page makes to its own origin; an Origin header, when there is one, must equal the listener's public origin. It takes no key and no CSRF token: the page asks here for the token every other request by session carries in X-CSRF-Token. The request counts as seen and moves the idle limit.",
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "description": "no-store",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request carries both a key and a session cookie: key-and-session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or one that names no live session: no-session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "Session",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Set-Cookie": {
+                "description": "Removes the session cookie, when the request's cookie names no live session: __Host-vcs_session=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request is not a same-origin fetch from this listener's public origin, the listener has no public origin, or it does not serve this kind of session: bad-origin, wrong-listener",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed: internal",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service cannot answer now: unavailable, audit-failed, limit-reached or master-key-limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/session/logout": {
+      "post": {
+        "operationId": "endSession",
+        "summary": "Ends the session of the request's cookie",
+        "description": "Needs the session cookie, an Origin header equal to the listener's public origin and the session's CSRF token in X-CSRF-Token. It takes no key. The body is not read.",
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "description": "The csrf_token GET /session answered",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "description": "The listener's public origin, as a browser sets it",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The session has ended",
+            "headers": {
+              "Set-Cookie": {
+                "description": "Removes the session cookie: __Host-vcs_session=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request carries both a key and a session cookie: key-and-session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session cookie, or one that names no live session: no-session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "Session",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Set-Cookie": {
+                "description": "Removes the session cookie, when the request's cookie names no live session: __Host-vcs_session=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request does not come from this listener's public origin, the listener has no public origin, the CSRF token is missing or wrong, or the listener does not serve this kind of session: bad-origin, bad-csrf, wrong-listener",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed: internal",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service cannot answer now: unavailable, audit-failed, limit-reached or master-key-limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -3848,6 +4083,12 @@
         "type": "http",
         "scheme": "bearer",
         "description": "An API key token: vcs_<16 hex digits>_<43 base64url characters>"
+      },
+      "session": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "__Host-vcs_session",
+        "description": "The cookie of a session: 43 base64url characters. A request by session carries no bearer key; one that carries both is refused with key-and-session."
       }
     },
     "parameters": {
@@ -4024,6 +4265,10 @@
               "https://vcon-server.com/problems/duplicate-member",
               "https://vcon-server.com/problems/forbidden",
               "https://vcon-server.com/problems/wrong-listener",
+              "https://vcon-server.com/problems/key-and-session",
+              "https://vcon-server.com/problems/no-session",
+              "https://vcon-server.com/problems/bad-origin",
+              "https://vcon-server.com/problems/bad-csrf",
               "https://vcon-server.com/problems/gone",
               "https://vcon-server.com/problems/holds-vcons",
               "https://vcon-server.com/problems/immutable",
@@ -4582,6 +4827,69 @@
           "granted_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "Session": {
+        "type": "object",
+        "required": [
+          "user",
+          "tenant",
+          "scopes",
+          "amr",
+          "created_at",
+          "last_seen_at",
+          "idle_expires_at",
+          "expires_at",
+          "csrf_token"
+        ],
+        "properties": {
+          "user": {
+            "type": "string",
+            "description": "The user's id, 32 hex digits"
+          },
+          "tenant": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The tenant the session works in; null on the operator plane"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The scopes the membership gave when the session started"
+          },
+          "amr": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The authentication methods the sign-in showed (RFC 8176 names)"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_seen_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "idle_expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the session ends unless a request is seen before"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the session ends whatever is seen"
+          },
+          "csrf_token": {
+            "type": "string",
+            "description": "The value of X-CSRF-Token on every other request by this session"
           }
         }
       }

@@ -495,8 +495,35 @@ pub struct MembershipRow {
     pub granted_at: i64,
 }
 
-/// The registry: tenants, access keys, users and their memberships,
-/// master-key use and the admin log.
+/// A session's row in the registry: one for each live session of a user
+/// who signed in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionRow {
+    /// The SHA-256 of the session's id; the id itself is not kept.
+    pub id_hash: Vec<u8>,
+    pub user: UserId,
+    /// The tenant of the membership the session is for; None for an
+    /// operator membership.
+    pub tenant: Option<TenantId>,
+    /// The scopes the session was given when it started, as `Scopes`
+    /// writes them.
+    pub scopes: String,
+    pub created_at: i64,
+    pub last_seen_at: i64,
+    /// When the session ends unless a request is seen before.
+    pub idle_expires_at: i64,
+    /// When the session ends whatever is seen.
+    pub expires_at: i64,
+    /// The time a request adds to `idle_expires_at`.
+    pub idle_seconds: i64,
+    /// The authentication methods the sign-in showed, joined with spaces.
+    pub amr: String,
+    /// The SHA-256 of the session's CSRF token.
+    pub csrf_hash: Vec<u8>,
+}
+
+/// The registry: tenants, access keys, users, their memberships and
+/// sessions, master-key use and the admin log.
 pub trait Registry: Send + Sync {
     /// A transaction that writes: one at a time.
     fn immediate(&self) -> Result<Box<dyn RegistryTx + '_>, TenantError>;
@@ -579,6 +606,26 @@ pub trait RegistryTx {
     fn delete_memberships_of_user(&mut self, user: UserId) -> Result<(), TenantError>;
     /// Removes every membership in a tenant.
     fn delete_memberships_in(&mut self, tenant: TenantId) -> Result<(), TenantError>;
+    /// The session whose id has this SHA-256, ended or not.
+    fn session(&mut self, id_hash: &[u8]) -> Result<Option<SessionRow>, TenantError>;
+    fn insert_session(&mut self, row: &SessionRow) -> Result<(), TenantError>;
+    /// Sets when a session was last seen and when it ends unless seen
+    /// again.
+    fn touch_session(
+        &mut self,
+        id_hash: &[u8],
+        last_seen_at: i64,
+        idle_expires_at: i64,
+    ) -> Result<(), TenantError>;
+    /// Removes one session, if it is there.
+    fn delete_session(&mut self, id_hash: &[u8]) -> Result<(), TenantError>;
+    /// Removes every session of a user, in every tenant and as an
+    /// operator.
+    fn delete_sessions_of_user(&mut self, user: UserId) -> Result<(), TenantError>;
+    /// Removes every session in a tenant.
+    fn delete_sessions_in(&mut self, tenant: TenantId) -> Result<(), TenantError>;
+    /// Removes every session either of whose limits is at or before `at`.
+    fn delete_sessions_ended(&mut self, at: i64) -> Result<(), TenantError>;
     /// The settings a tenant has set, as (name, value) by name. The table
     /// does not know tenants or names: the caller checks both.
     fn settings(&mut self, tenant: TenantId) -> Result<Vec<(String, String)>, TenantError>;

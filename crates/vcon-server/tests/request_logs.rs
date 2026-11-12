@@ -83,6 +83,7 @@ async fn each_request_is_logged_by_its_route_template_and_no_id() {
         mcp: vcon_server::mcp::Limits::DEFAULT,
         plane: vcon_server::access::Plane::Both,
         reports: vcon_server::api::ReportGate::new(vcon_server::api::ReportLimits::DEFAULT),
+        origin: None,
     });
 
     let made =

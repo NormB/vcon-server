@@ -9,7 +9,7 @@ use serde_json::json;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use crate::ids::{KeyId, VersionId};
+use crate::ids::{KeyId, UserId, VersionId};
 use crate::query::{self, BadQuery};
 use crate::reveal::Part;
 
@@ -37,8 +37,10 @@ pub enum Actor {
     Sweep,
     /// A command run on the host.
     Cli,
+    /// A user who signed in, by a session.
+    User(UserId),
     /// A caller with no known key: its token did not parse, or names a key
-    /// id the key table does not hold.
+    /// id the key table does not hold; or a caller with no known session.
     Unparsed,
 }
 
@@ -114,6 +116,12 @@ pub enum Action {
     SettingsSet,
     /// A tenant's memberships listed by its administrator.
     MembershipList,
+    /// A session started for a user who signed in.
+    SessionStart,
+    /// A session read by its own browser (`GET /session`), counted.
+    SessionRead,
+    /// A session ended by its user.
+    SessionEnd,
 }
 
 impl Action {
@@ -178,6 +186,9 @@ impl Action {
             Action::SettingsRead => "settings_read",
             Action::SettingsSet => "settings_set",
             Action::MembershipList => "membership_list",
+            Action::SessionStart => "session_start",
+            Action::SessionRead => "session_read",
+            Action::SessionEnd => "session_end",
         }
     }
 }
@@ -223,9 +234,11 @@ impl From<rusqlite::Error> for AuditError {
 }
 
 impl Actor {
-    /// The name written in the log: the key id, `sweep`, `cli`, or empty.
+    /// The name written in the log: the key id, `sweep`, `cli`,
+    /// `user:<id>`, or empty.
     fn name(self) -> String {
         match self {
+            Actor::User(id) => format!("user:{id}"),
             Actor::Key(id) => id.to_string(),
             Actor::Sweep => "sweep".to_owned(),
             Actor::Cli => "cli".to_owned(),
@@ -739,6 +752,9 @@ mod tests {
             Action::SettingsRead => "settings_read",
             Action::SettingsSet => "settings_set",
             Action::MembershipList => "membership_list",
+            Action::SessionStart => "session_start",
+            Action::SessionRead => "session_read",
+            Action::SessionEnd => "session_end",
         };
         let every = [
             Action::Create,
@@ -799,6 +815,9 @@ mod tests {
             Action::SettingsRead,
             Action::SettingsSet,
             Action::MembershipList,
+            Action::SessionStart,
+            Action::SessionRead,
+            Action::SessionEnd,
         ];
         let mut seen = std::collections::BTreeSet::new();
         for action in every {

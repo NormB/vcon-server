@@ -279,6 +279,7 @@ fn a_0_4_2_registry_gains_the_user_and_membership_tables_empty() {
             "audit",
             "master_key_use",
             "membership",
+            "session",
             "tenant",
             "tenant_setting",
             "user_account"

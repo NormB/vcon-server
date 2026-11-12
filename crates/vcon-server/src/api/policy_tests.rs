@@ -28,6 +28,8 @@ enum Needs {
     AnyKey,
     /// Nothing: the route takes no key.
     NoKey,
+    /// A session's cookie: the route takes no key, whatever its scopes.
+    Session,
 }
 
 const POLICY: &[(&str, &str, Needs)] = &[
@@ -115,6 +117,8 @@ const POLICY: &[(&str, &str, Needs)] = &[
         "/tenant/memberships",
         Needs::Scope(Scope::TenantAdmin),
     ),
+    ("GET", "/session", Needs::Session),
+    ("POST", "/session/logout", Needs::Session),
 ];
 
 fn policy() -> Vec<(&'static str, &'static str, Needs)> {
@@ -126,6 +130,7 @@ fn reaches(scopes: Scopes, needs: Needs) -> bool {
     match needs {
         Needs::Scope(scope) => scopes.contains(scope),
         Needs::AnyKey | Needs::NoKey => true,
+        Needs::Session => false,
     }
 }
 
@@ -168,6 +173,10 @@ async fn held_to_the_table(scopes: Scopes, who: &str) {
     let token = key(&s, scopes);
     for (method, template, needs) in policy() {
         let answer = status(&s, method, template, Some(&token)).await;
+        if needs == Needs::Session {
+            assert_eq!(answer, 401, "{who}: {method} {template} takes no key");
+            continue;
+        }
         assert_ne!(answer, 401, "{who}: {method} {template} took the key");
         assert_eq!(
             answer != 403,
@@ -276,6 +285,7 @@ fn each_route_that_needs_a_scope_is_reached_by_one_role() {
             Needs::AnyKey | Needs::NoKey => {
                 assert_eq!(roles.len(), Role::ALL.len(), "{method} {route}: {roles:?}");
             }
+            Needs::Session => assert_eq!(roles.len(), 0, "{method} {route}: {roles:?}"),
         }
     }
 }

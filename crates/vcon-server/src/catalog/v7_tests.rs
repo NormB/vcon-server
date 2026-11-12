@@ -67,7 +67,11 @@ const SETTING_READ: &str =
 #[test]
 fn a_version_6_registry_gains_the_settings_table() {
     let conn = registry().upgraded();
-    assert_eq!(version(&conn), 7, "the upgraded registry's version");
+    assert_eq!(
+        version(&conn),
+        SCHEMA_VERSION,
+        "the upgraded registry's version"
+    );
     assert_eq!(
         columns(&conn, "tenant_setting"),
         ["tenant", "name", "value"],
@@ -124,7 +128,7 @@ fn a_new_registry_is_made_at_version_7_with_the_table() {
     let dir = tempfile::tempdir().expect("temp dir");
     let new = LocalRegistry::open(dir.path(), Key::generate().expect("key")).expect("a new one");
     let conn = new.local_conn();
-    assert_eq!(version(&conn), 7, "a new registry's version");
+    assert_eq!(version(&conn), SCHEMA_VERSION, "a new registry's version");
     assert!(
         tables(&conn).contains(&"tenant_setting".to_owned()),
         "the table is in a new registry"
@@ -134,7 +138,7 @@ fn a_new_registry_is_made_at_version_7_with_the_table() {
 #[test]
 fn a_0_4_3_registry_reaches_version_7_in_one_step() {
     let conn = Old::registry().upgraded();
-    assert_eq!(version(&conn), 7, "from version 4");
+    assert_eq!(version(&conn), SCHEMA_VERSION, "from version 4");
     assert!(
         tables(&conn).contains(&"membership".to_owned()),
         "version 5's tables"
@@ -242,7 +246,11 @@ fn a_re_encrypted_upgraded_registry_keeps_its_settings() {
     let new_key = Key::generate().expect("key");
     super::reencrypt(&old.path(), &old.key, &new_key).expect("re-encrypted");
     let conn = open(&old.path(), &new_key, "").expect("opens under the new key");
-    assert_eq!(version(&conn), 7, "the version after re-encryption");
+    assert_eq!(
+        version(&conn),
+        SCHEMA_VERSION,
+        "the version after re-encryption"
+    );
     assert_eq!(
         rows(&conn, SETTING_READ),
         ["A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1|masking.legal|false"],
@@ -304,24 +312,11 @@ fn a_wrong_key_upgrades_no_version_6_registry() {
 }
 
 #[test]
-fn version_8_is_refused_and_left_as_it_was() {
-    let old = Old::at(8, &[REGISTRY_V4, USERS_V5, AUDIT_V5]);
-    let before = declared(&old.raw());
-    assert!(
-        matches!(old.open(), Err(CatalogError::UnknownSchema(8))),
-        "a version this build does not know"
-    );
-    assert_eq!(version(&old.raw()), 8, "the number is left");
-    assert_eq!(declared(&old.raw()), before, "the tables are left");
-}
-
-#[test]
 fn this_build_makes_a_version_a_version_6_build_refuses() {
     // A build at version 6 opens versions 0 to 6 and refuses every other
     // number, so it cannot remove a tenant and leave the tenant's settings.
     let conn = registry().upgraded();
     assert!(version(&conn) > 6, "the number: {}", version(&conn));
-    assert_eq!(SCHEMA_VERSION, 7, "this build's version");
 }
 
 #[test]
@@ -439,7 +434,7 @@ fn a_version_6_tenant_catalog_changes_only_its_number() {
     let old = Old::at(6, &[TENANT_V4, AUDIT_V5]);
     let before = declared(&old.raw());
     let conn = old.upgraded();
-    assert_eq!(version(&conn), 7, "the number");
+    assert_eq!(version(&conn), SCHEMA_VERSION, "the number");
     assert_eq!(
         declared(&conn),
         before,
@@ -466,7 +461,7 @@ fn registries_stamped_with_every_older_version_gain_the_table() {
             .execute_batch("CREATE TABLE tenant (id BLOB PRIMARY KEY NOT NULL)")
             .expect("a tenant table");
         let conn = old.upgraded();
-        assert_eq!(version(&conn), 7, "from {from}");
+        assert_eq!(version(&conn), SCHEMA_VERSION, "from {from}");
         assert!(
             tables(&conn).contains(&"tenant_setting".to_owned()),
             "from {from}"

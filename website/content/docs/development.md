@@ -28,6 +28,7 @@ crates/
         ├── reveal.rs      the reveal marker on a read, for the audit log
         ├── roles.rs       the roles a membership holds, and the scope each gives
         ├── settings.rs    the settings a tenant's administrator sets, and what each may hold
+        ├── session.rs     a session's cookie, CSRF token and the origin a request must come from
         ├── access.rs      tokens, scopes, authentication
         ├── store.rs       one tenant's vCons: versions, deletes, purges, legal reads
         ├── backend.rs     where the data is kept: local files, an S3 bucket, PostgreSQL

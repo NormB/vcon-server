@@ -2,7 +2,7 @@
 //! the registry's tenant table. Each live test starts from a database at
 //! version 2, as a build of `main` before the role cap left one.
 
-use super::super::super::schema::{MIGRATIONS, version_refusal};
+use super::super::super::schema::{MIGRATIONS, SCHEMA_VERSION, version_refusal};
 
 #[test]
 fn version_3_is_the_third_migration() {
@@ -16,8 +16,9 @@ fn version_3_is_the_third_migration() {
 fn a_version_2_database_is_refused_with_the_command_that_upgrades_it() {
     let why = version_refusal(Some(2)).expect("refused");
     assert!(
-        why.contains("version 2, older than this binary's 4")
-            && why.contains("vcon-server migrate"),
+        why.contains(&format!(
+            "version 2, older than this binary's {SCHEMA_VERSION}"
+        )) && why.contains("vcon-server migrate"),
         "the versions and the command: {why}"
     );
 }
@@ -59,7 +60,7 @@ fn version_3_is_one_statement() {
 #[cfg(feature = "backend-tests")]
 mod on_a_server {
     use super::super::super::super::connect::Purpose;
-    use super::super::super::super::schema::{MIGRATIONS, Migrated};
+    use super::super::super::super::schema::{MIGRATIONS, Migrated, SCHEMA_VERSION};
     use super::super::super::live::value;
     use super::super::live::{Db, TENANT_A, count, in_scope, insert_registry_row};
 
@@ -110,7 +111,10 @@ mod on_a_server {
         .expect("a tenant, written before the upgrade");
         assert_eq!(
             db.migrate().await,
-            Migrated { from: 2, to: 4 },
+            Migrated {
+                from: 2,
+                to: SCHEMA_VERSION
+            },
             "every migration after the second runs"
         );
         assert_eq!(
@@ -183,7 +187,10 @@ mod on_a_server {
         let db = Db::fresh().await;
         assert_eq!(
             db.migrate().await,
-            Migrated { from: 0, to: 4 },
+            Migrated {
+                from: 0,
+                to: SCHEMA_VERSION
+            },
             "every migration"
         );
         assert_eq!(count(&db.admin().await, COLUMN).await, 1, "the column");
@@ -281,7 +288,10 @@ mod on_a_server {
         db.migrate().await;
         assert_eq!(
             db.migrate().await,
-            Migrated { from: 4, to: 4 },
+            Migrated {
+                from: SCHEMA_VERSION,
+                to: SCHEMA_VERSION
+            },
             "nothing left to do"
         );
         assert_eq!(
@@ -290,7 +300,7 @@ mod on_a_server {
                 "SELECT count(*) FROM vcon.schema_version"
             )
             .await,
-            4,
+            i64::from(SCHEMA_VERSION),
             "one row for each version"
         );
     }

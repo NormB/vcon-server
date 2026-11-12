@@ -18,7 +18,7 @@ shows how to read them.
 |---|---|
 | `seq` | the record's number in its log, rising |
 | `at` | when, RFC 3339 in UTC |
-| `actor` | the key id; `sweep` for the purge sweep; `cli` for a command on the host; empty for a token that did not parse or names no known key |
+| `actor` | the key id; `user:` and the user id for a request by session; `sweep` for the purge sweep; `cli` for a command on the host; empty for a token that did not parse or names no known key, and for a request by session refused before its session is known |
 | `action` | what was asked: one of the [actions](#every-action) below |
 | `target` | the uuid, tenant id, key id or user id acted on, if any; for `listener_full`, the configuration key of the listener, `listen` or `operator.listen`; for `membership_grant` and `membership_revoke`, the user id, then the tenant id or `operator`, then the roles the command named if it named any, joined by `/`; for `role_cap_set`, the tenant id, then the cap's roles or `all`, joined by `/`; for `settings_set`, the tenant id, then after a `/` the names of the settings changed, joined by `,`, and never a value |
 | `version` | the version id involved, if any |
@@ -68,9 +68,9 @@ action through MCP is recorded as its HTTP route records it.
 | `key_info` | a key reading what it may do (`GET /key`) | the key's |
 | `openapi` | a read of `GET /openapi.json` | the key's |
 | `health` | a health check, [counted](@/docs/audit-logs.md#counted-records) | the key's |
-| `auth_failed` | a request whose token was refused, [counted](@/docs/audit-logs.md#counted-records) | the key's tenant's when the key is known, otherwise the admin log with an empty actor |
+| `auth_failed` | a request whose token was refused (status 401); a request with both a key and the session cookie (400); a request by session refused for its cookie (401), its origin (403) or its CSRF token (403); [counted](@/docs/audit-logs.md#counted-records) | the key's tenant's when the key is known, and the session's tenant's, under `user:` and the user id, for a wrong CSRF token; otherwise the admin log with an empty actor |
 | `mcp` | a request to `/mcp`, [counted](@/docs/audit-logs.md#counted-records) | the key's |
-| `wrong_listener` | a valid key refused because it came to the listener that serves the other kind of key, on a server with an [operator listener](@/docs/operator-listener.md), [counted](@/docs/audit-logs.md#counted-records) | the admin log for an operator key; the tenant's for a tenant key, or the admin log when the tenant's cannot be opened |
+| `wrong_listener` | a valid key, or a live session, refused because it came to the listener that serves the other kind, on a server with an [operator listener](@/docs/operator-listener.md), [counted](@/docs/audit-logs.md#counted-records) | the admin log for an operator key or session; the tenant's for a tenant key or session, or the admin log when the tenant's cannot be opened |
 | `listener_full` | a listener that held [`limits.connections`](@/docs/configuration.md#the-most-connections-at-once) connections and took no more until one ended. The record describes a state of the listener and answers no request: its actor is empty, its `status` is `null`, and its `count` is the times the listener became full in the minute, not the connections that waited; [counted](@/docs/audit-logs.md#counted-records) | admin |
 | `csp_report` | a request to `POST /console/csp-report`, where a browser reports that a [console](@/docs/console.md#reports-of-a-broken-policy) page broke its content-security policy. The route takes no key, so the actor is empty; `status` is 204 for a report taken, 400, 408, 413 or 415 for a request refused, or 429 for the requests refused in the minute past the listener's number of reports (one record, written when the minute ends); nothing the report says is kept; [counted](@/docs/audit-logs.md#counted-records) | admin |
 | `key_create` | a key made, over the admin API, at `POST /tenant/keys` or by `vcon-server key create` | admin, copied to the tenant's for a tenant key |
@@ -86,6 +86,9 @@ action through MCP is recorded as its HTTP route records it.
 | `settings_read` | a tenant's settings read, at `GET /tenant/settings`; the target is the tenant id | admin, copied to the tenant's |
 | `settings_set` | a tenant's settings changed, at `PUT /tenant/settings`; a refused change is recorded too | admin, copied to the tenant's |
 | `membership_list` | a tenant's memberships listed, at `GET /tenant/memberships`; the target is the tenant id | admin, copied to the tenant's |
+| `session_start` | a session started for a user who signed in; the actor is `user:` and the user id, and the target is the user id, then the tenant id or `operator`, joined by `/`; a refused start is recorded too. No sign-in method starts one yet | admin, copied to the tenant's |
+| `session_read` | a session read by its own browser, at `GET /session`, one record for each user and minute | the tenant's; admin for an operator's session |
+| `session_end` | a session ended by its user, at `POST /session/logout`; actor and target as for `session_start` | admin, copied to the tenant's |
 | `tenant_create` | a tenant made | admin |
 | `tenant_list` | the tenants listed | admin |
 | `tenant_retention` | a tenant's retention period changed | admin |

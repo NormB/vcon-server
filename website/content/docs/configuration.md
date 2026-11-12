@@ -55,6 +55,8 @@ allowed a group to write them. To check a host before an upgrade, see
 | `operator.listen` | Address and port of the operator listener, such as `127.0.0.1:8444`. With it, this address serves operator keys only and `listen` serves tenant keys only (see [the operator listener](@/docs/operator-listener.md)) | none: `listen` serves both |
 | `operator.tls.cert` | PEM certificate chain the operator listener presents; set together with `operator.tls.key` | `tls.cert` |
 | `operator.tls.key` | PEM private key of the operator listener; set together with `operator.tls.cert` | `tls.key` |
+| `public_origin` | The origin a browser reaches `listen` at: `https://`, a host in lower case and, unless it is 443, a port, with nothing after, such as `https://vcon.example.com`. A request by session must come from it (see [sessions](@/docs/session-origin.md)) | none: the listener serves no session |
+| `operator.public_origin` | The origin a browser reaches the operator listener at, written as `public_origin` is. Its host must differ from the host of `public_origin`: a browser keeps a session cookie by host and not by port | none: the listener serves no session |
 | `retention_default` | Retention period for tenants that set none: years, months or days, written `7y`, `18m` or `90d` | `7y` |
 | `purge_interval` | Seconds between purge sweeps | `3600` (1 hour) |
 | `rotation_warn` | Seconds the oldest work may wait for key rotation before a warning is logged | `2592000` (30 days) |

@@ -14,8 +14,8 @@ use uuid::Uuid;
 use super::{
     Catalog, CatalogTx, CommitError, ExaminedRow, ExportedRow, HiddenRow, KeptRow, KeyRow,
     ListedRow, MembershipRow, NewPackFile, NewVersion, ObjectError, ObjectPlace, Objects,
-    PackFileRow, Packed, PageQuery, Registry, RegistryTx, TenantRow, TenantSpace, Under,
-    UnpackedRow, UserRow, VconRow, VersionRow, WrappedRow,
+    PackFileRow, Packed, PageQuery, Registry, RegistryTx, SessionRow, TenantRow, TenantSpace,
+    Under, UnpackedRow, UserRow, VconRow, VersionRow, WrappedRow,
 };
 use crate::audit::{self, Action, Actor, AuditError, Entry};
 use crate::catalog;
@@ -1166,9 +1166,10 @@ impl LocalRegistry {
     /// Opens `<dir>/server.sqlite` under `catalog_key`, making it if new.
     pub fn open(dir: &Path, catalog_key: Key) -> Result<LocalRegistry, RegistryError> {
         let schema = format!(
-            "{REGISTRY_TABLES}{}{}{}",
+            "{REGISTRY_TABLES}{}{}{}{}",
             catalog::USER_TABLES,
             catalog::TENANT_SETTINGS,
+            catalog::SESSIONS,
             audit::SCHEMA
         );
         let path = dir.join("server.sqlite");
@@ -1310,6 +1311,25 @@ fn membership_row(r: &rusqlite::Row) -> rusqlite::Result<MembershipRow> {
         tenant: r.get::<_, Option<[u8; 16]>>(1)?.map(TenantId),
         roles: r.get(2)?,
         granted_at: r.get(3)?,
+    })
+}
+
+const SESSION_COLUMNS: &str = "id_hash, user, tenant, scopes, created_at, last_seen_at, \
+     idle_expires_at, expires_at, idle_seconds, amr, csrf_hash";
+
+fn session_row(r: &rusqlite::Row) -> rusqlite::Result<SessionRow> {
+    Ok(SessionRow {
+        id_hash: r.get(0)?,
+        user: UserId(r.get(1)?),
+        tenant: r.get::<_, Option<[u8; 16]>>(2)?.map(TenantId),
+        scopes: r.get(3)?,
+        created_at: r.get(4)?,
+        last_seen_at: r.get(5)?,
+        idle_expires_at: r.get(6)?,
+        expires_at: r.get(7)?,
+        idle_seconds: r.get(8)?,
+        amr: r.get(9)?,
+        csrf_hash: r.get(10)?,
     })
 }
 
@@ -1681,6 +1701,88 @@ impl RegistryTx for LocalRegistryTx<'_> {
     fn delete_memberships_in(&mut self, tenant: TenantId) -> Result<(), TenantError> {
         self.conn
             .execute("DELETE FROM membership WHERE tenant = ?1", [tenant.0])
+            .map_err(tenant_io)?;
+        Ok(())
+    }
+
+    fn session(&mut self, id_hash: &[u8]) -> Result<Option<SessionRow>, TenantError> {
+        self.conn
+            .query_row(
+                &format!("SELECT {SESSION_COLUMNS} FROM session WHERE id_hash = ?1"),
+                [id_hash],
+                session_row,
+            )
+            .optional()
+            .map_err(tenant_io)
+    }
+
+    fn insert_session(&mut self, row: &SessionRow) -> Result<(), TenantError> {
+        self.conn
+            .execute(
+                &format!(
+                    "INSERT INTO session ({SESSION_COLUMNS})
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"
+                ),
+                params![
+                    row.id_hash,
+                    row.user.0,
+                    row.tenant.map(|t| t.0),
+                    row.scopes,
+                    row.created_at,
+                    row.last_seen_at,
+                    row.idle_expires_at,
+                    row.expires_at,
+                    row.idle_seconds,
+                    row.amr,
+                    row.csrf_hash
+                ],
+            )
+            .map_err(tenant_io)?;
+        Ok(())
+    }
+
+    fn touch_session(
+        &mut self,
+        id_hash: &[u8],
+        last_seen_at: i64,
+        idle_expires_at: i64,
+    ) -> Result<(), TenantError> {
+        self.conn
+            .execute(
+                "UPDATE session SET last_seen_at = ?2, idle_expires_at = ?3 WHERE id_hash = ?1",
+                params![id_hash, last_seen_at, idle_expires_at],
+            )
+            .map_err(tenant_io)?;
+        Ok(())
+    }
+
+    fn delete_session(&mut self, id_hash: &[u8]) -> Result<(), TenantError> {
+        self.conn
+            .execute("DELETE FROM session WHERE id_hash = ?1", [id_hash])
+            .map_err(tenant_io)?;
+        Ok(())
+    }
+
+    fn delete_sessions_of_user(&mut self, user: UserId) -> Result<(), TenantError> {
+        self.conn
+            .execute("DELETE FROM session WHERE user = ?1", [user.0])
+            .map_err(tenant_io)?;
+        Ok(())
+    }
+
+    fn delete_sessions_in(&mut self, tenant: TenantId) -> Result<(), TenantError> {
+        self.conn
+            .execute("DELETE FROM session WHERE tenant = ?1", [tenant.0])
+            .map_err(tenant_io)?;
+        Ok(())
+    }
+
+    fn delete_sessions_ended(&mut self, at: i64) -> Result<(), TenantError> {
+        self.conn
+            .execute(
+                "DELETE FROM session WHERE idle_expires_at <= ?1 OR expires_at <= ?1",
+                [at],
+            )
             .map_err(tenant_io)?;
         Ok(())
     }
