@@ -6,6 +6,23 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The PostgreSQL preview's pages said more of row-level security than
+  it does.** The how-to and the status page said that a query with no
+  tenant set is refused. That holds for a statement the server plans: the
+  planner evaluates the policy. A prepared statement whose plan the
+  server has cached is not planned again, and the policy is then
+  evaluated only for a row the statement examines, so on a table with no
+  rows, or with an index condition that finds none, such a statement ends
+  with nothing and no error. What holds for every plan: with no tenant
+  set no row is returned or changed, and the statement is refused at the
+  first row it examines. The
+  [how-to](https://vcon-server.com/docs/postgres-catalog/) and the
+  [status page](https://vcon-server.com/docs/status/) now say that, and
+  tests on PostgreSQL 16 and 18 hold it for every table. The schema is
+  unchanged, and no row was readable without a tenant before or after.
+
 ## [0.4.5] - 2026-11-12
 
 The upgrade from 0.4.4 is the binary alone. No stored data and no schema
