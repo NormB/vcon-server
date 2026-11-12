@@ -6,6 +6,45 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-11-12
+
+There is no downgrade from 0.4.4. The first time 0.4.4 opens a data
+directory it brings the catalogs from schema version 4 to 9, and release
+0.4.3 and earlier refuse a catalog at version 9. Copy the data directory
+before the upgrade, with the server stopped: that copy is the only way
+back, and everything stored after it is lost on the way back. A 0.4.3
+configuration is read as it was. Each of the following is under Security,
+Added or Changed below, and the Upgrade page's "From 0.4.3 to 0.4.4" has
+the steps.
+
+- **New keys expire.** A key made by 0.4.4 expires 90 days after it is
+  made, unless its request names 1 to 365 days or asks for no expiry. An
+  operator can refuse new keys with no expiry by setting `keys.no_expiry`
+  to `false`. Keys made before the upgrade keep working with no expiry.
+- **A request that carries both a key and the session cookie is
+  refused.** A request with an `Authorization` header and a cookie named
+  `__Host-vcs_session` is answered 400 `key-and-session`.
+- **Sessions and users have no sign-in method.** 0.4.4 keeps users,
+  memberships and sessions and serves the two session routes, and nothing
+  in it starts a session: nobody can sign in as a user. The status page
+  says so. API keys work as before.
+- **Readers of the audit log.** Thirteen action names are new:
+  `user_add`, `user_list`, `user_deactivate`, `membership_grant`,
+  `membership_revoke`, `role_cap_set`, `role_cap_read`, `settings_read`,
+  `settings_set`, `membership_list`, `session_start`, `session_read` and
+  `session_end`. The `actor` of a record may be `user:` and a user id,
+  and an `auth_failed` record may have the status 400 or 403.
+- **The PostgreSQL catalog preview.** Run `vcon-server migrate` after the
+  new binary is installed and before a server starts: the database's
+  schema goes from version 1 to 6.
+- **Code that uses the `vcon-server` library.** `config::Config` has two
+  new members, `public_origin` and `keys_no_expiry`, `config::Operator`
+  one, `public_origin`, and `api::App` one, `origin`, so a struct literal
+  of any of them must set them. `audit::Action` has thirteen new
+  variants, one for each action above, and `audit::Actor` one, `User`,
+  which a `match` that lists every variant must take.
+  `catalog::SCHEMA_VERSION` is 9.
+
 ### Security
 
 - rusqlite goes from 0.41.1 to 0.42.0, which moves the bundled SQLCipher
@@ -38,7 +77,7 @@ All notable changes to this project are recorded here. The format follows
   change to a tenant membership is copied to that tenant's log; a record
   names ids and role names, never a label, an issuer or a subject. There
   is no route for either, and no request reads them yet: nobody can sign
-  in as a user until a later release adds sessions. See the how-to
+  in as a user until a later release adds a sign-in method. See the how-to
   "Add users and memberships".
 - Roles as sets of scopes, and a role cap for each tenant. Each role gives
   one scope: `reader` gives `read`, `producer` `write`, `records` `delete`,
@@ -124,7 +163,6 @@ All notable changes to this project are recorded here. The format follows
   be `user:` and a user id, and the actions `session_start`,
   `session_read` and `session_end` are new. `auth_failed` records may have
   the status 400 or 403.
-
 - **No downgrade: the catalogs move to schema version 9.** The first time
   this server or one of its commands opens a data directory, it brings
   `server.sqlite` from schema version 4 to 9, and each tenant's catalog at
@@ -154,14 +192,14 @@ All notable changes to this project are recorded here. The format follows
   working. See "Keys made before the upgrade have no expiry" on the
   upgrade page.
 - **Breaking for a reader of the audit log that knows a fixed list of
-  actions:** add the five actions named above, and `role_cap_set`,
+  actions:** add `user_add`, `user_list`, `user_deactivate`,
+  `membership_grant`, `membership_revoke`, `role_cap_set`,
   `role_cap_read`, `settings_read`, `settings_set` and `membership_list`.
 - **`user list` prints each membership's `scopes`** beside its `roles`:
   what the membership lets its user do, under the tenant's role cap.
 - **A tenant key may hold the scope `tenant_admin`.** `key create --scope`
   and `POST /admin/tenants/{id}/keys` take the name with the five there
   were. Such a key reaches the routes under `/tenant`.
-  actions:** add the five actions named above.
 - The terminal UI's page is rewritten. It opens with what the command shows
   and one screen, says when to use the console or the API instead, lists
   what to have ready in a table, and has a quick start for the server's own
@@ -1111,7 +1149,8 @@ Nothing in this release breaks a 0.4.1 deployment, and an upgrade from
   stack and abort the server. `vcon::MAX_SIGNED_LAYERS`,
   `vcon::MAX_JSON_DEPTH` and `vcon::Rejection::TooDeep` name the limits.
 
-[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.4...HEAD
+[0.4.4]: https://github.com/NormB/vcon-server/releases/tag/v0.4.4
 [0.4.3]: https://github.com/NormB/vcon-server/releases/tag/v0.4.3
 [0.4.2]: https://github.com/NormB/vcon-server/releases/tag/v0.4.2
 [0.4.1]: https://github.com/NormB/vcon-server/releases/tag/v0.4.1

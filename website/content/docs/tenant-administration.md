@@ -24,13 +24,13 @@ when it starts, and no sign-in method starts one yet; nothing reads the
 masking settings yet, and the console will. Until then, set them to decide
 them ahead of time.
 
-The routes are on `main` only; release 0.4.3 does not have them. CI runs
+The routes are new in 0.4.4; release 0.4.3 does not have them. CI runs
 every command on this page against a live server, after
 [getting started](@/docs/getting-started.md), and checks each answer.
 
 ## Before you start
 
-- A server built from `main`, set up as in
+- A server of release 0.4.4 or later, set up as in
   [getting started](@/docs/getting-started.md), with the tenant `acme`,
   running and reachable at its address, here
   `https://vcon.example.com:8443`.
@@ -357,7 +357,7 @@ See [audit log records](@/docs/audit-log-records.md) for every action.
 ## When a step fails
 
 - **`404` on a route under `/tenant`:** the server is release 0.4.3 or
-  older. The routes are on `main` only.
+  older. The routes are new in 0.4.4: [upgrade](@/docs/upgrading.md).
 - **`403` [`forbidden`](@/problems/forbidden.md):** the key does not hold
   `tenant_admin`, or is an operator key. `GET /key` shows a key's scopes.
 - **`403` [`wrong-listener`](@/problems/wrong-listener.md):** the server

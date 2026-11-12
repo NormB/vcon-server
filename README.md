@@ -15,7 +15,7 @@ A server that stores [vCons](https://datatracker.ietf.org/wg/vcon/about/), the
 IETF conversation-record format, encrypted at rest, and returns them only to
 the keys allowed to see them.
 
-**Status: 0.4.3 released, not yet for production.** The `vcon` and
+**Status: 0.4.4 released, not yet for production.** The `vcon` and
 `vcon-server` crates are on crates.io, and the server for Linux on x86_64 and
 aarch64 is on [GitHub](https://github.com/NormB/vcon-server/releases).
 [What is built](https://vcon-server.com/docs/status/) says what works today.
@@ -60,6 +60,21 @@ where each item is described in full:
   limits that close a stalled or idle one.
 - **Reports of a broken console policy:** browsers' reports are taken at
   `/console/csp-report` and counted in the admin audit log.
+- **Users and memberships, and schema version 9:** people and their roles
+  in a tenant, made on the host. The catalogs move to schema version 9,
+  which an older release refuses: there is no downgrade, so copy the data
+  directory before an upgrade.
+- **Roles as scopes, and a tenant's role cap:** each role gives one scope,
+  and a tenant has a cap on the roles a membership may be given.
+- **Routes for a tenant's administrator:** a key with the scope
+  `tenant_admin` reads and changes its tenant's settings, makes, lists
+  and revokes its keys, and lists its memberships.
+- **Sessions, with no way to start one yet:** the server keeps sessions
+  and serves two session routes. No sign-in method exists yet, so nobody
+  can sign in as a user.
+- **Key expiry and last-used time:** a new key expires 90 days after it
+  is made unless its request says otherwise, and every list of keys shows
+  when each key expires and when it was last used.
 - **Tenants and keys:** scoped bearer keys, revocation and tenant removal.
 - **Retention:** periods per tenant or server-wide, and the purge sweep.
 - **Audit logs:** one per tenant and one for administration.

@@ -16,17 +16,17 @@ membership`, on the server's host.
 This is the first part of sign-in, and the only part there is yet. The
 server keeps users and memberships and records every change to them. No
 request reads them: nobody can sign in as a user, and a membership lets
-nobody do anything, until a later release adds sessions. API keys work as
+nobody do anything, until a later release adds a sign-in method. API keys work as
 before. Use these commands now to prepare the list of people and roles, or
 leave them until sign-in is released.
 
-The commands are on `main` only; release 0.4.3 does not have them. CI runs
+The commands are new in 0.4.4; release 0.4.3 does not have them. CI runs
 every command on this page against a live server, after
 [getting started](@/docs/getting-started.md), and checks each answer.
 
 ## Before you start
 
-- A server built from `main`, set up as in
+- A server of release 0.4.4 or later, set up as in
   [getting started](@/docs/getting-started.md), with the tenant `acme`. The
   server may be running: every command here runs beside it.
 - A shell on the server's host, as an account that may run commands as the
@@ -261,7 +261,8 @@ See [audit log records](@/docs/audit-log-records.md) for every action.
 ## When a step fails
 
 - **`error: unrecognized subcommand 'user'`:** the binary is release 0.4.3
-  or older. The commands are on `main` only.
+  or older. The commands are new in 0.4.4:
+  [upgrade](@/docs/upgrading.md).
 - **`no user has this id`:** the id is not a user's. `user list` prints
   each id; a user id is 32 lowercase hex digits.
 - **`no tenant has this id`:** `tenant list` prints each tenant's id.

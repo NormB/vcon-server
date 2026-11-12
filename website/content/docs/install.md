@@ -133,7 +133,7 @@ archive names:
 
 <!-- docs-test: only release -->
 ```sh
-VERSION=0.4.3
+VERSION=0.4.4
 ARCHIVE=vcon-server-$VERSION-$(uname -m)-unknown-linux-gnu.tar.gz
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$VERSION/$ARCHIVE
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$VERSION/SHA256SUMS.txt

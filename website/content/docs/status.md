@@ -7,7 +7,7 @@ weight = 60
 group = "project"
 +++
 
-vcon-server 0.4.3 is released: the `vcon` and `vcon-server` crates are on
+vcon-server 0.4.4 is released: the `vcon` and `vcon-server` crates are on
 crates.io, and the server for Linux on x86_64 and aarch64 is on
 [GitHub](https://github.com/NormB/vcon-server/releases). It is not yet for
 production. This page says what works today; each other page describes only
@@ -109,6 +109,61 @@ what is built, unless it says otherwise.
   log as `csp_report`. Release 0.4.2 sends policies with no reporting
   directive and answers 404 at that path. See
   [reports of a broken policy](@/docs/console.md#reports-of-a-broken-policy).
+- **Users and memberships, and schema version 9**, from 0.4.4: the
+  commands `user add`, `user list`, `user deactivate`, `membership grant`
+  and `membership revoke` keep a list of people and their roles in a
+  tenant or as an operator, on the host, in `server.sqlite`, with each
+  change in the audit logs. No sign-in method exists yet, so nobody can
+  sign in as a user. The catalogs move from schema version 4 to 9, which
+  release 0.4.3 refuses to open: there is no downgrade, and the only way
+  back is the copy of the data directory taken before the upgrade.
+  Release 0.4.3 has none of these commands and keeps schema version 4.
+  See [add users and memberships](@/docs/users-and-memberships.md) and
+  [schema version 9](@/docs/upgrading.md#schema-version-9-and-no-way-back-without-the-copy).
+- **Roles as scopes, and a tenant's role cap**, from 0.4.4: each role of
+  a membership gives one scope, and `user list` prints a membership's
+  `scopes` beside its `roles`. The commands `tenant set-role-cap` and
+  `tenant role-cap` set and print the roles a membership in a tenant may
+  be given, recorded as `role_cap_set` and `role_cap_read`. A tenant key
+  may hold the new scope `tenant_admin`, which the role `tenant-admin`
+  gives. Release 0.4.3 has neither command, and refuses `tenant_admin` as
+  a key's scope. See
+  [roles, scopes and a tenant's role cap](@/docs/roles-and-scopes.md).
+- **Routes for a tenant's administrator**, from 0.4.4: a key of a tenant
+  that holds `tenant_admin` reads and changes the tenant's settings at
+  `/tenant/settings`, makes, lists and revokes the tenant's keys at
+  `/tenant/keys`, within the tenant's role cap, and lists its memberships
+  at `/tenant/memberships`. Each call is in the tenant's audit log, as
+  `settings_read`, `settings_set`, `membership_list` or one of the key
+  actions, and a change outside the list of settings is refused with
+  `bad-setting`. The settings (`masking.<role>`, `session.idle_seconds`
+  and `session.absolute_seconds`) are stored and answered; a session takes
+  the two limits when it starts, and nothing reads the masking settings
+  yet. Release 0.4.3 has none of these routes. See
+  [administer a tenant with a key](@/docs/tenant-administration.md).
+- **Sessions, with no way to start one yet**, from 0.4.4: the server
+  keeps sessions in `server.sqlite`, by the SHA-256 of their ids, and
+  serves `GET /session` and `POST /session/logout` to a request with the
+  cookie `__Host-vcs_session` that comes from the listener's public
+  origin (`public_origin`, `operator.public_origin`) and, for the
+  sign-out, carries the session's CSRF token. A change of a user's roles,
+  a deactivation and a change of a tenant's role cap end the sessions
+  they touch. A request with both a key and the cookie is refused with
+  `key-and-session`. No sign-in method exists in 0.4.4: nothing starts a
+  session, no browser holds one, nobody can sign in as a user, and the
+  routes that take a key take no session. Release 0.4.3 has none of
+  this. See
+  [set a listener's public origin for sessions](@/docs/session-origin.md).
+- **Key expiry and last-used time**, from 0.4.4: a new key expires 90
+  days after it is made, or in `expires_in_days` days (1 to 365), or
+  never with `"no_expiry": true`; `key create` takes `--expires-days` and
+  `--no-expiry`, and `keys.no_expiry` in the configuration can refuse new
+  keys with no expiry. A request by an expired key is refused with
+  `key-expired`, and an expiry a key cannot have with `bad-expiry`. Every
+  list of keys shows `expires_at` and `last_used_at`, the minute of the
+  key's latest accepted request. A key made by release 0.4.3 or earlier
+  keeps working with no expiry. Release 0.4.3 has none of this. See
+  [administer a tenant with a key](@/docs/tenant-administration.md#set-a-key-s-expiry-and-see-when-it-was-last-used).
 - **Tenants and keys.** Scoped bearer keys, revocation, tenant removal that
   never passes a legal hold.
 - **Retention.** Calendar periods per tenant or server-wide, the purge sweep
@@ -148,65 +203,6 @@ what is built, unless it says otherwise.
   checksums, every file with a signed build provenance attestation; from
   0.3.0 also a Sigstore signature over the checksums and the provenance as a
   file. The release workflow also publishes both crates to crates.io.
-
-## On `main` only
-
-The site is built from the `main` branch, so a page can describe what no
-release holds yet. Release 0.4.3 does not have these:
-
-- **Users and memberships, and schema version 9.** The commands
-  `user add`, `user list`, `user deactivate`, `membership grant` and
-  `membership revoke` keep a list of people and their roles in a tenant or
-  as an operator, on the host, in `server.sqlite`, with each change in the
-  audit logs. No request reads the list yet, so nobody can
-  sign in as a user. The catalogs move from schema version 4 to 9, which
-  release 0.4.3 refuses to open: there is no downgrade without the copy
-  taken before the upgrade. Release 0.4.3 has neither command and keeps
-  schema version 4. See
-  [add users and memberships](@/docs/users-and-memberships.md) and
-  [schema version 9](@/docs/upgrading.md#schema-version-9-and-no-way-back-without-the-copy).
-- **Roles as scopes, and a tenant's role cap.** Each role of a membership
-  gives one scope, and `user list` prints a membership's `scopes` beside
-  its `roles`. The commands `tenant set-role-cap` and `tenant role-cap` set
-  and print the roles a membership in a tenant may be given, recorded as
-  `role_cap_set` and `role_cap_read`. A tenant key may hold the new scope
-  `tenant_admin`, which the role `tenant-admin` gives. Release 0.4.3 has
-  neither command, and refuses `tenant_admin` as a key's scope. See
-  [roles, scopes and a tenant's role cap](@/docs/roles-and-scopes.md).
-- **Routes for a tenant's administrator.** A key of a tenant that holds
-  `tenant_admin` reads and changes the tenant's settings at
-  `/tenant/settings`, makes, lists and revokes the tenant's keys at
-  `/tenant/keys`, within the tenant's role cap, and lists its memberships
-  at `/tenant/memberships`. Each call is in the tenant's audit log, as
-  `settings_read`, `settings_set`, `membership_list` or one of the key
-  actions, and a change outside the list of settings is refused with
-  `bad-setting`. The settings (`masking.<role>`, `session.idle_seconds`
-  and `session.absolute_seconds`) are stored and answered; a session takes
-  the two limits when it starts, and nothing reads the masking settings
-  yet. Release 0.4.3 has none of these routes. See
-  [administer a tenant with a key](@/docs/tenant-administration.md).
-- **Sessions, with no way to start one yet.** The server keeps sessions in
-  `server.sqlite`, by the SHA-256 of their ids, and serves `GET /session`
-  and `POST /session/logout` to a request with the cookie
-  `__Host-vcs_session` that comes from the listener's public origin
-  (`public_origin`, `operator.public_origin`) and, for the sign-out,
-  carries the session's CSRF token. A change of a user's roles, a
-  deactivation and a change of a tenant's role cap end the sessions they
-  touch. A request with both a key and the cookie is refused with
-  `key-and-session`. No sign-in method exists, so no browser holds a
-  session, and the routes that take a key take no session. Release 0.4.3
-  has none of this. See
-  [set a listener's public origin for sessions](@/docs/session-origin.md).
-- **Key expiry and last-used time.** A new key expires 90 days after it is
-  made, or in `expires_in_days` days (1 to 365), or never with
-  `"no_expiry": true`; `key create` takes `--expires-days` and
-  `--no-expiry`, and `keys.no_expiry` in the configuration can refuse new
-  keys with no expiry. A request by an expired key is refused with
-  `key-expired`, and an expiry a key cannot have with `bad-expiry`. Every
-  list of keys shows `expires_at` and `last_used_at`, the minute of the
-  key's latest accepted request. A key made by release 0.4.3 or earlier
-  keeps working with no expiry. Release 0.4.3 has none of this. See
-  [administer a tenant with a key](@/docs/tenant-administration.md#set-a-key-s-expiry-and-see-when-it-was-last-used).
 
 ## Being built
 

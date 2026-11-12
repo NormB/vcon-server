@@ -24,7 +24,7 @@ without a signed-in user can show. Passkeys and single sign-on, which a
 later release adds, will start sessions. Set the origin now to have the
 listener ready.
 
-The keys and the routes are on `main` only; release 0.4.3 does not have
+The keys and the routes are new in 0.4.4; release 0.4.3 does not have
 them. CI runs every command on this page against a live server, after
 [getting started](@/docs/getting-started.md), and checks each answer.
 
@@ -56,7 +56,7 @@ them. CI runs every command on this page against a live server, after
 
 ## Before you start
 
-- **A running server** built from `main`, set up as
+- **A running server** of release 0.4.4 or later, set up as
   [getting started](@/docs/getting-started.md) leaves it: its
   configuration in `/etc/vcon-server/vcon-server.toml`, the tenant `acme`,
   and the certificate authority's copy for clients in
@@ -322,7 +322,8 @@ curl -sS -o /dev/null -w '%{http_code}\n' --cacert $CA "$URL/session" -H "Cookie
   `public_origin``:** the two listeners' origins name one host. Give the
   operator listener a host name of its own.
 - **`unknown field `public_origin``:** release 0.4.3 and earlier do not
-  have the key. Take the line out, or run a build of `main`.
+  have the key. Take the line out, or [upgrade](@/docs/upgrading.md) to
+  0.4.4 or later.
 - **`duplicate key` or the key seems to be ignored:** the line is under a
   `[table]`. Move it above the first table, or, for the operator
   listener's, into `[operator]`.

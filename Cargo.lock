@@ -3892,7 +3892,7 @@ dependencies = [
 
 [[package]]
 name = "vcon"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "base64 0.23.1",
  "flate2",
@@ -3916,7 +3916,7 @@ dependencies = [
 
 [[package]]
 name = "vcon-server"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "aws-config",
  "aws-lc-rs",

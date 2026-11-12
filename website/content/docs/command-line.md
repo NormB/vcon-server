@@ -91,7 +91,7 @@ operator keys included (their `tenant` is `null`).
 
 ## Users and memberships
 
-On `main` only; release 0.4.3 does not have these commands. A user is a
+New in 0.4.4; release 0.4.3 does not have these commands. A user is a
 person who will sign in; a membership gives a user roles in a tenant, or
 the operator role. These commands are the only way to make either, and no
 request reads them yet. See

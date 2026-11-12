@@ -94,12 +94,12 @@ note = "As root, on Debian or Ubuntu. A minimal image has no sudo, curl or CA ce
 [[extra.install]]
 title = "Download the release and check it"
 code = """
-VERSION=0.4.3
+VERSION=0.4.4
 ARCHIVE=vcon-server-$VERSION-$(uname -m)-unknown-linux-gnu.tar.gz
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$VERSION/$ARCHIVE
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$VERSION/SHA256SUMS.txt
 sha256sum -c SHA256SUMS.txt --ignore-missing"""
-note = "sha256sum prints the archive's name and OK. The 0.4.3 binaries need glibc 2.34 or later, such as Debian 12 or 13, Ubuntu 22.04 or 24.04, or Fedora 44; on an older system, install with cargo or build from source."
+note = "sha256sum prints the archive's name and OK. The 0.4.4 binaries need glibc 2.34 or later, such as Debian 12 or 13, Ubuntu 22.04 or 24.04, or Fedora 44; on an older system, install with cargo or build from source."
 
 [[extra.install]]
 title = "Unpack it"
@@ -170,7 +170,7 @@ link = "@/docs/how-to.md"
 summary = "Every how-to guide, with the install and getting-started pages."
 +++
 
-> **Status: 0.4.3 released, not yet for production.** The store, the HTTP API
+> **Status: 0.4.4 released, not yet for production.** The store, the HTTP API
 > with its client routes and OpenAPI description, tenants and their keys,
 > retention and the purge sweep, legal holds, the audit logs, the console, the
 > terminal UI, the command line, key rotation, `check` and the MCP server

@@ -18,13 +18,31 @@ CI runs every command on this page on each change. It installs the previous
 release, sets it up as [getting started](@/docs/getting-started.md) does,
 upgrades it to the server built from the change, and goes back again.
 
-## After 0.4.3
+## From 0.4.3 to 0.4.4
 
-These are on `main` only, in no release yet; they apply to the release
-that follows 0.4.3. The configuration is as it was. The catalogs change:
-see [schema version 9](#schema-version-9-and-no-way-back-without-the-copy)
-first. New keys expire: see
-[keys made before the upgrade have no expiry](#keys-made-before-the-upgrade-have-no-expiry).
+There is no downgrade from 0.4.4: release 0.4.3 refuses a data directory
+that 0.4.4 has opened. Copy the data directory before the upgrade, as in
+[copy the data directory](#copy-the-data-directory); that copy is the
+only way back. A 0.4.3 configuration is read as it was. Four things need
+a look before the upgrade:
+
+- **The catalogs change.** See
+  [schema version 9](#schema-version-9-and-no-way-back-without-the-copy)
+  first.
+- **New keys expire.** A key made by 0.4.4 expires 90 days after it is
+  made, unless its request names 1 to 365 days or asks for no expiry.
+  Keys that exist keep working with no expiry. See
+  [keys made before the upgrade have no expiry](#keys-made-before-the-upgrade-have-no-expiry).
+- **A request that carries both a key and the session cookie is
+  refused.** Every route answers 400
+  [`key-and-session`](@/problems/key-and-session.md) to a request with an
+  `Authorization` header and a cookie named `__Host-vcs_session`. No
+  release before 0.4.4 set that cookie, so a client is affected only if
+  it sends a cookie of that name itself.
+- **Sessions and users have no sign-in method.** 0.4.4 keeps users,
+  memberships and sessions, and nothing in it starts a session, so nobody
+  can sign in as a user; API keys work as before. The
+  [status](@/docs/status.md) page says what is built.
 
 ### Schema version 9, and no way back without the copy
 
@@ -287,7 +305,7 @@ but do not install it yet. The commands use their own variable names, so
 they do not change the ones from install:
 
 ```sh
-NEW_VERSION=0.4.3
+NEW_VERSION=0.4.4
 NEW_ARCHIVE=vcon-server-$NEW_VERSION-$(uname -m)-unknown-linux-gnu.tar.gz
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/$NEW_ARCHIVE
 curl -fsSL -o SHA256SUMS-$NEW_VERSION.txt https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/SHA256SUMS.txt
