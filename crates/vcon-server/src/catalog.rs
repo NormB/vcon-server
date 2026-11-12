@@ -572,6 +572,41 @@ pub(crate) mod tests {
             .expect(name)
     }
 
+    /// The SQLite in the SQLCipher this build links, as a catalog reports
+    /// it: (major, minor, patch).
+    fn linked_sqlite(conn: &Connection) -> (u32, u32, u32) {
+        let text: String = conn
+            .query_row("SELECT sqlite_version()", [], |r| r.get(0))
+            .expect("the version");
+        let mut parts = text.split('.').map(|part| part.parse().expect("a number"));
+        let mut next = || parts.next().expect("three parts");
+        (next(), next(), next())
+    }
+
+    #[test]
+    fn the_linked_sqlite_is_not_one_cve_2026_119375_affects() {
+        // RUSTSEC-2026-0459: SQLite before 3.54.0 can return uninitialized
+        // page-cache memory when a database is opened beside a -wal file of
+        // another page size. An encrypted catalog reports the SQLite that
+        // serves it, so this fails if a dependency change brings an
+        // affected one back.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let key = Key::generate().expect("key");
+        let conn = open(&path(&dir), &key, SCHEMA).expect("opens");
+        let linked = linked_sqlite(&conn);
+        assert!(linked >= (3, 54, 0), "SQLite {linked:?} is before 3.54.0");
+        assert_eq!(
+            rusqlite::version_number(),
+            i32::try_from(linked.0 * 1_000_000 + linked.1 * 1_000 + linked.2).expect("fits"),
+            "the library rusqlite links is the one the catalog runs on"
+        );
+        let cipher = cipher_setting(&conn, "cipher_version");
+        assert!(
+            cipher.starts_with("4."),
+            "SQLCipher 4, whose file format release 0.4.3 wrote: {cipher}"
+        );
+    }
+
     #[test]
     fn a_catalog_runs_with_the_required_settings() {
         let dir = tempfile::tempdir().expect("temp dir");

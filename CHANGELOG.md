@@ -6,6 +6,24 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- rusqlite goes from 0.41.1 to 0.42.0, which moves the bundled SQLCipher
+  from 4.19.0 to 4.20.0 and the SQLite inside it from 3.53.4 to 3.54.1
+  (CVE-2026-119375, RUSTSEC-2026-0459). SQLite before 3.54.0 can return
+  uninitialized page-cache memory when a process opens a database file
+  beside a write-ahead-log file (`-wal`) whose page size differs from the
+  database's. The vector is local: someone who can write a crafted pair of
+  files into the data directory, where the server opens `server.sqlite`
+  and each tenant's catalog, could make queries return stale bytes of the
+  server's memory. Releases 0.4.3 and earlier bundle an affected SQLite.
+  The file format does not change: the new build opens the encrypted
+  catalogs that 0.4.3 wrote, and a test now fails if the linked SQLite is
+  older than 3.54.0. The crate requires rusqlite 0.42.0 or later. 0.42.0
+  was published on 2026-11-11, less than the 14 days CONTRIBUTING.md asks
+  of a new version; a published advisory against a shipped dependency
+  comes before that wait, as it does for Dependabot's security updates.
+
 ### Added
 
 - Users and memberships, the first part of sign-in. `server.sqlite` keeps
