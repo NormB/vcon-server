@@ -60,10 +60,6 @@ fn rows(f: &Fixture) -> i64 {
     f.count("SELECT count(*) FROM session")
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
 /// The records of `action` in a log: actor, target and status.
 fn records(log: &[Value], action: &str) -> Vec<(Value, Value, Value)> {
     log.iter()
@@ -88,7 +84,7 @@ mod works {
         let f = fixture();
         let (t, u) = member(&f);
         let s = start(&f, u, Some(t));
-        assert!(well_formed(&s.id), "a 256-bit id: {}", s.id);
+        assert!(well_formed(&s.id), "a 256-bit id");
         assert_eq!(s.csrf, csrf_token(&s.id), "the token of that id");
         assert_eq!(
             s.session,
@@ -117,27 +113,46 @@ mod works {
     }
 
     #[test]
+    fn a_started_session_is_shown_for_debugging_without_its_id_and_token() {
+        let f = fixture();
+        let (t, u) = member(&f);
+        let s = start(&f, u, Some(t));
+        let shown = format!("{s:?}");
+        assert!(
+            !shown.contains(&s.id) && !shown.contains(&s.csrf),
+            "a log line or a failed assertion that prints it shows neither"
+        );
+        assert!(
+            shown.contains("Started") && shown.contains("hwk"),
+            "the rest of it is shown"
+        );
+    }
+
+    #[test]
     fn the_table_keeps_the_hashes_and_neither_the_id_nor_the_token() {
         let f = fixture();
         let (t, u) = member(&f);
         let s = start(&f, u, Some(t));
-        let with = |column: &str, bytes: &[u8]| {
-            f.count(&format!(
-                "SELECT count(*) FROM session WHERE {column} = x'{}'",
-                hex(bytes)
-            ))
-        };
-        assert_eq!(with("id_hash", &hash(&s.id)), 1, "SHA-256 of the id");
-        assert_eq!(with("csrf_hash", &hash(&s.csrf)), 1, "SHA-256 of the token");
-        // An id and a token are base64url, so they stand in SQL text as
-        // they are.
-        let held = f.count(&format!(
-            "SELECT count(*) FROM session WHERE amr IN ('{0}', '{1}') OR scopes IN ('{0}', '{1}') \
-             OR id_hash IN (CAST('{0}' AS BLOB), CAST('{1}' AS BLOB)) \
-             OR csrf_hash IN (CAST('{0}' AS BLOB), CAST('{1}' AS BLOB))",
-            s.id, s.csrf
-        ));
-        assert_eq!(held, 0, "no column holds either");
+        // The row is read as the server reads it, by the hash of the id.
+        let row = f
+            .tenants
+            .registry
+            .snapshot()
+            .expect("a transaction")
+            .session(&hash(&s.id))
+            .expect("reads")
+            .expect("found by the SHA-256 of the id");
+        assert_eq!(row.id_hash, hash(&s.id), "SHA-256 of the id");
+        assert_eq!(row.csrf_hash, hash(&s.csrf), "SHA-256 of the token");
+        let texts = [row.scopes.as_bytes(), row.amr.as_bytes()];
+        let blobs = [row.id_hash.as_slice(), row.csrf_hash.as_slice()];
+        for kept in texts.into_iter().chain(blobs) {
+            assert!(
+                kept != s.id.as_bytes() && kept != s.csrf.as_bytes(),
+                "no column holds the id or the token"
+            );
+        }
+        assert_eq!(rows(&f), 1, "the one row");
     }
 
     #[test]
@@ -481,11 +496,12 @@ mod refused {
         let (t, u) = member(&f);
         start(&f, u, Some(t));
         let unknown = new_secret();
-        for id in [unknown.as_str(), "", "short", "not/base64url"] {
+        let ids = [unknown.as_str(), "", "short", "not/base64url"];
+        for (place, id) in ids.into_iter().enumerate() {
             assert_eq!(
                 f.tenants.session(id, Proof::Handout),
                 Err(SessionError::NoSession),
-                "{id:?}"
+                "id {place}"
             );
         }
     }
@@ -528,11 +544,11 @@ mod refused {
             Some(s.id.as_str()),
             Some(&s.csrf[..42]),
         ];
-        for token in tokens {
+        for (place, token) in tokens.into_iter().enumerate() {
             assert_eq!(
                 f.tenants.session(&s.id, Proof::Csrf(token)),
                 Err(SessionError::BadCsrf),
-                "{token:?}"
+                "token {place}"
             );
         }
         assert_eq!(rows(&f), 2, "a refused token ends nothing");

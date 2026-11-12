@@ -69,14 +69,24 @@ impl SessionInfo {
 }
 
 /// A session just started or just given a new id: the id for the cookie,
-/// the CSRF token for the page, and the session.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// the CSRF token for the page, and the session. Its `Debug` form shows
+/// the session and neither the id nor the token, so a log line or a failed
+/// assertion that prints one gives nothing a request could use.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Started {
     /// The session's id. It is shown this once and kept nowhere.
     pub id: String,
     /// The session's CSRF token, `crate::session::csrf_token` of the id.
     pub csrf: String,
     pub session: SessionInfo,
+}
+
+impl std::fmt::Debug for Started {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Started")
+            .field("session", &self.session)
+            .finish_non_exhaustive()
+    }
 }
 
 /// What a request by session shows besides its cookie.

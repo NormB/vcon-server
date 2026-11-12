@@ -515,7 +515,11 @@ mod refused {
                 headers.push(("x-csrf-token", token));
             }
             let answer = send(&s, Method::POST, "/session/logout", &headers).await;
-            assert_eq!(refused(answer).await, bad_csrf(), "{token:?}");
+            assert_eq!(
+                refused(answer).await,
+                bad_csrf(),
+                "a missing or wrong token"
+            );
         }
         assert_eq!(
             read(&s, &started.id).await.status(),
@@ -791,7 +795,7 @@ mod refused {
             assert_eq!(
                 refused(answer).await,
                 (400, "key-and-session".to_owned(), None),
-                "{cookie}"
+                "whatever the cookie holds"
             );
         }
         assert_eq!(

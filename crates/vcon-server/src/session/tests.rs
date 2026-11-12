@@ -27,7 +27,7 @@ mod works {
     fn a_new_secret_is_256_random_bits_in_43_url_safe_characters() {
         let (one, two) = (new_secret(), new_secret());
         assert_eq!(one.len(), 43, "32 bytes in base64url with no padding");
-        assert!(well_formed(&one), "a new secret is well formed: {one}");
+        assert!(well_formed(&one), "a new secret is well formed");
         assert_ne!(one, two, "two secrets differ");
     }
 
@@ -79,7 +79,7 @@ mod works {
         assert_eq!(token, csrf_token(&id), "one session, one token");
         assert_ne!(token, id, "the token does not show the id");
         assert_ne!(hash(&token), hash(&id), "nor does its hash");
-        assert!(well_formed(&token), "43 url-safe characters: {token}");
+        assert!(well_formed(&token), "43 url-safe characters");
         assert_ne!(
             token,
             csrf_token(&new_secret()),
@@ -199,16 +199,19 @@ mod refused {
     #[test]
     fn a_cookie_value_that_no_session_id_has_is_refused_unread() {
         let id = new_secret();
-        for value in [
+        // A message names a value by its place: a session id is never
+        // printed.
+        let values = [
             String::new(),
             id[..42].to_owned(),
             format!("{id}A"),
             format!("{}=", &id[..42]),
             format!("{}+", &id[..42]),
             format!("\"{id}\""),
-        ] {
+        ];
+        for (place, value) in values.iter().enumerate() {
             let sent = headers(&[("cookie", &format!("{COOKIE}={value}"))]);
-            assert_eq!(cookie(&sent), Cookie::Bad, "{value:?}");
+            assert_eq!(cookie(&sent), Cookie::Bad, "value {place}");
         }
     }
 
