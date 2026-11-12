@@ -34,8 +34,9 @@ git config user.email "test@example.com"
 git config commit.gpgsign false
 git config core.hooksPath .githooks
 # .config holds nextest's deadline, .cargo the linker config and .github the
-# workflows, which the tests of the hook's scripts read.
-cp -R "$src/.githooks" "$src/scripts" "$src/.config" "$src/.cargo" "$src/.github" "$src/.gitignore" "$src/rust-toolchain.toml" .
+# workflows, which the tests of the hook's scripts read. CHANGELOG.md is
+# what scripts/test_release_notes.py makes each release's text from.
+cp -R "$src/.githooks" "$src/scripts" "$src/.config" "$src/.cargo" "$src/.github" "$src/.gitignore" "$src/rust-toolchain.toml" "$src/CHANGELOG.md" .
 # A workspace shaped like the real one: one crate under crates/, ready to
 # publish, so the hook's package check has a package to read.
 cat > Cargo.toml <<'TOML'
