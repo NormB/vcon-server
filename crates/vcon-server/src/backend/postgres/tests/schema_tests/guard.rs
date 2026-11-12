@@ -83,8 +83,28 @@ fn a_test_name_whose_time_does_not_parse_is_never_stale() {
 
 #[test]
 fn the_limit_is_longer_than_any_test_may_run() {
-    // .config/nextest.toml ends a test well inside this.
-    assert!(STALE_AFTER >= 900, "at least a quarter of an hour");
+    // The test runner ends a test after `terminate-after` periods of
+    // `period`; a database older than twice that is no running test's.
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.config/nextest.toml");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("slow-timeout = "))
+        .expect("the runner's deadline is set");
+    let number_after = |key: &str| -> u64 {
+        let rest = line.split(key).nth(1).expect("the key is there");
+        rest.trim_start_matches([' ', '=', '"'])
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>()
+            .parse()
+            .unwrap_or_else(|e| panic!("{key} in {line}: {e}"))
+    };
+    let deadline = number_after("period") * number_after("terminate-after");
+    assert!(
+        STALE_AFTER >= 2 * deadline,
+        "the sweep's limit of {STALE_AFTER} s against a test's deadline of {deadline} s"
+    );
 }
 
 #[cfg(feature = "backend-tests")]
