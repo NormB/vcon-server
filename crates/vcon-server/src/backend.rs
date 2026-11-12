@@ -205,7 +205,10 @@ impl std::error::Error for CommitError {}
 /// One tenant's catalog.
 pub trait Catalog: Send + Sync {
     /// A transaction that writes: one at a time per tenant, so a tenant's
-    /// writes queue here.
+    /// writes queue here, or, in a catalog that begins the transaction
+    /// with its first statement, at that statement. A caller does nothing
+    /// that needs the tenant's writes held off between this call and the
+    /// transaction's first statement.
     fn immediate(&self) -> Result<Box<dyn CatalogTx + '_>, StoreError>;
     /// A transaction that only reads, seeing one consistent state.
     fn snapshot(&self) -> Result<Box<dyn CatalogTx + '_>, StoreError>;

@@ -29,10 +29,24 @@ fn a_write_begins_read_committed_sets_the_tenant_and_locks_its_row() {
         begin_text(Begin::Write, TENANT),
         format!(
             "BEGIN ISOLATION LEVEL READ COMMITTED; SET LOCAL vcon.tenant = '{hex}'; \
-             SELECT 1 FROM vcon.tenant_lock WHERE tenant = '\\x{hex}' FOR UPDATE"
+             DO $$BEGIN \
+             PERFORM 1 FROM vcon.tenant_lock WHERE tenant = '\\x{hex}' FOR UPDATE; \
+             IF NOT FOUND THEN RAISE EXCEPTION 'tenant {hex} has no lock row'; END IF; \
+             END$$"
         ),
-        "one round trip: the transaction, the tenant, the lock"
+        "one batch: the transaction, the tenant, the lock, and an error with no lock row"
     );
+}
+
+#[test]
+fn only_a_write_asks_for_the_lock_row() {
+    for how in [Begin::Read, Begin::Create] {
+        let text = begin_text(how, TENANT);
+        assert!(
+            !text.contains("tenant_lock") && !text.contains("DO $$"),
+            "a read takes no lock, and the write that makes the row cannot hold it yet: {text}"
+        );
+    }
 }
 
 #[test]
@@ -361,11 +375,13 @@ pub(super) mod on_a_server {
     use crate::store::{Caller, ListQuery, StoreError};
 
     /// The round trips to the database of one `Store::create`, one
-    /// `Store::get` and one page of `Store::list`, as first measured; a
-    /// change that adds one is seen here.
-    const CREATE_TRIPS: usize = 13;
-    const GET_TRIPS: usize = 10;
-    const LIST_TRIPS: usize = 4;
+    /// `Store::get` and one page of `Store::list`, as measured; a change
+    /// that adds one is seen here. A `get` is two transactions of four:
+    /// two reads and the version's row, or two reads and the audit
+    /// record, with the begin in the first one's round trip, then the end.
+    const CREATE_TRIPS: usize = 11;
+    const GET_TRIPS: usize = 8;
+    const LIST_TRIPS: usize = 3;
 
     /// A migrated database of the test's own and the application role's
     /// pool on it. The runtime that made the database is dropped before
@@ -789,12 +805,20 @@ pub(super) mod on_a_server {
     fn a_second_write_of_a_tenant_waits_for_the_first_to_end() {
         let (db, database) = database();
         let (tenant, key, catalog) = tenant_catalog(&database);
-        let first = catalog.immediate().expect("the first write begins");
+        let mut first = catalog.immediate().expect("the first write begins");
+        assert_eq!(
+            first.wraps(KeyId([1; 8])),
+            Ok(0),
+            "its first statement takes the lock"
+        );
         let second = std::thread::spawn({
             let database = database.clone();
             move || {
                 let catalog = PgCatalog::open(database, tenant, &key).expect("opens");
-                let begun = catalog.immediate().map(drop);
+                let begun = catalog
+                    .immediate()
+                    .and_then(|mut tx| tx.wraps(KeyId([1; 8])))
+                    .map(drop);
                 // The transaction borrows the catalog, so it ends first.
                 drop(catalog);
                 begun
@@ -810,7 +834,10 @@ pub(super) mod on_a_server {
             .await
         });
         assert!(waiting, "the second write waits for the tenant's lock row");
-        assert!(!second.is_finished(), "and has not begun");
+        assert!(
+            !second.is_finished(),
+            "and its first statement has no answer"
+        );
         first.commit().expect("the first commits");
         assert_eq!(
             second.join().expect("the thread ends"),
@@ -840,7 +867,12 @@ pub(super) mod on_a_server {
         let (_db, database) = database();
         let (_, _, one) = tenant_catalog(&database);
         let (_, _, two) = tenant_catalog(&database);
-        let held = one.immediate().expect("one tenant's write begins");
+        let mut held = one.immediate().expect("one tenant's write begins");
+        assert_eq!(
+            held.wraps(KeyId([1; 8])),
+            Ok(0),
+            "and holds its tenant's lock"
+        );
         store_one(&two, a_uuid(1), 1);
         held.commit().expect("and commits after the other's");
         assert_eq!(
@@ -957,23 +989,102 @@ pub(super) mod on_a_server {
         let (_, _, catalog) = tenant_catalog(&database);
         let start = database.round_trips();
         let mut tx = catalog.immediate().expect("begins");
-        assert_eq!(database.round_trips() - start, 1, "begin, tenant and lock");
+        assert_eq!(
+            database.round_trips() - start,
+            0,
+            "the begin waits for the first statement"
+        );
         tx.vcon_row(a_uuid(1)).expect("reads");
         assert_eq!(
             database.round_trips() - start,
-            2,
-            "a read with its savepoint"
+            1,
+            "begin, tenant and lock, with a read and its savepoint"
         );
         tx.add_wrap(KeyId([1; 8])).expect("writes");
-        assert_eq!(database.round_trips() - start, 3, "a write");
+        assert_eq!(database.round_trips() - start, 2, "a write");
         tx.commit().expect("commits");
-        assert_eq!(database.round_trips() - start, 4, "the commit");
+        assert_eq!(database.round_trips() - start, 3, "the commit");
         let start = database.round_trips();
-        drop(catalog.snapshot().expect("begins"));
+        let mut tx = catalog.snapshot().expect("begins");
+        assert_eq!(tx.count_versions(), Ok(0), "reads");
+        drop(tx);
         assert_eq!(
             database.round_trips() - start,
             2,
-            "a snapshot begins in one and its drop rolls back in one"
+            "a snapshot begins with its read in one and its drop rolls back in one"
+        );
+    }
+
+    #[test]
+    fn a_transaction_that_sends_no_statement_costs_no_round_trip() {
+        let (_db, database) = database();
+        let (_, _, catalog) = tenant_catalog(&database);
+        let idle = database.idle();
+        let start = database.round_trips();
+        drop(catalog.snapshot().expect("begins"));
+        drop(catalog.immediate().expect("begins"));
+        assert_eq!(
+            catalog.immediate().expect("begins").commit(),
+            Ok(()),
+            "nothing to keep is kept"
+        );
+        assert_eq!(
+            database.round_trips(),
+            start,
+            "no begin, no rollback and no commit was sent"
+        );
+        assert_eq!(database.idle(), idle, "each connection went back");
+    }
+
+    #[test]
+    fn a_write_sent_first_is_in_the_transaction_it_began() {
+        let (_db, database) = database();
+        let (_, _, catalog) = tenant_catalog(&database);
+        let start = database.round_trips();
+        let mut tx = catalog.immediate().expect("begins");
+        tx.add_wrap(KeyId([1; 8])).expect("writes");
+        assert_eq!(
+            database.round_trips() - start,
+            1,
+            "the begin went with the write"
+        );
+        drop(tx);
+        let mut tx = catalog.immediate().expect("begins");
+        assert_eq!(
+            tx.wraps(KeyId([1; 8])),
+            Ok(0),
+            "the drop rolled the write back, so it was inside the transaction"
+        );
+        tx.add_wrap(KeyId([1; 8])).expect("writes");
+        tx.commit().expect("commits");
+        assert_eq!(
+            catalog.snapshot().expect("begins").wraps(KeyId([1; 8])),
+            Ok(1),
+            "and a committed one is kept"
+        );
+    }
+
+    #[test]
+    fn a_part_sent_first_begins_the_transaction() {
+        let (_db, database) = database();
+        let (_, _, catalog) = tenant_catalog(&database);
+        let start = database.round_trips();
+        let mut tx = catalog.immediate().expect("begins");
+        tx.begin_part().expect("a savepoint needs a transaction");
+        assert_eq!(
+            database.round_trips() - start,
+            1,
+            "the begin went with the savepoint"
+        );
+        tx.add_wrap(KeyId([1; 8])).expect("writes");
+        tx.rollback_part().expect("back to the savepoint");
+        tx.add_wrap(KeyId([2; 8])).expect("writes");
+        tx.commit().expect("commits");
+        let mut tx = catalog.snapshot().expect("begins");
+        assert_eq!(
+            (tx.wraps(KeyId([1; 8])), tx.wraps(KeyId([2; 8]))),
+            (Ok(0), Ok(1)),
+            "the part was undone and the write after it kept"
         );
     }
 
@@ -1128,15 +1239,114 @@ pub(super) mod on_a_server {
         let (db, database) = database();
         let (tenant, _, catalog) = tenant_catalog(&database);
         owner_reads(&db, tenant, "DELETE FROM vcon.tenant_lock RETURNING 'gone'");
+        let idle = database.idle();
+        let mut tx = catalog.immediate().expect("a connection");
         assert_eq!(
-            catalog.immediate().map(drop),
+            tx.wraps(KeyId([1; 8])),
             Err(StoreError::Io),
-            "no lock row: the tenant was removed"
+            "no lock row: the tenant was removed, and the first statement says so"
+        );
+        assert_eq!(
+            tx.wraps(KeyId([1; 8])),
+            Err(StoreError::Io),
+            "a statement after it is refused too"
+        );
+        assert_eq!(
+            tx.commit(),
+            Err(CommitError::RolledBack),
+            "and the commit says nothing was kept"
+        );
+        assert_eq!(
+            database.idle(),
+            idle,
+            "the connection went back to the pool"
         );
         assert_eq!(
             catalog.snapshot().expect("a read begins").count_versions(),
             Ok(0),
             "and the connection it used went back to the pool usable"
+        );
+    }
+
+    #[test]
+    fn a_removed_tenant_s_first_write_is_refused_and_writes_nothing() {
+        let (db, database) = database();
+        let (tenant, _, catalog) = tenant_catalog(&database);
+        owner_reads(&db, tenant, "DELETE FROM vcon.tenant_lock RETURNING 'gone'");
+        let mut tx = catalog.immediate().expect("a connection");
+        let refused = tx.record(&entry("never"), OffsetDateTime::UNIX_EPOCH);
+        let Err(AuditError::Database(why)) = &refused else {
+            panic!("the record is refused: {refused:?}");
+        };
+        assert!(
+            why.contains(&format!("tenant {tenant} has no lock row")),
+            "the begin's own error, not the statement's: {why}"
+        );
+        assert_eq!(
+            tx.commit(),
+            Err(CommitError::RolledBack),
+            "nothing was kept"
+        );
+        assert_eq!(
+            owner_reads(&db, tenant, "SELECT count(*) FROM vcon.audit"),
+            ["0"],
+            "the write sent with the begin did not run"
+        );
+    }
+
+    #[test]
+    fn rolling_back_a_part_does_not_begin_a_removed_tenant_s_write() {
+        let (db, database) = database();
+        let (tenant, _, catalog) = tenant_catalog(&database);
+        owner_reads(&db, tenant, "DELETE FROM vcon.tenant_lock RETURNING 'gone'");
+        let mut tx = catalog.immediate().expect("a connection");
+        assert_eq!(
+            tx.begin_part(),
+            Err(StoreError::Io),
+            "the part's savepoint is the first statement"
+        );
+        assert_eq!(
+            tx.rollback_part(),
+            Err(StoreError::Io),
+            "there is no savepoint to go back to"
+        );
+        assert_eq!(
+            tx.add_wrap(KeyId([1; 8])),
+            Err(StoreError::Io),
+            "a write after it is refused"
+        );
+        assert_eq!(
+            tx.commit(),
+            Err(CommitError::RolledBack),
+            "and the commit says nothing was kept"
+        );
+        assert_eq!(
+            owner_reads(&db, tenant, "SELECT count(*) FROM vcon.key_use"),
+            ["0"],
+            "no write of the removed tenant was kept"
+        );
+    }
+
+    #[test]
+    fn a_first_read_that_fails_leaves_the_transaction_begun_and_usable() {
+        let (db, database) = database();
+        let (_, _, catalog) = tenant_catalog(&database);
+        as_owner(&db, "REVOKE SELECT ON vcon.audit FROM vcon_app");
+        let mut tx = catalog.immediate().expect("begins");
+        let mut out = Vec::new();
+        let failed = tx.audit_lines(0, Some(10), &mut out);
+        assert!(
+            matches!(failed, Err(AuditError::Database(_))),
+            "the read sent with the begin is refused: {failed:?}"
+        );
+        tx.add_wrap(KeyId([1; 8]))
+            .expect("the begin was kept, so a write runs");
+        tx.commit().expect("and commits");
+        as_owner(&db, "GRANT SELECT ON vcon.audit TO vcon_app");
+        assert_eq!(
+            catalog.snapshot().expect("begins").wraps(KeyId([1; 8])),
+            Ok(1),
+            "the write was kept"
         );
     }
 

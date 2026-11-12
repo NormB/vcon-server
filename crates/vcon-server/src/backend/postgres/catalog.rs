@@ -9,8 +9,12 @@
 //!   it, sets `vcon.tenant` for the row-level security policies, and, for
 //!   a write, locks the tenant's row of `vcon.tenant_lock`, which gives
 //!   the tenant's writes one order, as `BEGIN IMMEDIATE` gives a local
-//!   catalog's. The tenant is set here and nowhere else; every statement
-//!   names it too, and the policy is the second check.
+//!   catalog's. That round trip is the one of the transaction's first
+//!   statement: the begin is sent ahead of it on the same connection, so a
+//!   tenant's writes queue at their first statement, and a transaction
+//!   that sends no statement sends nothing. The tenant is set here and
+//!   nowhere else; every statement names it too, and the policy is the
+//!   second check.
 //! - A statement is sent with its parameter types (`query_typed`), in one
 //!   round trip and with no prepared statement, so the server plans each
 //!   with the tenant set and keeps no plan.
@@ -42,7 +46,7 @@ use std::sync::Mutex;
 use time::OffsetDateTime;
 use tokio_postgres::error::{DbError, Severity};
 use tokio_postgres::types::{ToSql, Type};
-use tokio_postgres::{Client, Row, SimpleQueryMessage};
+use tokio_postgres::{Client, Row};
 use uuid::Uuid;
 
 use super::connect::{Connector, Purpose, with_causes};
@@ -229,16 +233,23 @@ pub(crate) enum Begin {
     Create,
 }
 
-/// The one round trip that begins a transaction of `tenant` as `how`:
-/// the transaction, the tenant the policies read, and for a write the
-/// lock on the tenant's row, whose absence is a removed tenant. The
-/// tenant's id is 32 hex digits, so it is written into the text as it is.
+/// The one batch that begins a transaction of `tenant` as `how`: the
+/// transaction, the tenant the policies read, and for a write the lock on
+/// the tenant's row. A tenant with no such row was removed, and the batch
+/// then ends in an error: it is sent in one round trip with the
+/// transaction's first statement ([`PgTx::trip`]), and after an error the
+/// server refuses that statement and every one after it until the
+/// rollback. The tenant's id is 32 hex digits, so it is written into the
+/// text as it is.
 pub(crate) fn begin_text(how: Begin, tenant: TenantId) -> String {
     let set = format!("SET LOCAL vcon.tenant = '{tenant}'");
     match how {
         Begin::Write => format!(
             "BEGIN ISOLATION LEVEL READ COMMITTED; {set}; \
-             SELECT 1 FROM vcon.tenant_lock WHERE tenant = '\\x{tenant}' FOR UPDATE"
+             DO $$BEGIN \
+             PERFORM 1 FROM vcon.tenant_lock WHERE tenant = '\\x{tenant}' FOR UPDATE; \
+             IF NOT FOUND THEN RAISE EXCEPTION 'tenant {tenant} has no lock row'; END IF; \
+             END$$"
         ),
         Begin::Read => format!("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; {set}"),
         Begin::Create => format!("BEGIN ISOLATION LEVEL READ COMMITTED; {set}"),
@@ -412,8 +423,7 @@ impl PgCatalog {
     /// catalog.
     fn key_id(database: &Arc<Database>, tenant: TenantId) -> Result<Option<Vec<u8>>, CatalogError> {
         let lease = database.lease().map_err(|_| CatalogError::Io)?;
-        let tx = PgTx::begin(database, lease, tenant, None, Begin::Read)
-            .map_err(|_| CatalogError::Io)?;
+        let tx = PgTx::begin(database, lease, tenant, None, Begin::Read);
         let rows = tx
             .query(
                 "SELECT catalog_key_id FROM vcon.tenant_catalog WHERE tenant = $1",
@@ -446,7 +456,13 @@ impl PgCatalog {
 
     fn begin(&self, how: Begin) -> Result<PgTx<'_>, StoreError> {
         let lease = self.database.lease()?;
-        PgTx::begin(&self.database, lease, self.tenant, Some(self), how)
+        Ok(PgTx::begin(
+            &self.database,
+            lease,
+            self.tenant,
+            Some(self),
+            how,
+        ))
     }
 }
 
@@ -525,7 +541,14 @@ struct PgTx<'a> {
     /// The catalog whose keys seal and open the columns; none for the
     /// read that finds a tenant's key id before there is a catalog.
     catalog: Option<&'a PgCatalog>,
-    open: bool,
+    /// How the transaction begins, until its first statement is sent:
+    /// the begin goes with that statement, in its round trip.
+    pending: Cell<Option<Begin>>,
+    /// The begin was sent and no end yet: the drop rolls back.
+    open: Cell<bool>,
+    /// The begin failed: nothing of this transaction is kept, whatever
+    /// is rolled back to after.
+    refused: Cell<bool>,
     /// A write failed: the server refuses every statement but the end.
     aborted: Cell<bool>,
     /// A statement failed in a way that says the connection cannot be
@@ -535,7 +558,7 @@ struct PgTx<'a> {
 
 impl Drop for PgTx<'_> {
     fn drop(&mut self) {
-        if self.open {
+        if self.open.get() {
             let rolled = self
                 .database
                 .wait(self.lease.client().batch_execute("ROLLBACK"));
@@ -550,47 +573,64 @@ impl Drop for PgTx<'_> {
 }
 
 impl<'a> PgTx<'a> {
+    /// A transaction of `tenant` on the connection of `lease`. Nothing is
+    /// sent yet: the begin goes with the first statement ([`PgTx::trip`]).
     fn begin(
         database: &'a Database,
-        mut lease: Lease,
+        lease: Lease,
         tenant: TenantId,
         catalog: Option<&'a PgCatalog>,
         how: Begin,
-    ) -> Result<PgTx<'a>, StoreError> {
-        let began = database.wait(lease.client().simple_query(&begin_text(how, tenant)));
-        let locked = match began {
-            Ok(messages) => messages
-                .iter()
-                .any(|m| matches!(m, SimpleQueryMessage::Row(_))),
-            Err(e) => {
-                // The transaction may have begun before the statement
-                // that failed; the connection is not kept in that state.
-                lease.failed(&e);
-                let rolled = database.wait(lease.client().batch_execute("ROLLBACK"));
-                if rolled.is_err() {
-                    lease.discard();
-                }
-                return Err(StoreError::Io);
-            }
-        };
-        let tx = PgTx {
+    ) -> PgTx<'a> {
+        PgTx {
             database,
             lease,
             tenant,
             catalog,
-            open: true,
+            pending: Cell::new(Some(how)),
+            open: Cell::new(false),
+            refused: Cell::new(false),
             aborted: Cell::new(false),
             broken: Cell::new(false),
-        };
-        if how == Begin::Write && !locked {
-            // No lock row: the tenant was removed. The drop rolls back.
-            return Err(StoreError::Io);
         }
-        Ok(tx)
     }
 
     fn client(&self) -> &Client {
         self.lease.client()
+    }
+
+    /// One round trip of the transaction: `call`, and before it in the
+    /// same round trip the begin ([`begin_text`]), when `call` is the
+    /// transaction's first. The two are written to the connection in this
+    /// order before either answer is read, and the server runs them in
+    /// that order. When the begin fails, its error is the answer: the
+    /// server then refuses `call` and every later statement, the commit
+    /// answers [`CommitError::RolledBack`], and the drop rolls back.
+    ///
+    /// A begin whose `BEGIN` itself did not run would leave `call` outside
+    /// any transaction. The batch is fixed text that the server parses
+    /// whole, so that is not expected; if it happened, no tenant would be
+    /// set, and the policies refuse a row read or written with no tenant.
+    fn trip<T>(
+        &self,
+        call: impl Future<Output = Result<T, tokio_postgres::Error>>,
+    ) -> Result<T, tokio_postgres::Error> {
+        let Some(how) = self.pending.take() else {
+            return self.database.wait(call);
+        };
+        let text = begin_text(how, self.tenant);
+        let client = self.lease.client();
+        self.open.set(true);
+        let (began, done) = self
+            .database
+            .wait(async { tokio::join!(biased; client.batch_execute(&text), call) });
+        match began {
+            Ok(()) => done,
+            Err(e) => {
+                self.refused.set(true);
+                Err(e)
+            }
+        }
     }
 
     /// Notes a statement's failure: whether the connection may be kept.
@@ -616,8 +656,9 @@ impl<'a> PgTx<'a> {
         params: &[Param<'_>],
     ) -> Result<Vec<Row>, tokio_postgres::Error> {
         let client = self.lease.client();
-        let outcome = self.database.wait(async {
+        let outcome = self.trip(async {
             let (saved, rows, released) = tokio::join!(
+                biased;
                 client.batch_execute("SAVEPOINT read"),
                 client.query_typed(sql, params),
                 client.batch_execute("RELEASE SAVEPOINT read"),
@@ -651,9 +692,7 @@ impl<'a> PgTx<'a> {
         sql: &str,
         params: &[Param<'_>],
     ) -> Result<u64, tokio_postgres::Error> {
-        let outcome = self
-            .database
-            .wait(self.lease.client().execute_typed(sql, params));
+        let outcome = self.trip(self.lease.client().execute_typed(sql, params));
         if let Err(e) = &outcome {
             self.aborted.set(true);
             self.failed(e);
@@ -664,9 +703,7 @@ impl<'a> PgTx<'a> {
     /// A write that returns rows, such as an INSERT with RETURNING: it
     /// runs as a write, with no savepoint.
     fn returning(&self, sql: &str, params: &[Param<'_>]) -> Result<Vec<Row>, StoreError> {
-        let outcome = self
-            .database
-            .wait(self.lease.client().query_typed(sql, params));
+        let outcome = self.trip(self.lease.client().query_typed(sql, params));
         outcome.map_err(|e| {
             self.aborted.set(true);
             self.failed(&e);
@@ -675,7 +712,7 @@ impl<'a> PgTx<'a> {
     }
 
     fn batch(&self, sql: &str) -> Result<(), StoreError> {
-        let outcome = self.database.wait(self.client().batch_execute(sql));
+        let outcome = self.trip(self.client().batch_execute(sql));
         outcome.map_err(|e| {
             self.aborted.set(true);
             self.failed(&e);
@@ -1695,7 +1732,7 @@ impl CatalogTx for PgTx<'_> {
     /// Back to where the part began. It also ends the abort a failed
     /// write of the part left, so the transaction goes on.
     fn rollback_part(&mut self) -> Result<(), StoreError> {
-        let outcome = self.database.wait(
+        let outcome = self.trip(
             self.client()
                 .batch_execute("ROLLBACK TO SAVEPOINT part; RELEASE SAVEPOINT part"),
         );
@@ -1773,17 +1810,24 @@ impl CatalogTx for PgTx<'_> {
                 CommitError::Unknown => "COMMIT",
                 CommitError::RolledBack => "ROLLBACK",
             };
-            let ended = self.database.wait(self.client().batch_execute(end));
-            ended.expect("ends the transaction");
-            self.open = false;
+            if self.open.get() {
+                let ended = self.database.wait(self.client().batch_execute(end));
+                ended.expect("ends the transaction");
+            }
+            self.pending.set(None);
+            self.open.set(false);
             return self.ended(Err(how));
         }
-        if self.aborted.get() {
+        if self.aborted.get() || self.refused.get() {
             // The drop sends the ROLLBACK the server is waiting for.
             return Err(CommitError::RolledBack);
         }
+        if self.pending.take().is_some() {
+            // No statement was sent, so no begin was: nothing to keep.
+            return Ok(());
+        }
         let outcome = self.database.wait(self.client().batch_execute("COMMIT"));
-        self.open = false;
+        self.open.set(false);
         let outcome =
             outcome.map_err(|e| commit_failure(e.as_db_error().and_then(DbError::parsed_severity)));
         self.ended(outcome)
