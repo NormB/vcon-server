@@ -1257,6 +1257,46 @@ async fn a_backup_taken_under_write_load_checks_whole_and_serves() {
     assert_eq!(read.bytes().await.expect("body").to_vec(), first);
 }
 
+/// The PostgreSQL schema version `vcon-server migrate` leaves: the number
+/// of migration files, `schema_v<n>.sql`, in the source. Read from the
+/// files, so a test that states the version does not fall behind a new
+/// migration: one that pinned the number failed only where a PostgreSQL
+/// server was at hand.
+fn postgres_schema_version() -> usize {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/backend/postgres");
+    std::fs::read_dir(&dir)
+        .expect("the PostgreSQL backend's source")
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.strip_prefix("schema_v")
+                .and_then(|rest| rest.strip_suffix(".sql"))
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .count()
+}
+
+#[test]
+fn the_postgresql_schema_version_is_the_number_of_migration_files() {
+    let version = postgres_schema_version();
+    assert!(
+        version >= 4,
+        "schema_v1.sql to schema_v4.sql at least: {version}"
+    );
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/backend/postgres");
+    for n in 1..=version {
+        assert!(
+            dir.join(format!("schema_v{n}.sql")).is_file(),
+            "the migrations are numbered from 1 with none left out: schema_v{n}.sql"
+        );
+    }
+    assert!(
+        !dir.join(format!("schema_v{}.sql", version + 1)).exists(),
+        "and {version} is the last"
+    );
+}
+
 /// Against the S3-compatible service the `VCON_TEST_S3_*` variables name
 /// (see src/backend/s3.rs), with its keys given only in the AWS
 /// environment variables, as the AWS default credential chain reads them.
@@ -1672,8 +1712,9 @@ mod postgres {
             .expect("runs");
         let printed = String::from_utf8_lossy(&out.stdout).into_owned();
         assert!(
-            out.status.success() && printed.contains("\"to\":3"),
-            "migrate succeeded and left version 3: {printed} {}",
+            out.status.success()
+                && printed.contains(&format!("\"to\":{}", super::postgres_schema_version())),
+            "migrate succeeded and left this binary's version: {printed} {}",
             String::from_utf8_lossy(&out.stderr)
         );
     }
