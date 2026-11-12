@@ -219,7 +219,7 @@ what is built, unless it says otherwise.
   with `BYPASSRLS`, a role that can change the schema and a schema of any
   other version than the binary's, and then stops, since the catalogs are
   not kept there yet. `vcon-server migrate` makes the schema, with every
-  table under row-level security that refuses a query with no tenant. Its tests run against PostgreSQL 16 and 18 in CI, and its how-to against Debian 13's PostgreSQL 17. See
+  table under row-level security that gives a query with no tenant no row and refuses it at the first row it examines. Its tests run against PostgreSQL 16 and 18 in CI, and its how-to against Debian 13's PostgreSQL 17. See
   [keep the catalogs in PostgreSQL](@/docs/postgres-catalog.md).
 - **The draft's recommended algorithms** for `vcon::write` (RS256,
   RSA-OAEP and A256CBC-HS512) as an option of the `vcon` crate, and a check

@@ -155,8 +155,11 @@ vcon_owner
 
 - `vcon_owner` owns the schema; nobody logs in as it.
 - `vcon_app` is the role the server logs in as. It reads and writes rows,
-  never the schema, and a query from it with no tenant set is refused by
-  row-level security.
+  never the schema. Row-level security gives a statement from it with no
+  tenant set no row, to read or to change, and refuses the statement at the
+  first row it examines. A statement that examines no row, such as a
+  prepared statement on a table with no rows, can end with nothing in place
+  of the refusal.
 - `vcon_migrate` is the role `vcon-server migrate` logs in as. Keep its
   password apart from the server's: a server that logs in with a role that
   owns the tables, or can act as `vcon_owner`, is refused. If your server

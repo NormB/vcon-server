@@ -804,12 +804,7 @@ pub(crate) fn migrate_for_command(
                 .build()
                 .map_err(|e| crate::config::StorageError(format!("the runtime cannot start: {e}")))?
                 .block_on(postgres::migrate(settings))?;
-            Ok(serde_json::json!({
-                "migrated": migrated.from != migrated.to,
-                "from": migrated.from,
-                "to": migrated.to,
-                "message": migrated.message(),
-            }))
+            Ok(migrated.line())
         }
         #[cfg(not(feature = "postgres"))]
         crate::config::CatalogStore::Postgres(_) => Err(crate::config::StorageError(

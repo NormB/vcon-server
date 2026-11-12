@@ -55,6 +55,18 @@ impl Migrated {
             format!("schema version {} to schema version {}", self.from, self.to)
         }
     }
+
+    /// The JSON line `migrate` prints: both versions, whether the schema
+    /// changed, and [`Migrated::message`].
+    #[must_use]
+    pub(crate) fn line(self) -> serde_json::Value {
+        serde_json::json!({
+            "migrated": self.from != self.to,
+            "from": self.from,
+            "to": self.to,
+            "message": self.message(),
+        })
+    }
 }
 
 /// Why a connection is refused for the schema version `installed` (`None`

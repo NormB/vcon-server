@@ -5,8 +5,10 @@
 //! has a database of its own, because a migration changes the whole
 //! database and tests run at the same time.
 
+mod cached;
 mod edge;
 mod failure;
+mod line;
 mod success;
 mod v2;
 mod v3;

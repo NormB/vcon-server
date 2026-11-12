@@ -225,6 +225,15 @@ CREATE INDEX admin_audit_counted ON vcon.admin_audit (actor, action, status, at)
 -- while it estimates the comparison, so a table with no rows still refuses
 -- a query with no tenant, instead of returning nothing because the policy
 -- was never evaluated (tests: schema_tests).
+--
+-- That refusal comes from planning. A prepared statement whose plan the
+-- server has cached is not planned again, and the policy is then
+-- evaluated only for a row the plan examines: with no tenant set such a
+-- statement is refused at the first row, and on a table with no rows, or
+-- with an index condition that finds none, it ends with nothing and no
+-- error. No plan returns or changes a row with no tenant set (tests:
+-- schema_tests::cached). The code that runs a statement sets the tenant;
+-- the policy is the second check.
 DO $$
 DECLARE
     name text;
