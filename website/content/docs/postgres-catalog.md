@@ -402,6 +402,49 @@ up would change the schema under the others. After each migration, every
 new connection reads the schema's version and refuses any other than the
 binary's.
 
+### After an upgrade from 0.4.5
+
+Release 0.4.5 and the releases before it leave the schema at version 6.
+A build from `main` makes version 7, so a database that 0.4.5 migrated
+needs the command once more, with the new binary and before any server
+starts:
+
+<!-- docs-test: skip the run starts from a new database, which the step above brought to this build's version -->
+```sh
+sudo -u vcon vcon-server migrate --config /etc/vcon-server/vcon-migrate.toml
+```
+
+```text
+{"from":6,"message":"schema version 6 to schema version 7","migrated":true,"to":7}
+```
+
+Until then a server stops with `the database schema is version 6, older
+than this binary's 7: run vcon-server migrate`. Version 7 changes two
+things, and no row there is:
+
+- The `version` table gains the column `seq`, a number PostgreSQL gives
+  each version as it is stored. Two versions of one vCon can hold the same
+  time of storing, and the order of a vCon's versions is read by that time
+  and then by `seq`.
+- On PostgreSQL 17 and later, `vcon_app` is granted `MAINTAIN` on the
+  tables `version`, `vcon` and `tombstone`. After a purge the server will
+  run `VACUUM` on those three, so the bytes of the deleted rows leave the
+  table files sooner. PostgreSQL 16 has no such privilege: there the
+  server's `VACUUM` is skipped with a warning in PostgreSQL's log, and
+  autovacuum does the same work later. To check the grant on 17 or later:
+
+<!-- docs-test: skip Debian 13's PostgreSQL 17 would print t; the scenario does not run this build's version 7 check apart from migrate -->
+```sh
+sudo -u postgres psql -At -d vcon -c "SELECT has_table_privilege('vcon_app', 'vcon.version', 'MAINTAIN')"
+```
+
+```text
+t
+```
+
+`migrate` gives up its two locks before it ends, so a server can be
+started as soon as the command returns.
+
 ## Check it
 
 Run a command with the server's configuration, or start the server:
@@ -594,8 +637,8 @@ primary in `hosts`; a standby before it is passed over.
 
 ```text
 vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database has no vCon schema: run vcon-server migrate
-vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is version 1, older than this binary's 6: run vcon-server migrate
-vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is newer than this binary (version 7, this binary 6): upgrade this server
+vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is version 6, older than this binary's 7: run vcon-server migrate
+vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is newer than this binary (version 8, this binary 7): upgrade this server
 ```
 
 Run `vcon-server migrate` with `vcon_migrate`'s configuration, or upgrade

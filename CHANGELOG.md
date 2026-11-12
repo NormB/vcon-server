@@ -6,7 +6,37 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **The PostgreSQL preview's schema is at version 7.** A database that
+  0.4.5 or an earlier release migrated is at version 6: run
+  `vcon-server migrate` with the new binary before a server starts, as
+  [after an upgrade from 0.4.5](https://vcon-server.com/docs/postgres-catalog/#after-an-upgrade-from-0-4-5)
+  shows. Until then a server stops with `the database schema is version
+  6, older than this binary's 7: run vcon-server migrate`. Version 7
+  gives the `version` table the column `seq`, the order versions were
+  stored in, and on PostgreSQL 17 and later grants `vcon_app` `MAINTAIN`
+  on the tables `version`, `vcon` and `tombstone`, for the `VACUUM` the
+  server will run after a purge. No row is changed. The local catalogs
+  stay at schema version 9.
+- **The statements that keep a tenant's catalog in PostgreSQL**, behind
+  the `postgres` cargo feature and used by no server yet: a start with
+  `catalog.backend = "postgres"` still connects, checks and stops. They
+  pass the store's conformance suite on PostgreSQL 16 and 18 with the
+  objects in a bucket, with and without Parquet storage. The uuid of a
+  vCon is kept as an HMAC and a sealed copy; a version's form, gzip flag
+  and size, and an audit record's target, are sealed; times, holds,
+  counts and random ids are clear.
+
 ### Fixed
+
+- **A server started the moment `vcon-server migrate` returned could be
+  refused by the migration's locks.** The command left its two advisory
+  locks to the end of its database session, and PostgreSQL releases
+  those only when it notices the closed connection, which can be after
+  the command has exited. `migrate` now gives up the role and both locks
+  before it returns, also when it fails or was refused one of the two.
+  Only the PostgreSQL preview is affected.
 
 - **The PostgreSQL preview's pages said more of row-level security than
   it does.** The how-to and the status page said that a query with no

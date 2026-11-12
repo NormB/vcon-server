@@ -209,6 +209,24 @@ what is built, unless it says otherwise.
   0.3.0 also a Sigstore signature over the checksums and the provenance as a
   file. The release workflow also publishes both crates to crates.io.
 
+## On `main` only
+
+The site is built from the `main` branch, so a page can describe what no
+release holds yet. Release 0.4.5 does not have these, both of the
+PostgreSQL catalog preview and behind the `postgres` cargo feature:
+
+- **Schema version 7 of the PostgreSQL preview.** `vcon-server migrate`
+  built from `main` leaves the database at version 7; release 0.4.5 leaves
+  it at 6, and its server refuses a database at 7. Version 7 adds the
+  column `seq` to the `version` table and, on PostgreSQL 17 and later,
+  grants `vcon_app` `MAINTAIN` on three tables. See
+  [after an upgrade from 0.4.5](@/docs/postgres-catalog.md#after-an-upgrade-from-0-4-5).
+- **The statements that keep a tenant's catalog in PostgreSQL.** They pass
+  the store's conformance suite on PostgreSQL 16 and 18 with the objects
+  in a bucket. No server uses them: a start with
+  `catalog.backend = "postgres"` connects, checks the server and stops, as
+  in 0.4.5.
+
 ## Being built
 
 - **A PostgreSQL catalog**, a preview behind the `postgres` cargo feature:
@@ -219,7 +237,7 @@ what is built, unless it says otherwise.
   with `BYPASSRLS`, a role that can change the schema and a schema of any
   other version than the binary's, and then stops, since the catalogs are
   not kept there yet. `vcon-server migrate` makes the schema, with every
-  table under row-level security that gives a query with no tenant no row and refuses it at the first row it examines. Its tests run against PostgreSQL 16 and 18 in CI, and its how-to against Debian 13's PostgreSQL 17. See
+  table under row-level security that gives a query with no tenant no row and refuses it at the first row it examines. Its tests run against PostgreSQL 16 and 18 in CI, and its how-to against Debian 13's PostgreSQL 17. On `main`, the schema is at version 7 and the statements that keep a tenant's catalog in PostgreSQL are written: they pass the store's conformance suite on PostgreSQL 16 and 18 with the objects in a bucket, and no server uses them yet. See
   [keep the catalogs in PostgreSQL](@/docs/postgres-catalog.md).
 - **The draft's recommended algorithms** for `vcon::write` (RS256,
   RSA-OAEP and A256CBC-HS512) as an option of the `vcon` crate, and a check
