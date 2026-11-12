@@ -19,6 +19,8 @@ pub mod view;
 
 #[cfg(test)]
 mod page_tests;
+#[cfg(test)]
+mod screens;
 
 use std::io::IsTerminal;
 use std::sync::Arc;

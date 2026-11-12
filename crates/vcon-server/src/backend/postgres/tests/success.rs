@@ -63,12 +63,11 @@ fn the_system_authorities_are_trusted_without_a_ca_file() {
         Some(&password),
     );
     s.ca_file = None;
-    let secrets = Secrets::read(&s).expect("reads the system's authorities");
-    assert!(
-        secrets.roots.len() > 1,
-        "the system's authorities, not one file: {}",
-        secrets.roots.len()
-    );
+    let roots = Secrets::read(&s)
+        .expect("reads the system's authorities")
+        .roots
+        .len();
+    assert!(roots > 1, "the system's authorities, not one file: {roots}");
 }
 
 #[test]

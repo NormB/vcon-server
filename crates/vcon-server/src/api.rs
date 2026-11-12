@@ -2198,7 +2198,12 @@ mod tests {
             let s = server().await;
             for token in [None, Some("vcs_nonsense")] {
                 let answer = post(&s, token, b"{}".to_vec()).await;
-                assert_eq!(answer.status(), 401, "{token:?}");
+                let sent = if token.is_some() {
+                    "a bad key"
+                } else {
+                    "no key"
+                };
+                assert_eq!(answer.status(), 401, "{sent}");
                 assert_eq!(answer.headers()["www-authenticate"], "Bearer");
                 assert_eq!(problem(answer).await, "unauthorized");
             }
@@ -5099,7 +5104,12 @@ mod tests {
             let s = server().await;
             for token in [None, Some("vcs_nonsense")] {
                 let answer = key(&s, token).await;
-                assert_eq!(answer.status(), 401, "{token:?}");
+                let sent = if token.is_some() {
+                    "a bad key"
+                } else {
+                    "no key"
+                };
+                assert_eq!(answer.status(), 401, "{sent}");
                 assert_eq!(problem(answer).await, "unauthorized");
             }
         }

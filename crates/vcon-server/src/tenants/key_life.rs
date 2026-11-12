@@ -22,8 +22,11 @@ pub const DEFAULT_DAYS: u32 = 90;
 /// The most days a new key with an expiry may live.
 pub const MAX_DAYS: u32 = 365;
 
+/// The nanoseconds in a second: the resolution of an expiry.
+const SECOND: i64 = 1_000_000_000;
+
 /// The nanoseconds in a day.
-const DAY: i64 = 86_400 * 1_000_000_000;
+const DAY: i64 = 86_400 * SECOND;
 
 /// The nanoseconds in a minute: the resolution of a last-used time.
 const MINUTE: i64 = 60 * 1_000_000_000;
@@ -63,8 +66,8 @@ impl KeyLife {
         }
     }
 
-    /// When a key made at `now` (nanoseconds) with this life expires;
-    /// `Ok(None)` for no expiry.
+    /// When a key made at `now` (nanoseconds) with this life expires, cut
+    /// down to the whole second; `Ok(None)` for no expiry.
     ///
     /// # Errors
     ///
@@ -83,9 +86,13 @@ impl KeyLife {
             KeyLife::Days(days) if (1..=MAX_DAYS).contains(&days) => days,
             KeyLife::Days(_) | KeyLife::Invalid => return Err(TenantError::BadExpiry),
         };
+        // Cut down to the whole second: the time is then written with no
+        // fraction, so the answer that carries it has one length whenever
+        // the key is made, and the key never lives longer than asked.
         i64::from(days)
             .checked_mul(DAY)
             .and_then(|life| now.checked_add(life))
+            .and_then(|at| at.checked_sub(at.rem_euclid(SECOND)))
             .map(Some)
             .ok_or(TenantError::BadExpiry)
     }
@@ -254,13 +261,13 @@ mod tests {
     fn the_default_life_is_90_days() {
         assert_eq!(DEFAULT_DAYS, 90, "the approved default");
         assert_eq!(
-            KeyLife::Default.expires_at(1_000, true),
-            Ok(Some(1_000 + 90 * DAY)),
+            KeyLife::Default.expires_at(1_000 * SECOND, true),
+            Ok(Some(1_000 * SECOND + 90 * DAY)),
             "90 days after the key is made"
         );
         assert_eq!(
-            KeyLife::Default.expires_at(1_000, false),
-            Ok(Some(1_000 + 90 * DAY)),
+            KeyLife::Default.expires_at(1_000 * SECOND, false),
+            Ok(Some(1_000 * SECOND + 90 * DAY)),
             "the same where no expiry is refused"
         );
     }
@@ -269,11 +276,83 @@ mod tests {
     fn a_life_in_days_ends_that_many_days_after_the_key_is_made() {
         for days in [1_u32, 30, 365] {
             assert_eq!(
-                KeyLife::Days(days).expires_at(5, true),
-                Ok(Some(5 + i64::from(days) * DAY)),
+                KeyLife::Days(days).expires_at(5 * SECOND, true),
+                Ok(Some(5 * SECOND + i64::from(days) * DAY)),
                 "{days} days"
             );
         }
+    }
+
+    // An expiry is a whole second, so the answer that carries it has one
+    // length whenever the key is made.
+
+    #[test]
+    fn an_expiry_is_cut_to_the_whole_second() {
+        assert_eq!(
+            KeyLife::Default.expires_at(7 * SECOND + 999_999_999, true),
+            Ok(Some(7 * SECOND + 90 * DAY)),
+            "the last nanosecond of a second"
+        );
+        assert_eq!(
+            KeyLife::Days(1).expires_at(7 * SECOND + 1, true),
+            Ok(Some(7 * SECOND + DAY)),
+            "the first nanosecond after a second"
+        );
+    }
+
+    #[test]
+    fn an_expiry_made_on_the_second_is_not_moved() {
+        assert_eq!(
+            KeyLife::Days(30).expires_at(7 * SECOND, true),
+            Ok(Some(7 * SECOND + 30 * DAY)),
+            "nothing to cut"
+        );
+    }
+
+    #[test]
+    fn an_expiry_is_never_after_the_days_asked() {
+        for nanos in [0, 1, 500_000_000, 999_999_999] {
+            let now = 1_762_000_000 * SECOND + nanos;
+            let at = KeyLife::Days(2)
+                .expires_at(now, true)
+                .expect("two days")
+                .expect("a time");
+            assert_eq!(at % SECOND, 0, "a whole second at {nanos} ns");
+            assert!(
+                at <= now + 2 * DAY && now + 2 * DAY - at < SECOND,
+                "cut down, by less than a second, at {nanos} ns"
+            );
+        }
+    }
+
+    #[test]
+    fn an_expiry_before_1970_is_cut_down_too() {
+        assert_eq!(
+            KeyLife::Days(1).expires_at(-2 * DAY - 1, true),
+            Ok(Some(-DAY - SECOND)),
+            "toward the earlier second, not toward zero"
+        );
+    }
+
+    #[test]
+    fn a_key_made_within_a_second_expires_on_a_whole_second() {
+        let f = fixture();
+        let t = tenant(&f);
+        f.clock.set(START + Duration::nanoseconds(123_456_789));
+        let made = f
+            .tenants
+            .create_key(Actor::Cli, Some(t), vcon_scopes(), "ingest")
+            .expect("made");
+        assert_eq!(
+            row(&f, made.id).expires_at,
+            Some(start() + 90 * DAY),
+            "the stored expiry has no part of a second"
+        );
+        assert_eq!(
+            made.expires_at,
+            Some(START + Duration::days(90)),
+            "nor has the expiry its maker is told"
+        );
     }
 
     #[test]
@@ -418,8 +497,8 @@ mod tests {
         );
         assert_eq!(
             KeyLife::Days(1).expires_at(i64::MAX - DAY, true),
-            Ok(Some(i64::MAX)),
-            "the last instant itself"
+            Ok(Some(i64::MAX - i64::MAX % SECOND)),
+            "the second of the last instant"
         );
     }
 

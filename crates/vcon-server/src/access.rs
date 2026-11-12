@@ -477,14 +477,14 @@ mod tests {
             URL_SAFE_NO_PAD.encode([0xfb; 32]),
             URL_SAFE_NO_PAD.encode([[0xff; 16], [0x00; 16]].concat()),
         ];
-        for secret in secrets {
+        for (case, secret) in secrets.into_iter().enumerate() {
             assert_eq!(
                 secret.len(),
                 43,
                 "32 bytes are 43 base64url characters without padding"
             );
             let token = format!("vcs_{ID}_{secret}");
-            assert_eq!(parse(&token), Ok(id), "{token}");
+            assert_eq!(parse(&token), Ok(id), "case {case} parses");
         }
         assert!(
             secret(0xff).contains('_'),
@@ -518,8 +518,12 @@ mod tests {
             format!("vcs_{ID}__{good}"),
             format!("vcs_\u{0661}123456789abcdef_{good}"),
         ];
-        for token in malformed {
-            assert_eq!(parse(&token), Err(AuthError::Malformed), "{token:?}");
+        for (case, token) in malformed.iter().enumerate() {
+            assert_eq!(
+                parse(token),
+                Err(AuthError::Malformed),
+                "case {case} of the list is malformed"
+            );
         }
     }
 

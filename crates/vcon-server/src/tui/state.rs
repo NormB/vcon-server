@@ -242,6 +242,55 @@ impl State {
                 && matches!(self.connection, Connection::Connected(_)))
     }
 
+    /// Whether a press of the key for `action` can do anything in this
+    /// state. The footer names only keys that act.
+    #[must_use]
+    pub fn acts(&self, action: Action) -> bool {
+        match (self.view, action) {
+            (_, Action::Quit | Action::Help) | (View::Help | View::Detail, Action::Back) => true,
+            (View::Help, _) | (View::List, Action::Back) | (View::Detail, Action::Open) => false,
+            (_, Action::Refresh) => !self.busy() && self.key_refusal().is_none(),
+            (_, Action::More) => {
+                !self.busy() && self.listing == Listing::Ready && self.next.is_some()
+            }
+            (View::List, Action::Open) => self.rows_shown() && !self.rows.is_empty(),
+            (
+                view,
+                Action::Up
+                | Action::Down
+                | Action::Top
+                | Action::Bottom
+                | Action::PageUp
+                | Action::PageDown,
+            ) => {
+                // In a detail view whose vCon left the list, a key that
+                // moves shows the selected row, even when it is the only one.
+                let reselects =
+                    view == View::Detail && !self.rows.is_empty() && self.detail_row().is_none();
+                self.rows_shown() && (self.rows.len() > 1 || reselects)
+            }
+        }
+    }
+
+    /// Whether the screen shows the rows, or the detail of one: the list
+    /// is read. Otherwise a message stands in their place, and there is no
+    /// selection to move or open. While a connection is being made the
+    /// list is being read too, so the listing alone decides.
+    #[must_use]
+    pub fn rows_shown(&self) -> bool {
+        self.listing == Listing::Ready
+    }
+
+    /// Why the key the server answered for may not list vCons, if it may
+    /// not. The key is read once, at start, so no request changes this.
+    #[must_use]
+    pub fn key_refusal(&self) -> Option<&'static str> {
+        match &self.connection {
+            Connection::Connected(info) => refusal(info),
+            Connection::Connecting | Connection::Failed(_) => None,
+        }
+    }
+
     /// Applies `event`, which happened at `now`, and returns the requests
     /// to make.
     pub fn step(&mut self, event: Event, now: OffsetDateTime) -> Vec<Effect> {
@@ -273,15 +322,7 @@ impl State {
 
     /// The key answered: asks for the first page if the key may list.
     fn connected(&mut self, info: KeyInfo) -> Vec<Effect> {
-        let refusal = if info.tenant.is_none() {
-            Some(
-                "this is an operator key, which reaches no vCon: use a tenant key with the read scope",
-            )
-        } else if info.scopes.iter().all(|scope| scope != "read") {
-            Some("this key lacks the read scope: use a tenant key that holds it")
-        } else {
-            None
-        };
+        let refusal = refusal(&info);
         self.connection = Connection::Connected(info);
         match refusal {
             Some(why) => {
@@ -356,6 +397,18 @@ impl State {
             (View::Detail, Action::Back) => self.view = View::List,
             (_, Action::Refresh) => return self.refresh(),
             (_, Action::More) => return self.more(),
+            // A message stands in place of the rows: nothing to open or
+            // to move from.
+            (
+                _,
+                Action::Open
+                | Action::Up
+                | Action::Down
+                | Action::Top
+                | Action::Bottom
+                | Action::PageUp
+                | Action::PageDown,
+            ) if !self.rows_shown() => {}
             (View::List, Action::Open) => {
                 if let Some(row) = self.rows.get(self.selected) {
                     self.detail = Some(row.uuid.clone());
@@ -422,6 +475,18 @@ impl State {
         };
         self.more = true;
         vec![Effect::FetchPage(Some(cursor))]
+    }
+}
+
+/// Why a key may not list vCons, if it may not: an operator key reaches no
+/// tenant, and a tenant key needs the read scope.
+fn refusal(info: &KeyInfo) -> Option<&'static str> {
+    if info.tenant.is_none() {
+        Some("this is an operator key, which reaches no vCon: use a tenant key with the read scope")
+    } else if info.scopes.iter().all(|scope| scope != "read") {
+        Some("this key lacks the read scope: use a tenant key that holds it")
+    } else {
+        None
     }
 }
 
@@ -1090,5 +1155,418 @@ mod tests {
             vec![Effect::FetchPage(None)],
             "so r reads the first page, not the key"
         );
+    }
+
+    // Which keys act in a state: `acts` against what a press does.
+
+    const ACTIONS: [Action; 12] = [
+        Action::Up,
+        Action::Down,
+        Action::Top,
+        Action::Bottom,
+        Action::PageUp,
+        Action::PageDown,
+        Action::Open,
+        Action::Back,
+        Action::Refresh,
+        Action::More,
+        Action::Help,
+        Action::Quit,
+    ];
+
+    const TRAVEL: [Action; 6] = [
+        Action::Up,
+        Action::Down,
+        Action::Top,
+        Action::Bottom,
+        Action::PageUp,
+        Action::PageDown,
+    ];
+
+    fn after(mut state: State, events: Vec<Event>) -> State {
+        for event in events {
+            state.step(event, NOW);
+        }
+        state
+    }
+
+    fn new() -> State {
+        State::new("https://vcon.example.com:8443", (80, 24)).0
+    }
+
+    fn key(tenant: Option<&str>, scope: &str) -> Event {
+        Event::KeyInfo(Ok(KeyInfo {
+            id: "0123456789abcdef".to_owned(),
+            tenant: tenant.map(str::to_owned),
+            scopes: vec![scope.to_owned()],
+        }))
+    }
+
+    fn no_answer() -> ApiError {
+        ApiError::Unreachable("no answer within 15 seconds".to_owned())
+    }
+
+    /// States of every kind the screen can be in, each with a name, in the
+    /// list view, the detail view where a row can be opened, and help.
+    fn states() -> Vec<(String, State)> {
+        let act = Event::Action;
+        let mut base: Vec<(&str, State)> = vec![
+            ("connecting", new()),
+            ("loading", after(new(), vec![Event::KeyInfo(Ok(reader()))])),
+            (
+                "no answer",
+                after(new(), vec![Event::KeyInfo(Err(no_answer()))]),
+            ),
+            (
+                "refused key",
+                after(
+                    new(),
+                    vec![Event::KeyInfo(Err(ApiError::Status(401, None)))],
+                ),
+            ),
+            ("operator key", after(new(), vec![key(None, "admin")])),
+            (
+                "write key",
+                after(new(), vec![key(Some("t_example"), "write")]),
+            ),
+            (
+                "first page failed",
+                after(
+                    new(),
+                    vec![
+                        Event::KeyInfo(Ok(reader())),
+                        Event::Page(Err(ApiError::Status(503, None))),
+                    ],
+                ),
+            ),
+            ("empty", listed(0, None)),
+            ("one row", listed(1, None)),
+            ("one row, more", listed(1, Some("c"))),
+            ("three rows", listed(3, None)),
+            ("three rows, more", listed(3, Some("c"))),
+            (
+                "three rows, second",
+                after(listed(3, None), vec![act(Action::Down)]),
+            ),
+            (
+                "three rows, last",
+                after(listed(3, Some("c")), vec![act(Action::Bottom)]),
+            ),
+            (
+                "next page out",
+                after(listed(3, Some("c")), vec![act(Action::More)]),
+            ),
+            (
+                "next page failed",
+                after(
+                    listed(3, Some("c")),
+                    vec![act(Action::More), Event::Page(Err(no_answer()))],
+                ),
+            ),
+            (
+                "refresh out",
+                after(listed(3, Some("c")), vec![act(Action::Refresh)]),
+            ),
+            (
+                "refresh failed",
+                after(
+                    listed(3, None),
+                    vec![
+                        act(Action::Refresh),
+                        Event::Page(Err(ApiError::Status(503, None))),
+                    ],
+                ),
+            ),
+            (
+                "reconnecting",
+                after(
+                    listed(3, None),
+                    vec![
+                        act(Action::Refresh),
+                        Event::Page(Err(no_answer())),
+                        act(Action::Refresh),
+                    ],
+                ),
+            ),
+        ];
+        // The vCon open in the detail view leaves the list: three, one and
+        // no rows are left.
+        for (name, left) in [
+            ("gone, three left", 3),
+            ("gone, one left", 1),
+            ("gone, none left", 0),
+        ] {
+            let mut state = after(
+                listed(5, None),
+                vec![act(Action::Bottom), act(Action::Open), act(Action::Refresh)],
+            );
+            state.step(Event::Page(Ok(page(0..left, None))), NOW);
+            assert_eq!(
+                state.view,
+                View::Detail,
+                "{name}: the detail view stays open"
+            );
+            assert!(
+                state.detail_row().is_none(),
+                "{name}: its vCon is not listed"
+            );
+            base.push((name, state));
+        }
+        let mut all = Vec::new();
+        for (name, state) in base {
+            let opened = after(state.clone(), vec![act(Action::Open)]);
+            if opened.view == View::Detail && state.view != View::Detail {
+                let refreshing = after(opened.clone(), vec![act(Action::Refresh)]);
+                all.push((
+                    format!("{name}, detail, help"),
+                    after(opened.clone(), vec![act(Action::Help)]),
+                ));
+                all.push((format!("{name}, detail, r pressed"), refreshing));
+                all.push((format!("{name}, detail"), opened));
+            }
+            all.push((
+                format!("{name}, help"),
+                after(state.clone(), vec![act(Action::Help)]),
+            ));
+            all.push((name.to_owned(), state));
+        }
+        all
+    }
+
+    /// The state after `action`, and the requests it made.
+    fn acted(state: &State, action: Action) -> (State, Vec<Effect>) {
+        let mut next = state.clone();
+        let effects = next.act(action);
+        (next, effects)
+    }
+
+    #[test]
+    fn the_states_tried_cover_every_view_and_kind() {
+        let all = states();
+        assert!(all.len() >= 50, "{} states are tried", all.len());
+        for view in [View::List, View::Detail, View::Help] {
+            assert!(
+                all.iter().any(|(_, state)| state.view == view),
+                "a state in {view:?} is tried"
+            );
+        }
+        let mut names: Vec<&String> = all.iter().map(|(name, _)| name).collect();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), all.len(), "each state has its own name");
+    }
+
+    #[test]
+    fn a_key_that_does_not_act_changes_nothing() {
+        for (name, state) in states() {
+            for action in ACTIONS {
+                if state.acts(action) {
+                    continue;
+                }
+                let (next, effects) = acted(&state, action);
+                assert!(
+                    next == state && effects.is_empty(),
+                    "{name}: {action:?} is said not to act, and a press changed the state or asked the server"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_key_that_acts_changes_the_state_or_asks_the_server() {
+        for (name, state) in states() {
+            for action in ACTIONS {
+                if !state.acts(action) || TRAVEL.contains(&action) {
+                    continue;
+                }
+                let (next, effects) = acted(&state, action);
+                assert!(
+                    next != state || !effects.is_empty(),
+                    "{name}: {action:?} is said to act, and a press did nothing"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_keys_that_move_act_when_one_of_them_can_move() {
+        for (name, state) in states() {
+            let moves = TRAVEL
+                .iter()
+                .any(|action| acted(&state, *action).0 != state);
+            for action in TRAVEL {
+                assert_eq!(
+                    state.acts(action),
+                    moves,
+                    "{name}: {action:?} acts when the selection can move ({moves})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn quit_and_help_act_in_every_state() {
+        for (name, state) in states() {
+            assert!(state.acts(Action::Quit), "{name}: q quits");
+            assert!(state.acts(Action::Help), "{name}: ? opens or closes help");
+        }
+    }
+
+    #[test]
+    fn nothing_but_help_back_and_quit_acts_in_the_help_view() {
+        for (name, state) in states() {
+            if state.view != View::Help {
+                continue;
+            }
+            for action in ACTIONS {
+                assert_eq!(
+                    state.acts(action),
+                    matches!(action, Action::Help | Action::Back | Action::Quit),
+                    "{name}: {action:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn refresh_does_not_act_while_a_request_is_out() {
+        for state in [
+            new(),
+            after(new(), vec![Event::KeyInfo(Ok(reader()))]),
+            after(listed(3, Some("c")), vec![Event::Action(Action::More)]),
+            after(listed(3, None), vec![Event::Action(Action::Refresh)]),
+        ] {
+            assert!(
+                !state.acts(Action::Refresh),
+                "a second request would race the first: {:?} {:?}",
+                state.connection,
+                state.listing
+            );
+        }
+    }
+
+    #[test]
+    fn refresh_acts_after_a_failure_the_server_made() {
+        for state in [
+            after(new(), vec![Event::KeyInfo(Err(no_answer()))]),
+            after(
+                new(),
+                vec![Event::KeyInfo(Err(ApiError::Status(401, None)))],
+            ),
+            after(
+                new(),
+                vec![
+                    Event::KeyInfo(Ok(reader())),
+                    Event::Page(Err(ApiError::Status(503, None))),
+                ],
+            ),
+        ] {
+            assert!(
+                state.acts(Action::Refresh),
+                "the server may answer the next request: {:?}",
+                state.listing
+            );
+        }
+    }
+
+    #[test]
+    fn refresh_does_not_act_for_a_key_that_may_not_list() {
+        for event in [key(None, "admin"), key(Some("t_example"), "write")] {
+            let mut state = after(new(), vec![event]);
+            assert!(
+                !state.acts(Action::Refresh),
+                "the key is read once, at start: {:?}",
+                state.listing
+            );
+            let before = state.clone();
+            assert_eq!(
+                press(&mut state, Action::Refresh),
+                Vec::new(),
+                "nothing is asked of the server"
+            );
+            assert_eq!(state, before, "and the refusal stays on the screen");
+        }
+    }
+
+    #[test]
+    fn more_acts_only_when_the_server_holds_more_and_nothing_is_out() {
+        assert!(listed(3, Some("c")).acts(Action::More), "a cursor is held");
+        assert!(!listed(3, None).acts(Action::More), "every vCon is read");
+        assert!(
+            !after(listed(3, Some("c")), vec![Event::Action(Action::More)]).acts(Action::More),
+            "the next page is on its way"
+        );
+        assert!(
+            !after(listed(3, Some("c")), vec![Event::Action(Action::Refresh)]).acts(Action::More),
+            "the list is being read again"
+        );
+        assert!(!new().acts(Action::More), "nothing is read yet");
+    }
+
+    #[test]
+    fn open_acts_only_in_a_list_that_shows_a_row() {
+        assert!(listed(1, None).acts(Action::Open), "one row can be opened");
+        assert!(
+            !listed(0, None).acts(Action::Open),
+            "an empty tenant has none"
+        );
+        assert!(!new().acts(Action::Open), "nothing is listed yet");
+        let detail = after(listed(2, None), vec![Event::Action(Action::Open)]);
+        assert!(
+            !detail.acts(Action::Open),
+            "the detail view is open already"
+        );
+    }
+
+    #[test]
+    fn a_list_of_one_row_has_nowhere_to_move() {
+        let state = listed(1, None);
+        for action in TRAVEL {
+            assert!(!state.acts(action), "{action:?} has no other row to select");
+        }
+    }
+
+    #[test]
+    fn the_selection_does_not_move_while_the_list_is_not_shown() {
+        let mut state = after(listed(3, None), vec![Event::Action(Action::Refresh)]);
+        assert_eq!(state.listing, Listing::Loading, "the list is being read");
+        press(&mut state, Action::Down);
+        assert_eq!(state.selected, 0, "the screen shows no row to move from");
+        press(&mut state, Action::Open);
+        assert_eq!(state.view, View::List, "and none to open");
+    }
+
+    #[test]
+    fn back_acts_in_the_detail_and_help_views_only() {
+        let list = listed(2, None);
+        assert!(!list.acts(Action::Back), "the list is the first view");
+        let detail = after(list.clone(), vec![Event::Action(Action::Open)]);
+        assert!(detail.acts(Action::Back), "Esc returns to the list");
+        let help = after(list, vec![Event::Action(Action::Help)]);
+        assert!(help.acts(Action::Back), "Esc closes help");
+    }
+
+    #[test]
+    fn in_a_detail_view_whose_vcon_is_gone_the_keys_that_move_select_a_listed_one() {
+        let mut state = after(
+            listed(5, None),
+            vec![
+                Event::Action(Action::Bottom),
+                Event::Action(Action::Open),
+                Event::Action(Action::Refresh),
+            ],
+        );
+        state.step(Event::Page(Ok(page(0..1, None))), NOW);
+        assert!(
+            state.acts(Action::Down),
+            "one row is left, and j shows it in place of the message"
+        );
+        press(&mut state, Action::Down);
+        assert_eq!(
+            state.detail_row().map(|row| row.uuid.clone()),
+            Some(row(0).uuid),
+            "the detail view shows the row that is left"
+        );
+        assert!(!state.acts(Action::Down), "then there is nowhere to move");
     }
 }

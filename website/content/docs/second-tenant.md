@@ -111,12 +111,13 @@ curl -sS -i --cacert /usr/local/share/vcon-server/ca.pem -X POST "$URL/admin/ten
 HTTP/2 201
 content-type: application/json
 cache-control: no-store
-content-length: <length>
+content-length: 136
 date: <date>
 ```
 
 The last line of the answer, left out above, is
-`{"expires_at":"…","id":"…","token":"vcs_…"}`: the key expires 90 days
+`{"expires_at":"…","id":"…","token":"vcs_…"}`, 136 bytes for a key with
+an expiry: the key expires 90 days
 after it is made unless the body names `expires_in_days` or `no_expiry`.
 Keep the token, and delete the file that held it:
 

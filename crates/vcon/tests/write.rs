@@ -1300,10 +1300,12 @@ fn a_malformed_hash_algorithm_or_digest_is_refused() {
         "sha512-A",
         "sha512-AQ ID",
     ] {
+        // A content hash, which the type calls a token; it is no credential.
+        let text = token;
         assert_eq!(
-            token.parse::<ContentHash>(),
+            text.parse::<ContentHash>(),
             Err(WriteError::BadHash),
-            "{token:?}"
+            "{text:?}"
         );
     }
     assert_eq!(

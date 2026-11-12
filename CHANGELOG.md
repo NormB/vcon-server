@@ -6,6 +6,52 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The terminal UI's last line named keys that did nothing.** The
+  connecting screen, an empty tenant and every failure showed the list's
+  keys (`j down  k up  Enter open  r refresh  n more`). The last line now
+  names only the keys that act on the screen: `? help  q quit` while
+  connecting or loading, `r refresh  ? help  q quit` for an empty tenant
+  or a failure, no `n more` when every vCon is read, and no `j down  k up`
+  for a list of one. For a key that may not list vCons (an operator key,
+  or a key without the `read` scope) the screen says `Press q to quit.`
+  in place of `Press r to try again, or q to quit.`, since `r` cannot
+  read another key. While a message stands in place of the list, the keys
+  that select and open do nothing. The
+  [terminal UI page](https://vcon-server.com/docs/tui/) lists
+  the last line of each screen.
+
+### Changed
+
+- **The terminal UI page shows every screen.** The
+  [page](https://vcon-server.com/docs/tui/) has a table of the 25 screens
+  the command draws and a section for each: the screen as the command
+  draws it, what it shows, the keys that do something on it, how to leave
+  it and, for a failure, what to do. Nine screens are new on the page:
+  connecting, loading, the list of one vCon, the list while the next page
+  is read, a key without the `read` scope, a list the server did not
+  give, and three of the detail view. The prerequisites name what the
+  server must hold: a tenant, a tenant key with the `read` scope and no
+  operator configuration.
+- **A new key's expiry is a whole second.** `expires_at` of a key made
+  from now on has no fraction of a second (`2027-02-10T12:00:00Z`): the
+  days are counted from the second the key is made in, so a key lives up
+  to one second less than the days asked and never longer. The answer
+  that makes a key with an expiry is then 136 bytes whenever the key is
+  made; before, its length changed with the clock's sub-second digits.
+  Keys made before keep the expiry they have.
+- **A GitHub release's text is its changelog section.** The release
+  workflow writes the section of the tag's version, then the line that
+  says how to verify a download (`scripts/release_notes.py`). A tag whose
+  version has no section in `CHANGELOG.md` stops the workflow before the
+  builds. Before, the text was the verify line alone, and the notes of
+  0.4.4 were added by hand.
+- **No test shows a credential when it fails.** Assertion messages, panic
+  texts and debug prints in the tests no longer show a key's token, a
+  secret, a cookie or a session id, and `scripts/check_style.py` refuses
+  one that names such a value (`credential-in-message`).
+
 ## [0.4.4] - 2026-11-12
 
 There is no downgrade from 0.4.4. The first time 0.4.4 opens a data

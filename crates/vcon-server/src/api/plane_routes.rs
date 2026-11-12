@@ -713,9 +713,14 @@ async fn a_refusal_that_cannot_be_counted_is_refused_all_the_same() {
 async fn a_path_no_route_matches_is_404_on_every_plane() {
     for plane in [Plane::Both, Plane::Tenant, Plane::Operator] {
         let s = server_on(plane).await;
-        for token in [None, Some(operator(&s)), Some(s.key(&[Scope::Read]))] {
+        let keys = [
+            ("no key", None),
+            ("an operator key", Some(operator(&s))),
+            ("a tenant key", Some(s.key(&[Scope::Read]))),
+        ];
+        for (sent, token) in keys {
             let answer = call(&s, Method::GET, "/no-such-route", token.as_deref()).await;
-            assert_eq!(answer.status(), 404, "{plane:?} {token:?}");
+            assert_eq!(answer.status(), 404, "{plane:?} with {sent}");
         }
         assert_eq!(
             admin_log(&s, "wrong_listener"),

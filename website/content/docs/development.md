@@ -241,7 +241,13 @@ for the published crates' public API, the
   imports (allowed: `use super::*` in an inline module, `use Enum::*` in a
   function, `pub use sub::*` in a non-leaf module), a reason above each
   `#[rustfmt::skip]`, and a message on every assertion, tests included,
-  saying why it holds. Until every assertion has one,
+  saying why it holds. No assertion message, panic text or debug print
+  (`println!`, `eprintln!`, `dbg!`) may show a value whose name holds the
+  word `token`, `secret`, `cookie`, `bearer`, `password`, `passphrase` or
+  `sid`, or the words `session` and `id`: such text reaches the test log
+  and CI's log. Say which case failed in place of the value. A credential
+  under another name (`key`, `made`, `body`) is not found by the check and
+  is not to be shown either. Until every assertion has a message,
   `style/assert-message-baseline.txt` holds how many each file may still
   lack; a new file may lack none, and a file that gets better lowers its
   count with `scripts/check_style.py --write-baseline`, which never raises
@@ -559,6 +565,27 @@ source of the system is in the table, and changes nothing in either case.
 job that runs in a container, and in a composite action or a shell script,
 within the file. `scripts/test_apt_mirror_setup.py` tests the script
 against a server on the same machine.
+
+### The text of a GitHub release
+
+`release.yml` makes the text of a release from `CHANGELOG.md`:
+`scripts/release_notes.py <version> --repo <owner>/<name>` prints the
+section of the version (what stands between `## [<version>] - <date>` and
+the next `## ` heading), then the line that says how to verify a
+download. A link the section writes by reference is written in full. The
+script ends with exit code 1 and prints no text for a version with no
+section or with two, for a section with no text, and for a text longer
+than the 125000 characters a release holds. The workflow's first job runs
+it for a tag, so a tag without its section stops before the builds; the
+publish job gives its output to `gh release create --notes-file`. Before
+a tag, see the text a release will have:
+
+```sh
+python3 -I scripts/release_notes.py 0.4.4 --repo NormB/vcon-server
+```
+
+`scripts/test_release_notes.py` tests the script, and that the workflow
+calls it.
 
 ## Pinned tool downloads
 

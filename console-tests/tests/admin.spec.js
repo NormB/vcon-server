@@ -66,7 +66,11 @@ test("keys: the form sets a key's expiry, and the table shows it and when the ke
   const cells = page.locator(`#key-list tbody tr:has-text("${id}") td`);
   const keys = await (await request.get(`/admin/tenants/${tenant.id}/keys`, { headers: auth })).json();
   const stored = keys.find((k) => k.id === id);
-  expect(Date.parse(stored.expires_at) - Date.parse(stored.created_at)).toBe(30 * 86400 * 1000);
+  // An expiry is a whole second: the days are counted from the second the
+  // key was made in.
+  const madeIn = Math.floor(Date.parse(stored.created_at) / 1000) * 1000;
+  expect(Date.parse(stored.expires_at) - madeIn).toBe(30 * 86400 * 1000);
+  expect(stored.expires_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
   await expect(cells.nth(5)).toHaveText(/^\d{4}-\d{2}-\d{2}/);
   await expect(cells.nth(6)).toHaveText("never");
 

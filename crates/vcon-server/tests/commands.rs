@@ -131,7 +131,10 @@ fn keys_are_made_for_a_tenant_or_the_operator_listed_and_revoked() {
     ]);
     let token = made[0]["token"].as_str().expect("token");
     let id = made[0]["id"].as_str().expect("id").to_owned();
-    assert!(token.starts_with(&format!("vcs_{id}_")), "{token}");
+    assert!(
+        token.starts_with(&format!("vcs_{id}_")),
+        "the token starts with vcs_ and the key's id {id}"
+    );
     let operator = s.ok(&["key", "create", "--operator", "--label", "ops"]);
     assert!(operator[0]["token"].as_str().is_some());
 
@@ -163,6 +166,14 @@ fn rfc3339(value: &Value) -> time::OffsetDateTime {
     .expect("RFC 3339")
 }
 
+/// The second a key was made in. A key's expiry is a whole second: its
+/// life is counted from here.
+fn made_in(value: &Value) -> time::OffsetDateTime {
+    rfc3339(value)
+        .replace_nanosecond(0)
+        .expect("zero is in range")
+}
+
 #[test]
 fn key_create_takes_the_days_until_the_key_expires_or_no_expiry() {
     let s = setup();
@@ -173,12 +184,12 @@ fn key_create_takes_the_days_until_the_key_expires_or_no_expiry() {
     let listed = s.ok(&["key", "list"]);
     assert_eq!(listed.len(), 3, "three keys");
     assert_eq!(
-        rfc3339(&default[0]["expires_at"]) - rfc3339(&listed[0]["created_at"]),
+        rfc3339(&default[0]["expires_at"]) - made_in(&listed[0]["created_at"]),
         time::Duration::days(90),
         "with neither argument a key expires in 90 days"
     );
     assert_eq!(
-        rfc3339(&week[0]["expires_at"]) - rfc3339(&listed[1]["created_at"]),
+        rfc3339(&week[0]["expires_at"]) - made_in(&listed[1]["created_at"]),
         time::Duration::days(7),
         "--expires-days 7"
     );

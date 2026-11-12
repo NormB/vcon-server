@@ -1142,7 +1142,7 @@ mod tests {
             );
             assert!(
                 !error.0.contains("k3y"),
-                "the error shows the secret: {error}"
+                "the error does not show the secret"
             );
         }
         let error = read_secret(std::path::Path::new("/nonexistent/s3.secret"), "storage.s3")
@@ -2486,7 +2486,7 @@ pub(crate) mod remote {
         for secret in ["not-the-secret", &var("VCON_TEST_S3_SECRET_KEY")] {
             assert!(
                 !refused.0.contains(secret),
-                "the secret is shown: {refused}"
+                "the refusal does not show a secret"
             );
         }
     }

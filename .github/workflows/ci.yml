@@ -561,6 +561,8 @@ jobs:
         run: python3 -I scripts/test_check_repo_links.py
       - name: The rule for the home page's numbers
         run: python3 -I scripts/test_published_metrics.py
+      - name: The text of a GitHub release, from the changelog
+        run: python3 -I scripts/test_release_notes.py
       - name: The site's link checker
         run: python3 -I scripts/test_check_site_links.py
       - name: Dependabot watches every dependency file

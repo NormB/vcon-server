@@ -1,6 +1,101 @@
 {
+  "connecting": {
+    "columns": 80,
+    "keys": [
+      {
+        "does": "Show or close this help",
+        "key": "?"
+      },
+      {
+        "does": "Quit (also Ctrl-C)",
+        "key": "q"
+      }
+    ],
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "https://vcon.example.com:8443 | tenant unknown | "
+        },
+        {
+          "class": "bold yellow",
+          "text": "connecting"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Connecting to the server..."
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "Press q to quit."
+        }
+      ],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [
+        {
+          "class": "",
+          "text": "? help  q quit"
+        }
+      ]
+    ]
+  },
   "detail": {
     "columns": 80,
+    "keys": [
+      {
+        "does": "Select the vCon below (also Down)",
+        "key": "j"
+      },
+      {
+        "does": "Select the vCon above (also Up)",
+        "key": "k"
+      },
+      {
+        "does": "Select the first vCon (also Home)",
+        "key": "g"
+      },
+      {
+        "does": "Select the last vCon read (also End)",
+        "key": "G"
+      },
+      {
+        "does": "Move up one screen",
+        "key": "PgUp"
+      },
+      {
+        "does": "Move down one screen",
+        "key": "PgDn"
+      },
+      {
+        "does": "Go back to the view before (also Backspace)",
+        "key": "Esc"
+      },
+      {
+        "does": "Read the list again from the server",
+        "key": "r"
+      },
+      {
+        "does": "Read the next page of vCons",
+        "key": "n"
+      },
+      {
+        "does": "Show or close this help",
+        "key": "?"
+      },
+      {
+        "does": "Quit (also Ctrl-C)",
+        "key": "q"
+      }
+    ],
     "lines": [
       [
         {
@@ -72,8 +167,116 @@
       ]
     ]
   },
+  "detail-failed": {
+    "columns": 80,
+    "keys": [
+      {
+        "does": "Go back to the view before (also Backspace)",
+        "key": "Esc"
+      },
+      {
+        "does": "Read the list again from the server",
+        "key": "r"
+      },
+      {
+        "does": "Show or close this help",
+        "key": "?"
+      },
+      {
+        "does": "Quit (also Ctrl-C)",
+        "key": "q"
+      }
+    ],
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "vcon.example.com:8443 | tenant 8c41f2d9a07e4b5c9d13e6f0a2b4c7d8 | "
+        },
+        {
+          "class": "bold green",
+          "text": "connected"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Could not list vCons: the server answered 503 (The service cannot answer now)."
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "Press r to try again, or q to quit."
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "A change to the client file or the key file takes effect at the next start."
+        }
+      ],
+      [],
+      [],
+      [],
+      [],
+      [
+        {
+          "class": "",
+          "text": "Esc back  r refresh  ? help  q quit"
+        }
+      ]
+    ]
+  },
   "detail-gone": {
     "columns": 80,
+    "keys": [
+      {
+        "does": "Select the vCon below (also Down)",
+        "key": "j"
+      },
+      {
+        "does": "Select the vCon above (also Up)",
+        "key": "k"
+      },
+      {
+        "does": "Select the first vCon (also Home)",
+        "key": "g"
+      },
+      {
+        "does": "Select the last vCon read (also End)",
+        "key": "G"
+      },
+      {
+        "does": "Move up one screen",
+        "key": "PgUp"
+      },
+      {
+        "does": "Move down one screen",
+        "key": "PgDn"
+      },
+      {
+        "does": "Go back to the view before (also Backspace)",
+        "key": "Esc"
+      },
+      {
+        "does": "Read the list again from the server",
+        "key": "r"
+      },
+      {
+        "does": "Read the next page of vCons",
+        "key": "n"
+      },
+      {
+        "does": "Show or close this help",
+        "key": "?"
+      },
+      {
+        "does": "Quit (also Ctrl-C)",
+        "key": "q"
+      }
+    ],
     "lines": [
       [
         {
@@ -121,8 +324,152 @@
       ]
     ]
   },
+  "detail-one": {
+    "columns": 80,
+    "keys": [
+      {
+        "does": "Go back to the view before (also Backspace)",
+        "key": "Esc"
+      },
+      {
+        "does": "Read the list again from the server",
+        "key": "r"
+      },
+      {
+        "does": "Show or close this help",
+        "key": "?"
+      },
+      {
+        "does": "Quit (also Ctrl-C)",
+        "key": "q"
+      }
+    ],
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "vcon.example.com:8443 | tenant 8c41f2d9a07e4b5c9d13e6f0a2b4c7d8 | "
+        },
+        {
+          "class": "bold green",
+          "text": "connected"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "vCon f372fe94-f82b-8c6e-bf82-678dde6e5fd2"
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "Version       f372fe94f82b3c6eb97f4a7c159e3779"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "First stored  2026-11-10 01:08:10 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Last updated  2026-11-10 01:08:10 UTC+00:00"
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "Content is not shown: this view lists metadata only."
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "1 of 1 read | as of 2026-11-10 01:20:00 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Esc back  r refresh  ? help  q quit"
+        }
+      ]
+    ]
+  },
+  "detail-refreshing": {
+    "columns": 80,
+    "keys": [
+      {
+        "does": "Go back to the view before (also Backspace)",
+        "key": "Esc"
+      },
+      {
+        "does": "Show or close this help",
+        "key": "?"
+      },
+      {
+        "does": "Quit (also Ctrl-C)",
+        "key": "q"
+      }
+    ],
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "vcon.example.com:8443 | tenant 8c41f2d9a07e4b5c9d13e6f0a2b4c7d8 | "
+        },
+        {
+          "class": "bold green",
+          "text": "connected"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Reading the list again..."
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "Press q to quit."
+        }
+      ],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [
+        {
+          "class": "",
+          "text": "Esc back  ? help  q quit"
+        }
+      ]
+    ]
+  },
   "empty": {
     "columns": 80,
+    "keys": [
+      {
+        "does": "Read the list again from the server",
+        "key": "r"
+      },
+      {
+        "does": "Show or close this help",
+        "key": "?"
+      },
+      {
+        "does": "Quit (also Ctrl-C)",
+        "key": "q"
+      }
+    ],
     "lines": [
       [
         {
@@ -160,13 +507,27 @@
       [
         {
           "class": "",
-          "text": "j down  k up  Enter open  r refresh  n more  ? help  q quit"
+          "text": "r refresh  ? help  q quit"
         }
       ]
     ]
   },
   "help": {
     "columns": 80,
+    "keys": [
+      {
+        "does": "Go back to the view before (also Backspace)",
+        "key": "Esc"
+      },
+      {
+        "does": "Show or close this help",
+        "key": "?"
+      },
+      {
+        "does": "Quit (also Ctrl-C)",
+        "key": "q"
+      }
+    ],
     "lines": [
       [
         {
@@ -285,6 +646,52 @@
   },
   "list": {
     "columns": 80,
+    "keys": [
+      {
+        "does": "Select the vCon below (also Down)",
+        "key": "j"
+      },
+      {
+        "does": "Select the vCon above (also Up)",
+        "key": "k"
+      },
+      {
+        "does": "Select the first vCon (also Home)",
+        "key": "g"
+      },
+      {
+        "does": "Select the last vCon read (also End)",
+        "key": "G"
+      },
+      {
+        "does": "Move up one screen",
+        "key": "PgUp"
+      },
+      {
+        "does": "Move down one screen",
+        "key": "PgDn"
+      },
+      {
+        "does": "Open the selected vCon's metadata",
+        "key": "Enter"
+      },
+      {
+        "does": "Read the list again from the server",
+        "key": "r"
+      },
+      {
+        "does": "Read the next page of vCons",
+        "key": "n"
+      },
+      {
+        "does": "Show or close this help",
+        "key": "?"
+      },
+      {
+        "does": "Quit (also Ctrl-C)",
+        "key": "q"
+      }
+    ],
     "lines": [
       [
         {
@@ -438,6 +845,48 @@
   },
   "list-end": {
     "columns": 80,
+    "keys": [
+      {
+        "does": "Select the vCon below (also Down)",
+        "key": "j"
+      },
+      {
+        "does": "Select the vCon above (also Up)",
+        "key": "k"
+      },
+      {
+        "does": "Select the first vCon (also Home)",
+        "key": "g"
+      },
+      {
+        "does": "Select the last vCon read (also End)",
+        "key": "G"
+      },
+      {
+        "does": "Move up one screen",
+        "key": "PgUp"
+      },
+      {
+        "does": "Move down one screen",
+        "key": "PgDn"
+      },
+      {
+        "does": "Open the selected vCon's metadata",
+        "key": "Enter"
+      },
+      {
+        "does": "Read the list again from the server",
+        "key": "r"
+      },
+      {
+        "does": "Show or close this help",
+        "key": "?"
+      },
+      {
+        "does": "Quit (also Ctrl-C)",
+        "key": "q"
+      }
+    ],
     "lines": [
       [
         {
@@ -485,13 +934,166 @@
       [
         {
           "class": "",
-          "text": "j down  k up  Enter open  r refresh  n more  ? help  q quit"
+          "text": "j down  k up  Enter open  r refresh  ? help  q quit"
+        }
+      ]
+    ]
+  },
+  "list-one": {
+    "columns": 80,
+    "keys": [
+      {
+        "does": "Open the selected vCon's metadata",
+        "key": "Enter"
+      },
+      {
+        "does": "Read the list again from the server",
+        "key": "r"
+      },
+      {
+        "does": "Show or close this help",
+        "key": "?"
+      },
+      {
+        "does": "Quit (also Ctrl-C)",
+        "key": "q"
+      }
+    ],
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "vcon.example.com:8443 | tenant 8c41f2d9a07e4b5c9d13e6f0a2b4c7d8 | "
+        },
+        {
+          "class": "bold green",
+          "text": "connected"
+        }
+      ],
+      [
+        {
+          "class": "bold",
+          "text": "  UUID                                  STORED (UTC+00:00)   UPDATED (UTC+00:00)"
+        }
+      ],
+      [
+        {
+          "class": "reversed",
+          "text": "> f372fe94-f82b-8c6e-bf82-678dde6e5fd2  2026-11-10 01:08:10  2026-11-10 01:08:10"
+        }
+      ],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [
+        {
+          "class": "",
+          "text": "1 of 1 read | as of 2026-11-10 01:20:00 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Enter open  r refresh  ? help  q quit"
+        }
+      ]
+    ]
+  },
+  "loading": {
+    "columns": 80,
+    "keys": [
+      {
+        "does": "Show or close this help",
+        "key": "?"
+      },
+      {
+        "does": "Quit (also Ctrl-C)",
+        "key": "q"
+      }
+    ],
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "vcon.example.com:8443 | tenant 8c41f2d9a07e4b5c9d13e6f0a2b4c7d8 | "
+        },
+        {
+          "class": "bold green",
+          "text": "connected"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Loading vCons..."
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "Press q to quit."
+        }
+      ],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [
+        {
+          "class": "",
+          "text": "? help  q quit"
         }
       ]
     ]
   },
   "more-read": {
     "columns": 80,
+    "keys": [
+      {
+        "does": "Select the vCon below (also Down)",
+        "key": "j"
+      },
+      {
+        "does": "Select the vCon above (also Up)",
+        "key": "k"
+      },
+      {
+        "does": "Select the first vCon (also Home)",
+        "key": "g"
+      },
+      {
+        "does": "Select the last vCon read (also End)",
+        "key": "G"
+      },
+      {
+        "does": "Move up one screen",
+        "key": "PgUp"
+      },
+      {
+        "does": "Move down one screen",
+        "key": "PgDn"
+      },
+      {
+        "does": "Open the selected vCon's metadata",
+        "key": "Enter"
+      },
+      {
+        "does": "Read the list again from the server",
+        "key": "r"
+      },
+      {
+        "does": "Show or close this help",
+        "key": "?"
+      },
+      {
+        "does": "Quit (also Ctrl-C)",
+        "key": "q"
+      }
+    ],
     "lines": [
       [
         {
@@ -554,13 +1156,166 @@
       [
         {
           "class": "",
-          "text": "j down  k up  Enter open  r refresh  n more  ? help  q quit"
+          "text": "j down  k up  Enter open  r refresh  ? help  q quit"
+        }
+      ]
+    ]
+  },
+  "more-reading": {
+    "columns": 80,
+    "keys": [
+      {
+        "does": "Select the vCon below (also Down)",
+        "key": "j"
+      },
+      {
+        "does": "Select the vCon above (also Up)",
+        "key": "k"
+      },
+      {
+        "does": "Select the first vCon (also Home)",
+        "key": "g"
+      },
+      {
+        "does": "Select the last vCon read (also End)",
+        "key": "G"
+      },
+      {
+        "does": "Move up one screen",
+        "key": "PgUp"
+      },
+      {
+        "does": "Move down one screen",
+        "key": "PgDn"
+      },
+      {
+        "does": "Open the selected vCon's metadata",
+        "key": "Enter"
+      },
+      {
+        "does": "Show or close this help",
+        "key": "?"
+      },
+      {
+        "does": "Quit (also Ctrl-C)",
+        "key": "q"
+      }
+    ],
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "vcon.example.com:8443 | tenant 8c41f2d9a07e4b5c9d13e6f0a2b4c7d8 | "
+        },
+        {
+          "class": "bold green",
+          "text": "connected"
+        }
+      ],
+      [
+        {
+          "class": "bold",
+          "text": "  UUID                                  STORED (UTC+00:00)   UPDATED (UTC+00:00)"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  f372fe94-f82b-8c6e-bf82-678dde6e5fd2  2026-11-10 01:08:10  2026-11-10 01:08:10"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  e6e5fd29-f054-88dd-bf05-8f1bbcdcbfa5  2026-11-10 00:31:07  2026-11-10 00:37:07"
+        }
+      ],
+      [
+        {
+          "class": "reversed",
+          "text": "> da58fbbe-e87f-854c-be87-f6a99b4b1f77  2026-11-09 23:54:32  2026-11-10 00:06:32"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  cdcbfa53-e0a8-81bb-be0a-1e3779b97f4a  2026-11-09 23:17:29  2026-11-09 23:35:29"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  c13ef8e8-d8d2-8e2a-bd8d-45c55827df1d  2026-11-09 22:40:26  2026-11-09 22:40:26"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  b4b1f77d-d0fd-8a99-bd0f-ad5336963eef  2026-11-09 22:03:51  2026-11-09 22:09:51"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Reading the next page..."
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "j down  k up  Enter open  ? help  q quit"
         }
       ]
     ]
   },
   "narrow": {
     "columns": 60,
+    "keys": [
+      {
+        "does": "Select the vCon below (also Down)",
+        "key": "j"
+      },
+      {
+        "does": "Select the vCon above (also Up)",
+        "key": "k"
+      },
+      {
+        "does": "Select the first vCon (also Home)",
+        "key": "g"
+      },
+      {
+        "does": "Select the last vCon read (also End)",
+        "key": "G"
+      },
+      {
+        "does": "Move up one screen",
+        "key": "PgUp"
+      },
+      {
+        "does": "Move down one screen",
+        "key": "PgDn"
+      },
+      {
+        "does": "Open the selected vCon's metadata",
+        "key": "Enter"
+      },
+      {
+        "does": "Read the list again from the server",
+        "key": "r"
+      },
+      {
+        "does": "Read the next page of vCons",
+        "key": "n"
+      },
+      {
+        "does": "Show or close this help",
+        "key": "?"
+      },
+      {
+        "does": "Quit (also Ctrl-C)",
+        "key": "q"
+      }
+    ],
     "lines": [
       [
         {
@@ -630,6 +1385,52 @@
   },
   "narrowest": {
     "columns": 40,
+    "keys": [
+      {
+        "does": "Select the vCon below (also Down)",
+        "key": "j"
+      },
+      {
+        "does": "Select the vCon above (also Up)",
+        "key": "k"
+      },
+      {
+        "does": "Select the first vCon (also Home)",
+        "key": "g"
+      },
+      {
+        "does": "Select the last vCon read (also End)",
+        "key": "G"
+      },
+      {
+        "does": "Move up one screen",
+        "key": "PgUp"
+      },
+      {
+        "does": "Move down one screen",
+        "key": "PgDn"
+      },
+      {
+        "does": "Open the selected vCon's metadata",
+        "key": "Enter"
+      },
+      {
+        "does": "Read the list again from the server",
+        "key": "r"
+      },
+      {
+        "does": "Read the next page of vCons",
+        "key": "n"
+      },
+      {
+        "does": "Show or close this help",
+        "key": "?"
+      },
+      {
+        "does": "Quit (also Ctrl-C)",
+        "key": "q"
+      }
+    ],
     "lines": [
       [
         {
@@ -699,6 +1500,52 @@
   },
   "next-page-failed": {
     "columns": 80,
+    "keys": [
+      {
+        "does": "Select the vCon below (also Down)",
+        "key": "j"
+      },
+      {
+        "does": "Select the vCon above (also Up)",
+        "key": "k"
+      },
+      {
+        "does": "Select the first vCon (also Home)",
+        "key": "g"
+      },
+      {
+        "does": "Select the last vCon read (also End)",
+        "key": "G"
+      },
+      {
+        "does": "Move up one screen",
+        "key": "PgUp"
+      },
+      {
+        "does": "Move down one screen",
+        "key": "PgDn"
+      },
+      {
+        "does": "Open the selected vCon's metadata",
+        "key": "Enter"
+      },
+      {
+        "does": "Read the list again from the server",
+        "key": "r"
+      },
+      {
+        "does": "Read the next page of vCons",
+        "key": "n"
+      },
+      {
+        "does": "Show or close this help",
+        "key": "?"
+      },
+      {
+        "does": "Quit (also Ctrl-C)",
+        "key": "q"
+      }
+    ],
     "lines": [
       [
         {
@@ -766,8 +1613,81 @@
       ]
     ]
   },
+  "no-read-scope": {
+    "columns": 80,
+    "keys": [
+      {
+        "does": "Show or close this help",
+        "key": "?"
+      },
+      {
+        "does": "Quit (also Ctrl-C)",
+        "key": "q"
+      }
+    ],
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "vcon.example.com:8443 | tenant 8c41f2d9a07e4b5c9d13e6f0a2b4c7d8 | "
+        },
+        {
+          "class": "bold green",
+          "text": "connected"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Could not list vCons: this key lacks the read scope: use a tenant key that holds"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "it."
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "Press q to quit."
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "A change to the client file or the key file takes effect at the next start."
+        }
+      ],
+      [],
+      [],
+      [],
+      [
+        {
+          "class": "",
+          "text": "? help  q quit"
+        }
+      ]
+    ]
+  },
   "not-connected": {
     "columns": 80,
+    "keys": [
+      {
+        "does": "Read the list again from the server",
+        "key": "r"
+      },
+      {
+        "does": "Show or close this help",
+        "key": "?"
+      },
+      {
+        "does": "Quit (also Ctrl-C)",
+        "key": "q"
+      }
+    ],
     "lines": [
       [
         {
@@ -805,13 +1725,23 @@
       [
         {
           "class": "",
-          "text": "j down  k up  Enter open  r refresh  n more  ? help  q quit"
+          "text": "r refresh  ? help  q quit"
         }
       ]
     ]
   },
   "operator-key": {
     "columns": 80,
+    "keys": [
+      {
+        "does": "Show or close this help",
+        "key": "?"
+      },
+      {
+        "does": "Quit (also Ctrl-C)",
+        "key": "q"
+      }
+    ],
     "lines": [
       [
         {
@@ -839,7 +1769,7 @@
       [
         {
           "class": "",
-          "text": "Press r to try again, or q to quit."
+          "text": "Press q to quit."
         }
       ],
       [
@@ -854,13 +1784,27 @@
       [
         {
           "class": "",
-          "text": "j down  k up  Enter open  r refresh  n more  ? help  q quit"
+          "text": "? help  q quit"
         }
       ]
     ]
   },
   "refused-certificate": {
     "columns": 80,
+    "keys": [
+      {
+        "does": "Read the list again from the server",
+        "key": "r"
+      },
+      {
+        "does": "Show or close this help",
+        "key": "?"
+      },
+      {
+        "does": "Quit (also Ctrl-C)",
+        "key": "q"
+      }
+    ],
     "lines": [
       [
         {
@@ -908,13 +1852,27 @@
       [
         {
           "class": "",
-          "text": "j down  k up  Enter open  r refresh  n more  ? help  q quit"
+          "text": "r refresh  ? help  q quit"
         }
       ]
     ]
   },
   "refused-key": {
     "columns": 80,
+    "keys": [
+      {
+        "does": "Read the list again from the server",
+        "key": "r"
+      },
+      {
+        "does": "Show or close this help",
+        "key": "?"
+      },
+      {
+        "does": "Quit (also Ctrl-C)",
+        "key": "q"
+      }
+    ],
     "lines": [
       [
         {
@@ -957,13 +1915,117 @@
       [
         {
           "class": "",
-          "text": "j down  k up  Enter open  r refresh  n more  ? help  q quit"
+          "text": "r refresh  ? help  q quit"
+        }
+      ]
+    ]
+  },
+  "server-error": {
+    "columns": 80,
+    "keys": [
+      {
+        "does": "Read the list again from the server",
+        "key": "r"
+      },
+      {
+        "does": "Show or close this help",
+        "key": "?"
+      },
+      {
+        "does": "Quit (also Ctrl-C)",
+        "key": "q"
+      }
+    ],
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "vcon.example.com:8443 | tenant 8c41f2d9a07e4b5c9d13e6f0a2b4c7d8 | "
+        },
+        {
+          "class": "bold green",
+          "text": "connected"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Could not list vCons: the server answered 503 (The service cannot answer now)."
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "Press r to try again, or q to quit."
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "A change to the client file or the key file takes effect at the next start."
+        }
+      ],
+      [],
+      [],
+      [],
+      [],
+      [
+        {
+          "class": "",
+          "text": "r refresh  ? help  q quit"
         }
       ]
     ]
   },
   "too-small": {
     "columns": 36,
+    "keys": [
+      {
+        "does": "Select the vCon below (also Down)",
+        "key": "j"
+      },
+      {
+        "does": "Select the vCon above (also Up)",
+        "key": "k"
+      },
+      {
+        "does": "Select the first vCon (also Home)",
+        "key": "g"
+      },
+      {
+        "does": "Select the last vCon read (also End)",
+        "key": "G"
+      },
+      {
+        "does": "Move up one screen",
+        "key": "PgUp"
+      },
+      {
+        "does": "Move down one screen",
+        "key": "PgDn"
+      },
+      {
+        "does": "Open the selected vCon's metadata",
+        "key": "Enter"
+      },
+      {
+        "does": "Read the list again from the server",
+        "key": "r"
+      },
+      {
+        "does": "Read the next page of vCons",
+        "key": "n"
+      },
+      {
+        "does": "Show or close this help",
+        "key": "?"
+      },
+      {
+        "does": "Quit (also Ctrl-C)",
+        "key": "q"
+      }
+    ],
     "lines": [
       [
         {
@@ -985,6 +2047,52 @@
   },
   "wide": {
     "columns": 120,
+    "keys": [
+      {
+        "does": "Select the vCon below (also Down)",
+        "key": "j"
+      },
+      {
+        "does": "Select the vCon above (also Up)",
+        "key": "k"
+      },
+      {
+        "does": "Select the first vCon (also Home)",
+        "key": "g"
+      },
+      {
+        "does": "Select the last vCon read (also End)",
+        "key": "G"
+      },
+      {
+        "does": "Move up one screen",
+        "key": "PgUp"
+      },
+      {
+        "does": "Move down one screen",
+        "key": "PgDn"
+      },
+      {
+        "does": "Open the selected vCon's metadata",
+        "key": "Enter"
+      },
+      {
+        "does": "Read the list again from the server",
+        "key": "r"
+      },
+      {
+        "does": "Read the next page of vCons",
+        "key": "n"
+      },
+      {
+        "does": "Show or close this help",
+        "key": "?"
+      },
+      {
+        "does": "Quit (also Ctrl-C)",
+        "key": "q"
+      }
+    ],
     "lines": [
       [
         {

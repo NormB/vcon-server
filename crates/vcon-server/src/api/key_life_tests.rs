@@ -95,6 +95,12 @@ fn time(value: &Value) -> OffsetDateTime {
     OffsetDateTime::parse(value.as_str().expect("a time as text"), &Rfc3339).expect("RFC 3339")
 }
 
+/// The second a key was made in. A key's expiry is a whole second: its
+/// life is counted from here.
+fn made_in(value: &Value) -> OffsetDateTime {
+    time(value).replace_nanosecond(0).expect("zero is in range")
+}
+
 /// How many keys the server's tenant has.
 fn keys(s: &Server) -> usize {
     s.tenants
@@ -122,7 +128,7 @@ async fn a_key_made_with_no_expiry_field_expires_90_days_after_it_is_made() {
     let shown = listed(&s, &token, "reports").await;
     assert_eq!(shown.len(), 1, "one key with the label");
     assert_eq!(
-        time(&shown[0]["expires_at"]) - time(&shown[0]["created_at"]),
+        time(&shown[0]["expires_at"]) - made_in(&shown[0]["created_at"]),
         Duration::days(90),
         "the default life"
     );
@@ -143,12 +149,42 @@ async fn a_key_made_for_a_number_of_days_expires_then() {
         let shown = listed(&s, &token, "reports").await;
         let last = shown.last().expect("the key just made");
         assert_eq!(
-            time(&last["expires_at"]) - time(&last["created_at"]),
+            time(&last["expires_at"]) - made_in(&last["created_at"]),
             Duration::days(days),
             "{days} days"
         );
         assert_eq!(body["expires_at"], last["expires_at"], "{days} days");
     }
+}
+
+#[tokio::test]
+async fn the_answer_that_makes_a_key_has_one_length_whenever_the_key_is_made() {
+    let s = server().await;
+    let token = administrator(&s);
+    let start = s
+        .tenants
+        .now()
+        .replace_nanosecond(0)
+        .expect("zero is in range");
+    let mut lengths = Vec::new();
+    for nanos in [0_i64, 1, 120_000_000, 123_456_789, 999_999_999] {
+        s.clock.set(start + Duration::nanoseconds(nanos));
+        let answer = made(&s, &token, &json!({})).await;
+        assert_eq!(answer.status().as_u16(), 201, "made at {nanos} ns");
+        let bytes = answer.bytes().await.expect("a body");
+        let body: Value = serde_json::from_slice(&bytes).expect("JSON");
+        let expiry = body["expires_at"].as_str().expect("a time as text");
+        assert_eq!(
+            expiry.len(),
+            "2027-02-10T12:00:00Z".len(),
+            "a whole second, with no fraction, at {nanos} ns: {expiry}"
+        );
+        lengths.push(bytes.len());
+    }
+    assert_eq!(
+        lengths, [136; 5],
+        "the answer is 136 bytes whatever part of a second the key is made in"
+    );
 }
 
 #[tokio::test]
@@ -211,7 +247,7 @@ async fn the_operator_makes_a_tenants_key_with_an_expiry_and_lists_it() {
     assert_eq!(status, 200, "listed");
     let key = &list[0];
     assert_eq!(
-        time(&key["expires_at"]) - time(&key["created_at"]),
+        time(&key["expires_at"]) - made_in(&key["created_at"]),
         Duration::days(365),
         "one year"
     );
@@ -464,7 +500,7 @@ async fn no_expiry_false_with_days_is_days() {
     assert_eq!(status, 201, "made");
     let shown = listed(&s, &token, "reports").await;
     assert_eq!(
-        time(&shown[0]["expires_at"]) - time(&shown[0]["created_at"]),
+        time(&shown[0]["expires_at"]) - made_in(&shown[0]["created_at"]),
         Duration::days(2),
         "two days"
     );

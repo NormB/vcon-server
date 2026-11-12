@@ -520,8 +520,7 @@ mod tests {
         );
         assert!(
             heads[0].contains(&format!("authorization: bearer {TOKEN}")),
-            "the token goes in the Authorization header: {}",
-            heads[0]
+            "the token goes in the Authorization header"
         );
     }
 
@@ -721,10 +720,7 @@ mod tests {
     fn a_refused_certificate_message_never_holds_the_token() {
         let cert = ca_certificate();
         let (said, _) = refusal(&cert, &cert);
-        assert!(
-            !said.contains("secret"),
-            "the token is not in the message: {said}"
-        );
+        assert!(!said.contains("secret"), "the token is not in the message");
     }
 
     #[test]
@@ -824,10 +820,7 @@ mod tests {
         let refused = HttpApi::new(&client(dir.path(), 1, &cert, 0o644))
             .expect_err("a world-readable key file");
         assert!(refused.contains("key_file"), "the file is named: {refused}");
-        assert!(
-            !refused.contains(TOKEN),
-            "the token is not in the message: {refused}"
-        );
+        assert!(!refused.contains(TOKEN), "the token is not in the message");
     }
 
     #[test]

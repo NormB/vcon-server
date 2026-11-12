@@ -1031,6 +1031,14 @@ mod tests {
         .expect("RFC 3339")
     }
 
+    /// The second a key was made in. A key's expiry is a whole second:
+    /// its life is counted from here.
+    fn made_in(value: &Value) -> time::OffsetDateTime {
+        rfc3339(value)
+            .replace_nanosecond(0)
+            .expect("zero is in range")
+    }
+
     #[test]
     fn key_create_prints_the_expiry_of_the_key_it_makes() {
         let s = setup();
@@ -1038,7 +1046,7 @@ mod tests {
         let made = key_with(&s, &tenant, KeyLife::Default).expect("made");
         let listed = s.run(Command::KeyList { tenant: None }).expect("listed");
         assert_eq!(
-            rfc3339(&made[0]["expires_at"]) - rfc3339(&listed[0]["created_at"]),
+            rfc3339(&made[0]["expires_at"]) - made_in(&listed[0]["created_at"]),
             time::Duration::days(90),
             "the default life"
         );
@@ -1057,7 +1065,7 @@ mod tests {
         let never = key_with(&s, &tenant, KeyLife::Never).expect("made");
         let listed = s.run(Command::KeyList { tenant: None }).expect("listed");
         assert_eq!(
-            rfc3339(&week[0]["expires_at"]) - rfc3339(&listed[0]["created_at"]),
+            rfc3339(&week[0]["expires_at"]) - made_in(&listed[0]["created_at"]),
             time::Duration::days(7),
             "seven days"
         );
@@ -1128,7 +1136,9 @@ mod tests {
     fn tenant_error(result: Result<Vec<Value>, CommandError>) -> TenantError {
         match result {
             Err(CommandError::Tenant(e)) => e,
-            other => panic!("not a tenant error: {other:?}"),
+            // What a command prints is not shown: `key create` prints a token.
+            Ok(_) => panic!("the command succeeded, and a tenant error was expected"),
+            Err(other) => panic!("not a tenant error: {other:?}"),
         }
     }
 
@@ -1317,7 +1327,10 @@ mod tests {
         let token = made[0]["token"].as_str().expect("token").to_owned();
         assert_eq!(made.len(), 1);
         assert_eq!(made[0].as_object().expect("object").len(), 3);
-        assert!(token.starts_with(&format!("vcs_{id}_")), "{token}");
+        assert!(
+            token.starts_with(&format!("vcs_{id}_")),
+            "the token starts with vcs_ and the key's id {id}"
+        );
         let operator = s
             .run(Command::KeyCreate {
                 owner: Owner::Operator,

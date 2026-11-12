@@ -283,17 +283,22 @@ async fn no_key_or_a_bad_key_gets_401_with_a_bearer_challenge() {
     let id = crate::access::parse(&revoked).expect("a token");
     s.tenants.revoke_key(Actor::Cli, id).expect("revoked");
     let malformed = "vcs_nothing";
-    for token in [None, Some(malformed), Some(revoked.as_str())] {
+    let keys = [
+        ("no key", None),
+        ("a malformed key", Some(malformed)),
+        ("a revoked key", Some(revoked.as_str())),
+    ];
+    for (sent, token) in keys {
         let a = s.post(token, &initialize("2025-11-25"), &[]).await;
-        assert_eq!(a.status, 401, "{token:?}: {:?}", a.body);
+        assert_eq!(a.status, 401, "{sent}: {:?}", a.body);
         assert_eq!(
             a.headers.get("www-authenticate").map(|v| v.to_str().ok()),
             Some(Some("Bearer")),
-            "{token:?}"
+            "{sent}"
         );
         assert_eq!(
             a.body["type"], "https://vcon-server.com/problems/unauthorized",
-            "{token:?}"
+            "{sent}"
         );
     }
     // Counted, as every failed authentication is, never recorded one row
@@ -1964,7 +1969,8 @@ mod admin {
             json!({"tenant": id, "scopes": ["read"], "label": "agent \u{202e}one"}),
         )
         .await;
-        assert!(!error, "{key}");
+        // The answer holds the new key's token, so a failure does not show it.
+        assert!(!error, "admin_key_create makes the key");
         let token = key["token"]
             .as_str()
             .expect("the token, this once")

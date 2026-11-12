@@ -227,6 +227,9 @@ A key expires 90 days after it is made. The body of `POST /tenant/keys`
 may name another life with `expires_in_days`, from 1 to 365, or ask for a
 key that never expires with `"no_expiry": true`. The answer carries the
 expiry as `expires_at`, in UTC, and `null` for a key that never expires.
+An expiry is a whole second (`2027-02-10T12:00:00Z`): the days are counted
+from the second the key is made in, so a key lives up to one second less
+than the days asked and never longer.
 Make a key that lives 30 days:
 
 ```sh

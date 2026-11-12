@@ -237,6 +237,138 @@ class AssertMessages(unittest.TestCase):
         self.assertEqual(self.missing(text), [])
 
 
+class CredentialsInMessages(unittest.TestCase):
+    """A failed assertion's message, a panic's text and a debug print reach
+    the test log, CI's log among them. None of them may show a key's token,
+    a secret, a cookie or a session id, so none names a variable that holds
+    one."""
+
+    def shown(self, text):
+        return [line for line, rule in rules(text) if rule == "credential-in-message"]
+
+    # Refused.
+
+    def test_a_token_in_an_assert_message_is_refused(self):
+        self.assertEqual(self.shown('fn f() {\n    assert!(ok, "{token}");\n}\n'), [2])
+
+    def test_a_token_shown_with_debug_is_refused(self):
+        self.assertEqual(self.shown('fn f() {\n    assert_eq!(a, 401, "{token:?}");\n}\n'), [2])
+
+    def test_a_token_in_an_assert_ne_message_is_refused(self):
+        self.assertEqual(self.shown('fn f() { assert_ne!(a, b, "both are {token:#?}"); }\n'), [1])
+
+    def test_a_secret_in_a_message_is_refused(self):
+        self.assertEqual(self.shown('fn f() { assert!(!log.contains(secret), "{secret} is in the log"); }\n'), [1])
+
+    def test_a_cookie_in_a_message_is_refused(self):
+        self.assertEqual(self.shown('fn f() { assert!(set, "no cookie: {cookie}"); }\n'), [1])
+
+    def test_a_session_id_in_a_message_is_refused(self):
+        text = 'fn f() {\n    assert!(live, "{session_id:?} has ended");\n    assert!(live, "{}", id_of_session);\n    assert!(live, "{sid}");\n}\n'
+        self.assertEqual(self.shown(text), [2, 3, 4])
+
+    def test_a_session_that_is_not_an_id_passes(self):
+        # tests/tui_terminal.rs calls its pseudo-terminal a session.
+        self.assertEqual(self.shown('fn f() { assert!(live, "the screen: {}", session.shown()); }\n'), [])
+
+    def test_a_longer_name_that_holds_the_word_is_refused(self):
+        text = 'fn f() {\n    assert!(a, "{new_token}");\n    assert!(b, "{refresh_tokens}");\n    assert!(c, "{api_secret:?}");\n}\n'
+        self.assertEqual(self.shown(text), [2, 3, 4])
+
+    def test_a_field_of_a_value_is_refused_by_the_fields_name(self):
+        self.assertEqual(self.shown('fn f() { assert!(a, "{}", made.token); }\n'), [1])
+
+    def test_a_token_as_an_argument_after_the_message_is_refused(self):
+        self.assertEqual(self.shown('fn f() {\n    assert!(ok, "made {}", token);\n}\n'), [2])
+
+    def test_a_named_argument_that_is_a_token_is_refused(self):
+        self.assertEqual(self.shown('fn f() { assert!(ok, "made {t}", t = token); }\n'), [1])
+
+    def test_a_token_in_a_panic_is_refused(self):
+        self.assertEqual(self.shown('fn f() {\n    panic!("not parsed: {token}");\n}\n'), [2])
+
+    def test_a_token_in_a_panic_inside_a_closure_inside_an_assertion_is_refused(self):
+        text = 'fn f() {\n    assert!(\n        g().unwrap_or_else(|e| panic!("{e}: {bearer}")),\n        "parsed"\n    );\n}\n'
+        self.assertEqual(self.shown(text), [3])
+
+    def test_a_token_in_a_debug_print_is_refused(self):
+        text = 'fn f() {\n    println!("{token}");\n    eprintln!("got {}", cookie);\n    dbg!(secret);\n    print!("{password}");\n    eprint!("{passphrase}");\n}\n'
+        self.assertEqual(self.shown(text), [2, 3, 4, 5, 6])
+
+    def test_dbg_of_an_expression_that_names_a_token_is_refused(self):
+        self.assertEqual(self.shown('fn f() { let n = dbg!(a, token.len()); }\n'), [1])
+
+    def test_a_token_in_a_macro_inside_an_argument_after_the_message_is_refused(self):
+        text = 'fn f() {\n    assert!(a, "{}", format!("Bearer {token}"));\n    assert!(b, "{:?}", vec![cookie]);\n}\n'
+        self.assertEqual(self.shown(text), [2, 3])
+
+    def test_a_message_over_several_lines_is_named_by_the_line_of_the_message(self):
+        text = 'fn f() {\n    assert_eq!(\n        a,\n        b,\n        "the answer for {token}"\n    );\n}\n'
+        self.assertEqual(self.shown(text), [5])
+
+    def test_the_debug_and_prop_forms_are_read_too(self):
+        text = 'fn f() {\n    debug_assert!(a, "{token}");\n    prop_assert_eq!(a, b, "{token}");\n    unreachable!("{secret}");\n}\n'
+        self.assertEqual(self.shown(text), [2, 3, 4])
+
+    def test_upper_case_names_are_read_as_their_words(self):
+        self.assertEqual(self.shown('fn f() { assert!(a, "{TOKEN} {}", SESSION_COOKIE); }\n'), [1, 1])
+
+    # Allowed.
+
+    def test_a_message_that_says_the_word_and_shows_no_value_passes(self):
+        text = 'fn f() {\n    assert!(ok, "the token starts with the key id");\n    panic!("no session cookie was set");\n}\n'
+        self.assertEqual(self.shown(text), [])
+
+    def test_a_token_in_the_condition_passes(self):
+        text = 'fn f() {\n    assert!(token.starts_with("vcs_"), "the prefix");\n    assert_eq!(parse(&token), Ok(id), "case {n}");\n}\n'
+        self.assertEqual(self.shown(text), [])
+
+    def test_a_string_built_from_a_token_in_the_condition_passes(self):
+        text = 'fn f() {\n    assert!(auth(&format!("Bearer {token}")).is_ok(), "the key is taken");\n}\n'
+        self.assertEqual(self.shown(text), [])
+
+    def test_a_format_that_is_not_a_message_passes(self):
+        text = 'fn f() {\n    let header = format!("Bearer {token}");\n    write!(out, "{cookie}")?;\n}\n'
+        self.assertEqual(self.shown(text), [])
+
+    def test_other_names_pass(self):
+        text = 'fn f() {\n    assert!(a, "{key}: {error}");\n    assert!(b, "{tokenized} {secretary} {sessions} {id}");\n    println!("{checked} checked");\n}\n'
+        self.assertEqual(self.shown(text), [])
+
+    def test_escaped_braces_are_not_a_placeholder(self):
+        self.assertEqual(self.shown('fn f() { assert!(a, "write {{token}} for the token"); }\n'), [])
+
+    def test_a_comment_is_not_read(self):
+        text = 'fn f() {\n    // assert!(a, "{token}");\n    /* panic!("{secret}"); */\n}\n'
+        self.assertEqual(self.shown(text), [])
+
+    def test_a_macro_shown_inside_a_string_is_not_read(self):
+        self.assertEqual(self.shown('const T: &str = "assert!(a, \\"{token}\\");";\n'), [])
+
+    def test_a_name_that_is_not_a_macro_call_is_not_read(self):
+        self.assertEqual(self.shown('fn panic(token: &str) {}\nfn f() { panic(token); }\n'), [])
+
+    def test_a_raw_string_message_is_read(self):
+        self.assertEqual(self.shown('fn f() { assert!(a, r#"the "token" {token}"#); }\n'), [1])
+
+    def test_a_character_literal_does_not_end_the_reading(self):
+        text = "fn f() {\n    assert!(c != ')', \"{token}\");\n    assert!(d != '\"', \"fine\");\n}\n"
+        self.assertEqual(self.shown(text), [2])
+
+    def test_a_lifetime_is_not_a_character_literal(self):
+        text = "fn f<'a>(token: &'a str) {\n    assert!(g::<&'a str>(token), \"{token}\");\n}\n"
+        self.assertEqual(self.shown(text), [2])
+
+    def test_one_finding_for_each_argument_that_shows_one(self):
+        self.assertEqual(self.shown('fn f() { assert!(a, "{token} {secret}", cookie); }\n'), [1, 1])
+
+    def test_the_finding_says_what_to_do(self):
+        found = [f for f in check_style.findings('fn f() { assert!(a, "{token}"); }\n') if f.rule == "credential-in-message"]
+        self.assertEqual(len(found), 1, "one finding")
+        self.assertIn("`token`", found[0].message)
+        self.assertIn("assert!", found[0].message)
+
+
 class Ratchet(unittest.TestCase):
     def verdict(self, counts, baseline):
         return check_style.ratchet(counts, baseline)

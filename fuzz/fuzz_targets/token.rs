@@ -9,7 +9,7 @@ fuzz_target!(|token: &str| {
     if let Ok(id) = access::parse(token) {
         assert!(
             token.starts_with(&format!("vcs_{id}_")),
-            "{token:?} gave {id}"
+            "a token that parses starts with vcs_ and its key id, {id}"
         );
     }
 });

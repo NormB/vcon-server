@@ -16,6 +16,7 @@ use time::macros::datetime;
 
 use super::client;
 use super::keys::BINDINGS;
+use super::screens::Screen;
 use super::state::{Action, ApiError, Event, KeyInfo, Page, Row, State, View};
 use super::view::{self, Theme};
 use crate::api::Problem;
@@ -697,6 +698,72 @@ fn the_views_reader_knows_a_key_that_does_nothing_from_one_that_does() {
     );
 }
 
+/// Each row of the page's table of last lines: the screen as the page
+/// names it, and the states drawn as that screen.
+fn last_line_screens() -> Vec<(&'static str, Vec<State>)> {
+    let no_read = || keyed(Some("8c41f2d9a07e4b5c9d13e6f0a2b4c7d8"), &["write"]);
+    let mut first_page_failed = reader();
+    first_page_failed.step(Event::Page(Err(ApiError::Status(503, None))), NOW);
+    vec![
+        ("The list, with more on the server", vec![listed(3, true)]),
+        ("The list, every vCon read", vec![listed(3, false)]),
+        ("The list of one vCon", vec![listed(1, false)]),
+        (
+            "The list while the next page is read",
+            vec![press(listed(3, true), &[Action::More])],
+        ),
+        (
+            "A tenant with no vCons, or a failure that `r` can try again",
+            vec![
+                listed(0, false),
+                refused(client::no_answer(client::TIMEOUT)),
+                refused(ApiError::Status(401, None)),
+                first_page_failed,
+            ],
+        ),
+        (
+            "`Connecting to the server...`, `Loading vCons...`, or a key that may not list",
+            vec![connecting(), reader(), keyed(None, &[]), no_read()],
+        ),
+        (
+            "The detail view",
+            vec![press(listed(3, false), &[Action::Open])],
+        ),
+        (
+            "The detail view of the only vCon",
+            vec![press(listed(1, false), &[Action::Open])],
+        ),
+        (
+            "The detail view while the list is read again",
+            vec![press(listed(3, false), &[Action::Open, Action::Refresh])],
+        ),
+        ("Help", vec![press(listed(3, true), &[Action::Help])]),
+    ]
+}
+
+#[test]
+fn the_page_lists_the_last_line_of_each_screen_as_the_ui_draws_it() {
+    let rows = table(&section(&page(), "### Read the screen"), "Screen");
+    let screens = last_line_screens();
+    assert_eq!(rows.len(), screens.len(), "one row for each screen");
+    for (row, (name, states)) in rows.iter().zip(screens) {
+        assert_eq!(
+            row.first().map(String::as_str),
+            Some(name),
+            "the screens, in order"
+        );
+        for state in states {
+            let lines = frame(&state, 80, 24);
+            let footer = lines.last().expect("24 lines").trim_end();
+            assert_eq!(
+                row.get(1).map(String::as_str),
+                Some(format!("`{footer}`").as_str()),
+                "the last line of {name:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn the_page_says_that_a_key_not_in_the_table_does_nothing() {
     let page = page().replace('\n', " ");
@@ -1086,7 +1153,20 @@ fn the_page_shows_each_view_and_each_state() {
 
 #[test]
 fn each_screen_is_shown_once_with_a_label_of_its_own() {
-    let shown = shown(&page());
+    // The page opens with the list, which its own section shows again:
+    // no other screen is shown twice.
+    let shown = shown(&screens_section());
+    assert_eq!(
+        self::shown(&page()).len(),
+        shown.len().saturating_add(1),
+        "the screens of the sections, and the one the page opens with"
+    );
+    let opening = self::shown(&page()).remove(0);
+    assert_eq!(opening.0, "list", "the page opens with the list");
+    assert!(
+        shown.iter().all(|(_, label)| *label != opening.1),
+        "and says it in other words than the list's section"
+    );
     let names: BTreeSet<&str> = shown.iter().map(|(name, _)| name.as_str()).collect();
     let labels: BTreeSet<&str> = shown.iter().map(|(_, label)| label.as_str()).collect();
     assert_eq!(names.len(), shown.len(), "no screen twice");
@@ -1490,4 +1570,372 @@ fn the_screen_reader_finds_names_and_labels() {
         ],
         "a label that is not text is empty"
     );
+}
+
+// Every screen in the code's list (`Screen::ALL`) is on the page.
+
+/// The section of the page that holds one section for each screen.
+fn screens_section() -> String {
+    section(&page(), "## Screens")
+}
+
+/// The section of `screen`.
+fn screen_section(screen: Screen) -> String {
+    section(&screens_section(), &format!("### {}", screen.title()))
+}
+
+/// The anchor the site gives a heading: lower case, with one hyphen for
+/// each run of other characters.
+fn anchor(title: &str) -> String {
+    let mut out = String::new();
+    for c in title.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.trim_matches('-').to_owned()
+}
+
+/// The data file's entry for each screen name.
+fn screen_data() -> serde_json::Map<String, serde_json::Value> {
+    serde_json::from_str::<serde_json::Value>(&read("website/data/tui-screens.json"))
+        .expect("JSON")
+        .as_object()
+        .expect("an object")
+        .clone()
+}
+
+/// What a press of `action` does to `state`, apart from clearing the
+/// notice, which every key does: whether the state changed or a request
+/// was made.
+fn does_something(state: &State, action: Action) -> bool {
+    let mut after = state.clone();
+    let asked = after.step(Event::Action(action), NOW);
+    after.notice.clone_from(&state.notice);
+    !asked.is_empty() || after != *state
+}
+
+const MOVES: [Action; 6] = [
+    Action::Up,
+    Action::Down,
+    Action::Top,
+    Action::Bottom,
+    Action::PageUp,
+    Action::PageDown,
+];
+
+#[test]
+fn the_code_lists_25_screens_with_a_name_and_a_title_each() {
+    let names: BTreeSet<&str> = Screen::ALL.iter().map(|s| s.name()).collect();
+    let titles: BTreeSet<&str> = Screen::ALL.iter().map(|s| s.title()).collect();
+    let anchors: BTreeSet<String> = Screen::ALL.iter().map(|s| anchor(s.title())).collect();
+    assert_eq!(Screen::ALL.len(), 25, "the screens the UI can draw");
+    assert_eq!(names.len(), 25, "a name each");
+    assert_eq!(titles.len(), 25, "a title each");
+    assert_eq!(anchors.len(), 25, "and a link target each");
+}
+
+#[test]
+fn the_list_of_screens_holds_every_view() {
+    for view in [View::List, View::Detail, View::Help] {
+        assert!(
+            Screen::ALL.iter().any(|screen| screen.view() == view),
+            "a screen of the {view:?} view"
+        );
+    }
+}
+
+#[test]
+fn every_screen_in_the_code_has_a_section_on_the_page() {
+    let headings: Vec<String> = screens_section()
+        .lines()
+        .filter(|line| level(line) == 3)
+        .map(|line| line.trim_start_matches("### ").to_owned())
+        .collect();
+    let titles: Vec<&str> = Screen::ALL.iter().map(|s| s.title()).collect();
+    assert_eq!(
+        headings, titles,
+        "one section for each screen of Screen::ALL, in its order, and no other"
+    );
+}
+
+#[test]
+fn every_screen_in_the_code_is_drawn_in_the_data_file_and_no_other_is() {
+    let drawn: Vec<String> = screen_data().keys().cloned().collect();
+    let names: BTreeSet<&str> = Screen::ALL.iter().map(|s| s.name()).collect();
+    let names: Vec<&str> = names.into_iter().collect();
+    assert_eq!(
+        drawn, names,
+        "tui-screens.json holds the screens of Screen::ALL"
+    );
+}
+
+#[test]
+fn each_screens_section_draws_that_screen_and_no_other() {
+    for screen in Screen::ALL {
+        let names: Vec<String> = shown(&screen_section(screen))
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(
+            names,
+            [screen.name()],
+            "the section {:?} shows its own screen",
+            screen.title()
+        );
+    }
+}
+
+#[test]
+fn each_screens_section_lists_the_keys_of_that_screen() {
+    for screen in Screen::ALL {
+        let text = screen_section(screen);
+        let listed: Vec<&str> = text
+            .split("<tui_keys name=\"")
+            .skip(1)
+            .filter_map(|rest| rest.split('"').next())
+            .collect();
+        assert_eq!(
+            listed,
+            [screen.name()],
+            "the section {:?} lists its own keys",
+            screen.title()
+        );
+    }
+}
+
+#[test]
+fn the_keys_the_site_lists_for_a_screen_are_the_bindings_that_act_there() {
+    let data = screen_data();
+    for screen in Screen::ALL {
+        let listed: Vec<(String, String)> = data[screen.name()]["keys"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{} has keys", screen.name()))
+            .iter()
+            .map(|key| {
+                (
+                    key["key"].as_str().expect("a key").to_owned(),
+                    key["does"].as_str().expect("what it does").to_owned(),
+                )
+            })
+            .collect();
+        let state = screen.state();
+        let acting: Vec<(String, String)> = BINDINGS
+            .iter()
+            .filter(|binding| state.acts(binding.action))
+            .map(|binding| (binding.label.to_owned(), binding.does.to_owned()))
+            .collect();
+        assert_eq!(listed, acting, "the keys of {}", screen.name());
+    }
+}
+
+#[test]
+fn a_key_listed_for_a_screen_does_something_there_and_no_other_key_does() {
+    for screen in Screen::ALL {
+        let state = screen.state();
+        let listed: Vec<Action> = screen.keys().iter().map(|b| b.action).collect();
+        let can_move = MOVES.iter().any(|action| does_something(&state, *action));
+        for binding in &BINDINGS {
+            let action = binding.action;
+            // A key that moves is listed where the selection can move,
+            // also when it is at the end that key moves toward.
+            let does = if MOVES.contains(&action) {
+                can_move
+            } else {
+                does_something(&state, action)
+            };
+            assert_eq!(
+                listed.contains(&action),
+                does,
+                "{}: {action:?} is listed exactly when a press does something",
+                screen.name()
+            );
+        }
+    }
+}
+
+#[test]
+fn quit_and_help_are_listed_for_every_screen() {
+    for screen in Screen::ALL {
+        let labels: Vec<&str> = screen.keys().iter().map(|b| b.label).collect();
+        assert!(labels.contains(&"q"), "{}: q quits", screen.name());
+        assert!(labels.contains(&"?"), "{}: ? is help", screen.name());
+    }
+}
+
+#[test]
+fn the_waiting_screens_list_help_and_quit_only() {
+    for screen in [Screen::Connecting, Screen::Loading] {
+        let labels: Vec<&str> = screen.keys().iter().map(|b| b.label).collect();
+        assert_eq!(labels, ["?", "q"], "{}", screen.name());
+    }
+}
+
+#[test]
+fn the_help_screen_lists_the_keys_that_close_it_and_quit() {
+    let labels: Vec<&str> = Screen::Help.keys().iter().map(|b| b.label).collect();
+    assert_eq!(labels, ["Esc", "?", "q"], "nothing else acts in help");
+}
+
+#[test]
+fn a_key_that_may_not_list_has_no_refresh_and_other_failures_have() {
+    for (screen, wanted) in [
+        (Screen::OperatorKey, false),
+        (Screen::NoReadScope, false),
+        (Screen::NotConnected, true),
+        (Screen::RefusedKey, true),
+        (Screen::RefusedCertificate, true),
+        (Screen::ServerError, true),
+        (Screen::DetailFailed, true),
+        (Screen::NextPageFailed, true),
+    ] {
+        let labels: Vec<&str> = screen.keys().iter().map(|b| b.label).collect();
+        assert_eq!(labels.contains(&"r"), wanted, "{}: r", screen.name());
+    }
+}
+
+#[test]
+fn the_failure_screens_are_the_ones_that_say_something_failed() {
+    let failures: Vec<&str> = Screen::ALL
+        .iter()
+        .filter(|screen| screen.failure())
+        .map(|screen| screen.name())
+        .collect();
+    assert_eq!(
+        failures,
+        [
+            "next-page-failed",
+            "not-connected",
+            "refused-key",
+            "refused-certificate",
+            "operator-key",
+            "no-read-scope",
+            "server-error",
+            "detail-failed"
+        ],
+        "a list that could not be read, or a notice above the keys"
+    );
+}
+
+#[test]
+fn each_failure_screens_section_says_what_to_do() {
+    for screen in Screen::ALL {
+        let text = screen_section(screen);
+        let needs = screen.failure() || matches!(screen, Screen::DetailGone | Screen::TooSmall);
+        assert_eq!(
+            text.contains("**What to do.**"),
+            needs,
+            "{:?}: a failure says what to do, and no other screen needs to",
+            screen.title()
+        );
+    }
+}
+
+#[test]
+fn each_screens_section_says_what_it_shows_and_how_to_get_there_and_leave() {
+    for screen in Screen::ALL {
+        let text = screen_section(screen);
+        for part in ["**When.**", "**Shows.**", "**Leave.**"] {
+            let said = text
+                .split(part)
+                .nth(1)
+                .map_or("", |rest| rest.split("\n\n").next().unwrap_or(""));
+            assert!(
+                said.trim().len() >= 20,
+                "{:?} has {part} with a sentence after it: {said:?}",
+                screen.title()
+            );
+        }
+    }
+}
+
+#[test]
+fn each_failure_screens_section_quotes_what_the_screen_says() {
+    for screen in Screen::ALL.into_iter().filter(|screen| screen.failure()) {
+        let state = screen.state();
+        let said = match (&state.listing, &state.notice) {
+            (_, Some(notice)) => notice.clone(),
+            (super::state::Listing::Failed(why), None) => why.clone(),
+            other => panic!("{} is no failure: {other:?}", screen.name()),
+        };
+        let quoted = said.split(": ").next().expect("a first part");
+        assert!(
+            screen_section(screen).replace('\n', " ").contains(quoted),
+            "{:?} quotes {quoted:?}",
+            screen.title()
+        );
+    }
+}
+
+#[test]
+fn the_table_at_the_top_links_every_screen_in_order() {
+    let rows = table(&section(&page(), "## Every screen"), "Screen");
+    assert_eq!(rows.len(), Screen::ALL.len(), "one row for each screen");
+    for (row, screen) in rows.iter().zip(Screen::ALL) {
+        assert_eq!(
+            row.first().map(String::as_str),
+            Some(format!("[{}](#{})", screen.title(), anchor(screen.title())).as_str()),
+            "the screen, as a link to its section"
+        );
+        assert!(
+            row.get(1).is_some_and(|when| when.len() >= 20),
+            "{:?} says when it appears: {row:?}",
+            screen.title()
+        );
+    }
+}
+
+#[test]
+fn the_table_of_screens_stands_before_the_first_step() {
+    let page = page();
+    let table = page
+        .find("\n## Every screen\n")
+        .expect("the table's heading");
+    let steps = page.find("\n## Quick start").expect("the first steps");
+    assert!(table < steps, "a reader meets the list of screens first");
+}
+
+#[test]
+fn the_layout_screens_are_drawn_at_their_widths() {
+    let data = screen_data();
+    for (screen, columns) in [
+        (Screen::Wide, 120),
+        (Screen::Narrow, 60),
+        (Screen::Narrowest, 40),
+        (Screen::TooSmall, 36),
+        (Screen::List, 80),
+    ] {
+        assert_eq!(
+            data[screen.name()]["columns"],
+            columns,
+            "{} is drawn in {columns} columns",
+            screen.name()
+        );
+        assert!(
+            screen_section(screen).contains(&columns.to_string()),
+            "and its section names the width"
+        );
+    }
+}
+
+#[test]
+fn the_anchor_of_a_title_is_as_the_site_makes_it() {
+    assert_eq!(anchor("The list"), "the-list", "spaces");
+    assert_eq!(
+        anchor("A terminal of 120 columns"),
+        "a-terminal-of-120-columns",
+        "digits stay"
+    );
+    assert_eq!(anchor("Help"), "help", "one word");
+}
+
+#[test]
+fn a_screen_added_to_the_code_without_a_section_would_be_found() {
+    // The reader of sections fails on a heading the page lacks: this is
+    // what refuses a screen that is in Screen::ALL and not on the page.
+    let refused =
+        std::panic::catch_unwind(|| section(&screens_section(), "### A screen nobody wrote about"));
+    assert!(refused.is_err(), "a title with no section is a failure");
 }

@@ -108,7 +108,7 @@ pub fn draw(frame: &mut Frame<'_>, state: &State, theme: Theme) {
         },
     );
     frame.render_widget(
-        Paragraph::new(hints(state.view, usize::from(area.width))),
+        Paragraph::new(hints(state, usize::from(area.width))),
         line(area.height.saturating_sub(1)),
     );
 }
@@ -287,7 +287,13 @@ fn waiting(state: &State, loading: &str) -> Option<Vec<String>> {
                 lines
                     .push("Check that key_file holds a key the server has not revoked.".to_owned());
             }
-            lines.push("Press r to try again, or q to quit.".to_owned());
+            // r asks the server again. For a key that may not list there
+            // is nothing to ask: the answer depends on the key alone.
+            lines.push(if state.acts(Action::Refresh) {
+                "Press r to try again, or q to quit.".to_owned()
+            } else {
+                "Press q to quit.".to_owned()
+            });
             // The client file, the token and the CA are read once, before
             // the first screen, so r cannot pick up a corrected file.
             lines.push(
@@ -436,14 +442,14 @@ fn notice(state: &State) -> Vec<String> {
     ]
 }
 
-/// The key hints of a view, from the bindings, in `columns` columns. Help
+/// The key hints of a state, from the bindings, in `columns` columns. Help
 /// and quit end every line. When the line is longer than the terminal is
 /// wide, the hint before those two is left out, then the one before it,
 /// until the line fits: a hint is whole or absent, and `?` lists every key.
-fn hints(view: View, columns: usize) -> String {
+fn hints(state: &State, columns: usize) -> String {
     /// The hints never left out: the last two of a view.
     const KEPT: usize = 2;
-    let mut shown = view_hints(view);
+    let mut shown = state_hints(state);
     let length = |shown: &[String]| {
         shown
             .iter()
@@ -457,9 +463,11 @@ fn hints(view: View, columns: usize) -> String {
     shown.join("  ")
 }
 
-/// Every key hint of a view, each a key and a word.
-fn view_hints(view: View) -> Vec<String> {
-    let actions: &[Action] = match view {
+/// The key hints of a state, each a key and a word: those of its view
+/// whose key acts in the state ([`State::acts`]). A screen with nothing to
+/// select names no key that selects.
+fn state_hints(state: &State) -> Vec<String> {
+    let actions: &[Action] = match state.view {
         View::List => &[
             Action::Down,
             Action::Up,
@@ -481,6 +489,7 @@ fn view_hints(view: View) -> Vec<String> {
     };
     actions
         .iter()
+        .filter(|action| state.acts(**action))
         .filter_map(|action| binding(*action))
         .map(|binding| format!("{} {}", binding.label, binding.hint))
         .collect()
@@ -492,13 +501,13 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Cell;
     use ratatui::style::{Color, Modifier};
-    use time::format_description::well_known::Rfc3339;
+    use time::OffsetDateTime;
     use time::macros::datetime;
-    use time::{Duration, OffsetDateTime};
 
     use super::{Theme, draw, theme, utc};
     use crate::tui::client;
     use crate::tui::keys::BINDINGS;
+    use crate::tui::screens::{SHOWN_TENANT, Screen, shown_key, shown_page, shown_refusal};
     use crate::tui::state::{Action, ApiError, Event, KeyInfo, Page, Row, State};
 
     const NOW: OffsetDateTime = datetime!(2026-11-10 01:20:00 UTC);
@@ -1360,7 +1369,7 @@ mod tests {
     #[test]
     fn at_80_columns_the_footers_are_whole() {
         assert_eq!(
-            footer_at(&listed(2, None), 80),
+            footer_at(&listed(2, Some("cursor-2")), 80),
             "j down  k up  Enter open  r refresh  n more  ? help  q quit",
             "the list's keys"
         );
@@ -1397,15 +1406,332 @@ mod tests {
     #[test]
     fn one_column_short_of_the_whole_list_footer_drops_one_hint() {
         assert_eq!(
-            footer_at(&listed(2, None), 58),
+            footer_at(&listed(2, Some("cursor-2")), 58),
             "j down  k up  Enter open  r refresh  ? help  q quit",
             "the hint before help goes first"
         );
         assert_eq!(
-            footer_at(&listed(2, None), 59),
+            footer_at(&listed(2, Some("cursor-2")), 59),
             "j down  k up  Enter open  r refresh  n more  ? help  q quit",
             "at its own width the footer is whole"
         );
+    }
+
+    // The last line names the keys that act in the state, and no other.
+
+    const HELP_QUIT: &str = "? help  q quit";
+    const RETRY: &str = "r refresh  ? help  q quit";
+    const LIST_KEYS: &str = "j down  k up  Enter open  r refresh  n more  ? help  q quit";
+
+    fn failed(error: ApiError) -> State {
+        let mut state = connecting();
+        state.step(Event::KeyInfo(Err(error)), NOW);
+        state
+    }
+
+    fn with_key(tenant: Option<&str>, scope: &str) -> State {
+        let mut state = connecting();
+        state.step(
+            Event::KeyInfo(Ok(KeyInfo {
+                id: "0123456789abcdef".to_owned(),
+                tenant: tenant.map(str::to_owned),
+                scopes: vec![scope.to_owned()],
+            })),
+            NOW,
+        );
+        state
+    }
+
+    fn page_failed(mut state: State, error: ApiError) -> State {
+        state.step(Event::Page(Err(error)), NOW);
+        state
+    }
+
+    /// The detail view of the last of five vCons after a refresh whose
+    /// answer holds the first `left` of them.
+    fn detail_gone(left: u8) -> State {
+        let mut state = press(
+            listed(5, None),
+            &[Action::Bottom, Action::Open, Action::Refresh],
+        );
+        state.step(
+            Event::Page(Ok(Page {
+                vcons: (0..left).map(row).collect(),
+                next: None,
+            })),
+            NOW,
+        );
+        state
+    }
+
+    #[test]
+    fn the_connecting_screen_names_help_and_quit_only() {
+        assert_eq!(
+            footer_at(&connecting(), 80),
+            HELP_QUIT,
+            "nothing is listed, and r waits for the request that is out"
+        );
+    }
+
+    #[test]
+    fn the_loading_screen_names_help_and_quit_only() {
+        assert_eq!(
+            footer_at(&connected(), 80),
+            HELP_QUIT,
+            "the first page is on its way"
+        );
+    }
+
+    #[test]
+    fn an_empty_tenant_names_refresh_help_and_quit() {
+        assert_eq!(
+            footer_at(&listed(0, None), 80),
+            RETRY,
+            "there is no vCon to select, open or read more of"
+        );
+    }
+
+    #[test]
+    fn a_server_that_did_not_answer_names_refresh_help_and_quit() {
+        assert_eq!(
+            footer_at(&failed(client::no_answer(client::TIMEOUT)), 80),
+            RETRY,
+            "r asks again"
+        );
+    }
+
+    #[test]
+    fn a_refused_key_names_refresh_help_and_quit() {
+        assert_eq!(
+            footer_at(&failed(ApiError::Status(401, None)), 80),
+            RETRY,
+            "r asks the server for the key again"
+        );
+    }
+
+    #[test]
+    fn a_refused_certificate_names_refresh_help_and_quit() {
+        assert_eq!(
+            footer_at(
+                &failed(ApiError::Untrusted("it has expired".to_owned())),
+                80
+            ),
+            RETRY,
+            "a clock that was corrected lets r succeed"
+        );
+    }
+
+    #[test]
+    fn a_first_page_that_failed_names_refresh_help_and_quit() {
+        let state = page_failed(connected(), ApiError::Status(503, None));
+        assert_eq!(footer_at(&state, 80), RETRY, "r reads the first page again");
+    }
+
+    #[test]
+    fn an_operator_key_names_help_and_quit_only() {
+        let state = with_key(None, "admin");
+        assert_eq!(
+            footer_at(&state, 80),
+            HELP_QUIT,
+            "r cannot read another key: the key file is read at start"
+        );
+        let shown = text(&state);
+        assert!(
+            shown.contains("\nPress q to quit.") && !shown.contains("Press r"),
+            "the message names no key that does nothing: {shown}"
+        );
+        assert!(
+            shown.contains(AT_START),
+            "and says when another key is read: {shown}"
+        );
+    }
+
+    #[test]
+    fn a_key_without_the_read_scope_names_help_and_quit_only() {
+        let state = with_key(Some("t_example"), "write");
+        assert_eq!(footer_at(&state, 80), HELP_QUIT, "as for an operator key");
+        let shown = text(&state);
+        assert!(
+            shown.contains("\nPress q to quit.") && !shown.contains("Press r"),
+            "the message names no key that does nothing: {shown}"
+        );
+    }
+
+    #[test]
+    fn a_list_of_one_vcon_names_no_key_that_moves() {
+        assert_eq!(
+            footer_at(&listed(1, None), 80),
+            "Enter open  r refresh  ? help  q quit",
+            "there is no other row, and no next page"
+        );
+    }
+
+    #[test]
+    fn a_list_that_is_all_read_does_not_name_more() {
+        assert_eq!(
+            footer_at(&listed(3, None), 80),
+            "j down  k up  Enter open  r refresh  ? help  q quit",
+            "n does nothing when the server holds no more"
+        );
+    }
+
+    #[test]
+    fn a_list_with_more_on_the_server_names_every_list_key() {
+        assert_eq!(
+            footer_at(&listed(3, Some("cursor-2")), 80),
+            LIST_KEYS,
+            "every key acts"
+        );
+    }
+
+    #[test]
+    fn while_the_next_page_is_read_refresh_and_more_are_not_named() {
+        let state = press(listed(3, Some("cursor-2")), &[Action::More]);
+        assert_eq!(
+            footer_at(&state, 80),
+            "j down  k up  Enter open  ? help  q quit",
+            "a second request would race the one that is out"
+        );
+    }
+
+    #[test]
+    fn after_a_next_page_that_failed_refresh_and_more_are_named_again() {
+        let state = page_failed(
+            press(listed(3, Some("cursor-2")), &[Action::More]),
+            client::no_answer(client::TIMEOUT),
+        );
+        assert_eq!(footer_at(&state, 80), LIST_KEYS, "n and r both try again");
+    }
+
+    #[test]
+    fn while_the_list_is_read_again_only_help_and_quit_are_named() {
+        let state = press(listed(3, Some("cursor-2")), &[Action::Refresh]);
+        assert_eq!(
+            footer_at(&state, 80),
+            HELP_QUIT,
+            "the rows are not on the screen"
+        );
+    }
+
+    #[test]
+    fn the_detail_of_the_only_vcon_names_no_key_that_moves() {
+        assert_eq!(
+            footer_at(&press(listed(1, None), &[Action::Open]), 80),
+            "Esc back  r refresh  ? help  q quit",
+            "there is no other vCon to show"
+        );
+    }
+
+    #[test]
+    fn the_detail_view_names_back_while_the_list_is_read_again() {
+        let state = press(listed(3, None), &[Action::Open, Action::Refresh]);
+        assert_eq!(
+            footer_at(&state, 80),
+            "Esc back  ? help  q quit",
+            "Esc still returns to the list"
+        );
+    }
+
+    #[test]
+    fn the_detail_view_names_back_and_refresh_after_a_failure() {
+        let state = page_failed(
+            press(listed(3, None), &[Action::Open, Action::Refresh]),
+            ApiError::Status(503, None),
+        );
+        assert_eq!(
+            footer_at(&state, 80),
+            "Esc back  r refresh  ? help  q quit",
+            "there is no row to move to"
+        );
+    }
+
+    #[test]
+    fn a_detail_view_whose_vcon_is_gone_names_the_keys_that_show_another() {
+        for left in [1, 3] {
+            assert_eq!(
+                footer_at(&detail_gone(left), 80),
+                "Esc back  j down  k up  r refresh  ? help  q quit",
+                "with {left} left, j and k show a vCon that is listed"
+            );
+        }
+    }
+
+    #[test]
+    fn a_detail_view_with_no_vcon_left_names_back_and_refresh() {
+        assert_eq!(
+            footer_at(&detail_gone(0), 80),
+            "Esc back  r refresh  ? help  q quit",
+            "no vCon is left to show"
+        );
+    }
+
+    #[test]
+    fn help_names_back_and_quit_over_every_state() {
+        for state in [
+            connecting(),
+            connected(),
+            listed(0, None),
+            listed(3, Some("cursor-2")),
+            failed(ApiError::Status(401, None)),
+            with_key(None, "admin"),
+            press(listed(3, None), &[Action::Open]),
+        ] {
+            assert_eq!(
+                footer_at(&press(state, &[Action::Help]), 80),
+                "Esc back  q quit",
+                "help has two keys of its own"
+            );
+        }
+    }
+
+    #[test]
+    fn at_40_columns_the_short_footers_are_whole() {
+        for (state, wanted) in [
+            (connecting(), HELP_QUIT),
+            (listed(0, None), RETRY),
+            (failed(ApiError::Status(401, None)), RETRY),
+            (with_key(None, "admin"), HELP_QUIT),
+        ] {
+            assert_eq!(footer_at(&state, 40), wanted, "the hints fit 40 columns");
+        }
+    }
+
+    #[test]
+    fn every_hint_on_every_shown_screen_is_a_key_that_acts() {
+        for one in Screen::ALL {
+            let (name, state, (columns, rows)) = (one.name(), one.state(), one.size());
+            if columns < 40 || rows < 8 {
+                continue;
+            }
+            let lines = screen(&state, columns, rows);
+            let footer = lines[usize::from(rows) - 1].trim_end().to_owned();
+            assert!(!footer.is_empty(), "{name}: the last line holds hints");
+            for hint in footer.split("  ") {
+                let binding = BINDINGS
+                    .iter()
+                    .find(|b| format!("{} {}", b.label, b.hint) == hint)
+                    .unwrap_or_else(|| panic!("{name}: {hint:?} is a binding's hint"));
+                assert!(
+                    state.acts(binding.action),
+                    "{name}: {hint:?} is shown, and the key does nothing there"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_failure_the_server_made_still_says_to_press_r() {
+        for state in [
+            failed(client::no_answer(client::TIMEOUT)),
+            failed(ApiError::Status(401, None)),
+            page_failed(connected(), ApiError::Status(503, None)),
+        ] {
+            let shown = text(&state);
+            assert!(
+                shown.contains("Press r to try again, or q to quit."),
+                "r asks the server again: {shown}"
+            );
+        }
     }
 
     /// The text of the lines from `first` on, without the key hints, joined
@@ -1541,131 +1867,6 @@ mod tests {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../website/data/tui-screens.json")
     }
 
-    /// A tenant's first page of 100 vCons, newest first, with more on the
-    /// server, and the third one selected: the list the site shows.
-    fn shown_list() -> State {
-        let state = shown_page(shown_key(Some(SHOWN_TENANT), &["read"]), 0..100, true);
-        press(state, &[Action::Down, Action::Down])
-    }
-
-    /// The tenant of the screens the site shows.
-    const SHOWN_TENANT: &str = "8c41f2d9a07e4b5c9d13e6f0a2b4c7d8";
-
-    /// The state once the server has answered for a key of `tenant` (an
-    /// operator key has none) that holds `scopes`.
-    fn shown_key(tenant: Option<&str>, scopes: &[&str]) -> State {
-        let mut state = connecting();
-        state.step(
-            Event::KeyInfo(Ok(KeyInfo {
-                id: "5b0c3f9a1d2e4f60".to_owned(),
-                tenant: tenant.map(str::to_owned),
-                scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
-            })),
-            NOW,
-        );
-        state
-    }
-
-    /// `state` after a page with the vCons `rows` arrived, with `more` on
-    /// the server or not.
-    fn shown_page(mut state: State, rows: std::ops::Range<u64>, more: bool) -> State {
-        state.step(
-            Event::Page(Ok(Page {
-                vcons: rows.map(shown_row).collect(),
-                next: more.then(|| "cursor-2".to_owned()),
-            })),
-            NOW,
-        );
-        state
-    }
-
-    /// The state at start when the server's answer for the key is `error`.
-    fn shown_refusal(error: ApiError) -> State {
-        let mut state = connecting();
-        state.step(Event::KeyInfo(Err(error)), NOW);
-        state
-    }
-
-    /// Every screen the site shows: its name in the file, the state drawn,
-    /// and the terminal's columns and lines.
-    fn shown_screens() -> Vec<(&'static str, State, u16, u16)> {
-        let reader = || shown_key(Some(SHOWN_TENANT), &["read"]);
-        let no_answer = || client::no_answer(client::TIMEOUT);
-        let mut next_page_failed = press(shown_list(), &[Action::More]);
-        next_page_failed.step(Event::Page(Err(no_answer())), NOW);
-        // The vCon open in the detail view is deleted; r reads a list
-        // without it.
-        let detail_gone = shown_page(
-            press(shown_list(), &[Action::Open, Action::Refresh]),
-            3..100,
-            true,
-        );
-        let unknown_issuer = client::certificate_advice(&rustls::CertificateError::UnknownIssuer)
-            .expect("advice for a certificate no trusted authority signed");
-        vec![
-            ("list", shown_list(), 80, 24),
-            ("detail", press(shown_list(), &[Action::Open]), 80, 24),
-            ("help", press(shown_list(), &[Action::Help]), 80, 24),
-            ("list-end", shown_page(reader(), 0..3, false), 80, 10),
-            (
-                "more-read",
-                shown_page(press(shown_list(), &[Action::More]), 100..200, false),
-                80,
-                10,
-            ),
-            ("empty", shown_page(reader(), 0..0, false), 80, 10),
-            ("not-connected", shown_refusal(no_answer()), 80, 10),
-            (
-                "refused-key",
-                shown_refusal(ApiError::Status(401, None)),
-                80,
-                10,
-            ),
-            (
-                "refused-certificate",
-                shown_refusal(ApiError::Untrusted(unknown_issuer.to_owned())),
-                80,
-                10,
-            ),
-            ("operator-key", shown_key(None, &[]), 80, 10),
-            ("next-page-failed", next_page_failed, 80, 10),
-            ("detail-gone", detail_gone, 80, 10),
-            ("narrow", shown_list(), 60, 10),
-            ("narrowest", shown_list(), 40, 10),
-            ("wide", shown_list(), 120, 10),
-            ("too-small", shown_list(), 36, 6),
-        ]
-    }
-
-    /// The `n`th vCon of the shown list: a version 8 uuid made from `n`,
-    /// stored 37 minutes before the one above it, some updated since.
-    fn shown_row(n: u64) -> Row {
-        let mix = n
-            .wrapping_add(1)
-            .wrapping_mul(0x9e37_79b9_7f4a_7c15)
-            .rotate_left(17);
-        let minutes = i64::try_from(n).expect("a small number").saturating_mul(37);
-        let stored = NOW
-            - Duration::minutes(minutes.saturating_add(11))
-            - Duration::seconds(i64::try_from(mix % 60).expect("under 60"));
-        let updated =
-            stored + Duration::minutes(i64::try_from(n % 4).expect("under 4").saturating_mul(6));
-        let time = |at: OffsetDateTime| at.format(&Rfc3339).expect("an RFC 3339 time");
-        Row {
-            uuid: format!(
-                "{:08x}-{:04x}-8{:03x}-b{:03x}-{:012x}",
-                mix >> 32,
-                (mix >> 16) & 0xffff,
-                mix & 0xfff,
-                (mix >> 20) & 0xfff,
-                mix.rotate_left(29) & 0xffff_ffff_ffff
-            ),
-            stored_at: time(stored),
-            updated_at: time(updated),
-            version: format!("{mix:016x}{:016x}", mix.rotate_left(7)),
-        }
-    }
-
     /// The class names website/sass/style.scss styles a cell with.
     fn classes(cell: &Cell) -> String {
         assert_eq!(cell.bg, Color::Reset, "the site draws no background color");
@@ -1719,8 +1920,17 @@ mod tests {
     #[test]
     fn the_site_shows_the_screens_draw_makes() {
         let mut made = serde_json::Map::new();
-        for (name, state, columns, rows) in shown_screens() {
-            let before = made.insert(name.to_owned(), styled(&state, columns, rows));
+        for screen in Screen::ALL {
+            let (name, (columns, rows)) = (screen.name(), screen.size());
+            let mut drawn = styled(&screen.state(), columns, rows);
+            // The keys that do something on the screen, from the bindings
+            // table: the page lists them under the screen.
+            drawn["keys"] = screen
+                .keys()
+                .into_iter()
+                .map(|binding| serde_json::json!({"key": binding.label, "does": binding.does}))
+                .collect();
+            let before = made.insert(name.to_owned(), drawn);
             assert!(before.is_none(), "the screen {name} is made once");
         }
         let made = format!(

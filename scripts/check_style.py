@@ -20,6 +20,14 @@ The rules are the Google Rust Style Guide's
   temporary made there lives until the block ends, so a call in the block
   that takes the lock again waits on itself. Bind the result first.
 
+- credential-in-message: no assertion message, panic text or debug print
+  (assert!, panic!, println!, eprintln!, dbg! and their kin) shows a value
+  whose name holds the word token, secret, cookie, bearer, password,
+  passphrase or sid, or the words session and id: such text reaches the test log and CI's log.
+  The names in the placeholders of the message are read, and those of the
+  arguments after it. A name that holds a credential under another word
+  (`key`, `made`, `body`) is not found: do not show those either.
+
 - lint-table: every package holds the lints of [workspace.lints] in
   Cargo.toml, at their level or stricter: with `[lints] workspace = true`,
   or in a table of its own (vcon's adds unsafe_code = "forbid"). The fuzz
@@ -44,6 +52,7 @@ Run with: python3 -I scripts/check_style.py [--walk] [--write-baseline]
 
 import dataclasses
 import pathlib
+import re
 import subprocess
 import sys
 import tomllib
@@ -54,6 +63,9 @@ class Token:
     kind: str  # "ident", "punct", "literal" (a string or character) or "attr"
     text: str
     line: int
+    # A string literal as the source has it, quotes and all. It is not
+    # `text`, so nothing inside it is read as code.
+    value: str = ""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -132,14 +144,16 @@ def tokens(text):
                         line += 1
                     i += 1
         elif c == '"':
-            out.append(Token("literal", "", line))
+            start, at = i, line
             i, line = _skip_string(text, i, line)
+            out.append(Token("literal", "", at, text[start:i]))
         elif c in "rbc" and (raw := _skip_raw_string(text, i + (c != "r" and text[i + 1 : i + 2] == "r"), line)):
-            out.append(Token("literal", "", line))
+            out.append(Token("literal", "", line, text[i : raw[0]]))
             i, line = raw
         elif c in "bc" and text[i + 1 : i + 2] == '"':
-            out.append(Token("literal", "", line))
+            start, at = i, line
             i, line = _skip_string(text, i + 1, line)
+            out.append(Token("literal", "", at, text[start:i]))
         elif c == "b" and text[i + 1 : i + 2] == "'":
             out.append(Token("literal", "", line))
             i = _skip_char(text, i + 1)
@@ -248,6 +262,94 @@ ASSERTIONS = {
 }
 
 BASELINE = pathlib.Path("style/assert-message-baseline.txt")
+
+# Each macro whose text reaches a test's output or a log, and the index of
+# its first argument that is shown: an assertion's message follows what it
+# compares.
+MESSAGES = {
+    **{name: count - 1 for name, count in ASSERTIONS.items()},
+    "panic": 0,
+    "unreachable": 0,
+    "todo": 0,
+    "unimplemented": 0,
+    "print": 0,
+    "println": 0,
+    "eprint": 0,
+    "eprintln": 0,
+    "dbg": 0,
+}
+
+# A name with one of these words between its underscores holds a
+# credential: a key's token, a secret, a cookie or a session id. A plural
+# is the same word. `session` alone is not one (a test of the terminal UI
+# calls its pseudo-terminal a session); `session` with `id` is.
+CREDENTIALS = frozenset(
+    {"token", "secret", "cookie", "bearer", "password", "passphrase", "sid"}
+)
+
+_PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
+_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _credential(name):
+    """Whether the identifier `name` names a credential."""
+    words = {word.removesuffix("s") if len(word) > 3 else word for word in name.lower().split("_")}
+    return bool(words & CREDENTIALS) or {"session", "id"} <= words
+
+
+def _top_level_arguments(toks, open_at):
+    """The tokens of each comma-separated argument of the macro call whose
+    opening bracket is toks[open_at]."""
+    out = [[]]
+    depth = 0
+    for t in toks[open_at:]:
+        if t.kind == "punct" and t.text in "([{":
+            depth += 1
+            if depth == 1:
+                continue
+        elif t.kind == "punct" and t.text in ")]}":
+            depth -= 1
+            if depth == 0:
+                break
+        elif t.kind == "punct" and t.text == "," and depth == 1:
+            out.append([])
+            continue
+        out[-1].append(t)
+    return [argument for argument in out if argument]
+
+
+def _shown_credentials(argument):
+    """The credential names the macro argument `argument` shows: the names
+    in the placeholders of its strings (the message, or the string of a
+    `format!` inside an expression) and the identifiers of an expression."""
+    names = []
+    for t in argument:
+        if t.kind == "ident":
+            names.append(t.text)
+        elif t.kind == "literal":
+            message = t.value.replace("{{", "").replace("}}", "")
+            for placeholder in _PLACEHOLDER.findall(message):
+                names.extend(_NAME.findall(placeholder.split(":", 1)[0]))
+    return [name for name in names if _credential(name)]
+
+
+def _credentials_in_message(toks, k):
+    """A finding for each argument of the macro call at toks[k] that shows
+    a credential."""
+    name = toks[k].text
+    out = []
+    for argument in _top_level_arguments(toks, k + 2)[MESSAGES[name] :]:
+        shown = _shown_credentials(argument)
+        if shown:
+            names = ", ".join(f"`{n}`" for n in dict.fromkeys(shown))
+            out.append(
+                Finding(
+                    argument[0].line,
+                    "credential-in-message",
+                    f"`{name}!` shows {names}: a message or a print reaches the logs; say which case it is without the value",
+                )
+            )
+    return out
 
 
 def _arguments(toks, open_at):
@@ -427,6 +529,14 @@ def findings(text, nonleaf=False):
             and _arguments(toks, k + 2) < ASSERTIONS[t.text]
         ):
             out.append(Finding(t.line, "assert-message", f"`{t.text}!` without a message saying why it holds"))
+        if (
+            t.kind == "ident"
+            and t.text in MESSAGES
+            and k + 2 < len(toks)
+            and toks[k + 1].text == "!"
+            and toks[k + 2].text in ("(", "[", "{")
+        ):
+            out.extend(_credentials_in_message(toks, k))
         if t.kind == "ident" and t.text in ("match", "for", "if", "while") and _held_transaction(toks, k):
             out.append(
                 Finding(

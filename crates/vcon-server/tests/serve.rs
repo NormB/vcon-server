@@ -1131,7 +1131,13 @@ fn beside(s: &Setup, args: &[&str]) -> Vec<u8> {
         .arg(&s.config)
         .output()
         .expect("runs");
-    assert!(output.status.success(), "{args:?}: {output:?}");
+    // What the command printed is not shown: `key create` prints a token.
+    assert!(
+        output.status.success(),
+        "{args:?}: {:?}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
     output.stdout
 }
 

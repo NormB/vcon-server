@@ -173,13 +173,13 @@ async fn each_request_is_logged_by_its_route_template_and_no_id() {
         assert!(line.contains(&format!("status={status}")), "{line}");
         assert!(line.contains("duration_ms="), "{line}");
     }
-    for secret in [
-        token.as_str(),
-        &token[21..],
-        UUID,
-        &tenant.to_string(),
-        &key.id.to_string(),
+    for (what, secret) in [
+        ("the token", token.as_str()),
+        ("the token's secret part", &token[21..]),
+        ("the vCon's uuid", UUID),
+        ("the tenant's id", &tenant.to_string()),
+        ("the key's id", &key.id.to_string()),
     ] {
-        assert!(!logged.contains(secret), "{secret} is in the log");
+        assert!(!logged.contains(secret), "{what} is in the log");
     }
 }

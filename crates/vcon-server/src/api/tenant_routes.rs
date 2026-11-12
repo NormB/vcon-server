@@ -160,7 +160,9 @@ async fn an_administrator_makes_a_key_and_is_shown_its_token_once() {
         "a token is not kept by a cache"
     );
     let (status, body) = answered(answer).await;
-    assert_eq!(status, 201, "{body}");
+    // The body of a 201 holds the token, so a failure shows only the
+    // problem type of another answer.
+    assert_eq!(status, 201, "the key is made: {}", body["type"]);
     let made = body["token"].as_str().expect("the token");
     assert_eq!(body["id"], json!(key_id(made)), "the id the token names");
     let (status, _) = answered(get(&s, "/key", made).await).await;
@@ -202,7 +204,7 @@ async fn an_administrator_lists_its_tenants_keys_without_a_token() {
     );
     assert!(
         keys.iter().all(|k| k.get("token").is_none()),
-        "never a token: {body}"
+        "the list never holds a token"
     );
 }
 
