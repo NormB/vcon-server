@@ -78,6 +78,43 @@ All notable changes to this project are recorded here. The format follows
 - **A tenant key may hold the scope `tenant_admin`.** `key create --scope`
   and `POST /admin/tenants/{id}/keys` take the name with the five there
   were. Such a key reaches the routes under `/tenant`.
+  actions:** add the five actions named above.
+- The terminal UI's page is rewritten. It opens with what the command shows
+  and one screen, says when to use the console or the API instead, lists
+  what to have ready in a table, and has a quick start for the server's own
+  machine and a separate procedure for a terminal on another machine. Each
+  task has a section and a screen: reading the screen, finding a vCon,
+  the next page, reading the list again, help, leaving, and narrow and wide
+  terminals. The reference has the client file, the keys by view, the
+  environment, and the sizes and limits as tables. The messages are grouped
+  by where they appear, each with its cause and what to do. The page now
+  shows sixteen screens, all drawn by the UI's own code, and tests hold its
+  keys, client file keys, limits and every message it quotes to the code.
+  The page said a refused list shows `the server answered 503
+  (unavailable)`; the UI shows the problem's title:
+  `the server answered 503 (The service cannot answer now)`.
+- The how-to scenarios open the terminal UI's detail and help views on a
+  live server, and start it with a revoked key: a `terminal` step of
+  `scripts/docs_test.py` may name the keys to type (`keys Enter q`).
+- `vcon-server tui`: when a request fails, the screen adds
+  `A change to the client file or the key file takes effect at the next
+  start.` under `Press r to try again, or q to quit.` The command reads
+  both files once, at start, so `r` never reads a corrected file.
+
+### Fixed
+
+- `vcon-server tui`: in a terminal narrower than its last line (59 columns
+  in the list, 49 in the detail view), the key hints were cut at the edge,
+  and `? help` and `q quit` were not on screen. The last line now always
+  ends with those two and leaves out, whole, the hints that do not fit.
+- `vcon-server tui`: the line above the key hints was one line and was cut
+  at the terminal's edge. A failed next page showed `The next page was not
+  read: the server did not answer: error sending request for` and no cause.
+  The line now wraps, up to half of the screen.
+- `vcon-server tui`: a key revoked while the command ran left the first
+  line saying `connected`, with the tenant, above `the server refused the
+  key (401)`. The first line now says `not connected`, as at start, and
+  `r` asks for the key again.
 
 ## [0.4.3] - 2026-11-11
 

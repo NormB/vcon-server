@@ -31,6 +31,10 @@ An HTML comment on the line before a block changes how it runs:
                                            writes <word>, q is typed; the text
                                            block after it is the screen it had
                                            when it ended
+    <!-- docs-test: terminal <word>; keys Enter q -->
+                                           the same, with these keys typed in
+                                           place of q: each one character, or
+                                           Enter
 
 Markers combine with ";", such as `only systemd; exit 1`.
 
@@ -124,10 +128,16 @@ class Block:
     since: str | None = None
     # The text that says a full-screen command has drawn its screen.
     terminal: str | None = None
+    # The keys typed once that text is written, in order.
+    keys: tuple = ("q",)
     # The page's text from the last block or heading to this block: what a
     # reader sees just before it.
     prose: str = ""
 
+
+# The keys a `keys` marker names by a word, and the printf format that
+# writes what a terminal sends for each. Any other key is its one character.
+KEY_NAMES = {"Enter": r"\r"}
 
 MARKER = re.compile(r"^<!--\s*docs-test:\s*(.*?)\s*-->\s*$")
 FENCE = re.compile(r"^```\s*([A-Za-z0-9_+-]*)")
@@ -167,6 +177,16 @@ def parse_marker(text: str, at: str) -> dict:
             if " " in rest:
                 raise PageError(f"{at}: `terminal` takes one word, as the command writes it")
             out["terminal"] = rest
+        elif word == "keys":
+            keys = tuple(rest.split())
+            if not keys:
+                raise PageError(f"{at}: `keys` needs the keys to type, such as `keys Enter q`")
+            for key in keys:
+                if len(key) != 1 and key not in KEY_NAMES:
+                    raise PageError(
+                        f"{at}: `keys`: `{key}` is not one character or one of {', '.join(sorted(KEY_NAMES))}"
+                    )
+            out["keys"] = keys
         elif word == "since":
             if not RELEASE.match(rest):
                 raise PageError(f"{at}: `since` needs a release version such as 0.3.0")
@@ -175,6 +195,8 @@ def parse_marker(text: str, at: str) -> dict:
             raise PageError(f"{at}: unknown docs-test marker `{word}`")
     if "terminal" in out and "background" in out:
         raise PageError(f"{at}: a `terminal` step cannot be a `background` step")
+    if "keys" in out and "terminal" not in out:
+        raise PageError(f"{at}: `keys` is for a `terminal` step")
     return out
 
 
@@ -536,19 +558,27 @@ def _terminal_step(n: int, b: Block) -> str:
     """A full-screen command: run by util-linux script(1), which gives it a
     pseudo-terminal, here of 80 columns by 24 lines. Everything the command
     writes, escape sequences included, is the step's output. Once that holds
-    the ready text, or after READY_SECONDS without it, q is typed. The block runs in
-    a bash of its own, which sees the exported variables only."""
+    the ready text, or after READY_SECONDS without it, the step's keys are
+    typed (q, unless its marker names others), one after the other with no
+    wait between them: the terminal keeps them until the command reads
+    them, and a full-screen command draws between one key and the next. The
+    block runs in a bash of its own, which sees the exported variables
+    only."""
     out = f'"$DOCS_TEST_OUT/{n}.out"'
     rc = f'"$DOCS_TEST_OUT/{n}.rc"'
     code = f'"$DOCS_TEST_OUT/{n}.sh"'
     ended = f'"$DOCS_TEST_OUT/{n}.ended"'
     ready = _quote(b.terminal)
+    typed = "".join(
+        f"  printf {_quote(KEY_NAMES[key])}\n" if key in KEY_NAMES else f"  printf %s {_quote(key)}\n"
+        for key in b.keys
+    )
     return (
         f"set +e\ncat > {code} <<'DOCS_TEST_EOF'\nset -eo pipefail\nstty rows 24 cols 80\n{b.code}DOCS_TEST_EOF\n"
         f": > {out}\n"
         "{\n"
         f"  for _ in $(seq {READY_SECONDS * 10}); do grep -qaF -- {ready} {out} && break; [ -e {ended} ] && break; sleep 0.1; done\n"
-        "  printf q\n"
+        f"{typed}"
         f"  for _ in $(seq {TERMINAL_SECONDS * 10}); do [ -e {ended} ] && break; sleep 0.1; done\n"
         "} | {\n"
         f'  timeout {TERMINAL_SECONDS} script -qefc "bash $DOCS_TEST_OUT/{n}.sh" /dev/null > {out} 2>&1\n'

@@ -49,7 +49,8 @@ where each item is described in full:
 - **The console:** a web page at `/console/`.
 - **The MCP server:** tools for AI agents, at `/mcp` and through
   `vcon-server mcp`.
-- **The terminal UI:** `vcon-server tui` lists a tenant's vCons.
+- **The terminal UI:** `vcon-server tui` lists a tenant's vCons in a terminal:
+  uuids, versions and times, never their content.
 - **Reveals in the audit log:** a read that shows masked content is
   recorded under an action that names the part shown.
 - **An operator listener:** operator keys on an address of their own.

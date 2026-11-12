@@ -82,9 +82,14 @@ pub fn draw(frame: &mut Frame<'_>, state: &State, theme: Theme) {
         height: 1,
         ..area
     };
+    // The notice takes the lines it needs, up to half of what is left
+    // after the status line and the key hints, and one line when empty.
+    let most = usize::from(area.height.saturating_sub(2) / 2).max(1);
+    let said = fitted(&notice(state), usize::from(area.width), most);
+    let notice_lines = u16::try_from(said.len()).unwrap_or(1).max(1);
     let body = Rect {
         y: area.y.saturating_add(1),
-        height: area.height.saturating_sub(3),
+        height: area.height.saturating_sub(notice_lines.saturating_add(2)),
         ..area
     };
     frame.render_widget(Paragraph::new(status(state, area.width, theme)), line(0));
@@ -93,14 +98,72 @@ pub fn draw(frame: &mut Frame<'_>, state: &State, theme: Theme) {
         View::Detail => detail(frame, state, body),
         View::Help => help(frame, body),
     }
+    let said: Vec<Line<'_>> = said.into_iter().map(Line::from).collect();
     frame.render_widget(
-        Paragraph::new(notice(state)),
-        line(area.height.saturating_sub(2)),
+        Paragraph::new(said),
+        Rect {
+            y: area.y.saturating_add(body.height).saturating_add(1),
+            height: notice_lines,
+            ..area
+        },
     );
     frame.render_widget(
-        Paragraph::new(hints(state.view)),
+        Paragraph::new(hints(state.view, usize::from(area.width))),
         line(area.height.saturating_sub(1)),
     );
+}
+
+/// `text` as lines of at most `columns` characters, broken between words;
+/// a word longer than a line is broken where the line ends.
+fn wrapped(text: &str, columns: usize) -> Vec<String> {
+    let columns = columns.max(1);
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    let mut used = 0_usize;
+    for word in text.split(' ').filter(|word| !word.is_empty()) {
+        let mut rest: Vec<char> = word.chars().collect();
+        if used > 0 && used.saturating_add(1).saturating_add(rest.len()) > columns {
+            lines.push(std::mem::take(&mut line));
+            used = 0;
+        }
+        while rest.len() > columns {
+            lines.push(rest.drain(..columns).collect());
+        }
+        if used > 0 {
+            line.push(' ');
+            used = used.saturating_add(1);
+        }
+        used = used.saturating_add(rest.len());
+        line.extend(rest);
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
+/// The parts of the notice as the lines drawn: on one line, joined by
+/// [`BETWEEN`], when that fits `columns`; otherwise each part on lines of
+/// its own, wrapped. At most `most` lines: when there are more, the last
+/// one drawn ends with [`CUT`].
+fn fitted(parts: &[String], columns: usize, most: usize) -> Vec<String> {
+    let whole = parts.join(BETWEEN);
+    if whole.chars().count() <= columns {
+        return vec![whole];
+    }
+    let mut lines: Vec<String> = parts
+        .iter()
+        .flat_map(|part| wrapped(part, columns))
+        .collect();
+    if lines.len() > most {
+        lines.truncate(most);
+        if let Some(last) = lines.last_mut() {
+            let kept = columns.saturating_sub(CUT.chars().count());
+            *last = last.chars().take(kept).collect();
+            last.push_str(CUT);
+        }
+    }
+    lines
 }
 
 /// Whose key the server answered for, as the status line names it.
@@ -225,6 +288,12 @@ fn waiting(state: &State, loading: &str) -> Option<Vec<String>> {
                     .push("Check that key_file holds a key the server has not revoked.".to_owned());
             }
             lines.push("Press r to try again, or q to quit.".to_owned());
+            // The client file, the token and the CA are read once, before
+            // the first screen, so r cannot pick up a corrected file.
+            lines.push(
+                "A change to the client file or the key file takes effect at the next start."
+                    .to_owned(),
+            );
             Some(lines)
         }
     }
@@ -335,36 +404,61 @@ fn help(frame: &mut Frame<'_>, body: Rect) {
     message(frame, body, lines);
 }
 
-/// The line above the key hints: what went wrong with the last request, or
-/// where the selection is and when the list was read.
-fn notice(state: &State) -> String {
+/// The notice above the key hints, as its parts: what went wrong with the
+/// last request, or where the selection is and when the list was read.
+/// [`fitted`] makes lines of them.
+fn notice(state: &State) -> Vec<String> {
     if let Some(notice) = &state.notice {
-        return notice.clone();
+        return vec![notice.clone()];
     }
     if state.more {
-        return "Reading the next page...".to_owned();
+        return vec!["Reading the next page...".to_owned()];
     }
     let (Listing::Ready, Some(as_of)) = (&state.listing, state.as_of) else {
-        return String::new();
+        return Vec::new();
     };
+    let as_of = format!("as of {} {ZONE}", stamp(as_of));
     if state.rows.is_empty() {
-        return format!("as of {} {ZONE}", stamp(as_of));
+        return vec![as_of];
     }
     let more = if state.next.is_some() {
         ", more on the server"
     } else {
         ""
     };
-    format!(
-        "{} of {} read{more} | as of {} {ZONE}",
-        state.selected.saturating_add(1),
-        state.rows.len(),
-        stamp(as_of)
-    )
+    vec![
+        format!(
+            "{} of {} read{more}",
+            state.selected.saturating_add(1),
+            state.rows.len()
+        ),
+        as_of,
+    ]
 }
 
-/// The key hints of a view, from the bindings.
-fn hints(view: View) -> String {
+/// The key hints of a view, from the bindings, in `columns` columns. Help
+/// and quit end every line. When the line is longer than the terminal is
+/// wide, the hint before those two is left out, then the one before it,
+/// until the line fits: a hint is whole or absent, and `?` lists every key.
+fn hints(view: View, columns: usize) -> String {
+    /// The hints never left out: the last two of a view.
+    const KEPT: usize = 2;
+    let mut shown = view_hints(view);
+    let length = |shown: &[String]| {
+        shown
+            .iter()
+            .map(|hint| hint.chars().count())
+            .sum::<usize>()
+            .saturating_add(shown.len().saturating_sub(1).saturating_mul(2))
+    };
+    while shown.len() > KEPT && length(&shown) > columns {
+        shown.remove(shown.len().saturating_sub(KEPT).saturating_sub(1));
+    }
+    shown.join("  ")
+}
+
+/// Every key hint of a view, each a key and a word.
+fn view_hints(view: View) -> Vec<String> {
     let actions: &[Action] = match view {
         View::List => &[
             Action::Down,
@@ -389,8 +483,7 @@ fn hints(view: View) -> String {
         .iter()
         .filter_map(|action| binding(*action))
         .map(|binding| format!("{} {}", binding.label, binding.hint))
-        .collect::<Vec<_>>()
-        .join("  ")
+        .collect()
 }
 
 #[cfg(test)]
@@ -404,6 +497,7 @@ mod tests {
     use time::{Duration, OffsetDateTime};
 
     use super::{Theme, draw, theme, utc};
+    use crate::tui::client;
     use crate::tui::keys::BINDINGS;
     use crate::tui::state::{Action, ApiError, Event, KeyInfo, Page, Row, State};
 
@@ -1230,6 +1324,215 @@ mod tests {
         );
     }
 
+    // The last two lines in a narrow terminal.
+
+    /// The last line of the screen: the key hints.
+    fn footer_at(state: &State, columns: u16) -> String {
+        screen(state, columns, 24)[23].trim_end().to_owned()
+    }
+
+    #[test]
+    fn at_40_columns_the_list_footer_still_shows_help_and_quit() {
+        let footer = footer_at(&listed(2, None), 40);
+        assert!(
+            footer.ends_with("? help  q quit"),
+            "how to get help and how to leave are whole: {footer:?}"
+        );
+        assert!(
+            footer.starts_with("j down  k up"),
+            "the first keys stay first: {footer:?}"
+        );
+    }
+
+    #[test]
+    fn at_40_columns_the_detail_footer_still_shows_help_and_quit() {
+        let footer = footer_at(&press(listed(2, None), &[Action::Open]), 40);
+        assert!(
+            footer.ends_with("? help  q quit"),
+            "how to get help and how to leave are whole: {footer:?}"
+        );
+        assert!(
+            footer.starts_with("Esc back"),
+            "how to go back stays first: {footer:?}"
+        );
+    }
+
+    #[test]
+    fn at_80_columns_the_footers_are_whole() {
+        assert_eq!(
+            footer_at(&listed(2, None), 80),
+            "j down  k up  Enter open  r refresh  n more  ? help  q quit",
+            "the list's keys"
+        );
+        assert_eq!(
+            footer_at(&press(listed(2, None), &[Action::Open]), 80),
+            "Esc back  j down  k up  r refresh  ? help  q quit",
+            "the detail's keys"
+        );
+        assert_eq!(
+            footer_at(&press(listed(2, None), &[Action::Help]), 80),
+            "Esc back  q quit",
+            "help's keys"
+        );
+    }
+
+    #[test]
+    fn no_footer_ends_in_a_cut_hint_at_any_width() {
+        for view in [&[][..], &[Action::Open][..], &[Action::Help][..]] {
+            let state = press(listed(2, None), view);
+            for columns in 40..=100 {
+                let footer = footer_at(&state, columns);
+                assert!(
+                    footer.ends_with("q quit"),
+                    "at {columns} columns the last hint is whole: {footer:?}"
+                );
+                assert!(
+                    footer.chars().count() <= usize::from(columns),
+                    "at {columns} columns the footer fits: {footer:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn one_column_short_of_the_whole_list_footer_drops_one_hint() {
+        assert_eq!(
+            footer_at(&listed(2, None), 58),
+            "j down  k up  Enter open  r refresh  ? help  q quit",
+            "the hint before help goes first"
+        );
+        assert_eq!(
+            footer_at(&listed(2, None), 59),
+            "j down  k up  Enter open  r refresh  n more  ? help  q quit",
+            "at its own width the footer is whole"
+        );
+    }
+
+    /// The text of the lines from `first` on, without the key hints, joined
+    /// as a reader reads a wrapped sentence.
+    fn joined(lines: &[String], first: usize) -> String {
+        lines[first..lines.len().saturating_sub(1)]
+            .iter()
+            .map(|line| line.trim())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn a_notice_longer_than_the_terminal_is_wrapped_not_cut() {
+        let mut state = press(listed(2, Some("cursor-1")), &[Action::More]);
+        state.step(
+            Event::Page(Err(ApiError::Unreachable(
+                "error sending request for url (https://vcon.example.com:8443/vcons): client error (Connect): tcp connect error: Connection refused (os error 111)".to_owned(),
+            ))),
+            NOW,
+        );
+        let lines = screen(&state, 80, 24);
+        let said = joined(&lines, 19);
+        assert!(
+            said.contains("The next page was not read: the server did not answer: ")
+                && said.ends_with("Connection refused (os error 111)."),
+            "the whole sentence is on screen, to its end: {said}"
+        );
+        assert!(
+            lines[2].contains(&row(0).uuid),
+            "the rows stay: {}",
+            lines[2]
+        );
+    }
+
+    #[test]
+    fn a_short_notice_takes_one_line() {
+        let mut state = press(listed(2, Some("cursor-1")), &[Action::More]);
+        state.step(
+            Event::Page(Err(ApiError::Unreachable("timed out".to_owned()))),
+            NOW,
+        );
+        let lines = screen(&state, 80, 24);
+        assert!(
+            lines[22].starts_with("The next page was not read"),
+            "on the line above the key hints: {}",
+            lines[22]
+        );
+        assert_eq!(lines[21].trim(), "", "and the line above it is empty");
+    }
+
+    #[test]
+    fn at_60_columns_the_position_line_keeps_when_the_list_was_read() {
+        let lines = screen(&listed(2, Some("cursor-1")), 60, 24);
+        let said = joined(&lines, 20);
+        assert!(
+            said.contains("1 of 2 read, more on the server")
+                && said.ends_with("as of 2026-11-10 01:20:00 UTC+00:00"),
+            "the position and the time are whole: {said}"
+        );
+    }
+
+    // A failure whose remedy is in a file the UI read at start.
+
+    /// What `r` cannot do, as the screen says it.
+    const AT_START: &str =
+        "A change to the client file or the key file takes effect at the next start.";
+
+    #[test]
+    fn a_refused_key_says_that_a_new_key_file_needs_a_new_start() {
+        let shown = text(&shown_refusal(ApiError::Status(401, None)));
+        assert!(
+            shown.contains(AT_START),
+            "the token is read once, so r cannot read a corrected key file: {shown}"
+        );
+    }
+
+    #[test]
+    fn a_refused_certificate_says_that_a_new_ca_needs_a_new_start() {
+        let advice =
+            client::certificate_advice(&rustls::CertificateError::UnknownIssuer).expect("advice");
+        let shown = text(&shown_refusal(ApiError::Untrusted(advice.to_owned())));
+        assert!(
+            shown
+                .replace('\n', " ")
+                .contains("set ca in the client file")
+                && shown.contains(AT_START),
+            "the advice names the client file, which is read once: {shown}"
+        );
+    }
+
+    #[test]
+    fn a_key_that_may_not_list_says_that_another_key_needs_a_new_start() {
+        for state in [
+            shown_key(None, &[]),
+            shown_key(Some(SHOWN_TENANT), &["write"]),
+        ] {
+            let shown = text(&state);
+            assert!(
+                shown.contains(AT_START),
+                "another key is another key file, read at start: {shown}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failure_still_names_r_and_q() {
+        let shown = text(&shown_refusal(client::no_answer(client::TIMEOUT)));
+        assert!(
+            shown.contains("Press r to try again, or q to quit."),
+            "a server that did not answer may answer the next request: {shown}"
+        );
+    }
+
+    #[test]
+    fn an_empty_tenant_does_not_mention_the_files() {
+        let shown = text(&shown_page(
+            shown_key(Some(SHOWN_TENANT), &["read"]),
+            0..0,
+            false,
+        ));
+        assert!(
+            !shown.contains(AT_START),
+            "nothing failed, so there is nothing to correct: {shown}"
+        );
+    }
+
     // The screens the site shows.
 
     /// The file the terminal UI's page and the home page draw their screens
@@ -1241,24 +1544,97 @@ mod tests {
     /// A tenant's first page of 100 vCons, newest first, with more on the
     /// server, and the third one selected: the list the site shows.
     fn shown_list() -> State {
+        let state = shown_page(shown_key(Some(SHOWN_TENANT), &["read"]), 0..100, true);
+        press(state, &[Action::Down, Action::Down])
+    }
+
+    /// The tenant of the screens the site shows.
+    const SHOWN_TENANT: &str = "8c41f2d9a07e4b5c9d13e6f0a2b4c7d8";
+
+    /// The state once the server has answered for a key of `tenant` (an
+    /// operator key has none) that holds `scopes`.
+    fn shown_key(tenant: Option<&str>, scopes: &[&str]) -> State {
         let mut state = connecting();
         state.step(
             Event::KeyInfo(Ok(KeyInfo {
                 id: "5b0c3f9a1d2e4f60".to_owned(),
-                tenant: Some("8c41f2d9a07e4b5c9d13e6f0a2b4c7d8".to_owned()),
-                scopes: vec!["read".to_owned()],
+                tenant: tenant.map(str::to_owned),
+                scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
             })),
             NOW,
         );
-        let vcons = (0..100_u64).map(shown_row).collect();
+        state
+    }
+
+    /// `state` after a page with the vCons `rows` arrived, with `more` on
+    /// the server or not.
+    fn shown_page(mut state: State, rows: std::ops::Range<u64>, more: bool) -> State {
         state.step(
             Event::Page(Ok(Page {
-                vcons,
-                next: Some("cursor-2".to_owned()),
+                vcons: rows.map(shown_row).collect(),
+                next: more.then(|| "cursor-2".to_owned()),
             })),
             NOW,
         );
-        press(state, &[Action::Down, Action::Down])
+        state
+    }
+
+    /// The state at start when the server's answer for the key is `error`.
+    fn shown_refusal(error: ApiError) -> State {
+        let mut state = connecting();
+        state.step(Event::KeyInfo(Err(error)), NOW);
+        state
+    }
+
+    /// Every screen the site shows: its name in the file, the state drawn,
+    /// and the terminal's columns and lines.
+    fn shown_screens() -> Vec<(&'static str, State, u16, u16)> {
+        let reader = || shown_key(Some(SHOWN_TENANT), &["read"]);
+        let no_answer = || client::no_answer(client::TIMEOUT);
+        let mut next_page_failed = press(shown_list(), &[Action::More]);
+        next_page_failed.step(Event::Page(Err(no_answer())), NOW);
+        // The vCon open in the detail view is deleted; r reads a list
+        // without it.
+        let detail_gone = shown_page(
+            press(shown_list(), &[Action::Open, Action::Refresh]),
+            3..100,
+            true,
+        );
+        let unknown_issuer = client::certificate_advice(&rustls::CertificateError::UnknownIssuer)
+            .expect("advice for a certificate no trusted authority signed");
+        vec![
+            ("list", shown_list(), 80, 24),
+            ("detail", press(shown_list(), &[Action::Open]), 80, 24),
+            ("help", press(shown_list(), &[Action::Help]), 80, 24),
+            ("list-end", shown_page(reader(), 0..3, false), 80, 10),
+            (
+                "more-read",
+                shown_page(press(shown_list(), &[Action::More]), 100..200, false),
+                80,
+                10,
+            ),
+            ("empty", shown_page(reader(), 0..0, false), 80, 10),
+            ("not-connected", shown_refusal(no_answer()), 80, 10),
+            (
+                "refused-key",
+                shown_refusal(ApiError::Status(401, None)),
+                80,
+                10,
+            ),
+            (
+                "refused-certificate",
+                shown_refusal(ApiError::Untrusted(unknown_issuer.to_owned())),
+                80,
+                10,
+            ),
+            ("operator-key", shown_key(None, &[]), 80, 10),
+            ("next-page-failed", next_page_failed, 80, 10),
+            ("detail-gone", detail_gone, 80, 10),
+            ("narrow", shown_list(), 60, 10),
+            ("narrowest", shown_list(), 40, 10),
+            ("wide", shown_list(), 120, 10),
+            ("too-small", shown_list(), 36, 6),
+        ]
     }
 
     /// The `n`th vCon of the shown list: a version 8 uuid made from `n`,
@@ -1310,15 +1686,15 @@ mod tests {
         out.join(" ")
     }
 
-    /// The screen, in color, at 80 by 24: each line as runs of text that
+    /// The screen, in color, in a terminal of `columns` by `rows`: each line as runs of text that
     /// share one style, without the plain blanks that end a line.
-    fn styled(state: &State) -> serde_json::Value {
-        let terminal = terminal(state, 80, 24, COLOR);
+    fn styled(state: &State, columns: u16, rows: u16) -> serde_json::Value {
+        let terminal = terminal(state, columns, rows, COLOR);
         let buffer = terminal.backend().buffer();
-        let lines: Vec<serde_json::Value> = (0..24_u16)
+        let lines: Vec<serde_json::Value> = (0..rows)
             .map(|y| {
                 let mut runs: Vec<(String, String)> = Vec::new();
-                for x in 0..80_u16 {
+                for x in 0..columns {
                     let cell = &buffer[(x, y)];
                     let class = classes(cell);
                     match runs.last_mut() {
@@ -1337,17 +1713,20 @@ mod tests {
                     .collect()
             })
             .collect();
-        serde_json::json!({"columns": 80, "lines": lines})
+        serde_json::json!({"columns": columns, "lines": lines})
     }
 
     #[test]
     fn the_site_shows_the_screens_draw_makes() {
-        let list = shown_list();
-        let made = serde_json::json!({
-            "list": styled(&list),
-            "detail": styled(&press(list, &[Action::Open])),
-        });
-        let made = format!("{}\n", serde_json::to_string_pretty(&made).expect("JSON"));
+        let mut made = serde_json::Map::new();
+        for (name, state, columns, rows) in shown_screens() {
+            let before = made.insert(name.to_owned(), styled(&state, columns, rows));
+            assert!(before.is_none(), "the screen {name} is made once");
+        }
+        let made = format!(
+            "{}\n",
+            serde_json::to_string_pretty(&serde_json::Value::Object(made)).expect("JSON")
+        );
         let path = screens_file();
         if std::env::var_os("VCON_SERVER_WRITE_SCREENS").is_some() {
             std::fs::write(&path, &made)

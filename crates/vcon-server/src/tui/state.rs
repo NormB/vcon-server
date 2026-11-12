@@ -321,8 +321,14 @@ impl State {
 
     /// A page did not arrive: a next page leaves the rows and a notice, a
     /// first page leaves an error in place of rows that may be out of date.
+    /// A server that did not answer, or that no longer takes the key (401),
+    /// is not connected, as at start, so the next refresh asks for the key
+    /// again.
     fn page_failed(&mut self, error: &ApiError) {
-        if matches!(error, ApiError::Unreachable(_) | ApiError::Untrusted(_)) {
+        if matches!(
+            error,
+            ApiError::Unreachable(_) | ApiError::Untrusted(_) | ApiError::Status(401, _)
+        ) {
             self.connection = Connection::Failed(error.to_string());
         }
         if self.more {
@@ -1016,5 +1022,73 @@ mod tests {
         press(&mut state, Action::Back);
         assert!(!state.quit, "only the quit keys end the program");
         assert_eq!(state.view, View::List, "and the view stays");
+    }
+
+    // A key the server stops accepting while the UI runs.
+
+    #[test]
+    fn a_key_refused_at_a_refresh_is_not_connected_as_at_start() {
+        let mut state = listed(3, None);
+        press(&mut state, Action::Refresh);
+        state.step(Event::Page(Err(ApiError::Status(401, None))), NOW);
+        assert_eq!(
+            state.connection,
+            Connection::Failed("the server refused the key (401)".to_owned()),
+            "a revoked key is shown as it is when the UI starts with one"
+        );
+        assert_eq!(
+            state.listing,
+            Listing::Failed("the server refused the key (401)".to_owned()),
+            "and the list says why"
+        );
+    }
+
+    #[test]
+    fn a_refresh_after_a_refused_key_asks_for_the_key_again() {
+        let mut state = listed(3, None);
+        press(&mut state, Action::Refresh);
+        state.step(Event::Page(Err(ApiError::Status(401, None))), NOW);
+        assert_eq!(
+            press(&mut state, Action::Refresh),
+            vec![Effect::FetchKey],
+            "the tenant and scopes are read again, not taken from before the refusal"
+        );
+    }
+
+    #[test]
+    fn a_key_refused_at_a_next_page_is_not_connected_and_the_rows_stay() {
+        let mut state = listed(3, Some("cursor-1"));
+        press(&mut state, Action::More);
+        state.step(Event::Page(Err(ApiError::Status(401, None))), NOW);
+        assert_eq!(
+            state.connection,
+            Connection::Failed("the server refused the key (401)".to_owned()),
+            "the status line stops saying connected"
+        );
+        assert_eq!(state.rows.len(), 3, "the rows read before stay");
+        assert_eq!(
+            state.notice.as_deref(),
+            Some("The next page was not read: the server refused the key (401)."),
+            "and the notice says why"
+        );
+    }
+
+    #[test]
+    fn a_503_at_a_refresh_leaves_the_connection_as_it_was() {
+        let mut state = listed(3, None);
+        press(&mut state, Action::Refresh);
+        state.step(
+            Event::Page(Err(ApiError::Status(503, Some("unavailable".to_owned())))),
+            NOW,
+        );
+        assert!(
+            matches!(state.connection, Connection::Connected(_)),
+            "the server answered for the key, and may answer the next request"
+        );
+        assert_eq!(
+            press(&mut state, Action::Refresh),
+            vec![Effect::FetchPage(None)],
+            "so r reads the first page, not the key"
+        );
     }
 }

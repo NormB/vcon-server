@@ -17,6 +17,9 @@ pub mod keys;
 pub mod state;
 pub mod view;
 
+#[cfg(test)]
+mod page_tests;
+
 use std::io::IsTerminal;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};

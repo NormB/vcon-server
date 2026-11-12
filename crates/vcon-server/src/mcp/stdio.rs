@@ -22,10 +22,12 @@ use serde::Deserialize;
 
 use crate::config::ConfigError;
 
-/// The client file `vcon-server mcp` reads.
+/// The client file `vcon-server mcp` and `vcon-server tui` read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientConfig {
-    /// The server's MCP address, `https://host:port/mcp`.
+    /// The server's address: for `vcon-server mcp` its MCP address,
+    /// `https://host:port/mcp`; for `vcon-server tui` the server itself,
+    /// `https://host:port`, with no path.
     pub url: String,
     /// A file holding one API token and nothing else.
     pub key_file: PathBuf,

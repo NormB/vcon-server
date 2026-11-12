@@ -15,9 +15,9 @@ use crate::mcp::stdio::{self, ClientConfig};
 use crate::tui::state::{ApiError, Effect, Event, KeyInfo, Page};
 
 /// The vCons asked for in one page.
-const PAGE: u16 = 100;
+pub(crate) const PAGE: u16 = 100;
 /// How long one request may take, connection included.
-const TIMEOUT: Duration = Duration::from_secs(15);
+pub(crate) const TIMEOUT: Duration = Duration::from_secs(15);
 /// The most bytes read of one answer; a page of [`PAGE`] rows is far
 /// smaller.
 const MAX_BODY: usize = 1 << 20;
@@ -155,14 +155,14 @@ impl HttpApi {
         self.runtime.block_on(async {
             tokio::time::timeout(self.timeout, exchange)
                 .await
-                .unwrap_or_else(|_| {
-                    Err(ApiError::Unreachable(format!(
-                        "no answer within {} seconds",
-                        self.timeout.as_secs()
-                    )))
-                })
+                .unwrap_or_else(|_| Err(no_answer(self.timeout)))
         })
     }
+}
+
+/// What a request that took longer than `timeout` gives.
+pub(crate) fn no_answer(timeout: Duration) -> ApiError {
+    ApiError::Unreachable(format!("no answer within {} seconds", timeout.as_secs()))
 }
 
 impl Api for HttpApi {
@@ -178,7 +178,7 @@ impl Api for HttpApi {
 /// What is wrong with a certificate the client refused, and what to do,
 /// for the refusals an operator can act on; `None` for any other, whose
 /// own text is shown.
-fn certificate_advice(error: &rustls::CertificateError) -> Option<&'static str> {
+pub(crate) fn certificate_advice(error: &rustls::CertificateError) -> Option<&'static str> {
     use rustls::CertificateError as Refused;
     match error {
         // rustls carries webpki's `CaUsedAsEndEntity` only as an opaque

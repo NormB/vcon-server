@@ -24,7 +24,7 @@ below open each page's source in the repository.
 - [Client examples](../website/content/docs/clients.md): Programs in curl, Python, TypeScript, Go and Rust that work through the HTTP API and MCP: store, gzip, list with a cursor, replace, legal hold, audit, admin and MCP calls, and delete.
 - [HTTP API](../website/content/docs/http-api.md): Every route: the scope it needs, what it takes, and what it answers.
 - [Console](../website/content/docs/console.md): Open the web console the server serves, sign in with an API key, and what the console does and does not keep.
-- [Terminal UI](../website/content/docs/tui.md): Browse a tenant's vCons from a terminal with vcon-server tui: the build, the key and client file it needs, the keys, and what each message means.
+- [Terminal UI](../website/content/docs/tui.md): Look at a tenant's vCons in a terminal with vcon-server tui: set it up on one machine or two, use it task by task, and look up every key, setting and message.
 - [MCP](../website/content/docs/mcp.md): Connecting an AI agent to vcon-server over MCP, and every tool with its parameters and an example.
 - [Connect an AI agent over MCP](../website/content/docs/connect-mcp.md): Give an AI agent its own key, then check the MCP endpoint by hand: the handshake and the tool list over HTTPS, the refusals, and the same through vcon-server mcp.
 - [Add a second tenant](../website/content/docs/second-tenant.md): Make a second tenant over the admin API while the server runs, give it a key, see that its data and acme's stay apart, change its retention period, and remove it.

@@ -8,6 +8,7 @@ Run: python3 -I scripts/test_docs_test.py
 """
 
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -1198,6 +1199,91 @@ class Terminal(unittest.TestCase):
         ((_, out),) = self.run_steps(self.terminal_page(code))
         self.assertIn("size=24x80", out)
 
+    # The keys a step types: `keys`, after `terminal`.
+
+    def keys_page(self, keys, code=None):
+        marker = f"<!-- docs-test: terminal READY; keys {keys} -->" if keys is not None else "<!-- docs-test: terminal READY -->"
+        return f"{marker}\n```sh\n{code or 'top'}\n```\n"
+
+    def typed(self, keys, count):
+        """The bytes a command read, as hex, when the step's marker names
+        `keys`: the command reads `count` bytes as a full-screen program
+        does, each as it is typed and none changed by the terminal."""
+        code = (
+            "printf READY\n"
+            "stty -echo -icanon -icrnl\n"
+            f"typed=$(for _ in $(seq {count}); do dd bs=1 count=1 2>/dev/null; done | od -An -tx1 | tr -d ' \\n')\n"
+            'printf "typed=%s." "$typed"'
+        )
+        ((rc, out),) = self.run_steps(self.keys_page(keys, code))
+        self.assertEqual(rc, "0", out)
+        return re.search(r"typed=([0-9a-f]*)\.", out).group(1)
+
+    # Success.
+
+    def test_a_step_with_no_keys_marker_types_q(self):
+        (block,) = dt.parse(self.keys_page(None), "p.md")
+        self.assertEqual(block.keys, ("q",))
+
+    def test_the_keys_marker_names_the_keys_in_order(self):
+        (block,) = dt.parse(self.keys_page("Enter q"), "p.md")
+        self.assertEqual(block.keys, ("Enter", "q"))
+
+    def test_the_keys_are_typed_in_order(self):
+        self.assertEqual(self.typed("j q", 2), "6a71", "j, then q")
+
+    def test_enter_is_typed_as_a_carriage_return(self):
+        self.assertEqual(self.typed("Enter q", 2), "0d71", "what a terminal sends for Enter, then q")
+
+    def test_a_question_mark_is_typed_as_it_is(self):
+        self.assertEqual(self.typed("? q", 2), "3f71")
+
+    def test_one_key_is_typed_once(self):
+        self.assertEqual(self.typed("q", 1), "71")
+
+    # Failure.
+
+    def test_keys_without_terminal_is_refused(self):
+        with self.assertRaisesRegex(dt.PageError, "p.md:1: `keys` is for a `terminal` step"):
+            dt.parse("<!-- docs-test: keys q -->\n```sh\ntop\n```\n", "p.md")
+
+    def test_a_keys_marker_without_a_key_is_refused(self):
+        with self.assertRaisesRegex(dt.PageError, "p.md:1: `keys` needs the keys to type"):
+            dt.parse("<!-- docs-test: terminal READY; keys -->\n```sh\ntop\n```\n", "p.md")
+
+    def test_a_key_name_the_runner_does_not_know_is_refused(self):
+        with self.assertRaisesRegex(dt.PageError, "p.md:1: `keys`: `Escape` is not one character or one of Enter"):
+            dt.parse(self.keys_page("Escape q"), "p.md")
+
+    def test_two_characters_are_not_one_key(self):
+        with self.assertRaisesRegex(dt.PageError, "p.md:1: `keys`: `jq` is not one character"):
+            dt.parse(self.keys_page("jq"), "p.md")
+
+    def test_keys_that_do_not_end_the_command_end_at_the_time_limit(self):
+        code = "printf READY\nstty -echo -icanon\ndd bs=1 count=1 >/dev/null 2>&1\nsleep 30"
+        with unittest.mock.patch.object(dt, "TERMINAL_SECONDS", 2):
+            ((rc, _),) = self.run_steps(self.keys_page("j", code))
+        self.assertEqual(rc, "124", "the command read j and went on; nothing typed q")
+
+    # Edge.
+
+    def test_a_quote_is_typed_as_it_is(self):
+        self.assertEqual(self.typed("' q", 2), "2771", "the shell's own quote character")
+
+    def test_a_percent_sign_is_typed_as_it_is(self):
+        self.assertEqual(self.typed("% q", 2), "2571", "printf's own format character")
+
+    def test_a_backslash_is_typed_as_it_is(self):
+        self.assertEqual(self.typed("\\ q", 2), "5c71", "printf's own escape character")
+
+    def test_spaces_between_keys_are_not_keys(self):
+        (block,) = dt.parse(self.keys_page("Enter    q"), "p.md")
+        self.assertEqual(block.keys, ("Enter", "q"))
+
+    def test_a_key_name_is_matched_with_its_capital(self):
+        with self.assertRaisesRegex(dt.PageError, "`enter` is not one character"):
+            dt.parse(self.keys_page("enter q"), "p.md")
+
     def test_quotes_and_dollars_in_the_block_reach_the_command_as_written(self):
         code = "X=inner\nprintf '%s READY' \"it's $X\"\nstty -echo -icanon\ndd bs=1 count=1 >/dev/null 2>&1\n"
         ((_, out),) = self.run_steps(self.terminal_page(code))
@@ -1370,10 +1456,44 @@ class TerminalRules(unittest.TestCase):
             self.assertIn("tui.md", scenario.pages, name)
 
     def test_the_terminal_ui_page_starts_the_ui_in_a_terminal_and_shows_its_screen(self):
-        steps = [b for b in dt.page_blocks("tui.md") if b.terminal is not None]
-        self.assertEqual(len(steps), 1, "one step starts the UI")
-        self.assertIn("vcon-server tui --config", steps[0].code)
-        self.assertIn("connected", steps[0].expect or "", "the screen the page shows")
+        steps = self.ui_steps()
+        self.assertEqual(len(steps), 4, "the list, the detail view, help, and a revoked key")
+        for step in steps:
+            self.assertIn("vcon-server tui --config", step.code)
+            self.assertIn("connected", step.expect or "", "the screen the page shows")
+
+    def ui_steps(self):
+        return [b for b in dt.page_blocks("tui.md") if b.terminal is not None]
+
+    def test_the_terminal_ui_page_opens_each_view_on_the_live_server(self):
+        steps = self.ui_steps()
+        self.assertEqual(
+            [step.keys for step in steps],
+            [("q",), ("Enter", "q"), ("?", "q"), ("q",)],
+            "the list as it starts, a vCon opened with Enter, help with ?, and the list again",
+        )
+        self.assertIn("Enter open", steps[0].expect, "the list's own keys")
+        self.assertIn("Content is not shown", steps[1].expect, "the detail view")
+        self.assertIn("Show or close this help", steps[2].expect, "the help view")
+
+    def test_the_views_are_opened_only_once_the_list_is_drawn(self):
+        # `connected` is written before the first page arrives; Enter then
+        # opens nothing. The header of the list is written with its rows.
+        for step in self.ui_steps()[:3]:
+            self.assertEqual(step.terminal, "UUID")
+
+    def test_the_terminal_ui_page_starts_the_ui_with_a_revoked_key(self):
+        blocks = dt.page_blocks("tui.md")
+        last = self.ui_steps()[-1]
+        before = blocks[blocks.index(last) - 1]
+        self.assertIn("key revoke", before.code, "the step before it revokes the key")
+        self.assertIn("the server refused the key (401)", last.expect)
+        self.assertIn("not connected", last.expect)
+        self.assertEqual(last.exit, 0, "q still ends it with code 0")
+
+    def test_every_screen_the_terminal_ui_page_expects_ends_with_how_to_quit(self):
+        for step in self.ui_steps():
+            self.assertTrue(step.expect.rstrip().endswith("q quit"), step.at)
 
     # Edge.
 

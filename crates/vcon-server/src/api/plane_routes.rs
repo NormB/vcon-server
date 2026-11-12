@@ -114,6 +114,21 @@ async fn the_one_listener_of_a_server_without_an_operator_listener_serves_both_k
     assert_eq!(get(&s, "/vcons", &reader).await.status(), 200, "the list");
 }
 
+/// A client file written for `vcon-server mcp` names the server with
+/// `/mcp` at the end. `vcon-server tui` with that address asks for
+/// `/mcp/key`, and the terminal UI's page says what the server answers.
+#[tokio::test]
+async fn a_path_under_mcp_is_not_a_route_and_answers_404_with_no_problem_document() {
+    let s = server().await;
+    let answer = get(&s, "/mcp/key", &s.key(&[Scope::Read])).await;
+    assert_eq!(answer.status(), 404, "no route has this path");
+    let body = answer.text().await.expect("a body");
+    assert!(
+        serde_json::from_str::<Value>(&body).is_err(),
+        "the answer is not a problem document, so a client has only the status: {body:?}"
+    );
+}
+
 #[tokio::test]
 async fn the_default_test_server_is_the_one_listener() {
     let s = server().await;

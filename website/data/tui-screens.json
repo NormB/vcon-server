@@ -72,6 +72,217 @@
       ]
     ]
   },
+  "detail-gone": {
+    "columns": 80,
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "vcon.example.com:8443 | tenant 8c41f2d9a07e4b5c9d13e6f0a2b4c7d8 | "
+        },
+        {
+          "class": "bold green",
+          "text": "connected"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "This vCon is no longer in the list: it was deleted, or it is past the pages"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "read."
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "Press Esc to go back."
+        }
+      ],
+      [],
+      [],
+      [],
+      [
+        {
+          "class": "",
+          "text": "3 of 97 read, more on the server | as of 2026-11-10 01:20:00 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Esc back  j down  k up  r refresh  ? help  q quit"
+        }
+      ]
+    ]
+  },
+  "empty": {
+    "columns": 80,
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "vcon.example.com:8443 | tenant 8c41f2d9a07e4b5c9d13e6f0a2b4c7d8 | "
+        },
+        {
+          "class": "bold green",
+          "text": "connected"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "This tenant has no vCons."
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "Press r to read again, or q to quit."
+        }
+      ],
+      [],
+      [],
+      [],
+      [],
+      [
+        {
+          "class": "",
+          "text": "as of 2026-11-10 01:20:00 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "j down  k up  Enter open  r refresh  n more  ? help  q quit"
+        }
+      ]
+    ]
+  },
+  "help": {
+    "columns": 80,
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "vcon.example.com:8443 | tenant 8c41f2d9a07e4b5c9d13e6f0a2b4c7d8 | "
+        },
+        {
+          "class": "bold green",
+          "text": "connected"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Keys"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  j      Select the vCon below (also Down)"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  k      Select the vCon above (also Up)"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  g      Select the first vCon (also Home)"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  G      Select the last vCon read (also End)"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  PgUp   Move up one screen"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  PgDn   Move down one screen"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  Enter  Open the selected vCon's metadata"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  Esc    Go back to the view before (also Backspace)"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  r      Read the list again from the server"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  n      Read the next page of vCons"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  ?      Show or close this help"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  q      Quit (also Ctrl-C)"
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "Every time shown is in UTC (UTC+00:00)."
+        }
+      ],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [
+        {
+          "class": "",
+          "text": "3 of 100 read, more on the server | as of 2026-11-10 01:20:00 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Esc back  q quit"
+        }
+      ]
+    ]
+  },
   "list": {
     "columns": 80,
     "lines": [
@@ -209,6 +420,622 @@
         {
           "class": "",
           "text": "  04fbe3a3-6348-88ab-b634-1715609f7c74  2026-11-09 13:25:29  2026-11-09 13:43:29"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "3 of 100 read, more on the server | as of 2026-11-10 01:20:00 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "j down  k up  Enter open  r refresh  n more  ? help  q quit"
+        }
+      ]
+    ]
+  },
+  "list-end": {
+    "columns": 80,
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "vcon.example.com:8443 | tenant 8c41f2d9a07e4b5c9d13e6f0a2b4c7d8 | "
+        },
+        {
+          "class": "bold green",
+          "text": "connected"
+        }
+      ],
+      [
+        {
+          "class": "bold",
+          "text": "  UUID                                  STORED (UTC+00:00)   UPDATED (UTC+00:00)"
+        }
+      ],
+      [
+        {
+          "class": "reversed",
+          "text": "> f372fe94-f82b-8c6e-bf82-678dde6e5fd2  2026-11-10 01:08:10  2026-11-10 01:08:10"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  e6e5fd29-f054-88dd-bf05-8f1bbcdcbfa5  2026-11-10 00:31:07  2026-11-10 00:37:07"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  da58fbbe-e87f-854c-be87-f6a99b4b1f77  2026-11-09 23:54:32  2026-11-10 00:06:32"
+        }
+      ],
+      [],
+      [],
+      [],
+      [
+        {
+          "class": "",
+          "text": "1 of 3 read | as of 2026-11-10 01:20:00 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "j down  k up  Enter open  r refresh  n more  ? help  q quit"
+        }
+      ]
+    ]
+  },
+  "more-read": {
+    "columns": 80,
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "vcon.example.com:8443 | tenant 8c41f2d9a07e4b5c9d13e6f0a2b4c7d8 | "
+        },
+        {
+          "class": "bold green",
+          "text": "connected"
+        }
+      ],
+      [
+        {
+          "class": "bold",
+          "text": "  UUID                                  STORED (UTC+00:00)   UPDATED (UTC+00:00)"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  f372fe94-f82b-8c6e-bf82-678dde6e5fd2  2026-11-10 01:08:10  2026-11-10 01:08:10"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  e6e5fd29-f054-88dd-bf05-8f1bbcdcbfa5  2026-11-10 00:31:07  2026-11-10 00:37:07"
+        }
+      ],
+      [
+        {
+          "class": "reversed",
+          "text": "> da58fbbe-e87f-854c-be87-f6a99b4b1f77  2026-11-09 23:54:32  2026-11-10 00:06:32"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  cdcbfa53-e0a8-81bb-be0a-1e3779b97f4a  2026-11-09 23:17:29  2026-11-09 23:35:29"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  c13ef8e8-d8d2-8e2a-bd8d-45c55827df1d  2026-11-09 22:40:26  2026-11-09 22:40:26"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  b4b1f77d-d0fd-8a99-bd0f-ad5336963eef  2026-11-09 22:03:51  2026-11-09 22:09:51"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "3 of 200 read | as of 2026-11-10 01:20:00 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "j down  k up  Enter open  r refresh  n more  ? help  q quit"
+        }
+      ]
+    ]
+  },
+  "narrow": {
+    "columns": 60,
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "vcon.example.com:8443 | tenant 8c41f2d9a07e4b... | "
+        },
+        {
+          "class": "bold green",
+          "text": "connected"
+        }
+      ],
+      [
+        {
+          "class": "bold",
+          "text": "  UUID                                  STORED (UTC+00:00) "
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  f372fe94-f82b-8c6e-bf82-678dde6e5fd2  2026-11-10 01:08:10"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  e6e5fd29-f054-88dd-bf05-8f1bbcdcbfa5  2026-11-10 00:31:07"
+        }
+      ],
+      [
+        {
+          "class": "reversed",
+          "text": "> da58fbbe-e87f-854c-be87-f6a99b4b1f77  2026-11-09 23:54:32"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  cdcbfa53-e0a8-81bb-be0a-1e3779b97f4a  2026-11-09 23:17:29"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  c13ef8e8-d8d2-8e2a-bd8d-45c55827df1d  2026-11-09 22:40:26"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "3 of 100 read, more on the server"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "as of 2026-11-10 01:20:00 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "j down  k up  Enter open  r refresh  n more  ? help  q quit"
+        }
+      ]
+    ]
+  },
+  "narrowest": {
+    "columns": 40,
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "vcon.example.com:8443 | "
+        },
+        {
+          "class": "bold green",
+          "text": "connected"
+        }
+      ],
+      [
+        {
+          "class": "bold",
+          "text": "  UUID                                "
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  f372fe94-f82b-8c6e-bf82-678dde6e5fd2"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  e6e5fd29-f054-88dd-bf05-8f1bbcdcbfa5"
+        }
+      ],
+      [
+        {
+          "class": "reversed",
+          "text": "> da58fbbe-e87f-854c-be87-f6a99b4b1f77"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  cdcbfa53-e0a8-81bb-be0a-1e3779b97f4a"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  c13ef8e8-d8d2-8e2a-bd8d-45c55827df1d"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "3 of 100 read, more on the server"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "as of 2026-11-10 01:20:00 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "j down  k up  Enter open  ? help  q quit"
+        }
+      ]
+    ]
+  },
+  "next-page-failed": {
+    "columns": 80,
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "https://vcon.example.com:8443 | tenant unknown | "
+        },
+        {
+          "class": "bold red",
+          "text": "not connected"
+        }
+      ],
+      [
+        {
+          "class": "bold",
+          "text": "  UUID                                  STORED (UTC+00:00)   UPDATED (UTC+00:00)"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  f372fe94-f82b-8c6e-bf82-678dde6e5fd2  2026-11-10 01:08:10  2026-11-10 01:08:10"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  e6e5fd29-f054-88dd-bf05-8f1bbcdcbfa5  2026-11-10 00:31:07  2026-11-10 00:37:07"
+        }
+      ],
+      [
+        {
+          "class": "reversed",
+          "text": "> da58fbbe-e87f-854c-be87-f6a99b4b1f77  2026-11-09 23:54:32  2026-11-10 00:06:32"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  cdcbfa53-e0a8-81bb-be0a-1e3779b97f4a  2026-11-09 23:17:29  2026-11-09 23:35:29"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  c13ef8e8-d8d2-8e2a-bd8d-45c55827df1d  2026-11-09 22:40:26  2026-11-09 22:40:26"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "The next page was not read: the server did not answer: no answer within 15"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "seconds."
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "j down  k up  Enter open  r refresh  n more  ? help  q quit"
+        }
+      ]
+    ]
+  },
+  "not-connected": {
+    "columns": 80,
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "https://vcon.example.com:8443 | tenant unknown | "
+        },
+        {
+          "class": "bold red",
+          "text": "not connected"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Could not list vCons: the server did not answer: no answer within 15 seconds."
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "Press r to try again, or q to quit."
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "A change to the client file or the key file takes effect at the next start."
+        }
+      ],
+      [],
+      [],
+      [],
+      [],
+      [
+        {
+          "class": "",
+          "text": "j down  k up  Enter open  r refresh  n more  ? help  q quit"
+        }
+      ]
+    ]
+  },
+  "operator-key": {
+    "columns": 80,
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "https://vcon.example.com:8443 | no tenant (operator key) | "
+        },
+        {
+          "class": "bold green",
+          "text": "connected"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Could not list vCons: this is an operator key, which reaches no vCon: use a"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "tenant key with the read scope."
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "Press r to try again, or q to quit."
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "A change to the client file or the key file takes effect at the next start."
+        }
+      ],
+      [],
+      [],
+      [],
+      [
+        {
+          "class": "",
+          "text": "j down  k up  Enter open  r refresh  n more  ? help  q quit"
+        }
+      ]
+    ]
+  },
+  "refused-certificate": {
+    "columns": 80,
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "https://vcon.example.com:8443 | tenant unknown | "
+        },
+        {
+          "class": "bold red",
+          "text": "not connected"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Could not list vCons: the server's certificate was refused: no certificate this"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "client trusts signed it; set ca in the client file to the server's current"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "certificate authority."
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "Press r to try again, or q to quit."
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "A change to the client file or the key file takes effect at the next start."
+        }
+      ],
+      [],
+      [],
+      [
+        {
+          "class": "",
+          "text": "j down  k up  Enter open  r refresh  n more  ? help  q quit"
+        }
+      ]
+    ]
+  },
+  "refused-key": {
+    "columns": 80,
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "https://vcon.example.com:8443 | tenant unknown | "
+        },
+        {
+          "class": "bold red",
+          "text": "not connected"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Could not list vCons: the server refused the key (401)."
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "Check that key_file holds a key the server has not revoked."
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Press r to try again, or q to quit."
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "A change to the client file or the key file takes effect at the next start."
+        }
+      ],
+      [],
+      [],
+      [],
+      [
+        {
+          "class": "",
+          "text": "j down  k up  Enter open  r refresh  n more  ? help  q quit"
+        }
+      ]
+    ]
+  },
+  "too-small": {
+    "columns": 36,
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "Terminal too small: 40x8 is needed."
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Enlarge it, or press q to quit."
+        }
+      ],
+      [],
+      [],
+      [],
+      []
+    ]
+  },
+  "wide": {
+    "columns": 120,
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "https://vcon.example.com:8443 | tenant 8c41f2d9a07e4b5c9d13e6f0a2b4c7d8 | "
+        },
+        {
+          "class": "bold green",
+          "text": "connected"
+        }
+      ],
+      [
+        {
+          "class": "bold",
+          "text": "  UUID                                  STORED (UTC+00:00)   UPDATED (UTC+00:00)  VERSION"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  f372fe94-f82b-8c6e-bf82-678dde6e5fd2  2026-11-10 01:08:10  2026-11-10 01:08:10  f372fe94f82b3c6eb97f4a7c159e3779"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  e6e5fd29-f054-88dd-bf05-8f1bbcdcbfa5  2026-11-10 00:31:07  2026-11-10 00:37:07  e6e5fd29f05478dd72fe94f82a3c6ef3"
+        }
+      ],
+      [
+        {
+          "class": "reversed",
+          "text": "> da58fbbe-e87f-854c-be87-f6a99b4b1f77  2026-11-09 23:54:32  2026-11-10 00:06:32  da58fbbee87fb54c2c7ddf743fdaa66d"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  cdcbfa53-e0a8-81bb-be0a-1e3779b97f4a  2026-11-09 23:17:29  2026-11-09 23:35:29  cdcbfa53e0a8f1bbe5fd29f05478dde6"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  c13ef8e8-d8d2-8e2a-bd8d-45c55827df1d  2026-11-09 22:40:26  2026-11-09 22:40:26  c13ef8e8d8d22e2a9f7c746c69171560"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  b4b1f77d-d0fd-8a99-bd0f-ad5336963eef  2026-11-09 22:03:51  2026-11-09 22:09:51  b4b1f77dd0fd6a9958fbbee87eb54cda"
         }
       ],
       [

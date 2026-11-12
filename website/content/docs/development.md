@@ -418,6 +418,7 @@ An HTML comment on the line before a block changes how it runs:
 | `<!-- docs-test: file <path> -->` | a block, such as TOML or a systemd unit, that the page says to save as `<path>` |
 | `<!-- docs-test: always -->` | runs at the end, even after a failure |
 | `<!-- docs-test: terminal <word> -->` | a full-screen command: it runs in a terminal of 80 columns by 24 lines (util-linux `script`), in a bash of its own that sees the exported variables only; when it writes `<word>`, `q` is typed; the text block after it is the screen it had when it ended |
+| `<!-- docs-test: terminal <word>; keys Enter q -->` | the same, with these keys typed in place of `q`, one after the other: each is one character, or `Enter` |
 
 A step that works only from some release on, such as checking a signature
 that older releases do not have, is marked `since`, not `skip`. Until that
