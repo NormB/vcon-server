@@ -1803,7 +1803,7 @@ impl CatalogTx for PgTx<'_> {
         PgTx::audit_lines(self, after, limit.map(i64::from), out)
     }
 
-    fn commit(mut self: Box<Self>) -> Result<(), CommitError> {
+    fn commit(self: Box<Self>) -> Result<(), CommitError> {
         #[cfg(test)]
         if let Some(how) = self.catalog.and_then(injected) {
             let end = match how {
