@@ -1953,13 +1953,23 @@ mod operator_listener {
         let (s, _) = setup_with(TABLE);
         let mut started = start(serve(&s));
         let (tenant_addr, operator_addr) = (started.addr, operator_addr(&mut started));
-        stop(&mut started);
         for addr in [tenant_addr, operator_addr] {
             assert!(
-                std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(5)).is_err(),
-                "{addr} no longer listens"
+                std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(5)).is_ok(),
+                "{addr} listens while the server runs"
             );
         }
+        // `stop` waits for the process to end and holds its exit status to
+        // success. A process that has ended holds no socket, so both
+        // listeners are closed. The two ports are not tried after: they
+        // are free from that moment, and another test's server, started
+        // on a port the system chooses, may be given one of them and
+        // accept the connection.
+        stop(&mut started);
+        assert!(
+            matches!(started.running.0.try_wait(), Ok(Some(status)) if status.success()),
+            "the one process that held both listeners has ended"
+        );
     }
 
     #[test]
