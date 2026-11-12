@@ -11,14 +11,13 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{Path as UriPath, State};
-use axum::http::header::CACHE_CONTROL;
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use serde::de::DeserializeOwned;
 
-use super::{App, NewKeyBody, Problem, admit, blocking, json_answer, refusal};
-use crate::access::{Scope, Scopes};
+use super::{App, NewKeyBody, Problem, admit, blocking, json_answer, new_key_answer, refusal};
+use crate::access::Scope;
 use crate::audit::{Action, Actor};
 use crate::ids::{KeyId, TenantId};
 use crate::tenants::TenantError;
@@ -117,7 +116,10 @@ pub(super) async fn settings_set(
 
 /// `POST /tenant/keys`: makes a key for the caller's tenant, with scopes
 /// the tenant's role cap allows and never `tenant_admin`, and answers 201
-/// with its id and token. The token is shown this once.
+/// with its id, its token and its expiry. The token is shown this once.
+/// The key expires in `expires_in_days` days (1 to 365; 90 when absent),
+/// or never with `no_expiry` where the configuration allows it; any other
+/// expiry is 422 `bad-expiry`.
 pub(super) async fn key_create(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -127,26 +129,24 @@ pub(super) async fn key_create(
     let made = async {
         let asked = asked(&app, &headers, body, action).await?;
         let new: NewKeyBody = json_body(&app, &asked, action).await?;
-        let Some(scopes) = Scopes::named(&new.scopes) else {
-            let refused = Problem::Tenant(TenantError::BadScopes);
-            let entry = refusal(asked.key, action, refused);
-            return Err(app.refuse(Some(asked.tenant), entry, refused).await);
+        let (scopes, life) = match new.asked() {
+            Ok(asked) => asked,
+            Err(refused) => {
+                let refused = Problem::Tenant(refused);
+                let entry = refusal(asked.key, action, refused);
+                return Err(app.refuse(Some(asked.tenant), entry, refused).await);
+            }
         };
         let tenants = app.tenants.clone();
         // Tenants records its own outcomes.
-        blocking(move || tenants.create_tenant_key(asked.who(), asked.tenant, scopes, &new.label))
-            .await
-            .map_err(Problem::Tenant)
+        blocking(move || {
+            tenants.create_tenant_key_for(asked.who(), asked.tenant, scopes, &new.label, life)
+        })
+        .await
+        .map_err(Problem::Tenant)
     };
     match made.await {
-        Ok(made) => {
-            let body = serde_json::json!({ "id": made.id.to_string(), "token": made.token });
-            let mut answer = json_answer(StatusCode::CREATED, &body);
-            answer
-                .headers_mut()
-                .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
-            answer
-        }
+        Ok(made) => new_key_answer(&made),
         Err(refused) => refused.into_response(),
     }
 }

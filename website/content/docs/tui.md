@@ -126,7 +126,7 @@ terminal.
    ```
 
    ```text
-   {"id":"<key id>","token":"<token>"}
+   {"expires_at":"<time>","id":"<key id>","token":"<token>"}
    ```
 
    Make one key for each person, with a label that names the person, so

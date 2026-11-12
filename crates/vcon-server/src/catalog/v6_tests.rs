@@ -10,7 +10,7 @@
 use rusqlite::Connection;
 
 use super::v5_tests::{
-    Old, REGISTRY_ROWS, REGISTRY_V4, TENANT_V4, declared, number, rows, tables, version,
+    KEYS_V4, Old, REGISTRY_ROWS, REGISTRY_V4, TENANT_V4, declared, number, rows, tables, version,
 };
 use super::{CatalogError, SCHEMA_VERSION, open};
 use crate::backend::Registry;
@@ -131,7 +131,7 @@ fn a_version_5_registry_keeps_its_users_memberships_keys_and_log() {
         [
             rows(conn, "SELECT * FROM user_account ORDER BY id"),
             rows(conn, "SELECT * FROM membership ORDER BY user"),
-            rows(conn, "SELECT * FROM api_key ORDER BY id"),
+            rows(conn, KEYS_V4),
             rows(conn, "SELECT * FROM master_key_use"),
             rows(conn, "SELECT * FROM audit ORDER BY seq"),
         ]

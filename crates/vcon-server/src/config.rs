@@ -67,6 +67,9 @@ pub struct Config {
     /// request by session must come from. Without it, `listen` serves no
     /// session.
     pub public_origin: Option<Origin>,
+    /// Whether a key may be made with no expiry (`keys.no_expiry`); true
+    /// unless configured. Keys made earlier are not changed.
+    pub keys_no_expiry: bool,
 }
 
 /// The operator listener: the `[operator]` table. With it, `serve` listens
@@ -399,6 +402,7 @@ pub fn parse(text: &str) -> Result<Config, ConfigError> {
         catalog,
         operator: operator(raw.operator, raw.listen, &tls, public_origin.as_ref())?,
         public_origin,
+        keys_no_expiry: raw.keys.no_expiry.unwrap_or(true),
     })
 }
 
@@ -991,6 +995,15 @@ struct Raw {
     catalog: RawCatalog,
     operator: Option<RawOperator>,
     public_origin: Option<String>,
+    #[serde(default)]
+    keys: RawKeys,
+}
+
+/// The `[keys]` table: the rules for new access keys.
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawKeys {
+    no_expiry: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -1144,6 +1157,9 @@ public_origin = "https://ops.example.com:8444"
 [operator.tls]
 cert = "/etc/vcon-server/operator-cert.pem"
 key = "/etc/vcon-server/operator-key.pem"
+
+[keys]
+no_expiry = false
 
 [limits]
 body = 10485760
@@ -1303,6 +1319,7 @@ lock_timeout = 20
                     public_origin: Origin::parse("https://ops.example.com:8444"),
                 }),
                 public_origin: Origin::parse("https://vcon.example.com"),
+                keys_no_expiry: false,
             }),
             "every key the file writes is read into its field"
         );
@@ -1570,6 +1587,59 @@ lock_timeout = 20
                 assert!(!same_socket(address(a), address(b)), "{a} and {b}");
                 assert!(!same_socket(address(b), address(a)), "{b} and {a}");
             }
+        }
+    }
+
+    /// `keys.no_expiry`: whether a key may be made with no expiry.
+    mod key_expiry {
+        use super::*;
+
+        fn with(table: &str) -> Result<Config, ConfigError> {
+            parse(&format!("{LEAST}\n{table}"))
+        }
+
+        #[test]
+        fn without_the_key_a_key_may_be_made_with_no_expiry() {
+            assert!(
+                parse(LEAST).expect("parses").keys_no_expiry,
+                "the default allows it"
+            );
+        }
+
+        #[test]
+        fn the_key_is_read_as_written() {
+            for (text, want) in [("true", true), ("false", false)] {
+                let config = with(&format!("[keys]\nno_expiry = {text}\n")).expect("parses");
+                assert_eq!(config.keys_no_expiry, want, "no_expiry = {text}");
+            }
+        }
+
+        #[test]
+        fn an_empty_table_leaves_the_default() {
+            assert!(
+                with("[keys]\n").expect("parses").keys_no_expiry,
+                "a table with no key"
+            );
+        }
+
+        #[test]
+        fn a_value_that_is_not_a_boolean_is_refused() {
+            for text in ["\"false\"", "0", "1", "[]", "90"] {
+                let error = with(&format!("[keys]\nno_expiry = {text}\n")).expect_err(text);
+                assert!(error.0.contains("no_expiry"), "{text}: {error}");
+            }
+        }
+
+        #[test]
+        fn another_key_in_the_table_is_refused() {
+            let error = with("[keys]\ndefault_days = 30\n").expect_err("an unknown key");
+            assert!(error.0.contains("default_days"), "{error}");
+        }
+
+        #[test]
+        fn the_key_outside_its_table_is_refused() {
+            let error = parse(&format!("no_expiry = false\n{LEAST}")).expect_err("the wrong place");
+            assert!(error.0.contains("no_expiry"), "{error}");
         }
     }
 
@@ -2984,7 +3054,7 @@ key = "/etc/vcon-server/key.pem"
             let defaults = parse(LEAST).expect("least");
             let mut all = Vec::new();
             keys(&FULL.parse::<toml::Table>().expect("toml"), "", &mut all);
-            assert_eq!(all.len(), 63, "{all:?}");
+            assert_eq!(all.len(), 64, "{all:?}");
             let pg = catalog::postgres_least();
             for key in all {
                 let default = match key.as_str() {
@@ -3017,6 +3087,7 @@ key = "/etc/vcon-server/key.pem"
                     }
                     "limits.timeouts.head" => format!("`{}`", defaults.connection.head.as_secs()),
                     "limits.timeouts.idle" => format!("`{}`", defaults.connection.idle.as_secs()),
+                    "keys.no_expiry" => format!("`{}`", defaults.keys_no_expiry),
                     "mcp.calls_per_second" => format!("`{}`", defaults.mcp.calls_per_second),
                     "mcp.concurrent" => format!("`{}`", defaults.mcp.concurrent),
                     "mcp.response_bytes" => format!("`{}`", defaults.mcp.response_bytes),

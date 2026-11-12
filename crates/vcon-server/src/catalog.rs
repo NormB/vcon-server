@@ -16,10 +16,19 @@ use crate::envelope::Key;
 /// server.sqlite, and lets every catalog's audit log hold no status;
 /// version 6 added each tenant's role cap to server.sqlite; version 7 added
 /// the table of the settings a tenant's administrator sets; version 8
-/// added the table of the sessions of users who signed in.
+/// added the table of the sessions of users who signed in; version 9 added
+/// each access key's expiry and last-used time to server.sqlite.
 /// A build refuses every version it does not know, so a catalog this
 /// build has opened is refused by release 0.4.3 and earlier.
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
+
+/// Brings server.sqlite from version 8 to 9: each access key's expiry and
+/// its last-used time, both NULL for every key there is. A key made
+/// before version 9 was made with no expiry, and keeps none.
+const KEY_LIFE: &str = "
+ALTER TABLE api_key ADD COLUMN expires_at INTEGER;
+ALTER TABLE api_key ADD COLUMN last_used_at INTEGER;
+";
 
 /// The sessions of the users who signed in, as a new registry and an
 /// upgraded one both make them (version 8): one row for each live session,
@@ -280,7 +289,7 @@ pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogE
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
         }
-        from @ 1..=7 => {
+        from @ 1..=8 => {
             // One transaction, so a failed upgrade leaves the old version
             // whole. A tenant catalog has a vcon table, server.sqlite a
             // tenant table, and both an audit log.
@@ -316,6 +325,9 @@ pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogE
             }
             if from < 8 && has("tenant")? {
                 tx.execute_batch(SESSIONS)?;
+            }
+            if from < 9 && has("api_key")? {
+                tx.execute_batch(KEY_LIFE)?;
             }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
@@ -518,6 +530,9 @@ mod v7_tests;
 
 #[cfg(test)]
 mod v8_tests;
+
+#[cfg(test)]
+mod v9_tests;
 
 #[cfg(test)]
 pub(crate) mod testing {

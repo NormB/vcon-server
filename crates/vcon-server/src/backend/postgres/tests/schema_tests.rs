@@ -12,6 +12,7 @@ mod v2;
 mod v3;
 mod v4;
 mod v5;
+mod v6;
 
 #[cfg(feature = "backend-tests")]
 pub(super) mod live {

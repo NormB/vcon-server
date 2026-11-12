@@ -21,7 +21,7 @@ use crate::retention::Retention;
 use crate::roles::{Role, Roles};
 use crate::store::ExamineError;
 use crate::tenants::{
-    self, BackupError, Identity, OpenFailure, RegistryError, Removal, TenantError,
+    self, BackupError, Identity, KeyLife, OpenFailure, RegistryError, Removal, TenantError,
     TenantExamination, Tenants, Unexamined, UserError,
 };
 use time::OffsetDateTime;
@@ -76,6 +76,8 @@ pub enum Command {
     KeyCreate {
         owner: Owner,
         label: String,
+        /// When the key expires: by default, in a number of days, or never.
+        life: KeyLife,
     },
     KeyList {
         tenant: Option<String>,
@@ -315,6 +317,9 @@ impl fmt::Display for CommandError {
                 TenantError::BadScopes => {
                     "a tenant key's scopes are one or more of write, read, delete, legal, audit and tenant_admin, each named once"
                 }
+                TenantError::BadExpiry => {
+                    "a key expires in 1 to 365 days, or never where keys.no_expiry allows it"
+                }
                 TenantError::LimitReached => {
                     "the master key has wrapped all the tenant keys it may; run rekey master"
                 }
@@ -383,6 +388,7 @@ pub fn run(config: &Config, command: &Command, out: &mut dyn Write) -> Result<()
         RegistryError::WrongKey => CommandError::WrongMasterKey,
         other => CommandError::Open(other),
     })?;
+    tenants.allow_no_expiry(config.keys_no_expiry);
     let who = Actor::Cli;
     match command {
         Command::TenantCreate { name, retention } => {
@@ -423,7 +429,7 @@ pub fn run(config: &Config, command: &Command, out: &mut dyn Write) -> Result<()
             };
             Ok(tenants.remove(who, tenant_id(id)?, removal)?)
         }
-        Command::KeyCreate { owner, label } => {
+        Command::KeyCreate { owner, label, life } => {
             let (tenant, scopes) = match owner {
                 Owner::Tenant { id, scopes } => (
                     Some(tenant_id(id)?),
@@ -431,11 +437,11 @@ pub fn run(config: &Config, command: &Command, out: &mut dyn Write) -> Result<()
                 ),
                 Owner::Operator => (None, Scopes::of(&[Scope::Admin])),
             };
-            let made = tenants.create_key(who, tenant, scopes, label)?;
-            line(
-                out,
-                &serde_json::json!({ "id": made.id.to_string(), "token": made.token }),
-            )
+            let made = tenants.create_key_for(who, tenant, scopes, label, *life)?;
+            let shown = made
+                .to_json()
+                .ok_or(CommandError::Tenant(TenantError::Io))?;
+            line(out, &shown)
         }
         Command::KeyList { tenant } => {
             let tenant = tenant.as_deref().map(tenant_id).transpose()?;
@@ -1005,6 +1011,120 @@ mod tests {
         }
     }
 
+    /// `key create` for a tenant key that reads, with this life.
+    fn key_with(s: &Setup, tenant: &str, life: KeyLife) -> Result<Vec<Value>, CommandError> {
+        s.run(Command::KeyCreate {
+            owner: Owner::Tenant {
+                id: tenant.to_owned(),
+                scopes: vec!["read".to_owned()],
+            },
+            label: "dated".to_owned(),
+            life,
+        })
+    }
+
+    fn rfc3339(value: &Value) -> time::OffsetDateTime {
+        time::OffsetDateTime::parse(
+            value.as_str().expect("a time as text"),
+            &time::format_description::well_known::Rfc3339,
+        )
+        .expect("RFC 3339")
+    }
+
+    #[test]
+    fn key_create_prints_the_expiry_of_the_key_it_makes() {
+        let s = setup();
+        let tenant = s.create("acme");
+        let made = key_with(&s, &tenant, KeyLife::Default).expect("made");
+        let listed = s.run(Command::KeyList { tenant: None }).expect("listed");
+        assert_eq!(
+            rfc3339(&made[0]["expires_at"]) - rfc3339(&listed[0]["created_at"]),
+            time::Duration::days(90),
+            "the default life"
+        );
+        assert_eq!(
+            made[0]["expires_at"], listed[0]["expires_at"],
+            "the list shows the same expiry"
+        );
+        assert!(listed[0]["last_used_at"].is_null(), "a key never used");
+    }
+
+    #[test]
+    fn key_create_makes_a_key_for_the_days_asked_or_with_no_expiry() {
+        let s = setup();
+        let tenant = s.create("acme");
+        let week = key_with(&s, &tenant, KeyLife::Days(7)).expect("made");
+        let never = key_with(&s, &tenant, KeyLife::Never).expect("made");
+        let listed = s.run(Command::KeyList { tenant: None }).expect("listed");
+        assert_eq!(
+            rfc3339(&week[0]["expires_at"]) - rfc3339(&listed[0]["created_at"]),
+            time::Duration::days(7),
+            "seven days"
+        );
+        assert!(
+            never[0]["expires_at"].is_null(),
+            "no expiry is printed as null"
+        );
+        assert!(listed[1]["expires_at"].is_null(), "and listed as null");
+    }
+
+    #[test]
+    fn key_create_refuses_days_outside_1_to_365() {
+        let s = setup();
+        let tenant = s.create("acme");
+        for days in [0, 366] {
+            assert!(
+                matches!(
+                    key_with(&s, &tenant, KeyLife::Days(days)),
+                    Err(CommandError::Tenant(TenantError::BadExpiry))
+                ),
+                "{days} days"
+            );
+        }
+        let listed = s.run(Command::KeyList { tenant: None }).expect("listed");
+        assert_eq!(listed.len(), 0, "no key was made");
+    }
+
+    #[test]
+    fn key_create_refuses_no_expiry_where_the_configuration_says_so() {
+        let mut s = setup();
+        let tenant = s.create("acme");
+        s.config.keys_no_expiry = false;
+        assert!(
+            matches!(
+                key_with(&s, &tenant, KeyLife::Never),
+                Err(CommandError::Tenant(TenantError::BadExpiry))
+            ),
+            "a tenant key"
+        );
+        let operator = s.run(Command::KeyCreate {
+            owner: Owner::Operator,
+            label: "ops".to_owned(),
+            life: KeyLife::Never,
+        });
+        assert!(
+            matches!(operator, Err(CommandError::Tenant(TenantError::BadExpiry))),
+            "an operator key"
+        );
+        assert!(
+            key_with(&s, &tenant, KeyLife::Default).is_ok(),
+            "a key with an expiry is still made"
+        );
+    }
+
+    #[test]
+    fn an_operator_key_may_have_no_expiry_by_default() {
+        let s = setup();
+        let made = s
+            .run(Command::KeyCreate {
+                owner: Owner::Operator,
+                label: "ops".to_owned(),
+                life: KeyLife::Never,
+            })
+            .expect("made");
+        assert!(made[0]["expires_at"].is_null(), "no expiry");
+    }
+
     fn tenant_error(result: Result<Vec<Value>, CommandError>) -> TenantError {
         match result {
             Err(CommandError::Tenant(e)) => e,
@@ -1111,7 +1231,8 @@ mod tests {
                         id: id.clone(),
                         scopes: vec!["read".to_owned()]
                     },
-                    label: "l".to_owned()
+                    label: "l".to_owned(),
+                    life: KeyLife::Default,
                 })),
                 TenantError::NotFound
             );
@@ -1189,17 +1310,19 @@ mod tests {
                     scopes: vec!["write".to_owned(), "read".to_owned()],
                 },
                 label: "producer".to_owned(),
+                life: KeyLife::Default,
             })
             .expect("made");
         let id = made[0]["id"].as_str().expect("id").to_owned();
         let token = made[0]["token"].as_str().expect("token").to_owned();
         assert_eq!(made.len(), 1);
-        assert_eq!(made[0].as_object().expect("object").len(), 2);
+        assert_eq!(made[0].as_object().expect("object").len(), 3);
         assert!(token.starts_with(&format!("vcs_{id}_")), "{token}");
         let operator = s
             .run(Command::KeyCreate {
                 owner: Owner::Operator,
                 label: "ops".to_owned(),
+                life: KeyLife::Default,
             })
             .expect("made")[0]["id"]
             .as_str()
@@ -1260,6 +1383,7 @@ mod tests {
                     scopes: scopes.iter().map(|s| (*s).to_owned()).collect(),
                 },
                 label: "l".to_owned(),
+                life: KeyLife::Default,
             });
             assert_eq!(tenant_error(error), TenantError::BadScopes, "{scopes:?}");
         }
@@ -1289,6 +1413,7 @@ mod tests {
                 scopes: vec!["read".to_owned()],
             },
             label: "l".to_owned(),
+            life: KeyLife::Default,
         })
         .expect("made");
 
@@ -1682,6 +1807,7 @@ mod tests {
             .run(Command::KeyCreate {
                 owner: Owner::Operator,
                 label: "l".to_owned(),
+                life: KeyLife::Default,
             })
             .expect("beside");
         s.run(Command::KeyRevoke {
@@ -1927,6 +2053,7 @@ mod tests {
                 TenantError::Closing => "being removed",
                 TenantError::CliOnly => "command line",
                 TenantError::BadScopes => "scopes",
+                TenantError::BadExpiry => "1 to 365 days",
                 TenantError::BadSetting(_) => "setting",
                 // Display folds a registry made under another master key
                 // into WrongMasterKey's message.
@@ -2204,6 +2331,7 @@ mod tests {
             TenantError::Closing,
             TenantError::CliOnly,
             TenantError::BadScopes,
+            TenantError::BadExpiry,
             TenantError::BadSetting(crate::settings::SettingError::UnknownName),
             TenantError::WrongKey,
             TenantError::Io,

@@ -11,7 +11,7 @@
 use rusqlite::Connection;
 
 use super::v5_tests::{
-    Old, REGISTRY_ROWS, REGISTRY_V4, TENANT_V4, declared, number, rows, tables, version,
+    KEYS_V4, Old, REGISTRY_ROWS, REGISTRY_V4, TENANT_V4, declared, number, rows, tables, version,
 };
 use super::v6_tests::{AUDIT_V5, ROWS_V5, USERS_V5, columns};
 use super::{CatalogError, SCHEMA_VERSION, open};
@@ -97,7 +97,7 @@ fn a_version_6_registry_keeps_every_row_it_had() {
             rows(conn, "SELECT * FROM tenant ORDER BY id"),
             rows(conn, "SELECT * FROM user_account ORDER BY id"),
             rows(conn, "SELECT * FROM membership ORDER BY user"),
-            rows(conn, "SELECT * FROM api_key ORDER BY id"),
+            rows(conn, KEYS_V4),
             rows(conn, "SELECT * FROM master_key_use"),
             rows(conn, "SELECT * FROM audit ORDER BY seq"),
         ]

@@ -79,9 +79,9 @@ is the cap's roles, or `null` for a tenant with no cap. See
 
 | Command | Prints | Runs beside `serve` |
 |---|---|---|
-| `key create --tenant <id> --scope <s> [--scope <s>...] --label <label>` | `{"id", "token"}` | yes |
-| `key create --operator --label <label>` | `{"id", "token"}` | yes |
-| `key list [--tenant <id>]` | `{"id", "tenant", "scopes", "label", "created_at", "revoked_at"}` per key, oldest first | yes |
+| `key create --tenant <id> --scope <s> [--scope <s>...] --label <label> [--expires-days <n> \| --no-expiry]` | `{"id", "token", "expires_at"}` | yes |
+| `key create --operator --label <label> [--expires-days <n> \| --no-expiry]` | `{"id", "token", "expires_at"}` | yes |
+| `key list [--tenant <id>]` | `{"id", "tenant", "scopes", "label", "created_at", "revoked_at", "expires_at", "last_used_at"}` per key, oldest first | yes |
 | `key revoke <id>` | nothing | yes |
 
 A token is printed once and never again; the server keeps only its hash.
@@ -319,8 +319,8 @@ once. See [operations](@/docs/operations.md#one-server-per-directory).
 sudo -u vcon vcon-server tenant create acme --config /etc/vcon-server/vcon-server.toml
 # {"id":"3f0c…"}
 sudo -u vcon vcon-server key create --operator --label ops --config /etc/vcon-server/vcon-server.toml
-# {"id":"…","token":"vcs_…"}   keep this token: it manages tenants over HTTP
+# {"expires_at":"…","id":"…","token":"vcs_…"}   keep this token: it manages tenants over HTTP
 sudo -u vcon vcon-server key create --tenant 3f0c… --scope write --label recorder-1 \
   --config /etc/vcon-server/vcon-server.toml
-# {"id":"…","token":"vcs_…"}   give this one to the producer
+# {"expires_at":"…","id":"…","token":"vcs_…"}   give this one to the producer
 ```

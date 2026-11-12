@@ -89,7 +89,9 @@ sudo -u vcon vcon-server key create --tenant "$TENANT" --scope audit --label cli
 sudo -u vcon vcon-server key create --operator --label client-example-operator --config $CONFIG
 ```
 
-Each prints `{"id", "token"}`; the token is the key. From the repository root:
+Each prints `{"id", "token", "expires_at"}`; the token is the key, and it
+expires 90 days after it is made unless `key create` is given
+`--expires-days` or `--no-expiry`. From the repository root:
 
 ```sh
 export VCON_URL=https://vcon.example.com VCON_KEY=vcs_... VCON_LEGAL_KEY=vcs_... \

@@ -46,6 +46,57 @@ test("tenants: create, set retention and remove leave the records the API leaves
   expect(recorded).toEqual(await about(request, apiId));
 });
 
+test("keys: the form sets a key's expiry, and the table shows it and when the key was last used", async ({ page, request, tenant }) => {
+  await signIn(page, operatorKey);
+  await openView(page, "tenants");
+  await page.locator(`#tenants tbody tr:has-text("${tenant.id}") button.keys`).click();
+  await expect(page.locator("#key-days")).toHaveValue("90");
+  const headings = await page.locator("#key-list thead th").allTextContents();
+  expect(headings).toEqual(["id", "scopes", "label", "created", "revoked", "expires", "last used", "actions"]);
+
+  // A key for 30 days: the message and the table show its expiry.
+  await page.check('#key-create input[value="read"]');
+  await page.fill("#key-label", "thirty-days");
+  await page.fill("#key-days", "30");
+  await page.click("#key-create button[type=submit]");
+  await expect(page.locator("#new-token")).toHaveText(/^vcs_/);
+  await expect(page.locator("#key-message")).toContainText("expires");
+  const token = (await page.locator("#new-token").textContent()).trim();
+  const id = token.slice(4, 20);
+  const cells = page.locator(`#key-list tbody tr:has-text("${id}") td`);
+  const keys = await (await request.get(`/admin/tenants/${tenant.id}/keys`, { headers: auth })).json();
+  const stored = keys.find((k) => k.id === id);
+  expect(Date.parse(stored.expires_at) - Date.parse(stored.created_at)).toBe(30 * 86400 * 1000);
+  await expect(cells.nth(5)).toHaveText(/^\d{4}-\d{2}-\d{2}/);
+  await expect(cells.nth(6)).toHaveText("never");
+
+  // After a request by the key, the table shows the minute of its use.
+  expect((await request.get("/key", { headers: { Authorization: `Bearer ${token}` } })).status()).toBe(200);
+  await openView(page, "tenants");
+  await page.locator(`#tenants tbody tr:has-text("${tenant.id}") button.keys`).click();
+  await expect(page.locator(`#key-list tbody tr:has-text("${id}") td`).nth(6)).toHaveText(/^\d{4}-\d{2}-\d{2}/);
+
+  // A key with no expiry: the days are not sent, and the table says never.
+  await page.check('#key-create input[value="read"]');
+  await page.fill("#key-label", "no-expiry");
+  await page.check("#key-never");
+  await expect(page.locator("#key-days")).toBeDisabled();
+  await page.click("#key-create button[type=submit]");
+  await expect(page.locator("#key-message")).toContainText("never expires");
+  const forever = (await page.locator("#new-token").textContent()).trim().slice(4, 20);
+  await expect(page.locator(`#key-list tbody tr:has-text("${forever}") td`).nth(5)).toHaveText("never");
+
+  // Days outside 1 to 365 are refused by the server, and the console says so.
+  await page.uncheck("#key-never");
+  await page.check('#key-create input[value="read"]');
+  await page.fill("#key-label", "too-long");
+  await page.fill("#key-days", "366");
+  await page.locator("#key-create").evaluate((form) => form.setAttribute("novalidate", ""));
+  await page.click("#key-create button[type=submit]");
+  await expect(page.locator("#key-message")).toContainText("A key cannot have this expiry");
+  await expect(page.locator("#new-token")).toHaveText("");
+});
+
 test("keys: a new token is shown once, revoking works, both recorded as by the API", async ({ page, request, tenant }) => {
   await signIn(page, operatorKey);
   await openView(page, "tenants");

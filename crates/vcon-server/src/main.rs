@@ -6,6 +6,7 @@ use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
 use vcon_server::commands::{self, Log, Owner, Place};
+use vcon_server::tenants::KeyLife;
 use vcon_server::{config, envelope, serve};
 
 /// A vCon server: stores IETF vCons, encrypted at rest.
@@ -251,6 +252,14 @@ enum KeyCommand {
         /// Who holds the key.
         #[arg(long)]
         label: String,
+        /// The days until the key expires, from 1 to 365. Without this and
+        /// without --no-expiry the key expires in 90 days.
+        #[arg(long, value_name = "DAYS", conflicts_with = "no_expiry")]
+        expires_days: Option<u32>,
+        /// Makes a key that never expires. Refused when the configuration
+        /// sets keys.no_expiry to false.
+        #[arg(long)]
+        no_expiry: bool,
     },
     /// Lists keys, never their tokens.
     List {
@@ -549,6 +558,16 @@ fn tenant(command: TenantCommand) -> (ConfigArg, commands::Command) {
     }
 }
 
+/// The life `key create` asks for: `--no-expiry`, else `--expires-days`,
+/// else the default. The days are checked where the key is made.
+fn key_life(expires_days: Option<u32>, no_expiry: bool) -> KeyLife {
+    match (no_expiry, expires_days) {
+        (true, _) => KeyLife::Never,
+        (false, Some(days)) => KeyLife::Days(days),
+        (false, None) => KeyLife::Default,
+    }
+}
+
 fn key(command: KeyCommand) -> (ConfigArg, commands::Command) {
     match command {
         KeyCommand::Create {
@@ -557,12 +576,15 @@ fn key(command: KeyCommand) -> (ConfigArg, commands::Command) {
             scopes,
             operator: _,
             label,
+            expires_days,
+            no_expiry,
         } => {
             let owner = match tenant {
                 Some(id) => Owner::Tenant { id, scopes },
                 None => Owner::Operator,
             };
-            (config, commands::Command::KeyCreate { owner, label })
+            let life = key_life(expires_days, no_expiry);
+            (config, commands::Command::KeyCreate { owner, label, life })
         }
         KeyCommand::List { config, tenant } => (config, commands::Command::KeyList { tenant }),
         KeyCommand::Revoke { config, id } => (config, commands::Command::KeyRevoke { id }),

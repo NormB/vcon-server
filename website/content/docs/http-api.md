@@ -14,7 +14,8 @@ group = "reference"
   The two [session routes](#sessions) alone take a session's cookie
   in its place.
   A missing, malformed, unknown or revoked key is
-  [`unauthorized`](@/problems/unauthorized.md) (401); a key without the
+  [`unauthorized`](@/problems/unauthorized.md) (401); a key past its
+  expiry is [`key-expired`](@/problems/key-expired.md) (401); a key without the
   route's scope is [`forbidden`](@/problems/forbidden.md) (403). See
   [tenants and keys](@/docs/tenants-and-keys.md).
 - **One listener, or two.** By default one address serves every key. On a
@@ -205,8 +206,8 @@ goes unnoticed.
 | `PATCH /admin/tenants/{id}` | `{"retention": "90d"}` or `{"retention": null}`; the member is required | `200` `{"id", "retention"}` |
 | `PUT /admin/tenants/{id}/metadata` | `{"metadata": "counts"}`: `none`, `counts` or `full` (see [export to Parquet](@/docs/export-parquet.md#choose-the-metadata-level)) | `200` `{"id", "metadata"}` |
 | `DELETE /admin/tenants/{id}` | optional `?force=true` (or `force=false`) | `204` |
-| `POST /admin/tenants/{id}/keys` | `{"scopes": ["write", "read"], "label": "producer-1"}` | `201` `{"id", "token"}` with `Cache-Control: no-store` |
-| `GET /admin/tenants/{id}/keys` | | `200` `[{"id", "tenant", "scopes", "label", "created_at", "revoked_at"}]`, oldest first; never a token |
+| `POST /admin/tenants/{id}/keys` | `{"scopes": ["write", "read"], "label": "producer-1"}`; optional `"expires_in_days"` (1 to 365; 90 when absent) or `"no_expiry": true`, else `422` [`bad-expiry`](@/problems/bad-expiry.md) | `201` `{"id", "token", "expires_at"}` with `Cache-Control: no-store` |
+| `GET /admin/tenants/{id}/keys` | | `200` `[{"id", "tenant", "scopes", "label", "created_at", "revoked_at", "expires_at", "last_used_at"}]`, oldest first; never a token |
 | `DELETE /admin/keys/{id}` | | `204`, also when already revoked |
 
 Refusals: [`unknown-tenant`](@/problems/unknown-tenant.md),
@@ -232,8 +233,8 @@ and a tenant key without the scope get
 |---|---|---|
 | `GET /tenant/settings` | | `200` an object of every setting: `masking.<role>` for the six tenant roles (`true` or `false`), `session.idle_seconds` and `session.absolute_seconds` |
 | `PUT /tenant/settings` | an object of the settings to change, each with its new value or `null` for its default, such as `{"masking.legal": false, "session.idle_seconds": 300}` | `200` every setting after the change |
-| `POST /tenant/keys` | `{"scopes": ["read"], "label": "reports"}`; scopes within the tenant's role cap, never `tenant_admin` | `201` `{"id", "token"}` with `Cache-Control: no-store` |
-| `GET /tenant/keys` | | `200` `[{"id", "tenant", "scopes", "label", "created_at", "revoked_at"}]`, oldest first; never a token |
+| `POST /tenant/keys` | `{"scopes": ["read"], "label": "reports"}`; scopes within the tenant's role cap, never `tenant_admin`; optional `"expires_in_days"` (1 to 365; 90 when absent) or `"no_expiry": true`, else `422` [`bad-expiry`](@/problems/bad-expiry.md) | `201` `{"id", "token", "expires_at"}` with `Cache-Control: no-store` |
+| `GET /tenant/keys` | | `200` `[{"id", "tenant", "scopes", "label", "created_at", "revoked_at", "expires_at", "last_used_at"}]`, oldest first; never a token |
 | `DELETE /tenant/keys/{id}` | | `204`, also when already revoked; a key of another tenant is `404` |
 | `GET /tenant/memberships` | | `200` `[{"user", "label", "roles", "scopes", "granted_at"}]`, oldest first |
 

@@ -451,6 +451,7 @@ fn operator_key_name(config: &Config, operator: &Operator) -> &'static str {
 /// What the API serves from on a listener of `plane`, as the
 /// configuration sets it.
 fn app_from(config: &Config, tenants: Arc<Tenants>, plane: Plane) -> App {
+    tenants.allow_no_expiry(config.keys_no_expiry);
     App {
         tenants,
         limits: Limits {
@@ -636,8 +637,17 @@ mod tests {
             catalog: crate::config::CatalogStore::Local,
             operator: None,
             public_origin: None,
+            keys_no_expiry: false,
         };
+        assert!(
+            tenants.no_expiry_allowed(),
+            "before the configuration is applied a key may have no expiry"
+        );
         let app = app_from(&config, tenants.clone(), Plane::Tenant);
+        assert!(
+            !tenants.no_expiry_allowed(),
+            "keys.no_expiry = false reaches the registry the API makes keys in"
+        );
         assert_eq!(app.plane, Plane::Tenant, "the plane it was given");
         assert!(Arc::ptr_eq(&app.tenants, &tenants));
         assert_eq!(app.limits.body, 12_345);

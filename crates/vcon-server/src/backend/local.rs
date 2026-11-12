@@ -1150,7 +1150,7 @@ CREATE TABLE api_key (
     label TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     revoked_at INTEGER
-);
+, expires_at INTEGER, last_used_at INTEGER);
 CREATE INDEX api_key_tenant ON api_key (tenant);
 ";
 
@@ -1274,7 +1274,8 @@ fn tenant_row(r: &rusqlite::Row) -> rusqlite::Result<TenantRow> {
     })
 }
 
-const KEY_COLUMNS: &str = "id, tenant, token_hash, scopes, label, created_at, revoked_at";
+const KEY_COLUMNS: &str =
+    "id, tenant, token_hash, scopes, label, created_at, revoked_at, expires_at, last_used_at";
 
 fn key_row(r: &rusqlite::Row) -> rusqlite::Result<KeyRow> {
     Ok(KeyRow {
@@ -1285,6 +1286,8 @@ fn key_row(r: &rusqlite::Row) -> rusqlite::Result<KeyRow> {
         label: r.get(4)?,
         created_at: r.get(5)?,
         revoked_at: r.get(6)?,
+        expires_at: r.get(7)?,
+        last_used_at: r.get(8)?,
     })
 }
 
@@ -1527,8 +1530,9 @@ impl RegistryTx for LocalRegistryTx<'_> {
     fn insert_key(&mut self, row: &KeyRow) -> Result<(), TenantError> {
         self.conn
             .execute(
-                "INSERT INTO api_key (id, tenant, token_hash, scopes, label, created_at, revoked_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                &format!(
+                    "INSERT INTO api_key ({KEY_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
+                ),
                 params![
                     row.id.bytes(),
                     row.tenant.map(|t| t.0),
@@ -1537,10 +1541,24 @@ impl RegistryTx for LocalRegistryTx<'_> {
                     row.label,
                     row.created_at,
                     row.revoked_at,
+                    row.expires_at,
+                    row.last_used_at,
                 ],
             )
             .map_err(tenant_io)?;
         Ok(())
+    }
+
+    fn touch_key(&mut self, id: KeyId, at: i64) -> Result<bool, TenantError> {
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE api_key SET last_used_at = ?2
+                 WHERE id = ?1 AND (last_used_at IS NULL OR last_used_at < ?2)",
+                params![id.bytes(), at],
+            )
+            .map_err(tenant_io)?;
+        Ok(changed > 0)
     }
 
     fn revoke_key(&mut self, id: KeyId, at: i64) -> Result<(), TenantError> {

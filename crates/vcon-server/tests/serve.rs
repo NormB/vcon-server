@@ -704,6 +704,85 @@ async fn serve_neither_logs_nor_counts_a_listener_that_is_not_full() {
     );
 }
 
+/// A key of the tenant's administrator, made while no server runs.
+fn administrator(s: &Setup) -> String {
+    let tenants = Tenants::open(
+        &s.data,
+        Key::load_master(&s.master_key).expect("the master key"),
+        Arc::new(OsFs),
+        Arc::new(SystemClock),
+    )
+    .expect("opens");
+    tenants
+        .create_key(
+            Actor::Cli,
+            Some(s.tenant),
+            Scopes::of(&[Scope::TenantAdmin]),
+            "admin",
+        )
+        .expect("a key")
+        .token
+}
+
+/// The status a served `POST /tenant/keys` answers to a body that asks
+/// for a key with no expiry.
+async fn no_expiry_status(s: &Setup, admin: &str) -> u16 {
+    let started = start(serve(s));
+    started
+        .client(s)
+        .post(started.url("/tenant/keys"))
+        .bearer_auth(admin)
+        .json(&serde_json::json!({"scopes": ["read"], "label": "forever", "no_expiry": true}))
+        .send()
+        .await
+        .expect("an answer")
+        .status()
+        .as_u16()
+}
+
+/// `keys.no_expiry` reaches the served API: without the key a key with no
+/// expiry is made, and with `false` the same request is refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn serve_refuses_a_key_with_no_expiry_only_where_the_configuration_says_so() {
+    let s = setup();
+    let admin = administrator(&s);
+    assert_eq!(no_expiry_status(&s, &admin).await, 201, "by default");
+    let mut text = std::fs::read_to_string(&s.config).expect("the configuration");
+    text.push_str("\n[keys]\nno_expiry = false\n");
+    std::fs::write(&s.config, text).expect("written");
+    assert_eq!(
+        no_expiry_status(&s, &admin).await,
+        422,
+        "with keys.no_expiry = false"
+    );
+}
+
+/// A key made before keys had an expiry has none in server.sqlite, and a
+/// served request by it is accepted and leaves its last-used time.
+#[tokio::test(flavor = "multi_thread")]
+async fn serve_accepts_a_key_with_no_expiry_and_writes_when_it_was_last_used() {
+    let s = setup();
+    let conn = server_sqlite(&s);
+    conn.execute("UPDATE api_key SET expires_at = NULL", [])
+        .expect("the key as release 0.4.3 left it");
+    drop(conn);
+    let started = start(serve(&s));
+    let answer = started
+        .client(&s)
+        .get(started.url("/key"))
+        .bearer_auth(&s.token)
+        .send()
+        .await
+        .expect("an answer");
+    assert_eq!(answer.status(), 200, "a key with no expiry is accepted");
+    drop(started);
+    let used: Option<i64> = server_sqlite(&s)
+        .query_row("SELECT last_used_at FROM api_key", [], |r| r.get(0))
+        .expect("the key's row");
+    let used = used.expect("a last-used time");
+    assert_eq!(used % 60_000_000_000, 0, "the start of a minute");
+}
+
 #[test]
 fn a_wrong_master_key_stops_the_start() {
     let s = setup();

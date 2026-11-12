@@ -2176,6 +2176,61 @@ mod admin {
     }
 
     #[tokio::test]
+    async fn a_key_is_made_with_the_expiry_asked_and_the_answer_tells_it() {
+        let s = server().await;
+        let operator = s.operator();
+        let tenant = s.tenant.to_string();
+        let expiry = |fields: Value| {
+            let mut arguments = json!({"tenant": tenant, "scopes": ["read"], "label": "x"});
+            for (name, value) in fields.as_object().expect("an object") {
+                arguments[name.as_str()] = value.clone();
+            }
+            let (s, operator) = (&s, &operator);
+            async move {
+                let (made, error) = tool(s, operator, "admin_key_create", arguments).await;
+                (made["expires_at"].clone(), made["type"].clone(), error)
+            }
+        };
+        let (default, _, error) = expiry(json!({})).await;
+        assert!(!error && default.is_string(), "the default has an expiry");
+        let (week, _, error) = expiry(json!({"expires_in_days": 7})).await;
+        assert!(!error && week.is_string(), "seven days");
+        assert!(
+            week.as_str() < default.as_str(),
+            "seven days end before the default 90 do"
+        );
+        let (never, _, error) = expiry(json!({"no_expiry": true})).await;
+        assert!(!error && never.is_null(), "no expiry is null");
+    }
+
+    #[tokio::test]
+    async fn an_expiry_a_key_cannot_have_is_refused_as_bad_expiry() {
+        let s = server().await;
+        let operator = s.operator();
+        for fields in [
+            json!({"expires_in_days": 0}),
+            json!({"expires_in_days": 366}),
+            json!({"expires_in_days": 30, "no_expiry": true}),
+        ] {
+            let mut arguments =
+                json!({"tenant": s.tenant.to_string(), "scopes": ["read"], "label": "x"});
+            for (name, value) in fields.as_object().expect("an object") {
+                arguments[name.as_str()] = value.clone();
+            }
+            let (refused, error) = tool(&s, &operator, "admin_key_create", arguments).await;
+            assert!(error, "{fields}: refused");
+            assert_eq!(refused["type"], named("bad-expiry"), "{fields}");
+        }
+        s.tenants.allow_no_expiry(false);
+        let arguments = json!({
+            "tenant": s.tenant.to_string(), "scopes": ["read"], "label": "x", "no_expiry": true
+        });
+        let (refused, error) = tool(&s, &operator, "admin_key_create", arguments).await;
+        assert!(error, "no expiry where the configuration refuses it");
+        assert_eq!(refused["type"], named("bad-expiry"), "keys.no_expiry false");
+    }
+
+    #[tokio::test]
     async fn a_scope_name_no_key_holds_is_refused_and_recorded() {
         let s = server().await;
         let operator = s.operator();

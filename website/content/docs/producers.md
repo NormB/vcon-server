@@ -20,7 +20,7 @@ name:
 curl https://vcon.example.com/admin/tenants/$TENANT/keys \
   -H "Authorization: Bearer $OPERATOR_KEY" -H "Content-Type: application/json" \
   -d '{"scopes": ["write"], "label": "recorder-east-1"}'
-# 201 {"id":"…","token":"vcs_…"}
+# 201 {"expires_at":"…","id":"…","token":"vcs_…"}
 ```
 
 The token is shown once. A producer that also reads back what it sent needs

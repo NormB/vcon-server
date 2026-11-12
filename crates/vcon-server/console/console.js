@@ -891,7 +891,7 @@ async function keysOf(section, t) {
   section.hidden = false;
   const message = el("p", "", { id: "key-message", role: "alert" });
   const token = el("p", "", { id: "new-token" });
-  const listed = table("key-list", ["id", "scopes", "label", "created", "revoked", ""]);
+  const listed = table("key-list", ["id", "scopes", "label", "created", "revoked", "expires", "last used", ""]);
   const state = stateOf(listed, "keys");
   const path = `/admin/tenants/${encodeURIComponent(t.id)}/keys`;
 
@@ -918,7 +918,9 @@ async function keysOf(section, t) {
         });
         controls.push(revoke);
       }
-      listed.tBodies[0].append(row([k.id, k.scopes.join(", "), k.label, utc(k.created_at), utc(k.revoked_at)], controls));
+      const expires = k.expires_at === null ? "never" : utc(k.expires_at);
+      const used = k.last_used_at === null ? "never" : utc(k.last_used_at);
+      listed.tBodies[0].append(row([k.id, k.scopes.join(", "), k.label, utc(k.created_at), utc(k.revoked_at), expires, used], controls));
     }
     state.loaded();
   }
@@ -932,14 +934,26 @@ async function keysOf(section, t) {
     choices.append(choice);
   }
   const label = field("key-label", "Label");
-  const create = form("key-create", [choices, ...label, el("button", "Issue key", { type: "submit" })], async () => {
+  // A key expires in 90 days unless the form says otherwise: 1 to 365
+  // days, or never. The server checks the days and whether it allows a key
+  // with no expiry.
+  const days = field("key-days", "Expires in days (1 to 365)", { type: "number", min: "1", max: "365", step: "1", value: "90" });
+  const never = el("input", "", { type: "checkbox", id: "key-never" });
+  never.addEventListener("change", () => {
+    days[1].disabled = never.checked;
+  });
+  const neverChoice = el("span", "", { class: "choice" });
+  neverChoice.append(never, el("label", "No expiry", { for: "key-never" }));
+  const create = form("key-create", [choices, ...label, ...days, neverChoice, el("button", "Issue key", { type: "submit" })], async () => {
     const scopes = TENANT_SCOPES.filter((s) => document.getElementById(`scope-${s}`).checked);
-    const body = JSON.stringify({ scopes, label: label[1].value });
+    const life = never.checked ? { no_expiry: true } : { expires_in_days: Number(days[1].value) };
+    const body = JSON.stringify({ scopes, label: label[1].value, ...life });
     const answer = await request("POST", path, body, { "Content-Type": "application/json" });
     if (answer.status === 201) {
       const made = await answer.json();
       token.textContent = made.token;
-      message.textContent = `Issued ${made.id}. Copy the token now; it is not shown again.`;
+      const life = made.expires_at === null ? "it never expires" : `it expires ${utc(made.expires_at)}`;
+      message.textContent = `Issued ${made.id}; ${life}. Copy the token now; it is not shown again.`;
     } else {
       token.textContent = "";
       message.textContent = await refusal(answer);

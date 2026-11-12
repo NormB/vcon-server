@@ -114,6 +114,11 @@ CREATE INDEX audit_counted ON audit (actor, action, status, at);
 
 /// Rows a 0.4.2 server.sqlite could hold: a tenant, a wrap count, a
 /// tenant key and an operator key.
+/// Every access key with the columns of version 4, in order: version 9
+/// adds its own.
+pub(super) const KEYS_V4: &str = "SELECT id, tenant, token_hash, scopes, label, created_at, \
+                                  revoked_at FROM api_key ORDER BY id";
+
 pub(super) const REGISTRY_ROWS: &str = "
 INSERT INTO tenant VALUES (x'a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1', 'acme', '30d', 7, x'0101010101010101',
     x'beef', NULL, 7, 'counts');
@@ -310,7 +315,7 @@ fn a_0_4_2_registry_keeps_its_tenants_keys_and_wrap_counts() {
                      pending_wrapped_tenant_key, key_since, metadata FROM tenant ORDER BY id",
             ),
             rows(conn, "SELECT * FROM master_key_use ORDER BY master_key_id"),
-            rows(conn, "SELECT * FROM api_key ORDER BY id"),
+            rows(conn, KEYS_V4),
         ]
     };
     let before = read(&old.raw());
