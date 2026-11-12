@@ -7,7 +7,7 @@ weight = 60
 group = "project"
 +++
 
-vcon-server 0.4.4 is released: the `vcon` and `vcon-server` crates are on
+vcon-server 0.4.5 is released: the `vcon` and `vcon-server` crates are on
 crates.io, and the server for Linux on x86_64 and aarch64 is on
 [GitHub](https://github.com/NormB/vcon-server/releases). It is not yet for
 production. This page says what works today; each other page describes only
@@ -73,7 +73,10 @@ what is built, unless it says otherwise.
 - **The terminal UI:** `vcon-server tui`, in the release binaries from
   0.4.2 on, lists the vCons of one key's tenant and shows each one's uuid,
   version and times, read over the HTTP API with a `read` key. It reads
-  only, and never a vCon's content. See [the terminal UI](@/docs/tui.md).
+  only, and never a vCon's content. From 0.4.5 on, the last line of each
+  screen names only the keys that act on it; releases 0.4.2 to 0.4.4 show
+  the list's keys on the connecting screen, an empty tenant and every
+  failure. See [the terminal UI](@/docs/tui.md).
 - **Reveals in the audit log**, from 0.4.3:
   `GET /vcons/{uuid}?reveal=<part>`, and the same parameter on the two
   legal read routes, records the read as `reveal_<part>` or
@@ -162,7 +165,9 @@ what is built, unless it says otherwise.
   `key-expired`, and an expiry a key cannot have with `bad-expiry`. Every
   list of keys shows `expires_at` and `last_used_at`, the minute of the
   key's latest accepted request. A key made by release 0.4.3 or earlier
-  keeps working with no expiry. Release 0.4.3 has none of this. See
+  keeps working with no expiry. Release 0.4.3 has none of this. From
+  0.4.5 on, the `expires_at` of a new key is a whole second; a key made
+  by 0.4.4 may have one with a fraction of a second. See
   [administer a tenant with a key](@/docs/tenant-administration.md#set-a-key-s-expiry-and-see-when-it-was-last-used).
 - **Tenants and keys.** Scoped bearer keys, revocation, tenant removal that
   never passes a legal hold.

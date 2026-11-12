@@ -572,7 +572,10 @@ against a server on the same machine.
 `scripts/release_notes.py <version> --repo <owner>/<name>` prints the
 section of the version (what stands between `## [<version>] - <date>` and
 the next `## ` heading), then the line that says how to verify a
-download. A link the section writes by reference is written in full. The
+download. A link the section writes by reference is written in full. A
+paragraph or a list item that the changelog writes on several lines is
+written on one, since GitHub shows each line break of a release's text;
+the lines of a code block, a table and a quote stay as they are. The
 script ends with exit code 1 and prints no text for a version with no
 section or with two, for a section with no text, and for a text longer
 than the 125000 characters a release holds. The workflow's first job runs
@@ -581,7 +584,7 @@ publish job gives its output to `gh release create --notes-file`. Before
 a tag, see the text a release will have:
 
 ```sh
-python3 -I scripts/release_notes.py 0.4.4 --repo NormB/vcon-server
+python3 -I scripts/release_notes.py 0.4.5 --repo NormB/vcon-server
 ```
 
 `scripts/test_release_notes.py` tests the script, and that the workflow

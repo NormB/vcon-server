@@ -13,6 +13,10 @@ section writes by reference (`[text][name]` or `[name]`) is written in
 full, since the release's text does not hold the definitions. Text in a
 code block or a code span is copied as it is.
 
+GitHub shows each line break of a release's text, so a paragraph or a
+list item that the changelog writes on several lines is written on one.
+The lines of a code block, a table and a quote stay as they are.
+
 Refused, with exit code 1 and no output: a version with no section or
 with two, a section with no text, a repository that is not `owner/name`,
 and notes longer than a release may hold.
@@ -40,6 +44,14 @@ _DEFINITION = re.compile(r"\[([^\]]+)\]:\s+(\S+)\s*")
 _FENCE = re.compile(r" {0,3}(```|~~~)")
 _CODE_SPAN = re.compile(r"(`+[^`]*`+)")
 _LINK = re.compile(r"(?<![\]\\])\[([^\]\[]+)\](\[([^\]\[]+)\])?(?![\[(:])")
+# The start of a list item: a bullet, or a number (group 2).
+_ITEM = re.compile(r" *([-*+]|(\d{1,9})[.)])( |$)")
+_NUMBERED = re.compile(r" *\d{1,9}[.)]( |$)")
+# A line that is never joined to another: a heading, a table row, a quote,
+# a rule, or the line under a heading written with `===` or `---`.
+_OWN_LINE = re.compile(r" *(#{1,6}( |$)|\||>|([-*_] *){3,}$|=+ *$|-+ *$)")
+# The first line of a code block written by indentation.
+_INDENTED = re.compile(r"( {4}|\t)")
 
 
 class Refused(Exception):
@@ -81,9 +93,36 @@ def _resolved(line, definitions):
     return "".join(part if k % 2 else _LINK.sub(link, part) for k, part in enumerate(parts))
 
 
+def _one_line(lines):
+    """`lines`, as `_lines` gives them, with each paragraph and each list
+    item on one line: a line that continues the one before it is joined to
+    it with one space. A blank line, a line of a code block, a heading, a
+    table row, a quote and a rule stay as they are, and so does the line
+    after a break the text asks for (a line that ends with a backslash or
+    with two spaces)."""
+    out = []
+    # The first line of the paragraph or item being joined, if one is open.
+    first = None
+    for line, code in lines:
+        if code or not line.strip() or _OWN_LINE.match(line):
+            out.append((line, code))
+            first = None
+            continue
+        item = _ITEM.match(line)
+        # A number other than 1 starts an item only in a numbered list.
+        starts = bool(item) and (item.group(2) in (None, "1") or (first is not None and _NUMBERED.match(first)))
+        before = out[-1][0] if out else ""
+        if first is None or starts or before.endswith(("\\", "  ")) or _INDENTED.match(first):
+            out.append((line, False))
+            first = line
+        else:
+            out[-1] = (f"{before.rstrip(' ')} {line.strip(' ')}", False)
+    return out
+
+
 def section(changelog, version):
     """The changelog section of `version`, as text with no blank line at
-    its start or end."""
+    its start or end and with each paragraph and list item on one line."""
     if not _VERSION.fullmatch(version):
         raise Refused(f"`{version}` is not a version: give it as Cargo.toml has it, such as 0.4.4")
     lines = _lines(changelog)
@@ -106,8 +145,10 @@ def section(changelog, version):
             continue
         if not inside or (not code and _DEFINITION.fullmatch(line)):
             continue
-        kept.append(line if code else _resolved(line, definitions))
-    text = "\n".join(kept).strip("\n")
+        kept.append((line, code))
+    # Joined first, so a link or a code span that breaks across two lines
+    # of the changelog is whole when links are resolved.
+    text = "\n".join(line if code else _resolved(line, definitions) for line, code in _one_line(kept)).strip("\n")
     if not any(line.strip() and not line.startswith("### ") for line in text.split("\n")):
         raise Refused(f"the section `## [{version}]` of CHANGELOG.md is empty")
     return text

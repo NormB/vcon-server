@@ -194,6 +194,139 @@ class Section(unittest.TestCase):
         self.assertIn("has no section", refusal(section, "1.0.0", ""))
 
 
+def of(body):
+    """The section of a changelog whose one version holds `body`."""
+    return release_notes.section(f"## [1.0.0] - 2026-01-01\n\n{body}\n\n## [0.9.0] - 2025-12-01\n\n- Older.\n", "1.0.0")
+
+
+class OneLine(unittest.TestCase):
+    """GitHub shows each line break of a release's text, so a paragraph or
+    list item the changelog writes on several lines is written on one."""
+
+    # What must work.
+
+    def test_a_paragraph_of_three_lines_is_one_line(self):
+        self.assertEqual(of("The upgrade is\nthe binary\nalone."), "The upgrade is the binary alone.")
+
+    def test_a_list_item_of_three_lines_is_one_line(self):
+        self.assertEqual(of("- **New keys.** A key\n  expires 90 days\n  after it is made."), "- **New keys.** A key expires 90 days after it is made.")
+
+    def test_each_list_item_keeps_its_own_line(self):
+        self.assertEqual(of("- One\n  more.\n- Two\n  more."), "- One more.\n- Two more.")
+
+    def test_the_blank_line_between_two_paragraphs_stays(self):
+        self.assertEqual(of("One\nmore.\n\nTwo\nmore."), "One more.\n\nTwo more.")
+
+    def test_a_paragraph_then_a_list_with_no_blank_line_between(self):
+        self.assertEqual(of("Three things:\n- One.\n- Two\n  more."), "Three things:\n- One.\n- Two more.")
+
+    def test_a_heading_and_the_text_under_it_stay_apart(self):
+        self.assertEqual(of("### Fixed\n\n- A fix\n  of two lines."), "### Fixed\n\n- A fix of two lines.")
+
+    def test_a_link_by_reference_that_breaks_across_lines_is_written_in_full(self):
+        changelog = (
+            "## [1.0.0] - 2026-01-01\n\n- See the [upgrade\n  page][upgrade] first.\n\n"
+            "[upgrade]: https://example.com/docs/upgrading/\n"
+        )
+        self.assertEqual(
+            release_notes.section(changelog, "1.0.0"),
+            "- See the [upgrade page](https://example.com/docs/upgrading/) first.",
+        )
+
+    def test_an_inline_link_that_breaks_across_lines_is_one_link(self):
+        self.assertEqual(
+            of("- The\n  [terminal UI page](https://example.com/docs/tui/) lists\n  each screen."),
+            "- The [terminal UI page](https://example.com/docs/tui/) lists each screen.",
+        )
+
+    def test_a_code_span_that_breaks_across_lines_is_one_span(self):
+        self.assertEqual(of("- It says `Press r to try again, or q to\n  quit.` there."), "- It says `Press r to try again, or q to quit.` there.")
+
+    def test_the_spaces_at_the_end_of_a_joined_line_are_not_doubled(self):
+        self.assertEqual(of("One \nmore."), "One more.")
+
+    def test_a_numbered_item_of_two_lines_is_one_line(self):
+        self.assertEqual(of("1. Stop\n   the server.\n2. Copy\n   the data."), "1. Stop the server.\n2. Copy the data.")
+
+    def test_no_line_of_the_notes_continues_the_line_before(self):
+        text = release_notes.notes("## [1.0.0] - 2026-01-01\n\nA paragraph\nof two lines.\n\n- An item\n  of two.\n", "1.0.0", REPO)
+        self.assertEqual(
+            text.split("\n")[:3],
+            ["A paragraph of two lines.", "", "- An item of two."],
+        )
+
+    # The edges.
+
+    def test_a_nested_item_keeps_its_line_and_its_indent(self):
+        self.assertEqual(of("- Outer\n  text.\n  - Inner\n    text.\n- Next."), "- Outer text.\n  - Inner text.\n- Next.")
+
+    def test_the_lines_of_a_code_block_stay_as_they_are(self):
+        self.assertEqual(of("Run:\n\n```sh\nline one\nline two\n```"), "Run:\n\n```sh\nline one\nline two\n```")
+
+    def test_text_right_before_a_code_block_is_not_joined_to_its_fence(self):
+        self.assertEqual(of("Run\nthis:\n```sh\nline one\n```"), "Run this:\n```sh\nline one\n```")
+
+    def test_text_right_after_a_code_block_is_not_joined_to_its_fence(self):
+        self.assertEqual(of("```sh\nline one\n```\nThen\nwait."), "```sh\nline one\n```\nThen wait.")
+
+    def test_the_rows_of_a_table_stay_apart(self):
+        table = "| Key | Does |\n|---|---|\n| `q` | quits |"
+        self.assertEqual(of(table), table)
+
+    def test_text_right_after_a_table_row_is_not_joined_to_it(self):
+        self.assertEqual(of("| Key |\n|---|\n| `q` |\nmore"), "| Key |\n|---|\n| `q` |\nmore")
+
+    def test_the_lines_of_a_quote_stay_apart(self):
+        self.assertEqual(of("> One.\n> Two."), "> One.\n> Two.")
+
+    def test_a_line_that_ends_with_a_backslash_keeps_its_break(self):
+        self.assertEqual(of("One\\\ntwo."), "One\\\ntwo.")
+
+    def test_a_line_that_ends_with_two_spaces_keeps_its_break(self):
+        self.assertEqual(of("One  \ntwo."), "One  \ntwo.")
+
+    def test_a_rule_of_dashes_is_not_joined_to_the_text_before_it(self):
+        self.assertEqual(of("One.\n\n---\n\nTwo."), "One.\n\n---\n\nTwo.")
+
+    def test_a_rule_or_an_underline_right_under_text_stays_on_its_own_line(self):
+        self.assertEqual(of("One.\n***\nTwo\nmore."), "One.\n***\nTwo more.")
+        self.assertEqual(of("A heading\n---\nTwo\nmore."), "A heading\n---\nTwo more.")
+        self.assertEqual(of("A heading\n===\nTwo\nmore."), "A heading\n===\nTwo more.")
+
+    def test_a_line_under_a_heading_with_no_blank_line_stays_under_it(self):
+        self.assertEqual(of("### Fixed\n- A fix."), "### Fixed\n- A fix.")
+        self.assertEqual(of("### Fixed\nText\nof two lines."), "### Fixed\nText of two lines.")
+
+    def test_a_changelog_with_windows_line_ends_is_joined_the_same(self):
+        changelog = "## [1.0.0] - 2026-01-01\r\n\r\n- One\r\n  more.\r\n"
+        self.assertEqual(release_notes.section(changelog, "1.0.0"), "- One more.")
+
+    def test_a_word_that_starts_with_a_dash_or_a_digit_is_joined(self):
+        self.assertEqual(of("The flag is\n--no-expiry and the port\n8443. is it."), "The flag is --no-expiry and the port 8443. is it.")
+
+    def test_the_lines_of_an_indented_code_block_stay_as_they_are(self):
+        self.assertEqual(of("Run:\n\n    line one\n    line two"), "Run:\n\n    line one\n    line two")
+
+    def test_the_second_paragraph_of_an_item_is_one_line_with_its_indent(self):
+        self.assertEqual(of("- One\n  more.\n\n  Second\n  paragraph."), "- One more.\n\n  Second paragraph.")
+
+    def test_one_line_stays_as_it_is(self):
+        self.assertEqual(of("- One."), "- One.")
+
+    # What must be refused.
+
+    def test_a_section_of_headings_alone_is_still_refused(self):
+        changelog = "## [1.0.0] - 2026-01-01\n\n### Added\n### Fixed\n"
+        self.assertIn("is empty", refusal(section, "1.0.0", changelog))
+
+    def test_the_limit_counts_the_joined_text(self):
+        # A line break and the space that takes its place are one character each.
+        body = "\n".join(["word"] * 24990)
+        changelog = f"## [1.0.0] - 2026-01-01\n\n{body}\n"
+        self.assertEqual(len(release_notes.section(changelog, "1.0.0")), 124949)
+        self.assertIn("at most 125000", refusal(release_notes.notes, changelog, "1.0.0", REPO))
+
+
 class Notes(unittest.TestCase):
     def notes(self, version="0.4.4", changelog=CHANGELOG, repo=REPO):
         return release_notes.notes(changelog, version, repo)
@@ -356,6 +489,19 @@ class Repository(unittest.TestCase):
             with self.subTest(version=version):
                 text = release_notes.notes(changelog, version, "NormB/vcon-server")
                 self.assertGreater(len(text), 200, "a section and the verify line")
+
+    def test_no_line_of_any_release_continues_the_line_before(self):
+        # GitHub shows each line break of a release's text: a sentence cut
+        # at the changelog's 76 columns would be cut on the release's page.
+        changelog = (HERE.parent / "CHANGELOG.md").read_text(encoding="utf-8")
+        for version in release_notes.versions(changelog):
+            lines = release_notes.section(changelog, version).split("\n")
+            for before, line in zip(lines, lines[1:]):
+                with self.subTest(version=version, line=line[:60]):
+                    self.assertTrue(
+                        not before.strip() or not line.strip() or line.lstrip().startswith(("- ", "#", "|", "```")),
+                        f"continues `{before[:60]}`",
+                    )
 
     def test_the_release_workflow_takes_its_notes_from_the_script(self):
         workflow = (HERE.parent / ".github/workflows/release.yml").read_text(encoding="utf-8")

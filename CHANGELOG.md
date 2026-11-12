@@ -6,6 +6,29 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-11-12
+
+The upgrade from 0.4.4 is the binary alone. No stored data and no schema
+changes: the catalogs stay at schema version 9, and the PostgreSQL
+preview's schema at version 6. A 0.4.4 configuration is read as it was.
+A downgrade is possible: 0.4.4 opens a data directory that 0.4.5 has
+served. Three things look different after the upgrade; each is under
+Fixed or Changed below, and the Upgrade page's "From 0.4.4 to 0.4.5" has
+the steps.
+
+- **The terminal UI's last line names only the keys that act.** On each
+  screen of `vcon-server tui` the last line lists the keys that do
+  something in the state shown. 0.4.4 showed the list's keys on the
+  connecting screen, an empty tenant and every failure.
+- **Two failure screens say what can be done.** For an operator key, and
+  for a key without the `read` scope, the screen says `Press q to quit.`
+  where 0.4.4 said `Press r to try again, or q to quit.`. While a message
+  stands in place of the list, the keys that select and open do nothing.
+- **`expires_at` of a new key is a whole second.** A key made by 0.4.5
+  has an expiry with no fraction of a second, such as
+  `2027-02-10T12:00:00Z`. Keys made before keep the expiry they have, so
+  a client must still read an `expires_at` with a fraction.
+
 ### Fixed
 
 - **The terminal UI's last line named keys that did nothing.** The
@@ -43,10 +66,11 @@ All notable changes to this project are recorded here. The format follows
   Keys made before keep the expiry they have.
 - **A GitHub release's text is its changelog section.** The release
   workflow writes the section of the tag's version, then the line that
-  says how to verify a download (`scripts/release_notes.py`). A tag whose
-  version has no section in `CHANGELOG.md` stops the workflow before the
-  builds. Before, the text was the verify line alone, and the notes of
-  0.4.4 were added by hand.
+  says how to verify a download (`scripts/release_notes.py`). Each
+  paragraph and list item is written on one line, since GitHub shows each
+  line break of a release's text. A tag whose version has no section in
+  `CHANGELOG.md` stops the workflow before the builds. Before, the text
+  was the verify line alone, and the notes of 0.4.4 were added by hand.
 - **No test shows a credential when it fails.** Assertion messages, panic
   texts and debug prints in the tests no longer show a key's token, a
   secret, a cookie or a session id, and `scripts/check_style.py` refuses
@@ -1195,7 +1219,8 @@ Nothing in this release breaks a 0.4.1 deployment, and an upgrade from
   stack and abort the server. `vcon::MAX_SIGNED_LAYERS`,
   `vcon::MAX_JSON_DEPTH` and `vcon::Rejection::TooDeep` name the limits.
 
-[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.4...HEAD
+[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.5...HEAD
+[0.4.5]: https://github.com/NormB/vcon-server/releases/tag/v0.4.5
 [0.4.4]: https://github.com/NormB/vcon-server/releases/tag/v0.4.4
 [0.4.3]: https://github.com/NormB/vcon-server/releases/tag/v0.4.3
 [0.4.2]: https://github.com/NormB/vcon-server/releases/tag/v0.4.2

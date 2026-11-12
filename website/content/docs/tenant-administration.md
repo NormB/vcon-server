@@ -229,7 +229,9 @@ key that never expires with `"no_expiry": true`. The answer carries the
 expiry as `expires_at`, in UTC, and `null` for a key that never expires.
 An expiry is a whole second (`2027-02-10T12:00:00Z`): the days are counted
 from the second the key is made in, so a key lives up to one second less
-than the days asked and never longer.
+than the days asked and never longer. Whole seconds are new in 0.4.5: a
+key made by release 0.4.4 may have an expiry with a fraction of a second,
+and keeps it.
 Make a key that lives 30 days:
 
 ```sh

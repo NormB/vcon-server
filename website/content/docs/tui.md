@@ -82,6 +82,12 @@ and holds a key that can only read.
 | A terminal of 80 columns by 24 lines | the terminal's machine | Smaller works, down to 40 by 8, with fewer columns shown. |
 | One shell for the steps | both | Later steps use variables that earlier steps set. |
 
+The screens on this page are those of release 0.4.5. Releases 0.4.2 to
+0.4.4 show another last line on some of them: the list's keys
+(`j down  k up  Enter open  r refresh  n more`) on the connecting screen,
+an empty tenant and every failure, and `Press r to try again, or q to
+quit.` for an operator key and for a key without the `read` scope.
+
 ## Quick start on the server's own machine
 
 These steps suit the machine [getting started](@/docs/getting-started.md)

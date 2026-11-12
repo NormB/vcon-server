@@ -8,7 +8,7 @@ hidden, until its tenant's retention period has passed since it was stored,
 and then erased, unless a legal hold keeps it. Every request is recorded in
 an audit log.
 
-**Status: 0.4.4 released, not yet for production.** What works today is on
+**Status: 0.4.5 released, not yet for production.** What works today is on
 [what is built](https://vcon-server.com/docs/status/).
 
 This crate is the `vcon-server` program. Its library exists so the tests can

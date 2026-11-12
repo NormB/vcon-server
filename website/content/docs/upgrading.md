@@ -18,6 +18,36 @@ CI runs every command on this page on each change. It installs the previous
 release, sets it up as [getting started](@/docs/getting-started.md) does,
 upgrades it to the server built from the change, and goes back again.
 
+## From 0.4.4 to 0.4.5
+
+The upgrade is the binary alone. No stored data and no schema changes: the
+catalogs keep schema version 9, and the
+[PostgreSQL preview](@/docs/postgres-catalog.md) keeps schema version 6. A
+0.4.4 configuration is read as it was. A downgrade is possible: 0.4.4
+opens a data directory that 0.4.5 has served. Copy the data directory
+before the upgrade all the same, as in
+[copy the data directory](#copy-the-data-directory). Three things look
+different after the upgrade:
+
+- **The terminal UI's last line names only the keys that act.** On each
+  screen of [`vcon-server tui`](@/docs/tui.md) the last line lists the
+  keys that do something in the state shown: `? help  q quit` while
+  connecting or loading, `r refresh  ? help  q quit` for an empty tenant
+  or a failure, no `n more` when every vCon is read, and no
+  `j down  k up` for a list of one. Release 0.4.4 showed the list's keys
+  on each of these screens.
+- **Two failure screens say what can be done.** For an operator key, and
+  for a key without the `read` scope, the screen says `Press q to quit.`
+  where 0.4.4 said `Press r to try again, or q to quit.`: `r` cannot read
+  another key. While a message stands in place of the list, the keys that
+  select and open do nothing.
+- **`expires_at` of a new key is a whole second.** A key made by 0.4.5
+  has an expiry with no fraction of a second, such as
+  `2027-02-10T12:00:00Z`, and the answer that makes it is 136 bytes. A
+  key made by 0.4.4 keeps the expiry it has, which may carry a fraction
+  of a second, so a client must still read both forms. See
+  [set a key's expiry](@/docs/tenant-administration.md#set-a-key-s-expiry-and-see-when-it-was-last-used).
+
 ## From 0.4.3 to 0.4.4
 
 There is no downgrade from 0.4.4: release 0.4.3 refuses a data directory
@@ -305,7 +335,7 @@ but do not install it yet. The commands use their own variable names, so
 they do not change the ones from install:
 
 ```sh
-NEW_VERSION=0.4.4
+NEW_VERSION=0.4.5
 NEW_ARCHIVE=vcon-server-$NEW_VERSION-$(uname -m)-unknown-linux-gnu.tar.gz
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/$NEW_ARCHIVE
 curl -fsSL -o SHA256SUMS-$NEW_VERSION.txt https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/SHA256SUMS.txt
