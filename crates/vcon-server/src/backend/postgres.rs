@@ -23,6 +23,7 @@
 //! No catalog statement runs here yet: [`preview`] connects, checks the
 //! server, and refuses to go on.
 
+mod catalog;
 mod connect;
 mod pool;
 mod schema;

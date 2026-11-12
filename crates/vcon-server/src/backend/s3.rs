@@ -1491,20 +1491,33 @@ pub(crate) mod remote {
             .collect()
     }
 
-    /// A local catalog with its objects in the bucket; `packed`: with
-    /// Parquet storage, a pack run after every write.
-    struct LocalAndS3 {
-        dir: tempfile::TempDir,
-        s3: Arc<S3>,
-        packed: bool,
+    /// Opens a tenant's catalog under its catalog key; called once for a
+    /// new tenant and again each time its Store is opened.
+    pub(crate) type CatalogFor = Arc<dyn Fn(TenantId, Key) -> Box<dyn crate::backend::Catalog>>;
+
+    /// A catalog from `catalog` with its objects in the bucket; `packed`:
+    /// with Parquet storage, a pack run after every write.
+    pub(crate) struct CatalogAndS3 {
+        pub(crate) catalog: CatalogFor,
+        pub(crate) s3: Arc<S3>,
+        pub(crate) packed: bool,
     }
 
-    impl Harness for LocalAndS3 {
+    /// Local catalogs, each in a directory of its tenant under `dir`.
+    fn local_catalogs(dir: &tempfile::TempDir) -> CatalogFor {
+        let dir = dir.path().to_owned();
+        Arc::new(move |tenant, catalog_key| {
+            let dir = dir.join(tenant.to_string());
+            std::fs::create_dir_all(&dir).expect("tenant directory");
+            Box::new(LocalCatalog::open(&dir.join("catalog.sqlite"), catalog_key).expect("catalog"))
+        })
+    }
+
+    impl Harness for CatalogAndS3 {
         fn fresh(&self, clock: Arc<TestClock>) -> Fresh {
             let packed = self.packed;
             let tenant = TenantId::generate();
-            let dir = self.dir.path().join(tenant.to_string());
-            std::fs::create_dir(&dir).expect("tenant directory");
+            let catalog_for = self.catalog.clone();
             let master = Key::generate().expect("master");
             let ctx = envelope::Context::Tenant { tenant };
             let wrapped = envelope::wrap(&master, &ctx, &Key::generate().expect("key"));
@@ -1525,12 +1538,10 @@ pub(crate) mod remote {
             let open = std::rc::Rc::new(move |s3: &Arc<S3>, recover: bool| {
                 let key = envelope::unwrap(&master, &ctx, &wrapped).expect("unwraps");
                 let catalog_key = envelope::catalog_key(&key).expect("catalog key");
-                let catalog =
-                    LocalCatalog::open(&dir.join("catalog.sqlite"), catalog_key).expect("catalog");
                 Store::open_on(
                     tenant,
                     key,
-                    Box::new(catalog),
+                    catalog_for(tenant, catalog_key),
                     Arc::new(s3.tenant(tenant)),
                     Some(Arc::new(s3.packs(tenant))),
                     Arc::new(OsFs),
@@ -1581,8 +1592,9 @@ pub(crate) mod remote {
     #[test]
     fn a_local_catalog_with_s3_objects_conforms() {
         let (s3, _) = bucket(false);
-        conformance::run(&LocalAndS3 {
-            dir: tempfile::tempdir().expect("temp dir"),
+        let dir = tempfile::tempdir().expect("temp dir");
+        conformance::run(&CatalogAndS3 {
+            catalog: local_catalogs(&dir),
             s3,
             packed: false,
         });
@@ -1593,8 +1605,9 @@ pub(crate) mod remote {
     #[test]
     fn a_local_catalog_with_parquet_storage_in_the_bucket_conforms() {
         let (s3, _) = bucket(false);
-        conformance::run(&LocalAndS3 {
-            dir: tempfile::tempdir().expect("temp dir"),
+        let dir = tempfile::tempdir().expect("temp dir");
+        conformance::run(&CatalogAndS3 {
+            catalog: local_catalogs(&dir),
             s3,
             packed: true,
         });
@@ -1677,8 +1690,9 @@ pub(crate) mod remote {
     #[test]
     fn recovery_removes_an_object_no_row_names() {
         let (s3, _) = bucket(false);
-        let harness = LocalAndS3 {
-            dir: tempfile::tempdir().expect("temp dir"),
+        let dir = tempfile::tempdir().expect("temp dir");
+        let harness = CatalogAndS3 {
+            catalog: local_catalogs(&dir),
             s3: s3.clone(),
             packed: false,
         };
@@ -1764,8 +1778,9 @@ pub(crate) mod remote {
     #[test]
     fn a_packed_version_reads_back_from_the_bucket() {
         let (s3, _) = bucket(false);
-        let harness = LocalAndS3 {
-            dir: tempfile::tempdir().expect("temp dir"),
+        let dir = tempfile::tempdir().expect("temp dir");
+        let harness = CatalogAndS3 {
+            catalog: local_catalogs(&dir),
             s3: s3.clone(),
             packed: false,
         };
@@ -2554,8 +2569,9 @@ pub(crate) mod remote {
     #[test]
     fn no_object_holds_the_vcon_or_its_uuid() {
         let (s3, _) = bucket(false);
-        let harness = LocalAndS3 {
-            dir: tempfile::tempdir().expect("temp dir"),
+        let dir = tempfile::tempdir().expect("temp dir");
+        let harness = CatalogAndS3 {
+            catalog: local_catalogs(&dir),
             s3: s3.clone(),
             packed: false,
         };

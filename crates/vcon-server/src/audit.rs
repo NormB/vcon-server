@@ -216,7 +216,7 @@ pub const NO_ANSWER: u16 = 0;
 
 /// What the log's column holds for an entry's `status`: the status, or
 /// NULL for [`NO_ANSWER`]. The one place the number becomes no status.
-fn stored(status: u16) -> Option<u16> {
+pub(crate) fn stored(status: u16) -> Option<u16> {
     Some(status).filter(|status| *status != NO_ANSWER)
 }
 
@@ -224,6 +224,9 @@ fn stored(status: u16) -> Option<u16> {
 #[derive(Debug)]
 pub enum AuditError {
     Sqlite(rusqlite::Error),
+    /// A log kept in a database server could not be written or read; the
+    /// text says why.
+    Database(String),
     Write(io::Error),
 }
 
@@ -236,7 +239,7 @@ impl From<rusqlite::Error> for AuditError {
 impl Actor {
     /// The name written in the log: the key id, `sweep`, `cli`,
     /// `user:<id>`, or empty.
-    fn name(self) -> String {
+    pub(crate) fn name(self) -> String {
         match self {
             Actor::User(id) => format!("user:{id}"),
             Actor::Key(id) => id.to_string(),
@@ -248,10 +251,19 @@ impl Actor {
 }
 
 /// `now` in RFC 3339, in UTC.
-fn rfc3339(now: OffsetDateTime) -> String {
+pub(crate) fn rfc3339(now: OffsetDateTime) -> String {
     now.to_offset(time::UtcOffset::UTC)
         .format(&Rfc3339)
         .expect("every UTC time from the clock formats")
+}
+
+/// The start of the minute `now` is in, in UTC: the time of the record
+/// [`count`] adds to.
+pub(crate) fn minute_of(now: OffsetDateTime) -> OffsetDateTime {
+    now.to_offset(time::UtcOffset::UTC)
+        .replace_second(0)
+        .and_then(|t| t.replace_nanosecond(0))
+        .expect("0 is a valid second and nanosecond")
 }
 
 /// Appends one record, at `now`, in `tx`.
@@ -292,11 +304,7 @@ pub fn count_many(
         return Ok(());
     }
     let times = i64::try_from(times).unwrap_or(i64::MAX);
-    let minute = now
-        .to_offset(time::UtcOffset::UTC)
-        .replace_second(0)
-        .and_then(|t| t.replace_nanosecond(0))
-        .expect("0 is a valid second and nanosecond");
+    let minute = minute_of(now);
     let fields = params![
         rfc3339(minute),
         entry.actor.name(),

@@ -233,6 +233,21 @@ impl Lease {
         }
     }
 
+    /// Closes the connection when the lease ends, whatever it did: for a
+    /// connection left in a state that cannot be known, such as one whose
+    /// COMMIT or ROLLBACK got no answer.
+    #[cfg_attr(
+        not(all(test, feature = "backend-tests")),
+        expect(
+            dead_code,
+            reason = "the catalog's transactions use it, and a tenant's space opens them from \
+                      the next change; the tests do now"
+        )
+    )]
+    pub(crate) fn discard(&mut self) {
+        self.keep = false;
+    }
+
     fn connected(&self) -> &Connected {
         self.connected
             .as_ref()

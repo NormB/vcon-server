@@ -564,7 +564,9 @@ pub fn run(config: &Config, command: &Command, out: &mut dyn Write) -> Result<()
             };
             exported.map_err(|e| match e {
                 AuditError::Write(e) => CommandError::Output(e),
-                AuditError::Sqlite(_) => CommandError::Tenant(TenantError::Io),
+                AuditError::Sqlite(_) | AuditError::Database(_) => {
+                    CommandError::Tenant(TenantError::Io)
+                }
             })
         }
     }

@@ -9,6 +9,7 @@
 //! servers never passes by skipping. The others need no server: they read
 //! files, or talk to a small fake server on the loopback address.
 
+mod catalog_tests;
 mod edge;
 mod failure;
 mod schema_tests;

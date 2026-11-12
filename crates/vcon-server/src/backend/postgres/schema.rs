@@ -24,11 +24,12 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     include_str!("schema_v4.sql"),
     include_str!("schema_v5.sql"),
     include_str!("schema_v6.sql"),
+    include_str!("schema_v7.sql"),
 ];
 
 /// The schema version this binary makes and reads:
 /// [`MIGRATIONS`]`.len()`, a test holds them equal.
-pub(crate) const SCHEMA_VERSION: i32 = 6;
+pub(crate) const SCHEMA_VERSION: i32 = 7;
 
 /// The advisory lock every server takes, a constant all instances share.
 pub(crate) const SERVERS_LOCK: i64 = 0x7663_6f6e_5352_0001;
@@ -198,10 +199,28 @@ pub(crate) async fn migrating_checks(client: &Client, user: &str) -> Result<(), 
 }
 
 /// Applies `migrations` the database has not yet, alone and as
-/// `vcon_owner`, each in one transaction. It leaves the connection's
-/// session changed (`SET ROLE` and the locks), so the caller closes it.
+/// `vcon_owner`, each in one transaction. Before it returns it gives up
+/// the role and the two locks, so a server started the moment `migrate`
+/// ends finds them free: a lock left to the end of the session is held
+/// until the server notices the closed connection, which is after the
+/// command has exited.
 pub(crate) async fn run(client: &mut Client, migrations: &[&str]) -> Result<Migrated, String> {
-    take_locks(client).await?;
+    let done = match take_locks(client).await {
+        Ok(()) => run_locked(client, migrations).await,
+        Err(refused) => Err(refused),
+    };
+    // A failed migration has already rolled back; the session's role and
+    // locks are given up either way, one of the two locks too when only
+    // the other was refused. If this fails the connection is lost, and
+    // the server frees both when it closes the session.
+    let _ = client
+        .batch_execute("RESET ROLE; SELECT pg_advisory_unlock_all()")
+        .await;
+    done
+}
+
+/// [`run`], with the two locks held.
+async fn run_locked(client: &mut Client, migrations: &[&str]) -> Result<Migrated, String> {
     client
         .batch_execute("SET ROLE vcon_owner")
         .await
@@ -248,6 +267,35 @@ async fn take_locks(client: &Client) -> Result<(), String> {
         )
     }
 }
+
+/// The lock a server holds for as long as it serves, tried without
+/// waiting, on a connection kept for it. It is exclusive: this release
+/// serves a database from one instance, and `migrate`, which tries the
+/// same lock, is refused while a server runs.
+#[cfg_attr(
+    not(all(test, feature = "backend-tests")),
+    expect(
+        dead_code,
+        reason = "a server keeps its catalogs here from the next change; the tests do now"
+    )
+)]
+pub(crate) async fn take_server_lock(client: &Client) -> Result<(), String> {
+    let row = checked_row(
+        client,
+        &format!("SELECT pg_try_advisory_lock({SERVERS_LOCK})"),
+    )
+    .await?;
+    if is_true(&row, 0) {
+        Ok(())
+    } else {
+        Err(SERVER_LOCK_HELD.to_owned())
+    }
+}
+
+/// What a server is told when another holds the servers' lock.
+pub(crate) const SERVER_LOCK_HELD: &str = "another server, or a migration, holds this database's \
+                                           lock; one server serves a database, and migrate runs \
+                                           while none does";
 
 /// The version recorded, or 0 for a database no migration has touched.
 async fn installed_for_migrate(client: &Client) -> Result<i32, String> {
