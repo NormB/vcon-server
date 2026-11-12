@@ -255,24 +255,30 @@ fn migrate_leaves_the_configuration_file_as_it_was() {
 }
 
 /// A configuration with the objects in a bucket and the catalogs in
-/// PostgreSQL at `port` of each of `hosts`, logging in with `password`.
-fn postgres_config(dir: &Path, hosts: &[&str], port: u16, password: &Path) -> PathBuf {
+/// PostgreSQL at `port` of each of `hosts`, logging in with what
+/// `password_file` holds.
+fn postgres_config(dir: &Path, hosts: &[&str], port: u16, password_file: &Path) -> PathBuf {
     let hosts: Vec<String> = hosts.iter().map(|h| format!("{h:?}")).collect();
     let text = format!(
         "{}\n[storage]\nobjects = \"s3\"\n\n[storage.s3]\nregion = \"us-east-1\"\n\
          bucket = \"vcon\"\n\n[catalog]\nbackend = \"postgres\"\n\n[catalog.postgres]\n\
          hosts = [{}]\nport = {port}\ndbname = \"vcon\"\nuser = \"vcon_migrate\"\n\
-         password_file = {password:?}\n",
+         password_file = {password_file:?}\n",
         least(dir),
         hosts.join(", ")
     );
     config(dir, &text)
 }
 
-/// A file a secret is read from, with `mode`.
+/// A file a secret is read from, with `mode`, holding 32 hexadecimal
+/// digits drawn for this test: no test's secret is written in the source.
 fn secret_file(dir: &Path, mode: u32) -> PathBuf {
+    let drawn: [u8; 16] = aws_lc_rs::rand::generate(&aws_lc_rs::rand::SystemRandom::new())
+        .expect("random bytes")
+        .expose();
+    let text: String = drawn.iter().map(|b| format!("{b:02x}")).collect();
     let path = dir.join("pg.password");
-    std::fs::write(&path, "not-a-real-one\n").expect("the file is written");
+    std::fs::write(&path, format!("{text}\n")).expect("the file is written");
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).expect("the mode");
     path
 }
@@ -281,8 +287,8 @@ fn secret_file(dir: &Path, mode: u32) -> PathBuf {
 #[test]
 fn migrate_in_a_build_without_postgres_names_the_cargo_feature() {
     let dir = tempfile::tempdir().expect("a directory");
-    let password = secret_file(dir.path(), 0o600);
-    let path = postgres_config(dir.path(), &["db1.example.com"], 5432, &password);
+    let password_file = secret_file(dir.path(), 0o600);
+    let path = postgres_config(dir.path(), &["db1.example.com"], 5432, &password_file);
     let said = refused(&migrate(&path));
     assert!(
         said.starts_with(STORAGE)
@@ -356,8 +362,8 @@ mod with_postgres {
     fn migrate_reaches_the_server_the_configuration_names_and_refuses_one_without_tls() {
         let dir = tempfile::tempdir().expect("a directory");
         let server = Listener::start(Answer::NoTls);
-        let password = secret_file(dir.path(), 0o600);
-        let path = postgres_config(dir.path(), &["127.0.0.1"], server.port, &password);
+        let password_file = secret_file(dir.path(), 0o600);
+        let path = postgres_config(dir.path(), &["127.0.0.1"], server.port, &password_file);
         let said = refused(&migrate(&path));
         assert!(
             said.starts_with(&server_line(server.port)),
@@ -375,8 +381,8 @@ mod with_postgres {
     fn migrate_refuses_a_server_that_closes_the_connection_and_names_it() {
         let dir = tempfile::tempdir().expect("a directory");
         let server = Listener::start(Answer::Close);
-        let password = secret_file(dir.path(), 0o600);
-        let path = postgres_config(dir.path(), &["127.0.0.1"], server.port, &password);
+        let password_file = secret_file(dir.path(), 0o600);
+        let path = postgres_config(dir.path(), &["127.0.0.1"], server.port, &password_file);
         let said = refused(&migrate(&path));
         assert!(
             said.starts_with(&server_line(server.port)),
@@ -389,12 +395,12 @@ mod with_postgres {
     fn migrate_tries_each_host_and_names_each_refusal() {
         let dir = tempfile::tempdir().expect("a directory");
         let server = Listener::start(Answer::NoTls);
-        let password = secret_file(dir.path(), 0o600);
+        let password_file = secret_file(dir.path(), 0o600);
         let path = postgres_config(
             dir.path(),
             &["127.0.0.1", "localhost"],
             server.port,
-            &password,
+            &password_file,
         );
         let said = refused(&migrate(&path));
         assert!(
@@ -423,8 +429,8 @@ mod with_postgres {
     fn migrate_refuses_a_password_file_other_users_may_read() {
         let dir = tempfile::tempdir().expect("a directory");
         let server = Listener::start(Answer::NoTls);
-        let password = secret_file(dir.path(), 0o644);
-        let path = postgres_config(dir.path(), &["127.0.0.1"], server.port, &password);
+        let password_file = secret_file(dir.path(), 0o644);
+        let path = postgres_config(dir.path(), &["127.0.0.1"], server.port, &password_file);
         let said = refused(&migrate(&path));
         assert!(
             said.starts_with(&format!("{STORAGE}catalog.postgres.password_file "))
@@ -439,11 +445,11 @@ mod with_postgres {
     fn migrate_refuses_an_empty_password_file() {
         let dir = tempfile::tempdir().expect("a directory");
         let server = Listener::start(Answer::NoTls);
-        let password = dir.path().join("pg.password");
-        std::fs::write(&password, "").expect("the file is written");
-        std::fs::set_permissions(&password, std::fs::Permissions::from_mode(0o600))
+        let password_file = dir.path().join("pg.password");
+        std::fs::write(&password_file, "").expect("the file is written");
+        std::fs::set_permissions(&password_file, std::fs::Permissions::from_mode(0o600))
             .expect("the mode");
-        let path = postgres_config(dir.path(), &["127.0.0.1"], server.port, &password);
+        let path = postgres_config(dir.path(), &["127.0.0.1"], server.port, &password_file);
         let said = refused(&migrate(&path));
         assert!(
             said.starts_with(&format!("{STORAGE}catalog.postgres.password_file ")),
@@ -456,11 +462,11 @@ mod with_postgres {
     fn migrate_does_not_print_the_password_in_a_refusal() {
         let dir = tempfile::tempdir().expect("a directory");
         let server = Listener::start(Answer::NoTls);
-        let password = secret_file(dir.path(), 0o600);
-        let path = postgres_config(dir.path(), &["127.0.0.1"], server.port, &password);
+        let password_file = secret_file(dir.path(), 0o600);
+        let path = postgres_config(dir.path(), &["127.0.0.1"], server.port, &password_file);
         let out = migrate(&path);
         let said = refused(&out);
-        let held = std::fs::read_to_string(&password).expect("the file is read");
+        let held = std::fs::read_to_string(&password_file).expect("the file is read");
         assert!(
             !said.contains(held.trim_end()),
             "the refusal holds no part of the secret file"
@@ -475,8 +481,8 @@ mod with_postgres {
         let _held = vcon_server::datadir::lock(&data, vcon_server::datadir::Sharing::Serve)
             .expect("a server's lock");
         let server = Listener::start(Answer::NoTls);
-        let password = secret_file(dir.path(), 0o600);
-        let path = postgres_config(dir.path(), &["127.0.0.1"], server.port, &password);
+        let password_file = secret_file(dir.path(), 0o600);
+        let path = postgres_config(dir.path(), &["127.0.0.1"], server.port, &password_file);
         let said = refused(&migrate(&path));
         assert!(
             said.starts_with(&server_line(server.port)) && !said.contains("in use"),

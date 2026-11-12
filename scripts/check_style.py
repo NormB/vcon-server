@@ -28,6 +28,13 @@ The rules are the Google Rust Style Guide's
   arguments after it. A name that holds a credential under another word
   (`key`, `made`, `body`) is not found: do not show those either.
 
+- credential-path: no parameter, field or `let` of a path type (`Path`,
+  `PathBuf`) has a name that names a credential (the words above), unless
+  the name says it is a place (`password_file`, `secret_path`,
+  `token_dir`). A path is not a credential, and code scanning reads every
+  file name passed to a parameter named `password` as a hard-coded
+  password.
+
 - lint-table: every package holds the lints of [workspace.lints] in
   Cargo.toml, at their level or stricter: with `[lints] workspace = true`,
   or in a table of its own (vcon's adds unsafe_code = "forbid"). The fuzz
@@ -297,6 +304,45 @@ def _credential(name):
     return bool(words & CREDENTIALS) or {"session", "id"} <= words
 
 
+_PLACE_WORDS = frozenset({"file", "path", "dir"})
+_PATH_TYPES = frozenset({"Path", "PathBuf"})
+
+
+def _credential_path(toks, k):
+    """A finding if toks[k] is a name that names a credential, declared with
+    a path type: `password: &Path`, `secret: Option<PathBuf>`. The type is
+    read from the `:` to the next `,`, `)`, `=`, `;` or brace outside its
+    own brackets. A name that says it is a place (`password_file`) is not
+    one, nor is a value in a struct literal (`password: path.clone()`)."""
+    name = toks[k]
+    if name.kind != "ident" or k + 1 >= len(toks) or toks[k + 1].text != ":":
+        return None
+    if k > 0 and toks[k - 1].text in (":", "::"):
+        return None
+    words = set(name.text.lower().split("_"))
+    if not _credential(name.text) or words & _PLACE_WORDS:
+        return None
+    depth = 0
+    for t in toks[k + 2 :]:
+        if t.text in ("<", "(", "["):
+            depth += 1
+        elif t.text in (">", ")", "]"):
+            if depth == 0:
+                break
+            depth -= 1
+        elif depth == 0 and t.text in (",", "=", ";", "{", "}"):
+            break
+        elif t.kind == "ident" and t.text in _PATH_TYPES:
+            return Finding(
+                name.line,
+                "credential-path",
+                f"`{name.text}` is a path, not a credential: name it for the file "
+                f"(`{name.text}_file`), or code scanning reads each file name given to it as a "
+                "hard-coded credential",
+            )
+    return None
+
+
 def _top_level_arguments(toks, open_at):
     """The tokens of each comma-separated argument of the macro call whose
     opening bracket is toks[open_at]."""
@@ -537,6 +583,9 @@ def findings(text, nonleaf=False):
             and toks[k + 2].text in ("(", "[", "{")
         ):
             out.extend(_credentials_in_message(toks, k))
+        named = _credential_path(toks, k)
+        if named:
+            out.append(named)
         if t.kind == "ident" and t.text in ("match", "for", "if", "while") and _held_transaction(toks, k):
             out.append(
                 Finding(

@@ -67,14 +67,14 @@ pub(super) fn file(dir: &Path, name: &str, bytes: &[u8], mode: u32) -> PathBuf {
 }
 
 /// Settings for `host` and `port`, logging in as `user` with the password
-/// file `password`, trusting the CA in `ca`, with every other key at its
+/// file `password_file`, trusting the CA in `ca`, with every other key at its
 /// default.
 pub(super) fn settings(
     host: &str,
     port: u16,
     user: &str,
     ca: &Path,
-    password: Option<&Path>,
+    password_file: Option<&Path>,
 ) -> PostgresSettings {
     PostgresSettings {
         hosts: vec![host.to_owned()],
@@ -82,7 +82,7 @@ pub(super) fn settings(
         dbname: "vcon".to_owned(),
         user: user.to_owned(),
         ca_file: Some(ca.to_owned()),
-        password_file: password.map(Path::to_owned),
+        password_file: password_file.map(Path::to_owned),
         client_cert_file: None,
         client_key_file: None,
         pool: crate::config::POSTGRES_POOL,

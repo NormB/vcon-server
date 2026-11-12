@@ -369,6 +369,83 @@ class CredentialsInMessages(unittest.TestCase):
         self.assertIn("assert!", found[0].message)
 
 
+class CredentialNamedPaths(unittest.TestCase):
+    """A path is not a credential. A parameter or field of a path type
+    named `password` makes code scanning read every file name passed to it
+    as a hard-coded password (three alerts on 2026-11-12, for
+    `postgres_config(..., password: &Path)` given `dir.join("pg.password")`).
+    The name says what the value is: the file."""
+
+    def named(self, text):
+        return [line for line, rule in rules(text) if rule == "credential-path"]
+
+    # Refused.
+
+    def test_a_path_parameter_named_password_is_refused(self):
+        self.assertEqual(self.named("fn config(dir: &Path, password: &Path) -> PathBuf {\n}\n"), [1])
+
+    def test_a_pathbuf_parameter_named_secret_is_refused(self):
+        self.assertEqual(self.named("fn f(\n    secret: PathBuf,\n) {}\n"), [2])
+
+    def test_a_qualified_path_type_is_refused(self):
+        self.assertEqual(self.named("fn f(token: &std::path::Path) {}\n"), [1])
+
+    def test_a_mutable_reference_and_a_lifetime_are_read_through(self):
+        self.assertEqual(self.named("fn f<'a>(passphrase: &'a mut PathBuf) {}\n"), [1])
+
+    def test_a_field_named_for_the_credential_is_refused(self):
+        self.assertEqual(self.named("struct S {\n    pub password: PathBuf,\n}\n"), [2])
+
+    def test_an_optional_path_is_refused(self):
+        self.assertEqual(self.named("struct S { cookie: Option<PathBuf> }\n"), [1])
+
+    def test_a_let_with_a_path_type_is_refused(self):
+        self.assertEqual(self.named("fn f() { let password: PathBuf = dir.join(name); }\n"), [1])
+
+    def test_each_such_parameter_is_a_finding(self):
+        self.assertEqual(self.named("fn f(password: &Path, secret: &Path) {}\n"), [1, 1])
+
+    def test_a_longer_name_that_holds_the_word_is_refused(self):
+        self.assertEqual(self.named("fn f(db_password: &Path, session_id: PathBuf) {}\n"), [1, 1])
+
+    # Accepted.
+
+    def test_a_name_that_says_file_is_accepted(self):
+        self.assertEqual(self.named("fn f(password_file: &Path, secret_path: PathBuf, token_dir: &Path) {}\n"), [])
+
+    def test_a_credential_that_is_text_is_not_this_rules(self):
+        self.assertEqual(self.named("fn f(password: &str, token: String, secret: &[u8]) {}\n"), [])
+
+    def test_a_path_with_another_name_is_accepted(self):
+        self.assertEqual(self.named("fn f(dir: &Path, key: &Path, config: PathBuf) {}\n"), [])
+
+    def test_a_struct_literal_field_is_not_a_declaration(self):
+        self.assertEqual(self.named("fn f() { let s = S { password: path.clone(), other: PathBuf::new() }; }\n"), [])
+
+    def test_a_type_after_the_next_comma_is_not_the_names(self):
+        self.assertEqual(self.named("fn f(password: &str, dir: &Path) {}\n"), [])
+
+    def test_the_return_type_is_not_the_last_parameters(self):
+        self.assertEqual(self.named("fn f(dir: &Path, password: &str) -> PathBuf {\n}\n"), [])
+
+    def test_a_comment_and_a_string_are_not_read(self):
+        self.assertEqual(self.named('// fn f(password: &Path)\nfn g() { let s = "password: &Path"; }\n'), [])
+
+    # The limits.
+
+    def test_a_generic_that_holds_a_path_deeper_is_refused(self):
+        self.assertEqual(self.named("fn f(secret: Option<&Path>) {}\n"), [1])
+
+    def test_a_path_type_of_another_name_is_not_read(self):
+        self.assertEqual(self.named("fn f(password: Utf8PathBuf, token: PathLike) {}\n"), [])
+
+    def test_the_finding_says_what_to_do(self):
+        found = [f for f in check_style.findings("fn f(password: &Path) {}\n") if f.rule == "credential-path"]
+        self.assertEqual(len(found), 1, "one finding")
+        self.assertIn("`password`", found[0].message)
+        self.assertIn("password_file", found[0].message)
+
+
 class Ratchet(unittest.TestCase):
     def verdict(self, counts, baseline):
         return check_style.ratchet(counts, baseline)
