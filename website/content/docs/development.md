@@ -276,7 +276,8 @@ git config core.hooksPath .githooks
   it checks that every action is pinned by commit
   (`scripts/check_action_pins.py`, see
   [adding a GitHub Action](#adding-a-github-action)) and runs
-  `scripts/rustfmt.sh --check`, `scripts/check_style.py --walk`,
+  `scripts/rustfmt.sh --check`, `scripts/check_style.py --walk`, the rules
+  of the how-to pages (`scripts/docs_test.py lint`),
   `cargo clippy --workspace --all-targets --locked --quiet -- -D warnings`,
   the documentation with rustdoc's warnings denied
   (`cargo doc --workspace --no-deps --locked --quiet`),

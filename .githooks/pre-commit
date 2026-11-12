@@ -77,6 +77,13 @@ export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="$CARGO_TARGET_DIR/cc-lld.s
 scripts/rustfmt.sh --check
 python3 -I scripts/test_check_style.py
 python3 -I scripts/check_style.py --walk
+# The rules every tested how-to page keeps (its docs-test markers among
+# them), which CI's how-to job checks first: a marker written wrong was
+# found there, not here, on 2026-11-12. A copy with no pages has none to
+# check.
+if [ -d website/content/docs ]; then
+  python3 -I scripts/docs_test.py lint
+fi
 cargo clippy --workspace --all-targets --locked --quiet -- -D warnings
 # The documentation, with rustdoc's warnings denied: a link that does not
 # resolve, or one from public documentation to a private item, fails here

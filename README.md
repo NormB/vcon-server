@@ -161,7 +161,8 @@ private spec or plan file (a name ending in .local.md), and that none is staged
 (`scripts/check-ignored-exports.sh`). Then, on a copy of exactly what is
 staged, it checks that every GitHub Action is pinned by commit
 (`scripts/check_action_pins.py`) and runs `scripts/rustfmt.sh --check`,
-`scripts/check_style.py --walk`,
+`scripts/check_style.py --walk`, the rules of the how-to pages
+(`scripts/docs_test.py lint`),
 `cargo clippy --workspace --all-targets --locked --quiet -- -D warnings`,
 builds the documentation with rustdoc's warnings denied
 (`cargo doc --workspace --no-deps --locked --quiet`), and runs the

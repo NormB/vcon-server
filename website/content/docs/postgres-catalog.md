@@ -433,7 +433,7 @@ things, and no row there is:
   server's `VACUUM` is skipped with a warning in PostgreSQL's log, and
   autovacuum does the same work later. To check the grant on 17 or later:
 
-<!-- docs-test: skip Debian 13's PostgreSQL 17 would print t; the scenario does not run this build's version 7 check apart from migrate -->
+<!-- docs-test: skip the scenario runs migrate and does not ask PostgreSQL for the grant -->
 ```sh
 sudo -u postgres psql -At -d vcon -c "SELECT has_table_privilege('vcon_app', 'vcon.version', 'MAINTAIN')"
 ```
