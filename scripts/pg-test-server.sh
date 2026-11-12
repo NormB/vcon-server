@@ -5,6 +5,7 @@
 #
 #   scripts/pg-test-server.sh start <image> <dir>
 #   scripts/pg-test-server.sh stop <dir>
+#   scripts/pg-test-server.sh leftovers <dir>
 #
 # start makes <dir> (it must not exist), a CA and a second CA, a server
 # certificate for localhost, 127.0.0.1, ::1 and the name `primary`, client
@@ -21,6 +22,11 @@
 # ::1 too. <dir>/env holds the VCON_TEST_PG_* lines the tests read, and
 # <dir>/containers and <dir>/network what stop removes: stop removes only
 # what start recorded, then <dir>.
+#
+# The servers force nothing to disk (fsync off): their data goes with the
+# containers. Each live test makes a database of its own and drops it when
+# it ends; leftovers prints how many such databases the primary still
+# holds and fails unless it is none, which CI runs after the tests.
 set -euo pipefail
 
 die() { echo "pg-test-server: $*" >&2; exit 1; }
@@ -123,6 +129,9 @@ CREATE ROLE vcon_migrate LOGIN PASSWORD :'pw';
 GRANT vcon_owner TO vcon_migrate;
 CREATE ROLE vcon_tester LOGIN CREATEDB PASSWORD :'pw';
 GRANT vcon_owner TO vcon_tester;
+-- A test drops its database when it ends, with the connections still open
+-- to it (DROP DATABASE ... WITH (FORCE)), which ends other roles' sessions.
+GRANT pg_signal_backend TO vcon_tester;
 CREATE ROLE vcon_stranger LOGIN PASSWORD :'pw';
 CREATE ROLE vcon_cert LOGIN;
 CREATE ROLE vcon_both LOGIN PASSWORD :'pw';
@@ -153,7 +162,11 @@ run_as="$(command -v su-exec || command -v gosu)"
 install -d -o postgres -m 0700 /pgconf
 install -o postgres -m 0600 /certs/server.key /pgconf/server.key
 install -o postgres -m 0644 /certs/server.crt /certs/ca.pem /certs/pg_hba.conf /pgconf/'
-  local tls='-c ssl=on -c ssl_cert_file=/pgconf/server.crt -c ssl_key_file=/pgconf/server.key -c ssl_ca_file=/pgconf/ca.pem -c hba_file=/pgconf/pg_hba.conf'
+  # The data is thrown away with the container, so nothing is forced to
+  # disk: each test makes a database and drops it, and a DROP DATABASE
+  # waits for a checkpoint, which with fsync on took seconds under a
+  # parallel test run.
+  local tls='-c ssl=on -c ssl_cert_file=/pgconf/server.crt -c ssl_key_file=/pgconf/server.key -c ssl_ca_file=/pgconf/ca.pem -c hba_file=/pgconf/pg_hba.conf -c fsync=off -c full_page_writes=off -c synchronous_commit=off'
 
   local primary
   primary="$(docker run -d --network "$net" --network-alias primary \
@@ -207,8 +220,22 @@ stop() {
   rm -rf "$dir"
 }
 
+# Prints how many test databases (vcon_t_*) the primary holds, and fails
+# unless it is none: every live test drops the database it made.
+leftovers() {
+  local dir="$1" primary count
+  [ -f "$dir/containers" ] || die "$dir has no containers file; it was not made by start"
+  primary="$(head -n 1 "$dir/containers")"
+  count="$(docker exec "$primary" psql -U postgres -At \
+    -c "SELECT count(*) FROM pg_database WHERE datname LIKE 'vcon\\_t\\_%'")" \
+    || die "the primary could not be asked for its databases"
+  echo "pg-test-server: $count test databases left on the primary"
+  [ "$count" = 0 ] || die "a test did not drop its database"
+}
+
 case "${1:-}" in
   start) [ $# -eq 3 ] || die "usage: $0 start <image> <dir>"; start "$2" "$3" ;;
   stop) [ $# -eq 2 ] || die "usage: $0 stop <dir>"; stop "$2" ;;
-  *) die "usage: $0 start <image> <dir> | stop <dir>" ;;
+  leftovers) [ $# -eq 2 ] || die "usage: $0 leftovers <dir>"; leftovers "$2" ;;
+  *) die "usage: $0 start <image> <dir> | stop <dir> | leftovers <dir>" ;;
 esac

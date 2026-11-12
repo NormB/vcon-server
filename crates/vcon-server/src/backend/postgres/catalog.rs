@@ -40,6 +40,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use time::OffsetDateTime;
+use tokio_postgres::error::{DbError, Severity};
 use tokio_postgres::types::{ToSql, Type};
 use tokio_postgres::{Client, Row, SimpleQueryMessage};
 use uuid::Uuid;
@@ -72,7 +73,7 @@ type Param<'a> = (&'a (dyn ToSql + Sync), Type);
 pub(crate) struct Database {
     // Dropped first: the lease and the pool close their connections while
     // the runtime that drives them is still there.
-    lock: Option<Lease>,
+    lock: std::sync::Mutex<Option<Lease>>,
     pool: Pool,
     runtime: tokio::runtime::Runtime,
     /// In tests, how many times a call waited on the database: the round
@@ -122,7 +123,7 @@ impl Database {
             .block_on(schema::take_server_lock(lock.client()))
             .map_err(|why| StorageError(format!("catalog.postgres: {why}")))?;
         Ok(Arc::new(Database {
-            lock: Some(lock),
+            lock: std::sync::Mutex::new(Some(lock)),
             pool,
             runtime,
             #[cfg(test)]
@@ -138,6 +139,31 @@ impl Database {
         self.runtime.handle().block_on(call)
     }
 
+    /// Gives up the servers' lock, as a server that stops does, while the
+    /// connection still answers: the next server finds it free at once. A
+    /// lock left to the end of the session, as a process that dies leaves
+    /// it, is held until PostgreSQL notices the closed connection. A
+    /// second call does nothing. The connection that held the lock goes
+    /// back to the pool.
+    pub(crate) fn give_up_lock(&self) {
+        let held = self
+            .lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(mut lock) = held {
+            let unlocked = self.runtime.block_on(
+                lock.client()
+                    .batch_execute("SELECT pg_advisory_unlock_all()"),
+            );
+            if unlocked.is_err() {
+                // No answer: the lock goes when the server closes the
+                // session, and the connection is not used again.
+                lock.discard();
+            }
+        }
+    }
+
     /// A connection from the pool. Taking one that waits unused sends
     /// nothing, so it is not a round trip.
     fn lease(&self) -> Result<Lease, StoreError> {
@@ -149,19 +175,11 @@ impl Database {
     pub(crate) fn round_trips(&self) -> usize {
         self.trips.load(std::sync::atomic::Ordering::SeqCst)
     }
-}
 
-impl Drop for Database {
-    fn drop(&mut self) {
-        // The lock is given up while the connection still answers, so the
-        // next server finds it free; a lock left to the end of the
-        // session is held until the server notices the closed connection.
-        if let Some(lock) = self.lock.take() {
-            let _ = self.runtime.block_on(
-                lock.client()
-                    .batch_execute("SELECT pg_advisory_unlock_all()"),
-            );
-        }
+    /// In tests, how many of the pool's connections wait unused.
+    #[cfg(all(test, feature = "backend-tests"))]
+    pub(crate) fn idle(&self) -> usize {
+        self.pool.idle()
     }
 }
 
@@ -227,14 +245,18 @@ pub(crate) fn begin_text(how: Begin, tenant: TenantId) -> String {
     }
 }
 
-/// What a COMMIT that failed means. The server answered with an error
-/// (`answered`): it rolled the transaction back. No answer came: the
-/// transaction may or may not have been kept.
-pub(crate) fn commit_failure(answered: bool) -> CommitError {
-    if answered {
-        CommitError::RolledBack
-    } else {
-        CommitError::Unknown
+/// What a COMMIT that failed means, from the severity of the server's
+/// answer, or `None` for no answer. Only an answer of ERROR says the
+/// transaction was rolled back: the server refused the COMMIT and goes on
+/// with the session. FATAL and PANIC end the session, and such a message
+/// may have been sent before the COMMIT arrived, so it is no answer to it;
+/// with no answer the transaction may or may not have been kept. Unknown
+/// is the answer that loses nothing: `Store` keeps the object, and
+/// recovery decides by the row.
+pub(crate) fn commit_failure(severity: Option<Severity>) -> CommitError {
+    match severity {
+        Some(Severity::Error) => CommitError::RolledBack,
+        _ => CommitError::Unknown,
     }
 }
 
@@ -720,12 +742,7 @@ impl<'a> PgTx<'a> {
     /// the row's key.
     fn uuid_of(&self, table: &str, mac: &[u8], sealed: &[u8]) -> Result<Uuid, StoreError> {
         let bytes = self.unseal(table, "uuid_sealed", mac, sealed)?;
-        let uuid = Uuid::from_bytes(id_of(&bytes)?);
-        if self.uuid_mac(uuid)?.as_slice() == mac {
-            Ok(uuid)
-        } else {
-            Err(StoreError::Damaged)
-        }
+        Ok(Uuid::from_bytes(id_of(&bytes)?))
     }
 
     /// The uuid in the columns `sealed` and `mac` of `row`, a vCon's.
@@ -1759,7 +1776,7 @@ impl CatalogTx for PgTx<'_> {
             let ended = self.database.wait(self.client().batch_execute(end));
             ended.expect("ends the transaction");
             self.open = false;
-            return Err(how);
+            return self.ended(Err(how));
         }
         if self.aborted.get() {
             // The drop sends the ROLLBACK the server is waiting for.
@@ -1767,16 +1784,21 @@ impl CatalogTx for PgTx<'_> {
         }
         let outcome = self.database.wait(self.client().batch_execute("COMMIT"));
         self.open = false;
-        match outcome {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                let answered = e.code().is_some();
-                if !answered {
-                    self.broken.set(true);
-                }
-                Err(commit_failure(answered))
-            }
+        let outcome =
+            outcome.map_err(|e| commit_failure(e.as_db_error().and_then(DbError::parsed_severity)));
+        self.ended(outcome)
+    }
+}
+
+impl PgTx<'_> {
+    /// A commit's outcome, on its way to the caller: after an unknown one
+    /// the connection's state is not known either, so it is closed and
+    /// not kept.
+    fn ended(&self, outcome: Result<(), CommitError>) -> Result<(), CommitError> {
+        if outcome == Err(CommitError::Unknown) {
+            self.broken.set(true);
         }
+        outcome
     }
 }
 

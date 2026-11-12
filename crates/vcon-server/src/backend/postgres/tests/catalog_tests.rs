@@ -9,6 +9,8 @@ use super::super::catalog::{
     Begin, CatalogError, SMALLEST_POOL, begin_text, commit_failure, gzip_byte, gzip_of, id_of,
     packed, pool_refusal, size_bytes, size_of,
 };
+use tokio_postgres::error::Severity;
+
 use crate::backend::CommitError;
 use crate::ids::TenantId;
 use crate::store::StoreError;
@@ -109,9 +111,9 @@ fn a_version_with_every_place_column_is_a_row_of_its_pack_file() {
 #[test]
 fn a_commit_the_server_refused_was_rolled_back() {
     assert_eq!(
-        commit_failure(true),
+        commit_failure(Some(Severity::Error)),
         CommitError::RolledBack,
-        "the server answered COMMIT with an error"
+        "the server answered COMMIT with an error and goes on with the session"
     );
 }
 
@@ -132,10 +134,42 @@ fn an_id_of_sixteen_bytes_reads() {
 #[test]
 fn a_commit_with_no_answer_may_or_may_not_have_been_kept() {
     assert_eq!(
-        commit_failure(false),
+        commit_failure(None),
         CommitError::Unknown,
         "the connection failed while COMMIT was outstanding"
     );
+}
+
+// A server that ends the session says so with FATAL or PANIC. That message
+// can be read as the answer to a COMMIT it was not an answer to, so it
+// does not say the transaction was rolled back; saying so of a kept
+// transaction would have its object removed.
+#[test]
+fn a_commit_answered_by_a_server_ending_the_session_is_unknown() {
+    for severity in [Severity::Fatal, Severity::Panic] {
+        assert_eq!(
+            commit_failure(Some(severity)),
+            CommitError::Unknown,
+            "{severity:?}"
+        );
+    }
+}
+
+#[test]
+fn a_commit_answered_with_less_than_an_error_is_unknown() {
+    for severity in [
+        Severity::Warning,
+        Severity::Notice,
+        Severity::Debug,
+        Severity::Info,
+        Severity::Log,
+    ] {
+        assert_eq!(
+            commit_failure(Some(severity)),
+            CommitError::Unknown,
+            "{severity:?}: not a refusal of the COMMIT"
+        );
+    }
 }
 
 #[test]
@@ -314,7 +348,7 @@ pub(super) mod on_a_server {
     use uuid::Uuid;
 
     use super::super::super::catalog::{CatalogError, Database, PgCatalog, pool_refusal};
-    use super::super::super::schema::{MIGRATIONS, SERVER_LOCK_HELD, SERVERS_LOCK};
+    use super::super::super::schema::{COMMANDS_LOCK, MIGRATIONS, SERVER_LOCK_HELD, SERVERS_LOCK};
     use super::super::live::value;
     use super::super::schema_tests::live::{Db, in_scope};
     use crate::audit::{Action, Actor, AuditError, Entry};
@@ -1205,6 +1239,8 @@ pub(super) mod on_a_server {
     fn a_commit_whose_connection_is_lost_is_unknown_and_the_connection_is_not_reused() {
         let (db, database) = database();
         let (_, _, catalog) = tenant_catalog(&database);
+        let idle = database.idle();
+        assert!(idle >= 1, "the connection that made the tenant waits");
         let mut tx = catalog.immediate().expect("begins");
         tx.add_wrap(KeyId([1; 8])).expect("writes");
         let ended = wait(async {
@@ -1222,7 +1258,12 @@ pub(super) mod on_a_server {
         assert_eq!(
             tx.commit(),
             Err(CommitError::Unknown),
-            "no answer to COMMIT"
+            "no answer to COMMIT, or the notice that the session was ended"
+        );
+        assert_eq!(
+            database.idle(),
+            idle - 1,
+            "the lost connection did not go back to the pool"
         );
         let mut tx = catalog.immediate().expect("a new connection");
         assert_eq!(
@@ -1238,12 +1279,21 @@ pub(super) mod on_a_server {
         let (_db, database) = database();
         let (_, _, catalog) = tenant_catalog(&database);
         catalog.fail_commit(1, CommitError::Unknown);
+        let idle = database.idle();
+        assert!(idle >= 1, "the connection that made the tenant waits");
         let mut tx = catalog.immediate().expect("begins");
         tx.add_wrap(KeyId([1; 8])).expect("writes");
         assert_eq!(
             tx.commit(),
             Err(CommitError::Unknown),
             "reported as unknown"
+        );
+        // This connection is sound, and is closed all the same: after an
+        // unknown commit a connection is not used again.
+        assert_eq!(
+            database.idle(),
+            idle - 1,
+            "the connection of an unknown commit did not go back to the pool"
         );
         catalog.fail_commit(2, CommitError::RolledBack);
         let mut tx = catalog.immediate().expect("begins");
@@ -1575,6 +1625,9 @@ pub(super) mod on_a_server {
     fn a_snapshot_takes_no_write() {
         let (_db, database) = database();
         let (_, _, catalog) = tenant_catalog(&database);
+        drop(catalog.snapshot().expect("a read begins and ends"));
+        let idle = database.idle();
+        assert!(idle >= 1, "the read's connection waits in the pool");
         let mut tx = catalog.snapshot().expect("begins");
         assert_eq!(
             tx.add_wrap(KeyId([1; 8])),
@@ -1585,6 +1638,109 @@ pub(super) mod on_a_server {
             tx.commit(),
             Err(CommitError::RolledBack),
             "and ends rolled back"
+        );
+        // The same refusal is what a server turned read-only gives every
+        // write, so a connection that met it is closed, not kept.
+        assert_eq!(
+            database.idle(),
+            idle - 1,
+            "the connection that was refused a write did not go back to the pool"
+        );
+        drop(catalog.snapshot().expect("a read on a new connection"));
+        assert_eq!(database.idle(), idle, "which is kept as the first was");
+    }
+
+    #[test]
+    fn a_server_connects_the_moment_another_has_stopped() {
+        let (db, database) = database();
+        database.give_up_lock();
+        drop(database);
+        let (_dir, settings) = db.settings("vcon_app");
+        for round in 0..5 {
+            let database = Database::connect(&settings)
+                .unwrap_or_else(|e| panic!("round {round}: the lock is free: {e:?}"));
+            assert_eq!(
+                PgCatalog::exists(&database, TenantId::generate()),
+                Ok(false),
+                "round {round}: and the server reads the database"
+            );
+            database.give_up_lock();
+        }
+    }
+
+    // A server that stops gives the lock up itself, while its connection
+    // still answers: the next server does not wait for PostgreSQL to
+    // notice a closed connection. Here the first server's connections are
+    // all still open when the second connects.
+    #[test]
+    fn a_server_that_has_given_up_the_lock_lets_the_next_in_while_still_connected() {
+        let (db, first) = database();
+        let (_dir, settings) = db.settings("vcon_app");
+        assert!(
+            Database::connect(&settings).is_err(),
+            "refused while the first holds the lock"
+        );
+        first.give_up_lock();
+        let second = Database::connect(&settings).expect("the lock is free at once");
+        assert_eq!(
+            PgCatalog::exists(&second, TenantId::generate()),
+            Ok(false),
+            "the second server reads the database"
+        );
+        assert_eq!(
+            PgCatalog::exists(&first, TenantId::generate()),
+            Ok(false),
+            "and the first's pool still answers until it is dropped"
+        );
+        first.give_up_lock();
+        assert!(
+            Database::connect(&settings).is_err(),
+            "giving up twice takes nothing from the second server"
+        );
+    }
+
+    #[test]
+    fn a_migrate_refused_by_one_lock_does_not_keep_the_other() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        let db = runtime.block_on(Db::migrated());
+        let holder = runtime.block_on(async {
+            let holder = db.admin().await;
+            holder
+                .batch_execute(&format!("SELECT pg_advisory_lock({COMMANDS_LOCK})"))
+                .await
+                .expect("a command's lock");
+            holder
+        });
+        // migrate gets the servers' lock, is refused the commands', and
+        // gives the first back before it answers.
+        let refused = runtime
+            .block_on(db.migrate_with(MIGRATIONS))
+            .expect_err("refused");
+        assert!(refused.contains("another"), "says so: {refused}");
+        let (_dir, settings) = db.settings("vcon_app");
+        assert!(
+            Database::connect(&settings).is_ok(),
+            "a server takes the servers' lock at once"
+        );
+        drop(holder);
+    }
+
+    #[test]
+    fn a_pool_of_two_serves_one_transaction_at_a_time() {
+        let (db, database) = database();
+        drop(database);
+        let (_dir, mut settings) = db.settings("vcon_app");
+        settings.pool = 2;
+        let database = Database::connect(&settings).expect("the smallest pool connects");
+        let (_, _, catalog) = tenant_catalog(&database);
+        store_one(&catalog, a_uuid(1), 1);
+        assert_eq!(
+            catalog.snapshot().expect("begins").count_versions(),
+            Ok(1),
+            "one connection holds the lock and the other serves"
         );
     }
 

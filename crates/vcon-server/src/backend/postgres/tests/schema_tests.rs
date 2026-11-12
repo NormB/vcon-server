@@ -8,6 +8,7 @@
 mod cached;
 mod edge;
 mod failure;
+mod guard;
 mod line;
 mod success;
 mod v2;
@@ -16,6 +17,35 @@ mod v4;
 mod v5;
 mod v6;
 mod v7;
+
+/// The names of the databases live tests make, and which of them a killed
+/// test left behind.
+pub(super) mod names {
+    /// What every test database's name starts with.
+    const PREFIX: &str = "vcon_t_";
+
+    /// How old, in seconds, a test database is before a new test may
+    /// remove it: longer than any test runs, so it is never a running
+    /// test's.
+    pub(crate) const STALE_AFTER: u64 = 1800;
+
+    /// The name of a database made at `now`, in seconds since 1970, with
+    /// `random` to tell it from another made in the same second.
+    pub(crate) fn name_at(now: u64, random: &[u8]) -> String {
+        let random: String = random.iter().map(|b| format!("{b:02x}")).collect();
+        format!("{PREFIX}{now:x}_{random}")
+    }
+
+    /// Whether `name` is a test database made more than [`STALE_AFTER`]
+    /// seconds before `now`. Any other name, and a name whose time does
+    /// not read, is not.
+    pub(crate) fn is_stale(name: &str, now: u64) -> bool {
+        name.strip_prefix(PREFIX)
+            .and_then(|rest| rest.split_once('_'))
+            .and_then(|(made, _)| u64::from_str_radix(made, 16).ok())
+            .is_some_and(|made| now.checked_sub(made).is_some_and(|age| age > STALE_AFTER))
+    }
+}
 
 #[cfg(feature = "backend-tests")]
 pub(super) mod live {
@@ -74,10 +104,11 @@ pub(super) mod live {
             let bytes = aws_lc_rs::rand::generate::<[u8; 8]>(&aws_lc_rs::rand::SystemRandom::new())
                 .expect("random")
                 .expose();
-            let name = format!("vcon_t_{}", hex(&bytes));
+            let name = super::names::name_at(now(), &bytes);
             let connected = connect(&admin, Purpose::Connect)
                 .await
                 .expect("the tester connects");
+            sweep(&connected.client).await;
             connected
                 .client
                 .batch_execute(&format!("CREATE DATABASE {name} OWNER vcon_owner"))
@@ -141,6 +172,66 @@ pub(super) mod live {
             let db = Db::fresh().await;
             db.migrate().await;
             db
+        }
+    }
+
+    /// How long the drop of a test's database may take before the test
+    /// goes on without it; the next sweep removes what is left.
+    const DROP_WITHIN: std::time::Duration = std::time::Duration::from_secs(20);
+
+    /// The statement that drops a test database with the connections
+    /// still open to it.
+    fn drop_statement(name: &str) -> String {
+        format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)")
+    }
+
+    impl Drop for Db {
+        /// Drops the database when the test ends, pass or fail, on a
+        /// thread and runtime of its own, since the test's runtime may be
+        /// the one that is ending. A failure here fails no test: a
+        /// database left behind is removed by a later test's sweep.
+        fn drop(&mut self) {
+            let statement = drop_statement(&self.name);
+            let dropping = std::thread::spawn(move || {
+                let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                else {
+                    return;
+                };
+                // The timer needs the runtime, so it is made inside it.
+                runtime.block_on(async {
+                    let _ = tokio::time::timeout(DROP_WITHIN, async {
+                        let (_dir, admin) = as_user("vcon_tester");
+                        if let Ok(connected) = connect(&admin, Purpose::Connect).await {
+                            let _ = connected.client.batch_execute(&statement).await;
+                        }
+                    })
+                    .await;
+                });
+            });
+            let _ = dropping.join();
+        }
+    }
+
+    /// Drops the test databases a killed test left on the server: those
+    /// older than any running test can be. Another test may sweep the
+    /// same ones at the same time, so a drop that fails is passed over.
+    async fn sweep(tester: &Client) {
+        let Ok(rows) = tester
+            .simple_query("SELECT datname FROM pg_database WHERE datname LIKE 'vcon\\_t\\_%'")
+            .await
+        else {
+            return;
+        };
+        let now = now();
+        for message in &rows {
+            if let tokio_postgres::SimpleQueryMessage::Row(row) = message
+                && let Some(name) = row.get(0)
+                && super::names::is_stale(name, now)
+            {
+                let _ = tester.batch_execute(&drop_statement(name)).await;
+            }
         }
     }
 
@@ -258,7 +349,11 @@ pub(super) mod live {
         }
     }
 
-    fn hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    /// The seconds since 1970, by the system's clock.
+    fn now() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("after 1970")
+            .as_secs()
     }
 }
