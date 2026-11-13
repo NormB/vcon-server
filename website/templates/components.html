@@ -74,15 +74,3 @@
 {% endfor %}</pre>
 </figure>
 {% endcomponent tui_screen %}
-
-{# The keys that do something on a screen of `vcon-server tui`, from the
-   same file: the bindings table, filtered by what the state takes. #}
-{% component tui_keys(name) %}
-{%- set s = load_data(path="data/tui-screens.json")[name] -%}
-<table class="term-keys">
-<thead><tr><th>Key</th><th>What it does on this screen</th></tr></thead>
-<tbody>
-{% for k in s.keys %}<tr><td><kbd>{{ k.key }}</kbd></td><td>{{ k.does }}</td></tr>
-{% endfor %}</tbody>
-</table>
-{% endcomponent tui_keys %}

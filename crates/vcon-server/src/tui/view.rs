@@ -1922,14 +1922,7 @@ mod tests {
         let mut made = serde_json::Map::new();
         for screen in Screen::ALL {
             let (name, (columns, rows)) = (screen.name(), screen.size());
-            let mut drawn = styled(&screen.state(), columns, rows);
-            // The keys that do something on the screen, from the bindings
-            // table: the page lists them under the screen.
-            drawn["keys"] = screen
-                .keys()
-                .into_iter()
-                .map(|binding| serde_json::json!({"key": binding.label, "does": binding.does}))
-                .collect();
+            let drawn = styled(&screen.state(), columns, rows);
             let before = made.insert(name.to_owned(), drawn);
             assert!(before.is_none(), "the screen {name} is made once");
         }

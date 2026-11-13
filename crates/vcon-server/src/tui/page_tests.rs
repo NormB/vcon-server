@@ -698,72 +698,6 @@ fn the_views_reader_knows_a_key_that_does_nothing_from_one_that_does() {
     );
 }
 
-/// Each row of the page's table of last lines: the screen as the page
-/// names it, and the states drawn as that screen.
-fn last_line_screens() -> Vec<(&'static str, Vec<State>)> {
-    let no_read = || keyed(Some("8c41f2d9a07e4b5c9d13e6f0a2b4c7d8"), &["write"]);
-    let mut first_page_failed = reader();
-    first_page_failed.step(Event::Page(Err(ApiError::Status(503, None))), NOW);
-    vec![
-        ("The list, with more on the server", vec![listed(3, true)]),
-        ("The list, every vCon read", vec![listed(3, false)]),
-        ("The list of one vCon", vec![listed(1, false)]),
-        (
-            "The list while the next page is read",
-            vec![press(listed(3, true), &[Action::More])],
-        ),
-        (
-            "A tenant with no vCons, or a failure that `r` can try again",
-            vec![
-                listed(0, false),
-                refused(client::no_answer(client::TIMEOUT)),
-                refused(ApiError::Status(401, None)),
-                first_page_failed,
-            ],
-        ),
-        (
-            "`Connecting to the server...`, `Loading vCons...`, or a key that may not list",
-            vec![connecting(), reader(), keyed(None, &[]), no_read()],
-        ),
-        (
-            "The detail view",
-            vec![press(listed(3, false), &[Action::Open])],
-        ),
-        (
-            "The detail view of the only vCon",
-            vec![press(listed(1, false), &[Action::Open])],
-        ),
-        (
-            "The detail view while the list is read again",
-            vec![press(listed(3, false), &[Action::Open, Action::Refresh])],
-        ),
-        ("Help", vec![press(listed(3, true), &[Action::Help])]),
-    ]
-}
-
-#[test]
-fn the_page_lists_the_last_line_of_each_screen_as_the_ui_draws_it() {
-    let rows = table(&section(&page(), "### Read the screen"), "Screen");
-    let screens = last_line_screens();
-    assert_eq!(rows.len(), screens.len(), "one row for each screen");
-    for (row, (name, states)) in rows.iter().zip(screens) {
-        assert_eq!(
-            row.first().map(String::as_str),
-            Some(name),
-            "the screens, in order"
-        );
-        for state in states {
-            let lines = frame(&state, 80, 24);
-            let footer = lines.last().expect("24 lines").trim_end();
-            assert_eq!(
-                row.get(1).map(String::as_str),
-                Some(format!("`{footer}`").as_str()),
-                "the last line of {name:?}"
-            );
-        }
-    }
-}
-
 #[test]
 fn the_page_says_that_a_key_not_in_the_table_does_nothing() {
     let page = page().replace('\n', " ");
@@ -1689,49 +1623,6 @@ fn each_screens_section_draws_that_screen_and_no_other() {
 }
 
 #[test]
-fn each_screens_section_lists_the_keys_of_that_screen() {
-    for screen in Screen::ALL {
-        let text = screen_section(screen);
-        let listed: Vec<&str> = text
-            .split("<tui_keys name=\"")
-            .skip(1)
-            .filter_map(|rest| rest.split('"').next())
-            .collect();
-        assert_eq!(
-            listed,
-            [screen.name()],
-            "the section {:?} lists its own keys",
-            screen.title()
-        );
-    }
-}
-
-#[test]
-fn the_keys_the_site_lists_for_a_screen_are_the_bindings_that_act_there() {
-    let data = screen_data();
-    for screen in Screen::ALL {
-        let listed: Vec<(String, String)> = data[screen.name()]["keys"]
-            .as_array()
-            .unwrap_or_else(|| panic!("{} has keys", screen.name()))
-            .iter()
-            .map(|key| {
-                (
-                    key["key"].as_str().expect("a key").to_owned(),
-                    key["does"].as_str().expect("what it does").to_owned(),
-                )
-            })
-            .collect();
-        let state = screen.state();
-        let acting: Vec<(String, String)> = BINDINGS
-            .iter()
-            .filter(|binding| state.acts(binding.action))
-            .map(|binding| (binding.label.to_owned(), binding.does.to_owned()))
-            .collect();
-        assert_eq!(listed, acting, "the keys of {}", screen.name());
-    }
-}
-
-#[test]
 fn a_key_listed_for_a_screen_does_something_there_and_no_other_key_does() {
     for screen in Screen::ALL {
         let state = screen.state();
@@ -1938,4 +1829,883 @@ fn a_screen_added_to_the_code_without_a_section_would_be_found() {
     let refused =
         std::panic::catch_unwind(|| section(&screens_section(), "### A screen nobody wrote about"));
     assert!(refused.is_err(), "a title with no section is a failure");
+}
+
+// The keys are stated once, in the Keys table of the reference. A screen's
+// section says only what differs on that screen, as the code has it.
+
+/// Whether `word` stands in `text` as a word of its own.
+fn has_word(text: &str, word: &str) -> bool {
+    let joins = |c: char| c.is_ascii_alphanumeric() || c == '-';
+    text.match_indices(word).any(|(at, found)| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + found.len()..].chars().next();
+        !before.is_some_and(joins) && !after.is_some_and(joins)
+    })
+}
+
+/// The bindings whose keys `text` names, each once, in the order of the
+/// bindings table. A key is named as the Keys table writes it: a letter
+/// or sign in a code span of its own, any other key as a word of its own.
+fn bindings_named(text: &str) -> Vec<Action> {
+    BINDINGS
+        .iter()
+        .filter(|binding| {
+            binding.keys.iter().any(|(code, modifiers)| {
+                let name = key_name(*code, *modifiers);
+                if name.starts_with('`') {
+                    text.contains(&name)
+                } else {
+                    has_word(text, &name)
+                }
+            })
+        })
+        .map(|binding| binding.action)
+        .collect()
+}
+
+/// The pieces of a page that a reader takes in at once, each with the
+/// number of its first line and the heading it stands under: a paragraph,
+/// a whole list, a row of a table. A code block, a shortcode, a comment
+/// and a heading are no piece: a code block and a screen show what the
+/// command draws.
+fn pieces(text: &str) -> Vec<(usize, String, String)> {
+    let mut out: Vec<(usize, String, String)> = Vec::new();
+    let (mut fenced, mut open, mut heading) = (false, false, String::new());
+    for (index, line) in text.lines().enumerate() {
+        if line.starts_with("```") {
+            fenced = !fenced;
+            open = false;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        if level(line) > 0 {
+            line.clone_into(&mut heading);
+            open = false;
+            continue;
+        }
+        let no_prose = line.trim().is_empty() || line.starts_with("{{") || line.starts_with("<!--");
+        if no_prose {
+            open = false;
+            continue;
+        }
+        if line.starts_with('|') {
+            out.push((index + 1, heading.clone(), line.trim().to_owned()));
+            open = false;
+        } else if open {
+            let last = out.last_mut().expect("an open piece");
+            last.2.push(' ');
+            last.2.push_str(line.trim());
+        } else {
+            out.push((index + 1, heading.clone(), line.trim().to_owned()));
+            open = true;
+        }
+    }
+    out
+}
+
+/// How many bindings a piece may name outside the Keys table: none where
+/// it says how a screen is left, and one anywhere else, for the key a step
+/// presses.
+fn keys_allowed(piece: &str) -> usize {
+    usize::from(!piece.starts_with("**Leave.**"))
+}
+
+/// What on a page states the keys a second time: the shortcode that listed
+/// a screen's keys, a table of keys outside `### Keys`, a piece outside it
+/// that names more bindings than [`keys_allowed`] gives it, and a
+/// `**Keys.**` paragraph: the screens where fewer keys work are one table
+/// under `### Keys`.
+fn key_list_findings(text: &str) -> Vec<String> {
+    let mut findings = Vec::new();
+    if text.contains("tui_keys") {
+        findings.push("the page uses the tui_keys shortcode".to_owned());
+    }
+    for (line, heading, piece) in pieces(text) {
+        if heading == "### Keys" {
+            continue;
+        }
+        if piece.starts_with("| Key | Does") {
+            findings.push(format!("line {line}: a second table of keys"));
+        }
+        let named = bindings_named(&piece);
+        if named.len() > keys_allowed(&piece) {
+            findings.push(format!(
+                "line {line} names the keys of {} bindings ({named:?}); [Keys](#keys) states them",
+                named.len()
+            ));
+        }
+        if piece.contains("**Keys.**") {
+            findings.push(format!(
+                "line {line}: a **Keys.** paragraph under {heading:?}"
+            ));
+        }
+    }
+    findings
+}
+
+/// `names` as a sentence lists them: `a`, `a and b`, `a, b and c`.
+fn listed_in_words(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [first @ .., last] => format!("{} and {last}", first.join(", ")),
+    }
+}
+
+/// A binding's first key, as the Keys table writes it.
+fn first_key(action: Action) -> String {
+    let binding = BINDINGS
+        .iter()
+        .find(|binding| binding.action == action)
+        .expect("a binding");
+    let (code, modifiers) = binding.keys[0];
+    key_name(code, modifiers)
+}
+
+/// The sentence a screen's section has for what differs on that screen,
+/// from the code alone. `usual` are the actions the Keys table says do
+/// something in the screen's view and `acting` those that do something on
+/// the screen. No sentence when the two agree; the one or two silent keys
+/// when no more are silent; else the keys that still act.
+fn keys_sentence(usual: &[Action], acting: &[Action]) -> Option<String> {
+    let silent: Vec<String> = usual
+        .iter()
+        .filter(|action| !acting.contains(action))
+        .map(|action| first_key(*action))
+        .collect();
+    let said = match silent.len() {
+        0 => return None,
+        1 | 2 => format!("All but {}", listed_in_words(&silent)),
+        _ => {
+            let acting: Vec<String> = acting.iter().map(|action| first_key(*action)).collect();
+            format!("Only {}", listed_in_words(&acting))
+        }
+    };
+    Some(said)
+}
+
+/// The actions the Keys table says do something in `view`.
+fn usual_in(view: View) -> Vec<Action> {
+    BINDINGS
+        .iter()
+        .map(|binding| binding.action)
+        .filter(|action| works(view, *action))
+        .collect()
+}
+
+fn acting_on(screen: Screen) -> Vec<Action> {
+    screen.keys().iter().map(|binding| binding.action).collect()
+}
+
+#[test]
+fn the_page_states_the_keys_once() {
+    let findings = key_list_findings(&page());
+    assert!(findings.is_empty(), "tui.md: {findings:#?}");
+}
+
+#[test]
+fn the_page_has_one_table_of_keys_and_it_is_the_reference() {
+    let page = page();
+    assert_eq!(
+        page.matches("\n| Key | Does |").count(),
+        1,
+        "one table on the page says what each key does"
+    );
+    assert!(
+        section(&page, "### Keys").contains("\n| Key | Does |"),
+        "and it stands under Keys"
+    );
+    assert_eq!(
+        keys_table().len(),
+        BINDINGS.len(),
+        "with a row for each binding"
+    );
+}
+
+#[test]
+fn no_template_and_no_data_of_the_site_lists_a_screens_keys() {
+    assert!(
+        !read("website/templates/components.html").contains("tui_keys"),
+        "components.html has no tui_keys"
+    );
+    for (name, screen) in &screen_data() {
+        assert!(
+            screen.get("keys").is_none(),
+            "tui-screens.json: {name} holds no list of keys"
+        );
+    }
+}
+
+#[test]
+fn the_table_of_screens_where_fewer_keys_work_is_what_the_code_does() {
+    // One row for each view and set of keys, in the order the screens
+    // come; each row's screens in that order too, as links.
+    let mut wanted: Vec<(String, String, Vec<String>)> = Vec::new();
+    for screen in Screen::ALL {
+        let acting = acting_on(screen);
+        let usual = usual_in(screen.view());
+        for action in &acting {
+            assert!(
+                usual.contains(action),
+                "{}: {action:?} acts, so the Keys table says yes for its view",
+                screen.name()
+            );
+        }
+        let Some(keys) = keys_sentence(&usual, &acting) else {
+            continue;
+        };
+        let view = format!("{:?}", screen.view());
+        let link = format!("[{}](#{})", screen.title(), anchor(screen.title()));
+        match wanted.iter_mut().find(|row| row.0 == view && row.1 == keys) {
+            Some(row) => row.2.push(link),
+            None => wanted.push((view, keys, vec![link])),
+        }
+    }
+    let wanted: Vec<Vec<String>> = wanted
+        .into_iter()
+        .map(|(view, keys, screens)| vec![view, keys, screens.join(", ")])
+        .collect();
+    let shown = table(&section(&page(), "### Keys"), "View");
+    assert_eq!(shown, wanted, "the table under Keys that starts with View");
+}
+
+#[test]
+fn no_screens_section_has_a_keys_paragraph_or_a_list_of_keys() {
+    for screen in Screen::ALL {
+        let text = screen_section(screen);
+        assert!(
+            !text.contains("**Keys.**"),
+            "{:?} has a Keys paragraph",
+            screen.title()
+        );
+        for (_, _, piece) in pieces(&text) {
+            let named = bindings_named(&piece);
+            assert!(
+                named.len() <= 1,
+                "{:?} names the keys of {named:?} in one piece: {piece}",
+                screen.title()
+            );
+        }
+    }
+}
+
+#[test]
+fn the_last_line_names_a_key_only_where_it_does_something() {
+    assert!(
+        page()
+            .replace('\n', " ")
+            .contains("The last line names a key only where it does something."),
+        "the page says so"
+    );
+    for screen in Screen::ALL {
+        let (columns, rows) = screen.size();
+        let lines = frame(&screen.state(), columns, rows);
+        let footer = lines.last().expect("a last line");
+        let acting = acting_on(screen);
+        for binding in &BINDINGS {
+            let hint = format!("{} {}", binding.label, binding.hint);
+            if footer.contains(&hint) {
+                assert!(
+                    acting.contains(&binding.action),
+                    "{}: the last line names {hint:?}, which does nothing there",
+                    screen.name()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn no_screens_section_says_how_it_is_left_with_a_key() {
+    for screen in Screen::ALL {
+        for (_, _, piece) in pieces(&screen_section(screen)) {
+            if piece.starts_with("**Leave.**") {
+                assert_eq!(
+                    bindings_named(&piece),
+                    [],
+                    "{:?}: Leave links the screens that follow and names no key",
+                    screen.title()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn every_screen_a_leave_sentence_links_is_a_screen_of_the_page() {
+    let titles: Vec<String> = Screen::ALL
+        .into_iter()
+        .map(|screen| anchor(screen.title()))
+        .collect();
+    let mut links = 0;
+    for screen in Screen::ALL {
+        for (_, _, piece) in pieces(&screen_section(screen)) {
+            if !piece.starts_with("**Leave.**") {
+                continue;
+            }
+            for target in piece
+                .split("](#")
+                .skip(1)
+                .filter_map(|rest| rest.split(')').next())
+            {
+                links += 1;
+                assert!(
+                    titles.iter().any(|title| title == target),
+                    "{:?}: Leave links #{target}, which is no screen",
+                    screen.title()
+                );
+            }
+        }
+    }
+    assert!(
+        links >= Screen::ALL.len(),
+        "the Leave sentences link screens: {links}"
+    );
+}
+
+/// The screens a Leave sentence says a key press leads to: the screen,
+/// the action, and the screen it shows then.
+const LEADS_TO: [(Screen, Action, Screen); 13] = [
+    (Screen::List, Action::Open, Screen::Detail),
+    (Screen::List, Action::Help, Screen::Help),
+    (Screen::List, Action::More, Screen::MoreReading),
+    (Screen::ListOne, Action::Open, Screen::DetailOne),
+    (Screen::Empty, Action::Refresh, Screen::Loading),
+    (Screen::NotConnected, Action::Refresh, Screen::Connecting),
+    (Screen::RefusedKey, Action::Refresh, Screen::Connecting),
+    (
+        Screen::RefusedCertificate,
+        Action::Refresh,
+        Screen::Connecting,
+    ),
+    (Screen::ServerError, Action::Refresh, Screen::Loading),
+    (Screen::Detail, Action::Back, Screen::List),
+    (Screen::DetailOne, Action::Back, Screen::ListOne),
+    (
+        Screen::DetailFailed,
+        Action::Refresh,
+        Screen::DetailRefreshing,
+    ),
+    (Screen::DetailRefreshing, Action::Back, Screen::Loading),
+];
+
+#[test]
+fn a_leave_sentence_links_the_screen_the_code_shows_after_the_key() {
+    for (from, action, to) in LEADS_TO {
+        let after = press(from.state(), &[action]);
+        assert_eq!(
+            said(&after),
+            said(&to.state()),
+            "{} after {action:?} is {}",
+            from.name(),
+            to.name()
+        );
+        let leave: Vec<String> = pieces(&screen_section(from))
+            .into_iter()
+            .map(|(_, _, piece)| piece)
+            .filter(|piece| piece.starts_with("**Leave.**"))
+            .collect();
+        assert!(
+            leave
+                .iter()
+                .any(|piece| piece.contains(&format!("](#{})", anchor(to.title())))),
+            "{:?}: Leave links {:?}",
+            from.title(),
+            to.title()
+        );
+    }
+}
+
+// The readers of the rule, on made-up text, both ways.
+
+#[test]
+fn a_letter_key_is_named_by_a_code_span_of_its_own() {
+    assert_eq!(bindings_named("press `q` now"), [Action::Quit], "`q`");
+    assert_eq!(
+        bindings_named("the queue is quiet"),
+        [],
+        "the letter q in a word"
+    );
+    assert_eq!(bindings_named("`q quit`"), [], "a span that holds more");
+}
+
+#[test]
+fn a_named_key_is_a_word_of_its_own() {
+    assert_eq!(bindings_named("press Enter"), [Action::Open], "Enter");
+    assert_eq!(bindings_named("Entered text"), [], "inside a word");
+    assert_eq!(
+        bindings_named("the PgUp key"),
+        [Action::PageUp],
+        "PgUp is not Up"
+    );
+}
+
+#[test]
+fn two_keys_of_one_binding_are_one_binding() {
+    assert_eq!(bindings_named("`j` or Down"), [Action::Down], "j and Down");
+    assert_eq!(
+        bindings_named("`q` or Ctrl-C"),
+        [Action::Quit],
+        "q and Ctrl-C"
+    );
+    assert_eq!(
+        bindings_named("Esc or Backspace"),
+        [Action::Back],
+        "Esc and Backspace"
+    );
+}
+
+#[test]
+fn the_bindings_named_come_in_the_order_of_the_table() {
+    assert_eq!(
+        bindings_named("`q`, `?`, then `j`"),
+        [Action::Down, Action::Help, Action::Quit],
+        "the table's order, not the text's"
+    );
+}
+
+#[test]
+fn a_key_named_twice_is_one_binding() {
+    assert_eq!(
+        bindings_named("`n`, and `n` again"),
+        [Action::More],
+        "n twice"
+    );
+}
+
+#[test]
+fn the_case_of_a_letter_key_counts() {
+    assert_eq!(bindings_named("`g`"), [Action::Top], "g is the first vCon");
+    assert_eq!(bindings_named("`G`"), [Action::Bottom], "G is the last");
+    assert_eq!(bindings_named("`Q`"), [], "Q is not bound");
+}
+
+#[test]
+fn a_key_name_in_lower_case_is_no_key() {
+    assert_eq!(
+        bindings_named("at the end, go home and enter"),
+        [],
+        "words of a sentence"
+    );
+}
+
+#[test]
+fn text_with_no_key_names_no_binding() {
+    assert_eq!(bindings_named(""), [], "empty");
+    assert_eq!(
+        bindings_named("The list is read when the command starts."),
+        [],
+        "prose"
+    );
+}
+
+#[test]
+fn a_word_reader_takes_the_ends_of_the_text_and_punctuation() {
+    assert!(has_word("Esc", "Esc"), "the whole text");
+    assert!(has_word("(Esc)", "Esc"), "in parentheses");
+    assert!(has_word("press Esc.", "Esc"), "before a full stop");
+    assert!(!has_word("Escape", "Esc"), "a longer word");
+    assert!(!has_word("Ctrl-Up", "Up"), "after a hyphen");
+}
+
+#[test]
+fn a_paragraph_is_one_piece_with_its_lines_joined() {
+    let found = pieces("# T\n\none\ntwo\n\nthree\n");
+    assert_eq!(
+        found,
+        [
+            (3, "# T".to_owned(), "one two".to_owned()),
+            (6, "# T".to_owned(), "three".to_owned())
+        ],
+        "two paragraphs"
+    );
+}
+
+#[test]
+fn a_whole_list_is_one_piece_and_each_row_of_a_table_is_one() {
+    let found = pieces("- a\n- b\n\n| x |\n|---|\n| y |\nafter\n");
+    let texts: Vec<&str> = found.iter().map(|(_, _, piece)| piece.as_str()).collect();
+    assert_eq!(
+        texts,
+        ["- a - b", "| x |", "|---|", "| y |", "after"],
+        "a list, three rows, and the line after the table"
+    );
+}
+
+#[test]
+fn a_table_of_screens_may_name_one_key_in_each_row() {
+    let text = "| Screen | When |\n|---|---|\n| Help | After `?`. |\n| Next | After `n`. |\n";
+    assert_eq!(
+        key_list_findings(text),
+        Vec::<String>::new(),
+        "one key a row"
+    );
+    let two = "| Screen | When |\n|---|---|\n| Help | After `?` or `n`. |\n";
+    assert_eq!(key_list_findings(two).len(), 1, "two keys in one row");
+}
+
+#[test]
+fn a_code_block_a_shortcode_and_a_comment_are_no_piece() {
+    let text = "```text\n`j` `k` `q`\n```\n{{ <tui_screen name=\"list\" /> }}\n<!-- docs-test: keys Enter q -->\n";
+    assert_eq!(pieces(text), [], "nothing a reader takes as prose");
+}
+
+#[test]
+fn a_piece_stands_under_the_last_heading_before_it() {
+    let found = pieces("## A\n\none\n\n### B\n\ntwo\n");
+    let under: Vec<&str> = found
+        .iter()
+        .map(|(_, heading, _)| heading.as_str())
+        .collect();
+    assert_eq!(under, ["## A", "### B"], "each under its heading");
+}
+
+#[test]
+fn a_heading_ends_a_piece() {
+    let found = pieces("one\n### B\ntwo\n");
+    assert_eq!(found.len(), 2, "the heading stands between two pieces");
+    assert_eq!(found[1].1, "### B", "the second is under it");
+}
+
+#[test]
+fn a_page_with_no_text_has_no_piece_and_no_finding() {
+    assert_eq!(pieces(""), [], "no piece");
+    assert_eq!(key_list_findings(""), Vec::<String>::new(), "no finding");
+}
+
+#[test]
+fn a_step_that_names_the_key_it_presses_is_allowed() {
+    let text =
+        "### Read the next page\n\nPress `n`. `n` does nothing when the server has no more.\n";
+    assert_eq!(key_list_findings(text), Vec::<String>::new(), "one binding");
+}
+
+#[test]
+fn a_paragraph_that_names_two_bindings_is_refused() {
+    let found = key_list_findings("### Find\n\nPress `n` again, or `r`.\n");
+    assert_eq!(found.len(), 1, "one finding: {found:?}");
+    assert!(
+        found[0].starts_with("line 3 names the keys of 2 bindings"),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_list_with_one_key_in_each_item_is_refused() {
+    let found = key_list_findings("- `j` selects the vCon below.\n- `k` selects the one above.\n");
+    assert_eq!(found.len(), 1, "the list is one piece: {found:?}");
+}
+
+#[test]
+fn a_second_table_of_keys_is_refused() {
+    let text = "### A screen\n\n| Key | Does |\n|---|---|\n| `r` | Reads |\n| `q` | Quits |\n";
+    assert_eq!(
+        key_list_findings(text),
+        ["line 3: a second table of keys"],
+        "a table outside the reference"
+    );
+}
+
+#[test]
+fn the_reference_table_is_not_a_finding() {
+    let text = "### Keys\n\n| Key | Does |\n|---|---|\n| `r` | Reads |\n| `q` | Quits |\n\nEsc, `?` and `q` close help.\n";
+    assert_eq!(
+        key_list_findings(text),
+        Vec::<String>::new(),
+        "under ### Keys"
+    );
+}
+
+#[test]
+fn the_reference_ends_at_the_next_heading() {
+    let text = "### Keys\n\n`r` and `q`.\n\n### Environment\n\n`r` and `q`.\n";
+    let found = key_list_findings(text);
+    assert_eq!(
+        found.len(),
+        1,
+        "the paragraph after the reference: {found:?}"
+    );
+    assert!(found[0].starts_with("line 7 "), "{found:?}");
+}
+
+#[test]
+fn the_shortcode_that_listed_a_screens_keys_is_refused() {
+    let found = key_list_findings("### The list\n\n{{ <tui_keys name=\"list\" /> }}\n");
+    assert_eq!(
+        found,
+        ["the page uses the tui_keys shortcode"],
+        "the shortcode"
+    );
+}
+
+#[test]
+fn a_leave_sentence_that_names_a_key_is_refused() {
+    let found = key_list_findings("### The list\n\n**Leave.** `q` ends the command.\n");
+    assert_eq!(found.len(), 1, "Leave names no key: {found:?}");
+}
+
+#[test]
+fn a_leave_sentence_of_links_is_allowed() {
+    let text = "### The list\n\n**Leave.** To [help](#help) or to [loading](#loading).\n";
+    assert_eq!(key_list_findings(text), Vec::<String>::new(), "links only");
+}
+
+#[test]
+fn a_keys_paragraph_that_lists_keys_is_refused_twice_over() {
+    let text = "### Loading\n\n**Keys.** Only `?` and `q` do something on this screen.\n";
+    let found = key_list_findings(text);
+    assert_eq!(found.len(), 2, "the keys, and the paragraph: {found:?}");
+    assert_eq!(
+        found[1], "line 3: a **Keys.** paragraph under \"### Loading\"",
+        "the paragraph"
+    );
+}
+
+#[test]
+fn a_keys_paragraph_that_names_one_key_is_refused() {
+    let text = "### Loading\n\n**Keys.** `n` does nothing.\n";
+    assert_eq!(
+        key_list_findings(text),
+        ["line 3: a **Keys.** paragraph under \"### Loading\""],
+        "one key is still a Keys paragraph"
+    );
+}
+
+#[test]
+fn the_table_of_screens_where_fewer_keys_work_is_allowed_under_keys() {
+    let table = "| View | Keys that work | Screens |\n|---|---|---|\n| List | Only `?` and `q` | [Loading](#loading) |\n";
+    assert_eq!(
+        key_list_findings(&format!("### Keys\n\n{table}")),
+        Vec::<String>::new(),
+        "under the reference"
+    );
+}
+
+#[test]
+fn keys_in_a_code_block_are_what_the_command_draws_and_no_finding() {
+    let text = "### Help\n\n```text\nEsc back  q quit\n  j  Select\n  k  Select\n```\n";
+    assert_eq!(key_list_findings(text), Vec::<String>::new(), "a drawing");
+}
+
+#[test]
+fn a_what_to_do_paragraph_may_name_the_one_key_to_press() {
+    let text = "### A failure\n\n**What to do.** Check the server, then press `r`.\n";
+    assert_eq!(key_list_findings(text), Vec::<String>::new(), "one key");
+    let two = "### A failure\n\n**What to do.** Press `r`, or `q` to end.\n";
+    assert_eq!(key_list_findings(two).len(), 1, "two keys");
+}
+
+#[test]
+fn a_finding_says_the_line_and_the_bindings_it_names() {
+    let found = key_list_findings("### Find\n\ntext\n\nPress `r`,\nthen `n`.\n");
+    assert_eq!(
+        found,
+        ["line 5 names the keys of 2 bindings ([Refresh, More]); [Keys](#keys) states them"],
+        "the first line of the paragraph, and both bindings"
+    );
+}
+
+#[test]
+fn a_leave_sentence_that_names_a_key_by_its_word_is_refused() {
+    let found = key_list_findings("### The detail\n\n**Leave.** Esc goes back to the list.\n");
+    assert_eq!(found.len(), 1, "Esc in Leave: {found:?}");
+    assert!(found[0].contains("[Back]"), "{found:?}");
+}
+
+#[test]
+fn each_paragraph_that_lists_keys_is_a_finding_of_its_own() {
+    let found = key_list_findings("`j` and `k` select.\n\nprose\n\n`g` and `G` jump.\n");
+    assert_eq!(found.len(), 2, "two paragraphs: {found:?}");
+    assert!(found[0].starts_with("line 1 "), "{found:?}");
+    assert!(found[1].starts_with("line 5 "), "{found:?}");
+}
+
+#[test]
+fn a_what_to_do_paragraph_that_names_two_keys_is_refused() {
+    let text = "### A failure\n\n**What to do.** Press Esc, then `n` in the list.\n";
+    let found = key_list_findings(text);
+    assert_eq!(found.len(), 1, "two keys: {found:?}");
+    assert!(found[0].contains("[Back, More]"), "{found:?}");
+}
+
+#[test]
+fn a_table_of_keys_under_a_heading_that_is_not_the_reference_is_refused() {
+    let text = "#### Keys\n\n| Key | Does |\n|---|---|\n| `q` | Quits |\n";
+    assert_eq!(
+        key_list_findings(text),
+        ["line 3: a second table of keys"],
+        "only ### Keys is the reference"
+    );
+}
+
+#[test]
+fn the_shortcode_is_refused_wherever_the_page_names_it() {
+    let found = key_list_findings("See the tui_keys component.\n");
+    assert_eq!(
+        found,
+        ["the page uses the tui_keys shortcode"],
+        "in prose too"
+    );
+}
+
+#[test]
+fn a_paragraph_that_names_every_key_is_refused_with_all_twelve() {
+    let text = "`j` `k` `g` `G` PgUp PgDn Enter Esc `r` `n` `?` `q`\n";
+    let found = key_list_findings(text);
+    assert_eq!(found.len(), 1, "one paragraph: {found:?}");
+    assert!(found[0].contains("the keys of 12 bindings"), "{found:?}");
+}
+
+#[test]
+fn names_are_listed_in_words() {
+    let names = |n: usize| -> Vec<String> {
+        ["a", "b", "c"][..n]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect()
+    };
+    assert_eq!(listed_in_words(&names(0)), "", "none");
+    assert_eq!(listed_in_words(&names(1)), "a", "one");
+    assert_eq!(listed_in_words(&names(2)), "a and b", "two");
+    assert_eq!(listed_in_words(&names(3)), "a, b and c", "three");
+}
+
+#[test]
+fn the_first_key_of_a_binding_is_written_as_the_table_writes_it() {
+    assert_eq!(first_key(Action::Down), "`j`", "a letter in a code span");
+    assert_eq!(first_key(Action::Open), "Enter", "a named key");
+    assert_eq!(first_key(Action::Back), "Esc", "the first of two");
+    assert_eq!(first_key(Action::Help), "`?`", "a sign");
+}
+
+#[test]
+fn a_screen_where_every_usual_key_acts_has_no_sentence() {
+    let usual = [Action::Back, Action::Help, Action::Quit];
+    assert_eq!(keys_sentence(&usual, &usual), None, "nothing differs");
+    assert_eq!(keys_sentence(&[], &[]), None, "no key at all");
+}
+
+#[test]
+fn one_silent_key_is_named_in_the_singular() {
+    let usual = [Action::Refresh, Action::More, Action::Quit];
+    assert_eq!(
+        keys_sentence(&usual, &[Action::Refresh, Action::Quit]).as_deref(),
+        Some("All but `n`"),
+        "n alone"
+    );
+}
+
+#[test]
+fn two_silent_keys_are_named_in_the_plural() {
+    let usual = [Action::Refresh, Action::More, Action::Quit];
+    assert_eq!(
+        keys_sentence(&usual, &[Action::Quit]).as_deref(),
+        Some("All but `r` and `n`"),
+        "r and n"
+    );
+}
+
+#[test]
+fn with_three_silent_keys_the_sentence_names_the_keys_that_act() {
+    let usual = [
+        Action::Open,
+        Action::Refresh,
+        Action::More,
+        Action::Help,
+        Action::Quit,
+    ];
+    assert_eq!(
+        keys_sentence(&usual, &[Action::Help, Action::Quit]).as_deref(),
+        Some("Only `?` and `q`"),
+        "the two that act"
+    );
+}
+
+#[test]
+fn the_keys_that_act_are_named_in_the_order_given() {
+    let usual = usual_in(View::List);
+    let said = keys_sentence(
+        &usual,
+        &[Action::Open, Action::Refresh, Action::Help, Action::Quit],
+    );
+    assert_eq!(
+        said.as_deref(),
+        Some("Only Enter, `r`, `?` and `q`"),
+        "four that act"
+    );
+}
+
+#[test]
+fn the_usual_keys_of_a_view_are_the_yes_cells_of_the_keys_table() {
+    for (column, view) in [(2, View::List), (3, View::Detail), (4, View::Help)] {
+        let usual = usual_in(view);
+        for (binding, row) in BINDINGS.iter().zip(&keys_table()) {
+            assert_eq!(
+                usual.contains(&binding.action),
+                row[column] == "yes",
+                "{:?} in the {view:?} view",
+                binding.action
+            );
+        }
+    }
+}
+
+#[test]
+fn help_has_only_the_keys_that_close_it_and_quit_as_usual() {
+    assert_eq!(
+        usual_in(View::Help),
+        [Action::Back, Action::Help, Action::Quit],
+        "the Help column"
+    );
+}
+
+#[test]
+fn opening_is_usual_in_the_list_and_going_back_in_the_detail() {
+    assert!(
+        usual_in(View::List).contains(&Action::Open),
+        "Enter in the list"
+    );
+    assert!(
+        !usual_in(View::List).contains(&Action::Back),
+        "Esc in the list"
+    );
+    assert!(
+        usual_in(View::Detail).contains(&Action::Back),
+        "Esc in the detail"
+    );
+    assert!(
+        !usual_in(View::Detail).contains(&Action::Open),
+        "Enter in the detail"
+    );
+}
+
+#[test]
+fn the_waiting_and_refused_screens_differ_and_the_full_list_does_not() {
+    let differs =
+        |screen: Screen| keys_sentence(&usual_in(screen.view()), &acting_on(screen)).is_some();
+    assert!(differs(Screen::Connecting), "connecting");
+    assert!(differs(Screen::Loading), "loading");
+    assert!(differs(Screen::OperatorKey), "an operator key");
+    assert!(!differs(Screen::Help), "help");
+    assert!(!differs(Screen::ALL[0]), "the first screen, the list");
+}
+
+#[test]
+fn every_leave_and_keys_piece_is_one_the_rule_reads() {
+    // The rule reads a piece by its first words: the page writes them the
+    // same way in each section.
+    let text = screens_section();
+    let leaves = pieces(&text)
+        .iter()
+        .filter(|(_, _, piece)| piece.starts_with("**Leave.**"))
+        .count();
+    assert_eq!(leaves, Screen::ALL.len(), "one Leave piece for each screen");
+    assert_eq!(
+        text.matches("**Leave.**").count(),
+        leaves,
+        "no Leave stands in the middle of a paragraph"
+    );
 }

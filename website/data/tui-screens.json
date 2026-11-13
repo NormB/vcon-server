@@ -1,16 +1,6 @@
 {
   "connecting": {
     "columns": 80,
-    "keys": [
-      {
-        "does": "Show or close this help",
-        "key": "?"
-      },
-      {
-        "does": "Quit (also Ctrl-C)",
-        "key": "q"
-      }
-    ],
     "lines": [
       [
         {
@@ -50,52 +40,6 @@
   },
   "detail": {
     "columns": 80,
-    "keys": [
-      {
-        "does": "Select the vCon below (also Down)",
-        "key": "j"
-      },
-      {
-        "does": "Select the vCon above (also Up)",
-        "key": "k"
-      },
-      {
-        "does": "Select the first vCon (also Home)",
-        "key": "g"
-      },
-      {
-        "does": "Select the last vCon read (also End)",
-        "key": "G"
-      },
-      {
-        "does": "Move up one screen",
-        "key": "PgUp"
-      },
-      {
-        "does": "Move down one screen",
-        "key": "PgDn"
-      },
-      {
-        "does": "Go back to the view before (also Backspace)",
-        "key": "Esc"
-      },
-      {
-        "does": "Read the list again from the server",
-        "key": "r"
-      },
-      {
-        "does": "Read the next page of vCons",
-        "key": "n"
-      },
-      {
-        "does": "Show or close this help",
-        "key": "?"
-      },
-      {
-        "does": "Quit (also Ctrl-C)",
-        "key": "q"
-      }
-    ],
     "lines": [
       [
         {
@@ -169,24 +113,6 @@
   },
   "detail-failed": {
     "columns": 80,
-    "keys": [
-      {
-        "does": "Go back to the view before (also Backspace)",
-        "key": "Esc"
-      },
-      {
-        "does": "Read the list again from the server",
-        "key": "r"
-      },
-      {
-        "does": "Show or close this help",
-        "key": "?"
-      },
-      {
-        "does": "Quit (also Ctrl-C)",
-        "key": "q"
-      }
-    ],
     "lines": [
       [
         {
@@ -231,52 +157,6 @@
   },
   "detail-gone": {
     "columns": 80,
-    "keys": [
-      {
-        "does": "Select the vCon below (also Down)",
-        "key": "j"
-      },
-      {
-        "does": "Select the vCon above (also Up)",
-        "key": "k"
-      },
-      {
-        "does": "Select the first vCon (also Home)",
-        "key": "g"
-      },
-      {
-        "does": "Select the last vCon read (also End)",
-        "key": "G"
-      },
-      {
-        "does": "Move up one screen",
-        "key": "PgUp"
-      },
-      {
-        "does": "Move down one screen",
-        "key": "PgDn"
-      },
-      {
-        "does": "Go back to the view before (also Backspace)",
-        "key": "Esc"
-      },
-      {
-        "does": "Read the list again from the server",
-        "key": "r"
-      },
-      {
-        "does": "Read the next page of vCons",
-        "key": "n"
-      },
-      {
-        "does": "Show or close this help",
-        "key": "?"
-      },
-      {
-        "does": "Quit (also Ctrl-C)",
-        "key": "q"
-      }
-    ],
     "lines": [
       [
         {
@@ -326,24 +206,6 @@
   },
   "detail-one": {
     "columns": 80,
-    "keys": [
-      {
-        "does": "Go back to the view before (also Backspace)",
-        "key": "Esc"
-      },
-      {
-        "does": "Read the list again from the server",
-        "key": "r"
-      },
-      {
-        "does": "Show or close this help",
-        "key": "?"
-      },
-      {
-        "does": "Quit (also Ctrl-C)",
-        "key": "q"
-      }
-    ],
     "lines": [
       [
         {
@@ -403,20 +265,6 @@
   },
   "detail-refreshing": {
     "columns": 80,
-    "keys": [
-      {
-        "does": "Go back to the view before (also Backspace)",
-        "key": "Esc"
-      },
-      {
-        "does": "Show or close this help",
-        "key": "?"
-      },
-      {
-        "does": "Quit (also Ctrl-C)",
-        "key": "q"
-      }
-    ],
     "lines": [
       [
         {
@@ -456,20 +304,6 @@
   },
   "empty": {
     "columns": 80,
-    "keys": [
-      {
-        "does": "Read the list again from the server",
-        "key": "r"
-      },
-      {
-        "does": "Show or close this help",
-        "key": "?"
-      },
-      {
-        "does": "Quit (also Ctrl-C)",
-        "key": "q"
-      }
-    ],
     "lines": [
       [
         {
@@ -514,20 +348,6 @@
   },
   "help": {
     "columns": 80,
-    "keys": [
-      {
-        "does": "Go back to the view before (also Backspace)",
-        "key": "Esc"
-      },
-      {
-        "does": "Show or close this help",
-        "key": "?"
-      },
-      {
-        "does": "Quit (also Ctrl-C)",
-        "key": "q"
-      }
-    ],
     "lines": [
       [
         {
@@ -646,52 +466,6 @@
   },
   "list": {
     "columns": 80,
-    "keys": [
-      {
-        "does": "Select the vCon below (also Down)",
-        "key": "j"
-      },
-      {
-        "does": "Select the vCon above (also Up)",
-        "key": "k"
-      },
-      {
-        "does": "Select the first vCon (also Home)",
-        "key": "g"
-      },
-      {
-        "does": "Select the last vCon read (also End)",
-        "key": "G"
-      },
-      {
-        "does": "Move up one screen",
-        "key": "PgUp"
-      },
-      {
-        "does": "Move down one screen",
-        "key": "PgDn"
-      },
-      {
-        "does": "Open the selected vCon's metadata",
-        "key": "Enter"
-      },
-      {
-        "does": "Read the list again from the server",
-        "key": "r"
-      },
-      {
-        "does": "Read the next page of vCons",
-        "key": "n"
-      },
-      {
-        "does": "Show or close this help",
-        "key": "?"
-      },
-      {
-        "does": "Quit (also Ctrl-C)",
-        "key": "q"
-      }
-    ],
     "lines": [
       [
         {
@@ -845,48 +619,6 @@
   },
   "list-end": {
     "columns": 80,
-    "keys": [
-      {
-        "does": "Select the vCon below (also Down)",
-        "key": "j"
-      },
-      {
-        "does": "Select the vCon above (also Up)",
-        "key": "k"
-      },
-      {
-        "does": "Select the first vCon (also Home)",
-        "key": "g"
-      },
-      {
-        "does": "Select the last vCon read (also End)",
-        "key": "G"
-      },
-      {
-        "does": "Move up one screen",
-        "key": "PgUp"
-      },
-      {
-        "does": "Move down one screen",
-        "key": "PgDn"
-      },
-      {
-        "does": "Open the selected vCon's metadata",
-        "key": "Enter"
-      },
-      {
-        "does": "Read the list again from the server",
-        "key": "r"
-      },
-      {
-        "does": "Show or close this help",
-        "key": "?"
-      },
-      {
-        "does": "Quit (also Ctrl-C)",
-        "key": "q"
-      }
-    ],
     "lines": [
       [
         {
@@ -941,24 +673,6 @@
   },
   "list-one": {
     "columns": 80,
-    "keys": [
-      {
-        "does": "Open the selected vCon's metadata",
-        "key": "Enter"
-      },
-      {
-        "does": "Read the list again from the server",
-        "key": "r"
-      },
-      {
-        "does": "Show or close this help",
-        "key": "?"
-      },
-      {
-        "does": "Quit (also Ctrl-C)",
-        "key": "q"
-      }
-    ],
     "lines": [
       [
         {
@@ -1003,16 +717,6 @@
   },
   "loading": {
     "columns": 80,
-    "keys": [
-      {
-        "does": "Show or close this help",
-        "key": "?"
-      },
-      {
-        "does": "Quit (also Ctrl-C)",
-        "key": "q"
-      }
-    ],
     "lines": [
       [
         {
@@ -1052,48 +756,6 @@
   },
   "more-read": {
     "columns": 80,
-    "keys": [
-      {
-        "does": "Select the vCon below (also Down)",
-        "key": "j"
-      },
-      {
-        "does": "Select the vCon above (also Up)",
-        "key": "k"
-      },
-      {
-        "does": "Select the first vCon (also Home)",
-        "key": "g"
-      },
-      {
-        "does": "Select the last vCon read (also End)",
-        "key": "G"
-      },
-      {
-        "does": "Move up one screen",
-        "key": "PgUp"
-      },
-      {
-        "does": "Move down one screen",
-        "key": "PgDn"
-      },
-      {
-        "does": "Open the selected vCon's metadata",
-        "key": "Enter"
-      },
-      {
-        "does": "Read the list again from the server",
-        "key": "r"
-      },
-      {
-        "does": "Show or close this help",
-        "key": "?"
-      },
-      {
-        "does": "Quit (also Ctrl-C)",
-        "key": "q"
-      }
-    ],
     "lines": [
       [
         {
@@ -1163,44 +825,6 @@
   },
   "more-reading": {
     "columns": 80,
-    "keys": [
-      {
-        "does": "Select the vCon below (also Down)",
-        "key": "j"
-      },
-      {
-        "does": "Select the vCon above (also Up)",
-        "key": "k"
-      },
-      {
-        "does": "Select the first vCon (also Home)",
-        "key": "g"
-      },
-      {
-        "does": "Select the last vCon read (also End)",
-        "key": "G"
-      },
-      {
-        "does": "Move up one screen",
-        "key": "PgUp"
-      },
-      {
-        "does": "Move down one screen",
-        "key": "PgDn"
-      },
-      {
-        "does": "Open the selected vCon's metadata",
-        "key": "Enter"
-      },
-      {
-        "does": "Show or close this help",
-        "key": "?"
-      },
-      {
-        "does": "Quit (also Ctrl-C)",
-        "key": "q"
-      }
-    ],
     "lines": [
       [
         {
@@ -1270,52 +894,6 @@
   },
   "narrow": {
     "columns": 60,
-    "keys": [
-      {
-        "does": "Select the vCon below (also Down)",
-        "key": "j"
-      },
-      {
-        "does": "Select the vCon above (also Up)",
-        "key": "k"
-      },
-      {
-        "does": "Select the first vCon (also Home)",
-        "key": "g"
-      },
-      {
-        "does": "Select the last vCon read (also End)",
-        "key": "G"
-      },
-      {
-        "does": "Move up one screen",
-        "key": "PgUp"
-      },
-      {
-        "does": "Move down one screen",
-        "key": "PgDn"
-      },
-      {
-        "does": "Open the selected vCon's metadata",
-        "key": "Enter"
-      },
-      {
-        "does": "Read the list again from the server",
-        "key": "r"
-      },
-      {
-        "does": "Read the next page of vCons",
-        "key": "n"
-      },
-      {
-        "does": "Show or close this help",
-        "key": "?"
-      },
-      {
-        "does": "Quit (also Ctrl-C)",
-        "key": "q"
-      }
-    ],
     "lines": [
       [
         {
@@ -1385,52 +963,6 @@
   },
   "narrowest": {
     "columns": 40,
-    "keys": [
-      {
-        "does": "Select the vCon below (also Down)",
-        "key": "j"
-      },
-      {
-        "does": "Select the vCon above (also Up)",
-        "key": "k"
-      },
-      {
-        "does": "Select the first vCon (also Home)",
-        "key": "g"
-      },
-      {
-        "does": "Select the last vCon read (also End)",
-        "key": "G"
-      },
-      {
-        "does": "Move up one screen",
-        "key": "PgUp"
-      },
-      {
-        "does": "Move down one screen",
-        "key": "PgDn"
-      },
-      {
-        "does": "Open the selected vCon's metadata",
-        "key": "Enter"
-      },
-      {
-        "does": "Read the list again from the server",
-        "key": "r"
-      },
-      {
-        "does": "Read the next page of vCons",
-        "key": "n"
-      },
-      {
-        "does": "Show or close this help",
-        "key": "?"
-      },
-      {
-        "does": "Quit (also Ctrl-C)",
-        "key": "q"
-      }
-    ],
     "lines": [
       [
         {
@@ -1500,52 +1032,6 @@
   },
   "next-page-failed": {
     "columns": 80,
-    "keys": [
-      {
-        "does": "Select the vCon below (also Down)",
-        "key": "j"
-      },
-      {
-        "does": "Select the vCon above (also Up)",
-        "key": "k"
-      },
-      {
-        "does": "Select the first vCon (also Home)",
-        "key": "g"
-      },
-      {
-        "does": "Select the last vCon read (also End)",
-        "key": "G"
-      },
-      {
-        "does": "Move up one screen",
-        "key": "PgUp"
-      },
-      {
-        "does": "Move down one screen",
-        "key": "PgDn"
-      },
-      {
-        "does": "Open the selected vCon's metadata",
-        "key": "Enter"
-      },
-      {
-        "does": "Read the list again from the server",
-        "key": "r"
-      },
-      {
-        "does": "Read the next page of vCons",
-        "key": "n"
-      },
-      {
-        "does": "Show or close this help",
-        "key": "?"
-      },
-      {
-        "does": "Quit (also Ctrl-C)",
-        "key": "q"
-      }
-    ],
     "lines": [
       [
         {
@@ -1615,16 +1101,6 @@
   },
   "no-read-scope": {
     "columns": 80,
-    "keys": [
-      {
-        "does": "Show or close this help",
-        "key": "?"
-      },
-      {
-        "does": "Quit (also Ctrl-C)",
-        "key": "q"
-      }
-    ],
     "lines": [
       [
         {
@@ -1674,20 +1150,6 @@
   },
   "not-connected": {
     "columns": 80,
-    "keys": [
-      {
-        "does": "Read the list again from the server",
-        "key": "r"
-      },
-      {
-        "does": "Show or close this help",
-        "key": "?"
-      },
-      {
-        "does": "Quit (also Ctrl-C)",
-        "key": "q"
-      }
-    ],
     "lines": [
       [
         {
@@ -1732,16 +1194,6 @@
   },
   "operator-key": {
     "columns": 80,
-    "keys": [
-      {
-        "does": "Show or close this help",
-        "key": "?"
-      },
-      {
-        "does": "Quit (also Ctrl-C)",
-        "key": "q"
-      }
-    ],
     "lines": [
       [
         {
@@ -1791,20 +1243,6 @@
   },
   "refused-certificate": {
     "columns": 80,
-    "keys": [
-      {
-        "does": "Read the list again from the server",
-        "key": "r"
-      },
-      {
-        "does": "Show or close this help",
-        "key": "?"
-      },
-      {
-        "does": "Quit (also Ctrl-C)",
-        "key": "q"
-      }
-    ],
     "lines": [
       [
         {
@@ -1859,20 +1297,6 @@
   },
   "refused-key": {
     "columns": 80,
-    "keys": [
-      {
-        "does": "Read the list again from the server",
-        "key": "r"
-      },
-      {
-        "does": "Show or close this help",
-        "key": "?"
-      },
-      {
-        "does": "Quit (also Ctrl-C)",
-        "key": "q"
-      }
-    ],
     "lines": [
       [
         {
@@ -1922,20 +1346,6 @@
   },
   "server-error": {
     "columns": 80,
-    "keys": [
-      {
-        "does": "Read the list again from the server",
-        "key": "r"
-      },
-      {
-        "does": "Show or close this help",
-        "key": "?"
-      },
-      {
-        "does": "Quit (also Ctrl-C)",
-        "key": "q"
-      }
-    ],
     "lines": [
       [
         {
@@ -1980,52 +1390,6 @@
   },
   "too-small": {
     "columns": 36,
-    "keys": [
-      {
-        "does": "Select the vCon below (also Down)",
-        "key": "j"
-      },
-      {
-        "does": "Select the vCon above (also Up)",
-        "key": "k"
-      },
-      {
-        "does": "Select the first vCon (also Home)",
-        "key": "g"
-      },
-      {
-        "does": "Select the last vCon read (also End)",
-        "key": "G"
-      },
-      {
-        "does": "Move up one screen",
-        "key": "PgUp"
-      },
-      {
-        "does": "Move down one screen",
-        "key": "PgDn"
-      },
-      {
-        "does": "Open the selected vCon's metadata",
-        "key": "Enter"
-      },
-      {
-        "does": "Read the list again from the server",
-        "key": "r"
-      },
-      {
-        "does": "Read the next page of vCons",
-        "key": "n"
-      },
-      {
-        "does": "Show or close this help",
-        "key": "?"
-      },
-      {
-        "does": "Quit (also Ctrl-C)",
-        "key": "q"
-      }
-    ],
     "lines": [
       [
         {
@@ -2047,52 +1411,6 @@
   },
   "wide": {
     "columns": 120,
-    "keys": [
-      {
-        "does": "Select the vCon below (also Down)",
-        "key": "j"
-      },
-      {
-        "does": "Select the vCon above (also Up)",
-        "key": "k"
-      },
-      {
-        "does": "Select the first vCon (also Home)",
-        "key": "g"
-      },
-      {
-        "does": "Select the last vCon read (also End)",
-        "key": "G"
-      },
-      {
-        "does": "Move up one screen",
-        "key": "PgUp"
-      },
-      {
-        "does": "Move down one screen",
-        "key": "PgDn"
-      },
-      {
-        "does": "Open the selected vCon's metadata",
-        "key": "Enter"
-      },
-      {
-        "does": "Read the list again from the server",
-        "key": "r"
-      },
-      {
-        "does": "Read the next page of vCons",
-        "key": "n"
-      },
-      {
-        "does": "Show or close this help",
-        "key": "?"
-      },
-      {
-        "does": "Quit (also Ctrl-C)",
-        "key": "q"
-      }
-    ],
     "lines": [
       [
         {

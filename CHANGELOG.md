@@ -64,6 +64,17 @@ All notable changes to this project are recorded here. The format follows
   audit record is changed: a record's target is sealed under the audit
   key. Giving a log a new audit key is not written.
 
+### Changed
+
+- **The terminal UI's page states the keys once.** The
+  [Keys](https://vcon-server.com/docs/tui/#keys) table is the one list of
+  the keys and of the views each works in. The page no longer repeats the
+  keys under each of the 25 screens, in a table of last lines or in a copy
+  of the help view. A second table under Keys names the screens where
+  fewer keys work, and a test holds both tables to the code. A screen's
+  section says which screens follow it, and names a key only in a step.
+  The command is unchanged.
+
 ### Fixed
 
 - **No test and no log line shows the uuid of a vCon.** Code scanning
