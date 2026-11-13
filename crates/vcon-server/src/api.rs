@@ -1559,7 +1559,9 @@ impl Problem {
                 TenantError::LimitReached | TenantError::AuditFailed | TenantError::Closing => {
                     StatusCode::SERVICE_UNAVAILABLE
                 }
-                TenantError::WrongKey | TenantError::Io => StatusCode::INTERNAL_SERVER_ERROR,
+                TenantError::WrongKey | TenantError::NoFileBackup | TenantError::Io => {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                }
             },
         }
     }
@@ -1681,9 +1683,10 @@ impl Problem {
                     ("audit-failed", "The audit record could not be written")
                 }
                 TenantError::Closing => ("unavailable", "The service cannot answer now"),
-                TenantError::BadName | TenantError::WrongKey | TenantError::Io => {
-                    ("internal", "The server failed")
-                }
+                TenantError::BadName
+                | TenantError::WrongKey
+                | TenantError::NoFileBackup
+                | TenantError::Io => ("internal", "The server failed"),
             },
         }
     }
@@ -2442,6 +2445,7 @@ mod tests {
                 "bad-setting",
             ),
             (TenantError::WrongKey, 500, "internal"),
+            (TenantError::NoFileBackup, 500, "internal"),
             (TenantError::Io, 500, "internal"),
         ];
         for (error, status, name) in cases {
@@ -5397,6 +5401,7 @@ mod site_pages {
             TenantError::BadExpiry,
             TenantError::BadSetting(crate::settings::SettingError::UnknownName),
             TenantError::WrongKey,
+            TenantError::NoFileBackup,
             TenantError::Io,
         ];
         for error in tenant {
@@ -5414,6 +5419,7 @@ mod site_pages {
                 | TenantError::BadExpiry
                 | TenantError::BadSetting(_)
                 | TenantError::WrongKey
+                | TenantError::NoFileBackup
                 | TenantError::Io => all.push(Problem::Tenant(error)),
             }
         }

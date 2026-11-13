@@ -11,7 +11,6 @@ use time::macros::datetime;
 
 use super::{CatalogError, SCHEMA_VERSION, open, set_key};
 use crate::audit::{self, Action, Actor, Entry, NO_ANSWER};
-use crate::backend::Registry;
 use crate::backend::local::{LocalCatalog, LocalRegistry};
 use crate::envelope::Key;
 

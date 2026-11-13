@@ -1234,7 +1234,16 @@ impl Registry for LocalRegistry {
     }
 
     #[cfg(test)]
-    fn local_conn(&self) -> MutexGuard<'_, Connection> {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+#[cfg(test)]
+impl LocalRegistry {
+    /// The connection to server.sqlite, for tests that read or break the
+    /// registry directly.
+    pub(crate) fn local_conn(&self) -> MutexGuard<'_, Connection> {
         self.conn()
     }
 }

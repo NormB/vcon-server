@@ -12,6 +12,7 @@
 mod catalog_tests;
 mod edge;
 mod failure;
+mod registry_tests;
 mod schema_tests;
 mod success;
 

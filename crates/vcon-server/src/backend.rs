@@ -28,6 +28,8 @@ use crate::tenants::TenantError;
 #[cfg(test)]
 mod conformance;
 pub mod local;
+#[cfg(test)]
+mod registry_conformance;
 // Moving objects into a bucket, so only a build with S3 has it.
 #[cfg(feature = "s3")]
 pub(crate) mod migrate;
@@ -547,10 +549,10 @@ pub trait Registry: Send + Sync {
     /// Makes the `nth` commit from now fail as `how` says.
     #[cfg(test)]
     fn fail_commit(&self, nth: usize, how: CommitError);
-    /// The local connection, for tests that read or break the registry
-    /// directly.
+    /// The registry as its own type, for a test that reads or breaks one
+    /// backend's storage directly and so must know which backend it has.
     #[cfg(test)]
-    fn local_conn(&self) -> std::sync::MutexGuard<'_, rusqlite::Connection>;
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 /// The statements Tenants runs in a registry transaction. Dropping one

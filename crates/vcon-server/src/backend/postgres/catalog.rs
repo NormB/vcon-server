@@ -61,7 +61,7 @@ use crate::backend::{
     WrappedRow,
 };
 use crate::config::{PostgresSettings, StorageError};
-use crate::envelope::{self as column, ColumnContext, ColumnKeys, Key};
+use crate::envelope::{self as column, ColumnContext, ColumnKeys, Key, REGISTRY};
 use crate::ids::{FileId, KeyId, TenantId, VersionId};
 use crate::store::StoreError;
 
@@ -170,7 +170,7 @@ impl Database {
 
     /// A connection from the pool. Taking one that waits unused sends
     /// nothing, so it is not a round trip.
-    fn lease(&self) -> Result<Lease, StoreError> {
+    pub(super) fn lease(&self) -> Result<Lease, StoreError> {
         self.runtime.handle().block_on(self.pool.get()).map_err(io)
     }
 
@@ -255,6 +255,41 @@ pub(crate) fn begin_text(how: Begin, tenant: TenantId) -> String {
         Begin::Create => format!("BEGIN ISOLATION LEVEL READ COMMITTED; {set}"),
     }
 }
+
+/// The advisory lock a write of the registry holds to its end, a constant
+/// all instances share: the registry has one writer at a time, as the
+/// local registry's one connection gives it.
+pub(crate) const REGISTRY_LOCK: i64 = 0x7663_6f6e_5247_0001;
+
+/// The one batch that begins a transaction of the registry as `how`: the
+/// transaction, the marker the registry's policies read in place of a
+/// tenant, and for a write the registry's lock, which the transaction's
+/// end gives up.
+pub(crate) fn registry_begin_text(how: Begin) -> String {
+    let set = "SET LOCAL vcon.tenant = 'registry'";
+    match how {
+        Begin::Write | Begin::Create => format!(
+            "BEGIN ISOLATION LEVEL READ COMMITTED; {set}; \
+             SELECT pg_advisory_xact_lock({REGISTRY_LOCK})"
+        ),
+        Begin::Read => format!("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; {set}"),
+    }
+}
+
+/// The audit table of a transaction: a tenant's log, or the registry's.
+struct AuditTable {
+    /// The table, with its schema.
+    sql: &'static str,
+    /// The table's name in a sealed target's context.
+    sealed_as: &'static str,
+    /// Whether rows carry a tenant; the registry's log has no such column.
+    by_tenant: bool,
+}
+
+/// A commit fault a test set: the commits to go before it, and how it
+/// fails.
+#[cfg(test)]
+pub(super) type Fault = Mutex<Option<(usize, CommitError)>>;
 
 /// What a COMMIT that failed means, from the severity of the server's
 /// answer, or `None` for no answer. Only an answer of ERROR says the
@@ -366,6 +401,11 @@ impl PgCatalog {
         tenant: TenantId,
         catalog_key: &Key,
     ) -> Result<PgCatalog, CatalogError> {
+        if tenant == REGISTRY {
+            // The id of all zeros is the registry's in a sealed column's
+            // context and in a transaction's scope: no tenant has it.
+            return Err(CatalogError::NoTenant);
+        }
         Ok(PgCatalog {
             database,
             tenant,
@@ -422,6 +462,11 @@ impl PgCatalog {
     /// The id of the key `tenant`'s catalog is sealed under, if it has a
     /// catalog.
     fn key_id(database: &Arc<Database>, tenant: TenantId) -> Result<Option<Vec<u8>>, CatalogError> {
+        if tenant == REGISTRY {
+            // The registry's id is no tenant's, and a transaction of it
+            // reads no tenant's rows.
+            return Ok(None);
+        }
         let lease = database.lease().map_err(|_| CatalogError::Io)?;
         let tx = PgTx::begin(database, lease, tenant, None, Begin::Read);
         let rows = tx
@@ -456,13 +501,10 @@ impl PgCatalog {
 
     fn begin(&self, how: Begin) -> Result<PgTx<'_>, StoreError> {
         let lease = self.database.lease()?;
-        Ok(PgTx::begin(
-            &self.database,
-            lease,
-            self.tenant,
-            Some(self),
-            how,
-        ))
+        let tx = PgTx::begin(&self.database, lease, self.tenant, Some(&self.keys), how);
+        #[cfg(test)]
+        let tx = tx.with_fault(&self.fault);
+        Ok(tx)
     }
 }
 
@@ -532,15 +574,20 @@ impl Catalog for PgCatalog {
     }
 }
 
-/// A transaction on a tenant's catalog: one pooled connection, rolled
-/// back when dropped without a commit.
-struct PgTx<'a> {
+/// A transaction on a tenant's catalog, or on the registry: one pooled
+/// connection, rolled back when dropped without a commit.
+pub(super) struct PgTx<'a> {
     database: &'a Database,
     lease: Lease,
+    /// Whose rows the transaction reads and writes: a tenant's, or with
+    /// [`REGISTRY`] the registry's.
     tenant: TenantId,
-    /// The catalog whose keys seal and open the columns; none for the
-    /// read that finds a tenant's key id before there is a catalog.
-    catalog: Option<&'a PgCatalog>,
+    /// The keys that seal and open the columns; none for the read that
+    /// finds a tenant's key id before there is a catalog.
+    keys: Option<&'a ColumnKeys>,
+    /// The commit fault of the catalog or registry the transaction is of.
+    #[cfg(test)]
+    fault: Option<&'a Fault>,
     /// How the transaction begins, until its first statement is sent:
     /// the begin goes with that statement, in its round trip.
     pending: Cell<Option<Begin>>,
@@ -573,20 +620,31 @@ impl Drop for PgTx<'_> {
 }
 
 impl<'a> PgTx<'a> {
-    /// A transaction of `tenant` on the connection of `lease`. Nothing is
-    /// sent yet: the begin goes with the first statement ([`PgTx::trip`]).
-    fn begin(
+    /// The transaction, with the commit fault a test set on its catalog
+    /// or registry.
+    #[cfg(test)]
+    pub(super) fn with_fault(mut self, fault: &'a Fault) -> PgTx<'a> {
+        self.fault = Some(fault);
+        self
+    }
+
+    /// A transaction of `tenant`, or with [`REGISTRY`] of the registry, on
+    /// the connection of `lease`. Nothing is sent yet: the begin goes with
+    /// the first statement ([`PgTx::trip`]).
+    pub(super) fn begin(
         database: &'a Database,
         lease: Lease,
         tenant: TenantId,
-        catalog: Option<&'a PgCatalog>,
+        keys: Option<&'a ColumnKeys>,
         how: Begin,
     ) -> PgTx<'a> {
         PgTx {
             database,
             lease,
             tenant,
-            catalog,
+            keys,
+            #[cfg(test)]
+            fault: None,
             pending: Cell::new(Some(how)),
             open: Cell::new(false),
             refused: Cell::new(false),
@@ -618,7 +676,11 @@ impl<'a> PgTx<'a> {
         let Some(how) = self.pending.take() else {
             return self.database.wait(call);
         };
-        let text = begin_text(how, self.tenant);
+        let text = if self.tenant == REGISTRY {
+            registry_begin_text(how)
+        } else {
+            begin_text(how, self.tenant)
+        };
         let client = self.lease.client();
         self.open.set(true);
         let (began, done) = self
@@ -640,13 +702,30 @@ impl<'a> PgTx<'a> {
         }
     }
 
-    fn keys(&self) -> Result<&ColumnKeys, StoreError> {
-        self.catalog.map(|c| &c.keys).ok_or(StoreError::Io)
+    pub(super) fn keys(&self) -> Result<&ColumnKeys, StoreError> {
+        self.keys.ok_or(StoreError::Io)
+    }
+
+    /// The log this transaction writes and reads.
+    fn audit_table(&self) -> AuditTable {
+        if self.tenant == REGISTRY {
+            AuditTable {
+                sql: "vcon.admin_audit",
+                sealed_as: "admin_audit",
+                by_tenant: false,
+            }
+        } else {
+            AuditTable {
+                sql: "vcon.audit",
+                sealed_as: "audit",
+                by_tenant: true,
+            }
+        }
     }
 
     /// A read, inside a savepoint sent with it in one round trip: when it
     /// fails, the transaction is as it was before it.
-    fn query(&self, sql: &str, params: &[Param<'_>]) -> Result<Vec<Row>, StoreError> {
+    pub(super) fn query(&self, sql: &str, params: &[Param<'_>]) -> Result<Vec<Row>, StoreError> {
         self.query_checked(sql, params).map_err(io)
     }
 
@@ -683,7 +762,7 @@ impl<'a> PgTx<'a> {
 
     /// A write, and the number of rows it changed. A write that fails
     /// aborts the transaction.
-    fn execute(&self, sql: &str, params: &[Param<'_>]) -> Result<u64, StoreError> {
+    pub(super) fn execute(&self, sql: &str, params: &[Param<'_>]) -> Result<u64, StoreError> {
         self.execute_checked(sql, params).map_err(io)
     }
 
@@ -720,7 +799,7 @@ impl<'a> PgTx<'a> {
         })
     }
 
-    fn exists(&self, sql: &str, params: &[Param<'_>]) -> Result<bool, StoreError> {
+    pub(super) fn exists(&self, sql: &str, params: &[Param<'_>]) -> Result<bool, StoreError> {
         Ok(!self.query(sql, params)?.is_empty())
     }
 
@@ -738,7 +817,7 @@ impl<'a> PgTx<'a> {
             .collect()
     }
 
-    fn seal(
+    pub(super) fn seal(
         &self,
         table: &str,
         column: &str,
@@ -754,7 +833,7 @@ impl<'a> PgTx<'a> {
         column::seal_column(self.keys()?, &ctx, plaintext).map_err(io)
     }
 
-    fn unseal(
+    pub(super) fn unseal(
         &self,
         table: &str,
         column: &str,
@@ -825,27 +904,37 @@ impl<'a> PgTx<'a> {
             return Ok((None, None));
         };
         let mac = column::mac(self.keys()?, target.as_bytes());
-        let sealed = self.seal("audit", "target_sealed", &mac, target.as_bytes())?;
+        let table = self.audit_table().sealed_as;
+        let sealed = self.seal(table, "target_sealed", &mac, target.as_bytes())?;
         Ok((Some(mac.to_vec()), Some(sealed)))
     }
 
     /// Writes at most `limit` records after the seq `after` as JSON
     /// lines, oldest first, as the local log does (`audit::export`).
-    fn audit_lines(
+    pub(super) fn audit_lines(
         &self,
         after: i64,
         limit: Option<i64>,
         out: &mut dyn Write,
     ) -> Result<(), AuditError> {
+        let table = self.audit_table();
+        let tenant = self.tenant.0.as_slice();
+        // The tenant is the last parameter, which only a tenant's log has.
+        let mut params: Vec<Param<'_>> = vec![(&after, Type::INT8), (&limit, Type::INT8)];
+        let of_tenant = if table.by_tenant {
+            params.push((&tenant, Type::BYTEA));
+            "AND tenant = $3"
+        } else {
+            ""
+        };
         let rows = self
             .query_checked(
-                "SELECT seq, at, actor, action, target_mac, target_sealed, version, status, count
-                 FROM vcon.audit WHERE tenant = $1 AND seq > $2 ORDER BY seq LIMIT $3",
-                &[
-                    (&self.tenant.0.as_slice(), Type::BYTEA),
-                    (&after, Type::INT8),
-                    (&limit, Type::INT8),
-                ],
+                &format!(
+                    "SELECT seq, at, actor, action, target_mac, target_sealed, version, status, \
+                     count FROM {} WHERE seq > $1 {of_tenant} ORDER BY seq LIMIT $2",
+                    table.sql
+                ),
+                &params,
             )
             .map_err(|e| audit_failed(&e))?;
         let damaged = || AuditError::Database("an audit record cannot be read".to_owned());
@@ -856,7 +945,7 @@ impl<'a> PgTx<'a> {
             let target = match (mac, sealed) {
                 (Some(mac), Some(sealed)) => {
                     let bytes = self
-                        .unseal("audit", "target_sealed", &mac, &sealed)
+                        .unseal(table.sealed_as, "target_sealed", &mac, &sealed)
                         .map_err(|_| damaged())?;
                     Some(String::from_utf8(bytes).map_err(|_| damaged())?)
                 }
@@ -879,8 +968,14 @@ impl<'a> PgTx<'a> {
     }
 
     /// Inserts one audit record at `at`, counting `count`; `counted`
-    /// marks a record [`CatalogTx::count`] adds to.
-    fn insert_audit(&self, entry: &Entry, at: &str, counted: bool) -> Result<(), AuditError> {
+    /// marks a record [`PgTx::count_record`] adds to.
+    fn insert_audit(
+        &self,
+        entry: &Entry,
+        at: &str,
+        count: i64,
+        counted: bool,
+    ) -> Result<(), AuditError> {
         let unsealed = || AuditError::Database("an audit record cannot be sealed".to_owned());
         let (mac, sealed) = self
             .sealed_target(entry.target.as_deref())
@@ -888,24 +983,144 @@ impl<'a> PgTx<'a> {
         let actor = entry.actor.name();
         let version = entry.version.map(|v| v.to_string());
         let status = audit::stored(entry.status).map(i64::from);
+        let action = entry.action.as_str();
+        let table = self.audit_table();
+        let tenant = self.tenant.0.as_slice();
+        // The tenant is the last parameter, which only a tenant's log has.
+        let mut params: Vec<Param<'_>> = vec![
+            (&at, Type::TEXT),
+            (&actor, Type::TEXT),
+            (&action, Type::TEXT),
+            (&mac, Type::BYTEA),
+            (&sealed, Type::BYTEA),
+            (&version, Type::TEXT),
+            (&status, Type::INT8),
+            (&count, Type::INT8),
+            (&counted, Type::BOOL),
+        ];
+        let (column, value) = if table.by_tenant {
+            params.push((&tenant, Type::BYTEA));
+            (", tenant", ", $10")
+        } else {
+            ("", "")
+        };
         self.execute_checked(
-            "INSERT INTO vcon.audit
-                 (tenant, at, actor, action, target_mac, target_sealed, version, status, count, counted)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, $9)",
-            &[
-                (&self.tenant.0.as_slice(), Type::BYTEA),
-                (&at, Type::TEXT),
-                (&actor, Type::TEXT),
-                (&entry.action.as_str(), Type::TEXT),
-                (&mac, Type::BYTEA),
-                (&sealed, Type::BYTEA),
-                (&version, Type::TEXT),
-                (&status, Type::INT8),
-                (&counted, Type::BOOL),
-            ],
+            &format!(
+                "INSERT INTO {} (at, actor, action, target_mac, target_sealed, version, status, \
+                 count, counted{column}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9{value})",
+                table.sql
+            ),
+            &params,
         )
         .map(drop)
         .map_err(|e| audit_failed(&e))
+    }
+
+    /// Inserts one audit record at the time `now`.
+    pub(super) fn record(&self, entry: &Entry, now: OffsetDateTime) -> Result<(), AuditError> {
+        self.insert_audit(entry, &audit::rfc3339(now), 1, false)
+    }
+
+    /// Adds `times` to the record for this actor, action, target, version
+    /// and status in the minute of `now`, making it if there is none. Only
+    /// a record this call made is added to (`counted`). A count of nothing
+    /// makes no record.
+    ///
+    /// A new record is written with its whole count. A record that is
+    /// there is added to one at a time, each in a statement of its own:
+    /// schema version 8 lets an UPDATE of a log add one to a count and
+    /// nothing else (`vcon.audit_append_only`).
+    pub(super) fn count_record(
+        &self,
+        entry: &Entry,
+        now: OffsetDateTime,
+        times: u64,
+    ) -> Result<(), AuditError> {
+        if times == 0 {
+            return Ok(());
+        }
+        let times = i64::try_from(times).unwrap_or(i64::MAX);
+        let unsealed = || AuditError::Database("an audit record cannot be sealed".to_owned());
+        let at = audit::rfc3339(audit::minute_of(now));
+        let mac = entry
+            .target
+            .as_deref()
+            .map(|target| {
+                self.keys()
+                    .map(|keys| column::mac(keys, target.as_bytes()).to_vec())
+            })
+            .transpose()
+            .map_err(|_| unsealed())?;
+        let actor = entry.actor.name();
+        let version = entry.version.map(|v| v.to_string());
+        let status = audit::stored(entry.status).map(i64::from);
+        let action = entry.action.as_str();
+        let table = self.audit_table();
+        let tenant = self.tenant.0.as_slice();
+        // The tenant is the last parameter, which only a tenant's log has.
+        let mut params: Vec<Param<'_>> = vec![
+            (&at, Type::TEXT),
+            (&actor, Type::TEXT),
+            (&action, Type::TEXT),
+            (&mac, Type::BYTEA),
+            (&version, Type::TEXT),
+            (&status, Type::INT8),
+        ];
+        let of_tenant = if table.by_tenant {
+            params.push((&tenant, Type::BYTEA));
+            "AND tenant = $7"
+        } else {
+            ""
+        };
+        let one_more = format!(
+            "UPDATE {} SET count = count + 1
+             WHERE counted AND at = $1 AND actor = $2 AND action = $3
+               AND target_mac IS NOT DISTINCT FROM $4 AND version IS NOT DISTINCT FROM $5
+               AND status IS NOT DISTINCT FROM $6 {of_tenant}",
+            table.sql
+        );
+        let added = self
+            .execute_checked(&one_more, &params)
+            .map_err(|e| audit_failed(&e))?;
+        if added == 0 {
+            return self.insert_audit(entry, &at, times, true);
+        }
+        for _ in 1..times {
+            self.execute_checked(&one_more, &params)
+                .map_err(|e| audit_failed(&e))?;
+        }
+        Ok(())
+    }
+
+    /// Ends the transaction, keeping what it wrote.
+    pub(super) fn finish(&self) -> Result<(), CommitError> {
+        #[cfg(test)]
+        if let Some(how) = self.fault.and_then(injected) {
+            let end = match how {
+                CommitError::Unknown => "COMMIT",
+                CommitError::RolledBack => "ROLLBACK",
+            };
+            if self.open.get() {
+                let ended = self.database.wait(self.client().batch_execute(end));
+                ended.expect("ends the transaction");
+            }
+            self.pending.set(None);
+            self.open.set(false);
+            return self.ended(Err(how));
+        }
+        if self.aborted.get() || self.refused.get() {
+            // The drop sends the ROLLBACK the server is waiting for.
+            return Err(CommitError::RolledBack);
+        }
+        if self.pending.take().is_some() {
+            // No statement was sent, so no begin was: nothing to keep.
+            return Ok(());
+        }
+        let outcome = self.database.wait(self.client().batch_execute("COMMIT"));
+        self.open.set(false);
+        let outcome =
+            outcome.map_err(|e| commit_failure(e.as_db_error().and_then(DbError::parsed_severity)));
+        self.ended(outcome)
     }
 }
 
@@ -1750,48 +1965,11 @@ impl CatalogTx for PgTx<'_> {
     }
 
     fn record(&mut self, entry: &Entry, now: OffsetDateTime) -> Result<(), AuditError> {
-        self.insert_audit(entry, &audit::rfc3339(now), false)
+        PgTx::record(self, entry, now)
     }
 
-    /// Adds one to the record for this actor, action, target, version and
-    /// status in the minute of `now`, making it if there is none. Only a
-    /// record this call made is added to (`counted`).
     fn count(&mut self, entry: &Entry, now: OffsetDateTime) -> Result<(), AuditError> {
-        let unsealed = || AuditError::Database("an audit record cannot be sealed".to_owned());
-        let at = audit::rfc3339(audit::minute_of(now));
-        let mac = entry
-            .target
-            .as_deref()
-            .map(|target| {
-                self.keys()
-                    .map(|keys| column::mac(keys, target.as_bytes()).to_vec())
-            })
-            .transpose()
-            .map_err(|_| unsealed())?;
-        let actor = entry.actor.name();
-        let version = entry.version.map(|v| v.to_string());
-        let status = audit::stored(entry.status).map(i64::from);
-        let added = self
-            .execute_checked(
-                "UPDATE vcon.audit SET count = count + 1
-                 WHERE tenant = $1 AND counted AND at = $2 AND actor = $3 AND action = $4
-                   AND target_mac IS NOT DISTINCT FROM $5 AND version IS NOT DISTINCT FROM $6
-                   AND status IS NOT DISTINCT FROM $7",
-                &[
-                    (&self.tenant.0.as_slice(), Type::BYTEA),
-                    (&at, Type::TEXT),
-                    (&actor, Type::TEXT),
-                    (&entry.action.as_str(), Type::TEXT),
-                    (&mac, Type::BYTEA),
-                    (&version, Type::TEXT),
-                    (&status, Type::INT8),
-                ],
-            )
-            .map_err(|e| audit_failed(&e))?;
-        if added == 0 {
-            self.insert_audit(entry, &at, true)?;
-        }
-        Ok(())
+        self.count_record(entry, now, 1)
     }
 
     fn audit_lines(
@@ -1804,33 +1982,7 @@ impl CatalogTx for PgTx<'_> {
     }
 
     fn commit(self: Box<Self>) -> Result<(), CommitError> {
-        #[cfg(test)]
-        if let Some(how) = self.catalog.and_then(injected) {
-            let end = match how {
-                CommitError::Unknown => "COMMIT",
-                CommitError::RolledBack => "ROLLBACK",
-            };
-            if self.open.get() {
-                let ended = self.database.wait(self.client().batch_execute(end));
-                ended.expect("ends the transaction");
-            }
-            self.pending.set(None);
-            self.open.set(false);
-            return self.ended(Err(how));
-        }
-        if self.aborted.get() || self.refused.get() {
-            // The drop sends the ROLLBACK the server is waiting for.
-            return Err(CommitError::RolledBack);
-        }
-        if self.pending.take().is_some() {
-            // No statement was sent, so no begin was: nothing to keep.
-            return Ok(());
-        }
-        let outcome = self.database.wait(self.client().batch_execute("COMMIT"));
-        self.open.set(false);
-        let outcome =
-            outcome.map_err(|e| commit_failure(e.as_db_error().and_then(DbError::parsed_severity)));
-        self.ended(outcome)
+        self.finish()
     }
 }
 
@@ -1849,8 +2001,8 @@ impl PgTx<'_> {
 /// In tests, the commit fault set for this commit, if any, as the local
 /// catalog's: Unknown commits and reports failure; RolledBack rolls back.
 #[cfg(test)]
-fn injected(catalog: &PgCatalog) -> Option<CommitError> {
-    let mut fault = catalog.fault.lock().expect("fault");
+fn injected(fault: &Fault) -> Option<CommitError> {
+    let mut fault = fault.lock().expect("fault");
     match *fault {
         Some((1, how)) => {
             *fault = None;

@@ -26,6 +26,7 @@
 mod catalog;
 mod connect;
 mod pool;
+mod registry;
 mod schema;
 mod secrets;
 #[cfg(test)]

@@ -330,6 +330,9 @@ impl fmt::Display for CommandError {
                     "a setting's name or value is not one the tenant may set"
                 }
                 TenantError::WrongKey => unreachable!("matched above"),
+                TenantError::NoFileBackup => {
+                    "the registry is kept in PostgreSQL, which this backend does not copy into a file; back up the catalog database with pg_dump"
+                }
                 TenantError::Io => "the data could not be read or written",
             }),
         }
@@ -2073,6 +2076,7 @@ mod tests {
                 // Display folds a registry made under another master key
                 // into WrongMasterKey's message.
                 TenantError::WrongKey => "is not the one server.sqlite was made under",
+                TenantError::NoFileBackup => "back up the catalog database with pg_dump",
                 TenantError::Io => "could not be read or written",
             },
         }
@@ -2349,6 +2353,7 @@ mod tests {
             TenantError::BadExpiry,
             TenantError::BadSetting(crate::settings::SettingError::UnknownName),
             TenantError::WrongKey,
+            TenantError::NoFileBackup,
             TenantError::Io,
         ]
         .map(CommandError::Tenant);

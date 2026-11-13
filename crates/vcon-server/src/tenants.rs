@@ -92,6 +92,10 @@ pub enum TenantError {
     BadSetting(crate::settings::SettingError),
     /// server.sqlite was made under another master key.
     WrongKey,
+    /// A copy of the registry into a local file was asked of a registry
+    /// kept in PostgreSQL, which is backed up with the database's own
+    /// tools (`pg_dump`).
+    NoFileBackup,
     Io,
 }
 
@@ -931,7 +935,11 @@ impl Tenants {
     /// The local registry's connection, for tests.
     #[cfg(test)]
     fn conn(&self) -> MutexGuard<'_, LocalConn> {
-        self.registry.local_conn()
+        self.registry
+            .as_any()
+            .downcast_ref::<LocalRegistry>()
+            .expect("the test's registry is the local one")
+            .local_conn()
     }
 }
 
