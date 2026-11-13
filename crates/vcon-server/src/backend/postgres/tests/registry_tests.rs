@@ -663,4 +663,170 @@ mod on_a_server {
         let why = refused.expect_err("the policy refuses a tenant's scope");
         assert!(why.contains("not the registry's"), "{why}");
     }
+
+    // Counting many: one statement for a record that is there (schema
+    // version 9).
+
+    /// A counted entry of the admin log.
+    fn refused_read() -> Entry {
+        Entry {
+            actor: Actor::Cli,
+            action: Action::Read,
+            target: None,
+            version: None,
+            status: 429,
+        }
+    }
+
+    /// The minute every count of these tests falls in.
+    fn minute() -> time::OffsetDateTime {
+        time::OffsetDateTime::from_unix_timestamp(T0).expect("a time")
+    }
+
+    /// Where each record of the admin log is in its table, and its count,
+    /// in the order stored. A row's place is `(page,item)`: an INSERT into
+    /// an empty table puts it at `(0,1)`, and each UPDATE of a transaction
+    /// writes the row's next version at the next item, so the item says
+    /// how many statements changed the row.
+    fn places(db: &Db) -> Vec<String> {
+        as_owner(db, "SELECT ctid, count FROM vcon.admin_audit ORDER BY seq")
+    }
+
+    #[test]
+    fn many_are_added_to_a_record_that_is_there_in_one_statement() {
+        let (db, _database, registry, _key) = registry();
+        write(&registry, |tx| {
+            tx.count_many(&refused_read(), minute(), 3).expect("counts")
+        });
+        assert_eq!(
+            places(&db),
+            ["(0,1) 3"],
+            "a new record takes its whole count"
+        );
+        write(&registry, |tx| {
+            tx.count_many(&refused_read(), minute(), 5).expect("counts")
+        });
+        assert_eq!(
+            places(&db),
+            ["(0,2) 8"],
+            "five more, and the record was written once more"
+        );
+    }
+
+    #[test]
+    fn a_thousand_are_added_in_one_statement_as_five_are() {
+        let (db, _database, registry, _key) = registry();
+        write(&registry, |tx| {
+            tx.count_many(&refused_read(), minute(), 1).expect("counts")
+        });
+        write(&registry, |tx| {
+            tx.count_many(&refused_read(), minute(), 1000)
+                .expect("counts")
+        });
+        assert_eq!(
+            places(&db),
+            ["(0,2) 1001"],
+            "the statements do not grow with the sum"
+        );
+    }
+
+    #[test]
+    fn one_more_is_one_statement() {
+        let (db, _database, registry, _key) = registry();
+        for _ in 0..2 {
+            write(&registry, |tx| {
+                tx.count(&refused_read(), minute()).expect("counts")
+            });
+        }
+        assert_eq!(places(&db), ["(0,2) 2"], "an INSERT, then one UPDATE");
+    }
+
+    #[test]
+    fn two_sums_in_one_write_are_two_statements() {
+        let (db, _database, registry, _key) = registry();
+        write(&registry, |tx| {
+            tx.count_many(&refused_read(), minute(), 2).expect("counts")
+        });
+        write(&registry, |tx| {
+            tx.count_many(&refused_read(), minute(), 30)
+                .expect("counts");
+            tx.count_many(&refused_read(), minute(), 400)
+                .expect("counts");
+        });
+        assert_eq!(
+            places(&db),
+            ["(0,3) 432"],
+            "each call writes the record once"
+        );
+    }
+
+    #[test]
+    fn a_sum_of_nothing_writes_nothing_to_a_record_that_is_there() {
+        let (db, _database, registry, _key) = registry();
+        write(&registry, |tx| {
+            tx.count_many(&refused_read(), minute(), 7).expect("counts")
+        });
+        write(&registry, |tx| {
+            tx.count_many(&refused_read(), minute(), 0).expect("counts")
+        });
+        assert_eq!(places(&db), ["(0,1) 7"], "no statement at all");
+    }
+
+    #[test]
+    fn a_sum_past_the_largest_count_is_an_error_and_the_count_stays() {
+        let (db, _database, registry, _key) = registry();
+        write(&registry, |tx| {
+            tx.count_many(&refused_read(), minute(), 7).expect("counts")
+        });
+        let mut tx = registry.immediate().expect("a write begins");
+        let e = tx
+            .count_many(&refused_read(), minute(), u64::MAX)
+            .expect_err("seven and the largest number");
+        assert!(
+            format!("{e:?}").contains("bigint out of range"),
+            "the server's reason: {e:?}"
+        );
+        assert_eq!(
+            tx.commit(),
+            Err(CommitError::RolledBack),
+            "a failed write ends its transaction"
+        );
+        assert_eq!(places(&db), ["(0,1) 7"], "as it was");
+    }
+
+    #[test]
+    fn a_record_at_the_largest_count_takes_no_more() {
+        let (db, _database, registry, _key) = registry();
+        write(&registry, |tx| {
+            tx.count_many(&refused_read(), minute(), u64::MAX)
+                .expect("a new record takes the largest count the column holds")
+        });
+        let mut tx = registry.immediate().expect("a write begins");
+        let e = tx
+            .count_many(&refused_read(), minute(), 1)
+            .expect_err("no number is larger");
+        assert!(
+            format!("{e:?}").contains("bigint out of range"),
+            "the server's reason: {e:?}"
+        );
+        drop(tx);
+        assert_eq!(places(&db), ["(0,1) 9223372036854775807"], "as it was");
+    }
+
+    #[test]
+    fn a_sum_in_another_minute_makes_a_record_of_its_own() {
+        let (db, _database, registry, _key) = registry();
+        write(&registry, |tx| {
+            tx.count_many(&refused_read(), minute(), 4).expect("counts")
+        });
+        write(&registry, |tx| {
+            tx.count_many(&refused_read(), minute() + Duration::from_secs(60), 9)
+                .expect("counts")
+        });
+        assert_eq!(
+            places(&db),
+            ["(0,1) 4", "(0,2) 9"],
+            "the first record is not written again"
+        );
+    }
 }

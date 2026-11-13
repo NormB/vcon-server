@@ -405,7 +405,7 @@ binary's.
 ### After an upgrade from 0.4.5
 
 Release 0.4.5 and the releases before it leave the schema at version 6.
-A build from `main` makes version 8, so a database that 0.4.5 migrated
+A build from `main` makes version 9, so a database that 0.4.5 migrated
 needs the command once more, with the new binary and before any server
 starts:
 
@@ -415,12 +415,12 @@ sudo -u vcon vcon-server migrate --config /etc/vcon-server/vcon-migrate.toml
 ```
 
 ```text
-{"from":6,"message":"schema version 6 to schema version 8","migrated":true,"to":8}
+{"from":6,"message":"schema version 6 to schema version 9","migrated":true,"to":9}
 ```
 
 Until then a server stops with `the database schema is version 6, older
-than this binary's 8: run vcon-server migrate`. Versions 7 and 8 change
-no row there is. Version 7 changes two things:
+than this binary's 9: run vcon-server migrate`. Versions 7, 8 and 9
+change no row there is. Version 7 changes two things:
 
 - The `version` table gains the column `seq`, a number PostgreSQL gives
   each version as it is stored. Two versions of one vCon can hold the same
@@ -452,10 +452,18 @@ Version 8 adds triggers and grants nothing:
   table rise by two for each row: they give an order, not a count.
 - The audit logs, the tables `audit` and `admin_audit`, take new records.
   A record there is changes in one way: the `count` of a record the server
-  counts requests in goes up by one. Every other `UPDATE`, every `DELETE`
+  counts requests in goes up. Every other `UPDATE`, every `DELETE`
   and every `TRUNCATE` is refused, for `vcon_owner` as for `vcon_app`. The
   owner of a table can drop its triggers, which is one reason no server
   logs in as `vcon_owner`.
+
+Version 9 replaces the function those triggers run, and makes no table
+and no trigger. Under version 8 an `UPDATE` passed when it added exactly
+one to a count. Under version 9 it passes when the record is one the
+server counts requests in, the new `count` is larger than the old one,
+and no other column is different, so the server writes the refused
+requests of a minute with one statement. The count only grows: an
+`UPDATE` that sets it to the same number or to a smaller one is refused.
 
 To check the second, try to empty a log as the owner:
 
@@ -664,8 +672,8 @@ primary in `hosts`; a standby before it is passed over.
 
 ```text
 vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database has no vCon schema: run vcon-server migrate
-vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is version 6, older than this binary's 8: run vcon-server migrate
-vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is newer than this binary (version 9, this binary 8): upgrade this server
+vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is version 6, older than this binary's 9: run vcon-server migrate
+vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is newer than this binary (version 10, this binary 9): upgrade this server
 ```
 
 Run `vcon-server migrate` with `vcon_migrate`'s configuration, or upgrade
@@ -676,13 +684,16 @@ the server.
 ```text
 ERROR:  an audit record is not deleted
 ERROR:  an audit log is not emptied
-ERROR:  an audit record is not changed, but for one more in the count of a counted record
+ERROR:  an audit record is not changed, but for a larger count of a counted record
 ```
 
 From schema version 8 the tables `audit` and `admin_audit` take new
-records and nothing else, from every role. A statement run by hand that
-deletes or rewrites a record is refused with one of these; the server
-sends no such statement. Reading the log with `SELECT` is not refused.
+records and nothing else, from every role, but for the `count` of a
+record the server counts requests in. The count only grows: from schema
+version 9 an `UPDATE` may make it larger, by any number, and change no
+other column. A statement run by hand that deletes or rewrites a record,
+or sets a count to the same number or a smaller one, is refused with one
+of these; the server sends no such statement. Reading the log with `SELECT` is not refused.
 
 ### The role owns the catalog or may not use it
 

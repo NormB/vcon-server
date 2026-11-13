@@ -8,21 +8,27 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
-- **The PostgreSQL preview's schema is at version 8.** A database that
+- **The PostgreSQL preview's schema is at version 9.** A database that
   0.4.5 or an earlier release migrated is at version 6: run
   `vcon-server migrate` with the new binary before a server starts, as
   [after an upgrade from 0.4.5](https://vcon-server.com/docs/postgres-catalog/#after-an-upgrade-from-0-4-5)
   shows. Until then a server stops with `the database schema is version
-  6, older than this binary's 8: run vcon-server migrate`. Version 7
+  6, older than this binary's 9: run vcon-server migrate`. Version 7
   gives the `version` table the column `seq`, the order versions were
   stored in, and on PostgreSQL 17 and later grants `vcon_app` `MAINTAIN`
   on the tables `version`, `vcon` and `tombstone`, for the `VACUUM` the
   server will run after a purge. Version 8 makes the audit logs
   append-only in the database: triggers on the tables `audit` and
   `admin_audit` refuse every `DELETE` and `TRUNCATE`, and every `UPDATE`
-  but one more in the `count` of a record the server counts requests in,
-  for `vcon_owner` as for `vcon_app`. No row is changed. The local
-  catalogs stay at schema version 9.
+  but a larger `count` of a record the server counts requests in, for
+  `vcon_owner` as for `vcon_app`. Version 9 sets the rule for that
+  `count`: an `UPDATE` passes when the new count is larger than the old
+  one, by any number, and no other column is different, where version 8
+  took exactly one more; the server then writes the refused requests of a
+  minute to a record that is there with one statement.
+  The count only grows: the same number or a smaller one is refused with
+  `an audit record is not changed, but for a larger count of a counted
+  record`. No row is changed. The local catalogs stay at schema version 9.
 - **The statements that keep a tenant's catalog in PostgreSQL**, behind
   the `postgres` cargo feature and used by no server yet: a start with
   `catalog.backend = "postgres"` still connects, checks and stops. They

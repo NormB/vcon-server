@@ -2,7 +2,9 @@
 //! whatever the statement says, and the two audit logs take new records
 //! and one more in the count of a counted record, and nothing else, from
 //! the application role and from the owner. Each live test of the
-//! migration starts from a database at version 7.
+//! migration starts from a database at version 7. Version 9 (v9.rs)
+//! replaced "one more" with "a larger count"; the live tests here that
+//! start from a migrated database hold the rule as it is now.
 
 use super::super::super::schema::{MIGRATIONS, SCHEMA_VERSION, version_refusal};
 
@@ -148,7 +150,7 @@ fn the_functions_are_revoked_from_public() {
 }
 
 #[cfg(feature = "backend-tests")]
-mod on_a_server {
+pub(super) mod on_a_server {
     use tokio_postgres::Client;
 
     use super::super::super::super::schema::{MIGRATIONS, Migrated, SCHEMA_VERSION};
@@ -156,12 +158,13 @@ mod on_a_server {
     use super::{LOGS, NUMBERED, THIS};
 
     /// The server's words when a record would be changed.
-    const NOT_CHANGED: &str =
-        "an audit record is not changed, but for one more in the count of a counted record";
+    /// Version 9 changed them with the rule.
+    pub(in super::super) const NOT_CHANGED: &str =
+        "an audit record is not changed, but for a larger count of a counted record";
     /// The server's words when a record would be deleted.
-    const NOT_DELETED: &str = "an audit record is not deleted";
+    pub(in super::super) const NOT_DELETED: &str = "an audit record is not deleted";
     /// The server's words when a log would be emptied.
-    const NOT_EMPTIED: &str = "an audit log is not emptied";
+    pub(in super::super) const NOT_EMPTIED: &str = "an audit log is not emptied";
 
     /// A database at version 7.
     async fn at_version_7() -> Db {
@@ -177,7 +180,7 @@ mod on_a_server {
     }
 
     /// The tester's connection as the role that owns the schema.
-    async fn owner(db: &Db) -> Client {
+    pub(in super::super) async fn owner(db: &Db) -> Client {
         let client = db.admin().await;
         client
             .batch_execute("SET ROLE vcon_owner")
@@ -188,7 +191,7 @@ mod on_a_server {
 
     /// The scope a transaction on `table` runs in: the registry's for the
     /// admin log, the first tenant's for the others.
-    fn scope(table: &str) -> &'static str {
+    pub(in super::super) fn scope(table: &str) -> &'static str {
         if table == "admin_audit" {
             "registry"
         } else {
@@ -197,7 +200,7 @@ mod on_a_server {
     }
 
     /// The first value of the first row `sql` gives `client` in `scope`.
-    async fn one(client: &Client, scope: &str, sql: &str) -> String {
+    pub(in super::super) async fn one(client: &Client, scope: &str, sql: &str) -> String {
         in_scope(client, scope, sql)
             .await
             .unwrap_or_else(|e| panic!("{sql}: {e}"))
@@ -212,7 +215,7 @@ mod on_a_server {
     }
 
     /// The server's message refusing `sql`.
-    async fn refused(client: &Client, scope: &str, sql: &str) -> String {
+    pub(in super::super) async fn refused(client: &Client, scope: &str, sql: &str) -> String {
         match in_scope(client, scope, sql).await {
             Ok(_) => panic!("not refused: {sql}"),
             Err(e) => e,
@@ -270,7 +273,7 @@ mod on_a_server {
     }
 
     /// The count of the one record of `table`, read by the owner.
-    async fn count_of(db: &Db, table: &str) -> String {
+    pub(in super::super) async fn count_of(db: &Db, table: &str) -> String {
         one(
             &owner(db).await,
             scope(table),
@@ -280,7 +283,7 @@ mod on_a_server {
     }
 
     /// How many rows `table` holds, read by the owner in the table's scope.
-    async fn rows(db: &Db, table: &str) -> String {
+    pub(in super::super) async fn rows(db: &Db, table: &str) -> String {
         one(
             &owner(db).await,
             scope(table),
@@ -290,7 +293,7 @@ mod on_a_server {
     }
 
     /// How many triggers of this version the database has.
-    async fn triggers(db: &Db) -> String {
+    pub(in super::super) async fn triggers(db: &Db) -> String {
         one(
             &db.admin().await,
             TENANT_A,
@@ -754,18 +757,13 @@ mod on_a_server {
     }
 
     #[tokio::test]
-    async fn a_count_is_changed_by_one_more_and_by_nothing_else() {
+    async fn a_count_is_not_changed_to_itself_or_to_less() {
+        // Version 8 took one more and nothing else; since version 9 a
+        // count takes any larger number (v9.rs).
         let db = Db::migrated().await;
         for table in LOGS {
             store(&db, table, true).await;
-            for to in [
-                "count + 2",
-                "count - 1",
-                "count",
-                "0",
-                "1000",
-                "count * 2 + 1",
-            ] {
+            for to in ["count - 1", "count", "0", "1", "-1000", "count * 2 - 2"] {
                 let sql = format!("UPDATE vcon.{table} SET count = {to}");
                 for client in [db.app().await, owner(&db).await] {
                     let e = refused(&client, scope(table), &sql).await;

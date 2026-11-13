@@ -1026,10 +1026,11 @@ impl<'a> PgTx<'a> {
     /// a record this call made is added to (`counted`). A count of nothing
     /// makes no record.
     ///
-    /// A new record is written with its whole count. A record that is
-    /// there is added to one at a time, each in a statement of its own:
-    /// schema version 8 lets an UPDATE of a log add one to a count and
-    /// nothing else (`vcon.audit_append_only`).
+    /// A new record is written with its whole count, and a record that is
+    /// there is added to in one UPDATE: since schema version 9 an UPDATE
+    /// of a log makes a count larger and changes nothing else
+    /// (`vcon.audit_append_only`). A sum past the largest count the column
+    /// holds is the server's error and adds nothing.
     pub(super) fn count_record(
         &self,
         entry: &Entry,
@@ -1065,29 +1066,26 @@ impl<'a> PgTx<'a> {
             (&mac, Type::BYTEA),
             (&version, Type::TEXT),
             (&status, Type::INT8),
+            (&times, Type::INT8),
         ];
         let of_tenant = if table.by_tenant {
             params.push((&tenant, Type::BYTEA));
-            "AND tenant = $7"
+            "AND tenant = $8"
         } else {
             ""
         };
-        let one_more = format!(
-            "UPDATE {} SET count = count + 1
+        let more = format!(
+            "UPDATE {} SET count = count + $7
              WHERE counted AND at = $1 AND actor = $2 AND action = $3
                AND target_mac IS NOT DISTINCT FROM $4 AND version IS NOT DISTINCT FROM $5
                AND status IS NOT DISTINCT FROM $6 {of_tenant}",
             table.sql
         );
         let added = self
-            .execute_checked(&one_more, &params)
+            .execute_checked(&more, &params)
             .map_err(|e| audit_failed(&e))?;
         if added == 0 {
             return self.insert_audit(entry, &at, times, true);
-        }
-        for _ in 1..times {
-            self.execute_checked(&one_more, &params)
-                .map_err(|e| audit_failed(&e))?;
         }
         Ok(())
     }

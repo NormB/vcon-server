@@ -2161,7 +2161,7 @@ pub(super) mod on_a_server {
         assert_eq!(
             app_marks.map(drop),
             Err(
-                "an audit record is not changed, but for one more in the count of a counted record"
+                "an audit record is not changed, but for a larger count of a counted record"
                     .to_owned()
             ),
             "the trigger holds a role that was granted more than the schema grants"
