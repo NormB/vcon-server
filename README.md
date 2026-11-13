@@ -160,7 +160,9 @@ that git ignores every export of the private design documents and every
 private spec or plan file (a name ending in .local.md), and that none is staged
 (`scripts/check-ignored-exports.sh`). Then, on a copy of exactly what is
 staged, it checks that every GitHub Action is pinned by commit
-(`scripts/check_action_pins.py`) and runs `scripts/rustfmt.sh --check`,
+(`scripts/check_action_pins.py`) and that every exception to the 14-day rule
+for dependency versions names its advisory
+(`scripts/check_dependency_age.py --walk`), and runs `scripts/rustfmt.sh --check`,
 `scripts/check_style.py --walk`, the rules of the how-to pages
 (`scripts/docs_test.py lint`),
 `cargo clippy --workspace --all-targets --locked --quiet -- -D warnings`,

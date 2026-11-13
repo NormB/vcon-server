@@ -54,6 +54,8 @@ python3 -I scripts/test_release_notes.py
 scripts/test-scan-commit-messages.sh
 python3 -I scripts/test_check_site_links.py
 python3 -I scripts/test_check_dependabot.py
+python3 -I scripts/test_check_dependency_age.py
+python3 -I scripts/check_dependency_age.py --walk
 python3 -I scripts/test_ci_success.py
 scripts/test-nextest.sh
 scripts/test-cc-lld.sh

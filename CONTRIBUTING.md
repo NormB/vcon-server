@@ -52,6 +52,43 @@ images. Dependabot waits the same 14 days (`cooldown` in
 entry that waits less. Dependabot applies no cooldown to its security
 updates.
 
+There is one exception: a version that fixes a published security advisory
+against a dependency the repository already uses is taken as soon as it is
+out. The change that takes it writes one comment line in the `Cargo.toml`
+that requires the crate, above the requirement (in the workspace
+`Cargo.toml` for a crate that only a `Cargo.lock` names):
+
+```toml
+# dependency-age-exception: <crate> <fixed version> <advisory id> published <YYYY-MM-DD>
+```
+
+- `<fixed version>` is the version the change takes: the one the advisory
+  names as fixed.
+- `<advisory id>` is the advisory's RUSTSEC, GHSA or CVE id, for example
+  `RUSTSEC-2026-0459`.
+- `<YYYY-MM-DD>` is the UTC day crates.io published the fixed version.
+
+A crate that the fixed version requires, at a version that is itself under
+14 days old, gets a line of its own with the same advisory id, and its own
+version and day. The line stays while a `Cargo.lock` holds the crate.
+`scripts/check_dependency_age.py` reads these lines. In the commit hook it
+uses no network: it fails on a line that does not have this form, on a
+crate and version excepted twice, and on a line whose crate no `Cargo.lock`
+holds at the fixed version or later. In CI it runs with `--registry` and
+also asks crates.io for publish times: it fails on a line whose date is not
+the registry's, and on a crate version new to a `Cargo.lock` that has been
+public for less than the 14 days and that no line names. A lockfile does not
+record publish times, so only the CI run can tell a version's age. To run
+the same check before a push:
+
+```sh
+python3 -I scripts/check_dependency_age.py --registry --base origin/main
+```
+
+The check covers crates. For npm and pip packages, GitHub Actions and
+container images, a security fix inside the 14 days is stated in the pull
+request with the advisory's id.
+
 ## Contributor License Agreement
 
 Sign the vcon-server [Contributor License Agreement](CLA.md) before your first

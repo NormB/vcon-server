@@ -58,6 +58,10 @@ parquet = { version = "=60.1.0", default-features = false }
 # through them crossterm for the terminal itself.
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"], optional = true }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2"] }
+# 3.9.0 is the first whose Streamable HTTP client stops reading an answer
+# at a size limit (RUSTSEC-2026-0462, GHSA-c9f9-cp8h-jcj5).
+# dependency-age-exception: rmcp 3.9.0 RUSTSEC-2026-0462 published 2026-11-05
+# dependency-age-exception: rmcp-macros 3.9.0 RUSTSEC-2026-0462 published 2026-11-05
 rmcp = { version = "3.9.0", default-features = false, features = [
     "server",
     "macros",
@@ -71,6 +75,9 @@ rmcp = { version = "3.9.0", default-features = false, features = [
 # (cipher_log_level and the rest); catalog.rs sets and reads them that way.
 # 0.42.0 is the first whose bundled SQLCipher (4.20.0) holds SQLite 3.54.1:
 # SQLite before 3.54.0 has CVE-2026-119375 (RUSTSEC-2026-0459).
+# dependency-age-exception: rusqlite 0.42.0 RUSTSEC-2026-0459 published 2026-11-11
+# dependency-age-exception: libsqlite3-sys 0.40.0 RUSTSEC-2026-0459 published 2026-11-11
+# dependency-age-exception: sqlite-wasm-rs 0.6.3 RUSTSEC-2026-0459 published 2026-11-10
 rusqlite = { version = "0.42.0", features = ["backup", "bundled-sqlcipher-vendored-openssl"] }
 rustls = "0.23.46"
 serde = { version = "1.0.229", features = ["derive"] }

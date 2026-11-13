@@ -275,7 +275,10 @@ git config core.hooksPath .githooks
   (`scripts/check-ignored-exports.sh`). On a copy of exactly what is staged,
   it checks that every action is pinned by commit
   (`scripts/check_action_pins.py`, see
-  [adding a GitHub Action](#adding-a-github-action)) and runs
+  [adding a GitHub Action](#adding-a-github-action)) and that every
+  exception to the 14-day rule for dependency versions names its advisory
+  (`scripts/check_dependency_age.py --walk`, see
+  [Contributing](#contributing)), and runs
   `scripts/rustfmt.sh --check`, `scripts/check_style.py --walk`, the rules
   of the how-to pages (`scripts/docs_test.py lint`),
   `cargo clippy --workspace --all-targets --locked --quiet -- -D warnings`,
@@ -836,7 +839,12 @@ local path that does not exist or leaves the repository.
 - **A new dependency or version:** take it only once that version has been
   public for 14 days. Dependabot waits the same 14 days (`cooldown` in
   `.github/dependabot.yml`), and `scripts/check_dependabot.py` fails on an
-  entry that waits less.
+  entry that waits less. A version that fixes a published security advisory
+  is taken sooner, under a `# dependency-age-exception:` line in the
+  `Cargo.toml` that names the crate, the fixed version, the advisory's id
+  and the day the version was published; CONTRIBUTING.md gives the form,
+  and `scripts/check_dependency_age.py` fails on a crate version under 14
+  days old that no such line names.
 - **A security problem:** report it privately, never in an issue; see
   [reporting a vulnerability](@/docs/security.md#reporting-a-vulnerability).
 
