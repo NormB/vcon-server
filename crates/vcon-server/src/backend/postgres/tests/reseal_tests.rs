@@ -1291,8 +1291,14 @@ mod on_a_server {
             keys = next;
         }
         let store = open(&space, &keys);
-        for uuid in stored {
-            assert!(reads(&store, uuid), "{uuid}, stored under an earlier key");
+        // The message names a vCon by its place in the test: a uuid is a
+        // value the catalog seals, and is not written out.
+        for (at, uuid) in stored.into_iter().enumerate() {
+            assert!(
+                reads(&store, uuid),
+                "vCon {}, stored under an earlier key",
+                at + 1
+            );
         }
     }
 }
