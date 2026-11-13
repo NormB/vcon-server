@@ -386,11 +386,34 @@ const VCON_JOIN: &str = "JOIN vcon.vcon c ON c.tenant = v.tenant AND c.uuid_mac 
 /// vacuums.
 pub(crate) const PURGED_TABLES: &str = "vcon.version, vcon.vcon, vcon.tombstone";
 
+/// A key of a tenant's audit log, opened: the targets of the log's
+/// records and their MACs are made with its keys, not with the catalog
+/// key's, so that a move of the catalog to a new key changes no record
+/// (schema version 11).
+pub(super) struct AuditKey {
+    /// The id the records it sealed name: the key's own.
+    id: Vec<u8>,
+    keys: ColumnKeys,
+}
+
+/// Where the audit key `id` of `tenant` is sealed.
+fn audit_key_context(tenant: TenantId, id: &[u8]) -> ColumnContext<'_> {
+    ColumnContext {
+        tenant,
+        table: "audit_key",
+        column: "wrapped",
+        row: id,
+    }
+}
+
 /// A tenant's catalog in the database.
 pub(crate) struct PgCatalog {
     database: Arc<Database>,
     tenant: TenantId,
     keys: ColumnKeys,
+    /// The keys of the tenant's audit log that opened, oldest first: the
+    /// last seals the new records.
+    audit: Vec<AuditKey>,
     #[cfg(test)]
     fault: Mutex<Option<(usize, CommitError)>>,
 }
@@ -410,13 +433,15 @@ impl PgCatalog {
             database,
             tenant,
             keys: ColumnKeys::derive(catalog_key).map_err(|_| CatalogError::Io)?,
+            audit: Vec::new(),
             #[cfg(test)]
             fault: Mutex::new(None),
         })
     }
 
     /// Makes the catalog of a new tenant, sealed under `catalog_key`: the
-    /// row its writes lock, and the id of the key.
+    /// row its writes lock, the id of the key, and the key of its audit
+    /// log, random and sealed under the catalog's keys.
     ///
     /// # Errors
     ///
@@ -427,7 +452,12 @@ impl PgCatalog {
         tenant: TenantId,
         catalog_key: &Key,
     ) -> Result<PgCatalog, CatalogError> {
-        let catalog = PgCatalog::with(database, tenant, catalog_key)?;
+        let mut catalog = PgCatalog::with(database, tenant, catalog_key)?;
+        let audit = Key::generate().map_err(|_| CatalogError::Io)?;
+        let audit_id = audit.id().0;
+        let wrapped =
+            column::wrap_key(&catalog.keys, &audit_key_context(tenant, &audit_id), &audit)
+                .map_err(|_| CatalogError::Io)?;
         let tx = catalog.begin(Begin::Create).map_err(|_| CatalogError::Io)?;
         let made = tx
             .execute(
@@ -446,8 +476,59 @@ impl PgCatalog {
             ],
         )
         .map_err(|_| CatalogError::Io)?;
+        tx.execute(
+            // After any key the tenant's id had before: a removal keeps
+            // the keys of the log with its records.
+            "INSERT INTO vcon.audit_key (tenant, key_id, ordinal, wrapped)
+             SELECT $1, $2, coalesce(max(ordinal), 0) + 1, $3
+             FROM vcon.audit_key WHERE tenant = $1",
+            &[
+                (&tenant.0.as_slice(), Type::BYTEA),
+                (&audit_id.as_slice(), Type::BYTEA),
+                (&wrapped, Type::BYTEA),
+            ],
+        )
+        .map_err(|_| CatalogError::Io)?;
         Box::new(tx).commit().map_err(|_| CatalogError::Io)?;
+        catalog.audit.push(AuditKey {
+            id: audit_id.to_vec(),
+            keys: ColumnKeys::derive(&audit).map_err(|_| CatalogError::Io)?,
+        });
         Ok(catalog)
+    }
+
+    /// The keys of the tenant's audit log, oldest first, each opened with
+    /// the catalog's keys. An older key that does not open is left out,
+    /// and the records that name it cannot be read; the newest must open,
+    /// since it seals the new records.
+    fn audit_keys(&self) -> Result<Vec<AuditKey>, CatalogError> {
+        let tx = self.begin(Begin::Read).map_err(|_| CatalogError::Io)?;
+        let rows = tx
+            .query(
+                "SELECT key_id, wrapped FROM vcon.audit_key WHERE tenant = $1 ORDER BY ordinal",
+                &[(&self.tenant.0.as_slice(), Type::BYTEA)],
+            )
+            .map_err(|_| CatalogError::Io)?;
+        let mut keys = Vec::with_capacity(rows.len());
+        for (at, row) in rows.iter().enumerate() {
+            let id: Vec<u8> = row.try_get(0).map_err(|_| CatalogError::Io)?;
+            let wrapped: Vec<u8> = row.try_get(1).map_err(|_| CatalogError::Io)?;
+            let opened =
+                column::unwrap_key(&self.keys, &audit_key_context(self.tenant, &id), &wrapped);
+            match opened {
+                Ok(key) => keys.push(AuditKey {
+                    keys: ColumnKeys::derive(&key).map_err(|_| CatalogError::Io)?,
+                    id,
+                }),
+                Err(_) if at + 1 < rows.len() => {}
+                Err(_) => return Err(CatalogError::Io),
+            }
+        }
+        if keys.is_empty() {
+            // A log with no key takes no record.
+            return Err(CatalogError::Io);
+        }
+        Ok(keys)
     }
 
     /// Whether the database has a catalog for `tenant`.
@@ -486,7 +567,8 @@ impl PgCatalog {
     ///
     /// [`CatalogError::NoTenant`] when the database has none,
     /// [`CatalogError::WrongKey`] when it is sealed under another key, and
-    /// [`CatalogError::Io`] when the database cannot be read.
+    /// [`CatalogError::Io`] when the database cannot be read, or the key
+    /// of the tenant's audit log is missing or does not open.
     pub(crate) fn open(
         database: Arc<Database>,
         tenant: TenantId,
@@ -496,7 +578,9 @@ impl PgCatalog {
         if held != catalog_key.id().0 {
             return Err(CatalogError::WrongKey);
         }
-        PgCatalog::with(database, tenant, catalog_key)
+        let mut catalog = PgCatalog::with(database, tenant, catalog_key)?;
+        catalog.audit = catalog.audit_keys()?;
+        Ok(catalog)
     }
 
     /// Every tenant that has a lock row, by id.
@@ -620,13 +704,261 @@ impl PgCatalog {
         }
     }
 
+    /// Moves the catalog of `tenant` from the catalog key `old` to `new`,
+    /// in one transaction that holds the tenant's lock row: every sealed
+    /// column and every MAC of the tenant's vCons, versions and tombstones
+    /// is made again with the keys of `new`, each key of the tenant's
+    /// audit log is sealed again, and the catalog then names `new`. It
+    /// reads and writes at most `batch` rows of a table in one statement.
+    ///
+    /// No audit record is changed: a record's target is sealed under the
+    /// audit key, which stays the same. A catalog that is under `new`
+    /// already is left as it is, so a move that was made can be asked for
+    /// again. Every server is stopped for it, as for the rotation it is a
+    /// step of: an open catalog holds the keys it was opened with.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::NoTenant`] when the database has no catalog for
+    /// the tenant, [`CatalogError::WrongKey`] when it is under neither
+    /// key, and [`CatalogError::Io`] when a row cannot be read under
+    /// `old`, the database cannot be written, or `batch` is not positive.
+    /// After an error nothing is changed, unless the commit got no
+    /// answer: [`PgCatalog::under`] then says which key the catalog is
+    /// under.
+    pub(crate) fn reseal(
+        database: &Arc<Database>,
+        tenant: TenantId,
+        old: &Key,
+        new: &Key,
+        batch: i64,
+    ) -> Result<(), CatalogError> {
+        if batch < 1 {
+            return Err(CatalogError::Io);
+        }
+        let held = PgCatalog::key_id(database, tenant)?.ok_or(CatalogError::NoTenant)?;
+        if held == new.id().0 {
+            return Ok(());
+        }
+        if held != old.id().0 {
+            return Err(CatalogError::WrongKey);
+        }
+        let from = ColumnKeys::derive(old).map_err(|_| CatalogError::Io)?;
+        let to = ColumnKeys::derive(new).map_err(|_| CatalogError::Io)?;
+        let lease = database.lease().map_err(|_| CatalogError::Io)?;
+        let tx = PgTx::begin(database, lease, tenant, Some(&from), Begin::Write);
+        let moved = reseal_audit_keys(&tx, &to)
+            .and_then(|()| reseal_uuids(&tx, "vcon", &to, batch))
+            .and_then(|()| reseal_uuids(&tx, "tombstone", &to, batch))
+            .and_then(|()| reseal_versions(&tx, &to, batch))
+            .and_then(|()| {
+                // The id is compared again, now with the lock row held.
+                let named = tx.execute(
+                    "UPDATE vcon.tenant_catalog SET catalog_key_id = $2
+                     WHERE tenant = $1 AND catalog_key_id = $3",
+                    &[
+                        (&tenant.0.as_slice(), Type::BYTEA),
+                        (&new.id().0.as_slice(), Type::BYTEA),
+                        (&old.id().0.as_slice(), Type::BYTEA),
+                    ],
+                )?;
+                if named == 1 {
+                    Ok(())
+                } else {
+                    Err(StoreError::Io)
+                }
+            });
+        moved.map_err(|_| CatalogError::Io)?;
+        tx.finish().map_err(|_| CatalogError::Io)
+    }
+
     fn begin(&self, how: Begin) -> Result<PgTx<'_>, StoreError> {
         let lease = self.database.lease()?;
-        let tx = PgTx::begin(&self.database, lease, self.tenant, Some(&self.keys), how);
+        let tx = PgTx::begin(&self.database, lease, self.tenant, Some(&self.keys), how)
+            .with_audit(&self.audit);
         #[cfg(test)]
         let tx = tx.with_fault(&self.fault);
         Ok(tx)
     }
+}
+
+/// The number of rows a statement of a re-seal must have changed.
+pub(super) fn all_changed(changed: u64, of: usize) -> Result<(), StoreError> {
+    if u64::try_from(of).is_ok_and(|of| of == changed) {
+        Ok(())
+    } else {
+        Err(StoreError::Io)
+    }
+}
+
+/// Seals each key of the tenant's audit log again, with the keys `to`.
+/// A key that does not open under the transaction's keys is left as it
+/// is, as [`PgCatalog::audit_keys`] leaves it out; the newest must open.
+fn reseal_audit_keys(tx: &PgTx<'_>, to: &ColumnKeys) -> Result<(), StoreError> {
+    let tenant = tx.tenant;
+    let rows = tx.query(
+        "SELECT key_id, wrapped FROM vcon.audit_key WHERE tenant = $1 ORDER BY ordinal",
+        &[(&tenant.0.as_slice(), Type::BYTEA)],
+    )?;
+    if rows.is_empty() {
+        // A catalog that would not open is not moved.
+        return Err(StoreError::Io);
+    }
+    for (at, row) in rows.iter().enumerate() {
+        let id: Vec<u8> = row.try_get(0).map_err(io)?;
+        let wrapped: Vec<u8> = row.try_get(1).map_err(io)?;
+        let ctx = audit_key_context(tenant, &id);
+        match column::unwrap_key(tx.keys()?, &ctx, &wrapped) {
+            Ok(key) => {
+                let again = column::wrap_key(to, &ctx, &key).map_err(io)?;
+                let changed = tx.execute(
+                    "UPDATE vcon.audit_key SET wrapped = $3 WHERE tenant = $1 AND key_id = $2",
+                    &[
+                        (&tenant.0.as_slice(), Type::BYTEA),
+                        (&id, Type::BYTEA),
+                        (&again, Type::BYTEA),
+                    ],
+                )?;
+                all_changed(changed, 1)?;
+            }
+            Err(_) if at + 1 < rows.len() => {}
+            Err(_) => return Err(StoreError::Damaged),
+        }
+    }
+    Ok(())
+}
+
+/// Makes the MAC and the sealed copy of each uuid in `table`, the vCons
+/// or the tombstones, again with the keys `to`, and gives each version
+/// of such a uuid its new MAC. The rows are read through a cursor, which
+/// shows the table as it was when the cursor was made: a row this
+/// transaction has moved is not read a second time.
+fn reseal_uuids(
+    tx: &PgTx<'_>,
+    table: &'static str,
+    to: &ColumnKeys,
+    batch: i64,
+) -> Result<(), StoreError> {
+    let tenant = tx.tenant;
+    let id = tenant.0.as_slice();
+    // The tenant's id is 32 hex digits, so it is written into the text
+    // as it is; a DECLARE takes no parameter.
+    tx.batch(&format!(
+        "DECLARE reseal_rows NO SCROLL CURSOR FOR \
+         SELECT uuid_mac, uuid_sealed FROM vcon.{table} WHERE tenant = '\\x{tenant}'"
+    ))?;
+    let fetch = format!("FETCH {batch} FROM reseal_rows");
+    let move_rows = format!(
+        "UPDATE vcon.{table} t SET uuid_mac = n.now, uuid_sealed = n.sealed
+         FROM unnest($2::bytea[], $3::bytea[], $4::bytea[]) AS n(was, now, sealed)
+         WHERE t.tenant = $1 AND t.uuid_mac = n.was"
+    );
+    loop {
+        let rows = tx.query(&fetch, &[])?;
+        if rows.is_empty() {
+            break;
+        }
+        let mut was = Vec::with_capacity(rows.len());
+        let mut now = Vec::with_capacity(rows.len());
+        let mut sealed = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let mac: Vec<u8> = row.try_get(0).map_err(io)?;
+            let old: Vec<u8> = row.try_get(1).map_err(io)?;
+            let uuid = tx.unseal(table, "uuid_sealed", &mac, &old)?;
+            let new_mac = column::mac(to, &uuid).to_vec();
+            let ctx = ColumnContext {
+                tenant,
+                table,
+                column: "uuid_sealed",
+                row: &new_mac,
+            };
+            sealed.push(column::seal_column(to, &ctx, &uuid).map_err(io)?);
+            was.push(mac);
+            now.push(new_mac);
+        }
+        let changed = tx.execute(
+            &move_rows,
+            &[
+                (&id, Type::BYTEA),
+                (&was, Type::BYTEA_ARRAY),
+                (&now, Type::BYTEA_ARRAY),
+                (&sealed, Type::BYTEA_ARRAY),
+            ],
+        )?;
+        all_changed(changed, rows.len())?;
+        // A uuid may have any number of versions, or none.
+        tx.execute(
+            "UPDATE vcon.version v SET uuid_mac = n.now
+             FROM unnest($2::bytea[], $3::bytea[]) AS n(was, now)
+             WHERE v.tenant = $1 AND v.uuid_mac = n.was",
+            &[
+                (&id, Type::BYTEA),
+                (&was, Type::BYTEA_ARRAY),
+                (&now, Type::BYTEA_ARRAY),
+            ],
+        )?;
+    }
+    tx.batch("CLOSE reseal_rows")
+}
+
+/// Seals the form, the gzip flag and the size of each version again with
+/// the keys `to`, in the order of the versions' ids, which a re-seal does
+/// not change. A version whose uuid neither a vCon nor a tombstone holds
+/// keeps the MAC it had: no row says which uuid it was made from.
+fn reseal_versions(tx: &PgTx<'_>, to: &ColumnKeys, batch: i64) -> Result<(), StoreError> {
+    const COLUMNS: [&str; 3] = ["form_sealed", "gzip_sealed", "size_sealed"];
+    let tenant = tx.tenant;
+    let id = tenant.0.as_slice();
+    let mut after: Vec<u8> = Vec::new();
+    loop {
+        let rows = tx.query(
+            "SELECT version, form_sealed, gzip_sealed, size_sealed FROM vcon.version
+             WHERE tenant = $1 AND version > $2 ORDER BY version LIMIT $3",
+            &[
+                (&id, Type::BYTEA),
+                (&after, Type::BYTEA),
+                (&batch, Type::INT8),
+            ],
+        )?;
+        let Some(last) = rows.last() else {
+            break;
+        };
+        after = last.try_get(0).map_err(io)?;
+        let mut versions = Vec::with_capacity(rows.len());
+        let mut sealed: [Vec<Vec<u8>>; 3] = [const { Vec::new() }; 3];
+        for row in &rows {
+            let version: Vec<u8> = row.try_get(0).map_err(io)?;
+            for (at, column) in COLUMNS.into_iter().enumerate() {
+                let old: Vec<u8> = row.try_get(at + 1).map_err(io)?;
+                let plain = tx.unseal("version", column, &version, &old)?;
+                let ctx = ColumnContext {
+                    tenant,
+                    table: "version",
+                    column,
+                    row: &version,
+                };
+                sealed[at].push(column::seal_column(to, &ctx, &plain).map_err(io)?);
+            }
+            versions.push(version);
+        }
+        let [form, gzip, size] = &sealed;
+        let changed = tx.execute(
+            "UPDATE vcon.version v
+             SET form_sealed = n.form, gzip_sealed = n.gzip, size_sealed = n.size
+             FROM unnest($2::bytea[], $3::bytea[], $4::bytea[], $5::bytea[])
+                  AS n(version, form, gzip, size)
+             WHERE v.tenant = $1 AND v.version = n.version",
+            &[
+                (&id, Type::BYTEA),
+                (&versions, Type::BYTEA_ARRAY),
+                (form, Type::BYTEA_ARRAY),
+                (gzip, Type::BYTEA_ARRAY),
+                (size, Type::BYTEA_ARRAY),
+            ],
+        )?;
+        all_changed(changed, rows.len())?;
+    }
+    Ok(())
 }
 
 impl Catalog for PgCatalog {
@@ -706,6 +1038,10 @@ pub(super) struct PgTx<'a> {
     /// The keys that seal and open the columns; none for the read that
     /// finds a tenant's key id before there is a catalog.
     keys: Option<&'a ColumnKeys>,
+    /// The keys of the tenant's audit log, oldest first; none for the
+    /// registry, whose log is sealed with `keys`, and none for a
+    /// transaction that writes and reads no audit record.
+    audit: &'a [AuditKey],
     /// The commit fault of the catalog or registry the transaction is of.
     #[cfg(test)]
     fault: Option<&'a Fault>,
@@ -764,6 +1100,7 @@ impl<'a> PgTx<'a> {
             lease,
             tenant,
             keys,
+            audit: &[],
             #[cfg(test)]
             fault: None,
             pending: Cell::new(Some(how)),
@@ -772,6 +1109,12 @@ impl<'a> PgTx<'a> {
             aborted: Cell::new(false),
             broken: Cell::new(false),
         }
+    }
+
+    /// The transaction, with the keys of the tenant's audit log.
+    fn with_audit(mut self, audit: &'a [AuditKey]) -> PgTx<'a> {
+        self.audit = audit;
+        self
     }
 
     fn client(&self) -> &Client {
@@ -1019,14 +1362,50 @@ impl<'a> PgTx<'a> {
         ))
     }
 
-    /// The HMAC and the sealed copy of an audit record's target.
-    fn sealed_target(&self, target: Option<&str>) -> Result<SealedTarget, StoreError> {
+    /// The keys that seal the target of a new audit record, and the id
+    /// of the audit key the record names: a tenant's newest audit key,
+    /// or for the registry's log the registry's keys and no id.
+    fn audit_writer(&self) -> Result<(&ColumnKeys, Option<&[u8]>), StoreError> {
+        if self.tenant == REGISTRY {
+            return Ok((self.keys()?, None));
+        }
+        let newest = self.audit.last().ok_or(StoreError::Io)?;
+        Ok((&newest.keys, Some(&newest.id)))
+    }
+
+    /// The keys that open the target of a record that names the audit
+    /// key `id`. A tenant's record that names no key, or a key that is
+    /// not among the opened ones, cannot be read.
+    fn audit_reader(&self, id: Option<&[u8]>) -> Result<&ColumnKeys, StoreError> {
+        if self.tenant == REGISTRY {
+            return self.keys();
+        }
+        let id = id.ok_or(StoreError::Damaged)?;
+        self.audit
+            .iter()
+            .find(|key| key.id == id)
+            .map(|key| &key.keys)
+            .ok_or(StoreError::Damaged)
+    }
+
+    /// The HMAC and the sealed copy of an audit record's target, made
+    /// with `keys`.
+    fn sealed_target(
+        &self,
+        keys: &ColumnKeys,
+        target: Option<&str>,
+    ) -> Result<SealedTarget, StoreError> {
         let Some(target) = target else {
             return Ok((None, None));
         };
-        let mac = column::mac(self.keys()?, target.as_bytes());
-        let table = self.audit_table().sealed_as;
-        let sealed = self.seal(table, "target_sealed", &mac, target.as_bytes())?;
+        let mac = column::mac(keys, target.as_bytes());
+        let ctx = ColumnContext {
+            tenant: self.tenant,
+            table: self.audit_table().sealed_as,
+            column: "target_sealed",
+            row: &mac,
+        };
+        let sealed = column::seal_column(keys, &ctx, target.as_bytes()).map_err(io)?;
         Ok((Some(mac.to_vec()), Some(sealed)))
     }
 
@@ -1042,17 +1421,18 @@ impl<'a> PgTx<'a> {
         let tenant = self.tenant.0.as_slice();
         // The tenant is the last parameter, which only a tenant's log has.
         let mut params: Vec<Param<'_>> = vec![(&after, Type::INT8), (&limit, Type::INT8)];
-        let of_tenant = if table.by_tenant {
+        // A tenant's record names the audit key that sealed its target.
+        let (key_id, of_tenant) = if table.by_tenant {
             params.push((&tenant, Type::BYTEA));
-            "AND tenant = $3"
+            ("key_id", "AND tenant = $3")
         } else {
-            ""
+            ("NULL::bytea", "")
         };
         let rows = self
             .query_checked(
                 &format!(
                     "SELECT seq, at, actor, action, target_mac, target_sealed, version, status, \
-                     count FROM {} WHERE seq > $1 {of_tenant} ORDER BY seq LIMIT $2",
+                     count, {key_id} FROM {} WHERE seq > $1 {of_tenant} ORDER BY seq LIMIT $2",
                     table.sql
                 ),
                 &params,
@@ -1065,9 +1445,17 @@ impl<'a> PgTx<'a> {
             let sealed: Option<Vec<u8>> = row.try_get(5).map_err(get)?;
             let target = match (mac, sealed) {
                 (Some(mac), Some(sealed)) => {
-                    let bytes = self
-                        .unseal(table.sealed_as, "target_sealed", &mac, &sealed)
+                    let key_id: Option<Vec<u8>> = row.try_get(9).map_err(get)?;
+                    let keys = self
+                        .audit_reader(key_id.as_deref())
                         .map_err(|_| damaged())?;
+                    let ctx = ColumnContext {
+                        tenant: self.tenant,
+                        table: table.sealed_as,
+                        column: "target_sealed",
+                        row: &mac,
+                    };
+                    let bytes = column::open_column(keys, &ctx, &sealed).map_err(|_| damaged())?;
                     Some(String::from_utf8(bytes).map_err(|_| damaged())?)
                 }
                 (None, None) => None,
@@ -1098,8 +1486,9 @@ impl<'a> PgTx<'a> {
         counted: bool,
     ) -> Result<(), AuditError> {
         let unsealed = || AuditError::Database("an audit record cannot be sealed".to_owned());
+        let (keys, key_id) = self.audit_writer().map_err(|_| unsealed())?;
         let (mac, sealed) = self
-            .sealed_target(entry.target.as_deref())
+            .sealed_target(keys, entry.target.as_deref())
             .map_err(|_| unsealed())?;
         let actor = entry.actor.name();
         let version = entry.version.map(|v| v.to_string());
@@ -1121,7 +1510,8 @@ impl<'a> PgTx<'a> {
         ];
         let (column, value) = if table.by_tenant {
             params.push((&tenant, Type::BYTEA));
-            (", tenant", ", $10")
+            params.push((&key_id, Type::BYTEA));
+            (", tenant, key_id", ", $10, $11")
         } else {
             ("", "")
         };
@@ -1164,15 +1554,14 @@ impl<'a> PgTx<'a> {
         let times = i64::try_from(times).unwrap_or(i64::MAX);
         let unsealed = || AuditError::Database("an audit record cannot be sealed".to_owned());
         let at = audit::rfc3339(audit::minute_of(now));
+        // The MAC of a tenant's record is made with its newest audit
+        // key, so a record under an older key is not added to: a new one
+        // is made, which names the newest.
+        let (keys, _) = self.audit_writer().map_err(|_| unsealed())?;
         let mac = entry
             .target
             .as_deref()
-            .map(|target| {
-                self.keys()
-                    .map(|keys| column::mac(keys, target.as_bytes()).to_vec())
-            })
-            .transpose()
-            .map_err(|_| unsealed())?;
+            .map(|target| column::mac(keys, target.as_bytes()).to_vec());
         let actor = entry.actor.name();
         let version = entry.version.map(|v| v.to_string());
         let status = audit::stored(entry.status).map(i64::from);

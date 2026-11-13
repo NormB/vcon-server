@@ -196,6 +196,54 @@ pub fn open_column(
     Ok(text)
 }
 
+/// Seals `key` as the column value of the place `ctx` names: a blob like
+/// [`seal_column`]'s, whose plaintext is the key.
+///
+/// # Errors
+///
+/// [`KeyError::Memory`] if the subkey's page cannot be locked.
+pub fn wrap_key(
+    keys: &ColumnKeys,
+    ctx: &ColumnContext<'_>,
+    key: &Key,
+) -> Result<Vec<u8>, KeyError> {
+    seal_column(keys, ctx, key.bytes())
+}
+
+/// Opens a key [`wrap_key`] made for the same keys and context. It is
+/// opened straight into the new key's own locked page, so the plain key
+/// is never anywhere else; on any error that page is dropped, and so
+/// zeroed.
+///
+/// # Errors
+///
+/// [`KeyError::Damaged`] for a blob that does not open under these keys
+/// and this context to exactly 32 bytes, and [`KeyError::Memory`] if a
+/// page cannot be locked.
+pub fn unwrap_key(
+    keys: &ColumnKeys,
+    ctx: &ColumnContext<'_>,
+    wrapped: &[u8],
+) -> Result<Key, KeyError> {
+    let (&format, rest) = wrapped.split_first().ok_or(KeyError::Damaged)?;
+    let (nonce, sealed) = rest
+        .split_first_chunk::<NONCE_LEN>()
+        .ok_or(KeyError::Damaged)?;
+    // Only a key's ciphertext and its tag fit: any other length is not a
+    // key, and is refused before anything is opened.
+    if sealed.len() != KEY_LEN + TAG_LEN {
+        return Err(KeyError::Damaged);
+    }
+    let subkey = subkey(keys, ctx)?;
+    let mut page = LockedPage::new().map_err(KeyError::Memory)?;
+    let text = &mut page.bytes_mut()[..KEY_LEN + TAG_LEN];
+    text.copy_from_slice(sealed);
+    match gcm_open(subkey.bytes(), *nonce, &associated_data(ctx, format), text) {
+        Ok(KEY_LEN) => Ok(Key { page }),
+        _ => Err(KeyError::Damaged),
+    }
+}
+
 /// HMAC-SHA256 of `value`'s fixed bytes under the index key: equal values
 /// give equal MACs, which SQL needs to find them, and which is all a MAC
 /// shows.
@@ -212,5 +260,7 @@ fn hmac_sha256(key: &[u8], value: &[u8]) -> [u8; 32] {
         .expect("HMAC-SHA256 is 32 bytes")
 }
 
+#[cfg(test)]
+mod key_tests;
 #[cfg(test)]
 mod tests;

@@ -118,7 +118,7 @@ fn the_how_to_says_a_removed_tenant_s_audit_records_are_kept() {
     assert!(
         page.contains(
             "A tenant's audit records are never deleted: the statements that remove a \
-             tenant delete its rows from every table but `audit`"
+             tenant delete its rows from every table but `audit` and `audit_key`"
         ),
         "the rule, in the how-to"
     );

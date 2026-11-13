@@ -117,9 +117,11 @@ mod on_a_server {
     async fn every_table_refuses_an_update_or_delete_with_no_tenant() {
         let db = Db::migrated().await;
         let app = db.app().await;
+        // The application role deletes no audit record and, since schema
+        // version 11, no key of a tenant's log (schema_tests::v11).
         let writable: Vec<&str> = all_tables()
             .into_iter()
-            .filter(|t| *t != "audit" && *t != "admin_audit")
+            .filter(|t| *t != "audit" && *t != "audit_key" && *t != "admin_audit")
             .collect();
         for table in &writable {
             let column = match *table {

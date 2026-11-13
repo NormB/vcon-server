@@ -40,9 +40,10 @@ mod on_a_server {
     }
 
     /// The tables the application role may delete from: every one but the
-    /// two audit logs.
+    /// two audit logs and, since schema version 11, the keys of a
+    /// tenant's log.
     fn deletable() -> impl Iterator<Item = &'static str> {
-        all_tables().filter(|t| !matches!(*t, "audit" | "admin_audit"))
+        all_tables().filter(|t| !matches!(*t, "audit" | "audit_key" | "admin_audit"))
     }
 
     /// The statement that puts one row in `table`, a tenant's or the
@@ -333,7 +334,10 @@ mod on_a_server {
     #[tokio::test]
     async fn a_cached_delete_by_one_tenant_leaves_another_tenants_rows() {
         let (_db, app) = with_a_row_in_every_table().await;
-        for table in TENANT_TABLES.iter().filter(|t| **t != "audit") {
+        for table in TENANT_TABLES
+            .iter()
+            .filter(|t| !matches!(**t, "audit" | "audit_key"))
+        {
             let name = format!("d_{table}");
             cached(&app, &name, &format!("DELETE FROM vcon.{table}"), TENANT_B).await;
             in_scope(&app, TENANT_B, &format!("EXECUTE {name}"))

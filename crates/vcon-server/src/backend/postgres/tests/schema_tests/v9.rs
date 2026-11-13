@@ -400,7 +400,7 @@ mod on_a_server {
             &owner(db).await,
             scope(table),
             &format!(
-                "SELECT coalesce(jsonb_agg(to_jsonb(t) - 'count' ORDER BY seq), '[]')::text \
+                "SELECT coalesce(jsonb_agg(to_jsonb(t) - 'count' - 'key_id' ORDER BY seq), '[]')::text \
                  FROM vcon.{table} t"
             ),
         )

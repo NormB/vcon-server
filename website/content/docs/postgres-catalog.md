@@ -405,7 +405,7 @@ binary's.
 ### After an upgrade from 0.4.5
 
 Release 0.4.5 and the releases before it leave the schema at version 6.
-A build from `main` makes version 10, so a database that 0.4.5 migrated
+A build from `main` makes version 11, so a database that 0.4.5 migrated
 needs the command once more, with the new binary and before any server
 starts:
 
@@ -415,11 +415,11 @@ sudo -u vcon vcon-server migrate --config /etc/vcon-server/vcon-migrate.toml
 ```
 
 ```text
-{"from":6,"message":"schema version 6 to schema version 10","migrated":true,"to":10}
+{"from":6,"message":"schema version 6 to schema version 11","migrated":true,"to":11}
 ```
 
 Until then a server stops with `the database schema is version 6, older
-than this binary's 10: run vcon-server migrate`. Versions 7 to 10
+than this binary's 11: run vcon-server migrate`. Versions 7 to 11
 change no row there is. Version 7 changes two things:
 
 - The `version` table gains the column `seq`, a number PostgreSQL gives
@@ -472,13 +472,37 @@ the tenants that have a catalog, to remove one that a cut-off create or
 removal left with no row in the registry. A tenant's transaction reads
 and writes its own row and no other, as before. No other table changes.
 
+Version 11 gives each tenant's audit log a key of its own. The table
+`audit_key` holds that key, sealed under the tenant's catalog key, and
+each record in `audit` names the key that sealed its target, in the new
+column `key_id`. Before version 11 a record's target was sealed under
+the catalog key itself, and a rotation of the tenant key would have had
+to write every record again, which version 8 refuses. `vcon_app` reads
+an audit key, makes one and seals one again; no role is granted a
+`DELETE` there, a record cannot name a key its tenant does not have, and
+a key that a record names cannot be deleted. The registry's log,
+`admin_audit`, is not changed. A database of the preview holds no audit
+record, since its server stops after it connects, so version 11 converts
+none.
+
+The audit key does not rotate with the tenant key: a rotation seals the
+same audit key under the new catalog key and changes no audit record.
+The statements of that rotation move a tenant's catalog to the new key
+in one transaction: the sealed columns and the lookup values of its
+vCons, versions and purge records are made again under the new key, and
+the transaction changes either all of them or none. No server runs
+those statements yet. Giving a log a new audit key is not written: the
+column `key_id` is there so that the records before such a change stay
+readable under the key they name.
+
 A tenant's audit records are never deleted: the statements that remove a
-tenant delete its rows from every table but `audit`, and the database
-refuses a `DELETE` there from every role. No server runs those
-statements yet. A kept record shows its time, actor, action, status and
-count to a transaction that sets `vcon.tenant` to the removed tenant's
-id. Its target is sealed under a key made from the tenant's key, and a
-removal deletes the tenant's key with the tenant's row in the registry.
+tenant delete its rows from every table but `audit` and `audit_key`, and
+the database refuses a `DELETE` of a record from every role. No server
+runs those statements yet. A kept record shows its time, actor, action,
+status and count to a transaction that sets `vcon.tenant` to the removed
+tenant's id. Its target is sealed under the log's audit key, the audit
+key is sealed under a key made from the tenant's key, and a removal
+deletes the tenant's key with the tenant's row in the registry.
 
 To check the second, try to empty a log as the owner:
 
@@ -687,8 +711,8 @@ primary in `hosts`; a standby before it is passed over.
 
 ```text
 vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database has no vCon schema: run vcon-server migrate
-vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is version 6, older than this binary's 10: run vcon-server migrate
-vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is newer than this binary (version 11, this binary 10): upgrade this server
+vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is version 6, older than this binary's 11: run vcon-server migrate
+vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is newer than this binary (version 12, this binary 11): upgrade this server
 ```
 
 Run `vcon-server migrate` with `vcon_migrate`'s configuration, or upgrade

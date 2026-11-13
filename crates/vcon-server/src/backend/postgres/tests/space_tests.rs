@@ -3,7 +3,7 @@
 //! need a PostgreSQL server and an S3-compatible service.
 
 #[cfg(feature = "backend-tests")]
-mod on_a_server {
+pub(super) mod on_a_server {
     use std::sync::Arc;
 
     use super::super::super::catalog::{CatalogError, Database, PgCatalog};
@@ -36,7 +36,7 @@ mod on_a_server {
 
     /// A space on a migrated database and a new bucket, both the test's
     /// own.
-    fn space() -> (Db, Arc<Database>, Arc<S3>, PgTenantSpace) {
+    pub(crate) fn space() -> (Db, Arc<Database>, Arc<S3>, PgTenantSpace) {
         let (db, database) = database();
         let (s3, _) = bucket(false);
         let space = PgTenantSpace::new(database.clone(), s3.clone(), Arc::new(OsFs));
@@ -45,18 +45,18 @@ mod on_a_server {
 
     /// A tenant's key, kept wrapped so that it can be given out again: a
     /// key cannot be copied.
-    struct Keys {
-        tenant: TenantId,
+    pub(crate) struct Keys {
+        pub(crate) tenant: TenantId,
         master: Key,
         wrapped: Vec<u8>,
     }
 
     impl Keys {
-        fn new() -> Keys {
+        pub(crate) fn new() -> Keys {
             Keys::of(TenantId::generate())
         }
 
-        fn of(tenant: TenantId) -> Keys {
+        pub(crate) fn of(tenant: TenantId) -> Keys {
             let master = Key::generate().expect("a master key");
             let key = Key::generate().expect("a tenant key");
             let wrapped = envelope::wrap(&master, &envelope::Context::Tenant { tenant }, &key);
@@ -67,24 +67,24 @@ mod on_a_server {
             }
         }
 
-        fn key(&self) -> Key {
+        pub(crate) fn key(&self) -> Key {
             let ctx = envelope::Context::Tenant {
                 tenant: self.tenant,
             };
             envelope::unwrap(&self.master, &ctx, &self.wrapped).expect("unwraps")
         }
 
-        fn catalog(&self) -> Key {
+        pub(crate) fn catalog(&self) -> Key {
             envelope::catalog_key(&self.key()).expect("a catalog key")
         }
     }
 
-    fn clock() -> Arc<TestClock> {
+    pub(crate) fn clock() -> Arc<TestClock> {
         TestClock::at(conformance::START)
     }
 
     /// A new tenant made in `space`, and its keys.
-    fn made(space: &PgTenantSpace) -> Keys {
+    pub(crate) fn made(space: &PgTenantSpace) -> Keys {
         let keys = Keys::new();
         space
             .make(keys.tenant, keys.key(), clock())
@@ -92,7 +92,7 @@ mod on_a_server {
         keys
     }
 
-    fn open(space: &PgTenantSpace, keys: &Keys) -> Store {
+    pub(crate) fn open(space: &PgTenantSpace, keys: &Keys) -> Store {
         space
             .open(keys.tenant, keys.key(), true, clock())
             .expect("opens the tenant")
@@ -100,7 +100,7 @@ mod on_a_server {
 
     /// Stores the `n`th vCon in `store` and reads it back, which writes
     /// audit records too.
-    fn store_one(store: &Store, n: u8) -> uuid::Uuid {
+    pub(crate) fn store_one(store: &Store, n: u8) -> uuid::Uuid {
         let who = Caller {
             key: Key::generate().expect("key").id(),
         };
@@ -112,7 +112,7 @@ mod on_a_server {
     }
 
     /// Whether `store` reads `uuid`.
-    fn reads(store: &Store, uuid: uuid::Uuid) -> bool {
+    pub(crate) fn reads(store: &Store, uuid: uuid::Uuid) -> bool {
         let who = Caller {
             key: Key::generate().expect("key").id(),
         };
@@ -121,7 +121,7 @@ mod on_a_server {
 
     /// The number of rows of `table` a transaction of `tenant` sees, read
     /// by the application role on a connection of the test's own.
-    fn rows(db: &Db, tenant: TenantId, table: &str) -> i64 {
+    pub(crate) fn rows(db: &Db, tenant: TenantId, table: &str) -> i64 {
         let sql = format!("SELECT count(*) FROM vcon.{table}");
         let messages = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -541,16 +541,17 @@ mod on_a_server {
     }
 
     #[test]
-    fn reseal_is_refused_and_leaves_the_catalog_under_its_key() {
+    fn reseal_from_a_key_the_catalog_is_not_under_is_refused_and_leaves_it_under_its_key() {
         let (_db, _database, _s3, space) = space();
         let keys = made(&space);
         let new = Key::generate().expect("a key");
+        let stranger = Key::generate().expect("a key");
         assert!(
             matches!(
-                space.reseal(keys.tenant, &keys.catalog(), &new),
+                space.reseal(keys.tenant, &stranger, &new),
                 Err(TenantError::Io)
             ),
-            "this build does not re-seal a catalog in PostgreSQL"
+            "the catalog is under neither key"
         );
         assert_eq!(
             space

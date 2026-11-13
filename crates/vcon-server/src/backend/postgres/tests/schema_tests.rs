@@ -12,6 +12,7 @@ mod guard;
 mod line;
 mod success;
 mod v10;
+mod v11;
 mod v2;
 mod v3;
 mod v4;
@@ -70,6 +71,7 @@ pub(super) mod live {
     /// table cannot be missed by the refusal tests.
     pub(crate) const TENANT_TABLES: &[&str] = &[
         "audit",
+        "audit_key",
         "key_use",
         "manifest",
         "parquet_file",
@@ -326,6 +328,9 @@ pub(super) mod live {
             }
             "audit" => format!(
                 "INSERT INTO vcon.audit (tenant, at, actor, action, status, count, counted) VALUES ({t}, 't', 'a', 'b', 1, 1, true)"
+            ),
+            "audit_key" => format!(
+                "INSERT INTO vcon.audit_key (tenant, key_id, ordinal, wrapped) VALUES ({t}, '\\x01', 1, '\\x02')"
             ),
             "tenant_lock" => format!("INSERT INTO vcon.tenant_lock (tenant) VALUES ({t})"),
             "tenant_catalog" => format!(

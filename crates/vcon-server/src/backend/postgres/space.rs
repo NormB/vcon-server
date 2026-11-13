@@ -13,10 +13,11 @@
 //! - A tenant's audit records are never deleted. The removal keeps the
 //!   rows of `vcon.audit`, which the database refuses to delete from every
 //!   role (schema version 8).
-//! - Re-sealing a catalog under a new key is not written yet: the audit
-//!   log's sealed columns cannot be updated, and the change that gives the
-//!   log a key of its own comes with it. Until then [`TenantSpace::reseal`]
-//!   is refused, and nothing is changed.
+//! - A catalog is moved to a new key in one transaction
+//!   ([`PgCatalog::reseal`]): every sealed column and every MAC of the
+//!   tenant's rows is made again under the new key, and the key of the
+//!   tenant's audit log is sealed again. No audit record is changed: its
+//!   target is sealed under the audit key, which stays the same.
 
 #![cfg_attr(
     not(all(test, feature = "backend-tests")),
@@ -40,6 +41,9 @@ use crate::tenants::TenantError;
 
 /// The rows of one table a removal deletes in one transaction.
 const REMOVE_BATCH: i64 = 10_000;
+
+/// The rows of one table a re-seal reads and writes in one statement.
+const RESEAL_BATCH: i64 = 1_000;
 
 /// Each tenant's rows in the database and its objects in the bucket.
 pub(crate) struct PgTenantSpace {
@@ -128,8 +132,8 @@ impl TenantSpace for PgTenantSpace {
         PgCatalog::under(&self.database, id, old, new).map_err(tenant_io)
     }
 
-    /// Refused: see the module's last point.
-    fn reseal(&self, _id: TenantId, _old: &Key, _new: &Key) -> Result<(), TenantError> {
-        Err(TenantError::Io)
+    /// One transaction: see the module's last point.
+    fn reseal(&self, id: TenantId, old: &Key, new: &Key) -> Result<(), TenantError> {
+        PgCatalog::reseal(&self.database, id, old, new, RESEAL_BATCH).map_err(tenant_io)
     }
 }
