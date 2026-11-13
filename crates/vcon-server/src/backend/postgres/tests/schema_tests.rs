@@ -11,6 +11,7 @@ mod failure;
 mod guard;
 mod line;
 mod success;
+mod v10;
 mod v2;
 mod v3;
 mod v4;

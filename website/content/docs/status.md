@@ -215,22 +215,28 @@ The site is built from the `main` branch, so a page can describe what no
 release holds yet. Release 0.4.5 does not have these, both of the
 PostgreSQL catalog preview and behind the `postgres` cargo feature:
 
-- **Schema version 9 of the PostgreSQL preview.** `vcon-server migrate`
-  built from `main` leaves the database at version 9; release 0.4.5 leaves
-  it at 6, and its server refuses a database at 9. Version 7 adds the
+- **Schema version 10 of the PostgreSQL preview.** `vcon-server migrate`
+  built from `main` leaves the database at version 10; release 0.4.5 leaves
+  it at 6, and its server refuses a database at 10. Version 7 adds the
   column `seq` to the `version` table and, on PostgreSQL 17 and later,
   grants `vcon_app` `MAINTAIN` on three tables. Version 8 adds triggers:
   the tables `audit` and `admin_audit` take new records and a larger
   `count` of a counted record, and nothing else, from every role, and
   PostgreSQL numbers each row's `seq` whatever the statement says.
   Version 9 is the rule for the count: any larger number, where version 8
-  took one more. See
+  took one more. Version 10 lets a transaction of the registry read, and
+  not write, the table `tenant_lock`, which has one row for each tenant
+  that has a catalog. See
   [after an upgrade from 0.4.5](@/docs/postgres-catalog.md#after-an-upgrade-from-0-4-5).
 - **The statements that keep a tenant's catalog in PostgreSQL.** They pass
   the store's conformance suite on PostgreSQL 16 and 18 with the objects
   in a bucket. No server uses them: a start with
   `catalog.backend = "postgres"` connects, checks the server and stops, as
   in 0.4.5.
+- **The statements that make, open, list and remove a tenant in
+  PostgreSQL.** A removal deletes the tenant's objects in the bucket and
+  its rows, and keeps its audit records. Moving a tenant's rows to a new
+  tenant key is not written yet, and no server uses these statements.
 
 ## Being built
 

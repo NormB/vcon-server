@@ -405,7 +405,7 @@ binary's.
 ### After an upgrade from 0.4.5
 
 Release 0.4.5 and the releases before it leave the schema at version 6.
-A build from `main` makes version 9, so a database that 0.4.5 migrated
+A build from `main` makes version 10, so a database that 0.4.5 migrated
 needs the command once more, with the new binary and before any server
 starts:
 
@@ -415,11 +415,11 @@ sudo -u vcon vcon-server migrate --config /etc/vcon-server/vcon-migrate.toml
 ```
 
 ```text
-{"from":6,"message":"schema version 6 to schema version 9","migrated":true,"to":9}
+{"from":6,"message":"schema version 6 to schema version 10","migrated":true,"to":10}
 ```
 
 Until then a server stops with `the database schema is version 6, older
-than this binary's 9: run vcon-server migrate`. Versions 7, 8 and 9
+than this binary's 10: run vcon-server migrate`. Versions 7 to 10
 change no row there is. Version 7 changes two things:
 
 - The `version` table gains the column `seq`, a number PostgreSQL gives
@@ -464,6 +464,21 @@ server counts requests in, the new `count` is larger than the old one,
 and no other column is different, so the server writes the refused
 requests of a minute with one statement. The count only grows: an
 `UPDATE` that sets it to the same number or to a smaller one is refused.
+
+Version 10 changes who reads the table `tenant_lock`, which holds one
+row for each tenant that has a catalog. A transaction of the registry
+now reads every row of it, and writes none: the server lists with it
+the tenants that have a catalog, to remove one that a cut-off create or
+removal left with no row in the registry. A tenant's transaction reads
+and writes its own row and no other, as before. No other table changes.
+
+A tenant's audit records are never deleted: the statements that remove a
+tenant delete its rows from every table but `audit`, and the database
+refuses a `DELETE` there from every role. No server runs those
+statements yet. A kept record shows its time, actor, action, status and
+count to a transaction that sets `vcon.tenant` to the removed tenant's
+id. Its target is sealed under a key made from the tenant's key, and a
+removal deletes the tenant's key with the tenant's row in the registry.
 
 To check the second, try to empty a log as the owner:
 
@@ -672,8 +687,8 @@ primary in `hosts`; a standby before it is passed over.
 
 ```text
 vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database has no vCon schema: run vcon-server migrate
-vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is version 6, older than this binary's 9: run vcon-server migrate
-vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is newer than this binary (version 10, this binary 9): upgrade this server
+vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is version 6, older than this binary's 10: run vcon-server migrate
+vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is newer than this binary (version 11, this binary 10): upgrade this server
 ```
 
 Run `vcon-server migrate` with `vcon_migrate`'s configuration, or upgrade

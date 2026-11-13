@@ -14,6 +14,7 @@ mod edge;
 mod failure;
 mod registry_tests;
 mod schema_tests;
+mod space_tests;
 mod success;
 
 use std::net::SocketAddr;

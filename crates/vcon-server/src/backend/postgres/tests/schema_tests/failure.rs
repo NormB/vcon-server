@@ -88,6 +88,13 @@ mod on_a_server {
         let app = db.app().await;
         for table in all_tables() {
             let result = no_scope(&app, &format!("SELECT * FROM vcon.{table}")).await;
+            if table == "tenant_lock" {
+                // Since schema version 10 its read's rule is a CASE, which
+                // the planner does not evaluate: with no row the read ends
+                // with nothing, and with a row it is refused (v10.rs).
+                assert_eq!(result, Ok(()), "{table}: no row, and no error");
+                continue;
+            }
             assert!(is_no_tenant(&result), "{table}: {result:?}");
         }
     }
@@ -195,7 +202,12 @@ mod on_a_server {
     async fn the_registry_transaction_is_refused_a_tenants_rows() {
         let db = Db::migrated().await;
         let app = db.app().await;
-        for table in TENANT_TABLES {
+        // Since schema version 10 the registry reads the lock rows, and
+        // only reads them (v10.rs).
+        for table in TENANT_TABLES
+            .iter()
+            .filter(|table| **table != "tenant_lock")
+        {
             let result = in_scope(&app, "registry", &format!("SELECT * FROM vcon.{table}")).await;
             let e = result.expect_err("refused");
             assert!(e.contains("is the registry's"), "{table}: {e}");

@@ -499,6 +499,127 @@ impl PgCatalog {
         PgCatalog::with(database, tenant, catalog_key)
     }
 
+    /// Every tenant that has a lock row, by id.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Io`] when the database cannot be read.
+    pub(crate) fn present(database: &Arc<Database>) -> Result<Vec<TenantId>, CatalogError> {
+        let lease = database.lease().map_err(|_| CatalogError::Io)?;
+        // A registry transaction reads every tenant's lock row (schema
+        // version 10); a tenant's reads its own.
+        let tx = PgTx::begin(database, lease, REGISTRY, None, Begin::Read);
+        tx.query("SELECT tenant FROM vcon.tenant_lock ORDER BY tenant", &[])
+            .map_err(|_| CatalogError::Io)?
+            .iter()
+            .map(|row| {
+                let bytes: Vec<u8> = row.try_get(0).map_err(|_| CatalogError::Io)?;
+                id_of(&bytes).map(TenantId).map_err(|_| CatalogError::Io)
+            })
+            .collect()
+    }
+
+    /// A transaction that removes rows of `tenant`: it holds the tenant's
+    /// lock row to its end, as a write does, when there is one. A removal
+    /// that is made again finds none and still deletes what is left.
+    fn begin_removal(database: &Arc<Database>, tenant: TenantId) -> Result<PgTx<'_>, CatalogError> {
+        let lease = database.lease().map_err(|_| CatalogError::Io)?;
+        let tx = PgTx::begin(database, lease, tenant, None, Begin::Create);
+        tx.query(
+            "SELECT 1 FROM vcon.tenant_lock WHERE tenant = $1 FOR UPDATE",
+            &[(&tenant.0.as_slice(), Type::BYTEA)],
+        )
+        .map_err(|_| CatalogError::Io)?;
+        Ok(tx)
+    }
+
+    /// Removes every row of `tenant` but its audit records, at most
+    /// `batch` rows of a table in one transaction.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::NoTenant`] for the registry's id, and
+    /// [`CatalogError::Io`] when the database cannot be written or `batch`
+    /// is not positive.
+    pub(crate) fn remove_in(
+        database: &Arc<Database>,
+        tenant: TenantId,
+        batch: i64,
+    ) -> Result<(), CatalogError> {
+        if tenant == REGISTRY {
+            return Err(CatalogError::NoTenant);
+        }
+        let most = u64::try_from(batch).map_err(|_| CatalogError::Io)?;
+        if most == 0 {
+            return Err(CatalogError::Io);
+        }
+        let id = tenant.0.as_slice();
+        // The tables that grow with the vCons stored, a batch in each
+        // transaction, so that no one transaction holds every row.
+        for (table, key) in [
+            ("version", "version"),
+            ("vcon", "uuid_mac"),
+            ("tombstone", "uuid_mac"),
+        ] {
+            let delete = format!(
+                "DELETE FROM vcon.{table} WHERE tenant = $1 AND {key} IN \
+                 (SELECT {key} FROM vcon.{table} WHERE tenant = $1 LIMIT $2)"
+            );
+            loop {
+                let tx = PgCatalog::begin_removal(database, tenant)?;
+                let deleted = tx
+                    .execute(&delete, &[(&id, Type::BYTEA), (&batch, Type::INT8)])
+                    .map_err(|_| CatalogError::Io)?;
+                tx.finish().map_err(|_| CatalogError::Io)?;
+                if deleted < most {
+                    break;
+                }
+            }
+        }
+        // The rest in one transaction, the lock row last: until it is
+        // gone the tenant is present, and a removal cut off is made again.
+        // The audit records stay (`vcon.audit` refuses a DELETE).
+        let tx = PgCatalog::begin_removal(database, tenant)?;
+        for table in [
+            "key_use",
+            "parquet_file",
+            "purge_pending",
+            "manifest",
+            "tenant_catalog",
+            "tenant_lock",
+        ] {
+            tx.execute(
+                &format!("DELETE FROM vcon.{table} WHERE tenant = $1"),
+                &[(&id, Type::BYTEA)],
+            )
+            .map_err(|_| CatalogError::Io)?;
+        }
+        tx.finish().map_err(|_| CatalogError::Io)
+    }
+
+    /// Which of two catalog keys the catalog of `tenant` is under.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::NoTenant`] when the database has no catalog for the
+    /// tenant, [`CatalogError::WrongKey`] when it is under neither key,
+    /// and [`CatalogError::Io`] when the database cannot be read.
+    pub(crate) fn under(
+        database: &Arc<Database>,
+        tenant: TenantId,
+        old: &Key,
+        new: &Key,
+    ) -> Result<crate::backend::Under, CatalogError> {
+        let held = PgCatalog::key_id(database, tenant)?.ok_or(CatalogError::NoTenant)?;
+        if held == old.id().0 {
+            Ok(crate::backend::Under::Old)
+        } else if held == new.id().0 {
+            Ok(crate::backend::Under::New)
+        } else {
+            Err(CatalogError::WrongKey)
+        }
+    }
+
     fn begin(&self, how: Begin) -> Result<PgTx<'_>, StoreError> {
         let lease = self.database.lease()?;
         let tx = PgTx::begin(&self.database, lease, self.tenant, Some(&self.keys), how);

@@ -259,8 +259,10 @@ mod on_a_server {
                     )
                 )
                 .await,
-                1,
-                "{table} has one policy"
+                // Since schema version 10 the lock rows have one for each
+                // kind of statement (v10.rs).
+                if *table == "tenant_lock" { 4 } else { 1 },
+                "{table} has one policy, the lock rows four"
             );
         }
     }

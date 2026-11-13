@@ -27,11 +27,12 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     include_str!("schema_v7.sql"),
     include_str!("schema_v8.sql"),
     include_str!("schema_v9.sql"),
+    include_str!("schema_v10.sql"),
 ];
 
 /// The schema version this binary makes and reads:
 /// [`MIGRATIONS`]`.len()`, a test holds them equal.
-pub(crate) const SCHEMA_VERSION: i32 = 9;
+pub(crate) const SCHEMA_VERSION: i32 = 10;
 
 /// The advisory lock every server takes, a constant all instances share.
 pub(crate) const SERVERS_LOCK: i64 = 0x7663_6f6e_5352_0001;

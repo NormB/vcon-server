@@ -8,12 +8,12 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
-- **The PostgreSQL preview's schema is at version 9.** A database that
+- **The PostgreSQL preview's schema is at version 10.** A database that
   0.4.5 or an earlier release migrated is at version 6: run
   `vcon-server migrate` with the new binary before a server starts, as
   [after an upgrade from 0.4.5](https://vcon-server.com/docs/postgres-catalog/#after-an-upgrade-from-0-4-5)
   shows. Until then a server stops with `the database schema is version
-  6, older than this binary's 9: run vcon-server migrate`. Version 7
+  6, older than this binary's 10: run vcon-server migrate`. Version 7
   gives the `version` table the column `seq`, the order versions were
   stored in, and on PostgreSQL 17 and later grants `vcon_app` `MAINTAIN`
   on the tables `version`, `vcon` and `tombstone`, for the `VACUUM` the
@@ -28,7 +28,11 @@ All notable changes to this project are recorded here. The format follows
   minute to a record that is there with one statement.
   The count only grows: the same number or a smaller one is refused with
   `an audit record is not changed, but for a larger count of a counted
-  record`. No row is changed. The local catalogs stay at schema version 9.
+  record`. Version 10 lets a transaction of the registry read every row
+  of the table `tenant_lock`, which has one row for each tenant that has
+  a catalog, and write none; a tenant's transaction reads and writes its
+  own row, as before. No row is changed. The local catalogs stay at
+  schema version 9.
 - **The statements that keep a tenant's catalog in PostgreSQL**, behind
   the `postgres` cargo feature and used by no server yet: a start with
   `catalog.backend = "postgres"` still connects, checks and stops. They
@@ -37,6 +41,15 @@ All notable changes to this project are recorded here. The format follows
   vCon is kept as an HMAC and a sealed copy; a version's form, gzip flag
   and size, and an audit record's target, are sealed; times, holds,
   counts and random ids are clear.
+- **The statements that make, open, list and remove a tenant in
+  PostgreSQL**, behind the `postgres` cargo feature and used by no server
+  yet. A tenant is made by its row in `tenant_lock` and the id of its
+  catalog key, and its objects are in the bucket. A removal deletes the
+  bucket's objects and then the tenant's rows, at most 10,000 rows of a
+  table in one transaction. A removal keeps the tenant's audit records:
+  the rows of `audit` stay, and the database refuses a `DELETE` there
+  from every role. Moving a tenant's rows to a new tenant key is not
+  written yet.
 
 ### Fixed
 

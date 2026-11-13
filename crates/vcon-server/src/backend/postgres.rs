@@ -29,6 +29,7 @@ mod pool;
 mod registry;
 mod schema;
 mod secrets;
+mod space;
 #[cfg(test)]
 mod tests;
 
