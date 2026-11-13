@@ -307,5 +307,9 @@ pub fn add_one(x: u32) -> u32 {
     x.add(1)
 }'
 
+# The exception to the 14-day rule for dependency versions
+# (scripts/check_dependency_age.py --walk): a line that names no advisory.
+why='crates/held/Cargo.toml:1: not of the form' expect refuse "dependency-age-exception line with no advisory id" crates/held/Cargo.toml '# dependency-age-exception: serde 1.0.228 published 2026-11-01'
+
 echo "test-hooks: $pass of $n passed"
 [ "$fail" -eq 0 ]

@@ -899,3 +899,64 @@ fn the_server_crate_readme_links_the_mcp_and_s3_pages() {
         );
     }
 }
+
+/// The value of `NAME = <value>` in a Python script, quotes removed.
+fn python_constant(script: &str, name: &str) -> String {
+    let start = format!("{name} = ");
+    let line = script
+        .lines()
+        .find(|line| line.starts_with(&start))
+        .unwrap_or_else(|| panic!("the script has no line `{start}`"));
+    line[start.len()..].trim().trim_matches('"').to_owned()
+}
+
+#[test]
+fn contributing_states_the_dependency_age_exception_as_the_gate_reads_it() {
+    let script = read("scripts/check_dependency_age.py");
+    let form = python_constant(&script, "FORM");
+    let days = python_constant(&script, "MIN_AGE_DAYS");
+    assert!(
+        form.starts_with("# dependency-age-exception: <crate> "),
+        "the gate's form is not the line it reads: {form}"
+    );
+    let contributing = read("CONTRIBUTING.md");
+    let rule = section(&contributing, "Dependency versions");
+    for needed in [
+        format!("```toml\n{form}\n```"),
+        format!("at least {days} days"),
+        "`scripts/check_dependency_age.py`".to_owned(),
+        "--registry --base origin/main".to_owned(),
+    ] {
+        assert!(
+            rule.contains(&needed),
+            "CONTRIBUTING.md's Dependency versions does not hold: {needed}"
+        );
+    }
+    let page = read("website/content/docs/development.md");
+    assert!(
+        section(&page, "Contributing").contains("`scripts/check_dependency_age.py`"),
+        "development.md's Contributing does not name the gate"
+    );
+}
+
+#[test]
+fn the_two_past_exceptions_are_written_in_the_form() {
+    // rmcp 3.9.0 and rusqlite 0.42.0 were taken inside the 14 days as
+    // security fixes, each with crates of its own that were as young.
+    let manifest = read("crates/vcon-server/Cargo.toml");
+    let lines: Vec<&str> = manifest
+        .lines()
+        .filter(|line| line.contains("dependency-age-exception"))
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            "# dependency-age-exception: rmcp 3.9.0 RUSTSEC-2026-0462 published 2026-11-05",
+            "# dependency-age-exception: rmcp-macros 3.9.0 RUSTSEC-2026-0462 published 2026-11-05",
+            "# dependency-age-exception: rusqlite 0.42.0 RUSTSEC-2026-0459 published 2026-11-11",
+            "# dependency-age-exception: libsqlite3-sys 0.40.0 RUSTSEC-2026-0459 published 2026-11-11",
+            "# dependency-age-exception: sqlite-wasm-rs 0.6.3 RUSTSEC-2026-0459 published 2026-11-10",
+        ],
+        "the exception lines of crates/vcon-server/Cargo.toml"
+    );
+}

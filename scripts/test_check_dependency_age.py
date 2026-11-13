@@ -155,38 +155,33 @@ class Success(unittest.TestCase):
         found = age.run(sorted(head), head.get, base.get, wire(INDEX), NOW)
         self.assertEqual(found, [])
 
-    def test_the_trees_own_manifests_hold_the_two_exceptions_in_the_form(self):
+    def test_the_five_lines_of_the_two_past_exceptions_are_read(self):
         # rmcp 3.9.0 (#150) and rusqlite 0.42.0 were taken inside the 14
         # days by hand; each brought crates of its own that were as young.
-        root = HERE.parent
-        found, problems = [], []
-        for path in ("Cargo.toml", "crates/vcon-server/Cargo.toml", "fuzz/Cargo.toml"):
-            one, bad = parsed((root / path).read_text(encoding="utf-8"), path)
-            found += one
-            problems += bad
-        self.assertEqual(problems, [])
-        self.assertEqual(
-            sorted((e.package, e.version, e.advisory, e.published) for e in found),
+        # tests/readme_sync.rs holds the manifest to these lines: the
+        # commit hook also runs this file in a small tree of its own
+        # (scripts/test-hooks.sh), which has no such manifest.
+        text = "\n".join(
             [
-                ("libsqlite3-sys", "0.40.0", "RUSTSEC-2026-0459", "2026-11-11"),
-                ("rmcp", "3.9.0", "RUSTSEC-2026-0462", "2026-11-05"),
-                ("rmcp-macros", "3.9.0", "RUSTSEC-2026-0462", "2026-11-05"),
-                ("rusqlite", "0.42.0", "RUSTSEC-2026-0459", "2026-11-11"),
-                ("sqlite-wasm-rs", "0.6.3", "RUSTSEC-2026-0459", "2026-11-10"),
-            ],
+                line("rmcp", "3.9.0", "RUSTSEC-2026-0462", "2026-11-05"),
+                line("rmcp-macros", "3.9.0", "RUSTSEC-2026-0462", "2026-11-05"),
+                'rmcp = "3.9.0"',
+                line(),
+                line("libsqlite3-sys", "0.40.0", "RUSTSEC-2026-0459", "2026-11-11"),
+                line("sqlite-wasm-rs", "0.6.3", "RUSTSEC-2026-0459", "2026-11-10"),
+                'rusqlite = "0.42.0"',
+            ]
         )
+        found, problems = parsed(text)
+        self.assertEqual(problems, [])
+        self.assertEqual([e.package for e in found], ["rmcp", "rmcp-macros", "rusqlite", "libsqlite3-sys", "sqlite-wasm-rs"])
+        self.assertEqual([e.line for e in found], [1, 2, 4, 5, 6])
 
     def test_a_crate_that_comes_with_the_fix_is_taken_under_its_own_line(self):
         when = datetime.datetime(2026, 11, 11, 6, 40, tzinfo=UTC)
         both = [exception(), exception("libsqlite3-sys", "0.40.0", number=2)]
         self.assertIsNone(age.verdict("libsqlite3-sys", "0.40.0", when, NOW, both))
         self.assertIn("no dependency-age-exception line names it", age.verdict("libsqlite3-sys", "0.40.0", when, NOW, [exception()]))
-
-    def test_contributing_states_the_form_and_the_number_of_days(self):
-        text = (HERE.parent / "CONTRIBUTING.md").read_text(encoding="utf-8")
-        self.assertIn(age.FORM, text)
-        self.assertIn(f"at least {age.MIN_AGE_DAYS} days", text)
-        self.assertIn("scripts/check_dependency_age.py", text)
 
     def test_the_number_of_days_is_the_one_dependabot_is_held_to(self):
         other = importlib.util.spec_from_file_location("check_dependabot", HERE / "check_dependabot.py")
