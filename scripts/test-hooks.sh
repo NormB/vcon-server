@@ -340,11 +340,14 @@ on: push
 permissions: {}
 jobs:
   extra:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - run: '
 why='`cargo test` has no per-test deadline' expect refuse "workflow that runs cargo test with no deadline" .github/workflows/extra.yml "${extra_workflow}cargo test --workspace"
 why='runs `scripts/check_new.py`, which no hook runs' expect refuse "workflow that runs a script no hook runs" .github/workflows/extra.yml "${extra_workflow}python3 -I scripts/check_new.py"
+# A floating runner image: on 2026-11-13 ubuntu-latest began to give jobs
+# Ubuntu 26.04, and the website job failed on main.
+why='jobs.extra.runs-on: `ubuntu-latest` is a floating runner image' expect refuse "workflow on a floating runner image" .github/workflows/extra.yml "$(printf '%s' "${extra_workflow}true" | sed 's/ubuntu-24.04/ubuntu-latest/')"
 why='no workflow runs the group `extra`' expect refuse "feature set no CI job lints" .github/clippy-feature-sets.txt "$(cat .github/clippy-feature-sets.txt)
 extra: -p hook-fixture --all-targets --locked --features postgres --no-default-features"
 why='ci-success must run with if: always()' expect refuse "CI success job that a failed job would skip" .github/workflows/ci.yml "$(sed 's/^    if: always()$/    if: success()/' "$src/.github/workflows/ci.yml")"

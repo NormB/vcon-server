@@ -23,7 +23,7 @@ jobs:
   rust:
     name: fmt, clippy, tests
     timeout-minutes: 45
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -102,7 +102,7 @@ jobs:
     # not there.
     name: storage backends (RustFS)
     timeout-minutes: 45
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       rustfs:
         image: rustfs/rustfs@sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2 # 1.0.4
@@ -178,7 +178,7 @@ jobs:
     # backend::s3::remote::a_claim_object_is_never_written_over.
     name: storage backends (MinIO)
     timeout-minutes: 45
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       MINIO_RELEASE: RELEASE.2025-09-07T16-13-09Z
       MINIO_SHA256: 7c5bd8512c6e966455b1d198209358b2d191c77a83ab377c4073281065fb855f
@@ -276,7 +276,7 @@ jobs:
     # server is not there.
     name: catalog backends (PostgreSQL ${{ matrix.postgres.major }})
     timeout-minutes: 45
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -350,7 +350,7 @@ jobs:
   coverage:
     name: coverage
     timeout-minutes: 45
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       LLVM_COV_VERSION: '0.9.1'
       LLVM_COV_SHA256: 'b3f68e625481fed9b16444174f3fa5ebcdbde4a1878803a35eabe2dcefcdc41a'
@@ -416,7 +416,7 @@ jobs:
   fuzz-targets:
     name: list the fuzz targets
     timeout-minutes: 5
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       targets: ${{ steps.list.outputs.targets }}
     steps:
@@ -436,7 +436,7 @@ jobs:
     name: fuzz ${{ matrix.target }}
     needs: fuzz-targets
     timeout-minutes: 45
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -468,7 +468,7 @@ jobs:
   clients:
     name: client examples against a live server
     timeout-minutes: 30
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -513,7 +513,7 @@ jobs:
   scan:
     name: no AI attribution or personal data
     timeout-minutes: 10
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -632,11 +632,19 @@ jobs:
           python3 -I scripts/test_check_hook_steps.py
           python3 -I scripts/check_hook_steps.py
           python3 -I scripts/test_tree_files.py
+      # A label that ends in -latest moves to a new operating system
+      # release on a day GitHub chooses: every job names a fixed image
+      # (scripts/check_runner_images.py).
+      - name: Every job runs on a fixed runner image
+        run: |
+          set -euo pipefail
+          python3 -I scripts/test_check_runner_images.py
+          python3 -I scripts/check_runner_images.py
 
   hooks:
     name: git hooks
     timeout-minutes: 20
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -680,7 +688,7 @@ jobs:
   messages:
     name: commit messages
     timeout-minutes: 10
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -720,7 +728,7 @@ jobs:
   deny:
     name: cargo-deny (licences, bans, sources)
     timeout-minutes: 10
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       CARGO_DENY_VERSION: '0.20.2'
       # From the release's own .sha256 file.
@@ -760,7 +768,7 @@ jobs:
   site:
     name: website
     timeout-minutes: 25
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       ZOLA_VERSION: '0.23.6'
       ZOLA_SHA256: '8f5132b3522412d04e395e0b25f6d68613ad272a873e54a2b3ebf664873024a4'
@@ -815,7 +823,7 @@ jobs:
   brand:
     name: logo files match their source
     timeout-minutes: 10
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       RESVG_VERSION: '0.49.0'
       RESVG_SHA256: '216637e75e909e53e3098b0875cd5f7da2fdc8b4359771b4a29b539afff9d3f5'
@@ -849,7 +857,7 @@ jobs:
   console:
     name: console in a browser
     timeout-minutes: 45
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       NODE_VERSION: '24.22.1'
       NODE_SHA256: '6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6'
@@ -889,7 +897,7 @@ jobs:
   docs-binary:
     name: how-to pages, the runner and the server
     timeout-minutes: 30
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       scenarios: ${{ steps.list.outputs.scenarios }}
     steps:
@@ -937,7 +945,7 @@ jobs:
     name: how-to ${{ matrix.scenario }} against a live server
     needs: docs-binary
     timeout-minutes: 75
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -1006,7 +1014,7 @@ jobs:
     if: always()
     needs: [rust, backends, backends-minio, backends-postgres, coverage, fuzz-targets, fuzz, clients, scan, hooks, messages, deny, site, brand, console, docs-binary, docs]
     timeout-minutes: 5
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

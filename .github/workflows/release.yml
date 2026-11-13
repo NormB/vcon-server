@@ -53,7 +53,7 @@ jobs:
   version:
     name: version
     timeout-minutes: 5
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -90,12 +90,12 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     # Built on the floor's glibc, so the binaries take no newer symbol
-    # version: on ubuntu-latest (glibc 2.39) v0.2.0 needed GLIBC_2.38. The
+    # version: on ubuntu-24.04 (glibc 2.39) v0.2.0 needed GLIBC_2.38. The
     # image is multi-architecture; this digest names both platforms.
     container:
       image: almalinux:9@sha256:1dc2f882fd8c5c1eb4747953cf8516e0f36d4d4aeba6a17f97e7b12d495e8547
@@ -159,7 +159,7 @@ jobs:
           - debian:12@sha256:854dd8ab51d62866dbd8f5431d15ce77b12983a2a4a1e1fe43a2395dc7ef9f61
           - ubuntu:22.04@sha256:e0f80c829509ef4df9e76bd8944eb7b8ec25cbb379b112a7f9448b2c77a77c9b
           - almalinux:9@sha256:1dc2f882fd8c5c1eb4747953cf8516e0f36d4d4aeba6a17f97e7b12d495e8547
-    runs-on: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    runs-on: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     container:
       image: ${{ matrix.image }}
       # The server locks all its memory before it reads a key.
@@ -204,7 +204,7 @@ jobs:
     needs: [version, build, smoke]
     if: github.event_name != 'pull_request'
     timeout-minutes: 20
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       # Sigstore signs with a short-lived certificate from the workflow's OIDC
@@ -326,7 +326,7 @@ jobs:
     if: github.ref_type == 'tag'
     needs: [version, attest]
     timeout-minutes: 10
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
@@ -366,7 +366,7 @@ jobs:
           ((github.ref_type == 'tag' && needs.publish.result == 'success') ||
            (github.event_name == 'workflow_dispatch' && inputs.crates_io_dry_run)) }}
     timeout-minutes: 40
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # crates.io's trusted publisher for both crates names this workflow,
     # release.yml, and no environment, so this job names none. Once the
     # trusted publishers on crates.io name the environment crates-io, this

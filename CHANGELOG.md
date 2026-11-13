@@ -87,6 +87,18 @@ All notable changes to this project are recorded here. The format follows
   it. The two messages it found name the vCon by its place in the test.
   The rule reads names: it does not find a uuid under another name, one
   that a call returns, or the values a failed `assert_eq!` prints.
+- **The workflows named a floating runner image.** Every job ran on
+  `ubuntu-latest`. On 2026-11-13 GitHub began to give that label Ubuntu
+  26.04 for some jobs: the website job's Playwright install failed on
+  `main`, on a commit whose pull request had passed on Ubuntu 24.04
+  minutes before. Every job now names `ubuntu-24.04` (the aarch64 release
+  jobs already named `ubuntu-24.04-arm`), and
+  `scripts/check_runner_images.py`, in the commit hook and in CI's scan
+  job, refuses a label that ends in `-latest` in a workflow or a composite
+  action. The release binaries are not changed by this: they are built in
+  an AlmaLinux 9 container pinned by digest, on glibc 2.34, as before.
+  [Runner images](https://vcon-server.com/docs/development/#runner-images)
+  shows how to move to a newer image. No server code changed.
 - **The commit hook did not run every check of the tree that CI runs.** No
   hook ran `scripts/test_docs_test.py`, the how-to runner's own tests,
   which read the how-to pages: on 2026-11-13 a page lost a line of a

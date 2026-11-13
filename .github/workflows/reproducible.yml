@@ -41,7 +41,7 @@ env:
 jobs:
   reproducible:
     name: Reproducible build (x86_64-unknown-linux-gnu)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Two release builds from nothing, and the second one's crate fetch.
     timeout-minutes: 60
     permissions:

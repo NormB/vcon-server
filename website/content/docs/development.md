@@ -281,7 +281,9 @@ git config core.hooksPath .githooks
   [Contributing](#contributing)). It runs the checks of the tree that CI's
   scan job runs: every script a workflow runs is run by a hook or listed
   with the reason it runs only in CI (`scripts/check_hook_steps.py`, see
-  [Scripts only CI runs](#scripts-only-ci-runs)), every test run has the
+  [Scripts only CI runs](#scripts-only-ci-runs)), every job names a fixed
+  runner image (`scripts/check_runner_images.py`, see
+  [Runner images](#runner-images)), every test run has the
   per-test deadline (`scripts/check_test_runner.py`), the "CI success" job
   needs every job of the workflow (`scripts/ci_success.py check`), a CI job
   lints every feature set (`scripts/clippy_features.py check`), Dependabot
@@ -639,6 +641,49 @@ source of the system is in the table, and changes nothing in either case.
 job that runs in a container, and in a composite action or a shell script,
 within the file. `scripts/test_apt_mirror_setup.py` tests the script
 against a server on the same machine.
+
+### Runner images
+
+Every job names a fixed runner image: `ubuntu-24.04`, or
+`ubuntu-24.04-arm` for the aarch64 release jobs. No job runs on macOS or
+Windows. A label that ends in `-latest` moves to a new operating system
+release on a day GitHub chooses, and a commit that passed can then fail
+with no change of its own: on 2026-11-13 `ubuntu-latest` began to give
+jobs Ubuntu 26.04, and the website job's Playwright install asked apt for
+packages that release does not have.
+
+`scripts/check_runner_images.py` fails, in the commit hook and in CI's
+scan job, when a value of a workflow in `.github/workflows/` or of a
+composite action in `.github/actions/` holds such a label: a job's
+`runs-on`, a row of its matrix, an input, a default, an environment
+value. It does not read a step's script, a name, a description or a
+comment.
+
+The release binaries do not take their glibc from the runner: the build
+job of `release.yml` runs in an AlmaLinux 9 container pinned by digest
+(glibc 2.34, the floor in `GLIBC_FLOOR`), and `scripts/check_glibc.py`
+checks each binary against that floor. The runner image decides which
+tools the other jobs find: apt packages, Docker, Node, Python.
+
+To move to a newer image:
+
+1. Change the label in every workflow in one commit, in a pull request.
+2. Read the jobs that install packages or browsers first: the website
+   and console jobs (`npx playwright install --with-deps`), the how-to
+   jobs (Docker), the reproducible build and the release smoke tests.
+3. Land it when every check passes on the new image.
+
+Verify with:
+
+```sh
+python3 -I scripts/test_check_runner_images.py
+python3 -I scripts/check_runner_images.py
+```
+
+The second command prints a line that starts `check_runner_images: ok`.
+A finding has the form ``<file>: jobs.<job>.runs-on: `ubuntu-latest` is
+a floating runner image``: replace the label with the fixed image the
+other jobs name.
 
 ### Scripts only CI runs
 

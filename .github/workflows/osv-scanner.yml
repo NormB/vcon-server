@@ -36,7 +36,7 @@ concurrency:
 jobs:
   scan:
     name: OSV (all lockfiles)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # A scan takes well under a minute; this bounds a hang.
     timeout-minutes: 15
     permissions:
