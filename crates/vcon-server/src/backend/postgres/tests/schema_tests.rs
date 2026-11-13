@@ -17,6 +17,7 @@ mod v4;
 mod v5;
 mod v6;
 mod v7;
+mod v8;
 
 /// The names of the databases live tests make, and which of them a killed
 /// test left behind.
@@ -322,7 +323,7 @@ pub(super) mod live {
                 format!("INSERT INTO vcon.manifest (tenant, published_at) VALUES ({t}, 1)")
             }
             "audit" => format!(
-                "INSERT INTO vcon.audit (tenant, at, actor, action, status, count) VALUES ({t}, 't', 'a', 'b', 1, 1)"
+                "INSERT INTO vcon.audit (tenant, at, actor, action, status, count, counted) VALUES ({t}, 't', 'a', 'b', 1, 1, true)"
             ),
             "tenant_lock" => format!("INSERT INTO vcon.tenant_lock (tenant) VALUES ({t})"),
             "tenant_catalog" => format!(
@@ -340,7 +341,7 @@ pub(super) mod live {
                 .to_owned(),
             "master_key_use" => "INSERT INTO vcon.master_key_use (master_key_id, wraps, since) VALUES ('\\x01', 1, 1)".to_owned(),
             "api_key" => "INSERT INTO vcon.api_key (id, token_hash, scopes_sealed, label_sealed, created_at) VALUES ('\\x01', '\\x02', '\\x03', '\\x04', 1)".to_owned(),
-            "admin_audit" => "INSERT INTO vcon.admin_audit (at, actor, action, status, count) VALUES ('t', 'a', 'b', 1, 1)".to_owned(),
+            "admin_audit" => "INSERT INTO vcon.admin_audit (at, actor, action, status, count, counted) VALUES ('t', 'a', 'b', 1, 1, true)".to_owned(),
             "user_account" => "INSERT INTO vcon.user_account (id, label_sealed, created_at) VALUES ('\\x01', '\\x02', 1)".to_owned(),
             "membership" => "INSERT INTO vcon.membership (user_id, roles_sealed, granted_at) VALUES ('\\x01', '\\x02', 1)".to_owned(),
             "tenant_setting" => "INSERT INTO vcon.tenant_setting (tenant, name, value_sealed) VALUES ('\\x01', 'n', '\\x02')".to_owned(),

@@ -411,8 +411,9 @@ mod on_a_server {
         .await;
         assert_eq!(
             a.as_deref(),
-            Some("2"),
-            "the other tenant's version took the number between: the order is the database's"
+            Some("4"),
+            "the other tenant's version took the numbers between, two a row since version 8: the \
+             order is the database's"
         );
     }
 

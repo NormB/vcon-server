@@ -1995,4 +1995,185 @@ pub(super) mod on_a_server {
             "create, get and a list page, each counted at the database"
         );
     }
+
+    /// A store on a new database with one vCon stored, its caller and the
+    /// vCon's uuid.
+    fn store_with_one() -> (Db, conformance::Fresh, Caller, Uuid) {
+        let (db, database) = database();
+        let (s3, _) = bucket(false);
+        let harness = CatalogAndS3 {
+            catalog: postgres_catalogs(&database),
+            s3,
+            packed: false,
+        };
+        let fresh = harness.fresh(TestClock::at(conformance::START));
+        let who = Caller {
+            key: Key::generate().expect("key").id(),
+        };
+        let (found, body) = conformance::vcon("01a07da8-c2bb-83e5-b9a2-279e0d16bc02", "kept");
+        fresh.store.create(&who, &found, &body).expect("creates");
+        (db, fresh, who, found.uuid)
+    }
+
+    /// Makes every new audit record of the database refused, as the local
+    /// tests do with a trigger (`Store::break_audit`).
+    fn refuse_records(db: &Db) {
+        as_owner(
+            db,
+            "CREATE FUNCTION vcon.test_no_audit() RETURNS trigger LANGUAGE plpgsql \
+             AS 'BEGIN RAISE EXCEPTION ''no audit''; END'; \
+             CREATE TRIGGER a_test_no_audit BEFORE INSERT ON vcon.audit \
+             FOR EACH ROW EXECUTE FUNCTION vcon.test_no_audit()",
+        );
+    }
+
+    /// Lets records be written again.
+    fn take_records(db: &Db) {
+        as_owner(db, "DROP TRIGGER a_test_no_audit ON vcon.audit");
+    }
+
+    #[test]
+    fn a_create_whose_record_is_refused_stores_nothing() {
+        let (db, fresh, who, _) = store_with_one();
+        refuse_records(&db);
+        let (found, body) = conformance::vcon("01a07da8-c2bb-83e5-b9a2-279e0d16bc03", "never");
+        assert_eq!(
+            fresh.store.create(&who, &found, &body).map(drop),
+            Err(StoreError::AuditFailed),
+            "no record, no write"
+        );
+        take_records(&db);
+        assert_eq!(
+            fresh.store.get(&who, found.uuid).map(drop),
+            Err(StoreError::NotFound),
+            "the vCon was not stored"
+        );
+    }
+
+    #[test]
+    fn a_read_whose_record_is_refused_gives_no_body() {
+        let (db, fresh, who, uuid) = store_with_one();
+        refuse_records(&db);
+        assert_eq!(
+            fresh.store.get(&who, uuid).map(drop),
+            Err(StoreError::AuditFailed),
+            "no record, no body"
+        );
+        take_records(&db);
+        assert!(
+            fresh.store.get(&who, uuid).is_ok(),
+            "and the vCon is read once a record can be written"
+        );
+    }
+
+    #[test]
+    fn a_list_whose_record_is_refused_gives_no_page() {
+        let (db, fresh, who, _) = store_with_one();
+        refuse_records(&db);
+        let query = ListQuery {
+            limit: 10,
+            cursor: None,
+            since: None,
+            until: None,
+        };
+        assert_eq!(
+            fresh.store.list(&who, &query).map(drop),
+            Err(StoreError::AuditFailed),
+            "no record, no page"
+        );
+    }
+
+    #[test]
+    fn a_delete_whose_record_is_refused_deletes_nothing() {
+        let (db, fresh, who, uuid) = store_with_one();
+        refuse_records(&db);
+        assert_eq!(
+            fresh
+                .store
+                .delete(&who, uuid, crate::retention::Retention::Years(7)),
+            Err(StoreError::AuditFailed),
+            "no record, no delete"
+        );
+        take_records(&db);
+        assert!(
+            fresh.store.get(&who, uuid).is_ok(),
+            "the vCon is still there"
+        );
+    }
+
+    #[test]
+    fn a_page_of_the_log_whose_record_is_refused_is_not_given() {
+        let (db, fresh, who, _) = store_with_one();
+        refuse_records(&db);
+        let query = crate::audit::AuditQuery {
+            after: 0,
+            limit: 10,
+        };
+        assert_eq!(
+            fresh.store.audit_page(&who, &query),
+            Err(StoreError::AuditFailed),
+            "the read of the log is recorded too, or not carried out"
+        );
+    }
+
+    #[test]
+    fn the_server_s_own_statements_pass_the_append_only_triggers() {
+        let (db, database) = database();
+        let (tenant, _, catalog) = tenant_catalog(&database);
+        let mut tx = catalog.immediate().expect("begins");
+        for _ in 0..3 {
+            tx.count(&entry("counted"), OffsetDateTime::UNIX_EPOCH)
+                .expect("counts");
+        }
+        tx.record(&entry("counted"), OffsetDateTime::UNIX_EPOCH)
+            .expect("records");
+        tx.commit().expect("commits");
+        assert_eq!(
+            owner_reads(
+                &db,
+                tenant,
+                "SELECT count::text || ' ' || counted::text FROM vcon.audit ORDER BY seq"
+            ),
+            ["3 true", "1 false"],
+            "one counted record added to twice, and one record of its own"
+        );
+    }
+
+    #[test]
+    fn a_change_the_log_refuses_is_an_audit_failure_and_keeps_the_record() {
+        let (db, database) = database();
+        let (tenant, _, catalog) = tenant_catalog(&database);
+        let mut tx = catalog.immediate().expect("begins");
+        tx.record(&entry("kept"), OffsetDateTime::UNIX_EPOCH)
+            .expect("records");
+        tx.commit().expect("commits");
+        // A record made by `record` is not counted; marked so around the
+        // server, it would take the next count.
+        as_owner(&db, "GRANT UPDATE (counted) ON vcon.audit TO vcon_app");
+        let app_marks = wait(async {
+            in_scope(
+                &db.app().await,
+                &tenant.to_string(),
+                "UPDATE vcon.audit SET counted = true",
+            )
+            .await
+        });
+        assert_eq!(
+            app_marks.map(drop),
+            Err(
+                "an audit record is not changed, but for one more in the count of a counted record"
+                    .to_owned()
+            ),
+            "the trigger holds a role that was granted more than the schema grants"
+        );
+        assert_eq!(
+            owner_reads(
+                &db,
+                tenant,
+                "SELECT count::text || ' ' || counted::text FROM vcon.audit"
+            ),
+            ["1 false"],
+            "the record is as written"
+        );
+    }
 }

@@ -405,7 +405,7 @@ binary's.
 ### After an upgrade from 0.4.5
 
 Release 0.4.5 and the releases before it leave the schema at version 6.
-A build from `main` makes version 7, so a database that 0.4.5 migrated
+A build from `main` makes version 8, so a database that 0.4.5 migrated
 needs the command once more, with the new binary and before any server
 starts:
 
@@ -415,12 +415,12 @@ sudo -u vcon vcon-server migrate --config /etc/vcon-server/vcon-migrate.toml
 ```
 
 ```text
-{"from":6,"message":"schema version 6 to schema version 7","migrated":true,"to":7}
+{"from":6,"message":"schema version 6 to schema version 8","migrated":true,"to":8}
 ```
 
 Until then a server stops with `the database schema is version 6, older
-than this binary's 7: run vcon-server migrate`. Version 7 changes two
-things, and no row there is:
+than this binary's 8: run vcon-server migrate`. Versions 7 and 8 change
+no row there is. Version 7 changes two things:
 
 - The `version` table gains the column `seq`, a number PostgreSQL gives
   each version as it is stored. Two versions of one vCon can hold the same
@@ -440,6 +440,33 @@ sudo -u postgres psql -At -d vcon -c "SELECT has_table_privilege('vcon_app', 'vc
 
 ```text
 t
+```
+
+Version 8 adds triggers and grants nothing:
+
+- PostgreSQL numbers each row of the tables `version`, `manifest`, `audit`
+  and `admin_audit` in their column `seq`, whatever the statement that
+  stores the row says, and keeps the number when the row is updated.
+  Before version 8 an `INSERT` with `OVERRIDING SYSTEM VALUE` chose the
+  number, and the newest version of a vCon is read by it. The numbers of a
+  table rise by two for each row: they give an order, not a count.
+- The audit logs, the tables `audit` and `admin_audit`, take new records.
+  A record there is changes in one way: the `count` of a record the server
+  counts requests in goes up by one. Every other `UPDATE`, every `DELETE`
+  and every `TRUNCATE` is refused, for `vcon_owner` as for `vcon_app`. The
+  owner of a table can drop its triggers, which is one reason no server
+  logs in as `vcon_owner`.
+
+To check the second, try to empty a log as the owner:
+
+<!-- docs-test: skip the scenario runs migrate and does not try to empty a log -->
+```sh
+sudo -u postgres psql -d vcon -c "SET ROLE vcon_owner" -c "TRUNCATE vcon.audit"
+```
+
+```text
+SET
+ERROR:  an audit log is not emptied
 ```
 
 `migrate` gives up its two locks before it ends, so a server can be
@@ -637,12 +664,25 @@ primary in `hosts`; a standby before it is passed over.
 
 ```text
 vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database has no vCon schema: run vcon-server migrate
-vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is version 6, older than this binary's 7: run vcon-server migrate
-vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is newer than this binary (version 8, this binary 7): upgrade this server
+vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is version 6, older than this binary's 8: run vcon-server migrate
+vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is newer than this binary (version 9, this binary 8): upgrade this server
 ```
 
 Run `vcon-server migrate` with `vcon_migrate`'s configuration, or upgrade
 the server.
+
+### A statement on an audit log is refused
+
+```text
+ERROR:  an audit record is not deleted
+ERROR:  an audit log is not emptied
+ERROR:  an audit record is not changed, but for one more in the count of a counted record
+```
+
+From schema version 8 the tables `audit` and `admin_audit` take new
+records and nothing else, from every role. A statement run by hand that
+deletes or rewrites a record is refused with one of these; the server
+sends no such statement. Reading the log with `SELECT` is not refused.
 
 ### The role owns the catalog or may not use it
 
