@@ -36,7 +36,9 @@ use time::OffsetDateTime;
 use tokio_postgres::Row;
 use tokio_postgres::types::{FromSql, Type};
 
-use super::catalog::{Begin, Database, PgTx};
+use super::catalog::{
+    AuditKey, Begin, Database, PgTx, audit_key_id, new_audit_key, open_audit_keys,
+};
 use crate::audit::{Action, AuditError, Entry};
 use crate::backend::{
     CommitError, KeyRow, MembershipRow, Registry, RegistryTx, SessionRow, TenantRow, UserRow,
@@ -49,6 +51,9 @@ use crate::tenants::TenantError;
 pub(crate) struct PgRegistry {
     database: Arc<Database>,
     keys: ColumnKeys,
+    /// The keys of the registry's audit log that opened, oldest first:
+    /// the last seals the new records (schema version 12).
+    audit: Vec<AuditKey>,
     #[cfg(test)]
     fault: super::catalog::Fault,
 }
@@ -123,28 +128,94 @@ const MEMBERSHIP_IS: &str = "user_id = $1 AND tenant IS NOT DISTINCT FROM $2";
 
 impl PgRegistry {
     /// The registry in `database`, its columns sealed under the keys
-    /// derived from `catalog_key`, the master key's catalog key. Nothing is
-    /// read: a registry sealed under another key fails at the first sealed
-    /// value read.
+    /// derived from `catalog_key`, the master key's catalog key.
+    ///
+    /// The database names the key the registry is under, in the one row
+    /// of `vcon.registry_key`. The first open of a database writes that
+    /// row and makes the key of the registry's audit log, with the
+    /// registry's lock held, so of several first opens at once one
+    /// writes; every later open compares the id and opens the log's keys.
     ///
     /// # Errors
     ///
-    /// [`TenantError::Io`] if a key's page cannot be locked.
+    /// [`TenantError::WrongKey`] when the database names another key, or
+    /// names none and holds a row that does not open under this one.
+    /// [`TenantError::Io`] when the database cannot be read or written,
+    /// when a key's page cannot be locked, and when the newest key of the
+    /// audit log is missing or does not open.
     pub(crate) fn open(
         database: Arc<Database>,
         catalog_key: &Key,
     ) -> Result<PgRegistry, TenantError> {
-        Ok(PgRegistry {
+        let mut registry = PgRegistry {
             database,
             keys: ColumnKeys::derive(catalog_key).map_err(io)?,
+            audit: Vec::new(),
             #[cfg(test)]
             fault: std::sync::Mutex::new(None),
-        })
+        };
+        let ours = catalog_key.id().0;
+        let audit = {
+            let read = registry.begin(Begin::Read)?;
+            match read.named()? {
+                Some(held) if held == ours => read.log_keys()?,
+                Some(_) => return Err(TenantError::WrongKey),
+                None => {
+                    // The read ends before the write begins: one
+                    // connection at a time.
+                    drop(read);
+                    registry.claim(&ours)?
+                }
+            }
+        };
+        if audit.is_empty() {
+            // A log with no key takes no record.
+            return Err(TenantError::Io);
+        }
+        registry.audit = audit;
+        Ok(registry)
+    }
+
+    /// The first open: names the key `ours` in the database and gives the
+    /// audit log its first key, in one write, which holds the registry's
+    /// lock. A row another open wrote while this one waited is compared,
+    /// not written again. Gives the keys of the log.
+    fn claim(&self, ours: &[u8]) -> Result<Vec<AuditKey>, TenantError> {
+        let tx = self.begin(Begin::Write)?;
+        match tx.named()? {
+            Some(held) if held == ours => return tx.log_keys(),
+            Some(_) => return Err(TenantError::WrongKey),
+            None => {}
+        }
+        // No id is named. Rows that are there were sealed by a registry
+        // of before schema version 12, under its key: this key must open
+        // them, or it is not that key.
+        if !tx.opens_what_is_there()? {
+            return Err(TenantError::WrongKey);
+        }
+        let mut audit = tx.log_keys().map_err(|_| TenantError::WrongKey)?;
+        if audit.is_empty() {
+            let (key, wrapped) = new_audit_key(REGISTRY, &self.keys).map_err(io)?;
+            tx.0.execute(
+                "INSERT INTO vcon.admin_audit_key (key_id, ordinal, wrapped) VALUES ($1, 1, $2)",
+                &[(&audit_key_id(&key), Type::BYTEA), (&wrapped, Type::BYTEA)],
+            )
+            .map_err(io)?;
+            audit.push(key);
+        }
+        tx.0.execute(
+            "INSERT INTO vcon.registry_key (catalog_key_id) VALUES ($1)",
+            &[(&ours, Type::BYTEA)],
+        )
+        .map_err(io)?;
+        Box::new(tx).commit().map_err(io)?;
+        Ok(audit)
     }
 
     fn begin(&self, how: Begin) -> Result<PgRegistryTx<'_>, TenantError> {
         let lease = self.database.lease().map_err(io)?;
-        let tx = PgTx::begin(&self.database, lease, REGISTRY, Some(&self.keys), how);
+        let tx = PgTx::begin(&self.database, lease, REGISTRY, Some(&self.keys), how)
+            .with_audit(&self.audit);
         #[cfg(test)]
         let tx = tx.with_fault(&self.fault);
         Ok(PgRegistryTx(tx))
@@ -190,6 +261,57 @@ impl Registry for PgRegistry {
 struct PgRegistryTx<'a>(PgTx<'a>);
 
 impl PgRegistryTx<'_> {
+    /// The id of the catalog key the database names for the registry, or
+    /// None when it names none yet.
+    fn named(&self) -> Result<Option<Vec<u8>>, TenantError> {
+        let rows = self
+            .0
+            .query("SELECT catalog_key_id FROM vcon.registry_key", &[])
+            .map_err(io)?;
+        rows.first().map(|row| col(row, 0)).transpose()
+    }
+
+    /// The keys of the registry's audit log that open under the
+    /// registry's keys, oldest first; none when the log has no key.
+    ///
+    /// # Errors
+    ///
+    /// [`TenantError::Io`] when the newest does not open.
+    fn log_keys(&self) -> Result<Vec<AuditKey>, TenantError> {
+        let rows = self
+            .0
+            .query(
+                "SELECT key_id, wrapped FROM vcon.admin_audit_key ORDER BY ordinal",
+                &[],
+            )
+            .map_err(io)?;
+        open_audit_keys(REGISTRY, self.0.keys().map_err(io)?, &rows).map_err(io)
+    }
+
+    /// Whether the registry's keys open the rows that are there: one
+    /// tenant, one API key and one user, each the first by its id. Every
+    /// other sealed row of the registry belongs to one of those three
+    /// tables' rows (a setting to a tenant, a membership and a session to
+    /// a user), and all were sealed under one key.
+    fn opens_what_is_there(&self) -> Result<bool, TenantError> {
+        let first = |columns: &str, table: &str| {
+            self.0
+                .query(
+                    &format!("SELECT {columns} FROM vcon.{table} ORDER BY id LIMIT 1"),
+                    &[],
+                )
+                .map_err(io)
+        };
+        let tenant = first(TENANT_COLUMNS, "tenant")?;
+        let key = first(KEY_COLUMNS, "api_key")?;
+        let user = first(USER_COLUMNS, "user_account")?;
+        Ok(tenant
+            .first()
+            .is_none_or(|row| self.tenant_row(row).is_ok())
+            && key.first().is_none_or(|row| self.key_row(row).is_ok())
+            && user.first().is_none_or(|row| self.user_row(row).is_ok()))
+    }
+
     fn seal(
         &self,
         table: &str,

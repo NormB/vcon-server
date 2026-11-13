@@ -405,7 +405,7 @@ binary's.
 ### After an upgrade from 0.4.5
 
 Release 0.4.5 and the releases before it leave the schema at version 6.
-A build from `main` makes version 11, so a database that 0.4.5 migrated
+A build from `main` makes version 12, so a database that 0.4.5 migrated
 needs the command once more, with the new binary and before any server
 starts:
 
@@ -415,11 +415,11 @@ sudo -u vcon vcon-server migrate --config /etc/vcon-server/vcon-migrate.toml
 ```
 
 ```text
-{"from":6,"message":"schema version 6 to schema version 11","migrated":true,"to":11}
+{"from":6,"message":"schema version 6 to schema version 12","migrated":true,"to":12}
 ```
 
 Until then a server stops with `the database schema is version 6, older
-than this binary's 11: run vcon-server migrate`. Versions 7 to 11
+than this binary's 12: run vcon-server migrate`. Versions 7 to 12
 change no row there is. Version 7 changes two things:
 
 - The `version` table gains the column `seq`, a number PostgreSQL gives
@@ -484,6 +484,23 @@ a key that a record names cannot be deleted. The registry's log,
 `admin_audit`, is not changed. A database of the preview holds no audit
 record, since its server stops after it connects, so version 11 converts
 none.
+
+Version 12 makes the table `registry_key`, whose one row names the
+catalog key the registry's columns are sealed under, and gives the
+registry's audit log a key of its own. The registry is the part of the
+database that belongs to no tenant: the tenants, the API keys, the users
+and their sessions. The id in `registry_key` is the id of a key derived
+from the master key: a server that opens the registry under another
+master key is refused with what it finds there, and a rotation of the
+master key moves the id with the columns. The table `admin_audit_key`
+holds the key of the registry's log, sealed under the registry's keys,
+and each record in `admin_audit` names the key that sealed its target,
+in the new column `key_id`, as a tenant's record does since version 11.
+`vcon_app` reads the id, writes it once and changes it; it reads an
+audit key, makes one and seals one again; no role is granted a `DELETE`
+on either table, a record cannot name a key the log does not have, and a
+key that a record names cannot be deleted. A database of the preview
+holds no row of the registry, so version 12 converts none.
 
 The audit key does not rotate with the tenant key: a rotation seals the
 same audit key under the new catalog key and changes no audit record.
@@ -711,8 +728,8 @@ primary in `hosts`; a standby before it is passed over.
 
 ```text
 vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database has no vCon schema: run vcon-server migrate
-vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is version 6, older than this binary's 11: run vcon-server migrate
-vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is newer than this binary (version 12, this binary 11): upgrade this server
+vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is version 6, older than this binary's 12: run vcon-server migrate
+vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is newer than this binary (version 13, this binary 12): upgrade this server
 ```
 
 Run `vcon-server migrate` with `vcon_migrate`'s configuration, or upgrade

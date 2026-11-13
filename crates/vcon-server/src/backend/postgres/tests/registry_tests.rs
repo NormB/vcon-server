@@ -158,7 +158,7 @@ mod on_a_server {
     use std::sync::{Arc, mpsc};
     use std::time::Duration;
 
-    use super::super::super::catalog::{CatalogError, Database, PgCatalog};
+    use super::super::super::catalog::{CatalogError, Database, PgCatalog, REGISTRY_LOCK};
     use super::super::super::registry::PgRegistry;
     use super::super::catalog_tests::on_a_server::database;
     use super::super::schema_tests::live::{Db, in_scope};
@@ -404,30 +404,6 @@ mod on_a_server {
     }
 
     #[test]
-    fn a_registry_under_another_key_reads_no_sealed_value() {
-        let (_db, database, registry, _key) = registry();
-        write(&registry, |tx| {
-            tx.insert_tenant(&tenant(1, "alpha")).expect("inserts");
-            tx.insert_key(&key(1, "label")).expect("inserts");
-        });
-        let other = Key::generate().expect("a key");
-        let wrong = PgRegistry::open(database, &other).expect("opens: nothing is read");
-        let mut tx = wrong.snapshot().expect("a read begins");
-        assert_eq!(
-            tx.tenant(TenantId([1; 16])),
-            Err(TenantError::Io),
-            "a tenant's row"
-        );
-        assert_eq!(tx.tenants(), Err(TenantError::Io), "the list of tenants");
-        assert_eq!(tx.key(KeyId([1; 8])), Err(TenantError::Io), "a key's row");
-        assert_eq!(
-            tx.name_taken("alpha"),
-            Ok(false),
-            "the name's HMAC under another key finds no row"
-        );
-    }
-
-    #[test]
     fn a_sealed_value_moved_to_another_row_does_not_open() {
         let (db, _database, registry, _key) = registry();
         write(&registry, |tx| {
@@ -662,6 +638,720 @@ mod on_a_server {
         });
         let why = refused.expect_err("the policy refuses a tenant's scope");
         assert!(why.contains("not the registry's"), "{why}");
+    }
+
+    // The key the registry is under, and the key of its log (schema
+    // version 12).
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// The id the database names for the registry's key, in hex: one
+    /// text for each row of the table.
+    fn named(db: &Db) -> Vec<String> {
+        as_owner(
+            db,
+            "SELECT encode(catalog_key_id, 'hex') FROM vcon.registry_key",
+        )
+    }
+
+    /// Each key of the registry's log, oldest first: its ordinal, its id
+    /// and its sealed copy, in hex.
+    fn log_keys(db: &Db) -> Vec<String> {
+        as_owner(
+            db,
+            "SELECT ordinal, encode(key_id, 'hex'), encode(wrapped, 'hex') \
+             FROM vcon.admin_audit_key ORDER BY ordinal",
+        )
+    }
+
+    /// An entry of the registry's log with a target.
+    fn about(target: &str) -> Entry {
+        Entry {
+            actor: Actor::Cli,
+            action: Action::Read,
+            target: Some(target.to_owned()),
+            version: None,
+            status: 200,
+        }
+    }
+
+    /// The registry's log as its export writes it.
+    fn exported(registry: &PgRegistry) -> Result<String, String> {
+        let mut out = Vec::new();
+        registry
+            .export(0, &mut out)
+            .map(|()| String::from_utf8(out).expect("text"))
+            .map_err(|e| format!("{e:?}"))
+    }
+
+    /// A record written around the registry, as the owner: with a target
+    /// or none, naming the key `id` (hex) or none.
+    fn raw_record(db: &Db, target: bool, id: Option<&str>) {
+        let (mac, sealed) = if target {
+            ("'\\x01'", "'\\x02'")
+        } else {
+            ("NULL", "NULL")
+        };
+        let id = id.map_or("NULL".to_owned(), |id| format!("'\\x{id}'"));
+        as_owner(
+            db,
+            &format!(
+                "INSERT INTO vcon.admin_audit \
+                     (at, actor, action, target_mac, target_sealed, status, count, counted, key_id) \
+                 VALUES ('2026-10-24T00:00:00Z', 'cli', 'read', {mac}, {sealed}, 200, 1, false, {id})"
+            ),
+        );
+    }
+
+    /// Leaves the registry's rows as a registry of before schema version
+    /// 12 would have left them: the database names no key, and the log
+    /// has none.
+    fn before_version_12(db: &Db) {
+        as_owner(db, "DELETE FROM vcon.registry_key");
+        as_owner(db, "DELETE FROM vcon.admin_audit_key");
+    }
+
+    #[test]
+    fn a_first_open_over_rows_of_before_version_12_names_the_key_and_makes_the_log_s() {
+        let (db, database, registry, key) = registry();
+        write(&registry, |tx| {
+            tx.insert_tenant(&tenant(1, "alpha")).expect("inserts");
+            tx.insert_key(&self::key(1, "label")).expect("inserts");
+        });
+        drop(registry);
+        before_version_12(&db);
+        let again = PgRegistry::open(database, &key).expect("the rows open under this key");
+        assert_eq!(named(&db), [hex(&key.id().0)], "the key is named");
+        assert_eq!(log_keys(&db).len(), 1, "and the log has its first key");
+        write(&again, |tx| {
+            tx.record(&about("the-target"), minute()).expect("records")
+        });
+        assert!(
+            exported(&again)
+                .expect("exports")
+                .contains("\"target\":\"the-target\""),
+            "which seals and opens a record"
+        );
+    }
+
+    #[test]
+    fn the_first_open_names_the_key_the_registry_is_under() {
+        let (db, _database, _registry, key) = registry();
+        assert_eq!(
+            named(&db),
+            [hex(&key.id().0)],
+            "one row: the id of the key it was opened under"
+        );
+    }
+
+    #[test]
+    fn the_first_open_makes_the_key_of_the_log() {
+        let (db, _database, _registry, key) = registry();
+        let keys = log_keys(&db);
+        assert_eq!(keys.len(), 1, "one key: {keys:?}");
+        let fields: Vec<&str> = keys[0].split(' ').collect();
+        assert_eq!(fields[0], "1", "the first ordinal");
+        assert_eq!(fields[1].len(), 16, "an id of 8 bytes: {}", fields[1]);
+        assert_ne!(
+            fields[1],
+            hex(&key.id().0),
+            "a key of its own, not the registry's"
+        );
+        assert!(
+            fields[2].len() > 64,
+            "the key sealed: more than its 32 bytes: {}",
+            fields[2]
+        );
+    }
+
+    #[test]
+    fn a_second_open_under_the_same_key_writes_nothing() {
+        let (db, database, _registry, key) = registry();
+        let (id, keys) = (named(&db), log_keys(&db));
+        let rows = as_owner(&db, "SELECT xmin FROM vcon.registry_key");
+        drop(PgRegistry::open(database, &key).expect("opens under the same key"));
+        assert_eq!(named(&db), id, "the id is as it was");
+        assert_eq!(
+            log_keys(&db),
+            keys,
+            "no second key, and the first as sealed"
+        );
+        assert_eq!(
+            as_owner(&db, "SELECT xmin FROM vcon.registry_key"),
+            rows,
+            "the row was not written again"
+        );
+    }
+
+    #[test]
+    fn a_record_names_the_key_of_the_log() {
+        let (db, _database, registry, _key) = registry();
+        write(&registry, |tx| {
+            tx.record(&about("the-target"), minute()).expect("records")
+        });
+        let key_id = log_keys(&db)[0]
+            .split(' ')
+            .nth(1)
+            .expect("an id")
+            .to_owned();
+        assert_eq!(
+            as_owner(&db, "SELECT encode(key_id, 'hex') FROM vcon.admin_audit"),
+            [key_id],
+            "the record names the one key"
+        );
+    }
+
+    #[test]
+    fn a_record_s_target_reads_back_in_another_registry() {
+        let (_db, database, registry, key) = registry();
+        write(&registry, |tx| {
+            tx.record(&about("the-target"), minute()).expect("records")
+        });
+        let second = PgRegistry::open(database, &key).expect("opens");
+        let lines = exported(&second).expect("exports");
+        assert!(
+            lines.contains("\"target\":\"the-target\""),
+            "another instance opens the log's key and reads the target: {lines}"
+        );
+    }
+
+    #[test]
+    fn a_counted_record_names_the_key_and_is_added_to() {
+        let (db, _database, registry, _key) = registry();
+        for _ in 0..2 {
+            write(&registry, |tx| {
+                tx.count(&about("counted-target"), minute())
+                    .expect("counts")
+            });
+        }
+        assert_eq!(
+            as_owner(
+                &db,
+                "SELECT count, key_id IS NOT NULL FROM vcon.admin_audit"
+            ),
+            ["2 t"],
+            "one record, counted twice, that names its key"
+        );
+    }
+
+    #[test]
+    fn a_record_with_no_target_names_the_key_too() {
+        let (db, _database, registry, _key) = registry();
+        write(&registry, |tx| {
+            tx.record(&refused_read(), minute()).expect("records")
+        });
+        assert_eq!(
+            as_owner(
+                &db,
+                "SELECT target_mac IS NULL, key_id IS NOT NULL FROM vcon.admin_audit"
+            ),
+            ["t t"],
+            "the key that would seal a target"
+        );
+    }
+
+    #[test]
+    fn a_target_is_sealed_under_the_log_s_key_not_the_registry_s() {
+        let (db, _database, registry, key) = registry();
+        write(&registry, |tx| {
+            tx.record(&about("the-target"), minute()).expect("records")
+        });
+        let keys = crate::envelope::ColumnKeys::derive(&key).expect("derives");
+        let under_the_registry = hex(&crate::envelope::mac(&keys, b"the-target"));
+        let stored = as_owner(
+            &db,
+            "SELECT encode(target_mac, 'hex') FROM vcon.admin_audit",
+        );
+        assert_eq!(stored.len(), 1, "one record");
+        assert_eq!(stored[0].len(), 64, "a MAC of 32 bytes");
+        assert_ne!(
+            stored[0], under_the_registry,
+            "a rotation of the master key changes the registry's keys and not this MAC"
+        );
+    }
+
+    #[test]
+    fn two_first_opens_at_once_name_one_key_and_make_one_log_key() {
+        let (db, database) = database();
+        let key = Key::generate().expect("a key");
+        let opened: Vec<bool> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..4)
+                .map(|_| scope.spawn(|| PgRegistry::open(database.clone(), &key).is_ok()))
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().expect("joins"))
+                .collect()
+        });
+        assert_eq!(opened, [true; 4], "each opens");
+        assert_eq!(named(&db), [hex(&key.id().0)], "one id");
+        assert_eq!(log_keys(&db).len(), 1, "one key of the log");
+    }
+
+    #[test]
+    fn a_first_open_that_waited_for_another_s_write_compares_what_it_wrote() {
+        use super::super::super::catalog::{audit_key_id, new_audit_key};
+        let (db, database) = database();
+        let key = Key::generate().expect("a key");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        // This connection is the other first open: it holds the
+        // registry's lock, as that open's write does.
+        let holder = runtime.block_on(db.app());
+        runtime
+            .block_on(holder.batch_execute(&format!(
+                "BEGIN; SET LOCAL vcon.tenant = 'registry'; \
+                 SELECT pg_advisory_xact_lock({REGISTRY_LOCK})"
+            )))
+            .expect("the lock");
+        let (opened, waiting) = {
+            let (database, key) = (database.clone(), &key);
+            std::thread::scope(|scope| {
+                let open = scope.spawn(move || PgRegistry::open(database, key).map(drop));
+                // The open has read no id and now waits for the lock.
+                let mut waiting = 0_i64;
+                for _ in 0..1500 {
+                    waiting = runtime
+                        .block_on(holder.query_one(
+                            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' \
+                             AND NOT granted",
+                            &[],
+                        ))
+                        .expect("reads the locks")
+                        .get(0);
+                    if waiting == 1 {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                // What the other first open writes, then its commit.
+                let keys = crate::envelope::ColumnKeys::derive(key).expect("derives");
+                let (log_key, wrapped) = new_audit_key(REGISTRY, &keys).expect("a key");
+                runtime
+                    .block_on(async {
+                        holder
+                            .execute(
+                                "INSERT INTO vcon.admin_audit_key (key_id, ordinal, wrapped) \
+                                 VALUES ($1, 1, $2)",
+                                &[&audit_key_id(&log_key), &wrapped],
+                            )
+                            .await?;
+                        holder
+                            .execute(
+                                "INSERT INTO vcon.registry_key (catalog_key_id) VALUES ($1)",
+                                &[&key.id().0.as_slice()],
+                            )
+                            .await?;
+                        holder.batch_execute("COMMIT").await
+                    })
+                    .expect("the other open's write");
+                (open.join().expect("joins"), waiting)
+            })
+        };
+        assert_eq!(waiting, 1, "the open waited for the lock");
+        assert_eq!(
+            opened,
+            Ok(()),
+            "the id the other wrote is this key's: the open goes on"
+        );
+        assert_eq!(named(&db), [hex(&key.id().0)], "one id");
+        assert_eq!(
+            log_keys(&db).len(),
+            1,
+            "and the one key of the log, the other's"
+        );
+    }
+
+    #[test]
+    fn a_first_open_that_waited_is_refused_when_the_other_wrote_another_key() {
+        let (db, database) = database();
+        let key = Key::generate().expect("a key");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        let holder = runtime.block_on(db.app());
+        runtime
+            .block_on(holder.batch_execute(&format!(
+                "BEGIN; SET LOCAL vcon.tenant = 'registry'; \
+                 SELECT pg_advisory_xact_lock({REGISTRY_LOCK})"
+            )))
+            .expect("the lock");
+        let opened = {
+            let (database, key) = (database.clone(), &key);
+            std::thread::scope(|scope| {
+                let open = scope.spawn(move || PgRegistry::open(database, key).map(drop));
+                for _ in 0..1500 {
+                    let waiting: i64 = runtime
+                        .block_on(holder.query_one(
+                            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' \
+                             AND NOT granted",
+                            &[],
+                        ))
+                        .expect("reads the locks")
+                        .get(0);
+                    if waiting == 1 {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                runtime
+                    .block_on(holder.batch_execute(
+                        "INSERT INTO vcon.registry_key (catalog_key_id) VALUES ('\\x0102030405060708'); \
+                         COMMIT",
+                    ))
+                    .expect("the other open's write");
+                open.join().expect("joins")
+            })
+        };
+        assert_eq!(
+            opened,
+            Err(TenantError::WrongKey),
+            "the other open named another key first"
+        );
+        assert_eq!(named(&db), ["0102030405060708"], "the id the other wrote");
+        assert_eq!(
+            log_keys(&db),
+            Vec::<String>::new(),
+            "the refused open made no key"
+        );
+    }
+
+    #[test]
+    fn a_first_open_over_rows_under_the_same_key_names_it_again() {
+        let (db, database, registry, key) = registry();
+        write(&registry, |tx| {
+            tx.insert_tenant(&tenant(1, "alpha")).expect("inserts")
+        });
+        drop(registry);
+        as_owner(&db, "DELETE FROM vcon.registry_key");
+        let again = PgRegistry::open(database, &key).expect("the rows open under this key");
+        assert_eq!(named(&db), [hex(&key.id().0)], "named again");
+        assert_eq!(log_keys(&db).len(), 1, "the log keeps its one key");
+        assert_eq!(
+            again
+                .snapshot()
+                .expect("a read begins")
+                .tenant(TenantId([1; 16]))
+                .expect("reads"),
+            Some(tenant(1, "alpha")),
+            "and the rows read"
+        );
+    }
+
+    // What must be refused.
+
+    #[test]
+    fn a_registry_under_another_key_is_refused_when_it_is_opened() {
+        let (db, database, registry, key) = registry();
+        write(&registry, |tx| {
+            tx.insert_tenant(&tenant(1, "alpha")).expect("inserts");
+            tx.insert_key(&self::key(1, "label")).expect("inserts");
+        });
+        let (id, keys) = (named(&db), log_keys(&db));
+        let other = Key::generate().expect("a key");
+        assert_eq!(
+            PgRegistry::open(database, &other).err(),
+            Some(TenantError::WrongKey),
+            "the database names another key"
+        );
+        assert_eq!(named(&db), id, "the id is as it was");
+        assert_eq!(log_keys(&db), keys, "and so is the log's key");
+        assert_eq!(id, [hex(&key.id().0)], "the first key's");
+    }
+
+    #[test]
+    fn a_first_open_over_a_tenant_sealed_under_another_key_is_refused() {
+        let (db, database, registry, _key) = registry();
+        write(&registry, |tx| {
+            tx.insert_tenant(&tenant(1, "alpha")).expect("inserts")
+        });
+        before_version_12(&db);
+        let other = Key::generate().expect("a key");
+        assert_eq!(
+            PgRegistry::open(database, &other).err(),
+            Some(TenantError::WrongKey),
+            "the tenant's name does not open under this key"
+        );
+        assert_eq!(named(&db), Vec::<String>::new(), "no id is written");
+    }
+
+    #[test]
+    fn a_first_open_over_an_api_key_sealed_under_another_key_is_refused() {
+        let (db, database, registry, _key) = registry();
+        write(&registry, |tx| {
+            tx.insert_key(&self::key(1, "label")).expect("inserts")
+        });
+        before_version_12(&db);
+        let other = Key::generate().expect("a key");
+        assert_eq!(
+            PgRegistry::open(database, &other).err(),
+            Some(TenantError::WrongKey),
+            "the key's label does not open under this key"
+        );
+        assert_eq!(named(&db), Vec::<String>::new(), "no id is written");
+    }
+
+    #[test]
+    fn a_first_open_over_a_user_sealed_under_another_key_is_refused() {
+        let (db, database, registry, _key) = registry();
+        write(&registry, |tx| {
+            tx.insert_user(&UserRow {
+                id: UserId([3; 16]),
+                label: "a user".to_owned(),
+                identity: None,
+                created_at: T0,
+                deactivated_at: None,
+            })
+            .expect("inserts")
+        });
+        before_version_12(&db);
+        let other = Key::generate().expect("a key");
+        assert_eq!(
+            PgRegistry::open(database, &other).err(),
+            Some(TenantError::WrongKey),
+            "the user's label does not open under this key"
+        );
+        assert_eq!(
+            log_keys(&db),
+            Vec::<String>::new(),
+            "and no key of the log is made"
+        );
+        assert_eq!(named(&db), Vec::<String>::new(), "no id is written");
+    }
+
+    #[test]
+    fn a_first_open_over_a_log_key_sealed_under_another_key_is_refused() {
+        let (db, database, _registry, _key) = registry();
+        as_owner(&db, "DELETE FROM vcon.registry_key");
+        let keys = log_keys(&db);
+        let other = Key::generate().expect("a key");
+        assert_eq!(
+            PgRegistry::open(database, &other).err(),
+            Some(TenantError::WrongKey),
+            "the log's key does not open under this key"
+        );
+        assert_eq!(named(&db), Vec::<String>::new(), "no id is written");
+        assert_eq!(log_keys(&db), keys, "and no second key of the log");
+    }
+
+    #[test]
+    fn a_log_key_that_does_not_open_refuses_the_registry() {
+        let (db, database, _registry, key) = registry();
+        as_owner(
+            &db,
+            "UPDATE vcon.admin_audit_key SET wrapped = decode(repeat('00', 60), 'hex')",
+        );
+        assert_eq!(
+            PgRegistry::open(database, &key).err(),
+            Some(TenantError::Io),
+            "the newest key seals the new records: without it no record is written"
+        );
+    }
+
+    #[test]
+    fn a_newest_log_key_that_does_not_open_refuses_the_registry_though_an_older_opens() {
+        let (db, database, _registry, key) = registry();
+        as_owner(
+            &db,
+            "INSERT INTO vcon.admin_audit_key (key_id, ordinal, wrapped) \
+             VALUES ('\\xaa', 2, decode(repeat('00', 60), 'hex'))",
+        );
+        assert_eq!(
+            PgRegistry::open(database, &key).err(),
+            Some(TenantError::Io),
+            "new records would be sealed under the older key and name it"
+        );
+    }
+
+    #[test]
+    fn a_registry_that_names_its_key_and_has_no_log_key_is_refused() {
+        let (db, database, _registry, key) = registry();
+        as_owner(&db, "DELETE FROM vcon.admin_audit_key");
+        assert_eq!(
+            PgRegistry::open(database, &key).err(),
+            Some(TenantError::Io),
+            "a log with no key takes no record"
+        );
+        assert_eq!(
+            log_keys(&db),
+            Vec::<String>::new(),
+            "a later open makes none: the records before it would name no key"
+        );
+    }
+
+    #[test]
+    fn a_record_that_names_no_key_and_has_a_target_cannot_be_read() {
+        let (db, _database, registry, _key) = registry();
+        raw_record(&db, true, None);
+        let why = exported(&registry).expect_err("refused");
+        assert!(why.contains("an audit record cannot be read"), "{why}");
+    }
+
+    #[test]
+    fn a_copy_of_a_record_that_names_no_key_cannot_be_read() {
+        let (db, _database, registry, _key) = registry();
+        write(&registry, |tx| {
+            tx.record(&about("the-target"), minute()).expect("records")
+        });
+        assert!(exported(&registry).is_ok(), "the record itself reads");
+        // The same sealed target, which the log's key opens, in a record
+        // that names no key.
+        as_owner(
+            &db,
+            "INSERT INTO vcon.admin_audit \
+                 (at, actor, action, target_mac, target_sealed, status, count, counted) \
+             SELECT at, actor, action, target_mac, target_sealed, status, count, counted \
+             FROM vcon.admin_audit",
+        );
+        let why = exported(&registry).expect_err("refused");
+        assert!(
+            why.contains("an audit record cannot be read"),
+            "no key is tried for a record that names none: {why}"
+        );
+    }
+
+    #[test]
+    fn a_record_under_a_key_that_did_not_open_cannot_be_read() {
+        let (db, database, registry, key) = registry();
+        drop(registry);
+        // An older key, which nothing opens, before the registry's own.
+        as_owner(&db, "UPDATE vcon.admin_audit_key SET ordinal = 2");
+        as_owner(
+            &db,
+            "INSERT INTO vcon.admin_audit_key (key_id, ordinal, wrapped) \
+             VALUES ('\\xaa', 1, decode(repeat('00', 60), 'hex'))",
+        );
+        raw_record(&db, true, Some("aa"));
+        let registry = PgRegistry::open(database, &key).expect("the newest key opens");
+        let why = exported(&registry).expect_err("refused");
+        assert!(why.contains("an audit record cannot be read"), "{why}");
+    }
+
+    #[test]
+    fn a_target_sealed_by_another_hand_under_the_log_s_key_id_does_not_open() {
+        let (db, _database, registry, _key) = registry();
+        let id = log_keys(&db)[0]
+            .split(' ')
+            .nth(1)
+            .expect("an id")
+            .to_owned();
+        raw_record(&db, true, Some(&id));
+        let why = exported(&registry).expect_err("refused");
+        assert!(
+            why.contains("an audit record cannot be read"),
+            "bytes the key did not seal: {why}"
+        );
+    }
+
+    // The edges.
+
+    #[test]
+    fn an_id_of_another_length_is_another_key() {
+        let (db, database, _registry, key) = registry();
+        as_owner(&db, "UPDATE vcon.registry_key SET catalog_key_id = '\\x01'");
+        assert_eq!(
+            PgRegistry::open(database.clone(), &key).err(),
+            Some(TenantError::WrongKey),
+            "one byte"
+        );
+        as_owner(&db, "UPDATE vcon.registry_key SET catalog_key_id = ''");
+        assert_eq!(
+            PgRegistry::open(database, &key).err(),
+            Some(TenantError::WrongKey),
+            "no byte"
+        );
+    }
+
+    #[test]
+    fn a_record_with_no_target_and_no_key_reads() {
+        let (db, _database, registry, _key) = registry();
+        raw_record(&db, false, None);
+        let lines = exported(&registry).expect("exports");
+        assert!(
+            lines.contains("\"target\":null"),
+            "nothing was sealed, so no key is needed: {lines}"
+        );
+    }
+
+    #[test]
+    fn an_older_log_key_that_does_not_open_is_left_out() {
+        let (db, database, registry, key) = registry();
+        drop(registry);
+        as_owner(&db, "UPDATE vcon.admin_audit_key SET ordinal = 2");
+        as_owner(
+            &db,
+            "INSERT INTO vcon.admin_audit_key (key_id, ordinal, wrapped) \
+             VALUES ('\\xaa', 1, decode(repeat('00', 60), 'hex'))",
+        );
+        let registry = PgRegistry::open(database, &key).expect("the newest key opens");
+        write(&registry, |tx| {
+            tx.record(&about("the-target"), minute()).expect("records")
+        });
+        let lines = exported(&registry).expect("exports");
+        assert!(
+            lines.contains("\"target\":\"the-target\""),
+            "new records are sealed under the newest key and read back: {lines}"
+        );
+        assert_eq!(
+            as_owner(
+                &db,
+                "SELECT k.ordinal FROM vcon.admin_audit a JOIN vcon.admin_audit_key k USING (key_id)"
+            ),
+            ["2"],
+            "the record names the newest key"
+        );
+    }
+
+    #[test]
+    fn an_ordinal_is_an_order_not_a_count() {
+        let (db, database, registry, key) = registry();
+        write(&registry, |tx| {
+            tx.record(&about("first"), minute()).expect("records")
+        });
+        drop(registry);
+        // The one key, at a later ordinal: the ordinals need not start
+        // at 1 or follow each other.
+        as_owner(&db, "UPDATE vcon.admin_audit_key SET ordinal = 7");
+        let registry = PgRegistry::open(database, &key).expect("opens");
+        write(&registry, |tx| {
+            tx.record(&about("second"), minute()).expect("records")
+        });
+        let lines = exported(&registry).expect("exports");
+        assert!(
+            lines.contains("\"target\":\"first\"") && lines.contains("\"target\":\"second\""),
+            "the record before the change and the one after it both read: {lines}"
+        );
+    }
+
+    #[test]
+    fn the_log_s_key_is_bound_to_its_id() {
+        let (db, database, _registry, key) = registry();
+        as_owner(&db, "UPDATE vcon.admin_audit_key SET key_id = '\\xaabb'");
+        assert_eq!(
+            PgRegistry::open(database, &key).err(),
+            Some(TenantError::Io),
+            "the sealed copy opens only under the id it was sealed for"
+        );
+    }
+
+    #[test]
+    fn a_dropped_registry_s_database_still_names_its_key() {
+        let (db, database, registry, key) = registry();
+        drop(registry);
+        drop(database);
+        assert_eq!(named(&db), [hex(&key.id().0)], "the row is the database's");
+    }
+
+    #[test]
+    fn a_new_database_names_no_key_until_a_registry_opens() {
+        let (db, _database) = database();
+        assert_eq!(named(&db), Vec::<String>::new(), "no id");
+        assert_eq!(log_keys(&db), Vec::<String>::new(), "no key of the log");
     }
 
     // Counting many: one statement for a record that is there (schema

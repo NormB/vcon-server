@@ -13,6 +13,7 @@ mod line;
 mod success;
 mod v10;
 mod v11;
+mod v12;
 mod v2;
 mod v3;
 mod v4;
@@ -86,9 +87,11 @@ pub(super) mod live {
     /// The registry's tables.
     pub(crate) const REGISTRY_TABLES: &[&str] = &[
         "admin_audit",
+        "admin_audit_key",
         "api_key",
         "master_key_use",
         "membership",
+        "registry_key",
         "session",
         "tenant",
         "tenant_setting",
@@ -353,6 +356,8 @@ pub(super) mod live {
             "membership" => "INSERT INTO vcon.membership (user_id, roles_sealed, granted_at) VALUES ('\\x01', '\\x02', 1)".to_owned(),
             "tenant_setting" => "INSERT INTO vcon.tenant_setting (tenant, name, value_sealed) VALUES ('\\x01', 'n', '\\x02')".to_owned(),
             "session" => "INSERT INTO vcon.session (id_hash, user_id, scopes_sealed, created_at, last_seen_at, idle_expires_at, expires_at, idle_seconds, amr_sealed, csrf_hash) VALUES (decode(repeat('01', 32), 'hex'), '\\x01', '\\x02', 1, 1, 2, 3, 1, '\\x03', decode(repeat('04', 32), 'hex'))".to_owned(),
+            "registry_key" => "INSERT INTO vcon.registry_key (catalog_key_id) VALUES ('\\x01')".to_owned(),
+            "admin_audit_key" => "INSERT INTO vcon.admin_audit_key (key_id, ordinal, wrapped) VALUES ('\\x01', 1, '\\x02')".to_owned(),
             other => panic!("no insert for {other}"),
         }
     }

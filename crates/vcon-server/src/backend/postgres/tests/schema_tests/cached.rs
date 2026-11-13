@@ -40,10 +40,16 @@ mod on_a_server {
     }
 
     /// The tables the application role may delete from: every one but the
-    /// two audit logs and, since schema version 11, the keys of a
-    /// tenant's log.
+    /// two audit logs, since schema version 11 the keys of a tenant's
+    /// log, and since version 12 the id of the registry's key and the
+    /// keys of the registry's log.
     fn deletable() -> impl Iterator<Item = &'static str> {
-        all_tables().filter(|t| !matches!(*t, "audit" | "audit_key" | "admin_audit"))
+        all_tables().filter(|t| {
+            !matches!(
+                *t,
+                "audit" | "audit_key" | "admin_audit" | "admin_audit_key" | "registry_key"
+            )
+        })
     }
 
     /// The statement that puts one row in `table`, a tenant's or the

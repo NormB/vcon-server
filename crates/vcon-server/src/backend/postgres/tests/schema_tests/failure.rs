@@ -118,10 +118,17 @@ mod on_a_server {
         let db = Db::migrated().await;
         let app = db.app().await;
         // The application role deletes no audit record and, since schema
-        // version 11, no key of a tenant's log (schema_tests::v11).
+        // version 11, no key of a tenant's log (schema_tests::v11); since
+        // version 12, neither the id of the registry's key nor a key of
+        // the registry's log (schema_tests::v12).
         let writable: Vec<&str> = all_tables()
             .into_iter()
-            .filter(|t| *t != "audit" && *t != "audit_key" && *t != "admin_audit")
+            .filter(|t| {
+                !matches!(
+                    *t,
+                    "audit" | "audit_key" | "admin_audit" | "admin_audit_key" | "registry_key"
+                )
+            })
             .collect();
         for table in &writable {
             let column = match *table {

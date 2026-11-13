@@ -8,12 +8,12 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
-- **The PostgreSQL preview's schema is at version 11.** A database that
+- **The PostgreSQL preview's schema is at version 12.** A database that
   0.4.5 or an earlier release migrated is at version 6: run
   `vcon-server migrate` with the new binary before a server starts, as
   [after an upgrade from 0.4.5](https://vcon-server.com/docs/postgres-catalog/#after-an-upgrade-from-0-4-5)
   shows. Until then a server stops with `the database schema is version
-  6, older than this binary's 11: run vcon-server migrate`. Version 7
+  6, older than this binary's 12: run vcon-server migrate`. Version 7
   gives the `version` table the column `seq`, the order versions were
   stored in, and on PostgreSQL 17 and later grants `vcon_app` `MAINTAIN`
   on the tables `version`, `vcon` and `tombstone`, for the `VACUUM` the
@@ -35,9 +35,17 @@ All notable changes to this project are recorded here. The format follows
   its own: the table `audit_key` holds it sealed under the tenant's
   catalog key, and each record in `audit` names the key that sealed its
   target in the new column `key_id`. `vcon_app` reads an audit key, makes
-  one and seals one again, and no role is granted a `DELETE` there. No
+  one and seals one again, and no role is granted a `DELETE` there.
+  Version 12 names the catalog key the registry is sealed under, in the
+  one row of the new table `registry_key`: a registry opened under
+  another master key is refused when it is opened, where it was refused
+  at the first sealed value it read. It also gives the registry's audit
+  log a key of its own, in the new table `admin_audit_key`, and each
+  record in `admin_audit` names the key that sealed its target in the
+  new column `key_id`, so a rotation of the master key will change no
+  audit record. No
   row is changed by any of these versions: a database of the preview
-  holds no audit record, so version 11 converts none. The local catalogs
+  holds no audit record, so versions 11 and 12 convert none. The local catalogs
   stay at schema version 9.
 - **The statements that keep a tenant's catalog in PostgreSQL**, behind
   the `postgres` cargo feature and used by no server yet: a start with

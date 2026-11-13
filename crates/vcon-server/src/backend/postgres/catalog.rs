@@ -396,14 +396,79 @@ pub(super) struct AuditKey {
     keys: ColumnKeys,
 }
 
-/// Where the audit key `id` of `tenant` is sealed.
+/// The table that holds the audit keys of `tenant`'s log: a tenant's, or
+/// with [`REGISTRY`] the registry's (schema version 12).
+fn audit_key_table(tenant: TenantId) -> &'static str {
+    if tenant == REGISTRY {
+        "admin_audit_key"
+    } else {
+        "audit_key"
+    }
+}
+
+/// Where the audit key `id` of `tenant`, or of the registry, is sealed.
 fn audit_key_context(tenant: TenantId, id: &[u8]) -> ColumnContext<'_> {
     ColumnContext {
         tenant,
-        table: "audit_key",
+        table: audit_key_table(tenant),
         column: "wrapped",
         row: id,
     }
+}
+
+/// A new audit key for the log of `tenant`, or of the registry: the key
+/// opened, and its copy sealed with `keys` for the log's table of keys.
+///
+/// # Errors
+///
+/// [`StoreError::Io`] when the key cannot be made or sealed.
+pub(super) fn new_audit_key(
+    tenant: TenantId,
+    keys: &ColumnKeys,
+) -> Result<(AuditKey, Vec<u8>), StoreError> {
+    let key = Key::generate().map_err(io)?;
+    let id = key.id().0.to_vec();
+    let wrapped = column::wrap_key(keys, &audit_key_context(tenant, &id), &key).map_err(io)?;
+    let opened = AuditKey {
+        keys: ColumnKeys::derive(&key).map_err(io)?,
+        id,
+    };
+    Ok((opened, wrapped))
+}
+
+/// The id of an opened audit key.
+pub(super) fn audit_key_id(key: &AuditKey) -> &[u8] {
+    &key.id
+}
+
+/// The audit keys in `rows` (`key_id`, `wrapped`, oldest first) of the
+/// log of `tenant`, or of the registry, each opened with `keys`. An older
+/// key that does not open is left out, and the records that name it
+/// cannot be read.
+///
+/// # Errors
+///
+/// [`StoreError::Damaged`] when the newest does not open: it seals the
+/// new records. [`StoreError::Io`] when a row cannot be read.
+pub(super) fn open_audit_keys(
+    tenant: TenantId,
+    keys: &ColumnKeys,
+    rows: &[Row],
+) -> Result<Vec<AuditKey>, StoreError> {
+    let mut opened = Vec::with_capacity(rows.len());
+    for (at, row) in rows.iter().enumerate() {
+        let id: Vec<u8> = row.try_get(0).map_err(io)?;
+        let wrapped: Vec<u8> = row.try_get(1).map_err(io)?;
+        match column::unwrap_key(keys, &audit_key_context(tenant, &id), &wrapped) {
+            Ok(key) => opened.push(AuditKey {
+                keys: ColumnKeys::derive(&key).map_err(io)?,
+                id,
+            }),
+            Err(_) if at + 1 < rows.len() => {}
+            Err(_) => return Err(StoreError::Damaged),
+        }
+    }
+    Ok(opened)
 }
 
 /// A tenant's catalog in the database.
@@ -453,11 +518,8 @@ impl PgCatalog {
         catalog_key: &Key,
     ) -> Result<PgCatalog, CatalogError> {
         let mut catalog = PgCatalog::with(database, tenant, catalog_key)?;
-        let audit = Key::generate().map_err(|_| CatalogError::Io)?;
-        let audit_id = audit.id().0;
-        let wrapped =
-            column::wrap_key(&catalog.keys, &audit_key_context(tenant, &audit_id), &audit)
-                .map_err(|_| CatalogError::Io)?;
+        let (audit, wrapped) =
+            new_audit_key(tenant, &catalog.keys).map_err(|_| CatalogError::Io)?;
         let tx = catalog.begin(Begin::Create).map_err(|_| CatalogError::Io)?;
         let made = tx
             .execute(
@@ -484,16 +546,13 @@ impl PgCatalog {
              FROM vcon.audit_key WHERE tenant = $1",
             &[
                 (&tenant.0.as_slice(), Type::BYTEA),
-                (&audit_id.as_slice(), Type::BYTEA),
+                (&audit.id, Type::BYTEA),
                 (&wrapped, Type::BYTEA),
             ],
         )
         .map_err(|_| CatalogError::Io)?;
         Box::new(tx).commit().map_err(|_| CatalogError::Io)?;
-        catalog.audit.push(AuditKey {
-            id: audit_id.to_vec(),
-            keys: ColumnKeys::derive(&audit).map_err(|_| CatalogError::Io)?,
-        });
+        catalog.audit.push(audit);
         Ok(catalog)
     }
 
@@ -509,21 +568,7 @@ impl PgCatalog {
                 &[(&self.tenant.0.as_slice(), Type::BYTEA)],
             )
             .map_err(|_| CatalogError::Io)?;
-        let mut keys = Vec::with_capacity(rows.len());
-        for (at, row) in rows.iter().enumerate() {
-            let id: Vec<u8> = row.try_get(0).map_err(|_| CatalogError::Io)?;
-            let wrapped: Vec<u8> = row.try_get(1).map_err(|_| CatalogError::Io)?;
-            let opened =
-                column::unwrap_key(&self.keys, &audit_key_context(self.tenant, &id), &wrapped);
-            match opened {
-                Ok(key) => keys.push(AuditKey {
-                    keys: ColumnKeys::derive(&key).map_err(|_| CatalogError::Io)?,
-                    id,
-                }),
-                Err(_) if at + 1 < rows.len() => {}
-                Err(_) => return Err(CatalogError::Io),
-            }
-        }
+        let keys = open_audit_keys(self.tenant, &self.keys, &rows).map_err(|_| CatalogError::Io)?;
         if keys.is_empty() {
             // A log with no key takes no record.
             return Err(CatalogError::Io);
@@ -1111,8 +1156,9 @@ impl<'a> PgTx<'a> {
         }
     }
 
-    /// The transaction, with the keys of the tenant's audit log.
-    fn with_audit(mut self, audit: &'a [AuditKey]) -> PgTx<'a> {
+    /// The transaction, with the keys of the audit log it writes: a
+    /// tenant's, or the registry's.
+    pub(super) fn with_audit(mut self, audit: &'a [AuditKey]) -> PgTx<'a> {
         self.audit = audit;
         self
     }
@@ -1363,23 +1409,17 @@ impl<'a> PgTx<'a> {
     }
 
     /// The keys that seal the target of a new audit record, and the id
-    /// of the audit key the record names: a tenant's newest audit key,
-    /// or for the registry's log the registry's keys and no id.
-    fn audit_writer(&self) -> Result<(&ColumnKeys, Option<&[u8]>), StoreError> {
-        if self.tenant == REGISTRY {
-            return Ok((self.keys()?, None));
-        }
+    /// of the audit key the record names: the newest audit key of the
+    /// log, a tenant's or the registry's.
+    fn audit_writer(&self) -> Result<(&ColumnKeys, &[u8]), StoreError> {
         let newest = self.audit.last().ok_or(StoreError::Io)?;
-        Ok((&newest.keys, Some(&newest.id)))
+        Ok((&newest.keys, &newest.id))
     }
 
     /// The keys that open the target of a record that names the audit
-    /// key `id`. A tenant's record that names no key, or a key that is
-    /// not among the opened ones, cannot be read.
+    /// key `id`. A record that names no key, or a key that is not among
+    /// the opened ones, cannot be read.
     fn audit_reader(&self, id: Option<&[u8]>) -> Result<&ColumnKeys, StoreError> {
-        if self.tenant == REGISTRY {
-            return self.keys();
-        }
         let id = id.ok_or(StoreError::Damaged)?;
         self.audit
             .iter()
@@ -1421,18 +1461,18 @@ impl<'a> PgTx<'a> {
         let tenant = self.tenant.0.as_slice();
         // The tenant is the last parameter, which only a tenant's log has.
         let mut params: Vec<Param<'_>> = vec![(&after, Type::INT8), (&limit, Type::INT8)];
-        // A tenant's record names the audit key that sealed its target.
-        let (key_id, of_tenant) = if table.by_tenant {
+        let of_tenant = if table.by_tenant {
             params.push((&tenant, Type::BYTEA));
-            ("key_id", "AND tenant = $3")
+            "AND tenant = $3"
         } else {
-            ("NULL::bytea", "")
+            ""
         };
         let rows = self
             .query_checked(
                 &format!(
+                    // A record names the audit key that sealed its target.
                     "SELECT seq, at, actor, action, target_mac, target_sealed, version, status, \
-                     count, {key_id} FROM {} WHERE seq > $1 {of_tenant} ORDER BY seq LIMIT $2",
+                     count, key_id FROM {} WHERE seq > $1 {of_tenant} ORDER BY seq LIMIT $2",
                     table.sql
                 ),
                 &params,
@@ -1508,12 +1548,12 @@ impl<'a> PgTx<'a> {
             (&count, Type::INT8),
             (&counted, Type::BOOL),
         ];
+        params.push((&key_id, Type::BYTEA));
         let (column, value) = if table.by_tenant {
             params.push((&tenant, Type::BYTEA));
-            params.push((&key_id, Type::BYTEA));
-            (", tenant, key_id", ", $10, $11")
+            (", key_id, tenant", ", $10, $11")
         } else {
-            ("", "")
+            (", key_id", ", $10")
         };
         self.execute_checked(
             &format!(
