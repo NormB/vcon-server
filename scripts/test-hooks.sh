@@ -62,7 +62,18 @@ readme = "README.md"
 keywords = ["fixture"]
 categories = ["development-tools::testing"]
 include = ["/src/**/*.rs", "/README.md", "/LICENSE-MIT", "/LICENSE-APACHE"]
+
+[features]
+backend-tests = []
+postgres = []
 TOML
+# The hook lints each feature set of .github/clippy-feature-sets.txt. The
+# fixture keeps the list's rows, for its own package, which has each feature
+# the rows name; a feature added to the list is added above.
+sed 's/-p vcon-server /-p hook-fixture /' "$src/.github/clippy-feature-sets.txt" > .github/clippy-feature-sets.txt
+if grep -q 'vcon-server' .github/clippy-feature-sets.txt || ! grep -q -- '-p hook-fixture ' .github/clippy-feature-sets.txt; then
+  echo "FAIL: the fixture's list of feature sets does not name the fixture's package in every row"; exit 1
+fi
 printf '# hook-fixture\n\nSee [the site](https://vcon-server.com/).\n' > crates/fixture/README.md
 cp "$src/LICENSE-MIT" "$src/LICENSE-APACHE" .
 cp "$src/LICENSE-MIT" "$src/LICENSE-APACHE" crates/fixture/
@@ -218,6 +229,53 @@ pub fn add_one(x: u32) -> u32 {
     let y = x;
     return y + 1;
 }'
+# Code the default features leave out is linted too, for each feature set
+# of .github/clippy-feature-sets.txt: on 2026-11-12 an unused `mut` in code
+# only the postgres feature compiles passed this hook and failed CI's lint.
+# Each case keeps the fixture's test, so the test run has a test to run and
+# the lint is the only check that can refuse the change.
+lib_tests='#[cfg(test)]
+mod tests {
+    #[test]
+    fn adds_one() {
+        assert_eq!(super::add_one(1), 2, "one more than one is two");
+    }
+}'
+why='variable does not need to be mutable' expect refuse "clippy warning in code only the postgres feature compiles" crates/fixture/src/lib.rs '/// Adds one.
+pub fn add_one(x: u32) -> u32 {
+    x + 1
+}
+
+/// Adds two, in a build with the PostgreSQL catalog.
+#[cfg(feature = "postgres")]
+pub fn add_two(x: u32) -> u32 {
+    let mut y = x;
+    y + 2
+}
+'"$lib_tests"
+why='variable does not need to be mutable' expect refuse "clippy warning in code only the backend-tests feature set compiles" crates/fixture/src/lib.rs '/// Adds one.
+pub fn add_one(x: u32) -> u32 {
+    x + 1
+}
+
+/// Adds two, in a build that has the backend tests and no PostgreSQL catalog.
+#[cfg(all(feature = "backend-tests", not(feature = "postgres")))]
+pub fn add_two(x: u32) -> u32 {
+    let mut y = x;
+    y + 2
+}
+'"$lib_tests"
+expect accept "clean code only the postgres feature compiles" crates/fixture/src/lib.rs '/// Adds one.
+pub fn add_one(x: u32) -> u32 {
+    x + 1
+}
+
+/// Adds two, in a build with the PostgreSQL catalog.
+#[cfg(feature = "postgres")]
+pub fn add_two(x: u32) -> u32 {
+    x + 2
+}
+'"$lib_tests"
 why='tests::adds_one' expect refuse "failing test" crates/fixture/src/lib.rs '/// Adds one.
 pub fn add_one(x: u32) -> u32 {
     x + 2

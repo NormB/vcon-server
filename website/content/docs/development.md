@@ -279,6 +279,9 @@ git config core.hooksPath .githooks
   `scripts/rustfmt.sh --check`, `scripts/check_style.py --walk`, the rules
   of the how-to pages (`scripts/docs_test.py lint`),
   `cargo clippy --workspace --all-targets --locked --quiet -- -D warnings`,
+  the same lint for each feature set CI lints
+  (`scripts/clippy_features.py run --quiet`, see
+  [Feature sets clippy lints](#feature-sets-clippy-lints)),
   the documentation with rustdoc's warnings denied
   (`cargo doc --workspace --no-deps --locked --quiet`),
   the tests with `scripts/nextest.sh run --workspace --locked` (each test
@@ -306,6 +309,60 @@ git config core.hooksPath .githooks
 
 `scripts/test-hooks.sh` and `scripts/test-pre-push.sh` test the hooks
 themselves. Every commit on `main` is signed and shows as verified on GitHub.
+
+### Feature sets clippy lints
+
+`cargo clippy --workspace` compiles the default features only. Code under
+another feature set, such as `cfg(feature = "postgres")` or a build without
+the default features, is linted only when clippy runs with that set.
+`.github/clippy-feature-sets.txt` lists those sets, one row each:
+
+```text
+<group>: <arguments of cargo clippy>
+```
+
+`scripts/clippy_features.py run` runs clippy with each row's arguments and
+with warnings denied (it adds `-- -D warnings`). The commit hook runs
+every row (`run --quiet`). A CI job runs the rows of the group it names
+(`run backend`, `run postgres`), in the job whose tests build the same
+features. Both read the one list, so a lint that fails in CI for a listed
+feature set fails in the commit hook first. Each row is one more clippy
+run over the server crate: measured on 2026-11-13 on a 14-core host under
+load, the four rows took 90 seconds of a hook run with the dependencies
+built, and 114 seconds the first time.
+
+To lint another feature set:
+
+1. Add a row to `.github/clippy-feature-sets.txt`. A row holds
+   `--all-targets` and `--locked`, names its features (`--features <names>`
+   or `--no-default-features`), and leaves out `--quiet`, `--` and the lint
+   arguments, which the script adds.
+2. For a row in a new group, add a step
+   `python3 -I scripts/clippy_features.py run <group>` to a CI job.
+3. If the row names a new feature, add that feature to the fixture crate's
+   `[features]` in `scripts/test-hooks.sh`.
+4. Run `python3 -I scripts/clippy_features.py check`. It prints the number
+   of feature sets and groups and exits 0 when the list, the hook and the
+   workflows agree.
+
+`check` exits 1 and names each place that breaks the rule:
+
+- `lints a feature set outside .github/clippy-feature-sets.txt`: a hook or
+  a workflow runs `cargo clippy` with `--features`, `--no-default-features`
+  or `--all-features` itself. Move the arguments to a row of the list.
+- `no workflow runs the group`: add the step the message names.
+- `runs the group ..., which .github/clippy-feature-sets.txt does not
+  hold`: the step names a group with no row. Correct the name or add the
+  row.
+- `never runs`: the commit hook must hold the line
+  `python3 -I scripts/clippy_features.py run --quiet`.
+
+When the hook refuses a commit at this step, the last line names the command
+that failed, for example
+`clippy_features: failed: cargo clippy -p vcon-server --all-targets --locked --features postgres --quiet -- -D warnings`.
+Run it without `--quiet` to see the build's progress, correct the code, stage
+it and commit again. CI runs `check` and the script's tests
+(`scripts/test_clippy_features.py`) in its scan job.
 
 Test data uses reserved values only: `example.com` addresses, 555-01xx
 numbers, RFC 5737 and RFC 3849 addresses. The one exception is the IETF

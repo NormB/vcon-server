@@ -34,6 +34,18 @@ All notable changes to this project are recorded here. The format follows
 
 ### Fixed
 
+- **The commit hook did not lint the feature sets CI lints.** The hook ran
+  clippy for the default features only, so a lint in code that only the
+  `postgres` feature, the `backend-tests` feature or a build without the
+  default features compiles failed first in CI: an unused `mut` did on
+  2026-11-12. The feature sets are now the rows of
+  `.github/clippy-feature-sets.txt`; `scripts/clippy_features.py` lints
+  each with warnings denied, in the commit hook (every row) and in CI's
+  backend and PostgreSQL jobs (their groups), and its `check`, in CI's scan
+  job, refuses a feature set linted outside the list and a row no CI job
+  runs.
+  [Feature sets clippy lints](https://vcon-server.com/docs/development/#feature-sets-clippy-lints)
+  shows how to add one. No server code changed.
 - **In the PostgreSQL preview a statement could choose a row's number.**
   The column `seq` of the tables `version`, `manifest`, `audit` and
   `admin_audit` is numbered by PostgreSQL, and an `INSERT` with

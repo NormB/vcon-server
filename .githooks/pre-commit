@@ -60,6 +60,7 @@ scripts/test-cc-lld.sh
 python3 -I scripts/test_check_test_runner.py
 python3 -I scripts/test_check_required_checks.py
 python3 -I scripts/test_hook_fixture.py
+python3 -I scripts/test_clippy_features.py
 # Always a directory of its own: a test binary records the directory it was
 # built from, so sharing the caller's target directory would leave binaries
 # there that read files from this deleted copy.
@@ -85,6 +86,11 @@ if [ -d website/content/docs ]; then
   python3 -I scripts/docs_test.py lint
 fi
 cargo clippy --workspace --all-targets --locked --quiet -- -D warnings
+# That lint compiles the default features only. The same lint for each
+# feature set CI lints, from the list CI reads
+# (.github/clippy-feature-sets.txt): an unused `mut` in code only the
+# postgres feature compiles passed this hook and failed in CI on 2026-11-12.
+python3 -I scripts/clippy_features.py run --quiet
 # The documentation, with rustdoc's warnings denied: a link that does not
 # resolve, or one from public documentation to a private item, fails here
 # (tests/rustdoc_gate.rs holds this line and CI's to one command).

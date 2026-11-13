@@ -1,0 +1,15 @@
+# The feature sets clippy lints besides the default one, with warnings
+# denied. The commit hook and CI both read this list through
+# scripts/clippy_features.py, so code that only one of these builds compiles
+# is linted before the commit and not first in CI.
+#
+# A row is `<group>: <arguments of cargo clippy>`. The script runs
+# `cargo clippy <arguments> -- -D warnings` for each row: the commit hook
+# every row, a CI job the rows of the group it names (the job whose tests
+# build the same feature set, so the lint shares that build).
+# scripts/clippy_features.py check refuses a row no CI job runs, and a
+# feature set that a hook or a workflow lints outside this list.
+backend: -p vcon-server --all-targets --locked --features backend-tests
+backend: -p vcon-server --all-targets --locked --no-default-features
+postgres: -p vcon-server --all-targets --locked --features postgres
+postgres: -p vcon-server --all-targets --locked --features postgres,backend-tests

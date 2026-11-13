@@ -164,6 +164,8 @@ staged, it checks that every GitHub Action is pinned by commit
 `scripts/check_style.py --walk`, the rules of the how-to pages
 (`scripts/docs_test.py lint`),
 `cargo clippy --workspace --all-targets --locked --quiet -- -D warnings`,
+the same lint for each feature set CI lints, read from
+`.github/clippy-feature-sets.txt` (`scripts/clippy_features.py run --quiet`),
 builds the documentation with rustdoc's warnings denied
 (`cargo doc --workspace --no-deps --locked --quiet`), and runs the
 tests with `scripts/nextest.sh run --workspace --locked` and the doc tests with

@@ -266,13 +266,22 @@ fn the_how_to_scenarios_run_a_build_of_the_default_features() {
 
 #[test]
 fn ci_still_checks_the_build_without_the_default_features() {
-    let ci = read(".github/workflows/ci.yml");
+    // The list of feature sets that clippy lints holds the build, and the
+    // backend job runs the list's group of it; scripts/clippy_features.py
+    // check holds the commit hook to running every row of the list.
+    let row = "backend: -p vcon-server --all-targets --locked --no-default-features";
     assert!(
-        ci.lines().any(|line| {
-            line.trim()
-                == "cargo clippy -p vcon-server --all-targets --locked --no-default-features -- -D warnings"
-        }),
-        "the build that leaves the terminal UI out is still compiled and linted"
+        read(".github/clippy-feature-sets.txt")
+            .lines()
+            .any(|line| line.trim() == row),
+        "the build that leaves the terminal UI out is still in the list of linted feature sets"
+    );
+    let run = "python3 -I scripts/clippy_features.py run backend";
+    assert!(
+        read(".github/workflows/ci.yml")
+            .lines()
+            .any(|line| line.trim() == run || line.trim().strip_prefix("run: ") == Some(run)),
+        "the build that leaves the terminal UI out is still compiled and linted by CI"
     );
 }
 

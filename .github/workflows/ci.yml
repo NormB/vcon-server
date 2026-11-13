@@ -154,9 +154,9 @@ jobs:
         # signed request to answer 200.
         run: scripts/wait-for-s3.sh RustFS
       - name: Clippy with the backend tests, and without the default features (S3, the terminal UI)
-        run: |
-          cargo clippy -p vcon-server --all-targets --locked --features backend-tests -- -D warnings
-          cargo clippy -p vcon-server --all-targets --locked --no-default-features -- -D warnings
+        # The rows of the group in .github/clippy-feature-sets.txt, which
+        # the commit hook lints too.
+        run: python3 -I scripts/clippy_features.py run backend
       - name: Backend tests
         # The serve test runs the binary, which locks all of its memory.
         run: |
@@ -326,9 +326,9 @@ jobs:
           grep -qx "VCON_TEST_PG_MAJOR=$MAJOR" "$RUNNER_TEMP/pg/env"
           cat "$RUNNER_TEMP/pg/env" >> "$GITHUB_ENV"
       - name: Clippy with the PostgreSQL catalog
-        run: |
-          cargo clippy -p vcon-server --all-targets --locked --features postgres -- -D warnings
-          cargo clippy -p vcon-server --all-targets --locked --features postgres,backend-tests -- -D warnings
+        # The rows of the group in .github/clippy-feature-sets.txt, which
+        # the commit hook lints too.
+        run: python3 -I scripts/clippy_features.py run postgres
       - name: Catalog backend tests
         # The serve test runs the binary, which locks all of its memory.
         run: |
@@ -580,6 +580,13 @@ jobs:
           scripts/test-nextest.sh
           python3 -I scripts/test_check_test_runner.py
           python3 -I scripts/check_test_runner.py
+      - name: The commit hook and CI lint the same feature sets
+        # One list, .github/clippy-feature-sets.txt: a feature set linted
+        # here and not by the hook lets a lint fail first in CI.
+        run: |
+          set -euo pipefail
+          python3 -I scripts/test_clippy_features.py
+          python3 -I scripts/clippy_features.py check
       - name: Test builds on aarch64 link with lld; release builds do not
         run: scripts/test-cc-lld.sh
       - name: The required checks are the jobs that run on every pull request
