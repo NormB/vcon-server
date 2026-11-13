@@ -12,7 +12,8 @@ compiles passed the hook and failed CI's lint. The rule:
   .github/clippy-feature-sets.txt   one row per feature set,
                                     `<group>: <arguments of cargo clippy>`
   the commit hook                   runs `python3 -I scripts/clippy_features.py
-                                    run --quiet`: every row
+                                    run --quiet`: every row; it may also
+                                    run `check`, as CI's scan job does
   a workflow step                   runs `python3 -I scripts/clippy_features.py
                                     run <group>`; every group is run by some
                                     step
@@ -165,6 +166,9 @@ def problems(list_text, hook_text, workflows):
     for number, line in logical_lines(hook_text):
         if line == HOOK_RUN:
             hook_runs = True
+        elif line == WORKFLOW_CHECK:
+            # The hook runs this check too, as CI's scan job does.
+            continue
         elif MENTION.search(line):
             found.append(f"{HOOK} line {number}: runs {SCRIPT} in a form this reader does not know: {line}")
     if not hook_runs:

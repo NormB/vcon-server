@@ -288,6 +288,19 @@ class Problems(unittest.TestCase):
         hook = HOOK + "cargo clippy --workspace --locked --quiet -- -F warnings\n"
         self.assertEqual(problems(hook=hook, **{"ci.yml": ci}), [])
 
+    def test_the_hook_may_run_the_check_too(self):
+        # The hook runs what CI's scan job runs (scripts/check_hook_steps.py).
+        hook = HOOK + "python3 -I scripts/clippy_features.py check\n"
+        self.assertEqual(problems(hook=hook), [])
+
+    def test_the_check_in_the_hook_is_no_run_of_the_list(self):
+        hook = "set -euo pipefail\npython3 -I scripts/clippy_features.py check\n"
+        self.assertEqual(problems(hook=hook), [".githooks/pre-commit: never runs `python3 -I scripts/clippy_features.py run --quiet`, which lints every row of .github/clippy-feature-sets.txt"])
+
+    def test_the_check_in_the_hook_in_another_form_is_refused_with_its_line(self):
+        hook = HOOK + "python3 -I scripts/clippy_features.py check || true\n"
+        self.assertEqual(problems(hook=hook), [".githooks/pre-commit line 4: runs scripts/clippy_features.py in a form this reader does not know: python3 -I scripts/clippy_features.py check || true"])
+
     def test_a_second_hook_run_in_another_form_is_refused_with_its_line(self):
         hook = HOOK + "python3 -I scripts/clippy_features.py run backend || true\n"
         self.assertEqual(problems(hook=hook), [".githooks/pre-commit line 4: runs scripts/clippy_features.py in a form this reader does not know: python3 -I scripts/clippy_features.py run backend || true"])

@@ -278,7 +278,20 @@ git config core.hooksPath .githooks
   [adding a GitHub Action](#adding-a-github-action)) and that every
   exception to the 14-day rule for dependency versions names its advisory
   (`scripts/check_dependency_age.py --walk`, see
-  [Contributing](#contributing)), and runs
+  [Contributing](#contributing)). It runs the checks of the tree that CI's
+  scan job runs: every script a workflow runs is run by a hook or listed
+  with the reason it runs only in CI (`scripts/check_hook_steps.py`, see
+  [Scripts only CI runs](#scripts-only-ci-runs)), every test run has the
+  per-test deadline (`scripts/check_test_runner.py`), the "CI success" job
+  needs every job of the workflow (`scripts/ci_success.py check`), a CI job
+  lints every feature set (`scripts/clippy_features.py check`), Dependabot
+  watches every dependency file (`scripts/check_dependabot.py --walk`), no
+  Python test module defines a name twice
+  (`scripts/check_test_names.py --walk`), and the
+  pages state the glibc floor the release is built for
+  (`scripts/check_glibc.py --docs .`). It runs the how-to runner's own
+  tests, which read the how-to pages (`scripts/test_docs_test.py`, about
+  25 seconds), and
   `scripts/rustfmt.sh --check`, `scripts/check_style.py --walk`, the rules
   of the how-to pages (`scripts/docs_test.py lint`),
   `cargo clippy --workspace --all-targets --locked --quiet -- -D warnings`,
@@ -626,6 +639,59 @@ source of the system is in the table, and changes nothing in either case.
 job that runs in a container, and in a composite action or a shell script,
 within the file. `scripts/test_apt_mirror_setup.py` tests the script
 against a server on the same machine.
+
+### Scripts only CI runs
+
+A check that only CI runs reports a failure after the push, on a commit the
+hooks accepted. `scripts/check_hook_steps.py` reads every `run` step of the
+workflows in `.github/workflows/` and of the composite actions in
+`.github/actions/`, and every hook in `.githooks/`. It fails, in the commit
+hook and in CI's scan job, when a workflow runs a `.py` or `.sh` file of
+`scripts/` that no hook runs and that the list `CI_ONLY` in the script does
+not hold. A script is compared with its subcommand, when the first argument
+is a word of lower-case letters: the hook's
+`scripts/clippy_features.py run --quiet` does not cover
+`scripts/clippy_features.py check`. Options are not compared.
+
+To add a script step to a workflow:
+
+1. Add the step to the workflow.
+2. If the script checks the tree and needs only Python, bash, git and cargo,
+   add the same command to `.githooks/pre-commit`, before the `cargo` steps
+   when it needs no build. The hook runs in a copy of the staged files,
+   which is no git repository: a script that reads git's tracked files in
+   a checkout takes `--walk` there and reads every file under the current
+   directory (`scripts/tree_files.py` holds both listings).
+   A script test (`scripts/test_*.py`, `scripts/test-*.sh`) is written as a
+   whole line, `python3 -I scripts/test_<name>.py` or
+   `scripts/test-<name>.sh`, which `scripts/hook_fixture.py` requires.
+3. If the hook cannot run it (it needs a service, a tool the hook does not
+   install, or the results of a CI run), add a line to `CI_ONLY` in
+   `scripts/check_hook_steps.py`: the script, with its subcommand, and the
+   reason.
+4. If the check reads files that `scripts/test-hooks.sh` does not copy into
+   its throwaway repository, copy them there, and add a case that commits a
+   change the check refuses.
+
+Verify with:
+
+```sh
+python3 -I scripts/test_check_hook_steps.py
+python3 -I scripts/check_hook_steps.py
+```
+
+The second command prints a line that starts `check_hook_steps: ok` and
+counts the scripts the workflows run, those a hook runs and those only CI
+runs.
+
+Findings and what to do:
+
+| Finding | Cause | Fix |
+| --- | --- | --- |
+| ``runs `scripts/<name>`, which no hook runs`` | A workflow step runs a script that no hook runs and `CI_ONLY` does not list. | Step 2 or step 3 above. |
+| ``CI_ONLY lists `scripts/<name>`, which .githooks/<hook> runs`` | The hook now runs a script the list still holds. | Remove the line from `CI_ONLY`. |
+| ``CI_ONLY lists `scripts/<name>`, which no workflow runs`` | The step left the workflows, or its subcommand changed. | Remove or correct the line in `CI_ONLY`. |
+| ``CI_ONLY gives no reason for `scripts/<name>` `` | The reason is empty. | Write why no hook can run the script. |
 
 ### The text of a GitHub release
 

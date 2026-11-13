@@ -37,19 +37,27 @@ or exclude list: a new version is proposed only once it is that old
 (CONTRIBUTING.md, "Dependency versions"). Dependabot's own default is 3
 days; #142 and #143 proposed parquet 60.1.0 ten days after its release.
 
-Run with: python3 -I scripts/check_dependabot.py
-(from the repository root; needs PyYAML). Exits 1 naming each file not
-covered and each break of the rules for git packages, shared manifests
-and the cooldown.
+Run with: python3 -I scripts/check_dependabot.py [--walk]
+(from anywhere in the repository; needs PyYAML). Exits 1 naming each file
+not covered and each break of the rules for git packages, shared manifests
+and the cooldown. With --walk it reads every file under the current
+directory, which need not be a repository: the commit hook runs it so, in
+its copy of the staged files (scripts/tree_files.py).
 """
 
 import fnmatch
+import importlib.util
 import pathlib
 import posixpath
 import re
-import subprocess
 import sys
 import tomllib
+
+# Loading a script by path would otherwise leave a __pycache__ beside it.
+sys.dont_write_bytecode = True
+_spec = importlib.util.spec_from_file_location("tree_files", pathlib.Path(__file__).resolve().parent / "tree_files.py")
+tree_files = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(tree_files)
 
 # A file listed here needs no Dependabot entry; the reason says why.
 EXCEPTIONS = {}
@@ -246,11 +254,18 @@ def problems(paths, config, read, exceptions):
     )
 
 
-def main():
+def main(argv):
     import yaml  # Only the command needs it; the tests pass parsed data.
 
-    root = pathlib.Path(subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True).stdout.strip())
-    paths = subprocess.run(["git", "ls-files"], cwd=root, capture_output=True, text=True, check=True).stdout.splitlines()
+    walk = tree_files.walk_flag(argv)
+    if walk is None:
+        print("usage: check_dependabot.py [--walk]", file=sys.stderr)
+        return 2
+    try:
+        root, paths = tree_files.listed(walk)
+    except tree_files.NotARepository as error:
+        print(f"check_dependabot: {error}", file=sys.stderr)
+        return 2
     config = yaml.safe_load((root / ".github/dependabot.yml").read_text(encoding="utf-8"))
     def read(path):
         return (root / path).read_text(encoding="utf-8")
@@ -265,4 +280,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

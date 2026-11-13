@@ -11,15 +11,24 @@ each class. A name defined in an if or try block is not compared (two
 branches may define one name on purpose), nor a property's setter or
 deleter.
 
-Run with: python3 -I scripts/check_test_names.py
-(from the repository root). Exits 1 naming each name defined again.
+Run with: python3 -I scripts/check_test_names.py [--walk]
+(from anywhere in the repository). Exits 1 naming each name defined again.
+With --walk it reads every test module under the current directory, which
+need not be a repository: the commit hook runs it so, in its copy of the
+staged files (scripts/tree_files.py).
 """
 
 import ast
+import importlib.util
 import pathlib
 import posixpath
-import subprocess
 import sys
+
+# Loading a script by path would otherwise leave a __pycache__ beside it.
+sys.dont_write_bytecode = True
+_spec = importlib.util.spec_from_file_location("tree_files", pathlib.Path(__file__).resolve().parent / "tree_files.py")
+tree_files = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(tree_files)
 
 
 def is_accessor(node):
@@ -66,9 +75,16 @@ def check(root, paths):
     return problems
 
 
-def main():
-    root = pathlib.Path(subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True).stdout.strip())
-    paths = subprocess.run(["git", "ls-files"], cwd=root, capture_output=True, text=True, check=True).stdout.splitlines()
+def main(argv):
+    walk = tree_files.walk_flag(argv)
+    if walk is None:
+        print("usage: check_test_names.py [--walk]", file=sys.stderr)
+        return 2
+    try:
+        root, paths = tree_files.listed(walk)
+    except tree_files.NotARepository as error:
+        print(f"check_test_names: {error}", file=sys.stderr)
+        return 2
     problems = check(root, paths)
     for problem in problems:
         print(f"check_test_names: {problem}", file=sys.stderr)
@@ -79,4 +95,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

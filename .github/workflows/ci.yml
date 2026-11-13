@@ -623,6 +623,15 @@ jobs:
           set -euo pipefail
           python3 -I scripts/test_ci_success.py
           python3 -I scripts/ci_success.py check
+      # A check only CI runs reports a failure after the push: each script
+      # a workflow runs is run by a git hook too, or is listed in
+      # scripts/check_hook_steps.py with the reason it runs only in CI.
+      - name: A git hook runs every script check a workflow runs
+        run: |
+          set -euo pipefail
+          python3 -I scripts/test_check_hook_steps.py
+          python3 -I scripts/check_hook_steps.py
+          python3 -I scripts/test_tree_files.py
 
   hooks:
     name: git hooks

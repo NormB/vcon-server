@@ -63,6 +63,24 @@ python3 -I scripts/test_check_test_runner.py
 python3 -I scripts/test_check_required_checks.py
 python3 -I scripts/test_hook_fixture.py
 python3 -I scripts/test_clippy_features.py
+python3 -I scripts/test_check_hook_steps.py
+python3 -I scripts/test_tree_files.py
+# The how-to runner's own tests read the how-to pages: on 2026-11-13 a page
+# lost a line of a step's expected output, and CI's how-to job, the first to
+# run these tests, refused a commit this hook had accepted.
+python3 -I scripts/test_docs_test.py
+# The checks of the tree that CI's scan job runs. The first holds the rule
+# for the rest: a script a workflow runs is run here too, or is listed in
+# scripts/check_hook_steps.py with the reason it runs only in CI.
+python3 -I scripts/check_hook_steps.py
+python3 -I scripts/check_test_runner.py
+python3 -I scripts/ci_success.py check
+python3 -I scripts/clippy_features.py check
+# This copy is no repository, so the two that read git's tracked files in
+# a checkout read every file here (--walk, scripts/tree_files.py).
+python3 -I scripts/check_dependabot.py --walk
+python3 -I scripts/check_test_names.py --walk
+python3 -I scripts/check_glibc.py --docs .
 # Always a directory of its own: a test binary records the directory it was
 # built from, so sharing the caller's target directory would leave binaries
 # there that read files from this deleted copy.
@@ -82,11 +100,8 @@ python3 -I scripts/test_check_style.py
 python3 -I scripts/check_style.py --walk
 # The rules every tested how-to page keeps (its docs-test markers among
 # them), which CI's how-to job checks first: a marker written wrong was
-# found there, not here, on 2026-11-12. A copy with no pages has none to
-# check.
-if [ -d website/content/docs ]; then
-  python3 -I scripts/docs_test.py lint
-fi
+# found there, not here, on 2026-11-12.
+python3 -I scripts/docs_test.py lint
 cargo clippy --workspace --all-targets --locked --quiet -- -D warnings
 # That lint compiles the default features only. The same lint for each
 # feature set CI lints, from the list CI reads

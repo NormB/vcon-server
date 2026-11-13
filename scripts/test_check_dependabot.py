@@ -453,5 +453,54 @@ class Problems(unittest.TestCase):
         self.assertEqual(run.stderr, "check_dependabot: cargo entry for /: no cooldown; a new version must wait 14 days\n")
 
 
+NO_COOLDOWN = 'version: 2\nupdates:\n  - package-ecosystem: "cargo"\n    directory: "/"\n    schedule:\n      interval: "weekly"\n'
+NO_ENTRY = "version: 2\nupdates: []\n"
+LOCK = 'version = 4\n\n[[package]]\nname = "x"\nversion = "0.1.0"\n'
+
+
+class Walk(unittest.TestCase):
+    """--walk: the command in the commit hook's copy of the staged files,
+    which is no repository."""
+
+    ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")} | {"GIT_CEILING_DIRECTORIES": tempfile.gettempdir()}
+
+    def run_in(self, files, *arguments, env=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            for name, text in files.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(text, encoding="utf-8")
+            run = subprocess.run([sys.executable, "-I", str(HERE / "check_dependabot.py"), *arguments], cwd=root, env=env or self.ENV, capture_output=True, text=True)
+        return run.returncode, run.stdout, run.stderr
+
+    def test_success_with_walk_the_command_needs_no_repository(self):
+        self.assertEqual(self.run_in({".github/dependabot.yml": NO_ENTRY}, "--walk"), (0, "check_dependabot: ok (0 dependency files covered)\n", ""))
+
+    def test_failure_with_walk_a_lockfile_no_entry_covers(self):
+        files = {".github/dependabot.yml": NO_ENTRY, "tools/package-lock.json": "{}\n"}
+        self.assertEqual(self.run_in(files, "--walk"), (1, "", "check_dependabot: tools/package-lock.json: no npm entry for /tools\n"))
+
+    def test_failure_with_walk_an_entry_without_a_cooldown(self):
+        files = {".github/dependabot.yml": NO_COOLDOWN, "Cargo.lock": LOCK}
+        self.assertEqual(self.run_in(files, "--walk"), (1, "", "check_dependabot: cargo entry for /: no cooldown; a new version must wait 14 days\n"))
+
+    def test_failure_outside_a_repository_without_walk_the_command_says_so(self):
+        self.assertEqual(
+            self.run_in({".github/dependabot.yml": NO_ENTRY}),
+            (2, "", "check_dependabot: not in a git repository; --walk reads the files under this directory\n"),
+        )
+
+    def test_failure_another_argument_is_refused(self):
+        self.assertEqual(self.run_in({".github/dependabot.yml": NO_ENTRY}, "--walk", "."), (2, "", "usage: check_dependabot.py [--walk]\n"))
+
+    def test_edge_with_walk_installed_packages_are_passed_over(self):
+        files = {".github/dependabot.yml": NO_ENTRY, "website/node_modules/x/package-lock.json": "{}\n"}
+        self.assertEqual(self.run_in(files, "--walk")[0], 0)
+
+    def test_edge_with_walk_under_a_hook_s_git_variables(self):
+        env = dict(self.ENV, GIT_DIR=str(HERE.parent / "no-such-directory"), GIT_INDEX_FILE="no-such-index")
+        self.assertEqual(self.run_in({".github/dependabot.yml": NO_ENTRY}, "--walk", env=env)[0], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

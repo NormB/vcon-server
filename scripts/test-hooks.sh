@@ -37,6 +37,12 @@ git config core.hooksPath .githooks
 # workflows, which the tests of the hook's scripts read. CHANGELOG.md is
 # what scripts/test_release_notes.py makes each release's text from.
 cp -R "$src/.githooks" "$src/scripts" "$src/.config" "$src/.cargo" "$src/.github" "$src/.gitignore" "$src/rust-toolchain.toml" "$src/CHANGELOG.md" .
+# The how-to pages and the home page, which the hook's checks of the pages
+# read (scripts/test_docs_test.py, scripts/docs_test.py lint,
+# scripts/check_glibc.py --docs).
+mkdir -p website/content
+cp -R "$src/website/content/docs" website/content/
+cp "$src/website/content/_index.md" website/content/
 # A workspace shaped like the real one: one crate under crates/, ready to
 # publish, so the hook's package check has a package to read.
 cat > Cargo.toml <<'TOML'
@@ -310,6 +316,38 @@ pub fn add_one(x: u32) -> u32 {
 # The exception to the 14-day rule for dependency versions
 # (scripts/check_dependency_age.py --walk): a line that names no advisory.
 why='crates/held/Cargo.toml:1: not of the form' expect refuse "dependency-age-exception line with no advisory id" crates/held/Cargo.toml '# dependency-age-exception: serde 1.0.228 published 2026-11-01'
+
+# What CI's script steps check, the hook checks first: on 2026-11-13 a how-to
+# page lost a line of a step's expected output, the hook accepted the commit
+# and CI's how-to job, the first to run scripts/test_docs_test.py, refused
+# it. This case commits that change with the real test in place of its
+# stand-in (the reset after the case puts the stand-in back).
+cp "$src/scripts/test_docs_test.py" scripts/test_docs_test.py
+git add scripts/test_docs_test.py
+why='test_the_terminal_ui_page_opens_each_view_on_the_live_server' expect refuse "how-to page that lost a line of expected output" website/content/docs/tui.md "$(grep -v '^  ?      Show or close this help$' "$src/website/content/docs/tui.md")"
+# The other checks of the tree that CI's scan job runs, each refused by the
+# hook with the check's own finding.
+why='docs/install.md says glibc 9.99 or later' expect refuse "install page that states another glibc floor" website/content/docs/install.md "$(sed 's/glibc [0-9.]* or later/glibc 9.99 or later/' "$src/website/content/docs/install.md")"
+why='test_a is defined again' expect refuse "Python test module that defines a test twice" scripts/test_twice.py 'def test_a():
+    pass
+
+
+def test_a():
+    pass'
+why='tools/package-lock.json: no npm entry for' expect refuse "lockfile Dependabot does not watch" tools/package-lock.json '{}'
+extra_workflow='name: Extra
+on: push
+permissions: {}
+jobs:
+  extra:
+    runs-on: ubuntu-latest
+    steps:
+      - run: '
+why='`cargo test` has no per-test deadline' expect refuse "workflow that runs cargo test with no deadline" .github/workflows/extra.yml "${extra_workflow}cargo test --workspace"
+why='runs `scripts/check_new.py`, which no hook runs' expect refuse "workflow that runs a script no hook runs" .github/workflows/extra.yml "${extra_workflow}python3 -I scripts/check_new.py"
+why='no workflow runs the group `extra`' expect refuse "feature set no CI job lints" .github/clippy-feature-sets.txt "$(cat .github/clippy-feature-sets.txt)
+extra: -p hook-fixture --all-targets --locked --features postgres --no-default-features"
+why='ci-success must run with if: always()' expect refuse "CI success job that a failed job would skip" .github/workflows/ci.yml "$(sed 's/^    if: always()$/    if: success()/' "$src/.github/workflows/ci.yml")"
 
 echo "test-hooks: $pass of $n passed"
 [ "$fail" -eq 0 ]

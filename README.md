@@ -162,7 +162,13 @@ private spec or plan file (a name ending in .local.md), and that none is staged
 staged, it checks that every GitHub Action is pinned by commit
 (`scripts/check_action_pins.py`) and that every exception to the 14-day rule
 for dependency versions names its advisory
-(`scripts/check_dependency_age.py --walk`), and runs `scripts/rustfmt.sh --check`,
+(`scripts/check_dependency_age.py --walk`), runs the checks of the tree
+that CI's scan job runs (`scripts/check_hook_steps.py`,
+`scripts/check_test_runner.py`, `scripts/ci_success.py check`,
+`scripts/clippy_features.py check`, `scripts/check_dependabot.py --walk`,
+`scripts/check_test_names.py --walk` and `scripts/check_glibc.py --docs .`) and the
+how-to runner's own tests, which read the how-to pages
+(`scripts/test_docs_test.py`), and runs `scripts/rustfmt.sh --check`,
 `scripts/check_style.py --walk`, the rules of the how-to pages
 (`scripts/docs_test.py lint`),
 `cargo clippy --workspace --all-targets --locked --quiet -- -D warnings`,

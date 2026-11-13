@@ -87,6 +87,23 @@ All notable changes to this project are recorded here. The format follows
   it. The two messages it found name the vCon by its place in the test.
   The rule reads names: it does not find a uuid under another name, one
   that a call returns, or the values a failed `assert_eq!` prints.
+- **The commit hook did not run every check of the tree that CI runs.** No
+  hook ran `scripts/test_docs_test.py`, the how-to runner's own tests,
+  which read the how-to pages: on 2026-11-13 a page lost a line of a
+  step's expected output, the hooks accepted the commit and CI's how-to job
+  refused it. Nothing compared the scripts the workflows run with the
+  scripts the hooks run. `scripts/check_hook_steps.py` now does, in the
+  commit hook and in CI's scan job: a script of `scripts/` that a workflow
+  runs is run by a hook, or is listed in the script with the reason it runs
+  only in CI. The commit hook now runs the seven it found:
+  `scripts/test_docs_test.py`, `scripts/check_test_runner.py`,
+  `scripts/ci_success.py check`, `scripts/clippy_features.py check`,
+  `scripts/check_dependabot.py`, `scripts/check_test_names.py` and
+  `scripts/check_glibc.py --docs .`. The hook runs in a copy of the staged
+  files, which is no git repository, so the two checks that read git's
+  tracked files take `--walk` there and read every file of the copy.
+  [Scripts only CI runs](https://vcon-server.com/docs/development/#scripts-only-ci-runs)
+  shows how to add a script step. No server code changed.
 - **The commit hook did not lint the feature sets CI lints.** The hook ran
   clippy for the default features only, so a lint in code that only the
   `postgres` feature, the `backend-tests` feature or a build without the
