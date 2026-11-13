@@ -28,6 +28,18 @@ The rules are the Google Rust Style Guide's
   arguments after it. A name that holds a credential under another word
   (`key`, `made`, `body`) is not found: do not show those either.
 
+- uuid-in-message: under crates/, no assertion message, panic text, debug
+  print or log line (the macros above and trace!, debug!, info!, warn!,
+  error!) shows a value whose name ends in the word uuid or uuids: the
+  uuid of a vCon is a value the catalogs seal, such text reaches the test
+  log, CI's log or the server's, and code scanning refuses it
+  (rust/cleartext-logging). The names in the placeholders are read, and
+  the identifiers of the arguments after the message, a field of a log
+  line among them. `format!` and `write!` are not read: they build paths
+  and responses. Not found, as for a credential: a uuid under another
+  name, one that a call returns (`shown(found)`), and the two values a
+  failed `assert_eq!` prints. The rule has no allow list.
+
 - credential-path: no parameter, field or `let` of a path type (`Path`,
   `PathBuf`) has a name that names a credential (the words above), unless
   the name says it is a place (`password_file`, `secret_path`,
@@ -294,6 +306,10 @@ CREDENTIALS = frozenset(
     {"token", "secret", "cookie", "bearer", "password", "passphrase", "sid"}
 )
 
+# The macros whose text reaches a log, for a vCon's uuid: those above, and
+# the log lines.
+UUID_MESSAGES = {**MESSAGES, "trace": 0, "debug": 0, "info": 0, "warn": 0, "error": 0}
+
 _PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
@@ -302,6 +318,19 @@ def _credential(name):
     """Whether the identifier `name` names a credential."""
     words = {word.removesuffix("s") if len(word) > 3 else word for word in name.lower().split("_")}
     return bool(words & CREDENTIALS) or {"session", "id"} <= words
+
+
+def _vcon_uuid(name):
+    """Whether the identifier `name` names the uuid of a vCon: a value's
+    name (not a type's, which starts with a capital) whose last word is
+    uuid or uuids. `uuid_count` and `uuid_mac` name something else."""
+    return not name[:1].isupper() and name.lower().split("_")[-1] in ("uuid", "uuids")
+
+
+def reads_uuids(path):
+    """Whether the uuid-in-message rule reads the file at `path`: the
+    crates', not the example clients', which print the uuids they made."""
+    return pathlib.PurePosixPath(path).parts[:1] == ("crates",)
 
 
 _PLACE_WORDS = frozenset({"file", "path", "dir"})
@@ -364,10 +393,10 @@ def _top_level_arguments(toks, open_at):
     return [argument for argument in out if argument]
 
 
-def _shown_credentials(argument):
-    """The credential names the macro argument `argument` shows: the names
-    in the placeholders of its strings (the message, or the string of a
-    `format!` inside an expression) and the identifiers of an expression."""
+def _shown_names(argument):
+    """The names the macro argument `argument` shows: the names in the
+    placeholders of its strings (the message, or the string of a `format!`
+    inside an expression) and the identifiers of an expression."""
     names = []
     for t in argument:
         if t.kind == "ident":
@@ -376,7 +405,32 @@ def _shown_credentials(argument):
             message = t.value.replace("{{", "").replace("}}", "")
             for placeholder in _PLACEHOLDER.findall(message):
                 names.extend(_NAME.findall(placeholder.split(":", 1)[0]))
-    return [name for name in names if _credential(name)]
+    return names
+
+
+def _shown_credentials(argument):
+    """The credential names the macro argument `argument` shows."""
+    return [name for name in _shown_names(argument) if _credential(name)]
+
+
+def _uuids_in_message(toks, k):
+    """A finding for each argument of the macro call at toks[k] that shows
+    the uuid of a vCon, one for a line: a placeholder and the named
+    argument that fills it are often on the same one."""
+    name = toks[k].text
+    out = []
+    for argument in _top_level_arguments(toks, k + 2)[UUID_MESSAGES[name] :]:
+        shown = [n for n in _shown_names(argument) if _vcon_uuid(n)]
+        if shown and argument[0].line not in {f.line for f in out}:
+            names = ", ".join(f"`{n}`" for n in dict.fromkeys(shown))
+            out.append(
+                Finding(
+                    argument[0].line,
+                    "uuid-in-message",
+                    f"`{name}!` shows {names}: a vCon's uuid is sealed in the catalogs, and a message or a log line reaches the logs; name the vCon by its place in the test, or leave the value out",
+                )
+            )
+    return out
 
 
 def _credentials_in_message(toks, k):
@@ -543,10 +597,11 @@ def lint_tables(root):
 VISIBILITY = {"pub", "(", ")", "crate", "super", "self", "in", "::"}
 
 
-def findings(text, nonleaf=False):
+def findings(text, nonleaf=False, uuids=True):
     """The style findings in Rust source `text`. `nonleaf` says whether the
     file is a non-leaf module (a crate root, a mod.rs, or a file with a
-    directory of submodules beside it)."""
+    directory of submodules beside it), and `uuids` whether the
+    uuid-in-message rule reads it (`reads_uuids`)."""
     toks = tokens(text)
     out = []
     submodules = {
@@ -583,6 +638,15 @@ def findings(text, nonleaf=False):
             and toks[k + 2].text in ("(", "[", "{")
         ):
             out.extend(_credentials_in_message(toks, k))
+        if (
+            uuids
+            and t.kind == "ident"
+            and t.text in UUID_MESSAGES
+            and k + 2 < len(toks)
+            and toks[k + 1].text == "!"
+            and toks[k + 2].text in ("(", "[", "{")
+        ):
+            out.extend(_uuids_in_message(toks, k))
         named = _credential_path(toks, k)
         if named:
             out.append(named)
@@ -701,7 +765,7 @@ def main(argv):
     for name in sources(walk="--walk" in flags):
         text = pathlib.Path(name).read_text(encoding="utf-8")
         counts[name] = 0
-        for f in findings(text, nonleaf=is_nonleaf(name)):
+        for f in findings(text, nonleaf=is_nonleaf(name), uuids=reads_uuids(name)):
             if f.rule == "assert-message":
                 counts[name] += 1
                 continue

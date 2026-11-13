@@ -369,6 +369,132 @@ class CredentialsInMessages(unittest.TestCase):
         self.assertIn("assert!", found[0].message)
 
 
+class UuidsInMessages(unittest.TestCase):
+    """The uuid of a vCon is a value the catalogs seal. A failed assertion's
+    message, a panic's text, a debug print and a log line reach a log, and
+    code scanning refuses a uuid written there (rust/cleartext-logging), so
+    none names a variable that holds one."""
+
+    def shown(self, text):
+        return [line for line, rule in rules(text) if rule == "uuid-in-message"]
+
+    # Refused.
+
+    def test_a_uuid_in_an_assert_message_is_refused(self):
+        self.assertEqual(self.shown('fn f() {\n    assert!(ok, "{uuid}, stored under an earlier key");\n}\n'), [2])
+
+    def test_a_uuid_shown_with_debug_is_refused(self):
+        self.assertEqual(self.shown('fn f() { assert!(ok, "{uuid:?} reads"); }\n'), [1])
+
+    def test_a_uuid_in_an_assert_eq_message_is_refused(self):
+        self.assertEqual(self.shown('fn f() { assert_eq!(a, b, "{uuid} has one version"); }\n'), [1])
+
+    def test_a_uuid_as_an_argument_after_the_message_is_refused(self):
+        self.assertEqual(self.shown('fn f() {\n    assert!(ok, "{} reads", uuid);\n}\n'), [2])
+
+    def test_a_named_argument_that_is_a_uuid_is_refused(self):
+        text = 'fn f() {\n    assert!(ok, "{u} reads", u = uuid);\n    assert!(ok, "{uuid} reads", uuid = found.id);\n}\n'
+        self.assertEqual(self.shown(text), [2, 3])
+
+    def test_a_field_named_uuid_is_refused(self):
+        self.assertEqual(self.shown('fn f() { assert!(ok, "{}", found.uuid); }\n'), [1])
+
+    def test_a_longer_name_that_ends_in_the_word_is_refused(self):
+        text = 'fn f() {\n    assert!(a, "{gzip_uuid}");\n    assert!(b, "{vcon_uuids:?}");\n}\n'
+        self.assertEqual(self.shown(text), [2, 3])
+
+    def test_a_uuid_in_a_panic_is_refused(self):
+        self.assertEqual(self.shown('fn f() { panic!("{uuid} is not stored"); }\n'), [1])
+
+    def test_a_uuid_in_a_print_is_refused(self):
+        text = 'fn f() {\n    println!("stored {uuid}");\n    eprintln!("{uuid}");\n    dbg!(uuid);\n}\n'
+        self.assertEqual(self.shown(text), [2, 3, 4])
+
+    def test_a_uuid_in_a_log_line_is_refused(self):
+        text = (
+            'fn f() {\n    tracing::info!("stored {uuid}");\n    warn!(%uuid, "not packed");\n'
+            '    tracing::error!(uuid = %found.id, "lost");\n    debug!("{}", uuid);\n    trace!(?uuid);\n}\n'
+        )
+        self.assertEqual(self.shown(text), [2, 3, 4, 5, 6])
+
+    def test_a_uuid_in_an_unreachable_is_refused(self):
+        self.assertEqual(self.shown('fn f() { unreachable!("{uuid} has no version"); }\n'), [1])
+
+    def test_a_message_over_several_lines_is_found_at_its_argument(self):
+        text = 'fn f() {\n    assert!(\n        ok,\n        "{uuid} reads"\n    );\n}\n'
+        self.assertEqual(self.shown(text), [4])
+
+    def test_the_finding_says_what_to_do(self):
+        found = [f for f in check_style.findings('fn f() { assert!(a, "{uuid}"); }\n') if f.rule == "uuid-in-message"]
+        self.assertEqual(len(found), 1)
+        self.assertIn("`assert!` shows `uuid`", found[0].message)
+        self.assertIn("its place in the test", found[0].message)
+
+    # Passes.
+
+    def test_a_message_with_no_uuid_passes(self):
+        self.assertEqual(self.shown('fn f() { assert!(reads(&store, uuid), "vCon {}, stored under an earlier key", at + 1); }\n'), [])
+
+    def test_a_uuid_that_is_compared_and_not_shown_passes(self):
+        self.assertEqual(self.shown('fn f() { assert_eq!(found.uuid, uuid, "the same vCon"); }\n'), [])
+
+    def test_a_count_of_uuids_passes(self):
+        text = 'fn f() {\n    assert!(ok, "{uuid_count} vCons");\n    assert!(ok, "{}", uuids_len);\n}\n'
+        self.assertEqual(self.shown(text), [])
+
+    def test_a_mac_of_a_uuid_passes(self):
+        self.assertEqual(self.shown('fn f() { assert!(ok, "{uuid_mac:?}"); }\n'), [])
+
+    def test_a_format_that_builds_a_path_passes(self):
+        self.assertEqual(self.shown('fn f() { let path = format!("/vcons/{uuid}"); call(&path); }\n'), [])
+
+    def test_a_write_to_a_response_passes(self):
+        self.assertEqual(self.shown('fn f() { writeln!(out, "{uuid}")?; }\n'), [])
+
+    # Edges.
+
+    def test_a_doc_comment_that_names_the_placeholder_passes(self):
+        text = '/// The message is `"{uuid} reads"`: assert!(ok, "{uuid}").\nfn f() {}\n// println!("{uuid}");\n'
+        self.assertEqual(self.shown(text), [])
+
+    def test_a_sql_string_outside_a_message_passes(self):
+        text = 'fn f() { tx.execute("SELECT uuid_sealed FROM vcon.vcon WHERE uuid = $1", &[&uuid]); }\n'
+        self.assertEqual(self.shown(text), [])
+
+    def test_the_word_in_a_message_s_text_passes(self):
+        self.assertEqual(self.shown('fn f() { assert!(ok, "the uuid is not found by its {mac:?}"); }\n'), [])
+
+    def test_an_escaped_brace_is_no_placeholder(self):
+        self.assertEqual(self.shown('fn f() { assert!(ok, "the path is /vcons/{{uuid}}"); }\n'), [])
+
+    def test_the_type_is_not_a_value(self):
+        self.assertEqual(self.shown('fn f() { assert!(ok, "{}", size_of::<Uuid>()); }\n'), [])
+
+    def test_a_format_inside_a_message_argument_is_read(self):
+        self.assertEqual(self.shown('fn f() { assert!(ok, "{}", format!("{uuid} reads")); }\n'), [1])
+
+    def test_a_placeholder_and_its_named_argument_on_two_lines_are_two_findings(self):
+        text = 'fn f() {\n    assert!(\n        ok,\n        "{u} and {uuid}",\n        u = uuid\n    );\n}\n'
+        self.assertEqual(self.shown(text), [4, 5])
+
+    def test_one_finding_for_an_argument_that_shows_it_twice(self):
+        self.assertEqual(self.shown('fn f() { assert!(ok, "{uuid} and {uuid:?}"); }\n'), [1])
+
+    def test_a_file_outside_the_crates_is_not_read_for_this_rule(self):
+        found = check_style.findings('fn f() { println!("stored {uuid}"); }\n', uuids=False)
+        self.assertEqual([f.rule for f in found], [])
+
+    def test_the_rule_reads_the_crates_and_not_the_example_clients(self):
+        self.assertTrue(check_style.reads_uuids("crates/vcon-server/src/store.rs"))
+        self.assertTrue(check_style.reads_uuids("./crates/vcon/tests/a.rs"))
+        self.assertFalse(check_style.reads_uuids("clients/rust/src/main.rs"))
+        self.assertFalse(check_style.reads_uuids("fuzz/fuzz_targets/crates.rs"))
+
+    def test_a_credential_and_a_uuid_in_one_message_are_two_findings(self):
+        found = rules('fn f() { assert!(ok, "{token} {uuid}"); }\n')
+        self.assertEqual(sorted(found), [(1, "credential-in-message"), (1, "uuid-in-message")])
+
+
 class CredentialNamedPaths(unittest.TestCase):
     """A path is not a credential. A parameter or field of a path type
     named `password` makes code scanning read every file name passed to it
@@ -561,6 +687,15 @@ class Command(unittest.TestCase):
                 result = self.run_in({"src/lib.rs": "pub fn f() {}\n"})
             self.assertEqual(index.read_bytes(), b"the caller's index", "the caller's index is untouched")
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_a_uuid_in_a_message_fails_under_crates_and_passes_in_a_client(self):
+        shown = 'fn f(uuid: u8) {\n    println!("stored {uuid}");\n}\n'
+        result = self.run_in({"clients/rust/src/main.rs": shown})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.run_in({"clients/rust/src/main.rs": shown, "crates/a/src/lib.rs": shown})
+        self.assertEqual(result.returncode, 1, "a uuid in a print under crates/ must fail the check")
+        self.assertIn("crates/a/src/lib.rs:2: uuid-in-message:", result.stderr)
+        self.assertNotIn("clients/", result.stderr)
 
     def test_a_clean_tree_passes(self):
         result = self.run_in({"src/lib.rs": "mod a;\npub use a::*;\n", "src/a.rs": "pub fn f() {}\n"})

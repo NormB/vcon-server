@@ -233,8 +233,10 @@ mod rekey_tests {
     /// nothing kept opens under `old`.
     fn all_under_the_new_key_only(f: &Fixture, id: TenantId, uuids: &[Uuid], old: &Key) {
         let store = f.tenants.store(id).expect("store");
-        for uuid in &uuids[..4] {
-            assert!(store.get(&CALLER, *uuid).is_ok(), "{uuid} reads");
+        // The message names a vCon by its place: a uuid is not written out
+        // (scripts/check_style.py, uuid-in-message).
+        for (at, uuid) in uuids[..4].iter().enumerate() {
+            assert!(store.get(&CALLER, *uuid).is_ok(), "vCon {at} reads");
         }
         assert!(
             store.legal_get(&CALLER, uuids[4], None).is_ok(),

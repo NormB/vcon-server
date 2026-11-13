@@ -66,6 +66,16 @@ All notable changes to this project are recorded here. The format follows
 
 ### Fixed
 
+- **No test and no log line shows the uuid of a vCon.** Code scanning
+  refused a pull request for an assertion message that wrote a vCon's
+  uuid to the test log (`rust/cleartext-logging`), the second time for
+  that cause, and nothing on the developer's side held it. Now
+  `scripts/check_style.py` refuses, under `crates/`, an assertion
+  message, a panic text, a debug print or a log line that names a value
+  whose name ends in `uuid` (`uuid-in-message`), and the commit hook runs
+  it. The two messages it found name the vCon by its place in the test.
+  The rule reads names: it does not find a uuid under another name, one
+  that a call returns, or the values a failed `assert_eq!` prints.
 - **The commit hook did not lint the feature sets CI lints.** The hook ran
   clippy for the default features only, so a lint in code that only the
   `postgres` feature, the `backend-tests` feature or a build without the
