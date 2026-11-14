@@ -154,7 +154,7 @@ fn a_write_that_makes_begins_as_a_write() {
 }
 
 #[cfg(feature = "backend-tests")]
-mod on_a_server {
+pub(super) mod on_a_server {
     use std::sync::{Arc, mpsc};
     use std::time::Duration;
 
@@ -227,7 +227,7 @@ mod on_a_server {
     }
 
     /// Runs `call` on a runtime of its own, for a test's own connection.
-    fn wait<T>(call: impl Future<Output = T>) -> T {
+    pub(crate) fn wait<T>(call: impl Future<Output = T>) -> T {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -238,7 +238,7 @@ mod on_a_server {
     /// Runs `sql` as the schema's owner in the registry's scope, around
     /// the application role, and gives every row's columns as the server
     /// writes them, joined by a space.
-    fn as_owner(db: &Db, sql: &str) -> Vec<String> {
+    pub(crate) fn as_owner(db: &Db, sql: &str) -> Vec<String> {
         wait(async {
             let admin = db.admin().await;
             admin
@@ -643,13 +643,13 @@ mod on_a_server {
     // The key the registry is under, and the key of its log (schema
     // version 12).
 
-    fn hex(bytes: &[u8]) -> String {
+    pub(crate) fn hex(bytes: &[u8]) -> String {
         bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
 
     /// The id the database names for the registry's key, in hex: one
     /// text for each row of the table.
-    fn named(db: &Db) -> Vec<String> {
+    pub(crate) fn named(db: &Db) -> Vec<String> {
         as_owner(
             db,
             "SELECT encode(catalog_key_id, 'hex') FROM vcon.registry_key",
@@ -658,7 +658,7 @@ mod on_a_server {
 
     /// Each key of the registry's log, oldest first: its ordinal, its id
     /// and its sealed copy, in hex.
-    fn log_keys(db: &Db) -> Vec<String> {
+    pub(crate) fn log_keys(db: &Db) -> Vec<String> {
         as_owner(
             db,
             "SELECT ordinal, encode(key_id, 'hex'), encode(wrapped, 'hex') \
@@ -678,7 +678,7 @@ mod on_a_server {
     }
 
     /// The registry's log as its export writes it.
-    fn exported(registry: &PgRegistry) -> Result<String, String> {
+    pub(crate) fn exported(registry: &PgRegistry) -> Result<String, String> {
         let mut out = Vec::new();
         registry
             .export(0, &mut out)

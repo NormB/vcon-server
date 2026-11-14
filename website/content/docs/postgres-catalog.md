@@ -502,6 +502,19 @@ on either table, a record cannot name a key the log does not have, and a
 key that a record names cannot be deleted. A database of the preview
 holds no row of the registry, so version 12 converts none.
 
+The statements of a rotation of the master key move the registry in one
+transaction, with the registry's lock held. Every tenant key, a pending
+one too, is wrapped again under the new master key. The sealed columns
+and the lookup values of the tenants, API keys, users, memberships,
+settings and sessions are made again under the new key, and the key of
+the registry's log is sealed again. The rows of `master_key_use` give
+way to one row for the new key, the id in `registry_key` is moved, and
+the rotation is recorded in `admin_audit`. The transaction changes all
+of them or none, and no record of the log is changed. A registry that is
+under the new key already is left as it is, so a rotation can be asked
+for again; a registry under neither key is refused. No command runs
+those statements yet: `rekey master` works on the local registry.
+
 The audit key does not rotate with the tenant key: a rotation seals the
 same audit key under the new catalog key and changes no audit record.
 The statements of that rotation move a tenant's catalog to the new key

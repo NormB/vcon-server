@@ -37,12 +37,14 @@ use tokio_postgres::Row;
 use tokio_postgres::types::{FromSql, Type};
 
 use super::catalog::{
-    AuditKey, Begin, Database, PgTx, audit_key_id, new_audit_key, open_audit_keys,
+    AuditKey, Begin, Database, PgTx, all_changed, audit_key_id, new_audit_key, open_audit_keys,
+    reseal_audit_keys,
 };
-use crate::audit::{Action, AuditError, Entry};
+use crate::audit::{Action, Actor, AuditError, Entry};
 use crate::backend::{
     CommitError, KeyRow, MembershipRow, Registry, RegistryTx, SessionRow, TenantRow, UserRow,
 };
+use crate::clock::nanos;
 use crate::envelope::{self as column, ColumnKeys, Key, REGISTRY};
 use crate::ids::{KeyId, TenantId, UserId};
 use crate::tenants::TenantError;
@@ -125,6 +127,240 @@ const SESSION_COLUMNS: &str = "id_hash, user_id, tenant, scopes_sealed, created_
      last_seen_at, idle_expires_at, expires_at, idle_seconds, amr_sealed, csrf_hash";
 /// The membership of a user in a tenant, or as an operator for no tenant.
 const MEMBERSHIP_IS: &str = "user_id = $1 AND tenant IS NOT DISTINCT FROM $2";
+
+/// A column of a registry table's primary key, as a rotation of the
+/// master key reads it and finds the row by it again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum KeyColumn {
+    /// Bytes, never NULL.
+    Bytes(&'static str),
+    /// Bytes, or NULL.
+    BytesOrNone(&'static str),
+    /// Text, never NULL.
+    Text(&'static str),
+}
+
+/// A column a rotation of the master key makes again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Column {
+    /// A sealed value, or NULL.
+    Sealed(&'static str),
+    /// A sealed value, or NULL, and the column of its HMAC.
+    SealedWithMac {
+        /// The sealed copy.
+        sealed: &'static str,
+        /// The HMAC the value is found by.
+        mac: &'static str,
+    },
+    /// A tenant key wrapped under the master key, or NULL.
+    TenantKey(&'static str),
+}
+
+/// A table of the registry whose columns a rotation makes again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Remade {
+    /// The table, in the schema `vcon`.
+    pub(super) table: &'static str,
+    /// The columns of its primary key, in the order their bytes make the
+    /// row's key in a sealed column's context.
+    pub(super) key: &'static [KeyColumn],
+    /// The columns made again.
+    pub(super) columns: &'static [Column],
+}
+
+/// One value of a row's primary key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum KeyValue {
+    /// Bytes, or NULL.
+    Bytes(Option<Vec<u8>>),
+    /// Text.
+    Text(String),
+}
+
+/// Every table a rotation of the master key makes again, with every
+/// column of it that is sealed, is an HMAC or holds a wrapped key. The
+/// registry's log is not here: no record of it is written again, and its
+/// keys are sealed again by the function a tenant's log has.
+pub(super) const REMADE: [Remade; 6] = [
+    Remade {
+        table: "tenant",
+        key: &[KeyColumn::Bytes("id")],
+        columns: &[
+            Column::SealedWithMac {
+                sealed: "name_sealed",
+                mac: "name_mac",
+            },
+            Column::Sealed("retention_sealed"),
+            Column::Sealed("metadata_sealed"),
+            Column::Sealed("role_cap_sealed"),
+            Column::TenantKey("wrapped_tenant_key"),
+            Column::TenantKey("pending_wrapped_tenant_key"),
+        ],
+    },
+    Remade {
+        table: "api_key",
+        key: &[KeyColumn::Bytes("id")],
+        columns: &[
+            Column::Sealed("scopes_sealed"),
+            Column::Sealed("label_sealed"),
+        ],
+    },
+    Remade {
+        table: "user_account",
+        key: &[KeyColumn::Bytes("id")],
+        columns: &[
+            Column::Sealed("label_sealed"),
+            Column::SealedWithMac {
+                sealed: "identity_sealed",
+                mac: "identity_mac",
+            },
+        ],
+    },
+    Remade {
+        table: "membership",
+        key: &[
+            KeyColumn::Bytes("user_id"),
+            KeyColumn::BytesOrNone("tenant"),
+        ],
+        columns: &[Column::Sealed("roles_sealed")],
+    },
+    Remade {
+        table: "tenant_setting",
+        key: &[KeyColumn::Bytes("tenant"), KeyColumn::Text("name")],
+        columns: &[Column::Sealed("value_sealed")],
+    },
+    Remade {
+        table: "session",
+        key: &[KeyColumn::Bytes("id_hash")],
+        columns: &[
+            Column::Sealed("scopes_sealed"),
+            Column::Sealed("amr_sealed"),
+        ],
+    },
+];
+
+/// The row's key in a sealed column's context: the bytes of each value
+/// of its primary key, one after the other. A NULL adds none, and a text
+/// its UTF-8. [`membership_key`] and [`setting_key`] give the same bytes
+/// for the rows they name.
+pub(super) fn row_key(values: &[KeyValue]) -> Vec<u8> {
+    let mut key = Vec::new();
+    for value in values {
+        match value {
+            KeyValue::Bytes(Some(bytes)) => key.extend_from_slice(bytes),
+            KeyValue::Bytes(None) => {}
+            KeyValue::Text(text) => key.extend_from_slice(text.as_bytes()),
+        }
+    }
+    key
+}
+
+impl KeyColumn {
+    fn name(self) -> &'static str {
+        match self {
+            KeyColumn::Bytes(name) | KeyColumn::BytesOrNone(name) | KeyColumn::Text(name) => name,
+        }
+    }
+}
+
+impl Remade {
+    /// The columns a rotation writes, in the order it reads them: an
+    /// HMAC before the sealed copy it is made from.
+    fn written(&self) -> Vec<&'static str> {
+        let mut names = Vec::new();
+        for column in self.columns {
+            match *column {
+                Column::Sealed(name) | Column::TenantKey(name) => names.push(name),
+                Column::SealedWithMac { sealed, mac } => names.extend([mac, sealed]),
+            }
+        }
+        names
+    }
+
+    /// The names of the key's columns, then of the columns written.
+    fn names(&self) -> Vec<&'static str> {
+        let mut names: Vec<&str> = self.key.iter().map(|column| column.name()).collect();
+        names.extend(self.written());
+        names
+    }
+
+    /// The statement of the cursor that reads the table's rows.
+    pub(super) fn fetch_text(&self) -> String {
+        format!(
+            "SELECT {} FROM vcon.{}",
+            self.names().join(", "),
+            self.table
+        )
+    }
+
+    /// The statement that writes the rows of one batch: one array for
+    /// each column [`Remade::fetch_text`] reads, and each row found by
+    /// its key.
+    pub(super) fn update_text(&self) -> String {
+        let written = self.written();
+        let set: Vec<String> = written.iter().map(|c| format!("{c} = n.{c}")).collect();
+        let kinds = self
+            .key
+            .iter()
+            .map(|column| match column {
+                KeyColumn::Text(_) => "text",
+                KeyColumn::Bytes(_) | KeyColumn::BytesOrNone(_) => "bytea",
+            })
+            .chain(written.iter().map(|_| "bytea"));
+        let arrays: Vec<String> = kinds
+            .enumerate()
+            .map(|(at, kind)| format!("${}::{kind}[]", at + 1))
+            .collect();
+        let found: Vec<String> = self
+            .key
+            .iter()
+            .map(|column| match *column {
+                KeyColumn::BytesOrNone(c) => format!("t.{c} IS NOT DISTINCT FROM n.{c}"),
+                KeyColumn::Bytes(c) | KeyColumn::Text(c) => format!("t.{c} = n.{c}"),
+            })
+            .collect();
+        format!(
+            "UPDATE vcon.{} t SET {} FROM unnest({}) AS n({}) WHERE {}",
+            self.table,
+            set.join(", "),
+            arrays.join(", "),
+            self.names().join(", "),
+            found.join(" AND ")
+        )
+    }
+}
+
+/// The values of one column of a primary key, for the rows of a batch.
+enum KeyArray {
+    Bytes(Vec<Option<Vec<u8>>>),
+    Text(Vec<String>),
+}
+
+impl KeyArray {
+    fn of(column: KeyColumn) -> KeyArray {
+        match column {
+            KeyColumn::Text(_) => KeyArray::Text(Vec::new()),
+            KeyColumn::Bytes(_) | KeyColumn::BytesOrNone(_) => KeyArray::Bytes(Vec::new()),
+        }
+    }
+
+    /// Adds a row's value; false when it is not of the column's kind.
+    fn push(&mut self, value: KeyValue) -> bool {
+        match (self, value) {
+            (KeyArray::Bytes(all), KeyValue::Bytes(bytes)) => all.push(bytes),
+            (KeyArray::Text(all), KeyValue::Text(text)) => all.push(text),
+            _ => return false,
+        }
+        true
+    }
+
+    fn param(&self) -> (&(dyn tokio_postgres::types::ToSql + Sync), Type) {
+        match self {
+            KeyArray::Bytes(all) => (all, Type::BYTEA_ARRAY),
+            KeyArray::Text(all) => (all, Type::TEXT_ARRAY),
+        }
+    }
+}
 
 impl PgRegistry {
     /// The registry in `database`, its columns sealed under the keys
@@ -210,6 +446,117 @@ impl PgRegistry {
         .map_err(io)?;
         Box::new(tx).commit().map_err(io)?;
         Ok(audit)
+    }
+
+    /// Moves the registry in `database` from the master key `old` to
+    /// `new`, in one transaction that holds the registry's lock: every
+    /// tenant key, a pending one too, is wrapped again under `new`; every
+    /// sealed column and every HMAC of the tables in [`REMADE`] is made
+    /// again with the keys of `new`'s catalog key; each key of the
+    /// registry's audit log is sealed again; the rows of the master
+    /// keys' use give way to one for `new`, which counts the tenant keys
+    /// wrapped and is in use since `now`; the database then names `new`'s
+    /// catalog key, and the rotation is recorded in the registry's log.
+    /// It reads and writes at most `batch` rows of a table in one
+    /// statement.
+    ///
+    /// No audit record is changed: a record's target is sealed under the
+    /// log's audit key, which stays the same. A registry that is under
+    /// `new` already is left as it is, so a rotation that was made can be
+    /// asked for again. A database that names no key is first opened
+    /// under `old`, as [`PgRegistry::open`] opens it. Every server is
+    /// stopped for a rotation: an open registry holds the keys it was
+    /// opened with.
+    ///
+    /// # Errors
+    ///
+    /// [`TenantError::WrongKey`] when the registry is under neither key.
+    /// [`TenantError::Io`] when a value does not open under `old`, the
+    /// database cannot be read or written, or `batch` is not positive,
+    /// and [`TenantError::AuditFailed`] when the record cannot be
+    /// written. After an error nothing is changed, unless the commit got
+    /// no answer: a second run then finds which key the registry is
+    /// under.
+    pub(crate) fn rekey_master(
+        database: &Arc<Database>,
+        old: &Key,
+        new: &Key,
+        now: OffsetDateTime,
+        batch: i64,
+    ) -> Result<(), TenantError> {
+        if batch < 1 {
+            return Err(TenantError::Io);
+        }
+        let old_catalog = column::catalog_key(old).map_err(io)?;
+        match PgRegistry::open(database.clone(), &old_catalog) {
+            Ok(registry) => registry.rotate(old, new, now, batch),
+            Err(TenantError::WrongKey) => {
+                // Under the new key, a rotation was made already.
+                let new_catalog = column::catalog_key(new).map_err(io)?;
+                PgRegistry::open(database.clone(), &new_catalog).map(drop)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The rotation [`PgRegistry::rekey_master`] describes, of this
+    /// registry, which was opened under `old`'s catalog key. The id the
+    /// database names is compared again with the registry's lock held:
+    /// another run may have made the rotation since the open.
+    pub(super) fn rotate(
+        &self,
+        old: &Key,
+        new: &Key,
+        now: OffsetDateTime,
+        batch: i64,
+    ) -> Result<(), TenantError> {
+        if batch < 1 {
+            return Err(TenantError::Io);
+        }
+        let old_id = column::catalog_key(old).map_err(io)?.id().0;
+        let new_catalog = column::catalog_key(new).map_err(io)?;
+        let new_id = new_catalog.id().0;
+        let to = ColumnKeys::derive(&new_catalog).map_err(io)?;
+        let tx = self.begin(Begin::Write)?;
+        match tx.named()? {
+            Some(held) if held == new_id => return Ok(()),
+            Some(held) if held == old_id => {}
+            _ => return Err(TenantError::WrongKey),
+        }
+        reseal_audit_keys(&tx.0, &to).map_err(io)?;
+        let mut wraps = 0_i64;
+        for table in &REMADE {
+            wraps += tx.remake(table, &to, old, new, batch)?;
+        }
+        tx.run("DELETE FROM vcon.master_key_use", &[])?;
+        tx.run(
+            "INSERT INTO vcon.master_key_use (master_key_id, wraps, since) VALUES ($1, $2, $3)",
+            &[
+                (&new.id().0.as_slice(), Type::BYTEA),
+                (&wraps, Type::INT8),
+                (&nanos(now), Type::INT8),
+            ],
+        )?;
+        let named =
+            tx.0.execute(
+                "UPDATE vcon.registry_key SET catalog_key_id = $1 WHERE catalog_key_id = $2",
+                &[
+                    (&new_id.as_slice(), Type::BYTEA),
+                    (&old_id.as_slice(), Type::BYTEA),
+                ],
+            )
+            .map_err(io)?;
+        all_changed(named, 1).map_err(io)?;
+        let entry = Entry {
+            actor: Actor::Cli,
+            action: Action::RekeyMaster,
+            target: None,
+            version: None,
+            status: 200,
+        };
+        tx.0.record(&entry, now)
+            .map_err(|_| TenantError::AuditFailed)?;
+        tx.0.finish().map_err(io)
     }
 
     fn begin(&self, how: Begin) -> Result<PgRegistryTx<'_>, TenantError> {
@@ -474,6 +821,136 @@ impl PgRegistryTx<'_> {
             )
             .map_err(io)?;
         Ok(changed != 0)
+    }
+
+    /// Opens `sealed`, a value of `table.column` in the row `row`, and
+    /// seals it again with the keys `to`: the plain value and its new
+    /// sealed copy.
+    fn sealed_again(
+        &self,
+        table: &str,
+        column: &str,
+        row: &[u8],
+        sealed: &[u8],
+        to: &ColumnKeys,
+    ) -> Result<(Vec<u8>, Vec<u8>), TenantError> {
+        let plain = self.0.unseal(table, column, row, sealed).map_err(io)?;
+        let ctx = column::ColumnContext {
+            tenant: REGISTRY,
+            table,
+            column,
+            row,
+        };
+        let again = column::seal_column(to, &ctx, &plain).map_err(io)?;
+        Ok((plain, again))
+    }
+
+    /// Makes every column of `spec` again in every row of its table:
+    /// a sealed value with the keys `to`, an HMAC from the value it is
+    /// of, and a tenant key from the master key `old` to `new`. The rows
+    /// are read through a cursor, `batch` at a time, and each batch is
+    /// written in one statement. Gives the number of tenant keys wrapped.
+    fn remake(
+        &self,
+        spec: &Remade,
+        to: &ColumnKeys,
+        old: &Key,
+        new: &Key,
+        batch: i64,
+    ) -> Result<i64, TenantError> {
+        let tx = &self.0;
+        tx.batch(&format!(
+            "DECLARE rekey_rows NO SCROLL CURSOR FOR {}",
+            spec.fetch_text()
+        ))
+        .map_err(io)?;
+        let fetch = format!("FETCH {batch} FROM rekey_rows");
+        let update = spec.update_text();
+        let columns = spec.written().len();
+        let mut wraps = 0_i64;
+        loop {
+            let rows = tx.query(&fetch, &[]).map_err(io)?;
+            if rows.is_empty() {
+                break;
+            }
+            let mut keys: Vec<KeyArray> = spec.key.iter().map(|c| KeyArray::of(*c)).collect();
+            let mut made: Vec<Vec<Option<Vec<u8>>>> = vec![Vec::new(); columns];
+            for row in &rows {
+                let mut values = Vec::with_capacity(spec.key.len());
+                for (at, column) in spec.key.iter().enumerate() {
+                    values.push(match column {
+                        KeyColumn::Text(_) => KeyValue::Text(col(row, at)?),
+                        KeyColumn::Bytes(_) | KeyColumn::BytesOrNone(_) => {
+                            KeyValue::Bytes(col(row, at)?)
+                        }
+                    });
+                }
+                let key = row_key(&values);
+                // Where the column is in the row read, and in `made`.
+                let mut at = spec.key.len();
+                let mut out = 0;
+                for column in spec.columns {
+                    match *column {
+                        Column::Sealed(name) => {
+                            let sealed: Option<Vec<u8>> = col(row, at)?;
+                            let again = sealed
+                                .map(|s| self.sealed_again(spec.table, name, &key, &s, to))
+                                .transpose()?;
+                            made[out].push(again.map(|(_, sealed)| sealed));
+                            at += 1;
+                            out += 1;
+                        }
+                        Column::SealedWithMac { sealed: name, .. } => {
+                            let sealed: Option<Vec<u8>> = col(row, at + 1)?;
+                            let again = sealed
+                                .map(|s| self.sealed_again(spec.table, name, &key, &s, to))
+                                .transpose()?;
+                            let (mac, sealed) = match again {
+                                Some((plain, sealed)) => {
+                                    (Some(column::mac(to, &plain).to_vec()), Some(sealed))
+                                }
+                                None => (None, None),
+                            };
+                            made[out].push(mac);
+                            made[out + 1].push(sealed);
+                            at += 2;
+                            out += 2;
+                        }
+                        Column::TenantKey(_) => {
+                            let wrapped: Option<Vec<u8>> = col(row, at)?;
+                            let again = wrapped
+                                .map(|wrapped| {
+                                    let Some(KeyValue::Bytes(Some(id))) = values.first() else {
+                                        return Err(TenantError::Io);
+                                    };
+                                    let ctx = column::Context::Tenant {
+                                        tenant: TenantId(fixed(id)?),
+                                    };
+                                    column::rewrap(old, new, &ctx, &wrapped).map_err(io)
+                                })
+                                .transpose()?;
+                            wraps += i64::from(again.is_some());
+                            made[out].push(again);
+                            at += 1;
+                            out += 1;
+                        }
+                    }
+                }
+                for (array, value) in keys.iter_mut().zip(values) {
+                    if !array.push(value) {
+                        return Err(TenantError::Io);
+                    }
+                }
+            }
+            let mut params: Vec<_> = keys.iter().map(KeyArray::param).collect();
+            for values in &made {
+                params.push((values, Type::BYTEA_ARRAY));
+            }
+            let changed = tx.execute(&update, &params).map_err(io)?;
+            all_changed(changed, rows.len()).map_err(io)?;
+        }
+        tx.batch("CLOSE rekey_rows").map_err(io)?;
+        Ok(wraps)
     }
 
     /// Runs a write whose count of rows the caller does not need.

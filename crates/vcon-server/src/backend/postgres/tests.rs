@@ -13,6 +13,7 @@ mod catalog_tests;
 mod edge;
 mod failure;
 mod registry_tests;
+mod rekey_tests;
 mod reseal_tests;
 mod schema_tests;
 mod space_tests;

@@ -71,6 +71,19 @@ All notable changes to this project are recorded here. The format follows
   them or none. The audit key does not rotate with the tenant key, and no
   audit record is changed: a record's target is sealed under the audit
   key. Giving a log a new audit key is not written.
+- **The statements that rotate the master key of a registry in
+  PostgreSQL**, behind the `postgres` cargo feature and used by no
+  command yet: `rekey master` works on the local registry as before. One
+  transaction, with the registry's lock held, wraps every tenant key
+  again under the new master key, a pending one too; makes the sealed
+  columns and the lookup values of the tenants, API keys, users,
+  memberships, settings and sessions again under the new key; seals the
+  key of the registry's audit log again; replaces the rows of
+  `master_key_use` with one row for the new key; moves the id in
+  `registry_key`; and records `rekey_master`. It changes all of them or
+  none, and no audit record is changed. A registry that is under the new
+  key already is left as it is, so a rotation can be asked for again,
+  and a registry under neither key is refused.
 
 ### Changed
 

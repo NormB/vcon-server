@@ -836,15 +836,39 @@ pub(super) fn all_changed(changed: u64, of: usize) -> Result<(), StoreError> {
     }
 }
 
-/// Seals each key of the tenant's audit log again, with the keys `to`.
-/// A key that does not open under the transaction's keys is left as it
-/// is, as [`PgCatalog::audit_keys`] leaves it out; the newest must open.
-fn reseal_audit_keys(tx: &PgTx<'_>, to: &ColumnKeys) -> Result<(), StoreError> {
+/// The statements that read the keys of an audit log, oldest first, and
+/// seal one again: a tenant's log, whose statements take the tenant as
+/// their last parameter, or with [`REGISTRY`] the registry's, whose table
+/// has no column for one.
+pub(super) fn audit_key_statements(tenant: TenantId) -> (&'static str, &'static str) {
+    if tenant == REGISTRY {
+        (
+            "SELECT key_id, wrapped FROM vcon.admin_audit_key ORDER BY ordinal",
+            "UPDATE vcon.admin_audit_key SET wrapped = $2 WHERE key_id = $1",
+        )
+    } else {
+        (
+            "SELECT key_id, wrapped FROM vcon.audit_key WHERE tenant = $1 ORDER BY ordinal",
+            "UPDATE vcon.audit_key SET wrapped = $2 WHERE key_id = $1 AND tenant = $3",
+        )
+    }
+}
+
+/// Seals each key of the audit log of the transaction's tenant, or of
+/// the registry, again with the keys `to`. A key that does not open
+/// under the transaction's keys is left as it is, as
+/// [`PgCatalog::audit_keys`] leaves it out; the newest must open.
+pub(super) fn reseal_audit_keys(tx: &PgTx<'_>, to: &ColumnKeys) -> Result<(), StoreError> {
     let tenant = tx.tenant;
-    let rows = tx.query(
-        "SELECT key_id, wrapped FROM vcon.audit_key WHERE tenant = $1 ORDER BY ordinal",
-        &[(&tenant.0.as_slice(), Type::BYTEA)],
-    )?;
+    let id_of_tenant = tenant.0.as_slice();
+    let (select, update) = audit_key_statements(tenant);
+    // The registry's statements name no tenant.
+    let whose: &[Param<'_>] = if tenant == REGISTRY {
+        &[]
+    } else {
+        &[(&id_of_tenant, Type::BYTEA)]
+    };
+    let rows = tx.query(select, whose)?;
     if rows.is_empty() {
         // A catalog that would not open is not moved.
         return Err(StoreError::Io);
@@ -856,14 +880,9 @@ fn reseal_audit_keys(tx: &PgTx<'_>, to: &ColumnKeys) -> Result<(), StoreError> {
         match column::unwrap_key(tx.keys()?, &ctx, &wrapped) {
             Ok(key) => {
                 let again = column::wrap_key(to, &ctx, &key).map_err(io)?;
-                let changed = tx.execute(
-                    "UPDATE vcon.audit_key SET wrapped = $3 WHERE tenant = $1 AND key_id = $2",
-                    &[
-                        (&tenant.0.as_slice(), Type::BYTEA),
-                        (&id, Type::BYTEA),
-                        (&again, Type::BYTEA),
-                    ],
-                )?;
+                let mut params: Vec<Param<'_>> = vec![(&id, Type::BYTEA), (&again, Type::BYTEA)];
+                params.extend_from_slice(whose);
+                let changed = tx.execute(update, &params)?;
                 all_changed(changed, 1)?;
             }
             Err(_) if at + 1 < rows.len() => {}
@@ -1300,7 +1319,7 @@ impl<'a> PgTx<'a> {
         })
     }
 
-    fn batch(&self, sql: &str) -> Result<(), StoreError> {
+    pub(super) fn batch(&self, sql: &str) -> Result<(), StoreError> {
         let outcome = self.trip(self.client().batch_execute(sql));
         outcome.map_err(|e| {
             self.aborted.set(true);

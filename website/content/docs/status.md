@@ -244,6 +244,14 @@ PostgreSQL catalog preview and behind the `postgres` cargo feature:
   tenant's catalog is moved to a new tenant key in one transaction, which
   changes no audit record: the audit key does not rotate with the tenant
   key. No server uses these statements.
+- **The statements that rotate the master key of the registry in
+  PostgreSQL.** One transaction wraps every tenant key again under the
+  new master key, makes the registry's sealed columns and lookup values
+  again, seals the key of the registry's audit log again, replaces the
+  rows of `master_key_use` with one for the new key, moves the id in
+  `registry_key` and records `rekey_master`; it changes no audit record.
+  No command uses these statements: `rekey master` works on the local
+  registry.
 
 ## Being built
 
