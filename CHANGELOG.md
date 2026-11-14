@@ -139,6 +139,16 @@ All notable changes to this project are recorded here. The format follows
   - What the feature adds to the build, for each release target: 22
     crate versions, none with a build script, one of them a procedural
     macro (`der_derive`).
+  - The size of each release binary, from release 0.4.5 to this build:
+    `x86_64-unknown-linux-gnu` 50,457,584 to 52,499,224 bytes
+    (+2,041,640); `aarch64-unknown-linux-gnu` 47,734,568 to 49,603,432
+    bytes (+1,868,864). The 0.4.5 numbers are the published binaries'; the
+    others are the `size:` lines of the two build jobs of the Release
+    workflow's run on this change,
+    <https://github.com/NormB/vcon-server/actions/runs/43598962925>. They
+    hold everything that changed since 0.4.5. The feature alone, as one
+    aarch64 development host built one commit without and with it:
+    50,710,792 to 52,734,384 bytes (+2,023,592).
 - **The terminal UI's page states the keys once.** The
   [Keys](https://vcon-server.com/docs/tui/#keys) table is the one list of
   the keys and of the views each works in. The page no longer repeats the
