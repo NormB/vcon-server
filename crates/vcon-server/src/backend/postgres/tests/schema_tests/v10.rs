@@ -125,22 +125,20 @@ fn the_how_to_says_a_removed_tenant_s_audit_records_are_kept() {
 }
 
 #[test]
-fn the_changelog_says_what_version_10_changes_and_that_the_log_is_kept() {
-    let text = flat("../../CHANGELOG.md");
-    let unreleased = text
-        .split(" ## [")
-        .find(|section| section.starts_with("Unreleased]"))
-        .expect("an Unreleased section");
+fn the_how_to_says_version_10_under_schema_versions_and_that_the_log_is_kept() {
+    // The changelog links the how-to for this; its entry does not walk
+    // through the versions.
+    let page = flat("../../website/content/docs/postgres-catalog.md");
+    let (before, versions) = page
+        .split_once(" ### Schema versions ")
+        .expect("the how-to has the section Schema versions");
     assert!(
-        unreleased.contains(
-            "Version 10 lets a transaction of the registry read every row of the table \
-             `tenant_lock`"
-        ),
-        "version 10, in the entry of the schema"
+        versions.contains("Version 10 changes who reads the table `tenant_lock`"),
+        "version 10, in the section of the schema's versions"
     );
     assert!(
-        unreleased.contains("A removal keeps the tenant's audit records"),
-        "the rule, in the entry of the statements"
+        before.contains("A tenant that is removed keeps its audit records."),
+        "the rule, where the page says what the database holds"
     );
 }
 

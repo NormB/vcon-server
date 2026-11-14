@@ -8,240 +8,55 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
-- **A server and the commands keep their catalogs in PostgreSQL**, behind
-  the `postgres` cargo feature, a preview (the release binaries are built
-  with it: see the first entry under Changed).
-  With `catalog.backend = "postgres"`, `serve` and every command keep the
-  registry and every tenant's catalog in the database; before, a start
-  connected, checked the server and stopped. Read this before using it:
-  - One server serves a database. A second server, on any host, is
-    refused at start. A server, a command beside it and a command that
-    runs alone each hold advisory locks on the database for as long as
-    they run, so `migrate`, `rekey master`, `rekey tenant`, `tenant
-    create`, `tenant remove` and `check` need every server stopped, and
-    `migrate` is refused while any command runs.
-  - A database starts with no tenant. No command moves the tenants of a
-    data directory into PostgreSQL: a configuration changed to
-    `catalog.backend = "postgres"` no longer serves the data directory's
-    tenants, and removing the `[catalog]` tables serves them again.
-  - The bucket prefix a data directory claimed is refused to a database:
-    give the database a `storage.s3.prefix` of its own. The claim of the
-    prefix is a row of the database.
-  - `data_dir` is still required and holds the two lock files only.
-    `catalog.postgres.pool` must be at least 2.
-  - `vcon-server backup` and `storage move-objects` are refused, each with
-    what to use: back up the database with `pg_dump` or a base backup, with
-    the bucket and the master key file.
-  - `rekey master` moves the registry to the new key in one transaction.
-    A wrong master key is refused with `the master key is not the one the
-    registry in the catalog database was made under`.
-  - A start logs `the catalogs are in PostgreSQL` with the server reached
-    and the role before its `serving` line.
-  The how-to is
-  [keep the catalogs in PostgreSQL](https://vcon-server.com/docs/postgres-catalog/).
-- **The PostgreSQL preview's schema is at version 13.** A database that
-  0.4.5 or an earlier release migrated is at version 6: run
-  `vcon-server migrate` with the new binary before a server starts, as
-  [after an upgrade from 0.4.5](https://vcon-server.com/docs/postgres-catalog/#after-an-upgrade-from-0-4-5)
-  shows. Until then a server stops with `the database schema is version
-  6, older than this binary's 13: run vcon-server migrate`. Version 7
-  gives the `version` table the column `seq`, the order versions were
-  stored in, and on PostgreSQL 17 and later grants `vcon_app` `MAINTAIN`
-  on the tables `version`, `vcon` and `tombstone`, for the `VACUUM` the
-  server will run after a purge. Version 8 makes the audit logs
-  append-only in the database: triggers on the tables `audit` and
-  `admin_audit` refuse every `DELETE` and `TRUNCATE`, and every `UPDATE`
-  but a larger `count` of a record the server counts requests in, for
-  `vcon_owner` as for `vcon_app`. Version 9 sets the rule for that
-  `count`: an `UPDATE` passes when the new count is larger than the old
-  one, by any number, and no other column is different, where version 8
-  took exactly one more; the server then writes the refused requests of a
-  minute to a record that is there with one statement.
-  The count only grows: the same number or a smaller one is refused with
-  `an audit record is not changed, but for a larger count of a counted
-  record`. Version 10 lets a transaction of the registry read every row
-  of the table `tenant_lock`, which has one row for each tenant that has
-  a catalog, and write none; a tenant's transaction reads and writes its
-  own row, as before. Version 11 gives each tenant's audit log a key of
-  its own: the table `audit_key` holds it sealed under the tenant's
-  catalog key, and each record in `audit` names the key that sealed its
-  target in the new column `key_id`. `vcon_app` reads an audit key, makes
-  one and seals one again, and no role is granted a `DELETE` there.
-  Version 12 names the catalog key the registry is sealed under, in the
-  one row of the new table `registry_key`: a registry opened under
-  another master key is refused when it is opened, where it was refused
-  at the first sealed value it read. It also gives the registry's audit
-  log a key of its own, in the new table `admin_audit_key`, and each
-  record in `admin_audit` names the key that sealed its target in the
-  new column `key_id`, so a rotation of the master key will change no
-  audit record. Version 13 keeps the claim of the bucket prefix in the
-  database, in the one row of the new table `storage_claim`, where
-  catalogs in a data directory keep it in the file `storage.claim`:
-  `vcon_app` reads the claim and writes it once, and no role is granted
-  an `UPDATE` or a `DELETE` there. No
-  row is changed by any of these versions: a database of the preview
-  holds no audit record and no claim, so versions 11 to 13 convert none. The local catalogs
-  stay at schema version 9.
-- **The statements that keep a tenant's catalog in PostgreSQL**, behind
-  the `postgres` cargo feature. They
-  pass the store's conformance suite on PostgreSQL 16 and 18 with the
-  objects in a bucket, with and without Parquet storage. The uuid of a
-  vCon is kept as an HMAC and a sealed copy; a version's form, gzip flag
-  and size, and an audit record's target, are sealed; times, holds,
-  counts and random ids are clear.
-- **The statements that make, open, list and remove a tenant in
-  PostgreSQL**, behind the `postgres` cargo feature. A tenant is made by its row in `tenant_lock` and the id of its
-  catalog key, and its objects are in the bucket. A removal deletes the
-  bucket's objects and then the tenant's rows, at most 10,000 rows of a
-  table in one transaction. A removal keeps the tenant's audit records:
-  the rows of `audit` and `audit_key` stay, and the database refuses a
-  `DELETE` of a record from every role.
-- **The statements that move a tenant's catalog in PostgreSQL to a new
-  tenant key**, behind the `postgres` cargo feature. One transaction makes the sealed columns and the lookup values of
-  the tenant's vCons, versions and purge records again under the new key
-  and seals the key of the tenant's audit log again; it changes all of
-  them or none. The audit key does not rotate with the tenant key, and no
-  audit record is changed: a record's target is sealed under the audit
-  key. Giving a log a new audit key is not written.
-- **The statements that rotate the master key of a registry in
-  PostgreSQL**, behind the `postgres` cargo feature, which `rekey master`
-  runs on a PostgreSQL catalog. One
-  transaction, with the registry's lock held, wraps every tenant key
-  again under the new master key, a pending one too; makes the sealed
-  columns and the lookup values of the tenants, API keys, users,
-  memberships, settings and sessions again under the new key; seals the
-  key of the registry's audit log again; replaces the rows of
-  `master_key_use` with one row for the new key; moves the id in
-  `registry_key`; and records `rekey_master`. It changes all of them or
-  none, and no audit record is changed. A registry that is under the new
-  key already is left as it is, so a rotation can be asked for again,
-  and a registry under neither key is refused.
+- **The catalogs can be kept in PostgreSQL, a preview the release binaries
+  include.**
+  - Effect: With `catalog.backend = "postgres"`, a server keeps its registry
+    and every tenant's catalog in a PostgreSQL database.
+  - Do: Coming from 0.4.5 with that setting, run `vcon-server migrate` before
+    the first start; a data-directory deployment changes nothing.
+  - Limit: One server serves a database, and a database starts with no
+    tenant: no command moves a data directory's tenants.
+  - Docs: [the limits of the
+    preview](https://vcon-server.com/docs/postgres-catalog/#the-limits-of-the-preview)
 
 ### Changed
 
-- **The release binaries are built with the `postgres` cargo feature.**
-  The release build (`scripts/reproducible-build.sh`) names it, so the
-  x86_64 and aarch64 binaries hold the PostgreSQL catalog. It is still a
-  preview: read
-  [the limits of the preview](https://vcon-server.com/docs/postgres-catalog/#the-limits-of-the-preview)
-  before using it. `cargo install vcon-server` and a build from source
-  build the default features, as before, and get it with
-  `--features postgres`.
-  - Upgrading from 0.4.5, with the catalogs in the data directory (no
-    `[catalog]` table, or `backend = "local"`): nothing changes. The
-    feature does nothing until `catalog.backend` is `"postgres"`.
-  - Upgrading from 0.4.5, with `catalog.backend = "postgres"` set: on
-    0.4.5 the server stopped at start. It now serves from the database,
-    which is empty of tenants: the data directory's tenants are not in
-    it, and no command moves them. Run `vcon-server migrate` before the
-    first start: a database that 0.4.5 migrated is at schema version 6,
-    and this binary needs version 13.
-  - What the feature adds to the build, for each release target: 22
-    crate versions, none with a build script, one of them a procedural
-    macro (`der_derive`).
-  - The size of each release binary, from release 0.4.5 to this build:
-    `x86_64-unknown-linux-gnu` 50,457,584 to 52,499,224 bytes
-    (+2,041,640); `aarch64-unknown-linux-gnu` 47,734,568 to 49,603,432
-    bytes (+1,868,864). The 0.4.5 numbers are the published binaries'; the
-    others are the `size:` lines of the two build jobs of the Release
-    workflow's run on this change,
-    <https://github.com/NormB/vcon-server/actions/runs/43598962925>. They
-    hold everything that changed since 0.4.5. The feature alone, as one
-    aarch64 development host built one commit without and with it:
-    50,710,792 to 52,734,384 bytes (+2,023,592).
-- **The terminal UI's page states the keys once.** The
-  [Keys](https://vcon-server.com/docs/tui/#keys) table is the one list of
-  the keys and of the views each works in. The page no longer repeats the
-  keys under each of the 25 screens, in a table of last lines or in a copy
-  of the help view. A second table under Keys names the screens where
-  fewer keys work, and a test holds both tables to the code. A screen's
-  section says which screens follow it, and names a key only in a step.
-  The command is unchanged.
+- **The release binaries are about 2 MB larger with the PostgreSQL catalog.**
+
+  | Target | 0.4.5, as published | Built with the catalog |
+  |---|---|---|
+  | `x86_64-unknown-linux-gnu` | 50,457,584 bytes | 52,499,224 bytes |
+  | `aarch64-unknown-linux-gnu` | 47,734,568 bytes | 49,603,432 bytes |
+- **`cargo install` gets the PostgreSQL catalog with `--features postgres`.**
+  - Effect: `cargo install vcon-server` and a build from source build the
+    default features, as before, without the preview.
+  - Do: Add `--features postgres` to either command to build it in.
+  - Docs: [install with
+    cargo](https://vcon-server.com/docs/install/#install-with-cargo)
+- **The terminal UI page lists the keys once.**
+  - Effect: One table names every key and the views it works in; the
+    command is unchanged.
+  - Docs: [Keys](https://vcon-server.com/docs/tui/#keys)
 
 ### Fixed
 
-- **No test and no log line shows the uuid of a vCon.** Code scanning
-  refused a pull request for an assertion message that wrote a vCon's
-  uuid to the test log (`rust/cleartext-logging`), the second time for
-  that cause, and nothing on the developer's side held it. Now
-  `scripts/check_style.py` refuses, under `crates/`, an assertion
-  message, a panic text, a debug print or a log line that names a value
-  whose name ends in `uuid` (`uuid-in-message`), and the commit hook runs
-  it. The two messages it found name the vCon by its place in the test.
-  The rule reads names: it does not find a uuid under another name, one
-  that a call returns, or the values a failed `assert_eq!` prints.
-- **The workflows named a floating runner image.** Every job ran on
-  `ubuntu-latest`. On 2026-11-13 GitHub began to give that label Ubuntu
-  26.04 for some jobs: the website job's Playwright install failed on
-  `main`, on a commit whose pull request had passed on Ubuntu 24.04
-  minutes before. Every job now names `ubuntu-24.04` (the aarch64 release
-  jobs already named `ubuntu-24.04-arm`), and
-  `scripts/check_runner_images.py`, in the commit hook and in CI's scan
-  job, refuses a label that ends in `-latest` in a workflow or a composite
-  action. The release binaries are not changed by this: they are built in
-  an AlmaLinux 9 container pinned by digest, on glibc 2.34, as before.
-  [Runner images](https://vcon-server.com/docs/development/#runner-images)
-  shows how to move to a newer image. No server code changed.
-- **The commit hook did not run every check of the tree that CI runs.** No
-  hook ran `scripts/test_docs_test.py`, the how-to runner's own tests,
-  which read the how-to pages: on 2026-11-13 a page lost a line of a
-  step's expected output, the hooks accepted the commit and CI's how-to job
-  refused it. Nothing compared the scripts the workflows run with the
-  scripts the hooks run. `scripts/check_hook_steps.py` now does, in the
-  commit hook and in CI's scan job: a script of `scripts/` that a workflow
-  runs is run by a hook, or is listed in the script with the reason it runs
-  only in CI. The commit hook now runs the seven it found:
-  `scripts/test_docs_test.py`, `scripts/check_test_runner.py`,
-  `scripts/ci_success.py check`, `scripts/clippy_features.py check`,
-  `scripts/check_dependabot.py`, `scripts/check_test_names.py` and
-  `scripts/check_glibc.py --docs .`. The hook runs in a copy of the staged
-  files, which is no git repository, so the two checks that read git's
-  tracked files take `--walk` there and read every file of the copy.
-  [Scripts only CI runs](https://vcon-server.com/docs/development/#scripts-only-ci-runs)
-  shows how to add a script step. No server code changed.
-- **The commit hook did not lint the feature sets CI lints.** The hook ran
-  clippy for the default features only, so a lint in code that only the
-  `postgres` feature, the `backend-tests` feature or a build without the
-  default features compiles failed first in CI: an unused `mut` did on
-  2026-11-12. The feature sets are now the rows of
-  `.github/clippy-feature-sets.txt`; `scripts/clippy_features.py` lints
-  each with warnings denied, in the commit hook (every row) and in CI's
-  backend and PostgreSQL jobs (their groups), and its `check`, in CI's scan
-  job, refuses a feature set linted outside the list and a row no CI job
-  runs.
-  [Feature sets clippy lints](https://vcon-server.com/docs/development/#feature-sets-clippy-lints)
-  shows how to add one. No server code changed.
-- **In the PostgreSQL preview a statement could choose a row's number.**
-  The column `seq` of the tables `version`, `manifest`, `audit` and
-  `admin_audit` is numbered by PostgreSQL, and an `INSERT` with
-  `OVERRIDING SYSTEM VALUE`, or an `UPDATE` that set it to `DEFAULT`,
-  gave a row another number; the newest version of a vCon and the order
-  of an audit log are read by it. From schema version 8 a trigger takes
-  the number of a new row from the sequence whatever the statement says
-  and keeps the number of an updated row. No released server writes
-  these tables.
-- **A server started the moment `vcon-server migrate` returned could be
-  refused by the migration's locks.** The command left its two advisory
-  locks to the end of its database session, and PostgreSQL releases
-  those only when it notices the closed connection, which can be after
-  the command has exited. `migrate` now gives up the role and both locks
-  before it returns, also when it fails or was refused one of the two.
-  Only the PostgreSQL preview is affected.
-
-- **The PostgreSQL preview's pages said more of row-level security than
-  it does.** The how-to and the status page said that a query with no
-  tenant set is refused. That holds for a statement the server plans: the
-  planner evaluates the policy. A prepared statement whose plan the
-  server has cached is not planned again, and the policy is then
-  evaluated only for a row the statement examines, so on a table with no
-  rows, or with an index condition that finds none, such a statement ends
-  with nothing and no error. What holds for every plan: with no tenant
-  set no row is returned or changed, and the statement is refused at the
-  first row it examines. The
-  [how-to](https://vcon-server.com/docs/postgres-catalog/) and the
-  [status page](https://vcon-server.com/docs/status/) now say that, and
-  tests on PostgreSQL 16 and 18 hold it for every table. The schema is
-  unchanged, and no row was readable without a tenant before or after.
+- **`vcon-server migrate` frees the database before it returns.**
+  - Was: A server started the moment `migrate` returned could be refused by
+    the migration's locks.
+  - Effect: `migrate` gives up both locks before it returns, also when it
+    fails.
+  - Limit: Only the PostgreSQL preview is affected.
+  - Docs: [make the
+    schema](https://vcon-server.com/docs/postgres-catalog/#make-the-schema)
+- **The PostgreSQL preview's pages no longer overstate row-level security.**
+  - Was: The pages said a query with no tenant set is refused; a cached
+    statement that examines no row returns nothing, with no error.
+  - Effect: The pages say what holds for every plan: with no tenant set,
+    no row is returned or changed.
+  - Limit: The schema is unchanged; no row was readable without a tenant
+    before or after.
+  - Docs: [keep the catalogs in
+    PostgreSQL](https://vcon-server.com/docs/postgres-catalog/)
 
 ## [0.4.5] - 2026-11-12
 
@@ -249,69 +64,41 @@ The upgrade from 0.4.4 is the binary alone. No stored data and no schema
 changes: the catalogs stay at schema version 9, and the PostgreSQL
 preview's schema at version 6. A 0.4.4 configuration is read as it was.
 A downgrade is possible: 0.4.4 opens a data directory that 0.4.5 has
-served. Three things look different after the upgrade; each is under
-Fixed or Changed below, and the Upgrade page's "From 0.4.4 to 0.4.5" has
-the steps.
-
-- **The terminal UI's last line names only the keys that act.** On each
-  screen of `vcon-server tui` the last line lists the keys that do
-  something in the state shown. 0.4.4 showed the list's keys on the
-  connecting screen, an empty tenant and every failure.
-- **Two failure screens say what can be done.** For an operator key, and
-  for a key without the `read` scope, the screen says `Press q to quit.`
-  where 0.4.4 said `Press r to try again, or q to quit.`. While a message
-  stands in place of the list, the keys that select and open do nothing.
-- **`expires_at` of a new key is a whole second.** A key made by 0.4.5
-  has an expiry with no fraction of a second, such as
-  `2027-02-10T12:00:00Z`. Keys made before keep the expiry they have, so
-  a client must still read an `expires_at` with a fraction.
+served. Three things look different after the upgrade; each is an entry
+below, and the Upgrade page's "From 0.4.4 to 0.4.5" has the steps.
 
 ### Fixed
 
-- **The terminal UI's last line named keys that did nothing.** The
-  connecting screen, an empty tenant and every failure showed the list's
-  keys (`j down  k up  Enter open  r refresh  n more`). The last line now
-  names only the keys that act on the screen: `? help  q quit` while
-  connecting or loading, `r refresh  ? help  q quit` for an empty tenant
-  or a failure, no `n more` when every vCon is read, and no `j down  k up`
-  for a list of one. For a key that may not list vCons (an operator key,
-  or a key without the `read` scope) the screen says `Press q to quit.`
-  in place of `Press r to try again, or q to quit.`, since `r` cannot
-  read another key. While a message stands in place of the list, the keys
-  that select and open do nothing. The
-  [terminal UI page](https://vcon-server.com/docs/tui/) lists
-  the last line of each screen.
+- **The terminal UI's last line names only the keys that act.**
+  - Was: The connecting screen, an empty tenant and every failure showed
+    the list's keys, which did nothing there.
+  - Effect: On each screen of `vcon-server tui` the last line lists the keys
+    that do something in the state shown.
+  - Docs: [terminal UI](https://vcon-server.com/docs/tui/)
+- **Two failure screens of the terminal UI say what can be done.**
+  - Was: For an operator key, and for a key without the `read` scope, the
+    screen said `Press r to try again, or q to quit.`.
+  - Effect: The screen says `Press q to quit.`, since `r` cannot read
+    another key.
+  - Limit: While a message stands in place of the list, the keys that
+    select and open do nothing.
 
 ### Changed
 
-- **The terminal UI page shows every screen.** The
-  [page](https://vcon-server.com/docs/tui/) has a table of the 25 screens
-  the command draws and a section for each: the screen as the command
-  draws it, what it shows, the keys that do something on it, how to leave
-  it and, for a failure, what to do. Nine screens are new on the page:
-  connecting, loading, the list of one vCon, the list while the next page
-  is read, a key without the `read` scope, a list the server did not
-  give, and three of the detail view. The prerequisites name what the
-  server must hold: a tenant, a tenant key with the `read` scope and no
-  operator configuration.
-- **A new key's expiry is a whole second.** `expires_at` of a key made
-  from now on has no fraction of a second (`2027-02-10T12:00:00Z`): the
-  days are counted from the second the key is made in, so a key lives up
-  to one second less than the days asked and never longer. The answer
-  that makes a key with an expiry is then 136 bytes whenever the key is
-  made; before, its length changed with the clock's sub-second digits.
-  Keys made before keep the expiry they have.
-- **A GitHub release's text is its changelog section.** The release
-  workflow writes the section of the tag's version, then the line that
-  says how to verify a download (`scripts/release_notes.py`). Each
-  paragraph and list item is written on one line, since GitHub shows each
-  line break of a release's text. A tag whose version has no section in
-  `CHANGELOG.md` stops the workflow before the builds. Before, the text
-  was the verify line alone, and the notes of 0.4.4 were added by hand.
-- **No test shows a credential when it fails.** Assertion messages, panic
-  texts and debug prints in the tests no longer show a key's token, a
-  secret, a cookie or a session id, and `scripts/check_style.py` refuses
-  one that names such a value (`credential-in-message`).
+- **A new key's expiry is a whole second.**
+  - Effect: `expires_at` of a key made by 0.4.5 has no fraction of a second,
+    such as `2027-02-10T12:00:00Z`.
+  - Do: Keep reading an `expires_at` with a fraction: keys made before keep
+    the expiry they have.
+  - Limit: A key lives up to one second less than the days asked, and never
+    longer.
+- **The terminal UI page shows every screen.**
+  - Effect: The page has a table of the 25 screens the command draws and a
+    section for each.
+  - Docs: [terminal UI](https://vcon-server.com/docs/tui/)
+- **A GitHub release's text is its changelog section.**
+  - Effect: A release's text is the section of its version, then the line
+    that says how to verify a download.
 
 ## [0.4.4] - 2026-11-12
 

@@ -168,7 +168,7 @@ staged, it checks that every GitHub Action is pinned by commit
 for dependency versions names its advisory
 (`scripts/check_dependency_age.py --walk`), runs the checks of the tree
 that CI's scan job runs (`scripts/check_hook_steps.py`,
-`scripts/check_runner_images.py`,
+`scripts/check_runner_images.py`, `scripts/check_changelog.py`,
 `scripts/check_test_runner.py`, `scripts/ci_success.py check`,
 `scripts/clippy_features.py check`, `scripts/check_dependabot.py --walk`,
 `scripts/check_test_names.py --walk` and `scripts/check_glibc.py --docs .`) and the

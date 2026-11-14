@@ -642,6 +642,13 @@ jobs:
           set -euo pipefail
           python3 -I scripts/test_check_runner_images.py
           python3 -I scripts/check_runner_images.py
+      # A changelog entry is a bold lead and labeled sub-bullets, for every
+      # section down to the script's marker (scripts/check_changelog.py).
+      - name: Every changelog entry has the outline form
+        run: |
+          set -euo pipefail
+          python3 -I scripts/test_check_changelog.py
+          python3 -I scripts/check_changelog.py
 
   hooks:
     name: git hooks

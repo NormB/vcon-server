@@ -125,15 +125,14 @@ fn the_how_to_says_what_version_12_changes() {
 }
 
 #[test]
-fn the_changelog_says_what_version_12_changes() {
-    let text = flat("../../CHANGELOG.md");
-    let unreleased = text
-        .split(" ## [")
-        .find(|section| section.starts_with("Unreleased]"))
-        .expect("an Unreleased section");
+fn the_how_to_says_what_version_12_changes_under_schema_versions() {
+    let page = flat("../../website/content/docs/postgres-catalog.md");
+    let (_, versions) = page
+        .split_once(" ### Schema versions ")
+        .expect("the how-to has the section Schema versions");
     assert!(
-        unreleased.contains("Version 12 names the catalog key the registry is sealed under"),
-        "version 12, in the entry of the schema"
+        versions.contains("Version 12 makes the table `registry_key`, whose one row names the"),
+        "version 12, in the section of the schema's versions"
     );
 }
 

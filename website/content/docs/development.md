@@ -285,7 +285,9 @@ git config core.hooksPath .githooks
   with the reason it runs only in CI (`scripts/check_hook_steps.py`, see
   [Scripts only CI runs](#scripts-only-ci-runs)), every job names a fixed
   runner image (`scripts/check_runner_images.py`, see
-  [Runner images](#runner-images)), every test run has the
+  [Runner images](#runner-images)), every changelog entry has the outline
+  form (`scripts/check_changelog.py`, see
+  [Changelog entries](#changelog-entries)), every test run has the
   per-test deadline (`scripts/check_test_runner.py`), the "CI success" job
   needs every job of the workflow (`scripts/ci_success.py check`), a CI job
   lints every feature set (`scripts/clippy_features.py check`), Dependabot
@@ -763,6 +765,62 @@ python3 -I scripts/release_notes.py 0.4.5 --repo NormB/vcon-server
 
 `scripts/test_release_notes.py` tests the script, and that the workflow
 calls it.
+
+### Changelog entries
+
+`CHANGELOG.md` is read by someone deciding whether to upgrade and what to
+do after. An entry is an outline, and every line of it answers one of:
+what changed, what must be done, what the limit is, where the detail is.
+
+```text
+- **Lead: what changed, in the user's terms.**
+  - Effect: what the user sees or can now do.
+  - Do: what the user must do, with the command or setting.
+  - Limit: one limit or caveat.
+  - Docs: [page title](link to the page that holds the detail).
+```
+
+- The lead is bold, is the whole top-level bullet, and has at most
+  15 words. It states the effect, and the mechanism stays out of it.
+- Under it are one to five sub-bullets, each one sentence of at most
+  25 words that starts with a label: `Effect:`, `Do:`, `Limit:`, `Docs:`,
+  or `Was:` in a Fixed entry, for what went wrong before. A label is used
+  once, and `Effect:` or `Was:` is always there.
+- An entry about sizes or limits may hold one table of at most six rows in
+  place of the sub-bullets.
+- There is no paragraph under a bullet and no third level. A line is at
+  most 80 characters; a line that is one word, such as a link's address,
+  is as long as it is.
+- Internals stay out: schema versions step by step, the names of tables,
+  columns, roles, triggers, functions and tests. A command, a flag, a
+  setting, a path, an error's text or a number the user meets stays, in
+  code font. The detail goes to the page it belongs to, and the entry
+  links it.
+- A change no user of the released binaries or of the site can see (a
+  hook, a workflow, a runner image, a test, a gate) has no entry.
+- Related changes of one release are one entry.
+- A release section may open with one paragraph, before its first heading,
+  that says what the upgrade is.
+
+`scripts/check_changelog.py` holds the shape, in the commit hook and in
+CI's scan job, for every section from `[Unreleased]` down to the section
+its `MARKER` names. The sections below the marker are in the older prose
+form; a change that rewrites one moves the marker down to it. The script
+prints the section, the entry's lead and the rule for each problem:
+
+| Message | Fix |
+|---|---|
+| `the entry does not start with a bold lead` | Start the bullet with `- **Lead.**`. |
+| `the lead is the whole bullet` | Move what follows the lead into sub-bullets. |
+| `the lead has <n> words, at most 15` | Shorten the lead. |
+| `the entry has no sub-bullet and no table` | Add `Effect:`, or `Was:` for a fix. |
+| `does not start with one of Effect:, Do:, Limit:, Docs:, Was:` | Start the sub-bullet with one of the labels. |
+| `the <label>: sub-bullet has <n> words, at most 25` | Shorten it, or move the detail to a docs page and link it. |
+| `a paragraph under the bullet` or `a third level of nesting` | Write it as sub-bullets of the entry. |
+| `a line of <n> characters, at most 80` | Wrap the line. |
+| `text outside an entry, under a heading` | Make it an entry, or move it before the section's first heading. |
+
+`scripts/test_check_changelog.py` tests the script.
 
 ## Pinned tool downloads
 
