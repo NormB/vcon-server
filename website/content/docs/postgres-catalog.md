@@ -19,6 +19,11 @@ with PostgreSQL's own tools, on a host other than the server's. What it
 does not change: the API, the keys, the bucket's contents, and the master
 key file, which never leaves the server's host.
 
+**What the database holds.** The uuid of a vCon is kept as an HMAC and a
+sealed copy. A version's form, gzip flag and size, and an audit record's
+target, are sealed. Times, holds, counts and random ids are in the clear.
+A tenant that is removed keeps its audit records.
+
 It is a preview because of
 [the limits below](#the-limits-of-the-preview): read them before using it.
 
@@ -490,8 +495,13 @@ sudo -u vcon vcon-server migrate --config /etc/vcon-server/vcon-migrate.toml
 ```
 
 Until then a server stops with `the database schema is version 6, older
-than this binary's 13: run vcon-server migrate`. Versions 7 to 13
-change no row there is. Version 7 changes two things:
+than this binary's 13: run vcon-server migrate`.
+
+### Schema versions
+
+What each version of the schema after 6 changes, for an operator who
+reads the database or grants on it. Versions 7 to 13 change no row there
+is. Version 7 changes two things:
 
 - The `version` table gains the column `seq`, a number PostgreSQL gives
   each version as it is stored. Two versions of one vCon can hold the same

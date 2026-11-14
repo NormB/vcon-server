@@ -140,19 +140,29 @@ fn the_how_to_says_what_version_13_changes() {
 }
 
 #[test]
-fn the_changelog_says_what_version_13_changes() {
-    let text = flat("../../CHANGELOG.md");
-    let unreleased = text
+fn the_how_to_says_what_version_13_changes_under_schema_versions() {
+    let page = flat("../../website/content/docs/postgres-catalog.md");
+    let (before, versions) = page
+        .split_once(" ### Schema versions ")
+        .expect("the how-to has the section Schema versions");
+    assert!(
+        versions.contains("Version 13 makes the table `storage_claim`, whose one row holds the"),
+        "version 13, in the section of the schema's versions"
+    );
+    assert!(
+        before.contains("schema version 6 to schema version 13"),
+        "the upgrade step names this version"
+    );
+    // The changelog's entry tells an upgrader to run migrate and links the
+    // how-to; it does not walk through the versions.
+    let changelog = flat("../../CHANGELOG.md");
+    let unreleased = changelog
         .split(" ## [")
         .find(|section| section.starts_with("Unreleased]"))
         .expect("an Unreleased section");
     assert!(
-        unreleased.contains("Version 13 keeps the claim of the bucket prefix in the database"),
-        "version 13, in the entry of the schema"
-    );
-    assert!(
-        unreleased.contains("The PostgreSQL preview's schema is at version 13."),
-        "the entry's first sentence names this version"
+        !unreleased.contains("Version 13 ") && !unreleased.contains("`storage_claim`"),
+        "the changelog leaves the schema's versions to the how-to"
     );
 }
 

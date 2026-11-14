@@ -66,6 +66,7 @@ python3 -I scripts/test_clippy_features.py
 python3 -I scripts/test_check_hook_steps.py
 python3 -I scripts/test_tree_files.py
 python3 -I scripts/test_check_runner_images.py
+python3 -I scripts/test_check_changelog.py
 # The how-to runner's own tests read the how-to pages: on 2026-11-13 a page
 # lost a line of a step's expected output, and CI's how-to job, the first to
 # run these tests, refused a commit this hook had accepted.
@@ -77,6 +78,9 @@ python3 -I scripts/check_hook_steps.py
 # No workflow names a floating runner image (ubuntu-latest): on 2026-11-13
 # GitHub began to give that label Ubuntu 26.04, and a job failed on main.
 python3 -I scripts/check_runner_images.py
+# A changelog entry is an outline for someone deciding whether to upgrade:
+# a bold lead and labeled sub-bullets (development.md, Changelog entries).
+python3 -I scripts/check_changelog.py
 python3 -I scripts/check_test_runner.py
 python3 -I scripts/ci_success.py check
 python3 -I scripts/clippy_features.py check

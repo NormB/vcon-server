@@ -300,24 +300,25 @@ fn the_status_page_names_this_binary_s_version() {
 }
 
 #[test]
-fn the_changelog_names_this_binary_s_version_and_the_rule() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../CHANGELOG.md");
+fn the_how_to_names_this_binary_s_version_and_the_rule() {
+    // The changelog's entry sends the reader to the how-to, whose section
+    // "Schema versions" holds what each version changes.
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../website/content/docs/postgres-catalog.md");
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    let unreleased = text
-        .split("\n## [")
-        .find(|section| section.starts_with("Unreleased]"))
-        .expect("an Unreleased section");
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let (before, versions) = text
+        .split_once(" ### Schema versions ")
+        .expect("the how-to has the section Schema versions");
     assert!(
-        unreleased.contains(&format!(
-            "**The PostgreSQL preview's schema is at version {SCHEMA_VERSION}.**"
-        )) && unreleased.contains(&format!(
+        before.contains(&format!(
             "older than this binary's {SCHEMA_VERSION}: run vcon-server migrate"
         )),
-        "the entry's title and the refusal it quotes"
+        "the upgrade step quotes the refusal, with this binary's version"
     );
     assert!(
-        unreleased.contains("The count only grows"),
-        "and the rule of version 9"
+        versions.contains("The count only grows"),
+        "and the section holds the rule of version 9"
     );
 }
 

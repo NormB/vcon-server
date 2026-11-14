@@ -116,19 +116,18 @@ fn the_how_to_says_the_audit_key_does_not_rotate_with_the_tenant_key() {
 }
 
 #[test]
-fn the_changelog_says_what_version_11_changes() {
-    let text = flat("../../CHANGELOG.md");
-    let unreleased = text
-        .split(" ## [")
-        .find(|section| section.starts_with("Unreleased]"))
-        .expect("an Unreleased section");
+fn the_how_to_says_what_version_11_changes_under_schema_versions() {
+    let page = flat("../../website/content/docs/postgres-catalog.md");
+    let (_, versions) = page
+        .split_once(" ### Schema versions ")
+        .expect("the how-to has the section Schema versions");
     assert!(
-        unreleased.contains("Version 11 gives each tenant's audit log a key of its own"),
-        "version 11, in the entry of the schema"
+        versions.contains("Version 11 gives each tenant's audit log a key of its own"),
+        "version 11, in the section of the schema's versions"
     );
     assert!(
-        !unreleased.contains("is not written yet"),
-        "the re-seal is written: the entry no longer says it is not"
+        !versions.contains("is not written yet"),
+        "the re-seal is written: the section does not say it is not"
     );
 }
 

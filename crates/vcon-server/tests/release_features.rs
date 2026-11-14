@@ -341,29 +341,28 @@ fn entry(changelog: &str, start: &str) -> Option<String> {
         .lines()
         .skip_while(|line| !line.starts_with(start));
     let mut entry = lines.next()?.to_owned();
-    for line in lines.take_while(|line| line.starts_with("  ")) {
-        entry.push(' ');
-        entry.push_str(line.trim());
+    // A blank line stands between a lead and its table.
+    for line in lines.take_while(|line| line.starts_with("  ") || line.is_empty()) {
+        if !line.is_empty() {
+            entry.push(' ');
+            entry.push_str(line.trim());
+        }
     }
     Some(entry)
 }
 
-/// The two sizes an entry gives for a release target, in bytes: the two
-/// numbers that follow the target's name in code marks, as
-/// `` `<target>` 1,234 to 5,678 bytes ``.
+/// The two sizes an entry's table gives for a release target, in bytes:
+/// the two cells that follow the target's name in code marks, as
+/// `` | `<target>` | 1,234 bytes | 5,678 bytes | ``.
 fn sizes(entry: &str, target: &str) -> Option<(u64, u64)> {
     let (_, after) = entry.split_once(&format!("`{target}`"))?;
-    let mut words = after.split_whitespace();
-    let number = |word: &str| word.replace(',', "").parse::<u64>().ok();
-    let before = number(words.next()?)?;
-    if words.next()? != "to" {
-        return None;
-    }
-    let after = number(words.next()?)?;
-    words
-        .next()?
-        .starts_with("bytes")
-        .then_some((before, after))
+    let mut cells = after.split('|').skip(1);
+    let bytes = |cell: &str| {
+        let mut words = cell.split_whitespace();
+        let number = words.next()?.replace(',', "").parse::<u64>().ok()?;
+        (words.next()? == "bytes" && words.next().is_none()).then_some(number)
+    };
+    Some((bytes(cells.next()?)?, bytes(cells.next()?)?))
 }
 
 /// The targets release.yml builds, from its build job's matrix.
@@ -378,10 +377,13 @@ fn release_targets() -> Vec<String> {
     targets
 }
 
-const SIZE_ENTRY: &str = "- **The release binaries are built with the `postgres` cargo feature.**";
+const SIZE_ENTRY: &str =
+    "- **The release binaries are about 2 MB larger with the PostgreSQL catalog.**";
+const CATALOG_ENTRY: &str =
+    "- **The catalogs can be kept in PostgreSQL, a preview the release binaries";
 
 #[test]
-fn the_changelog_gives_each_release_binarys_size_and_the_run_it_was_read_from() {
+fn the_changelog_gives_each_release_binarys_size_and_the_upgrade_step() {
     let entry = entry(&read("CHANGELOG.md"), SIZE_ENTRY)
         .unwrap_or_else(|| panic!("the changelog has the entry `{SIZE_ENTRY}`"));
     let targets = release_targets();
@@ -391,54 +393,59 @@ fn the_changelog_gives_each_release_binarys_size_and_the_run_it_was_read_from() 
         "release.yml builds two targets: {targets:?}"
     );
     for target in targets {
-        let (before, after) = sizes(&entry, &target)
-            .unwrap_or_else(|| panic!("the entry gives no `{target}` <bytes> to <bytes> bytes"));
+        let (before, after) = sizes(&entry, &target).unwrap_or_else(|| {
+            panic!("the entry's table has no row `{target}` | <n> bytes | <n> bytes |")
+        });
         assert!(
             before > 40_000_000 && after > before && after < before.saturating_add(8_000_000),
             "{target}: {before} to {after} bytes is not a release binary that grew by the feature"
         );
     }
-    assert!(
-        entry.contains("https://github.com/NormB/vcon-server/actions/runs/"),
-        "the entry names the run the sizes were read from"
-    );
+    // The upgrade step is the catalog entry's, with the link to the limits.
+    let catalog = super_entry(CATALOG_ENTRY);
     for words in [
-        "nothing changes",
-        "empty of tenants",
-        "`vcon-server migrate`",
+        "Do: Coming from 0.4.5 with that setting, run `vcon-server migrate`",
+        "a data-directory deployment changes nothing",
+        "postgres-catalog/#the-limits-of-the-preview",
     ] {
-        assert!(entry.contains(words), "the upgrade note says: {words}");
+        assert!(catalog.contains(words), "the catalog entry says: {words}");
     }
 }
 
+/// An entry of the repository's changelog, which must be there.
+fn super_entry(start: &str) -> String {
+    entry(&read("CHANGELOG.md"), start)
+        .unwrap_or_else(|| panic!("the changelog has the entry `{start}`"))
+}
+
 #[test]
-fn a_size_is_two_numbers_after_the_targets_name() {
-    let entry = "- **X.** Sizes: `a-b` 1,234 to 5,678 bytes; `c-d` 10 to 20 bytes. `e` 5 bytes. `f` 1 to x bytes. `g` 1 to 2 files.";
+fn a_size_is_a_cell_of_bytes_after_the_targets_name() {
+    let entry = "- **X.** | T | A | B | |---|---|---| | `a-b` | 1,234 bytes | 5,678 bytes | | `c-d` | 10 bytes | 20 bytes | | `e` | 5 bytes | | `f` | 1 bytes | x bytes | | `g` | 1 files | 2 files | | `i` | 1 bytes more | 2 bytes |";
     assert_eq!(sizes(entry, "a-b"), Some((1234, 5678)), "with commas");
-    assert_eq!(
-        sizes(entry, "c-d"),
-        Some((10, 20)),
-        "the second target, and `bytes.`"
-    );
+    assert_eq!(sizes(entry, "c-d"), Some((10, 20)), "the second row");
     assert_eq!(sizes(entry, "e"), None, "one number is not a change");
     assert_eq!(sizes(entry, "f"), None, "a word that is not a number");
     assert_eq!(sizes(entry, "g"), None, "another unit");
     assert_eq!(sizes(entry, "h"), None, "a target the entry does not name");
     assert_eq!(
-        sizes("`i` 1 and 2 bytes", "i"),
+        sizes(entry, "i"),
         None,
-        "two numbers that are not a change from one to the other"
+        "a cell that holds more than a size"
     );
 }
 
 #[test]
 fn a_changelog_entry_is_found_in_a_released_section_too() {
-    let changelog =
-        "## [Unreleased]\n\n## [0.1.0]\n\n- **A.** one\n  two\n\n  three\n- **B.** four\n";
+    let changelog = "## [Unreleased]\n\n## [0.1.0]\n\n- **A.** one\n  two\n\n  | three |\n- **B.** four\n\n## [0.0.1]\n";
     assert_eq!(
         entry(changelog, "- **A.**").as_deref(),
-        Some("- **A.** one two"),
-        "the entry and the lines that follow it, to the first line that is not its own"
+        Some("- **A.** one two | three |"),
+        "the entry, the lines that follow it and its table, to the first line that is not its own"
+    );
+    assert_eq!(
+        entry(changelog, "- **B.**").as_deref(),
+        Some("- **B.** four"),
+        "the last entry of a section ends at the next heading"
     );
     assert_eq!(
         entry(changelog, "- **C.**"),
