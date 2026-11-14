@@ -66,9 +66,18 @@ class WhatMustPass(unittest.TestCase):
         entry = "- **The release binaries are larger.**\n\n  | Target | Before | After |\n  |---|---|---|\n" + rows
         self.assertEqual(problems(entry), [])
 
-    def test_a_section_may_open_with_a_paragraph_before_its_first_heading(self):
-        intro = "The upgrade from 0.4.4 is the binary alone. No stored data\nchanges.\n\n"
-        self.assertEqual(problems(GOOD, intro=intro), [])
+    def test_the_upgrade_note_is_an_entry_the_first_under_the_first_heading(self):
+        note = (
+            "- **Upgrading from 0.4.4 replaces the binary only.**\n"
+            "  - Effect: No stored data changes.\n"
+            "  - Docs: [From 0.4.4 to\n"
+            "    0.4.5](https://vcon-server.example.com/docs/upgrading/#from-0-4-4-to-0-4-5)\n"
+        )
+        self.assertEqual(problems(note + GOOD, kind="Changed"), [])
+        self.assertEqual(cc.problems(log(note + GOOD, version="0.4.5", kind="Changed"), "0.4.5"), [])
+
+    def test_blank_lines_alone_before_the_first_heading_pass(self):
+        self.assertEqual(problems(GOOD, intro="\n\n"), [])
 
     def test_a_line_that_is_one_long_link_is_not_too_long(self):
         long = "https://vcon-server.example.com/docs/" + "x" * 80
@@ -118,6 +127,8 @@ class WhatMustPass(unittest.TestCase):
             self.assertIn(f"`{label}:`", flat, f"the page names the label {label}")
         self.assertIn(f"{cc.LEAD_WORDS} words", flat)
         self.assertIn(f"{cc.BULLET_WORDS} words", flat)
+        self.assertIn("`text before the section's first heading`", flat)
+        self.assertNotIn("may open with one paragraph", flat)
 
 
 class WhatMustBeRefused(unittest.TestCase):
@@ -194,6 +205,31 @@ class WhatMustBeRefused(unittest.TestCase):
         self.assertEqual(len(found), 1, found)
         self.assertIn("text outside an entry", found[0])
 
+    def test_a_paragraph_before_the_first_heading_of_a_section(self):
+        intro = "The upgrade from 0.4.4 is the binary alone. No stored data\nchanges.\n\n"
+        found = self.one(GOOD, "text before the section's first heading", intro=intro)
+        self.assertIn("`The upgrade from 0.4.4 is the binary alo`", found)
+
+    def test_a_paragraph_before_the_first_heading_of_a_released_section(self):
+        intro = "The upgrade from 0.4.5 is the binary alone.\n\n"
+        found = cc.problems(log(GOOD, version="0.4.6", intro=intro), "0.4.6")
+        self.assertEqual(len(found), 1, found)
+        self.assertTrue(found[0].startswith("[0.4.6]: `The upgrade from 0.4.5"), found[0])
+        self.assertIn("text before the section's first heading", found[0])
+
+    def test_each_paragraph_before_the_first_heading_is_named_once(self):
+        intro = "One paragraph, on\ntwo lines.\n\nA second paragraph.\n\n"
+        found = problems(GOOD, intro=intro)
+        self.assertEqual(len(found), 2, found)
+        self.assertIn("`One paragraph, on`", found[0])
+        self.assertIn("`A second paragraph.`", found[1])
+
+    def test_a_section_with_a_paragraph_and_no_heading_at_all(self):
+        text = f"{HEAD}## [Unreleased]\n\nOnly prose here.\n\n## [0.1.0] - 2026-10-26\n\n- Old prose.\n"
+        found = cc.problems(text, "Unreleased")
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("text before the section's first heading", found[0])
+
     def test_a_heading_the_format_does_not_have(self):
         found = problems(GOOD, kind="Notes")
         self.assertEqual(len(found), 1, found)
@@ -239,6 +275,15 @@ class TheEdges(unittest.TestCase):
     def test_an_empty_section_passes(self):
         text = f"{HEAD}## [Unreleased]\n\n## [0.4.5] - 2026-11-12\n\n### Fixed\n\n{GOOD.replace('Effect', 'Was')}"
         self.assertEqual(cc.problems(text, "0.4.5"), [])
+
+    def test_a_paragraph_that_opens_a_section_below_the_marker_is_not_judged(self):
+        text = (
+            f"{HEAD}## [Unreleased]\n\n### Added\n\n{GOOD}\n"
+            "## [0.4.4] - 2026-11-12\n\nThere is no downgrade from 0.4.4.\n\n### Added\n\n- Old prose.\n"
+        )
+        self.assertEqual(cc.problems(text, "Unreleased"), [])
+        found = cc.problems(text, "0.4.4")
+        self.assertTrue(any("text before the section's first heading" in p for p in found), found)
 
     def test_sections_are_split_at_release_headings_only(self):
         text = f"{HEAD}## [Unreleased]\n\n### Added\n\n{GOOD}\n## [0.4.5] - 2026-11-12\n\n### Fixed\n"

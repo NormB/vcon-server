@@ -381,6 +381,8 @@ const SIZE_ENTRY: &str =
     "- **The release binaries are about 2 MB larger with the PostgreSQL catalog.**";
 const CATALOG_ENTRY: &str =
     "- **The catalogs can be kept in PostgreSQL, a preview the release binaries";
+const UPGRADE_ENTRY: &str =
+    "- **Upgrading from 0.4.5: a data-directory deployment replaces the binary";
 
 #[test]
 fn the_changelog_gives_each_release_binarys_size_and_the_upgrade_step() {
@@ -401,15 +403,39 @@ fn the_changelog_gives_each_release_binarys_size_and_the_upgrade_step() {
             "{target}: {before} to {after} bytes is not a release binary that grew by the feature"
         );
     }
-    // The upgrade step is the catalog entry's, with the link to the limits.
-    let catalog = super_entry(CATALOG_ENTRY);
+    // The upgrade step is said once, in the upgrade entry, which links the
+    // Upgrade page; the catalog entry links the limits and does not repeat
+    // the step.
+    let upgrade = super_entry(UPGRADE_ENTRY);
     for words in [
-        "Do: Coming from 0.4.5 with that setting, run `vcon-server migrate`",
-        "a data-directory deployment changes nothing",
-        "postgres-catalog/#the-limits-of-the-preview",
+        "a data-directory deployment replaces the binary only",
+        "Do: With `catalog.backend = \"postgres\"` set on 0.4.5, run `vcon-server migrate`",
+        "upgrading/#from-0-4-5-to-0-4-6",
     ] {
-        assert!(catalog.contains(words), "the catalog entry says: {words}");
+        assert!(upgrade.contains(words), "the upgrade entry says: {words}");
     }
+    let catalog = super_entry(CATALOG_ENTRY);
+    assert!(
+        catalog.contains("postgres-catalog/#the-limits-of-the-preview"),
+        "the catalog entry links the limits of the preview"
+    );
+    assert!(
+        !catalog.contains("migrate"),
+        "the migrate step is in the upgrade entry alone: {catalog}"
+    );
+    let changelog = read("CHANGELOG.md");
+    let section = changelog
+        .split("\n## [")
+        .find(|section| section.starts_with("0.4.6]"))
+        .expect("the changelog has the section of 0.4.6");
+    let first = section
+        .lines()
+        .find(|line| line.starts_with("- "))
+        .expect("the section has an entry");
+    assert!(
+        first.starts_with(UPGRADE_ENTRY),
+        "the upgrade entry is the first of its section, so a release's text opens with it: {first}"
+    );
 }
 
 /// An entry of the repository's changelog, which must be there.

@@ -799,8 +799,9 @@ what changed, what must be done, what the limit is, where the detail is.
 - A change no user of the released binaries or of the site can see (a
   hook, a workflow, a runner image, a test, a gate) has no entry.
 - Related changes of one release are one entry.
-- A release section may open with one paragraph, before its first heading,
-  that says what the upgrade is.
+- No text stands between a release's heading and its first `###` heading.
+  What an upgrade needs is an entry too, the first under the section's
+  first heading, so that the release's text opens with it.
 
 `scripts/check_changelog.py` holds the shape, in the commit hook and in
 CI's scan job, for every section from `[Unreleased]` down to the section
@@ -818,7 +819,8 @@ prints the section, the entry's lead and the rule for each problem:
 | `the <label>: sub-bullet has <n> words, at most 25` | Shorten it, or move the detail to a docs page and link it. |
 | `a paragraph under the bullet` or `a third level of nesting` | Write it as sub-bullets of the entry. |
 | `a line of <n> characters, at most 80` | Wrap the line. |
-| `text outside an entry, under a heading` | Make it an entry, or move it before the section's first heading. |
+| `text outside an entry, under a heading` | Make it an entry. |
+| `text before the section's first heading` | Write it as an entry, the first under the first heading. |
 
 `scripts/test_check_changelog.py` tests the script.
 

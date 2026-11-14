@@ -8,28 +8,17 @@ All notable changes to this project are recorded here. The format follows
 
 ## [0.4.6] - 2026-11-14
 
-Nothing changes for a deployment with its catalogs in the data directory:
-the upgrade from 0.4.5 is the binary alone, the catalogs stay at schema
-version 9, and a downgrade is possible. A deployment that set `catalog.backend = "postgres"` on 0.4.5
-runs `vcon-server migrate` first, which takes the PostgreSQL preview's
-schema from version 6 to 13, and then serves from the database, which is
-empty of tenants. The Upgrade page's "From 0.4.5 to 0.4.6" has the steps.
-
-### Added
-
-- **The catalogs can be kept in PostgreSQL, a preview the release binaries
-  include.**
-  - Effect: With `catalog.backend = "postgres"`, a server keeps its registry
-    and every tenant's catalog in a PostgreSQL database.
-  - Do: Coming from 0.4.5 with that setting, run `vcon-server migrate` before
-    the first start; a data-directory deployment changes nothing.
-  - Limit: One server serves a database, and a database starts with no
-    tenant: no command moves a data directory's tenants.
-  - Docs: [the limits of the
-    preview](https://vcon-server.com/docs/postgres-catalog/#the-limits-of-the-preview)
-
 ### Changed
 
+- **Upgrading from 0.4.5: a data-directory deployment replaces the binary
+  only.**
+  - Effect: The catalogs stay at schema version 9, and a downgrade is
+    possible.
+  - Do: With `catalog.backend = "postgres"` set on 0.4.5, run
+    `vcon-server migrate` before the first start.
+  - Limit: That database is then at schema version 13 and holds no tenants.
+  - Docs: [From 0.4.5 to
+    0.4.6](https://vcon-server.com/docs/upgrading/#from-0-4-5-to-0-4-6)
 - **The release binaries are about 2 MB larger with the PostgreSQL catalog.**
 
   | Target | 0.4.5, as published | Built with the catalog |
@@ -46,6 +35,17 @@ empty of tenants. The Upgrade page's "From 0.4.5 to 0.4.6" has the steps.
   - Effect: One table names every key and the views it works in; the
     command is unchanged.
   - Docs: [Keys](https://vcon-server.com/docs/tui/#keys)
+
+### Added
+
+- **The catalogs can be kept in PostgreSQL, a preview the release binaries
+  include.**
+  - Effect: With `catalog.backend = "postgres"`, a server keeps its registry
+    and every tenant's catalog in a PostgreSQL database.
+  - Limit: One server serves a database, and a database starts with no
+    tenant: no command moves a data directory's tenants.
+  - Docs: [the limits of the
+    preview](https://vcon-server.com/docs/postgres-catalog/#the-limits-of-the-preview)
 
 ### Fixed
 
@@ -69,12 +69,31 @@ empty of tenants. The Upgrade page's "From 0.4.5 to 0.4.6" has the steps.
 
 ## [0.4.5] - 2026-11-12
 
-The upgrade from 0.4.4 is the binary alone. No stored data and no schema
-changes: the catalogs stay at schema version 9, and the PostgreSQL
-preview's schema at version 6. A 0.4.4 configuration is read as it was.
-A downgrade is possible: 0.4.4 opens a data directory that 0.4.5 has
-served. Three things look different after the upgrade; each is an entry
-below, and the Upgrade page's "From 0.4.4 to 0.4.5" has the steps.
+### Changed
+
+- **Upgrading from 0.4.4 replaces the binary only, and a downgrade is
+  possible.**
+  - Effect: No stored data and no schema changes: the catalogs stay at
+    schema version 9, the PostgreSQL preview's schema at version 6.
+  - Do: Keep the 0.4.4 configuration: it is read as it was.
+  - Limit: Three things look different after the upgrade; each is an entry
+    of this section.
+  - Docs: [From 0.4.4 to
+    0.4.5](https://vcon-server.com/docs/upgrading/#from-0-4-4-to-0-4-5)
+- **A new key's expiry is a whole second.**
+  - Effect: `expires_at` of a key made by 0.4.5 has no fraction of a second,
+    such as `2027-02-10T12:00:00Z`.
+  - Do: Keep reading an `expires_at` with a fraction: keys made before keep
+    the expiry they have.
+  - Limit: A key lives up to one second less than the days asked, and never
+    longer.
+- **The terminal UI page shows every screen.**
+  - Effect: The page has a table of the 25 screens the command draws and a
+    section for each.
+  - Docs: [terminal UI](https://vcon-server.com/docs/tui/)
+- **A GitHub release's text is its changelog section.**
+  - Effect: A release's text is the section of its version, then the line
+    that says how to verify a download.
 
 ### Fixed
 
@@ -91,23 +110,6 @@ below, and the Upgrade page's "From 0.4.4 to 0.4.5" has the steps.
     another key.
   - Limit: While a message stands in place of the list, the keys that
     select and open do nothing.
-
-### Changed
-
-- **A new key's expiry is a whole second.**
-  - Effect: `expires_at` of a key made by 0.4.5 has no fraction of a second,
-    such as `2027-02-10T12:00:00Z`.
-  - Do: Keep reading an `expires_at` with a fraction: keys made before keep
-    the expiry they have.
-  - Limit: A key lives up to one second less than the days asked, and never
-    longer.
-- **The terminal UI page shows every screen.**
-  - Effect: The page has a table of the 25 screens the command draws and a
-    section for each.
-  - Docs: [terminal UI](https://vcon-server.com/docs/tui/)
-- **A GitHub release's text is its changelog section.**
-  - Effect: A release's text is the section of its version, then the line
-    that says how to verify a download.
 
 ## [0.4.4] - 2026-11-12
 

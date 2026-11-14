@@ -15,8 +15,10 @@ The rule, for every release section from the top of the file down to the
 section of MARKER (the sections below it are in the older prose form and
 are not judged; the marker moves down as they are rewritten):
 
-- A section holds `### ` headings from HEADINGS and, before the first of
-  them, an optional paragraph. Under a heading there are entries only.
+- A section holds `### ` headings from HEADINGS, and under a heading
+  entries only. No text stands before the first heading: what an upgrade
+  needs is an entry, the first under the first heading, so that a
+  release's text opens with it.
 - An entry is a top-level bullet whose whole text is a bold lead of at
   most LEAD_WORDS words.
 - It has 1 to SUB_BULLETS sub-bullets, or one table of at most TABLE_ROWS
@@ -168,6 +170,7 @@ def section_problems(heading, lines):
     label = heading[3:].split("]")[0] + "]"
     found = []
     under_heading = False
+    in_prose = False
     entry = []
 
     def close():
@@ -179,6 +182,9 @@ def section_problems(heading, lines):
         entry.clear()
 
     for line in lines:
+        # A paragraph before the first heading is named once, by its first line.
+        opens_prose = not in_prose
+        in_prose = False
         if line.startswith("### "):
             close()
             under_heading = True
@@ -193,6 +199,13 @@ def section_problems(heading, lines):
             close()
             if under_heading:
                 found.append(f"{label}: `{line.strip()[:40]}`: text outside an entry, under a heading")
+            else:
+                in_prose = True
+                if opens_prose:
+                    found.append(
+                        f"{label}: `{line.strip()[:40]}`: text before the section's first heading: "
+                        "write it as an entry, the first under the first heading"
+                    )
     close()
     return found
 
