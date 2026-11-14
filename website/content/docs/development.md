@@ -124,7 +124,9 @@ Each test makes a bucket of its own, so a run leaves buckets behind;
 `docker stop` removes the container and them.
 
 The PostgreSQL catalog's connector and pool (the `postgres` cargo feature, a
-preview) are tested against real PostgreSQL servers as well. With both
+preview with
+[limits](@/docs/postgres-catalog.md#the-limits-of-the-preview)) are tested
+against real PostgreSQL servers as well. With both
 `postgres` and `backend-tests`, the tests in `backend::postgres::` connect
 to the servers `scripts/pg-test-server.sh` starts in containers: a primary
 with TLS and one test role for each way of logging in, a hot standby of it,

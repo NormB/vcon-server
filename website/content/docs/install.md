@@ -368,7 +368,18 @@ cargo install vcon-server --locked
 ```
 
 `--locked` builds with the exact dependency versions the release was tested
-with. Cargo prints each crate as it compiles it, and near the end:
+with.
+
+That command builds the package's default features. The release binaries
+built from `main` have one feature more, the `postgres` cargo feature: the
+PostgreSQL catalog, a preview whose limits are in
+[the limits of the preview](@/docs/postgres-catalog.md#the-limits-of-the-preview).
+To build it in, run this in place of the command above:
+`cargo install vcon-server --locked --features postgres`
+The package of release 0.4.5 holds the feature as that release had it: its
+server connects, checks the database and stops.
+
+Cargo prints each crate as it compiles it, and near the end:
 
 ```text
 …
@@ -445,7 +456,10 @@ vcon-server <version>
 ```
 
 `-p vcon-server` builds the server alone. Without it, `cargo build` builds
-every package in the repository. Install the binary:
+every package in the repository. For the PostgreSQL catalog preview, which
+[install with cargo](#install-with-cargo) describes, build with
+`cargo build --release --locked -p vcon-server --features postgres`
+in place of the build above. Install the binary:
 
 <!-- docs-test: only source -->
 ```sh

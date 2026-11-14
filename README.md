@@ -135,13 +135,16 @@ The [terminal UI](https://vcon-server.com/docs/tui/) is in the release
 binaries and in `cargo install` too: the `tui` cargo feature is on by
 default, and `--no-default-features` leaves it out as well.
 
-The `postgres` cargo feature, which is not on by default and not in the
-release binaries, adds a preview of the
+The `postgres` cargo feature adds a preview of the
 [PostgreSQL catalog](https://vcon-server.com/docs/postgres-catalog/):
-`vcon-server migrate` makes the schema, and one server per database keeps
-its registry and every tenant's catalog in PostgreSQL, reached over TLS,
-with the objects in an S3 bucket. No command moves a data directory's
-tenants into PostgreSQL yet.
+`vcon-server migrate` makes the schema, and a server keeps its registry
+and every tenant's catalog in PostgreSQL, reached over TLS, with the
+objects in an S3 bucket. The release binaries built from `main` have the
+`postgres` feature; release 0.4.5's were built before that. `cargo install`
+and a build from source get it with `--features postgres`. It does nothing
+until `catalog.backend` is `"postgres"`. Read
+[the limits of the preview](https://vcon-server.com/docs/postgres-catalog/#the-limits-of-the-preview)
+before using it.
 
 ## Contributing
 

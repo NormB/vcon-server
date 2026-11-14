@@ -4,8 +4,11 @@
 #
 # Usage:
 #   reproducible-build.sh build <target-triple>
-#       the release build: `cargo build --release --locked -p vcon-server`
-#       for <target-triple>, with the path remaps appended to RUSTFLAGS,
+#       the release build: `cargo build --release --locked -p vcon-server
+#       --features postgres` for <target-triple> (the default features and
+#       the PostgreSQL catalog preview; tests/release_features.rs reads the
+#       feature list from the command below and holds the pages and CI to
+#       it), with the path remaps appended to RUSTFLAGS,
 #       SOURCE_DATE_EPOCH set to the commit's time, and the target directory
 #       at $TARGET_DIR below. Prints the binary's path last. release.yml
 #       builds through this.
@@ -96,7 +99,7 @@ cmd_build() {
   case "$target" in
     aarch64-unknown-linux-gnu) export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=cc ;;
   esac
-  cargo build --release --locked -p vcon-server --target "$target" >&2
+  cargo build --release --locked -p vcon-server --features postgres --target "$target" >&2
   printf '%s\n' "$TARGET_DIR/$target/release/vcon-server"
 }
 

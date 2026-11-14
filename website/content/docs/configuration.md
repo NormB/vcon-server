@@ -107,7 +107,7 @@ allowed a group to write them. To check a host before an upgrade, see
 | `catalog.postgres.password_file` | File holding the role's password, used only with SCRAM-SHA-256 and channel binding; one line | none |
 | `catalog.postgres.client_cert_file` | PEM client certificate chain; required with `client_key_file` | none |
 | `catalog.postgres.client_key_file` | PEM private key of the client certificate | none |
-| `catalog.postgres.pool` | Most connections open at once | `16` |
+| `catalog.postgres.pool` | Most connections open at once; at least 2, since one holds the locks | `16` |
 | `catalog.postgres.connect_timeout` | Seconds a connection, or a wait for a free one, may take | `5` |
 | `catalog.postgres.statement_timeout` | Seconds a statement may run (PostgreSQL's `statement_timeout`), at most `2147483` | `30` |
 | `catalog.postgres.lock_timeout` | Seconds a statement may wait for a lock (PostgreSQL's `lock_timeout`), at most `2147483` | `10` |
@@ -377,14 +377,16 @@ pack_limit = 16777216
 Preview: with `catalog.backend = "postgres"`, `serve` and every command
 read the `[catalog.postgres]` secret files, connect to PostgreSQL over TLS,
 check the server, take their locks on the database, and keep the registry
-and every tenant's catalog there. One server serves a database. Run
+and every tenant's catalog there. Run
 `vcon-server migrate` first, with a role that may act as `vcon_owner`, or
 a connection refuses the missing schema. `data_dir` is still required: it
-holds the lock files and nothing else. `catalog.postgres.pool` is at
-least 2: one connection holds the locks. It needs the `postgres` cargo
-feature, which the release binaries do not have yet. The how-to
-[keep the catalogs in PostgreSQL](@/docs/postgres-catalog.md) gives the
-database's side, each refusal and what it means.
+holds the lock files and nothing else. The release binaries built from
+`main` have the `postgres` cargo feature this needs. A build with the
+default features stops with `this build has no PostgreSQL support`. The
+how-to [keep the catalogs in PostgreSQL](@/docs/postgres-catalog.md) gives
+the database's side, each refusal and what it means, and
+[the limits of the preview](@/docs/postgres-catalog.md#the-limits-of-the-preview):
+read them before setting `catalog.backend`.
 
 ```toml
 listen = "0.0.0.0:8443"

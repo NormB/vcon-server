@@ -19,18 +19,8 @@ with PostgreSQL's own tools, on a host other than the server's. What it
 does not change: the API, the keys, the bucket's contents, and the master
 key file, which never leaves the server's host.
 
-What this release does and does not do:
-
-- **One server serves a database.** A second server on the same database
-  is refused at start. Several servers on one database are the next step
-  of the [roadmap](@/docs/roadmap.md).
-- **A database starts with no tenant.** No command moves the tenants of a
-  data directory into PostgreSQL yet, so this page sets up a new
-  deployment beside the data directory's, on a bucket prefix of its own.
-- **The data directory stays.** It holds the two lock files of
-  [the commands](#commands-beside-a-server-and-alone) and nothing else.
-- **`vcon-server backup` and `storage move-objects` are refused**, each
-  with what to use (see [back it up](#back-it-up)).
+It is a preview because of
+[the limits below](#the-limits-of-the-preview): read them before using it.
 
 CI runs every command on this page on each change, after
 [getting started](@/docs/getting-started.md) and
@@ -40,16 +30,75 @@ server built with the `postgres` feature. The messages under
 [when it does not start](#when-it-does-not-start) that no step here prints
 were printed by the server built from this release's source.
 
-The release binaries and `cargo install vcon-server` do not have the
-`postgres` cargo feature. Build from source with it, as
-[install](@/docs/install.md#build-from-source) shows, adding the feature,
-and install that binary:
+**Which builds have it.** The release binaries built from `main` have the
+`postgres` cargo feature, so a server installed from one of them needs
+nothing more. Release 0.4.5's binaries were built before that: a server
+from one of them stops with
+[the build has no PostgreSQL support](#the-build-has-no-postgresql-support).
+`cargo install vcon-server` and a build from source build the default
+features, and `postgres` is outside them:
+[install with cargo](@/docs/install.md#install-with-cargo) gives the
+command that adds it.
 
-<!-- docs-test: skip the run is given a server built with the postgres feature -->
-```sh
-cargo build --release --locked -p vcon-server --features postgres
-sudo install -m 0755 target/release/vcon-server /usr/local/bin/vcon-server
-```
+## The limits of the preview
+
+The other pages link here for these and do not repeat them.
+
+- **One server serves a database.** A second server on the same database,
+  on any host, is refused at start (see
+  [another process holds the database](#another-process-holds-the-database)).
+  Several servers on one database are the next step of the
+  [roadmap](@/docs/roadmap.md).
+- **A database starts with no tenant, and no command moves tenants.** No
+  command moves the tenants of a data directory into PostgreSQL, or out of
+  it. Setting `catalog.backend` to `"postgres"` on a deployment that has
+  tenants does not move them: the server then serves the database, which
+  has none, and that hides the deployment's tenants until the setting is
+  changed back, as
+  [serve from the data directory again](#serve-from-the-data-directory-again)
+  shows. Their files in the data directory and their objects are left as
+  they were. This page therefore sets up a new deployment beside the data
+  directory's.
+- **The database needs a bucket prefix of its own.** The prefix a data
+  directory claimed is refused to a database (see
+  [the bucket prefix belongs to something else](#the-bucket-prefix-belongs-to-something-else)).
+- **The backup is PostgreSQL's.** A backup is `pg_dump` of the database or
+  a base backup, the bucket, and the master key file, kept together (see
+  [back it up](#back-it-up)). `vcon-server backup` is refused, and so is
+  `storage move-objects`, each with what to use.
+- **Six commands need every server stopped:** `rekey master`,
+  `rekey tenant`, `tenant create`, `tenant remove`, `check` and `migrate`
+  (see [commands beside a server, and alone](#commands-beside-a-server-and-alone)).
+- **No connection pooler in transaction mode.** A session's lock would be
+  held by no connection (the same section says why). No pooler was tested,
+  in any mode.
+- **Tested on PostgreSQL 16, 17 and 18, and not on managed services**
+  (Amazon RDS, Cloud SQL, Azure):
+  [what was tested, and what was not](#what-was-tested-and-what-was-not)
+  gives the versions and what ran on each.
+- **`catalog.postgres.pool` is at least 2.** One connection holds the
+  locks for as long as the server runs (see
+  [the pool is too small](#the-pool-is-too-small)).
+- **Run `migrate` first after an upgrade.** A new binary refuses a
+  database of an older schema version. A database that release 0.4.5
+  migrated is at version 6, and a build from `main` needs version 13 (see
+  [after an upgrade from 0.4.5](#after-an-upgrade-from-0-4-5)).
+- **The data directory stays.** It holds the two lock files of
+  [the commands](#commands-beside-a-server-and-alone) and nothing else.
+
+## Upgrading from 0.4.5
+
+- **A deployment with its catalogs in the data directory** (no `[catalog]`
+  table in its configuration, or `backend = "local"`): nothing changes.
+  The feature does nothing until `catalog.backend` is `"postgres"`.
+- **A deployment that set `catalog.backend = "postgres"` on 0.4.5:** on
+  0.4.5 its server stopped at start, a release binary because it had no
+  PostgreSQL support and a build with the feature after it had checked
+  the database. A build from `main` serves from the database, which is
+  empty of tenants. Run `migrate` before the first start, as
+  [after an upgrade from 0.4.5](#after-an-upgrade-from-0-4-5) shows, and
+  read the limits above: the tenants of the data directory are not in
+  the database.
 
 ## What was tested, and what was not
 
@@ -817,7 +866,10 @@ each with its reason, separated by `;`.
 vcon-server: the storage cannot be used: catalog.backend is "postgres", but this build has no PostgreSQL support (cargo feature postgres)
 ```
 
-Build with `--features postgres`, as the top of this page shows.
+The binary was built with the default features, or is a release binary of
+0.4.5 or an earlier release. Install a release binary that has the
+feature, or build with `--features postgres`, as
+[install with cargo](@/docs/install.md#install-with-cargo) shows.
 
 ### The catalog table does not hold together
 

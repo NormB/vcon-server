@@ -1,8 +1,17 @@
-//! What a released vcon-server holds is one rule: the package's default
-//! features. The release build, `cargo install`, the build from source the
-//! install page shows and the binary the how-to scenarios run all name no
-//! feature set of their own, so each is the default set, and the default
-//! set holds the terminal UI.
+//! What a vcon-server build holds is two rules, each written in one place.
+//!
+//! The package's default features (the manifest's `default` list) are what
+//! `cargo install`, the build from source the install page shows and the
+//! binary most how-to scenarios run are built with: none of them names a
+//! feature set of its own, and the default set holds the terminal UI.
+//!
+//! The release binaries are the default features and the ones the release
+//! build's one command names (scripts/reproducible-build.sh): `postgres`,
+//! the PostgreSQL catalog preview. Every other place that names features
+//! for a reader (the install page, the how-to, the CI build its scenario
+//! runs) names that list, read here from the script, and no page says the
+//! release binaries lack it. The preview's limits are stated once, in the
+//! how-to, and the other pages link to them.
 
 use std::path::{Path, PathBuf};
 
@@ -49,6 +58,146 @@ fn names_features(command: &str) -> bool {
     .iter()
     .any(|flag| command.contains(flag))
 }
+
+/// Whether a cargo command changes the feature set in a way other than
+/// adding features to the default ones.
+fn leaves_the_defaults(command: &str) -> bool {
+    ["--no-default-features", "--all-features", " -F "]
+        .iter()
+        .any(|flag| command.contains(flag))
+}
+
+/// The features a cargo command adds with `--features`, in the order
+/// written: `--features a,b`, `--features=a,b`, quoted or not, and as
+/// inline code in a page's sentence.
+fn features_named(command: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut words = command.split_whitespace();
+    while let Some(word) = words.next() {
+        let list = if word == "--features" {
+            words.next().unwrap_or("")
+        } else if let Some(list) = word.strip_prefix("--features=") {
+            list
+        } else {
+            continue;
+        };
+        found.extend(
+            list.split(',')
+                .map(|name| {
+                    name.trim_matches(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_'))
+                })
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned),
+        );
+    }
+    found
+}
+
+/// The release build: the one cargo command of scripts/reproducible-build.sh.
+fn release_build() -> String {
+    let script = read("scripts/reproducible-build.sh");
+    let commands = builds(&script);
+    assert_eq!(commands.len(), 1, "one release build: {commands:?}");
+    commands[0].to_owned()
+}
+
+/// The features the release binaries hold beyond the default ones: what
+/// the release build names. This is the one place the list is written.
+fn release_features() -> Vec<String> {
+    features_named(&release_build())
+}
+
+/// ` --features a,b` for the release features, as a command names them.
+fn release_flag() -> String {
+    format!(" --features {}", release_features().join(","))
+}
+
+/// `text` in lower case with every run of white space as one space, so a
+/// sentence is found whichever way its paragraph is wrapped. A changelog
+/// entry's or a comment's line starts (`#`, `//`) are dropped with it.
+fn flat(text: &str) -> String {
+    text.lines()
+        .map(|line| {
+            let line = line.trim();
+            line.strip_prefix("# ")
+                .or_else(|| line.strip_prefix("// "))
+                .unwrap_or(line)
+        })
+        .flat_map(str::split_whitespace)
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// Ways a page could say the release binaries are built without a feature.
+const DENIALS: [&str; 6] = [
+    "not in the release binaries",
+    "release binaries do not have",
+    "release binaries and `cargo install vcon-server` do not have",
+    "release binaries have no",
+    "release binaries lack",
+    "release binaries are built without",
+];
+
+/// The phrases of `DENIALS` that `text` holds.
+fn denials(text: &str) -> Vec<&'static str> {
+    let text = flat(text);
+    DENIALS
+        .iter()
+        .copied()
+        .filter(|phrase| text.contains(phrase))
+        .collect()
+}
+
+/// Whether one sentence of `text` says the release binaries, or the
+/// release build, have the `postgres` cargo feature.
+fn says_the_release_has_postgres(text: &str) -> bool {
+    flat(text).split(". ").any(|sentence| {
+        (sentence.contains("release binaries") || sentence.contains("release build"))
+            && sentence.contains("`postgres`")
+            && (sentence.contains(" have ")
+                || sentence.contains(" has ")
+                || sentence.contains("built with"))
+            && !sentence.contains(" not ")
+            && !sentence.contains(" no ")
+    })
+}
+
+/// The part of a page from the heading line `heading` to the next heading
+/// of the same or a higher level; `None` when the page has no such heading
+/// or has it more than once.
+fn section<'a>(page: &'a str, heading: &str) -> Option<&'a str> {
+    let level = heading.chars().take_while(|c| *c == '#').count();
+    let mut starts = page
+        .match_indices(heading)
+        .filter(|(at, _)| *at == 0 || page.as_bytes().get(at.wrapping_sub(1)) == Some(&b'\n'))
+        .filter(|(at, _)| page[*at..].lines().next() == Some(heading));
+    let (start, _) = starts.next()?;
+    if starts.next().is_some() {
+        return None;
+    }
+    let body = &page[start.saturating_add(heading.len())..];
+    // A `#` line inside a code block is a shell comment, not a heading.
+    let mut in_code = false;
+    let mut at = 0usize;
+    for line in body.split_inclusive('\n') {
+        if line.starts_with("```") {
+            in_code = !in_code;
+        }
+        let hashes = line.chars().take_while(|c| *c == '#').count();
+        if !in_code && hashes > 0 && hashes <= level && line[hashes..].starts_with(' ') {
+            return Some(&body[..at]);
+        }
+        at = at.saturating_add(line.len());
+    }
+    Some(body)
+}
+
+/// The how-to of the PostgreSQL catalog, and the heading and the anchor of
+/// the one place the preview's limits are stated.
+const HOW_TO: &str = "website/content/docs/postgres-catalog.md";
+const LIMITS_HEADING: &str = "## The limits of the preview";
+const LIMITS_ANCHOR: &str = "#the-limits-of-the-preview";
 
 /// `vcon-server tui --config <file>` with no terminal: standard input,
 /// output and error are not one.
@@ -185,24 +334,45 @@ fn an_entry_is_read_with_its_following_lines_and_only_from_the_unreleased_sectio
 }
 
 #[test]
-fn the_release_build_names_no_features_of_its_own() {
-    let script = read("scripts/reproducible-build.sh");
-    let commands = builds(&script);
-    assert_eq!(commands.len(), 1, "one release build: {commands:?}");
+fn the_release_build_is_the_default_features_and_postgres() {
+    let command = release_build();
     assert!(
-        commands[0].starts_with("cargo build --release --locked -p vcon-server"),
-        "the release build: {}",
-        commands[0]
+        command.starts_with("cargo build --release --locked -p vcon-server"),
+        "the release build: {command}"
     );
     assert!(
-        !names_features(commands[0]),
-        "the release build is the default features: {}",
-        commands[0]
+        !leaves_the_defaults(&command),
+        "the release build keeps the default features: {command}"
+    );
+    assert_eq!(
+        release_features(),
+        ["postgres"],
+        "the release binaries hold the PostgreSQL catalog preview: {command}"
     );
 }
 
 #[test]
-fn the_install_page_builds_and_installs_the_default_features() {
+fn a_release_feature_is_a_feature_of_the_package_and_not_a_default_one() {
+    let manifest: toml::Table = read("crates/vcon-server/Cargo.toml")
+        .parse()
+        .expect("the manifest is TOML");
+    let defaults = default_features();
+    let named = release_features();
+    assert!(!named.is_empty(), "the release build names its features");
+    for feature in named {
+        assert!(
+            manifest["features"].get(&feature).is_some(),
+            "{feature} is a feature of the package"
+        );
+        assert!(
+            !defaults.contains(&feature),
+            "{feature} is a default feature, so naming it in the release build is a second rule"
+        );
+    }
+}
+
+#[test]
+fn the_install_page_builds_the_default_features_and_says_how_to_add_the_release_ones() {
     let page = read("website/content/docs/install.md");
     let commands = builds(&page);
     assert!(
@@ -214,16 +384,39 @@ fn the_install_page_builds_and_installs_the_default_features() {
                 .any(|c| c.starts_with("cargo build --release")),
         "the page shows cargo install and a build from source: {commands:?}"
     );
+    // The page's own steps (the lines that are a command and nothing else)
+    // build the default features; a sentence may show the command that
+    // adds the release's features, and no other feature set.
+    let wanted = release_features();
+    let mut adds = 0usize;
     for command in commands {
         assert!(
-            !names_features(command),
-            "a reader's build is the release's: {command}"
+            !leaves_the_defaults(command),
+            "no build on the page leaves the default features out: {command}"
         );
+        let named = features_named(command);
+        if command.starts_with("cargo ") {
+            assert_eq!(
+                named,
+                Vec::<String>::new(),
+                "a step of the page builds the default features: {command}"
+            );
+        } else if !named.is_empty() {
+            assert_eq!(
+                named, wanted,
+                "a feature set that is not the release's: {command}"
+            );
+            adds = adds.saturating_add(1);
+        }
     }
+    assert_eq!(
+        adds, 2,
+        "the page says how cargo install and the build from source get the release's features"
+    );
 }
 
 #[test]
-fn the_how_to_scenarios_run_a_build_of_the_default_features() {
+fn the_how_to_scenarios_run_the_default_build_and_one_with_the_release_features() {
     let ci = read(".github/workflows/ci.yml");
     let job: Vec<&str> = ci
         .lines()
@@ -236,17 +429,19 @@ fn the_how_to_scenarios_run_a_build_of_the_default_features() {
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    // The second build is for the one scenario whose page says to build
-    // with the postgres feature (the PostgreSQL catalog preview, which the
-    // default build does not have). Every other scenario gets the first.
+    // The first build is what `cargo install` and a build from source give
+    // a reader: the default features. The second is built with the
+    // features the release build names, for the one scenario whose page
+    // needs them (the PostgreSQL catalog preview).
+    let with_release_features =
+        format!("run: cargo build --locked -p vcon-server{}", release_flag());
     assert_eq!(
         commands,
         [
-            "run: cargo build --locked -p vcon-server",
-            "run: cargo build --locked -p vcon-server --features postgres"
+            "run: cargo build --locked -p vcon-server".to_owned(),
+            with_release_features.clone()
         ],
-        "the binary the how-to pages run against is built as a reader's is, and the \
-         PostgreSQL page's as that page says"
+        "the binaries the how-to pages run against: the default features, and the release's"
     );
     // Both builds write target/debug/vcon-server, so the default one is
     // kept, under the name the scenarios without a feature download,
@@ -256,8 +451,11 @@ fn the_how_to_scenarios_run_a_build_of_the_default_features() {
             .unwrap_or_else(|| panic!("the docs-binary job has no `{text}`"))
     };
     let default_kept = at("          name: docs-vcon-server\n");
-    let feature_built = at("run: cargo build --locked -p vcon-server --features postgres");
-    let feature_kept = at("          name: docs-vcon-server-postgres\n");
+    let feature_built = at(&with_release_features);
+    let feature_kept = at(&format!(
+        "          name: docs-vcon-server-{}\n",
+        release_features().join("-")
+    ));
     assert!(
         default_kept < feature_built && feature_built < feature_kept,
         "the default build is kept before the postgres build replaces it, and that one after"
@@ -360,7 +558,384 @@ fn a_command_that_chooses_features_is_seen() {
     }
     assert!(
         !names_features("cargo build --release --locked -p vcon-server --target \"$target\" >&2"),
-        "the release build's own line"
+        "a build of the default features"
+    );
+}
+
+#[test]
+fn a_command_that_leaves_the_default_features_is_seen() {
+    for command in [
+        "cargo build --no-default-features",
+        "cargo build --release --no-default-features --features postgres",
+        "cargo install vcon-server --all-features",
+        "cargo build -F tui -p vcon-server",
+    ] {
+        assert!(leaves_the_defaults(command), "{command}");
+    }
+    for command in [
+        "cargo build --release --locked -p vcon-server --features postgres --target \"$target\" >&2",
+        "cargo install vcon-server --locked",
+    ] {
+        assert!(!leaves_the_defaults(command), "{command}");
+    }
+}
+
+#[test]
+fn the_features_a_command_adds_are_read_in_each_way_of_writing_them() {
+    let cases: [(&str, &[&str]); 8] = [
+        ("cargo build --features postgres", &["postgres"]),
+        (
+            "cargo build --features=postgres,backend-tests -p x",
+            &["postgres", "backend-tests"],
+        ),
+        ("cargo build --features \"postgres\" >&2", &["postgres"]),
+        (
+            "add it: `cargo install vcon-server --locked --features postgres`.",
+            &["postgres"],
+        ),
+        ("cargo build --features a --features b_c", &["a", "b_c"]),
+        ("cargo build --release --locked -p vcon-server", &[]),
+        ("cargo build --features", &[]),
+        ("cargo build --no-default-features", &[]),
+    ];
+    for (command, wanted) in cases {
+        assert_eq!(features_named(command), wanted, "{command}");
+    }
+}
+
+#[test]
+fn no_page_says_the_release_binaries_lack_a_feature() {
+    let mut files = rule_files();
+    files.push("crates/vcon-server/Cargo.toml".to_owned());
+    let mut found = Vec::new();
+    for file in files {
+        for phrase in denials(&read(&file)) {
+            found.push(format!("{file}: {phrase}"));
+        }
+    }
+    let changelog = read("CHANGELOG.md");
+    let unreleased: Vec<&str> = changelog
+        .lines()
+        .skip_while(|line| !line.starts_with("## [Unreleased]"))
+        .skip(1)
+        .take_while(|line| !line.starts_with("## ["))
+        .collect();
+    for phrase in denials(&unreleased.join("\n")) {
+        found.push(format!("CHANGELOG.md, unreleased: {phrase}"));
+    }
+    assert_eq!(
+        found,
+        Vec::<String>::new(),
+        "the release binaries are built with {:?}; these say they are not",
+        release_features()
+    );
+}
+
+#[test]
+fn a_sentence_that_denies_the_feature_is_found_however_it_is_wrapped() {
+    // The three sentences the pages held while the release build named no
+    // feature, as they were wrapped.
+    let readme = "The `postgres` cargo feature, which is not on by default and not in the\nrelease binaries, adds a preview";
+    let how_to = "The release binaries and `cargo install vcon-server` do not have the\n`postgres` cargo feature.";
+    let configuration =
+        "It needs the `postgres` cargo\nfeature, which the release binaries do not have yet.";
+    let manifest = "# a preview, which the release\n# binaries do not have";
+    assert_eq!(
+        denials(readme),
+        ["not in the release binaries"],
+        "the README's"
+    );
+    assert_eq!(
+        denials(how_to),
+        ["release binaries and `cargo install vcon-server` do not have"],
+        "the how-to's"
+    );
+    assert_eq!(
+        denials(configuration),
+        ["release binaries do not have"],
+        "the configuration page's"
+    );
+    assert_eq!(
+        denials(manifest),
+        ["release binaries do not have"],
+        "a comment's line starts are not part of the sentence"
+    );
+    assert!(
+        denials("The release build on `main` has the `postgres` cargo feature. Release 0.4.5's binaries do not have it.").is_empty(),
+        "what one named release lacks is a fact about that release"
+    );
+}
+
+#[test]
+fn a_sentence_that_says_the_release_has_the_feature_is_told_from_one_that_does_not() {
+    for text in [
+        "The release binaries have the `postgres` cargo feature.",
+        "The release build on `main` has the\n`postgres` cargo feature, and more.",
+        "First. The release binaries are built with the `postgres` cargo feature, a preview.",
+    ] {
+        assert!(says_the_release_has_postgres(text), "{text}");
+    }
+    for text in [
+        "The release binaries do not have the `postgres` cargo feature.",
+        "The `postgres` cargo feature is a preview.",
+        "The release binaries have the terminal UI. The `postgres` cargo feature is a preview.",
+        "The release binaries have no `postgres` cargo feature.",
+    ] {
+        assert!(!says_the_release_has_postgres(text), "{text}");
+    }
+}
+
+/// The pages that say which builds hold the feature.
+const FEATURE_PAGES: [&str; 5] = [
+    "README.md",
+    HOW_TO,
+    "website/content/docs/install.md",
+    "website/content/docs/configuration.md",
+    "website/content/docs/status.md",
+];
+
+#[test]
+fn the_pages_say_the_release_build_has_the_feature() {
+    for page in FEATURE_PAGES {
+        assert!(
+            says_the_release_has_postgres(&read(page)),
+            "{page} has no sentence that says the release binaries have the `postgres` cargo feature"
+        );
+    }
+}
+
+#[test]
+fn the_how_to_has_no_step_that_builds_the_server() {
+    // A reader with a release binary has the feature, so the page's steps
+    // start from the installed server; the build that adds the feature to
+    // `cargo install` is the install page's.
+    let page = read(HOW_TO);
+    let steps: Vec<&str> = builds(&page)
+        .into_iter()
+        .filter(|line| line.starts_with("cargo "))
+        .collect();
+    assert_eq!(steps, Vec::<&str>::new(), "the page builds nothing");
+    assert!(
+        !page.contains("docs-test: skip the run is given a server built"),
+        "no step is skipped for the build"
+    );
+    assert!(
+        page.contains("@/docs/install.md#"),
+        "the page sends a reader who builds to the install page"
+    );
+}
+
+/// The comment lines directly above `key = ` in the manifest, as one flat
+/// sentence.
+fn manifest_comment(manifest: &str, key: &str) -> String {
+    let lines: Vec<&str> = manifest.lines().collect();
+    let at = lines
+        .iter()
+        .position(|line| line.starts_with(&format!("{key} = ")))
+        .unwrap_or_else(|| panic!("the manifest has no `{key} = `"));
+    let mut comment: Vec<&str> = lines[..at]
+        .iter()
+        .rev()
+        .take_while(|line| line.starts_with('#'))
+        .copied()
+        .collect();
+    comment.reverse();
+    flat(&comment.join("\n"))
+}
+
+#[test]
+fn the_manifest_describes_the_postgres_feature_as_it_is() {
+    let comment = manifest_comment(&read("crates/vcon-server/Cargo.toml"), "postgres");
+    assert!(
+        !comment.contains("and stops"),
+        "a server with its catalogs in PostgreSQL serves; it no longer stops after the checks: {comment}"
+    );
+    assert!(
+        comment.contains("preview"),
+        "it is still a preview: {comment}"
+    );
+    assert!(
+        comment.contains("release binaries") && comment.contains("scripts/reproducible-build.sh"),
+        "the comment says the release binaries are built with it, and where: {comment}"
+    );
+    assert!(
+        comment.contains("not a default feature") || comment.contains("not on by default"),
+        "the comment says cargo install does not get it by default: {comment}"
+    );
+}
+
+#[test]
+fn a_manifest_comment_is_the_lines_directly_above_its_key() {
+    let manifest = "# Other.\na = []\n# The first\n# line and the second.\nb = [\"a\"]\n";
+    assert_eq!(
+        manifest_comment(manifest, "b"),
+        "the first line and the second.",
+        "the comment of `b`, without the one of `a`"
+    );
+    assert_eq!(manifest_comment("a = []\nb = []\n", "b"), "", "no comment");
+}
+
+/// What the limits section must name, each as the flat text holds it.
+const LIMITS: [(&str, &[&str]); 9] = [
+    (
+        "one server per database",
+        &["a second server", "refused at start"],
+    ),
+    (
+        "no tenant, and none moved",
+        &[
+            "starts with no tenant",
+            "no command moves",
+            "`catalog.backend`",
+            "hides",
+        ],
+    ),
+    ("a bucket prefix of its own", &["prefix of its own"]),
+    (
+        "the backup",
+        &[
+            "`pg_dump`",
+            "base backup",
+            "master key file",
+            "`vcon-server backup` is refused",
+        ],
+    ),
+    (
+        "the commands that run with every server stopped",
+        &[
+            "`rekey master`",
+            "`rekey tenant`",
+            "`tenant create`",
+            "`tenant remove`",
+            "`check`",
+            "`migrate`",
+            "every server stopped",
+        ],
+    ),
+    ("poolers", &["transaction mode", "no pooler was tested"]),
+    (
+        "what it was tested on",
+        &["postgresql 16, 17 and 18", "managed services"],
+    ),
+    ("the pool", &["`catalog.postgres.pool`", "at least 2"]),
+    (
+        "migrate after an upgrade",
+        &["run `migrate` first", "0.4.5", "version 6", "version 13"],
+    ),
+];
+
+#[test]
+fn the_how_to_states_each_limit_of_the_preview_in_one_section() {
+    let page = read(HOW_TO);
+    let limits = section(&page, LIMITS_HEADING)
+        .unwrap_or_else(|| panic!("{HOW_TO} has `{LIMITS_HEADING}` once"));
+    let limits = flat(limits);
+    for (limit, words) in LIMITS {
+        for word in words {
+            assert!(
+                limits.contains(word),
+                "{limit}: the section does not say {word}"
+            );
+        }
+    }
+    assert!(
+        flat(&page).contains("this page is a preview"),
+        "the page keeps the word"
+    );
+}
+
+/// The pages that sum the preview up and send the reader to its limits.
+const SUMMARY_PAGES: [&str; 7] = [
+    "README.md",
+    "website/content/docs/how-to.md",
+    "website/content/docs/install.md",
+    "website/content/docs/configuration.md",
+    "website/content/docs/status.md",
+    "website/content/docs/roadmap.md",
+    "website/content/docs/development.md",
+];
+
+/// Limits a summary page would be stating a second time.
+const RESTATED: [&str; 4] = [
+    "one server serves a database",
+    "one server per database",
+    "starts with no tenant",
+    "no command moves",
+];
+
+#[test]
+fn the_other_pages_link_to_the_limits_and_do_not_state_them_again() {
+    for page in SUMMARY_PAGES {
+        let text = read(page);
+        let link = if page == "README.md" {
+            format!("https://vcon-server.com/docs/postgres-catalog/{LIMITS_ANCHOR}")
+        } else {
+            format!("@/docs/postgres-catalog.md{LIMITS_ANCHOR}")
+        };
+        assert!(text.contains(&link), "{page} does not link to {link}");
+        let text = flat(&text);
+        assert!(text.contains("preview"), "{page} keeps the word preview");
+        for phrase in RESTATED {
+            assert!(
+                !text.contains(phrase),
+                "{page} states a limit again (`{phrase}`); the how-to states it once"
+            );
+        }
+    }
+}
+
+#[test]
+fn every_page_that_calls_the_catalog_a_preview_links_to_its_how_to() {
+    let dir = "website/content/docs";
+    let mut pages: Vec<String> = rule_files()
+        .into_iter()
+        .filter(|file| file.starts_with(dir) && file.ends_with(".md") && file != HOW_TO)
+        .collect();
+    pages.sort();
+    assert!(pages.len() > 20, "the pages are read: {}", pages.len());
+    for page in pages {
+        let text = read(&page);
+        let calls_it_one = text
+            .split("\n\n")
+            .map(flat)
+            .any(|paragraph| paragraph.contains("preview") && paragraph.contains("postgres"));
+        if calls_it_one {
+            assert!(
+                text.contains("@/docs/postgres-catalog.md"),
+                "{page} calls the PostgreSQL catalog a preview and does not link to its how-to"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_section_ends_at_the_next_heading_of_its_level_and_not_at_a_comment_in_a_code_block() {
+    let page =
+        "# T\n\n## A\n\none\n\n```sh\n# a comment\nrun\n```\n\n### A1\n\ntwo\n\n## B\n\nthree\n";
+    assert_eq!(
+        section(page, "## A"),
+        Some("\n\none\n\n```sh\n# a comment\nrun\n```\n\n### A1\n\ntwo\n\n"),
+        "the section holds its code block and its sub-section"
+    );
+    assert_eq!(
+        section(page, "## B"),
+        Some("\n\nthree\n"),
+        "the last section ends with the page"
+    );
+    assert_eq!(
+        section(page, "## C"),
+        None,
+        "a heading the page does not have"
+    );
+    assert_eq!(
+        section("## A\n\none\n\n## A\n\ntwo\n", "## A"),
+        None,
+        "a heading the page has twice is not one place"
+    );
+    assert_eq!(
+        section("text ## A\n\n## A more\n", "## A"),
+        None,
+        "a heading is a whole line"
     );
 }
 

@@ -107,8 +107,13 @@ s3 = ["dep:aws-config", "dep:aws-sdk-s3", "dep:aws-smithy-http-client"]
 # The store conformance suite against real services: run with the service
 # addresses set (see backend/s3.rs); without them the suite fails.
 backend-tests = []
-# The catalogs in PostgreSQL ([catalog.postgres]), a preview: this release
-# connects, checks the server and stops (see backend/postgres.rs).
+# The catalogs in PostgreSQL ([catalog.postgres]), a preview: one server per
+# database keeps the registry and every tenant's catalog there (see
+# backend/postgres.rs; the limits are in the how-to, postgres-catalog.md).
+# It is not a default feature: `cargo install` and a plain build get it
+# with `--features postgres`. The release binaries are built with it, by
+# the one build command of scripts/reproducible-build.sh
+# (tests/release_features.rs holds the pages and CI to that command).
 # It needs S3 objects ([catalog] in configuration.md), so it turns s3 on.
 postgres = ["s3", "dep:tokio-postgres", "dep:tokio-postgres-rustls", "dep:rustls-native-certs"]
 # `vcon-server tui`: a terminal UI that reads a running server over its HTTP

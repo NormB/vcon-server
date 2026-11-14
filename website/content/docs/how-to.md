@@ -41,9 +41,10 @@ shows. `scripts/docs_test.py` runs them. See
   preview: the database's side, the roles, the schema and
   `vcon-server migrate`, TLS and client certificates, the configuration and
   the secret files, the first start, the commands, backups, key rotation,
-  and what each refusal means. One server serves a database, and a
-  database starts with no tenant. CI runs it with Debian 13's PostgreSQL 17
-  and a server built with the `postgres` feature.
+  and what each refusal means. Its
+  [limits](@/docs/postgres-catalog.md#the-limits-of-the-preview) come
+  first. CI runs it with Debian 13's PostgreSQL 17 and a server built with
+  the `postgres` feature.
 
 ## Use it
 

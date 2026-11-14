@@ -429,7 +429,8 @@ SCENARIOS = [
     # The PostgreSQL catalog preview: a PostgreSQL server from Debian's own
     # packages beside the server and RustFS, each under systemd, in one
     # container. The page needs the objects in a bucket and a server built
-    # with the postgres feature, which the default build does not have.
+    # with the postgres feature: the release binaries have it
+    # (scripts/reproducible-build.sh), the default build does not.
     Scenario(
         "postgres",
         "systemd",

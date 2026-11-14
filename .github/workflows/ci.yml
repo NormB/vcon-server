@@ -929,6 +929,8 @@ jobs:
           retention-days: 1
           if-no-files-found: error
       # The postgres scenario's pages need the postgres cargo feature, which
+      # the release binaries have (scripts/reproducible-build.sh names it;
+      # tests/release_features.rs holds this build to that list) and
       # the default build does not have (`docs_test.py artifact <scenario>`
       # names the artifact each scenario gets; scripts/test_docs_test.py
       # holds these steps to the scenarios' features). Built after the

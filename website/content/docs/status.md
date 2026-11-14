@@ -212,9 +212,18 @@ what is built, unless it says otherwise.
 ## On `main` only
 
 The site is built from the `main` branch, so a page can describe what no
-release holds yet. Release 0.4.5 does not have these, both of the
-PostgreSQL catalog preview and behind the `postgres` cargo feature:
+release holds yet. Release 0.4.5 does not have these, all of the
+PostgreSQL catalog preview and behind the `postgres` cargo feature. The
+how-to states
+[the limits of the preview](@/docs/postgres-catalog.md#the-limits-of-the-preview)
+once, for every entry here:
 
+- **The feature in the release binaries.** The release binaries built from
+  `main` have the `postgres` cargo feature: the release build names it.
+  Release 0.4.5's binaries were built with the default features alone, and
+  `cargo install` and a build from source get it with
+  `--features postgres`. A deployment with its catalogs in the data
+  directory is unchanged by it.
 - **Schema version 13 of the PostgreSQL preview.** `vcon-server migrate`
   built from `main` leaves the database at version 13; release 0.4.5 leaves
   it at 6, and its server refuses a database at 13. Version 7 adds the
@@ -238,13 +247,11 @@ PostgreSQL catalog preview and behind the `postgres` cargo feature:
 - **A server and the commands on a PostgreSQL catalog.** With
   `catalog.backend = "postgres"`, `serve` and every command keep the
   registry and every tenant's catalog in the database, with the objects in
-  a bucket; release 0.4.5 connects, checks the server and stops. One server
-  serves a database: a server, a command beside it and a command that runs
-  alone each hold advisory locks there, as they hold the data directory's
-  lock files. The claim of the bucket prefix is a row of the database. A
-  database starts with no tenant: no command moves a data directory's
-  tenants into it yet. `vcon-server backup` and `storage move-objects` are
-  refused, each with what to use. The store's conformance suite passes on
+  a bucket; release 0.4.5 connects, checks the server and stops. A server,
+  a command beside it and a command that runs alone each hold advisory
+  locks in the database, as they hold the data directory's lock files. The
+  claim of the bucket prefix is a row of the database. The store's
+  conformance suite passes on
   PostgreSQL 16 and 18, and CI starts a server on each, stores and reads
   through it, restarts it, and runs the key rotation with the binary.
 - **Removing a tenant, and rotating a tenant key, in PostgreSQL.** A

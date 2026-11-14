@@ -9,7 +9,8 @@ All notable changes to this project are recorded here. The format follows
 ### Added
 
 - **A server and the commands keep their catalogs in PostgreSQL**, behind
-  the `postgres` cargo feature, which the release binaries do not have.
+  the `postgres` cargo feature, a preview (the release binaries are built
+  with it: see the first entry under Changed).
   With `catalog.backend = "postgres"`, `serve` and every command keep the
   registry and every tenant's catalog in the database; before, a start
   connected, checked the server and stopped. Read this before using it:
@@ -118,6 +119,26 @@ All notable changes to this project are recorded here. The format follows
 
 ### Changed
 
+- **The release binaries are built with the `postgres` cargo feature.**
+  The release build (`scripts/reproducible-build.sh`) names it, so the
+  x86_64 and aarch64 binaries hold the PostgreSQL catalog. It is still a
+  preview: read
+  [the limits of the preview](https://vcon-server.com/docs/postgres-catalog/#the-limits-of-the-preview)
+  before using it. `cargo install vcon-server` and a build from source
+  build the default features, as before, and get it with
+  `--features postgres`.
+  - Upgrading from 0.4.5, with the catalogs in the data directory (no
+    `[catalog]` table, or `backend = "local"`): nothing changes. The
+    feature does nothing until `catalog.backend` is `"postgres"`.
+  - Upgrading from 0.4.5, with `catalog.backend = "postgres"` set: on
+    0.4.5 the server stopped at start. It now serves from the database,
+    which is empty of tenants: the data directory's tenants are not in
+    it, and no command moves them. Run `vcon-server migrate` before the
+    first start: a database that 0.4.5 migrated is at schema version 6,
+    and this binary needs version 13.
+  - What the feature adds to the build, for each release target: 22
+    crate versions, none with a build script, one of them a procedural
+    macro (`der_derive`).
 - **The terminal UI's page states the keys once.** The
   [Keys](https://vcon-server.com/docs/tui/#keys) table is the one list of
   the keys and of the views each works in. The page no longer repeats the
