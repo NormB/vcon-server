@@ -14,12 +14,14 @@ mod claim_tests;
 mod edge;
 mod failure;
 mod lock_tests;
+mod place_tests;
 mod registry_tests;
 mod rekey_tests;
 mod reseal_tests;
 mod schema_tests;
 mod space_tests;
 mod success;
+mod tenants_tests;
 
 use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;

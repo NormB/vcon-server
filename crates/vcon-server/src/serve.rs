@@ -28,6 +28,9 @@ pub enum ServeError {
     MasterKey(KeyError),
     /// server.sqlite was made under another master key.
     WrongMasterKey,
+    /// The registry in the catalog database was made under another master
+    /// key.
+    WrongDatabaseKey,
     /// The registry could not be opened.
     Open(RegistryError),
     /// server.sqlite could not be read.
@@ -65,6 +68,7 @@ impl fmt::Display for ServeError {
             ServeError::WrongMasterKey => {
                 f.write_str("the master key is not the one server.sqlite was made under")
             }
+            ServeError::WrongDatabaseKey => f.write_str(crate::tenants::WRONG_DATABASE_KEY),
             ServeError::Open(e) => {
                 write!(f, "the registry cannot be opened: {}", with_causes(e))
             }
@@ -139,14 +143,81 @@ impl fmt::Display for ServeError {
 
 /// Runs the server until `shutdown` completes: locks the data directory,
 /// opens the registry under the master key, and serves the API over TLS.
+///
+/// The opening runs on a blocking task: the registry and the catalogs are
+/// read there, and a PostgreSQL catalog waits on a runtime of its own,
+/// which no async worker may do. A server that stops, or whose start is
+/// refused after the catalogs were reached, gives its locks on the
+/// database up before it ends.
 pub async fn run(config: &Config, shutdown: impl Future<Output = ()>) -> Result<(), ServeError> {
-    let _lock =
+    let opening = config.clone();
+    let opened = blocking(move || open(&opening)).await?;
+    run_opened(config, opened, shutdown).await
+}
+
+/// [`run`], with the data directory locked and the registry opened: serves
+/// until `shutdown` completes or a listener fails, and then gives up the
+/// locks on the catalog database, while its connections still answer, so
+/// the next server finds the database free at once.
+pub(crate) async fn run_opened(
+    config: &Config,
+    (_lock, catalogs, tenants): Opened,
+    shutdown: impl Future<Output = ()>,
+) -> Result<(), ServeError> {
+    if let Some(server) = catalogs.server() {
+        tracing::info!(catalog = %server, "the catalogs are in PostgreSQL");
+    }
+    let served = serve_opened(config, tenants, shutdown).await;
+    blocking(move || catalogs.give_up_locks()).await;
+    served?;
+    tracing::info!("stopped");
+    Ok(())
+}
+
+/// Runs `work`, which reads files or waits on the catalog database, off
+/// the async workers.
+async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+    match tokio::task::spawn_blocking(work).await {
+        Ok(done) => done,
+        Err(e) => std::panic::resume_unwind(e.into_panic()),
+    }
+}
+
+/// What a start opens before it listens: the data directory's lock, where
+/// the catalogs are, and the registry, checked.
+pub(crate) type Opened = (datadir::DataDirLock, backend::Catalogs, Tenants);
+
+/// Locks the data directory, reads the master key, reaches the catalogs
+/// and then the objects, and opens the registry. A start refused after the
+/// catalogs were reached gives its locks on the database up.
+fn open(config: &Config) -> Result<Opened, ServeError> {
+    let lock =
         datadir::lock(&config.data_dir, Work::Serve.sharing()).map_err(ServeError::DataDir)?;
     let master = Key::load_master(&config.master_key).map_err(ServeError::MasterKey)?;
-    let objects =
-        backend::objects_for(&config.storage, &config.data_dir).map_err(ServeError::Storage)?;
-    backend::catalog_for(&config.catalog)
-        .await
+    let catalogs = backend::catalog_for(&config.catalog, Work::Serve.sharing())
+        .map_err(ServeError::Storage)?;
+    let tenants = open_or_give_up(config, master, &catalogs)?;
+    Ok((lock, catalogs, tenants))
+}
+
+/// [`open_on`], and for a start it refuses, the locks on the catalog
+/// database given up while the connections still answer.
+pub(crate) fn open_or_give_up(
+    config: &Config,
+    master: Key,
+    catalogs: &backend::Catalogs,
+) -> Result<Tenants, ServeError> {
+    open_on(config, master, catalogs).inspect_err(|_| catalogs.give_up_locks())
+}
+
+/// The registry on `catalogs`, with the objects bound to them, and the
+/// checks a start makes of it before it listens.
+fn open_on(
+    config: &Config,
+    master: Key,
+    catalogs: &backend::Catalogs,
+) -> Result<Tenants, ServeError> {
+    let objects = backend::objects_for(&config.storage, &config.data_dir, catalogs)
         .map_err(ServeError::Storage)?;
     let tenants = Tenants::open_in(
         &config.data_dir,
@@ -154,9 +225,11 @@ pub async fn run(config: &Config, shutdown: impl Future<Output = ()>) -> Result<
         Arc::new(OsFs),
         Arc::new(SystemClock),
         objects,
+        catalogs,
     )
     .map_err(|e| match e {
         RegistryError::WrongKey => ServeError::WrongMasterKey,
+        RegistryError::WrongDatabaseKey => ServeError::WrongDatabaseKey,
         other => ServeError::Open(other),
     })?;
     let order = tenants.key_order().map_err(ServeError::Registry)?;
@@ -174,6 +247,16 @@ pub async fn run(config: &Config, shutdown: impl Future<Output = ()>) -> Result<
             return Err(ServeError::ParquetRemoved { tenants });
         }
     }
+    Ok(tenants)
+}
+
+/// Serves the opened registry until `shutdown` completes or a listener
+/// fails.
+async fn serve_opened(
+    config: &Config,
+    tenants: Tenants,
+    shutdown: impl Future<Output = ()>,
+) -> Result<(), ServeError> {
     let tls = api::tls_config(&config.tls_cert, &config.tls_key).map_err(ServeError::Tls)?;
     let listener = TcpListener::bind(config.listen)
         .await
@@ -328,9 +411,7 @@ pub async fn run(config: &Config, shutdown: impl Future<Output = ()>) -> Result<
     if let Some(packer) = packer {
         let _ = packer.await;
     }
-    served.map_err(ServeError::Serve)?;
-    tracing::info!("stopped");
-    Ok(())
+    served.map_err(ServeError::Serve)
 }
 
 /// What one pack run over every tenant did.

@@ -252,22 +252,16 @@ mod live {
         );
     }
 
-    #[tokio::test]
-    async fn the_preview_names_the_server_it_reached_and_refuses_to_go_on() {
-        let db = super::super::schema_tests::live::Db::migrated().await;
-        let (_tmp, s) = db.settings("vcon_app");
-        let refused = super::super::super::preview(&s).await;
+    #[test]
+    fn a_database_names_the_server_it_reached_for_the_start_s_log_line() {
+        let (_db, database) = super::super::catalog_tests::on_a_server::database();
+        let server = database.server();
         assert!(
-            refused
-                .0
-                .contains(&format!("connected to PostgreSQL {}.", live::major()))
-                && refused.0.contains("as vcon_app over TLS")
-                && refused.0.contains("preview")
-                && refused
-                    .0
-                    .contains("remove the [catalog] and [catalog.postgres] tables to serve"),
-            "names what it reached and what to do: {refused}"
+            server.starts_with(&format!("PostgreSQL {}.", live::major()))
+                && server.contains(&format!("at localhost:{}", live::primary()))
+                && server.ends_with("as vcon_app over TLS"),
+            "the version, the address and the role: {server}"
         );
-        assert!(!refused.0.contains(&live::password()), "never the password");
+        assert!(!server.contains(&live::password()), "never the password");
     }
 }

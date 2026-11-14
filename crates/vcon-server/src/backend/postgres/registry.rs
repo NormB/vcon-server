@@ -20,13 +20,6 @@
 //! later statement is refused and the commit answers
 //! [`CommitError::RolledBack`]. The local registry's transaction goes on
 //! after a failed write; no caller relies on that.
-#![cfg_attr(
-    not(all(test, feature = "backend-tests")),
-    expect(
-        dead_code,
-        reason = "serve opens this registry from a later change; the tests do now"
-    )
-)]
 
 use std::io::Write;
 use std::path::Path;

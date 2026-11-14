@@ -186,6 +186,9 @@ pub enum CommandError {
     MasterKey(KeyError),
     /// server.sqlite was made under another master key.
     WrongMasterKey,
+    /// The registry in the catalog database was made under another master
+    /// key.
+    WrongDatabaseKey,
     /// A period that is neither like 7y, 18m or 90d nor, where allowed,
     /// `default`.
     BadPeriod(String),
@@ -239,6 +242,7 @@ impl fmt::Display for CommandError {
             CommandError::WrongMasterKey | CommandError::Tenant(TenantError::WrongKey) => {
                 f.write_str("the master key is not the one server.sqlite was made under")
             }
+            CommandError::WrongDatabaseKey => f.write_str(crate::tenants::WRONG_DATABASE_KEY),
             CommandError::BadPeriod(text) => write!(
                 f,
                 "{text:?} is not a period such as 7y, 18m or 90d (or, for set-retention, default)"
@@ -303,6 +307,7 @@ impl fmt::Display for CommandError {
                 }
                 BackupError::Io => "the backup could not be written, or the data could not be read",
                 BackupError::AuditFailed => "the audit record could not be written",
+                BackupError::NoFileBackup => tenants::NO_FILE_BACKUP,
             }),
             CommandError::Tenant(e) => f.write_str(match e {
                 TenantError::NotFound => "no tenant has this id",
@@ -358,11 +363,46 @@ pub fn run(config: &Config, command: &Command, out: &mut dyn Write) -> Result<()
     let sharing = command.work().sharing();
     let _lock = datadir::lock(&config.data_dir, sharing).map_err(CommandError::DataDir)?;
     let master = Key::load_master(&config.master_key).map_err(CommandError::MasterKey)?;
-    backend::catalog_for_command(&config.catalog).map_err(CommandError::Storage)?;
+    // With the catalogs in PostgreSQL the command holds the locks of its
+    // kind on the database, as it holds the data directory's: beside a
+    // server, or alone.
+    let catalogs = backend::catalog_for(&config.catalog, sharing).map_err(CommandError::Storage)?;
+    run_and_give_up(config, command, master, &catalogs, out)
+}
+
+/// Runs `command` on `catalogs`, and then gives up the command's locks on
+/// the catalog database, done or refused, while the connections still
+/// answer: the next command or server finds the database free at once.
+pub(crate) fn run_and_give_up(
+    config: &Config,
+    command: &Command,
+    master: Key,
+    catalogs: &backend::Catalogs,
+    out: &mut dyn Write,
+) -> Result<(), CommandError> {
+    let done = run_on(config, command, master, catalogs, out);
+    catalogs.give_up_locks();
+    done
+}
+
+/// [`run`], with the data directory locked and the catalogs reached.
+fn run_on(
+    config: &Config,
+    command: &Command,
+    master: Key,
+    catalogs: &backend::Catalogs,
+    out: &mut dyn Write,
+) -> Result<(), CommandError> {
+    let sharing = command.work().sharing();
     // A master rotation renames over server.sqlite, so nothing may hold it
     // open: it runs before the registry is opened.
     if let Command::RekeyMaster { new_master } = command {
-        return rekey_master(config, &master, new_master, out);
+        return rekey_master(config, &master, new_master, catalogs, out);
+    }
+    // Refused before anything is opened or claimed: a PostgreSQL catalog
+    // has no objects in a data directory to move.
+    if matches!(command, Command::StorageMoveObjects) && catalogs.server().is_some() {
+        return Err(nothing_to_move_on_a_database());
     }
     // A command beside a running server must not run start-up recovery: it
     // would take the server's work in progress for a crash's leftovers. Nor
@@ -372,8 +412,8 @@ pub fn run(config: &Config, command: &Command, out: &mut dyn Write) -> Result<()
     } else {
         Tenants::open_in
     };
-    let objects =
-        backend::objects_for(&config.storage, &config.data_dir).map_err(CommandError::Storage)?;
+    let objects = backend::objects_for(&config.storage, &config.data_dir, catalogs)
+        .map_err(CommandError::Storage)?;
     // The bucket the objects move to, for `storage move-objects`.
     #[cfg(feature = "s3")]
     let bucket = match &objects {
@@ -386,9 +426,11 @@ pub fn run(config: &Config, command: &Command, out: &mut dyn Write) -> Result<()
         Arc::new(OsFs),
         Arc::new(SystemClock),
         objects,
+        catalogs,
     )
     .map_err(|e| match e {
         RegistryError::WrongKey => CommandError::WrongMasterKey,
+        RegistryError::WrongDatabaseKey => CommandError::WrongDatabaseKey,
         other => CommandError::Open(other),
     })?;
     tenants.allow_no_expiry(config.keys_no_expiry);
@@ -720,11 +762,28 @@ fn s3_target(
     Err(CommandError::NoS3)
 }
 
+/// How many rows of a table a master rotation in PostgreSQL reads and
+/// writes in one statement.
+#[cfg(feature = "postgres")]
+const REKEY_MASTER_BATCH: i64 = 1_000;
+
+/// The refusal of `storage move-objects` with the catalogs in PostgreSQL.
+fn nothing_to_move_on_a_database() -> CommandError {
+    CommandError::Storage(StorageError(
+        "storage move-objects moves the objects of a data directory's catalogs to the bucket; \
+         with catalog.backend = \"postgres\" every object is in the bucket from its first \
+         write and there is nothing to move: to move a data directory's objects, run it with \
+         the [catalog] and [catalog.postgres] tables removed"
+            .to_owned(),
+    ))
+}
+
 /// Rotates the master key and says what the operator does next.
 fn rekey_master(
     config: &Config,
     master: &Key,
     new_master: &std::path::Path,
+    catalogs: &backend::Catalogs,
     out: &mut dyn Write,
 ) -> Result<(), CommandError> {
     let new =
@@ -732,12 +791,33 @@ fn rekey_master(
     if new.id() == master.id() {
         return Err(CommandError::SameMasterKey);
     }
-    tenants::rekey_master(&config.data_dir, master, &new, SystemClock.now()).map_err(
-        |e| match e {
-            TenantError::WrongKey => CommandError::WrongMasterKey,
-            other => CommandError::Tenant(other),
-        },
-    )?;
+    match catalogs {
+        backend::Catalogs::Local => {
+            tenants::rekey_master(&config.data_dir, master, &new, SystemClock.now()).map_err(
+                |e| match e {
+                    TenantError::WrongKey => CommandError::WrongMasterKey,
+                    other => CommandError::Tenant(other),
+                },
+            )?;
+        }
+        // The registry's rows are made again under the new key in one
+        // transaction, with this command's locks held: no server and no
+        // other command has the database.
+        #[cfg(feature = "postgres")]
+        backend::Catalogs::Postgres(database) => {
+            backend::postgres::PgRegistry::rekey_master(
+                database,
+                master,
+                &new,
+                SystemClock.now(),
+                REKEY_MASTER_BATCH,
+            )
+            .map_err(|e| match e {
+                TenantError::WrongKey => CommandError::WrongDatabaseKey,
+                other => CommandError::Tenant(other),
+            })?;
+        }
+    }
     line(
         out,
         &serde_json::json!({
@@ -2027,6 +2107,9 @@ mod tests {
             // The step, the file and the error under it, all three.
             CommandError::Open(_) => "opening /srv/data/server.sqlite failed: disk I/O error",
             CommandError::WrongMasterKey => "is not the one server.sqlite was made under",
+            CommandError::WrongDatabaseKey => {
+                "is not the one the registry in the catalog database was made under"
+            }
             CommandError::BadPeriod(_) => "\"7w\" is not a period",
             CommandError::UnknownKey => "no key has this id",
             CommandError::User(e) => match e {
@@ -2059,6 +2142,7 @@ mod tests {
                 BackupError::KeptChanging => "try again",
                 BackupError::Io => "could not be written",
                 BackupError::AuditFailed => "audit record",
+                BackupError::NoFileBackup => "back up the catalog database with pg_dump",
             },
             CommandError::Tenant(e) => match e {
                 TenantError::NotFound => "no tenant",
@@ -2146,6 +2230,7 @@ mod tests {
             Arc::new(OsFs),
             Arc::new(SystemClock),
             crate::backend::ObjectPlace::S3(bucket.clone()),
+            &crate::backend::Catalogs::Local,
         )
         .expect("opens");
         let (_, body) = vcon(UUID, "exported");
@@ -2362,6 +2447,7 @@ mod tests {
             BackupError::KeptChanging,
             BackupError::Io,
             BackupError::AuditFailed,
+            BackupError::NoFileBackup,
         ]
         .map(CommandError::Backup);
         let rest = [
@@ -2373,6 +2459,7 @@ mod tests {
                 io::Error::other("disk I/O error"),
             )),
             CommandError::WrongMasterKey,
+            CommandError::WrongDatabaseKey,
             CommandError::BadPeriod("7w".to_owned()),
             CommandError::UnknownKey,
             CommandError::Output(io::Error::other("closed")),

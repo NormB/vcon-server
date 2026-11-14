@@ -28,14 +28,6 @@
 //!   read. A write that fails aborts the transaction: every later call
 //!   fails, and its commit answers [`CommitError::RolledBack`].
 
-#![cfg_attr(
-    not(all(test, feature = "backend-tests")),
-    expect(
-        dead_code,
-        reason = "a tenant's space opens these catalogs from the next change; the tests do now"
-    )
-)]
-
 use std::cell::Cell;
 use std::io::Write;
 use std::path::Path;
@@ -79,7 +71,9 @@ pub(crate) struct Database {
     // the runtime that drives them is still there.
     lock: std::sync::Mutex<Option<Lease>>,
     pool: Pool,
-    runtime: tokio::runtime::Runtime,
+    runtime: OwnRuntime,
+    /// The server the lock's connection reached, as a log line names it.
+    server: String,
     /// In tests, how many times a call waited on the database: the round
     /// trips, since each wait sends one batch and reads its answer.
     #[cfg(test)]
@@ -94,30 +88,51 @@ impl std::fmt::Debug for Database {
     }
 }
 
+/// The database's runtime, ended without waiting when it is dropped. A
+/// `tokio::runtime::Runtime` dropped where a runtime is entered panics,
+/// and the last holder of a database may end in serve's async body: on a
+/// start refused after the catalogs were opened, and when a server stops.
+struct OwnRuntime(Option<tokio::runtime::Runtime>);
+
+impl std::ops::Deref for OwnRuntime {
+    type Target = tokio::runtime::Runtime;
+
+    fn deref(&self) -> &tokio::runtime::Runtime {
+        self.0
+            .as_ref()
+            .expect("the runtime is there until the drop")
+    }
+}
+
+impl Drop for OwnRuntime {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.0.take() {
+            runtime.shutdown_background();
+        }
+    }
+}
+
 /// The fewest connections a server's pool may have: the one that holds
 /// the servers' lock, and one for a transaction.
 pub(crate) const SMALLEST_POOL: u32 = 2;
 
 impl Database {
-    /// Reads the secret files, connects as a server does, and takes the
-    /// lock every server shares, on a connection kept for that alone.
-    ///
-    /// # Errors
-    ///
-    /// A `StorageError` naming the step that refused: a secret file, the
-    /// pool's size, the server reached, or the lock another server or a
-    /// migration holds.
+    /// In tests, `connect_as` for a server.
+    #[cfg(all(test, feature = "backend-tests"))]
     pub(crate) fn connect(settings: &PostgresSettings) -> Result<Arc<Database>, StorageError> {
         Database::connect_as(settings, schema::Holds::Serve)
     }
 
-    /// [`Database::connect`] for the work `holds`: a server, a command
-    /// beside one, or a command alone, each with the locks of its kind.
+    /// Reads the secret files, connects with the application role, and
+    /// takes the locks of the work `holds`, on a connection kept for that
+    /// alone: a server, a command beside one, or a command alone, each
+    /// with the locks of its kind.
     ///
     /// # Errors
     ///
-    /// As [`Database::connect`]; the lock's refusal says what may hold the
-    /// database against this work.
+    /// A `StorageError` naming the step that refused: a secret file, the
+    /// pool's size, the server reached, or the lock, whose refusal says
+    /// what may hold the database against this work.
     pub(crate) fn connect_as(
         settings: &PostgresSettings,
         holds: schema::Holds,
@@ -127,12 +142,14 @@ impl Database {
         }
         let secrets = Secrets::read(settings)?;
         let connector = Connector::new(settings, secrets, Purpose::Serve)?;
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .thread_name("vcon-postgres")
-            .enable_all()
-            .build()
-            .map_err(|e| StorageError(format!("the runtime cannot start: {e}")))?;
+        let runtime = OwnRuntime(Some(
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_name("vcon-postgres")
+                .enable_all()
+                .build()
+                .map_err(|e| StorageError(format!("the runtime cannot start: {e}")))?,
+        ));
         let pool = Pool::new(connector, settings.pool, settings.connect_timeout);
         let lock = runtime
             .block_on(pool.get())
@@ -140,13 +157,21 @@ impl Database {
         runtime
             .block_on(schema::take_locks_for(lock.client(), holds))
             .map_err(|why| StorageError(format!("catalog.postgres: {why}")))?;
+        let server = lock.server().to_string();
         Ok(Arc::new(Database {
             lock: std::sync::Mutex::new(Some(lock)),
             pool,
             runtime,
+            server,
             #[cfg(test)]
             trips: std::sync::atomic::AtomicUsize::new(0),
         }))
+    }
+
+    /// The server reached and the role logged in as, such as `PostgreSQL
+    /// 18.6 at db1.example.com:5432 as vcon_app over TLS`.
+    pub(crate) fn server(&self) -> &str {
+        &self.server
     }
 
     /// Waits for `call` on the pool's runtime. The calling thread must not
@@ -189,7 +214,7 @@ impl Database {
     }
 
     /// In tests, the round trips so far.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "backend-tests"))]
     pub(crate) fn round_trips(&self) -> usize {
         self.trips.load(std::sync::atomic::Ordering::SeqCst)
     }
@@ -595,6 +620,7 @@ impl PgCatalog {
     /// # Errors
     ///
     /// [`CatalogError::Io`] when the database cannot be read.
+    #[cfg(all(test, feature = "backend-tests"))]
     pub(crate) fn exists(database: &Arc<Database>, tenant: TenantId) -> Result<bool, CatalogError> {
         Ok(PgCatalog::key_id(database, tenant)?.is_some())
     }

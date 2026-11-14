@@ -2351,6 +2351,7 @@ pub(crate) mod remote {
             Arc::new(OsFs),
             TestClock::at(conformance::START),
             crate::backend::ObjectPlace::S3(s3.clone()),
+            &crate::backend::Catalogs::Local,
         )
         .expect("the registry opens")
     }

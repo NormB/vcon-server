@@ -40,10 +40,10 @@ shows. `scripts/docs_test.py` runs them. See
 - [Keep the catalogs in PostgreSQL](@/docs/postgres-catalog.md), a
   preview: the database's side, the roles, the schema and
   `vcon-server migrate`, TLS and client certificates, the configuration and
-  the secret files, and what each refusal at start means. In this release
-  `migrate` makes the schema, and the server connects, checks the server
-  and stops. CI runs it with Debian 13's PostgreSQL 17 and a server built
-  with the `postgres` feature.
+  the secret files, the first start, the commands, backups, key rotation,
+  and what each refusal means. One server serves a database, and a
+  database starts with no tenant. CI runs it with Debian 13's PostgreSQL 17
+  and a server built with the `postgres` feature.
 
 ## Use it
 

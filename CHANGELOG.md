@@ -8,6 +8,36 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- **A server and the commands keep their catalogs in PostgreSQL**, behind
+  the `postgres` cargo feature, which the release binaries do not have.
+  With `catalog.backend = "postgres"`, `serve` and every command keep the
+  registry and every tenant's catalog in the database; before, a start
+  connected, checked the server and stopped. Read this before using it:
+  - One server serves a database. A second server, on any host, is
+    refused at start. A server, a command beside it and a command that
+    runs alone each hold advisory locks on the database for as long as
+    they run, so `migrate`, `rekey master`, `rekey tenant`, `tenant
+    create`, `tenant remove` and `check` need every server stopped, and
+    `migrate` is refused while any command runs.
+  - A database starts with no tenant. No command moves the tenants of a
+    data directory into PostgreSQL: a configuration changed to
+    `catalog.backend = "postgres"` no longer serves the data directory's
+    tenants, and removing the `[catalog]` tables serves them again.
+  - The bucket prefix a data directory claimed is refused to a database:
+    give the database a `storage.s3.prefix` of its own. The claim of the
+    prefix is a row of the database.
+  - `data_dir` is still required and holds the two lock files only.
+    `catalog.postgres.pool` must be at least 2.
+  - `vcon-server backup` and `storage move-objects` are refused, each with
+    what to use: back up the database with `pg_dump` or a base backup, with
+    the bucket and the master key file.
+  - `rekey master` moves the registry to the new key in one transaction.
+    A wrong master key is refused with `the master key is not the one the
+    registry in the catalog database was made under`.
+  - A start logs `the catalogs are in PostgreSQL` with the server reached
+    and the role before its `serving` line.
+  The how-to is
+  [keep the catalogs in PostgreSQL](https://vcon-server.com/docs/postgres-catalog/).
 - **The PostgreSQL preview's schema is at version 13.** A database that
   0.4.5 or an earlier release migrated is at version 6: run
   `vcon-server migrate` with the new binary before a server starts, as
@@ -52,32 +82,29 @@ All notable changes to this project are recorded here. The format follows
   holds no audit record and no claim, so versions 11 to 13 convert none. The local catalogs
   stay at schema version 9.
 - **The statements that keep a tenant's catalog in PostgreSQL**, behind
-  the `postgres` cargo feature and used by no server yet: a start with
-  `catalog.backend = "postgres"` still connects, checks and stops. They
+  the `postgres` cargo feature. They
   pass the store's conformance suite on PostgreSQL 16 and 18 with the
   objects in a bucket, with and without Parquet storage. The uuid of a
   vCon is kept as an HMAC and a sealed copy; a version's form, gzip flag
   and size, and an audit record's target, are sealed; times, holds,
   counts and random ids are clear.
 - **The statements that make, open, list and remove a tenant in
-  PostgreSQL**, behind the `postgres` cargo feature and used by no server
-  yet. A tenant is made by its row in `tenant_lock` and the id of its
+  PostgreSQL**, behind the `postgres` cargo feature. A tenant is made by its row in `tenant_lock` and the id of its
   catalog key, and its objects are in the bucket. A removal deletes the
   bucket's objects and then the tenant's rows, at most 10,000 rows of a
   table in one transaction. A removal keeps the tenant's audit records:
   the rows of `audit` and `audit_key` stay, and the database refuses a
   `DELETE` of a record from every role.
 - **The statements that move a tenant's catalog in PostgreSQL to a new
-  tenant key**, behind the `postgres` cargo feature and used by no server
-  yet. One transaction makes the sealed columns and the lookup values of
+  tenant key**, behind the `postgres` cargo feature. One transaction makes the sealed columns and the lookup values of
   the tenant's vCons, versions and purge records again under the new key
   and seals the key of the tenant's audit log again; it changes all of
   them or none. The audit key does not rotate with the tenant key, and no
   audit record is changed: a record's target is sealed under the audit
   key. Giving a log a new audit key is not written.
 - **The statements that rotate the master key of a registry in
-  PostgreSQL**, behind the `postgres` cargo feature and used by no
-  command yet: `rekey master` works on the local registry as before. One
+  PostgreSQL**, behind the `postgres` cargo feature, which `rekey master`
+  runs on a PostgreSQL catalog. One
   transaction, with the registry's lock held, wraps every tenant key
   again under the new master key, a pending one too; makes the sealed
   columns and the lookup values of the tenants, API keys, users,

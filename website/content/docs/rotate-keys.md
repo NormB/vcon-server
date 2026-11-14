@@ -311,6 +311,14 @@ copy taken before it. A rotation step that stops part way is finished by
 running it again. The test suite also plays this procedure end to end with
 the binary (`crates/vcon-server/tests/rotation.rs`).
 
+With the [catalogs in PostgreSQL](@/docs/postgres-catalog.md), a preview,
+the steps and the commands are the same. `rekey master` moves the
+registry to the new key in one transaction of the database, so it changed
+everything or nothing, and it is refused while a server or another command
+holds the database. The copies that a rotation makes unreadable are then
+the dumps and base backups of the database and the copies of the bucket.
+The test suite plays the procedure on PostgreSQL too, in the same file.
+
 ## When a step fails
 
 - **A `curl` error, or `401`, `403` or `503` where this page shows another

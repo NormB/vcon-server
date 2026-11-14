@@ -1,20 +1,36 @@
 +++
 title = "Keep the catalogs in PostgreSQL"
-description = "Preview: reach a PostgreSQL server over TLS for the catalogs: the database's side, the roles, the schema and `migrate`, TLS and client certificates, the configuration, the secret files, and what each refusal at start means. This release migrates the schema, connects, checks the server and stops."
+description = "Preview: keep the registry and every tenant's catalog in a PostgreSQL database, reached over TLS, with one server per database: the database's side, the roles, the schema and `migrate`, TLS and client certificates, the configuration, the secret files, the first start, the commands, backups, key rotation, and what each refusal means."
 weight = 30
 
 [extra]
 group = "how-to"
 +++
 
-**This page is a preview.** The PostgreSQL catalog is being built. In this
-release, `vcon-server migrate` makes the schema in the database, and a
-server configured for it reads its secret files, connects to PostgreSQL
-over TLS, checks the server, the roles and the schema's version, and then
-stops with exit code 1: the catalogs and the registry are not kept in
-PostgreSQL yet, and stay in the data directory as SQLCipher files. This
-page covers what those two do, so a database can be set up and checked
-ahead of the catalog itself.
+**This page is a preview.** With `catalog.backend = "postgres"` the server
+keeps its registry (tenants, keys, users, the admin log) and every
+tenant's catalog (which vCons and versions it holds, their keys, its audit
+log) in a PostgreSQL database, in place of the SQLCipher files in the data
+directory. The sealed objects stay in the S3 bucket, and what the database
+holds of a vCon is sealed or keyed as the files were.
+
+**Purpose.** The catalogs are then backed up, replicated and failed over
+with PostgreSQL's own tools, on a host other than the server's. What it
+does not change: the API, the keys, the bucket's contents, and the master
+key file, which never leaves the server's host.
+
+What this release does and does not do:
+
+- **One server serves a database.** A second server on the same database
+  is refused at start. Several servers on one database are the next step
+  of the [roadmap](@/docs/roadmap.md).
+- **A database starts with no tenant.** No command moves the tenants of a
+  data directory into PostgreSQL yet, so this page sets up a new
+  deployment beside the data directory's, on a bucket prefix of its own.
+- **The data directory stays.** It holds the two lock files of
+  [the commands](#commands-beside-a-server-and-alone) and nothing else.
+- **`vcon-server backup` and `storage move-objects` are refused**, each
+  with what to use (see [back it up](#back-it-up)).
 
 CI runs every command on this page on each change, after
 [getting started](@/docs/getting-started.md) and
@@ -317,10 +333,16 @@ client_key_file = "/etc/vcon-server/pg-client.key"
 
 The steps here add the two tables to the configuration that
 [keep vCons in an S3 bucket](@/docs/s3-storage.md) left, with one host and
-a password. Stop the server first: with these tables it does not serve.
+a password. Stop the server first: the configuration is read at start.
+
+The bucket's prefix changes too. The data directory claimed the prefix it
+serves, and a database is refused a prefix that a data directory or
+another database claimed, so the database gets the prefix `pg/` of the
+same bucket (`storage.s3.prefix`), which nothing has written to:
 
 ```sh
 sudo systemctl stop vcon-server
+sudo sed -i '/^bucket = /a prefix = "pg/"' /etc/vcon-server/vcon-server.toml
 printf '%s\n' '' '[catalog]' 'backend = "postgres"' '' '[catalog.postgres]' 'hosts = ["db1.example.com"]' \
   'dbname = "vcon"' 'user = "vcon_app"' 'ca_file = "/etc/vcon-server/pg-ca.pem"' \
   'password_file = "/etc/vcon-server/pg.password"' \
@@ -563,22 +585,22 @@ started as soon as the command returns.
 
 ## Check it
 
-Run a command with the server's configuration, or start the server:
+Run `check` with the server's configuration. It connects as the server
+does, takes the locks of a command that runs alone, opens the registry
+under the master key, and examines every tenant. A new database has none:
 
-<!-- docs-test: exit 1 -->
 ```sh
-sudo -u vcon vcon-server check --config /etc/vcon-server/vcon-server.toml
+sudo -u vcon vcon-server check --config /etc/vcon-server/vcon-server.toml | jq -c '{tenants, problems}'
 ```
-
-In this release it reaches the first host that passes the checks, says
-which, and stops with exit code 1:
 
 ```text
-vcon-server: the storage cannot be used: catalog.postgres: connected to PostgreSQL <version> at db1.example.com:5432 as vcon_app over TLS; this release does not keep the catalogs in PostgreSQL yet (a preview), so it stops here: remove the [catalog] and [catalog.postgres] tables to serve
+{"tenants":0,"problems":0}
 ```
 
-`serve` and every other command (`tenant create` and the rest) do the
-same. The next two steps make two of the refusals of
+That first open wrote the id of the master key's catalog key into the
+database. From here on the database opens under this master key only.
+
+The next two steps make two of the refusals of
 [when it does not start](#when-it-does-not-start) on purpose. A server
 that logs in as the role that can change the schema:
 
@@ -602,18 +624,163 @@ sudo -u vcon vcon-server migrate --config /etc/vcon-server/vcon-server.toml
 vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the role "vcon_app" cannot act as vcon_owner, which migrate needs; run GRANT vcon_owner TO "vcon_app" as a superuser, for a role the server does not use
 ```
 
-## Serve from the data directory again
+## Start the server
 
-Remove the `[catalog]` and `[catalog.postgres]` tables to serve from the
-data directory again. Both must go: `backend = "local"` beside a
-`[catalog.postgres]` table is refused, with
-`catalog.postgres is set but catalog.backend is not "postgres"`, so that a
-table left behind is never silently unused. The steps above put the two
-tables at the end of the file, so this removes them. Then start the server,
-and ask for its health:
+Make the first tenant and a key for it. `tenant create` runs alone, so it
+comes before the server starts, as on a data directory:
 
 ```sh
-sudo sed -i '/^\[catalog\]$/,$d' /etc/vcon-server/vcon-server.toml
+sudo -u vcon vcon-server tenant create acme --config /etc/vcon-server/vcon-server.toml >/dev/null
+PG_TENANT=$(sudo -u vcon vcon-server tenant list --config /etc/vcon-server/vcon-server.toml | jq -r 'select(.name == "acme") | .id')
+PG_KEY=$(sudo -u vcon vcon-server key create --tenant "$PG_TENANT" --scope write --scope read --label pg-check \
+  --config /etc/vcon-server/vcon-server.toml | jq -r .token)
+sudo -u vcon vcon-server tenant list --config /etc/vcon-server/vcon-server.toml | jq -c '{name}'
+```
+
+```text
+{"name":"acme"}
+```
+
+Start the server and wait for it to answer. Before its `serving` line it
+logs the database server it reached and the role it logged in as:
+
+```sh
+sudo systemctl start vcon-server
+timeout 30 sh -c 'until curl -s -o /dev/null --cacert /usr/local/share/vcon-server/ca.pem https://vcon.example.com:8443/health; do sleep 1; done'
+sudo journalctl -u vcon-server --no-pager -o cat | grep -o 'the catalogs are in PostgreSQL catalog=.* over TLS' | tail -n 1
+```
+
+```text
+the catalogs are in PostgreSQL catalog=PostgreSQL <version> at db1.example.com:5432 as vcon_app over TLS
+```
+
+## Verify
+
+Store a vCon with the new key and read it back:
+
+```sh
+PG_UUID=$(cat /proc/sys/kernel/random/uuid)
+cat > pg-call.vcon <<EOF
+{"vcon":"0.4.0","uuid":"$PG_UUID","created_at":"2026-10-27T12:00:00Z","parties":[{"tel":"+15555550101","name":"Caller Example"}],"dialog":[],"attachments":[],"analysis":[]}
+EOF
+curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/ca.pem https://vcon.example.com:8443/vcons \
+  -H "Authorization: Bearer $PG_KEY" -H "Content-Type: application/vcon" --data-binary @pg-call.vcon
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem "https://vcon.example.com:8443/vcons/$PG_UUID" \
+  -H "Authorization: Bearer $PG_KEY" | jq -c '{parties: (.parties | length)}'
+```
+
+```text
+201
+{"parties":1}
+```
+
+The version is a row of the database. A superuser reads the count; the
+server's role sees a tenant's rows only inside a transaction that names
+the tenant:
+
+```sh
+sudo -u postgres psql -At -d vcon -c "SELECT count(*) FROM vcon.version"
+```
+
+```text
+1
+```
+
+A command that runs beside a server reads the same registry while the
+server runs:
+
+```sh
+sudo -u vcon vcon-server key list --config /etc/vcon-server/vcon-server.toml | jq -r .label
+```
+
+```text
+pg-check
+```
+
+## Commands beside a server, and alone
+
+The commands keep the rule they have on a data directory, and hold it in
+two places: the lock files `lock` and `lock.commands` in `data_dir`, and
+two advisory locks in the database, held on one connection for as long as
+the process runs. The database's locks are what stop a second host.
+
+| Work | Runs | Refused while |
+|---|---|---|
+| `serve` | one per database | another server, a command that runs alone, or `migrate` holds the database |
+| `tenant list`, the `tenant set-` commands, `tenant role-cap`, `key create`, `key list`, `key revoke`, the `user` and `membership` commands, `audit export`, `export parquet` | beside a server and beside each other | a command that runs alone, or `migrate`, holds the database |
+| `tenant create`, `tenant remove`, `rekey tenant`, `rekey master`, `check` | alone | a server or any other command holds the database |
+| `migrate` | alone | a server or any command holds the database |
+
+A lock is tried once and never waited for: the refused process says what
+may hold the database and exits 1. A server that stops gives its lock up
+before it ends, so the next start finds the database free. PostgreSQL
+frees the lock of a process that was killed when it closes that process's
+connection.
+
+A connection pooler in transaction mode (PgBouncer's `pool_mode =
+transaction`) gives each transaction another server connection, and a
+session's advisory lock would then be held by none of them: connect the
+server to PostgreSQL directly, or through a pooler in session mode. No
+pooler was tested.
+
+## Back it up
+
+Three things together are a backup: the catalog database, the bucket, and
+the master key file.
+
+- **The database.** Use PostgreSQL's tools: `pg_dump` of the database
+  `vcon`, or a base backup with WAL archiving for a restore to a point in
+  time. They are the operator's to run and to test.
+- **The bucket.** As [keep vCons in an S3 bucket](@/docs/s3-storage.md)
+  says. A dump taken at one time and a bucket copied at another may
+  disagree by the writes between them: `vcon-server check` on the restored
+  pair names each version whose object is missing.
+- **The master key file**, kept apart from both, as
+  [backup and restore](@/docs/backup-and-restore.md) says.
+
+`vcon-server backup` copies a data directory's files and is refused here,
+before anything is left at the path it was given:
+
+```text
+vcon-server: the catalogs are in PostgreSQL, which backup does not copy into a directory: back up the catalog database with pg_dump or a base backup with WAL archiving, and keep the bucket and the master key file with it
+```
+
+A purged vCon is unreadable from an old dump once its tenant's key and the
+master key have been rotated and the old master key destroyed, as with a
+copy of a data directory: keep no dump longer than `rotation_warn`.
+
+## Rotate the keys
+
+[Rotate the keys](@/docs/rotate-keys.md) applies as it stands: stop the
+server, `rekey tenant` for each tenant, `rekey master --new-master`, point
+`master_key` at the new file, start the server, destroy the old key.
+
+`rekey master` makes every row of the registry again under the new key in
+one transaction, with the database's locks held: it either moved the whole
+registry or changed nothing. Run again after it succeeded, with the same
+two key files, it changes nothing and exits 0. Until `master_key` names
+the new file, the server and every command stop with:
+
+```text
+vcon-server: the master key is not the one the registry in the catalog database was made under
+```
+
+## Serve from the data directory again
+
+The data directory's own catalogs were not touched by the steps above.
+Remove the `[catalog]` and `[catalog.postgres]` tables and the `prefix`
+line to serve them again. Both tables must go: `backend = "local"` beside
+a `[catalog.postgres]` table is refused, with
+`catalog.postgres is set but catalog.backend is not "postgres"`, so that a
+table left behind is never silently unused. The steps above put the two
+tables at the end of the file, so this removes them. The tenants and the
+vCons of the database stay in the database and under the prefix `pg/`:
+the data directory's server does not see them. Then start the server, and
+ask for its health:
+
+```sh
+sudo systemctl stop vcon-server
+sudo sed -i -e '/^prefix = "pg\/"$/d' -e '/^\[catalog\]$/,$d' /etc/vcon-server/vcon-server.toml
 sudo systemctl start vcon-server
 timeout 30 sh -c 'until curl -s -o /dev/null --cacert /usr/local/share/vcon-server/ca.pem https://vcon.example.com:8443/health; do sleep 1; done'
 curl -sS --cacert /usr/local/share/vcon-server/ca.pem https://vcon.example.com:8443/health -H "Authorization: Bearer $MONITOR"
@@ -625,11 +792,11 @@ curl -sS --cacert /usr/local/share/vcon-server/ca.pem https://vcon.example.com:8
 
 ## Clean up
 
-The working directory holds the server certificate's key. PostgreSQL has
-its own copy; remove this one:
+The working directory holds the server certificate's key and the vCon of
+[verify](#verify). PostgreSQL has its own copy of the key; remove these:
 
 ```sh
-rm -f pg-server.key pg-server.pem
+rm -f pg-server.key pg-server.pem pg-call.vcon
 ls pg-server.key 2>/dev/null || echo "pg-server.key is gone"
 ```
 
@@ -813,3 +980,64 @@ Check `hosts`, `port`, the server's `listen_addresses` and the firewall. A
 server that takes the connection and then never answers is given up after
 `connect_timeout` too, with `no answer within
 catalog.postgres.connect_timeout`.
+
+### Another process holds the database
+
+```text
+vcon-server: the storage cannot be used: catalog.postgres: another server, a command that runs alone, or a migration holds this database's lock; one server serves a database, and those commands run while none does
+vcon-server: the storage cannot be used: catalog.postgres: a server or another command holds this database's locks; this command runs alone: stop every server, wait for the other commands to end, and run it again
+vcon-server: the storage cannot be used: catalog.postgres: a command that runs alone, or a migration, holds this database's lock; run this command again when it has ended
+vcon-server: the storage cannot be used: catalog.postgres: another server or command holds the database's locks; stop every server and command and run migrate again
+```
+
+The first is a server's, the second that of a command that runs alone,
+the third that of a command beside a server, the fourth `migrate`'s. See
+[commands beside a server, and alone](#commands-beside-a-server-and-alone).
+To see which connection holds a lock, as a superuser on the database host:
+`SELECT a.pid, a.client_addr, a.backend_start FROM pg_locks l JOIN
+pg_stat_activity a USING (pid) WHERE l.locktype = 'advisory'`.
+
+A second server on the same host and data directory is stopped by the
+data directory's lock first, with `the data directory is in use by
+another vcon-server or a command that runs alone`.
+
+### The master key is not the database's
+
+```text
+vcon-server: the master key is not the one the registry in the catalog database was made under
+```
+
+The database names the key its registry was first opened under, or last
+rotated to. Point `master_key` at that key's file. After `rekey master`
+that is the new file.
+
+### The bucket prefix belongs to something else
+
+```text
+vcon-server: the storage cannot be used: bucket "vcon", prefix "" belongs to another database (its claim is <claim>); start-up recovery here would remove that server's vCons. Give this server a prefix of its own, or point it at the database that claimed this one
+```
+
+The prefix holds the claim of other catalogs: a data directory's, or
+another database's. The message names the kind of catalog that asked, here
+a database. A database keeps its claim in its table `vcon.storage_claim`,
+so every host that serves the database shares one claim. Give the database
+a `storage.s3.prefix` of its own, as
+[the configuration](#the-configuration) does.
+
+### The pool is too small
+
+```text
+vcon-server: the storage cannot be used: catalog.postgres.pool is 1: a server needs at least 2 connections, one for the lock every server holds and one for a transaction
+```
+
+Set `catalog.postgres.pool` to 2 or more, or remove it for the default.
+
+### backup or storage move-objects is refused
+
+```text
+vcon-server: the catalogs are in PostgreSQL, which backup does not copy into a directory: back up the catalog database with pg_dump or a base backup with WAL archiving, and keep the bucket and the master key file with it
+vcon-server: the storage cannot be used: storage move-objects moves the objects of a data directory's catalogs to the bucket; with catalog.backend = "postgres" every object is in the bucket from its first write and there is nothing to move: to move a data directory's objects, run it with the [catalog] and [catalog.postgres] tables removed
+```
+
+See [back it up](#back-it-up). A PostgreSQL catalog never has objects in a
+data directory.

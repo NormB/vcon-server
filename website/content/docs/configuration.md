@@ -376,11 +376,13 @@ pack_limit = 16777216
 
 Preview: with `catalog.backend = "postgres"`, `serve` and every command
 read the `[catalog.postgres]` secret files, connect to PostgreSQL over TLS,
-check the server, and then stop with exit code 1, because this release
-does not yet keep the catalogs there. Run `vcon-server migrate` first, with
-a role that may act as `vcon_owner`, or a connection refuses the missing
-schema. The catalogs and the registry stay in `data_dir`. It needs the `postgres` cargo feature, which the release
-binaries do not have yet. The how-to
+check the server, take their locks on the database, and keep the registry
+and every tenant's catalog there. One server serves a database. Run
+`vcon-server migrate` first, with a role that may act as `vcon_owner`, or
+a connection refuses the missing schema. `data_dir` is still required: it
+holds the lock files and nothing else. `catalog.postgres.pool` is at
+least 2: one connection holds the locks. It needs the `postgres` cargo
+feature, which the release binaries do not have yet. The how-to
 [keep the catalogs in PostgreSQL](@/docs/postgres-catalog.md) gives the
 database's side, each refusal and what it means.
 

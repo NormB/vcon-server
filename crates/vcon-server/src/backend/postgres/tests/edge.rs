@@ -312,26 +312,12 @@ fn configuration(catalog: &str) -> String {
 const POSTGRES_TABLE: &str = "\n[catalog.postgres]\nhosts = [\"db1.example.com\"]\ndbname = \"vcon\"\n\
                               user = \"vcon_app\"\npassword_file = \"/etc/vcon-server/pg.password\"\n";
 
-/// The preview's stop tells the operator how to serve again. Found on
-/// 2026-11-10, running the PostgreSQL guide: it said to set
-/// `catalog.backend = "local"`, and a configuration with that and the
+/// The guide's way back to the local catalog is to remove both tables.
+/// Found on 2026-11-10, running the PostgreSQL guide: a message said to
+/// set `catalog.backend = "local"`, and a configuration with that and the
 /// `[catalog.postgres]` table still in it is refused.
 #[test]
-fn the_stop_message_gives_advice_the_configuration_accepts() {
-    let said =
-        super::super::stopped_after("PostgreSQL 17.6 at db1.example.com:5432 as vcon_app over TLS");
-    assert!(
-        said.starts_with("catalog.postgres: connected to PostgreSQL 17.6 at db1.example.com:5432 as vcon_app over TLS; "),
-        "it names the server reached: {said}"
-    );
-    assert!(
-        said.ends_with("remove the [catalog] and [catalog.postgres] tables to serve"),
-        "it says what to remove: {said}"
-    );
-    assert!(
-        !said.contains("set catalog.backend"),
-        "it does not advise a change the configuration refuses: {said}"
-    );
+fn the_guide_s_configuration_reads_and_so_does_one_with_both_tables_removed() {
     let with_tables = configuration(&format!(
         "\n[catalog]\nbackend = \"postgres\"\n{POSTGRES_TABLE}"
     ));

@@ -13,7 +13,9 @@ use crate::audit::{self, Action, Actor, Entry};
 #[cfg(test)]
 use crate::backend::local::LocalConn;
 use crate::backend::local::{LocalRegistry, LocalTenantSpace};
-use crate::backend::{CommitError, ObjectPlace, Registry, RegistryTx, TenantRow, TenantSpace};
+use crate::backend::{
+    Catalogs, CommitError, ObjectPlace, Registry, RegistryTx, TenantRow, TenantSpace,
+};
 use crate::clock::{Clock, from_nanos, nanos};
 use crate::envelope::{self, Context, Key, WrapLimit};
 use crate::export::Metadata;
@@ -32,7 +34,7 @@ mod sessions;
 mod tenant_admin;
 mod users;
 
-pub use backup::{Backup, BackupError};
+pub use backup::{Backup, BackupError, NO_FILE_BACKUP};
 pub use examine::{KeyOrder, RegistryExamination, RotationBacklog, TenantExamination, Unexamined};
 pub use key_life::KeyLife;
 pub use keys::{KeyInfo, NewKey};
@@ -118,7 +120,16 @@ pub enum RegistryError {
     },
     /// Start-up recovery failed.
     Recovery(TenantError),
+    /// The registry in the catalog database was made under another master
+    /// key.
+    WrongDatabaseKey,
+    /// The registry in the catalog database could not be opened, and why.
+    Database(String),
 }
+
+/// What a start says when the catalog database names another master key.
+pub(crate) const WRONG_DATABASE_KEY: &str = "the master key is not the one the registry in the \
+                                             catalog database was made under";
 
 /// A step of opening the registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,6 +175,11 @@ impl std::fmt::Display for RegistryError {
                 write!(f, "{doing} {} failed", path.display())
             }
             RegistryError::Recovery(e) => write!(f, "start-up recovery failed: {e:?}"),
+            RegistryError::WrongDatabaseKey => f.write_str(WRONG_DATABASE_KEY),
+            RegistryError::Database(why) => write!(
+                f,
+                "the registry in the PostgreSQL database cannot be opened: {why}"
+            ),
         }
     }
 }
@@ -172,7 +188,10 @@ impl std::error::Error for RegistryError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             RegistryError::Failed { source, .. } => Some(source.as_ref()),
-            RegistryError::WrongKey | RegistryError::Recovery(_) => None,
+            RegistryError::WrongKey
+            | RegistryError::Recovery(_)
+            | RegistryError::WrongDatabaseKey
+            | RegistryError::Database(_) => None,
         }
     }
 }
@@ -194,8 +213,8 @@ pub(crate) fn with_causes(error: &dyn std::error::Error) -> String {
 impl From<RegistryError> for TenantError {
     fn from(e: RegistryError) -> TenantError {
         match e {
-            RegistryError::WrongKey => TenantError::WrongKey,
-            RegistryError::Failed { .. } => TenantError::Io,
+            RegistryError::WrongKey | RegistryError::WrongDatabaseKey => TenantError::WrongKey,
+            RegistryError::Failed { .. } | RegistryError::Database(_) => TenantError::Io,
             RegistryError::Recovery(e) => e,
         }
     }
@@ -324,19 +343,23 @@ impl Tenants {
         fs: Arc<dyn Fs>,
         clock: Arc<dyn Clock>,
     ) -> Result<Tenants, RegistryError> {
-        Tenants::open_in(dir, master, fs, clock, ObjectPlace::Local)
+        Tenants::open_in(dir, master, fs, clock, ObjectPlace::Local, &Catalogs::Local)
     }
 
     /// Opens the registry as `open` does, with each tenant's objects kept
-    /// in `objects`.
+    /// in `objects` and the registry and the tenants' catalogs kept in
+    /// `catalogs`: in `dir`, or in a database, where start-up recovery
+    /// removes the catalog rows and the bucket's objects of a tenant with
+    /// no row.
     pub(crate) fn open_in(
         dir: &Path,
         master: Key,
         fs: Arc<dyn Fs>,
         clock: Arc<dyn Clock>,
         objects: ObjectPlace,
+        catalogs: &Catalogs,
     ) -> Result<Tenants, RegistryError> {
-        let registry = Tenants::opened(dir, master, fs, clock, false, objects)?;
+        let registry = Tenants::opened(dir, master, fs, clock, false, objects, catalogs)?;
         registry.recover().map_err(RegistryError::Recovery)?;
         Ok(registry)
     }
@@ -351,21 +374,33 @@ impl Tenants {
         fs: Arc<dyn Fs>,
         clock: Arc<dyn Clock>,
     ) -> Result<Tenants, RegistryError> {
-        Tenants::opened(dir, master, fs, clock, true, ObjectPlace::Local)
+        Tenants::opened(
+            dir,
+            master,
+            fs,
+            clock,
+            true,
+            ObjectPlace::Local,
+            &Catalogs::Local,
+        )
     }
 
     /// Opens the registry as `open_beside` does, with each tenant's objects
-    /// kept in `objects`.
+    /// kept in `objects` and the catalogs in `catalogs`.
     pub(crate) fn open_beside_in(
         dir: &Path,
         master: Key,
         fs: Arc<dyn Fs>,
         clock: Arc<dyn Clock>,
         objects: ObjectPlace,
+        catalogs: &Catalogs,
     ) -> Result<Tenants, RegistryError> {
-        Tenants::opened(dir, master, fs, clock, true, objects)
+        Tenants::opened(dir, master, fs, clock, true, objects, catalogs)
     }
 
+    /// The one opener: the registry and the tenants' space of `catalogs`,
+    /// the files of `dir` or the rows of a database, behind the same
+    /// `Tenants`.
     fn opened(
         dir: &Path,
         master: Key,
@@ -373,19 +408,23 @@ impl Tenants {
         clock: Arc<dyn Clock>,
         beside: bool,
         objects: ObjectPlace,
+        catalogs: &Catalogs,
     ) -> Result<Tenants, RegistryError> {
         let catalog_key = envelope::catalog_key(&master).map_err(|e| {
             RegistryError::failed(OpenStep::CatalogKey, dir.join("server.sqlite"), e)
         })?;
-        let registry = LocalRegistry::open(dir, catalog_key)?;
-        let space = LocalTenantSpace::open(dir, fs.clone(), objects)?;
+        let (registry, space): crate::backend::Backends = match catalogs {
+            Catalogs::Local => (
+                Box::new(LocalRegistry::open(dir, catalog_key)?),
+                Box::new(LocalTenantSpace::open(dir, fs.clone(), objects)?),
+            ),
+            #[cfg(feature = "postgres")]
+            Catalogs::Postgres(database) => {
+                crate::backend::postgres::open(database, &catalog_key, objects, fs.clone())?
+            }
+        };
         Ok(Tenants::with_backends(
-            Box::new(registry),
-            Box::new(space),
-            master,
-            fs,
-            clock,
-            beside,
+            registry, space, master, fs, clock, beside,
         ))
     }
 

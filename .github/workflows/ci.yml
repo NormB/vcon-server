@@ -330,12 +330,14 @@ jobs:
         # the commit hook lints too.
         run: python3 -I scripts/clippy_features.py run postgres
       - name: Catalog backend tests
-        # The serve test runs the binary, which locks all of its memory.
+        # The serve and rotation tests run the binary, which locks all of
+        # its memory: a server and the commands on a database of each
+        # test's own, and the key rotation an operator runs.
         run: |
           set -euo pipefail
           sudo prlimit --pid $$ --memlock=unlimited:unlimited
           scripts/nextest.sh run -p vcon-server --locked --features postgres,backend-tests --no-fail-fast --lib "backend::postgres::" "backend::catalog_tests::" "config::"
-          scripts/nextest.sh run -p vcon-server --locked --features postgres,backend-tests --no-fail-fast --test serve "postgres::"
+          scripts/nextest.sh run -p vcon-server --locked --features postgres,backend-tests --no-fail-fast --test serve --test rotation "postgres::"
       # Every live test drops the database it made: a server that kept
       # them filled its shared memory after some thousands (2026-11-12).
       - name: No test left a database on the server

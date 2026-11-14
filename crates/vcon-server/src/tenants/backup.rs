@@ -32,7 +32,16 @@ pub enum BackupError {
     Io,
     /// The admin log could not record the backup.
     AuditFailed,
+    /// The catalogs are in PostgreSQL, which this command does not copy
+    /// into a directory: the database's own backup tools do.
+    NoFileBackup,
 }
+
+/// What a refused backup of a PostgreSQL catalog says to do.
+pub const NO_FILE_BACKUP: &str = "the catalogs are in PostgreSQL, which backup does not copy into \
+                                  a directory: back up the catalog database with pg_dump or a \
+                                  base backup with WAL archiving, and keep the bucket and the \
+                                  master key file with it";
 
 impl Tenants {
     /// Copies the data directory into `to`, which must not exist, and
@@ -52,6 +61,7 @@ impl Tenants {
             Err(BackupError::Exists) => 409,
             Err(BackupError::KeptChanging) => 503,
             Err(BackupError::Io | BackupError::AuditFailed) => 500,
+            Err(BackupError::NoFileBackup) => 501,
         };
         self.record_alone(&Entry {
             actor: who,
@@ -86,10 +96,16 @@ impl Tenants {
             for file in ["server.sqlite", "server.sqlite-wal", "server.sqlite-shm"] {
                 remove_if_there(&to.join(file)).map_err(fail)?;
             }
-            let listed = self
-                .registry
-                .backup_into(&registry)
-                .map_err(|_| BackupError::Io)?;
+            let listed = match self.registry.backup_into(&registry) {
+                Ok(listed) => listed,
+                Err(TenantError::NoFileBackup) => {
+                    // Nothing was copied: the directory made for the copy
+                    // goes, so the path is free for a later backup.
+                    self.fs.remove_dir_all(to).map_err(fail)?;
+                    return Err(BackupError::NoFileBackup);
+                }
+                Err(_) => return Err(BackupError::Io),
+            };
             #[cfg(test)]
             if let Some(hook) = self.hooks.registry_copied.lock().expect("hook").as_mut() {
                 hook(self);

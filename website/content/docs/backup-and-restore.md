@@ -351,3 +351,14 @@ with the objects in the data directory only.
 
 [Operations](@/docs/operations.md#objects-in-an-s3-bucket) describes what
 else the server does with the bucket.
+
+## Catalogs in PostgreSQL
+
+With the [catalogs in PostgreSQL](@/docs/postgres-catalog.md), a preview,
+`vcon-server backup` is refused and leaves nothing at the path it was
+given: the registry and the catalogs are rows of the database, which
+PostgreSQL's own tools copy. A backup is then three things kept together:
+a `pg_dump` of the catalog database, or a base backup with WAL archiving;
+a copy of the bucket; and the master key file. The page's
+[back it up](@/docs/postgres-catalog.md#back-it-up) says what each holds
+and what a key rotation does to an old dump.

@@ -138,9 +138,10 @@ default, and `--no-default-features` leaves it out as well.
 The `postgres` cargo feature, which is not on by default and not in the
 release binaries, adds a preview of the
 [PostgreSQL catalog](https://vcon-server.com/docs/postgres-catalog/):
-`vcon-server migrate` makes the schema, and the server connects to
-PostgreSQL over TLS, checks it, and stops, since the catalogs are not kept
-there yet.
+`vcon-server migrate` makes the schema, and one server per database keeps
+its registry and every tenant's catalog in PostgreSQL, reached over TLS,
+with the objects in an S3 bucket. No command moves a data directory's
+tenants into PostgreSQL yet.
 
 ## Contributing
 

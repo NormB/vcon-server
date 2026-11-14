@@ -94,13 +94,6 @@ impl fmt::Debug for Lease {
 /// next caller: anything but an error the server answered, and the server's
 /// SQLSTATE 25006 (read-only transaction), which a standby answers.
 #[must_use]
-#[cfg_attr(
-    not(all(test, feature = "backend-tests")),
-    expect(
-        dead_code,
-        reason = "the catalog's statements use it from the next change; the tests do now"
-    )
-)]
 pub(crate) fn must_drop(e: &tokio_postgres::Error) -> bool {
     match e.code() {
         None => true,
@@ -201,13 +194,6 @@ impl Pool {
 
 impl Lease {
     /// The connection.
-    #[cfg_attr(
-        not(all(test, feature = "backend-tests")),
-        expect(
-            dead_code,
-            reason = "the catalog's statements use it from the next change; the tests do now"
-        )
-    )]
     pub(crate) fn client(&self) -> &Client {
         &self.connected().client
     }
@@ -220,13 +206,6 @@ impl Lease {
     /// Records that a call on this connection failed with `e`: when
     /// [`must_drop`] says so, the connection is closed when the lease ends
     /// instead of going back to the pool.
-    #[cfg_attr(
-        not(all(test, feature = "backend-tests")),
-        expect(
-            dead_code,
-            reason = "the catalog's statements use it from the next change; the tests do now"
-        )
-    )]
     pub(crate) fn failed(&mut self, e: &tokio_postgres::Error) {
         if must_drop(e) {
             self.keep = false;
@@ -236,14 +215,6 @@ impl Lease {
     /// Closes the connection when the lease ends, whatever it did: for a
     /// connection left in a state that cannot be known, such as one whose
     /// COMMIT or ROLLBACK got no answer.
-    #[cfg_attr(
-        not(all(test, feature = "backend-tests")),
-        expect(
-            dead_code,
-            reason = "the catalog's transactions use it, and a tenant's space opens them from \
-                      the next change; the tests do now"
-        )
-    )]
     pub(crate) fn discard(&mut self) {
         self.keep = false;
     }

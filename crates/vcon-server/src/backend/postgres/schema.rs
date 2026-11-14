@@ -45,13 +45,6 @@ pub(crate) const COMMANDS_LOCK: i64 = 0x7663_6f6e_434d_0001;
 
 /// What a process does with the database while it holds its locks there,
 /// as [`crate::datadir::Sharing`] says for the data directory's locks.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "a server and the commands connect here from the next change; the tests do now"
-    )
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Holds {
     /// A server.
@@ -82,13 +75,6 @@ impl From<crate::datadir::Sharing> for Holds {
 ///   commands and takes nothing a server holds.
 /// - A command alone takes both for itself, as `migrate` does
 ///   ([`take_locks`]), so it runs with no server and no other command.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "a server and the commands connect here from the next change; the tests do now"
-    )
-)]
 pub(crate) fn lock_text(holds: Holds) -> String {
     match holds {
         Holds::Serve => format!("SELECT pg_try_advisory_lock({SERVERS_LOCK}), true"),
@@ -101,13 +87,6 @@ pub(crate) fn lock_text(holds: Holds) -> String {
 
 /// Why the work `holds` may not go on when [`lock_text`] answered
 /// `servers` and `commands`, or `None` when it may.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "a server and the commands connect here from the next change; the tests do now"
-    )
-)]
 pub(crate) fn lock_refusal(holds: Holds, servers: bool, commands: bool) -> Option<&'static str> {
     match holds {
         Holds::Serve => (!servers).then_some(SERVER_LOCK_HELD),
@@ -124,13 +103,6 @@ pub(crate) fn lock_refusal(holds: Holds, servers: bool, commands: bool) -> Optio
 
 /// Takes the locks of `holds` on `client`, a connection kept for them,
 /// without waiting. A work refused one of its two locks keeps neither.
-#[cfg_attr(
-    not(all(test, feature = "backend-tests")),
-    expect(
-        dead_code,
-        reason = "a server and the commands connect here from the next change; the tests do now"
-    )
-)]
 pub(crate) async fn take_locks_for(client: &Client, holds: Holds) -> Result<(), String> {
     let row = checked_row(client, &lock_text(holds)).await?;
     match lock_refusal(holds, is_true(&row, 0), is_true(&row, 1)) {

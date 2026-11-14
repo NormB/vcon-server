@@ -24,6 +24,9 @@ use vcon_server::retention::Retention;
 use vcon_server::store::Caller;
 use vcon_server::tenants::Tenants;
 
+#[cfg(all(feature = "backend-tests", feature = "postgres"))]
+mod pg;
+
 const UUID: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bc46";
 
 /// A data directory with one tenant and a key for it, a certificate and a
@@ -1742,41 +1745,289 @@ mod s3 {
     }
 }
 
-/// With the catalogs in PostgreSQL, a preview in this release: against the
-/// servers `scripts/pg-test-server.sh` starts (`VCON_TEST_PG_*`) and the
+/// With the catalogs in PostgreSQL: against the servers
+/// `scripts/pg-test-server.sh` starts (`VCON_TEST_PG_*`) and the
 /// S3-compatible service of `VCON_TEST_S3_*`, since a PostgreSQL catalog
-/// needs its objects in a bucket.
+/// needs its objects in a bucket. One server serves a database, so each
+/// test has a database of its own (`pg::Db`).
 #[cfg(all(feature = "backend-tests", feature = "postgres"))]
 mod postgres {
+    use super::pg::{self, var};
     use super::*;
 
-    fn var(name: &str) -> String {
-        std::env::var(name).unwrap_or_else(|_| {
-            panic!("{name} is not set: these tests need scripts/pg-test-server.sh's servers")
-        })
-    }
-
-    /// `s`'s configuration with its objects in a new bucket and its
-    /// catalogs on the test primary, trusting the CA in `ca`.
-    fn on_postgres(s: &Setup, ca: &str) {
-        use std::os::unix::fs::PermissionsExt;
+    /// A new bucket's name, the bucket made.
+    fn new_bucket() -> String {
         let bucket = format!("vcon-pg-{}", &TenantId::generate().to_string()[..12]);
         s3::signed("PUT", &bucket);
-        s3::in_bucket(s, &bucket);
-        let dir = PathBuf::from(var("VCON_TEST_PG_DIR"));
+        bucket
+    }
+
+    /// `s`'s configuration with its objects in `bucket` and its catalogs
+    /// in the database `dbname` of the test primary, trusting the CA in
+    /// `ca`. The local registry `setup` made in the data directory is
+    /// removed: the registry is the database's.
+    fn on_database(s: &Setup, ca: &str, dbname: &str, bucket: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        for name in ["server.sqlite", "server.sqlite-wal", "server.sqlite-shm"] {
+            let _ = std::fs::remove_file(s.data.join(name));
+        }
+        std::fs::remove_dir_all(s.data.join("tenants")).expect("removes the local tenants");
+        s3::in_bucket(s, bucket);
         let password = s.dir.path().join("pg.password");
-        std::fs::copy(dir.join("password"), &password).expect("copies the password");
+        std::fs::copy(pg::dir().join("password"), &password).expect("copies the password");
         std::fs::set_permissions(&password, std::fs::Permissions::from_mode(0o600)).expect("mode");
         let mut text = std::fs::read_to_string(&s.config).expect("reads");
         text.push_str(&format!(
             "\n[catalog]\nbackend = \"postgres\"\n\n[catalog.postgres]\nhosts = \
-             [\"localhost\"]\nport = {}\ndbname = \"vcon\"\nuser = \"vcon_app\"\n\
+             [\"localhost\"]\nport = {}\ndbname = \"{dbname}\"\nuser = \"vcon_app\"\n\
              ca_file = \"{}\"\npassword_file = \"{}\"\n",
             var("VCON_TEST_PG_PORT"),
-            dir.join(ca).display(),
+            pg::dir().join(ca).display(),
             password.display()
         ));
         std::fs::write(&s.config, text).expect("writes");
+    }
+
+    /// `on_database` for a new bucket and the shared database `vcon`.
+    fn on_postgres(s: &Setup, ca: &str) {
+        on_database(s, ca, "vcon", &new_bucket());
+    }
+
+    /// A deployment: a migrated database and a bucket of the test's own,
+    /// the tenant `acme` and a key that writes and reads, made by the
+    /// commands as an operator makes them.
+    struct World {
+        s: Setup,
+        db: pg::Db,
+        bucket: String,
+        tenant: String,
+    }
+
+    /// A configuration on an empty database of the test's own.
+    fn unmigrated() -> World {
+        let s = setup();
+        let db = pg::Db::fresh();
+        let bucket = new_bucket();
+        on_database(&s, "ca.pem", &db.name, &bucket);
+        World {
+            s,
+            db,
+            bucket,
+            tenant: String::new(),
+        }
+    }
+
+    fn world() -> World {
+        let mut w = unmigrated();
+        migrate(&w.s);
+        w.tenant = ok(&w.s, &["tenant", "create", "acme"])[0]["id"]
+            .as_str()
+            .expect("an id")
+            .to_owned();
+        w.s.token = token_of(
+            &run(
+                &w.s,
+                &[
+                    "key", "create", "--tenant", &w.tenant, "--scope", "write", "--scope", "read",
+                    "--label", "test",
+                ],
+            )
+            .stdout,
+        );
+        w
+    }
+
+    /// Another host of the same deployment: a data directory of its own,
+    /// the same database, bucket and master key.
+    fn another_host(w: &World) -> Setup {
+        let s = setup();
+        on_database(&s, "ca.pem", &w.db.name, &w.bucket);
+        std::fs::copy(&w.s.master_key, &s.master_key).expect("the same master key");
+        s
+    }
+
+    /// Runs the command `args` on `s`'s configuration, with the bucket's
+    /// keys in the environment.
+    fn run(s: &Setup, args: &[&str]) -> Output {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_vcon-server"));
+        command.args(args).arg("--config").arg(&s.config);
+        s3::with_keys(command).output().expect("runs")
+    }
+
+    /// The lines a command that succeeds prints, as JSON. What it printed
+    /// is not shown when it fails: `key create` prints a token.
+    fn ok(s: &Setup, args: &[&str]) -> Vec<serde_json::Value> {
+        let out = run(s, args);
+        assert!(
+            out.status.success(),
+            "{args:?}: {:?}: {}",
+            out.status,
+            stderr(&out)
+        );
+        String::from_utf8(out.stdout)
+            .expect("UTF-8")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("a JSON line"))
+            .collect()
+    }
+
+    /// What a command that is refused says, with exit status 1.
+    fn refusal(s: &Setup, args: &[&str]) -> String {
+        let out = run(s, args);
+        let said = stderr(&out);
+        assert_eq!(out.status.code(), Some(1), "{args:?} exits 1: {said}");
+        said
+    }
+
+    /// What `serve` says when it refuses to start, with exit status 1.
+    fn serve_refusal(s: &Setup) -> String {
+        let out = refused(s3::with_keys(serve(s)));
+        let said = stderr(&out);
+        assert_eq!(out.status.code(), Some(1), "serve exits 1: {said}");
+        said
+    }
+
+    fn started(s: &Setup) -> Started {
+        start(s3::with_keys(serve(s)))
+    }
+
+    /// Sends SIGTERM and waits for the server to end; its exit status.
+    fn stop(mut started: Started) -> std::process::ExitStatus {
+        let pid = started.running.0.id();
+        // SAFETY: the pid is our running child's.
+        let sent = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+        assert_eq!(sent, 0, "SIGTERM is sent to the server");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(status) = started.running.0.try_wait().expect("wait") {
+                return status;
+            }
+            assert!(Instant::now() < deadline, "serve did not stop on SIGTERM");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// One request to a running server with `s`'s key: the status and
+    /// the body.
+    fn request(
+        started: &Started,
+        s: &Setup,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Vec<u8>>,
+    ) -> (u16, Vec<u8>) {
+        let (client, url, token) = (started.client(s), started.url(path), s.token.clone());
+        std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("a runtime")
+                .block_on(async {
+                    let mut request = client.request(method, url).bearer_auth(token);
+                    if let Some(body) = body {
+                        request = request
+                            .header("content-type", "application/vcon")
+                            .body(body);
+                    }
+                    let answer = request.send().await.expect("an answer");
+                    let status = answer.status().as_u16();
+                    (status, answer.bytes().await.expect("a body").to_vec())
+                })
+        })
+        .join()
+        .expect("the request's thread")
+    }
+
+    /// The IETF draft's example vCon, whose uuid is `UUID`.
+    fn example() -> Vec<u8> {
+        std::fs::read(format!(
+            "{}/../vcon/tests/fixtures/ietf/ab_call_ext_rec.vcon",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .expect("A.4")
+    }
+
+    fn store_example(started: &Started, s: &Setup) {
+        let (status, _) = request(started, s, reqwest::Method::POST, "/vcons", Some(example()));
+        assert_eq!(status, 201, "the vCon is stored");
+    }
+
+    fn read_example(started: &Started, s: &Setup) -> (u16, Vec<u8>) {
+        request(
+            started,
+            s,
+            reqwest::Method::GET,
+            &format!("/vcons/{UUID}"),
+            None,
+        )
+    }
+
+    /// The names in `s`'s data directory, sorted.
+    fn data_files(s: &Setup) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(&s.data)
+            .expect("lists")
+            .map(|e| {
+                e.expect("an entry")
+                    .file_name()
+                    .into_string()
+                    .expect("UTF-8")
+            })
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// How many advisory locks sessions hold in `db`.
+    fn locks_held(db: &pg::Db) -> String {
+        db.as_owner(
+            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND database = (SELECT \
+             oid FROM pg_database WHERE datname = current_database())",
+        )
+        .concat()
+    }
+
+    /// Waits until `db` holds `count` advisory locks.
+    fn until_locks_held(db: &pg::Db, count: &str) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while locks_held(db) != count {
+            assert!(
+                Instant::now() < deadline,
+                "the database never held {count} advisory lock(s)"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// `vcon-server migrate` refused, on the configuration `migrate` wrote
+    /// for `s`: what it said, with exit status 1.
+    fn migrate_refusal(s: &Setup) -> String {
+        let out = Command::new(env!("CARGO_BIN_EXE_vcon-server"))
+            .args(["migrate", "--config"])
+            .arg(s.dir.path().join("vcon-migrate.toml"))
+            .output()
+            .expect("runs");
+        let said = stderr(&out);
+        assert_eq!(out.status.code(), Some(1), "migrate exits 1: {said}");
+        said
+    }
+
+    /// A new master key file beside `s`'s; its path.
+    fn new_master(s: &Setup) -> String {
+        let path = s.dir.path().join("new-master.key");
+        random_key_file(&path);
+        path.to_str().expect("a UTF-8 path").to_owned()
+    }
+
+    /// `s`'s configuration naming the master key file at `path`.
+    fn with_master(s: &Setup, path: &str) {
+        let text = std::fs::read_to_string(&s.config).expect("reads");
+        let old = format!("master_key = \"{}\"", s.master_key.display());
+        assert!(text.contains(&old), "the configuration names the key file");
+        std::fs::write(
+            &s.config,
+            text.replace(&old, &format!("master_key = \"{path}\"")),
+        )
+        .expect("writes");
     }
 
     /// Runs `vcon-server migrate` as `vcon_migrate`, on a copy of `s`'s
@@ -1804,30 +2055,457 @@ mod postgres {
         );
     }
 
+    // What must work.
+
     #[test]
-    fn serve_reaches_postgresql_over_tls_then_refuses_to_go_on_as_a_preview() {
-        let s = setup();
-        on_postgres(&s, "ca.pem");
-        migrate(&s);
-        let out = refused(s3::with_keys(serve(&s)));
-        let text = stderr(&out);
-        assert_eq!(out.status.code(), Some(1), "exit 1: {text}");
+    fn serve_on_postgresql_starts_stores_reads_back_and_stops_on_sigterm() {
+        let w = world();
+        let mut server = started(&w.s);
+        let reached = server
+            .line_with("the catalogs are in PostgreSQL", Duration::from_secs(1))
+            .expect("the start names the database server before the serving line");
         assert!(
-            text.contains(&format!(
-                "connected to PostgreSQL {}.",
-                var("VCON_TEST_PG_MAJOR")
-            )) && text.contains("as vcon_app over TLS")
-                && text.contains("a preview"),
-            "names what it reached and why it stops: {text}"
+            reached.contains(&format!("PostgreSQL {}.", var("VCON_TEST_PG_MAJOR")))
+                && reached.contains("as vcon_app over TLS"),
+            "the version and the role: {reached}"
         );
-        let password =
-            std::fs::read_to_string(PathBuf::from(var("VCON_TEST_PG_DIR")).join("password"))
-                .expect("reads");
-        assert!(
-            !text.contains(password.trim_end()),
-            "never the password: {text}"
+        assert!(!reached.contains(&pg::password()), "never the password");
+        store_example(&server, &w.s);
+        let (status, body) = read_example(&server, &w.s);
+        assert_eq!(status, 200, "the vCon reads back");
+        assert_eq!(body, example(), "byte for byte");
+        let status = stop(server);
+        assert!(status.success(), "it stopped cleanly: {status:?}");
+    }
+
+    #[test]
+    fn a_restarted_server_reads_what_the_first_stored() {
+        let w = world();
+        let first = started(&w.s);
+        store_example(&first, &w.s);
+        assert!(stop(first).success(), "the first server stops");
+        let second = started(&w.s);
+        let (status, body) = read_example(&second, &w.s);
+        assert_eq!(status, 200, "the catalogs are the database's");
+        assert_eq!(body, example(), "byte for byte");
+    }
+
+    #[test]
+    fn another_host_serves_the_database_once_the_first_has_stopped() {
+        let w = world();
+        let first = started(&w.s);
+        store_example(&first, &w.s);
+        assert!(stop(first).success(), "the first server stops");
+        let mut other = another_host(&w);
+        other.token = w.s.token.clone();
+        let second = started(&other);
+        let (status, _) = read_example(&second, &other);
+        assert_eq!(
+            status, 200,
+            "the claim of the bucket is the database's, whichever data directory starts"
         );
     }
+
+    #[test]
+    fn a_stopped_server_gives_the_database_up_at_once() {
+        let w = world();
+        for round in 0..3 {
+            let server = started(&w.s);
+            assert!(stop(server).success(), "round {round} stops");
+        }
+        assert_eq!(
+            locks_held(&w.db),
+            "0",
+            "no advisory lock is left on the database"
+        );
+    }
+
+    #[test]
+    fn commands_beside_a_server_on_postgresql_read_and_write_the_registry() {
+        let mut w = world();
+        let server = started(&w.s);
+        let listed = ok(&w.s, &["tenant", "list"]);
+        assert_eq!(listed.len(), 1, "the tenant the server serves");
+        assert_eq!(listed[0]["name"], "acme", "by its name");
+        store_example(&server, &w.s);
+        w.s.token = token_of(
+            &run(
+                &w.s,
+                &[
+                    "key", "create", "--tenant", &w.tenant, "--scope", "read", "--label", "late",
+                ],
+            )
+            .stdout,
+        );
+        let (status, _) = read_example(&server, &w.s);
+        assert_eq!(status, 200, "the server takes the key the command made");
+    }
+
+    #[test]
+    fn rekey_master_on_postgresql_moves_the_registry_to_the_new_key() {
+        let w = world();
+        let server = started(&w.s);
+        store_example(&server, &w.s);
+        assert!(stop(server).success(), "the server stops for the rotation");
+        let new = new_master(&w.s);
+        let done = ok(&w.s, &["rekey", "master", "--new-master", &new]);
+        assert!(
+            done[0]["master_key_id"].is_string() && done[0]["next"].is_string(),
+            "it names the new key and what comes next: {done:?}"
+        );
+        let old = serve_refusal(&w.s);
+        assert!(
+            old.contains("the registry in the catalog database was made under"),
+            "the old key no longer opens the registry: {old}"
+        );
+        with_master(&w.s, &new);
+        let server = started(&w.s);
+        let (status, body) = read_example(&server, &w.s);
+        assert_eq!(status, 200, "under the new key the vCon reads");
+        assert_eq!(body, example(), "byte for byte");
+    }
+
+    #[test]
+    fn check_on_postgresql_examines_the_tenant_and_exits_0() {
+        let w = world();
+        let server = started(&w.s);
+        store_example(&server, &w.s);
+        assert!(stop(server).success(), "check runs alone");
+        let report = ok(&w.s, &["check"]);
+        assert_eq!(report[0]["tenant"], w.tenant.as_str(), "the tenant");
+        assert_eq!(report[0]["versions"], 1, "its one version");
+        assert_eq!(report[1]["problems"], 0, "nothing needs the operator");
+    }
+
+    #[test]
+    fn the_admin_log_on_postgresql_holds_what_the_commands_did() {
+        let w = world();
+        let records = ok(&w.s, &["audit", "export", "--admin"]);
+        let actions: Vec<&str> = records
+            .iter()
+            .filter_map(|r| r["action"].as_str())
+            .collect();
+        assert!(
+            actions.contains(&"tenant_create") && actions.contains(&"key_create"),
+            "the tenant and its key: {actions:?}"
+        );
+    }
+
+    #[test]
+    fn a_tenant_key_is_rotated_on_postgresql_and_the_vcon_still_reads() {
+        let w = world();
+        let server = started(&w.s);
+        store_example(&server, &w.s);
+        assert!(stop(server).success(), "rekey tenant runs alone");
+        assert_eq!(
+            ok(&w.s, &["rekey", "tenant", &w.tenant]),
+            Vec::<serde_json::Value>::new(),
+            "it prints nothing"
+        );
+        let server = started(&w.s);
+        assert_eq!(
+            read_example(&server, &w.s).0,
+            200,
+            "under the new tenant key"
+        );
+    }
+
+    #[test]
+    fn a_removed_tenant_is_gone_from_the_database_and_the_server_starts() {
+        let w = world();
+        ok(&w.s, &["tenant", "remove", &w.tenant]);
+        assert_eq!(
+            ok(&w.s, &["tenant", "list"]),
+            Vec::<serde_json::Value>::new(),
+            "no tenant is listed"
+        );
+        let server = started(&w.s);
+        assert_eq!(
+            read_example(&server, &w.s).0,
+            401,
+            "the removed tenant's key is refused"
+        );
+    }
+
+    // What must be refused.
+
+    #[test]
+    fn a_second_server_on_the_database_is_refused() {
+        let w = world();
+        let _first = started(&w.s);
+        let said = serve_refusal(&another_host(&w));
+        assert!(
+            said.contains("catalog.postgres: another server")
+                && said.contains("one server serves a database"),
+            "the database's lock, not the data directory's: {said}"
+        );
+    }
+
+    #[test]
+    fn a_second_server_on_the_data_directory_is_refused_before_the_database() {
+        let w = world();
+        let _first = started(&w.s);
+        let said = serve_refusal(&w.s);
+        assert!(
+            said.contains("data directory") && !said.contains("catalog.postgres"),
+            "the data directory's lock comes first: {said}"
+        );
+    }
+
+    #[test]
+    fn a_wrong_master_key_is_refused_and_names_the_database() {
+        let w = world();
+        with_master(&w.s, &new_master(&w.s));
+        let said = serve_refusal(&w.s);
+        assert!(
+            said.contains(
+                "the master key is not the one the registry in the catalog database was made under"
+            ) && !said.contains("server.sqlite"),
+            "the registry is not a file: {said}"
+        );
+        let command = refusal(&w.s, &["tenant", "list"]);
+        assert!(
+            command.contains("the registry in the catalog database was made under"),
+            "a command says the same: {command}"
+        );
+    }
+
+    #[test]
+    fn a_database_never_migrated_is_refused_with_the_command_to_run() {
+        let w = unmigrated();
+        let said = serve_refusal(&w.s);
+        assert!(
+            said.contains("the database has no vCon schema: run vcon-server migrate"),
+            "{said}"
+        );
+    }
+
+    #[test]
+    fn a_schema_older_than_the_binary_is_refused_with_the_command_to_run() {
+        let w = world();
+        let newest = super::postgres_schema_version();
+        w.db.as_owner(&format!(
+            "DELETE FROM vcon.schema_version WHERE version = {newest}"
+        ));
+        let said = serve_refusal(&w.s);
+        assert!(
+            said.contains(&format!(
+                "the database schema is version {}, older than this binary's {newest}: run \
+                 vcon-server migrate",
+                newest - 1
+            )),
+            "{said}"
+        );
+        let command = refusal(&w.s, &["tenant", "list"]);
+        assert!(command.contains("older than this binary's"), "{command}");
+    }
+
+    #[test]
+    fn a_schema_newer_than_the_binary_is_refused_and_says_to_upgrade() {
+        let w = world();
+        let newer = super::postgres_schema_version() + 1;
+        w.db.as_owner(&format!(
+            "INSERT INTO vcon.schema_version (version) VALUES ({newer})"
+        ));
+        let said = serve_refusal(&w.s);
+        assert!(
+            said.contains(&format!(
+                "the database schema is newer than this binary (version {newer}, this binary {}): \
+                 upgrade this server",
+                newer - 1
+            )),
+            "{said}"
+        );
+    }
+
+    #[test]
+    fn a_bucket_another_database_claimed_is_refused() {
+        let w = world();
+        let first = started(&w.s);
+        assert!(
+            stop(first).success(),
+            "the first database claims the bucket"
+        );
+        let other = setup();
+        let second_db = pg::Db::fresh();
+        on_database(&other, "ca.pem", &second_db.name, &w.bucket);
+        migrate(&other);
+        let said = serve_refusal(&other);
+        assert!(
+            said.contains(&w.bucket) && said.contains("belongs to another database"),
+            "the bucket and what claimed it: {said}"
+        );
+        assert_eq!(
+            second_db.as_owner(
+                "ALTER TABLE vcon.storage_claim DISABLE ROW LEVEL SECURITY; \
+                 SELECT count(*) FROM vcon.storage_claim"
+            ),
+            ["0"],
+            "the second database keeps no claim"
+        );
+    }
+
+    #[test]
+    fn migrate_is_refused_while_a_server_serves_the_database() {
+        let w = world();
+        let _server = started(&w.s);
+        let said = migrate_refusal(&w.s);
+        assert!(
+            said.contains("catalog.postgres: another server or command holds the database's locks"),
+            "{said}"
+        );
+    }
+
+    #[test]
+    fn migrate_is_refused_while_a_command_runs_beside_no_server() {
+        let w = world();
+        // A session that holds the commands' lock shared, as a command
+        // beside a server does for as long as it runs.
+        let holder = std::thread::spawn({
+            let name = w.db.name.clone();
+            move || {
+                // The commands' lock (COMMANDS_LOCK in
+                // backend/postgres/schema.rs).
+                pg::tester(
+                    &name,
+                    "SELECT pg_advisory_lock_shared(x'76636f6e434d0001'::bigint); \
+                     SELECT pg_sleep(4)",
+                )
+            }
+        });
+        until_locks_held(&w.db, "1");
+        let said = migrate_refusal(&w.s);
+        assert!(
+            said.contains("catalog.postgres: another server or command holds the database's locks"),
+            "{said}"
+        );
+        holder.join().expect("the holder").expect("held and slept");
+    }
+
+    #[test]
+    fn a_command_that_runs_alone_is_refused_while_another_host_serves() {
+        let w = world();
+        let _server = started(&w.s);
+        let other = another_host(&w);
+        let said = refusal(&other, &["tenant", "create", "beta"]);
+        assert!(
+            said.contains("a server or another command holds this database's locks"),
+            "{said}"
+        );
+        let rotation = refusal(
+            &other,
+            &["rekey", "master", "--new-master", &new_master(&other)],
+        );
+        assert!(
+            rotation.contains("a server or another command holds this database's locks"),
+            "a master rotation runs with every server stopped: {rotation}"
+        );
+    }
+
+    #[test]
+    fn backup_on_postgresql_is_refused_and_says_what_to_use() {
+        let w = world();
+        let to = w.s.dir.path().join("backup");
+        let said = refusal(&w.s, &["backup", to.to_str().expect("UTF-8")]);
+        assert!(
+            said.contains("back up the catalog database with pg_dump"),
+            "{said}"
+        );
+        assert!(!to.exists(), "nothing is left at the backup's path");
+    }
+
+    #[test]
+    fn storage_move_objects_on_postgresql_is_refused_and_says_why() {
+        let w = world();
+        let said = refusal(&w.s, &["storage", "move-objects"]);
+        assert!(
+            said.contains("there is nothing to move")
+                && said.contains("[catalog] and [catalog.postgres] tables removed"),
+            "{said}"
+        );
+    }
+
+    #[test]
+    fn a_pool_of_one_connection_is_refused_and_names_the_setting() {
+        let w = world();
+        let text = std::fs::read_to_string(&w.s.config).expect("reads");
+        std::fs::write(&w.s.config, format!("{text}pool = 1\n")).expect("writes");
+        let said = serve_refusal(&w.s);
+        assert!(said.contains("catalog.postgres.pool is 1"), "{said}");
+    }
+
+    // The edges.
+
+    #[test]
+    fn the_data_directory_of_a_postgresql_server_holds_only_its_locks() {
+        let w = world();
+        let server = started(&w.s);
+        store_example(&server, &w.s);
+        assert!(stop(server).success(), "stops");
+        assert_eq!(
+            data_files(&w.s),
+            ["lock", "lock.commands"],
+            "no server.sqlite, no tenants directory, no storage.claim"
+        );
+    }
+
+    #[test]
+    fn a_killed_server_leaves_the_database_free_for_the_next() {
+        let w = world();
+        let mut server = started(&w.s);
+        store_example(&server, &w.s);
+        server.running.0.kill().expect("SIGKILL");
+        server.running.0.wait().expect("ends");
+        // PostgreSQL frees the lock when it sees the session closed.
+        until_locks_held(&w.db, "0");
+        let next = started(&w.s);
+        assert_eq!(read_example(&next, &w.s).0, 200, "what was stored reads");
+    }
+
+    #[test]
+    fn a_sigterm_at_the_serving_line_stops_a_postgresql_server_cleanly() {
+        let w = world();
+        for round in 0..5 {
+            let status = stop(started(&w.s));
+            assert!(status.success(), "round {round}: {status:?}");
+        }
+    }
+
+    #[test]
+    fn a_master_rotation_asked_for_again_changes_nothing_and_exits_0() {
+        let w = world();
+        let new = new_master(&w.s);
+        ok(&w.s, &["rekey", "master", "--new-master", &new]);
+        let again = ok(&w.s, &["rekey", "master", "--new-master", &new]);
+        assert!(
+            again[0]["master_key_id"].is_string(),
+            "the run that was cut off after its commit ends as the first did: {again:?}"
+        );
+        with_master(&w.s, &new);
+        assert_eq!(ok(&w.s, &["tenant", "list"]).len(), 1, "under the new key");
+    }
+
+    #[test]
+    fn a_command_beside_no_server_runs_on_postgresql() {
+        let w = world();
+        let keys = ok(&w.s, &["key", "list"]);
+        assert_eq!(keys.len(), 1, "the key made for the tenant");
+        assert_eq!(locks_held(&w.db), "0", "and it left no lock");
+    }
+
+    #[test]
+    fn a_refused_start_gives_the_database_up() {
+        let w = world();
+        with_master(&w.s, &new_master(&w.s));
+        serve_refusal(&w.s);
+        assert_eq!(
+            locks_held(&w.db),
+            "0",
+            "a start refused after it connected holds nothing"
+        );
+    }
+
+    // What must be refused.
 
     #[test]
     fn serve_refuses_a_postgresql_server_whose_certificate_another_authority_signed() {

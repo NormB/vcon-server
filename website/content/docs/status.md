@@ -235,25 +235,30 @@ PostgreSQL catalog preview and behind the `postgres` cargo feature:
   adds the table `storage_claim`, whose one row holds the claim of the
   bucket prefix. See
   [after an upgrade from 0.4.5](@/docs/postgres-catalog.md#after-an-upgrade-from-0-4-5).
-- **The statements that keep a tenant's catalog in PostgreSQL.** They pass
-  the store's conformance suite on PostgreSQL 16 and 18 with the objects
-  in a bucket. No server uses them: a start with
-  `catalog.backend = "postgres"` connects, checks the server and stops, as
-  in 0.4.5.
-- **The statements that make, open, list and remove a tenant in
-  PostgreSQL.** A removal deletes the tenant's objects in the bucket and
-  its rows, and keeps its audit records and the key of its audit log. A
-  tenant's catalog is moved to a new tenant key in one transaction, which
-  changes no audit record: the audit key does not rotate with the tenant
-  key. No server uses these statements.
-- **The statements that rotate the master key of the registry in
-  PostgreSQL.** One transaction wraps every tenant key again under the
-  new master key, makes the registry's sealed columns and lookup values
-  again, seals the key of the registry's audit log again, replaces the
-  rows of `master_key_use` with one for the new key, moves the id in
-  `registry_key` and records `rekey_master`; it changes no audit record.
-  No command uses these statements: `rekey master` works on the local
-  registry.
+- **A server and the commands on a PostgreSQL catalog.** With
+  `catalog.backend = "postgres"`, `serve` and every command keep the
+  registry and every tenant's catalog in the database, with the objects in
+  a bucket; release 0.4.5 connects, checks the server and stops. One server
+  serves a database: a server, a command beside it and a command that runs
+  alone each hold advisory locks there, as they hold the data directory's
+  lock files. The claim of the bucket prefix is a row of the database. A
+  database starts with no tenant: no command moves a data directory's
+  tenants into it yet. `vcon-server backup` and `storage move-objects` are
+  refused, each with what to use. The store's conformance suite passes on
+  PostgreSQL 16 and 18, and CI starts a server on each, stores and reads
+  through it, restarts it, and runs the key rotation with the binary.
+- **Removing a tenant, and rotating a tenant key, in PostgreSQL.** A
+  removal deletes the tenant's objects in the bucket and its rows, and
+  keeps its audit records and the key of its audit log. A tenant's catalog
+  is moved to a new tenant key in one transaction, which changes no audit
+  record: the audit key does not rotate with the tenant key.
+- **`rekey master` on a PostgreSQL catalog.** One transaction wraps every
+  tenant key again under the new master key, makes the registry's sealed
+  columns and lookup values again, seals the key of the registry's audit
+  log again, replaces the rows of `master_key_use` with one for the new
+  key, moves the id in `registry_key` and records `rekey_master`; it
+  changes no audit record. The command holds the database's locks, so it
+  runs with every server stopped.
 
 ## Being built
 
@@ -263,9 +268,9 @@ PostgreSQL catalog preview and behind the `postgres` cargo feature:
   verified, logs in by SCRAM-SHA-256 with channel binding or a client
   certificate, refuses a standby, a read-only server, a superuser and a role
   with `BYPASSRLS`, a role that can change the schema and a schema of any
-  other version than the binary's, and then stops, since the catalogs are
-  not kept there yet. `vcon-server migrate` makes the schema, with every
-  table under row-level security that gives a query with no tenant no row and refuses it at the first row it examines. Its tests run against PostgreSQL 16 and 18 in CI, and its how-to against Debian 13's PostgreSQL 17. On `main`, the schema is at version 7 and the statements that keep a tenant's catalog in PostgreSQL are written: they pass the store's conformance suite on PostgreSQL 16 and 18 with the objects in a bucket, and no server uses them yet. See
+  other version than the binary's; in release 0.4.5 it then stops, and on
+  `main` it serves (see [on `main` only](#on-main-only)). `vcon-server migrate` makes the schema, with every
+  table under row-level security that gives a query with no tenant no row and refuses it at the first row it examines. Its tests run against PostgreSQL 16 and 18 in CI, and its how-to against Debian 13's PostgreSQL 17. See
   [keep the catalogs in PostgreSQL](@/docs/postgres-catalog.md).
 - **The draft's recommended algorithms** for `vcon::write` (RS256,
   RSA-OAEP and A256CBC-HS512) as an option of the `vcon` crate, and a check

@@ -688,7 +688,10 @@ The steps above are those of a server with its catalogs in the data
 directory. The [PostgreSQL catalog preview](@/docs/postgres-catalog.md)
 keeps the same id in the row of the table `storage_claim` of its
 database, from schema version 13, where a data directory keeps it in
-`storage.claim`; no server of this build writes that row yet.
+`storage.claim`: a server with its catalogs in PostgreSQL writes that row
+at its first start, and every host that serves the database shares it.
+`vcon-server storage move-objects` is refused with a PostgreSQL catalog,
+whose objects are in the bucket from the first write.
 
 ## Clean up
 

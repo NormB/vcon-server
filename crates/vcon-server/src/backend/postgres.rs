@@ -1,5 +1,6 @@
 //! The PostgreSQL catalog (cargo feature `postgres`), a preview: the
-//! connector and the pool the catalog's statements will run on.
+//! connector, the pool, and the registry and tenant catalogs kept in a
+//! database, which one server serves.
 //!
 //! - Every connection is TLS, with the server's certificate chain and host
 //!   name verified by rustls against `catalog.postgres.ca_file` or the
@@ -20,17 +21,12 @@
 //!   a serving connection refuses any version but this binary's, and a role
 //!   that could change the schema.
 //!
-//! No catalog statement runs here yet: [`preview`] connects, checks the
-//! server, and refuses to go on.
+//! - [`Database`] is a process's connections to the catalog database, with
+//!   the locks of its work held on one of them ([`Holds`]): a server's,
+//!   those of a command beside a server, or those of a command alone.
+//! - [`PgClaim`] keeps the claim of the bucket's prefix in the database.
 
 mod catalog;
-#[cfg_attr(
-    not(all(test, feature = "backend-tests")),
-    expect(
-        dead_code,
-        reason = "a server keeps its catalogs here from the next change; the tests do now"
-    )
-)]
 mod claim;
 mod connect;
 mod pool;
@@ -42,10 +38,48 @@ mod space;
 mod tests;
 
 use crate::config::{PostgresSettings, StorageError};
+use crate::tenants::{RegistryError, TenantError};
 
+pub(crate) use catalog::Database;
+pub(crate) use claim::PgClaim;
 use connect::{Connector, Purpose};
-use pool::Pool;
+pub(crate) use registry::PgRegistry;
+pub(crate) use schema::Holds;
 use secrets::Secrets;
+
+/// The registry and the tenants' space in `database`, as
+/// `Tenants::with_backends` takes them: the registry under `catalog_key`,
+/// the master key's catalog key, and each tenant's catalog rows in the
+/// database with its objects in the bucket of `objects`.
+///
+/// # Errors
+///
+/// [`RegistryError::WrongDatabaseKey`] when the database names another
+/// key. [`RegistryError::Database`] when the objects are not in a bucket,
+/// which the configuration refuses first, and when the registry cannot be
+/// read or written. Nothing is written for either refusal.
+pub(crate) fn open(
+    database: &std::sync::Arc<Database>,
+    catalog_key: &crate::envelope::Key,
+    objects: super::ObjectPlace,
+    fs: std::sync::Arc<dyn crate::fs::Fs>,
+) -> Result<super::Backends, RegistryError> {
+    let super::ObjectPlace::S3(s3) = objects else {
+        return Err(RegistryError::Database(
+            "catalog.backend = \"postgres\" needs storage.objects = \"s3\"".to_owned(),
+        ));
+    };
+    let registry = PgRegistry::open(database.clone(), catalog_key).map_err(|e| match e {
+        TenantError::WrongKey => RegistryError::WrongDatabaseKey,
+        _ => RegistryError::Database(
+            "the tables of the schema vcon could not be read or written, or a key of the \
+             registry's audit log does not open"
+                .to_owned(),
+        ),
+    })?;
+    let space = space::PgTenantSpace::new(database.clone(), s3, fs);
+    Ok((Box::new(registry), Box::new(space)))
+}
 
 /// `vcon-server migrate`: applies the migrations this database has not
 /// yet, and says what it did.
@@ -63,33 +97,4 @@ pub(crate) async fn migrate(settings: &PostgresSettings) -> Result<schema::Migra
     schema::run(&mut connected.client, schema::MIGRATIONS)
         .await
         .map_err(|why| StorageError(format!("catalog.postgres: {why}")))
-}
-
-/// What a start with a PostgreSQL catalog ends with in this release: the
-/// secret files read, one connection made and the server checked, then a
-/// refusal that names the server reached, since the catalogs are not kept
-/// there yet. Every other outcome is the refusal of the step that failed.
-pub(crate) async fn preview(settings: &PostgresSettings) -> StorageError {
-    let connector =
-        match Secrets::read(settings).and_then(|s| Connector::new(settings, s, Purpose::Serve)) {
-            Ok(connector) => connector,
-            Err(refused) => return refused,
-        };
-    let pool = Pool::new(connector, settings.pool, settings.connect_timeout);
-    match pool.get().await {
-        Ok(lease) => StorageError(stopped_after(&lease.server().to_string())),
-        Err(refused) => StorageError(format!("catalog.postgres: {refused}")),
-    }
-}
-
-/// What the preview says once it has reached and checked `server`: where it
-/// connected, why it stops, and how to serve again. The way back is to
-/// remove both tables: `backend = "local"` beside a `[catalog.postgres]`
-/// table is refused by the configuration.
-fn stopped_after(server: &str) -> String {
-    format!(
-        "catalog.postgres: connected to {server}; this release does not keep the catalogs in \
-         PostgreSQL yet (a preview), so it stops here: remove the [catalog] and \
-         [catalog.postgres] tables to serve"
-    )
 }

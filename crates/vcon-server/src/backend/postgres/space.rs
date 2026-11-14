@@ -19,14 +19,6 @@
 //!   tenant's audit log is sealed again. No audit record is changed: its
 //!   target is sealed under the audit key, which stays the same.
 
-#![cfg_attr(
-    not(all(test, feature = "backend-tests")),
-    expect(
-        dead_code,
-        reason = "serve opens this space from a later change; the tests that need a server use it"
-    )
-)]
-
 use std::sync::Arc;
 
 use super::catalog::{CatalogError, Database, PgCatalog};

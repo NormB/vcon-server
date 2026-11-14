@@ -90,6 +90,14 @@ without start-up recovery, so they never mistake the server's work in progress
 for a crash's leftovers. See the [command line](@/docs/command-line.md). While
 the server runs, the admin API does the tenant work instead.
 
+With the [catalogs in PostgreSQL](@/docs/postgres-catalog.md), a preview,
+the rule is the same and is held in the database as well: one server
+serves a database, and a server, a command beside it and a command that
+runs alone each hold advisory locks there for as long as they run, so a
+second host is refused as a second process on one host is. The data
+directory then holds its two lock files and nothing else; the registry,
+the catalogs and the claim of the bucket prefix are rows of the database.
+
 ## The purge sweep
 
 At start, then `purge_interval` seconds after each sweep ends, every tenant's
