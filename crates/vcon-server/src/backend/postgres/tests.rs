@@ -13,6 +13,7 @@ mod catalog_tests;
 mod claim_tests;
 mod edge;
 mod failure;
+mod lock_tests;
 mod registry_tests;
 mod rekey_tests;
 mod reseal_tests;

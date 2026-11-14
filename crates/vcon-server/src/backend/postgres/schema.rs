@@ -43,6 +43,109 @@ pub(crate) const SERVERS_LOCK: i64 = 0x7663_6f6e_5352_0001;
 /// The advisory lock every command takes.
 pub(crate) const COMMANDS_LOCK: i64 = 0x7663_6f6e_434d_0001;
 
+/// What a process does with the database while it holds its locks there,
+/// as [`crate::datadir::Sharing`] says for the data directory's locks.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "a server and the commands connect here from the next change; the tests do now"
+    )
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Holds {
+    /// A server.
+    Serve,
+    /// A command that runs beside a server and other such commands.
+    Beside,
+    /// A command that runs with no server and no other command.
+    Alone,
+}
+
+impl From<crate::datadir::Sharing> for Holds {
+    fn from(sharing: crate::datadir::Sharing) -> Holds {
+        match sharing {
+            crate::datadir::Sharing::Serve => Holds::Serve,
+            crate::datadir::Sharing::Beside => Holds::Beside,
+            crate::datadir::Sharing::Alone => Holds::Alone,
+        }
+    }
+}
+
+/// The one statement that tries the locks of `holds` without waiting. It
+/// answers two columns, the servers' lock and the commands' lock, each
+/// true when the lock was given or is not taken for this work.
+///
+/// - A server takes the servers' lock for itself: this release serves a
+///   database from one instance.
+/// - A command beside a server shares the commands' lock with other such
+///   commands and takes nothing a server holds.
+/// - A command alone takes both for itself, as `migrate` does
+///   ([`take_locks`]), so it runs with no server and no other command.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "a server and the commands connect here from the next change; the tests do now"
+    )
+)]
+pub(crate) fn lock_text(holds: Holds) -> String {
+    match holds {
+        Holds::Serve => format!("SELECT pg_try_advisory_lock({SERVERS_LOCK}), true"),
+        Holds::Beside => format!("SELECT true, pg_try_advisory_lock_shared({COMMANDS_LOCK})"),
+        Holds::Alone => format!(
+            "SELECT pg_try_advisory_lock({SERVERS_LOCK}), pg_try_advisory_lock({COMMANDS_LOCK})"
+        ),
+    }
+}
+
+/// Why the work `holds` may not go on when [`lock_text`] answered
+/// `servers` and `commands`, or `None` when it may.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "a server and the commands connect here from the next change; the tests do now"
+    )
+)]
+pub(crate) fn lock_refusal(holds: Holds, servers: bool, commands: bool) -> Option<&'static str> {
+    match holds {
+        Holds::Serve => (!servers).then_some(SERVER_LOCK_HELD),
+        Holds::Beside => (!commands).then_some(
+            "a command that runs alone, or a migration, holds this database's lock; run this \
+             command again when it has ended",
+        ),
+        Holds::Alone => (!(servers && commands)).then_some(
+            "a server or another command holds this database's locks; this command runs \
+             alone: stop every server, wait for the other commands to end, and run it again",
+        ),
+    }
+}
+
+/// Takes the locks of `holds` on `client`, a connection kept for them,
+/// without waiting. A work refused one of its two locks keeps neither.
+#[cfg_attr(
+    not(all(test, feature = "backend-tests")),
+    expect(
+        dead_code,
+        reason = "a server and the commands connect here from the next change; the tests do now"
+    )
+)]
+pub(crate) async fn take_locks_for(client: &Client, holds: Holds) -> Result<(), String> {
+    let row = checked_row(client, &lock_text(holds)).await?;
+    match lock_refusal(holds, is_true(&row, 0), is_true(&row, 1)) {
+        None => Ok(()),
+        Some(why) => {
+            // If this fails the connection is lost, and the server frees
+            // the lock when it closes the session.
+            let _ = client
+                .batch_execute("SELECT pg_advisory_unlock_all()")
+                .await;
+            Err(why.to_owned())
+        }
+    }
+}
+
 /// What `migrate` did: the schema version found, and the one it left.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Migrated {
@@ -274,34 +377,12 @@ async fn take_locks(client: &Client) -> Result<(), String> {
     }
 }
 
-/// The lock a server holds for as long as it serves, tried without
-/// waiting, on a connection kept for it. It is exclusive: this release
-/// serves a database from one instance, and `migrate`, which tries the
-/// same lock, is refused while a server runs.
-#[cfg_attr(
-    not(all(test, feature = "backend-tests")),
-    expect(
-        dead_code,
-        reason = "a server keeps its catalogs here from the next change; the tests do now"
-    )
-)]
-pub(crate) async fn take_server_lock(client: &Client) -> Result<(), String> {
-    let row = checked_row(
-        client,
-        &format!("SELECT pg_try_advisory_lock({SERVERS_LOCK})"),
-    )
-    .await?;
-    if is_true(&row, 0) {
-        Ok(())
-    } else {
-        Err(SERVER_LOCK_HELD.to_owned())
-    }
-}
-
-/// What a server is told when another holds the servers' lock.
-pub(crate) const SERVER_LOCK_HELD: &str = "another server, or a migration, holds this database's \
-                                           lock; one server serves a database, and migrate runs \
-                                           while none does";
+/// What a server is told when its lock is held: `migrate` and a command
+/// that runs alone try the same lock.
+pub(crate) const SERVER_LOCK_HELD: &str = "another server, a command that runs alone, or a \
+                                           migration holds this database's lock; one server \
+                                           serves a database, and those commands run while none \
+                                           does";
 
 /// The version recorded, or 0 for a database no migration has touched.
 async fn installed_for_migrate(client: &Client) -> Result<i32, String> {

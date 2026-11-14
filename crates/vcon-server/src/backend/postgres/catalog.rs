@@ -108,6 +108,20 @@ impl Database {
     /// pool's size, the server reached, or the lock another server or a
     /// migration holds.
     pub(crate) fn connect(settings: &PostgresSettings) -> Result<Arc<Database>, StorageError> {
+        Database::connect_as(settings, schema::Holds::Serve)
+    }
+
+    /// [`Database::connect`] for the work `holds`: a server, a command
+    /// beside one, or a command alone, each with the locks of its kind.
+    ///
+    /// # Errors
+    ///
+    /// As [`Database::connect`]; the lock's refusal says what may hold the
+    /// database against this work.
+    pub(crate) fn connect_as(
+        settings: &PostgresSettings,
+        holds: schema::Holds,
+    ) -> Result<Arc<Database>, StorageError> {
         if settings.pool < SMALLEST_POOL {
             return Err(StorageError(pool_refusal(settings.pool)));
         }
@@ -124,7 +138,7 @@ impl Database {
             .block_on(pool.get())
             .map_err(|e| StorageError(format!("catalog.postgres: {e}")))?;
         runtime
-            .block_on(schema::take_server_lock(lock.client()))
+            .block_on(schema::take_locks_for(lock.client(), holds))
             .map_err(|why| StorageError(format!("catalog.postgres: {why}")))?;
         Ok(Arc::new(Database {
             lock: std::sync::Mutex::new(Some(lock)),
