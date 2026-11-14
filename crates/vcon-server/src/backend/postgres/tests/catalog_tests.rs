@@ -364,7 +364,7 @@ pub(super) mod on_a_server {
     use super::super::super::catalog::{CatalogError, Database, PgCatalog, pool_refusal};
     use super::super::super::schema::{COMMANDS_LOCK, MIGRATIONS, SERVER_LOCK_HELD, SERVERS_LOCK};
     use super::super::live::value;
-    use super::super::schema_tests::live::{Db, in_scope};
+    use super::super::schema_tests::live::{Db, in_scope, waiters};
     use crate::audit::{Action, Actor, AuditError, Entry};
     use crate::backend::conformance::{self, Harness, TestClock};
     use crate::backend::s3::remote::{CatalogAndS3, CatalogFor, bucket};
@@ -826,12 +826,7 @@ pub(super) mod on_a_server {
         });
         let waiting = wait(async {
             let admin = db.admin().await;
-            within_five_seconds_of(
-                &admin,
-                "SELECT count(*) FROM pg_locks WHERE NOT granted",
-                "1",
-            )
-            .await
+            within_five_seconds_of(&admin, &waiters(None), "1").await
         });
         assert!(waiting, "the second write waits for the tenant's lock row");
         assert!(

@@ -41,13 +41,19 @@ mod on_a_server {
 
     /// The tables the application role may delete from: every one but the
     /// two audit logs, since schema version 11 the keys of a tenant's
-    /// log, and since version 12 the id of the registry's key and the
-    /// keys of the registry's log.
+    /// log, since version 12 the id of the registry's key and the keys of
+    /// the registry's log, and since version 13 the claim of the bucket
+    /// prefix.
     fn deletable() -> impl Iterator<Item = &'static str> {
         all_tables().filter(|t| {
             !matches!(
                 *t,
-                "audit" | "audit_key" | "admin_audit" | "admin_audit_key" | "registry_key"
+                "audit"
+                    | "audit_key"
+                    | "admin_audit"
+                    | "admin_audit_key"
+                    | "registry_key"
+                    | "storage_claim"
             )
         })
     }

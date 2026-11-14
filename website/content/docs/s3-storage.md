@@ -684,6 +684,12 @@ of its own, such as `prefix = "server-b/"`. A restored
 objects as files and has no `storage.claim`, so a server started from it
 with this storage table refuses this prefix too.
 
+The steps above are those of a server with its catalogs in the data
+directory. The [PostgreSQL catalog preview](@/docs/postgres-catalog.md)
+keeps the same id in the row of the table `storage_claim` of its
+database, from schema version 13, where a data directory keeps it in
+`storage.claim`; no server of this build writes that row yet.
+
 ## Clean up
 
 The working directory holds the files the steps above made. Remove the

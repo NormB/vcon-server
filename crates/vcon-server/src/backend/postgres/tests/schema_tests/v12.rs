@@ -135,18 +135,14 @@ fn the_changelog_says_what_version_12_changes() {
         unreleased.contains("Version 12 names the catalog key the registry is sealed under"),
         "version 12, in the entry of the schema"
     );
-    assert!(
-        unreleased.contains("The PostgreSQL preview's schema is at version 12."),
-        "the entry's first sentence names this version"
-    );
 }
 
 #[test]
 fn the_status_page_names_version_12() {
     let page = flat("../../website/content/docs/status.md");
     assert!(
-        page.contains("**Schema version 12 of the PostgreSQL preview.**"),
-        "the entry of what is on main only"
+        page.contains("Version 12 adds the table `registry_key`"),
+        "in the entry of what is on main only"
     );
 }
 

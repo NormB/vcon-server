@@ -14,6 +14,7 @@ mod success;
 mod v10;
 mod v11;
 mod v12;
+mod v13;
 mod v2;
 mod v3;
 mod v4;
@@ -93,6 +94,7 @@ pub(super) mod live {
         "membership",
         "registry_key",
         "session",
+        "storage_claim",
         "tenant",
         "tenant_setting",
         "user_account",
@@ -296,6 +298,29 @@ pub(super) mod live {
         }
     }
 
+    /// How many sessions of the connection's database wait for a lock of
+    /// the kind `locktype`. `pg_locks` lists the locks of every database
+    /// of the server, and the tests of a run share one server, each in a
+    /// database of its own: a count not held to the database also counts
+    /// the sessions other tests have waiting, and a test that waits for
+    /// its one waiter then does not see one.
+    ///
+    /// A session is of this database when the lock it waits for names the
+    /// database (an advisory lock, a row) or when a lock it holds does (a
+    /// session that waits for another's transaction holds a lock on the
+    /// table). The count reads `pg_locks` alone: what a transaction first
+    /// reads of `pg_stat_activity` is kept to its end, so a count made
+    /// there inside a transaction does not see a session that came after.
+    pub(crate) fn waiters(locktype: Option<&str>) -> String {
+        format!(
+            "SELECT count(*) FROM pg_locks l, \
+             (SELECT oid FROM pg_database WHERE datname = current_database()) d \
+             WHERE NOT l.granted AND (l.database = d.oid OR EXISTS (SELECT 1 FROM pg_locks h \
+             WHERE h.pid = l.pid AND h.granted AND h.database = d.oid)){}",
+            locktype.map_or(String::new(), |kind| format!(" AND l.locktype = '{kind}'"))
+        )
+    }
+
     /// The number of rows `sql` counts.
     pub(crate) async fn count(client: &Client, sql: &str) -> i64 {
         value(client, sql).await.parse().expect("a count")
@@ -358,6 +383,7 @@ pub(super) mod live {
             "session" => "INSERT INTO vcon.session (id_hash, user_id, scopes_sealed, created_at, last_seen_at, idle_expires_at, expires_at, idle_seconds, amr_sealed, csrf_hash) VALUES (decode(repeat('01', 32), 'hex'), '\\x01', '\\x02', 1, 1, 2, 3, 1, '\\x03', decode(repeat('04', 32), 'hex'))".to_owned(),
             "registry_key" => "INSERT INTO vcon.registry_key (catalog_key_id) VALUES ('\\x01')".to_owned(),
             "admin_audit_key" => "INSERT INTO vcon.admin_audit_key (key_id, ordinal, wrapped) VALUES ('\\x01', 1, '\\x02')".to_owned(),
+            "storage_claim" => "INSERT INTO vcon.storage_claim (claim_id) VALUES ('0123456789abcdef0123456789abcdef')".to_owned(),
             other => panic!("no insert for {other}"),
         }
     }

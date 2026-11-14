@@ -120,13 +120,20 @@ mod on_a_server {
         // The application role deletes no audit record and, since schema
         // version 11, no key of a tenant's log (schema_tests::v11); since
         // version 12, neither the id of the registry's key nor a key of
-        // the registry's log (schema_tests::v12).
+        // the registry's log (schema_tests::v12); since version 13 it
+        // neither changes nor deletes the claim of the bucket prefix
+        // (schema_tests::v13).
         let writable: Vec<&str> = all_tables()
             .into_iter()
             .filter(|t| {
                 !matches!(
                     *t,
-                    "audit" | "audit_key" | "admin_audit" | "admin_audit_key" | "registry_key"
+                    "audit"
+                        | "audit_key"
+                        | "admin_audit"
+                        | "admin_audit_key"
+                        | "registry_key"
+                        | "storage_claim"
                 )
             })
             .collect();

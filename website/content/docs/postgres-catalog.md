@@ -405,7 +405,7 @@ binary's.
 ### After an upgrade from 0.4.5
 
 Release 0.4.5 and the releases before it leave the schema at version 6.
-A build from `main` makes version 12, so a database that 0.4.5 migrated
+A build from `main` makes version 13, so a database that 0.4.5 migrated
 needs the command once more, with the new binary and before any server
 starts:
 
@@ -415,11 +415,11 @@ sudo -u vcon vcon-server migrate --config /etc/vcon-server/vcon-migrate.toml
 ```
 
 ```text
-{"from":6,"message":"schema version 6 to schema version 12","migrated":true,"to":12}
+{"from":6,"message":"schema version 6 to schema version 13","migrated":true,"to":13}
 ```
 
 Until then a server stops with `the database schema is version 6, older
-than this binary's 12: run vcon-server migrate`. Versions 7 to 12
+than this binary's 13: run vcon-server migrate`. Versions 7 to 13
 change no row there is. Version 7 changes two things:
 
 - The `version` table gains the column `seq`, a number PostgreSQL gives
@@ -514,6 +514,18 @@ of them or none, and no record of the log is changed. A registry that is
 under the new key already is left as it is, so a rotation can be asked
 for again; a registry under neither key is refused. No command runs
 those statements yet: `rekey master` works on the local registry.
+
+Version 13 makes the table `storage_claim`, whose one row holds the
+claim of the bucket prefix: the random id that binds a prefix to one set
+of catalogs, as [the bucket's claim](@/docs/s3-storage.md#one-server-per-bucket-and-prefix)
+describes. Catalogs in a data directory keep the id in the file
+`storage.claim`; catalogs in PostgreSQL keep it in this row, so every
+server on the database reads the same claim, and a server on another
+database is refused the prefix. The table takes one row, and an id is 32
+lowercase hexadecimal digits. `vcon_app` reads the claim and writes it
+once, in a transaction of the registry; no role is granted an `UPDATE`
+or a `DELETE` there. A database of the preview holds no claim, so the
+table starts empty.
 
 The audit key does not rotate with the tenant key: a rotation seals the
 same audit key under the new catalog key and changes no audit record.
@@ -741,8 +753,8 @@ primary in `hosts`; a standby before it is passed over.
 
 ```text
 vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database has no vCon schema: run vcon-server migrate
-vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is version 6, older than this binary's 12: run vcon-server migrate
-vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is newer than this binary (version 13, this binary 12): upgrade this server
+vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is version 6, older than this binary's 13: run vcon-server migrate
+vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is newer than this binary (version 14, this binary 13): upgrade this server
 ```
 
 Run `vcon-server migrate` with `vcon_migrate`'s configuration, or upgrade

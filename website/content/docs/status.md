@@ -215,9 +215,9 @@ The site is built from the `main` branch, so a page can describe what no
 release holds yet. Release 0.4.5 does not have these, both of the
 PostgreSQL catalog preview and behind the `postgres` cargo feature:
 
-- **Schema version 12 of the PostgreSQL preview.** `vcon-server migrate`
-  built from `main` leaves the database at version 12; release 0.4.5 leaves
-  it at 6, and its server refuses a database at 12. Version 7 adds the
+- **Schema version 13 of the PostgreSQL preview.** `vcon-server migrate`
+  built from `main` leaves the database at version 13; release 0.4.5 leaves
+  it at 6, and its server refuses a database at 13. Version 7 adds the
   column `seq` to the `version` table and, on PostgreSQL 17 and later,
   grants `vcon_app` `MAINTAIN` on three tables. Version 8 adds triggers:
   the tables `audit` and `admin_audit` take new records and a larger
@@ -231,7 +231,9 @@ PostgreSQL catalog preview and behind the `postgres` cargo feature:
   catalog key; each record names the key that sealed its target.
   Version 12 adds the table `registry_key`, whose one row names the
   catalog key the registry is sealed under, and the table
-  `admin_audit_key`, the key of the registry's audit log. See
+  `admin_audit_key`, the key of the registry's audit log. Version 13
+  adds the table `storage_claim`, whose one row holds the claim of the
+  bucket prefix. See
   [after an upgrade from 0.4.5](@/docs/postgres-catalog.md#after-an-upgrade-from-0-4-5).
 - **The statements that keep a tenant's catalog in PostgreSQL.** They pass
   the store's conformance suite on PostgreSQL 16 and 18 with the objects

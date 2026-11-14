@@ -161,7 +161,7 @@ pub(super) mod on_a_server {
     use super::super::super::catalog::{CatalogError, Database, PgCatalog, REGISTRY_LOCK};
     use super::super::super::registry::PgRegistry;
     use super::super::catalog_tests::on_a_server::database;
-    use super::super::schema_tests::live::{Db, in_scope};
+    use super::super::schema_tests::live::{Db, in_scope, waiters};
     use crate::audit::{Action, Actor, Entry};
     use crate::backend::registry_conformance::{Fresh, registry_conformance};
     use crate::backend::{CommitError, KeyRow, Registry, TenantRow, UserRow};
@@ -916,11 +916,7 @@ pub(super) mod on_a_server {
                 let mut waiting = 0_i64;
                 for _ in 0..1500 {
                     waiting = runtime
-                        .block_on(holder.query_one(
-                            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' \
-                             AND NOT granted",
-                            &[],
-                        ))
+                        .block_on(holder.query_one(&waiters(Some("advisory")), &[]))
                         .expect("reads the locks")
                         .get(0);
                     if waiting == 1 {
@@ -987,11 +983,7 @@ pub(super) mod on_a_server {
                 let open = scope.spawn(move || PgRegistry::open(database, key).map(drop));
                 for _ in 0..1500 {
                     let waiting: i64 = runtime
-                        .block_on(holder.query_one(
-                            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' \
-                             AND NOT granted",
-                            &[],
-                        ))
+                        .block_on(holder.query_one(&waiters(Some("advisory")), &[]))
                         .expect("reads the locks")
                         .get(0);
                     if waiting == 1 {

@@ -24,6 +24,14 @@
 //! server, and refuses to go on.
 
 mod catalog;
+#[cfg_attr(
+    not(all(test, feature = "backend-tests")),
+    expect(
+        dead_code,
+        reason = "a server keeps its catalogs here from the next change; the tests do now"
+    )
+)]
+mod claim;
 mod connect;
 mod pool;
 mod registry;

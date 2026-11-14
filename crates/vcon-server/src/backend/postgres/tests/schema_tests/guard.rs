@@ -113,7 +113,7 @@ mod on_a_server {
 
     use super::super::super::super::connect::Purpose;
     use super::super::super::live::{as_user, value};
-    use super::super::live::{Db, connect};
+    use super::super::live::{Db, connect, waiters};
     use super::super::names::{STALE_AFTER, name_at};
 
     /// The tester's connection to the server's own database.
@@ -259,5 +259,171 @@ mod on_a_server {
             4,
             "and each had a name of its own"
         );
+    }
+
+    /// Asks `sql` up to fifty times, a tenth of a second apart, until its
+    /// value is `want`.
+    async fn within_five_seconds_of(
+        client: &tokio_postgres::Client,
+        sql: &str,
+        want: &str,
+    ) -> bool {
+        for _ in 0..50 {
+            if value(client, sql).await == want {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        false
+    }
+
+    // A test that waits until its one session waits for a lock counts the
+    // sessions that wait. The tests of a run share a server: on
+    // 2026-11-14 two such tests of the registry ran at the same moment,
+    // each counted the other's waiting session too, neither saw exactly
+    // one, and one of them ended at the lock timeout.
+
+    #[tokio::test]
+    async fn a_session_that_begins_to_wait_is_counted_by_a_transaction_already_open() {
+        // The registry's tests count from the session that holds the
+        // lock, inside its transaction. PostgreSQL keeps what a
+        // transaction first read of the sessions (pg_stat_activity) to
+        // the transaction's end, so a count made through that view does
+        // not see a session that came after.
+        let db = Db::fresh().await;
+        let holder = db.admin().await;
+        holder
+            .batch_execute("BEGIN; SELECT pg_advisory_xact_lock(7)")
+            .await
+            .expect("holds the lock in a transaction");
+        assert_eq!(
+            value(&holder, &waiters(Some("advisory"))).await,
+            "0",
+            "no session waits yet"
+        );
+        let waiter = db.admin().await;
+        let waiting = tokio::spawn(async move {
+            waiter
+                .batch_execute("BEGIN; SELECT pg_advisory_xact_lock(7); COMMIT")
+                .await
+        });
+        assert!(
+            within_five_seconds_of(&holder, &waiters(Some("advisory")), "1").await,
+            "the session that came after the transaction's first count"
+        );
+        holder.batch_execute("COMMIT").await.expect("commits");
+        waiting
+            .await
+            .expect("the task ends")
+            .expect("the waiter got the lock");
+    }
+
+    #[tokio::test]
+    async fn a_session_waiting_for_a_row_is_counted_and_is_not_an_advisory_wait() {
+        let (here, other) = (Db::fresh().await, Db::fresh().await);
+        let holder = here.admin().await;
+        holder
+            .batch_execute("CREATE TABLE held (n int); INSERT INTO held VALUES (1)")
+            .await
+            .expect("a table with a row");
+        holder
+            .batch_execute("BEGIN; SELECT n FROM held FOR UPDATE")
+            .await
+            .expect("holds the row");
+        let waiter = here.admin().await;
+        let waiting =
+            tokio::spawn(
+                async move { waiter.batch_execute("SELECT n FROM held FOR UPDATE").await },
+            );
+        let counting = here.admin().await;
+        assert!(
+            within_five_seconds_of(&counting, &waiters(None), "1").await,
+            "the session that waits for the row"
+        );
+        assert_eq!(
+            value(&counting, &waiters(Some("advisory"))).await,
+            "0",
+            "it waits for no advisory lock"
+        );
+        assert_eq!(
+            value(&other.admin().await, &waiters(None)).await,
+            "0",
+            "and another database counts none"
+        );
+        holder.batch_execute("COMMIT").await.expect("commits");
+        waiting
+            .await
+            .expect("the task ends")
+            .expect("the waiter got the row");
+    }
+
+    #[tokio::test]
+    async fn a_session_waiting_in_this_database_is_counted() {
+        let db = Db::fresh().await;
+        let holder = db.admin().await;
+        holder
+            .batch_execute("SELECT pg_advisory_lock(7)")
+            .await
+            .expect("holds the lock");
+        let waiter = db.admin().await;
+        let waiting =
+            tokio::spawn(async move { waiter.batch_execute("SELECT pg_advisory_lock(7)").await });
+        for kind in [Some("advisory"), None] {
+            assert!(
+                within_five_seconds_of(&holder, &waiters(kind), "1").await,
+                "the one session that waits, by {kind:?}"
+            );
+        }
+        assert_eq!(
+            value(&holder, &waiters(Some("tuple"))).await,
+            "0",
+            "no session waits for a lock of another kind"
+        );
+        holder
+            .batch_execute("SELECT pg_advisory_unlock(7)")
+            .await
+            .expect("gives the lock up");
+        waiting
+            .await
+            .expect("the task ends")
+            .expect("the waiter got the lock");
+        assert_eq!(
+            value(&holder, &waiters(None)).await,
+            "0",
+            "no session waits now"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_waiting_in_another_database_is_not_counted() {
+        let (here, other) = (Db::fresh().await, Db::fresh().await);
+        let holder = other.admin().await;
+        holder
+            .batch_execute("SELECT pg_advisory_lock(7)")
+            .await
+            .expect("holds the lock");
+        let waiter = other.admin().await;
+        let waiting =
+            tokio::spawn(async move { waiter.batch_execute("SELECT pg_advisory_lock(7)").await });
+        assert!(
+            within_five_seconds_of(&holder, &waiters(Some("advisory")), "1").await,
+            "the other database has its one waiting session"
+        );
+        let mine = here.admin().await;
+        for kind in [Some("advisory"), None] {
+            assert_eq!(
+                value(&mine, &waiters(kind)).await,
+                "0",
+                "this database has none, by {kind:?}"
+            );
+        }
+        holder
+            .batch_execute("SELECT pg_advisory_unlock(7)")
+            .await
+            .expect("gives the lock up");
+        waiting
+            .await
+            .expect("the task ends")
+            .expect("the waiter got the lock");
     }
 }

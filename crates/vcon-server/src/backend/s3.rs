@@ -21,7 +21,7 @@ use aws_sdk_s3::types::{BucketVersioningStatus, Delete, ObjectIdentifier};
 use aws_smithy_http_client::tls;
 use zeroize::Zeroizing;
 
-mod claim;
+pub(crate) mod claim;
 
 use super::{ObjectError, Objects, Packs};
 use crate::config::{S3Settings, StorageError};
@@ -82,6 +82,21 @@ pub(crate) fn place(
     parquet: bool,
     data_dir: &std::path::Path,
 ) -> Result<super::ObjectPlace, StorageError> {
+    place_for(settings, parquet, &claim::DataDir(data_dir))
+}
+
+/// [`place`], for catalogs that keep their claim of the prefix in `home`:
+/// a data directory, or a database.
+///
+/// # Errors
+///
+/// As [`place`], and a `StorageError` naming what of `home` could not be
+/// read or written.
+pub(crate) fn place_for(
+    settings: &S3Settings,
+    parquet: bool,
+    home: &dyn claim::Home,
+) -> Result<super::ObjectPlace, StorageError> {
     let s3 = client_for(settings, "storage.s3")?;
     let unreadable = |e: ObjectError| {
         StorageError(format!(
@@ -102,8 +117,31 @@ pub(crate) fn place(
             settings.bucket
         )));
     }
-    s3.claim_for(data_dir)?;
+    s3.claim_for(home)?;
     Ok(super::ObjectPlace::S3(s3))
+}
+
+/// A bucket's prefix as the bucket's side of a claim, with `place` naming
+/// both in an error.
+struct ClaimedPrefix<'a> {
+    s3: &'a S3,
+    place: &'a str,
+}
+
+impl claim::Prefix for ClaimedPrefix<'_> {
+    fn found(&self) -> Result<(Option<String>, bool), StorageError> {
+        let unreadable =
+            |e: ObjectError| StorageError(format!("{} cannot be read: {e}", self.place));
+        let claim = self.s3.read_claim().map_err(unreadable)?;
+        let holds_tenants = !self.s3.tenants().map_err(unreadable)?.is_empty();
+        Ok((claim, holds_tenants))
+    }
+
+    fn write(&self, id: &str) -> Result<(), StorageError> {
+        self.s3
+            .write_claim(id)
+            .map_err(|e| StorageError(format!("{} cannot be claimed: {e}", self.place)))
+    }
 }
 
 /// A client for the bucket `settings` names, with the secret access key
@@ -381,32 +419,20 @@ impl S3 {
         }
     }
 
-    /// Binds the prefix to `data_dir`, as `claim` describes: uses it,
-    /// claims it, or refuses.
+    /// Binds the prefix to the catalogs of `home`, as `claim` describes:
+    /// uses it, claims it, or refuses.
     ///
     /// # Errors
     ///
     /// A `StorageError` naming the bucket and prefix, or the step that
     /// failed.
-    fn claim_for(&self, data_dir: &std::path::Path) -> Result<(), StorageError> {
+    fn claim_for(&self, home: &dyn claim::Home) -> Result<(), StorageError> {
         let place = format!("bucket {:?}, prefix {:?}", self.bucket, self.prefix);
-        let unreadable = |e: ObjectError| StorageError(format!("{place} cannot be read: {e}"));
-        let local = claim::read_file(data_dir)?;
-        let bucket = self.read_claim().map_err(unreadable)?;
-        let holds_tenants = !self.tenants().map_err(unreadable)?.is_empty();
-        let write = |id: &str| {
-            self.write_claim(id)
-                .map_err(|e| StorageError(format!("{place} cannot be claimed: {e}")))
+        let prefix = ClaimedPrefix {
+            s3: self,
+            place: &place,
         };
-        match claim::decide(local.as_deref(), bucket.as_deref(), holds_tenants, &place)? {
-            claim::Step::Use => Ok(()),
-            claim::Step::Claim => {
-                let id = claim::new_id();
-                claim::write_file(data_dir, &id)?;
-                write(&id)
-            }
-            claim::Step::Finish => write(local.as_deref().unwrap_or_default()),
-        }
+        claim::settle(home, &prefix, &place).map(drop)
     }
 
     /// The claim object's name.
@@ -415,7 +441,12 @@ impl S3 {
     }
 
     /// The claim object's id under the prefix, if there is one.
-    fn read_claim(&self) -> Result<Option<String>, ObjectError> {
+    ///
+    /// # Errors
+    ///
+    /// `ObjectError::Io` if the bucket cannot be read or the object does
+    /// not hold a claim id.
+    pub(crate) fn read_claim(&self) -> Result<Option<String>, ObjectError> {
         let call = self
             .client
             .get_object()

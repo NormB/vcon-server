@@ -10,6 +10,7 @@
 //! files, or talk to a small fake server on the loopback address.
 
 mod catalog_tests;
+mod claim_tests;
 mod edge;
 mod failure;
 mod registry_tests;
