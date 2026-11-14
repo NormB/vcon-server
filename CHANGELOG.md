@@ -6,6 +6,15 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-11-14
+
+Nothing changes for a deployment with its catalogs in the data directory:
+the upgrade from 0.4.5 is the binary alone, the catalogs stay at schema
+version 9, and a downgrade is possible. A deployment that set `catalog.backend = "postgres"` on 0.4.5
+runs `vcon-server migrate` first, which takes the PostgreSQL preview's
+schema from version 6 to 13, and then serves from the database, which is
+empty of tenants. The Upgrade page's "From 0.4.5 to 0.4.6" has the steps.
+
 ### Added
 
 - **The catalogs can be kept in PostgreSQL, a preview the release binaries
@@ -1243,7 +1252,8 @@ Nothing in this release breaks a 0.4.1 deployment, and an upgrade from
   stack and abort the server. `vcon::MAX_SIGNED_LAYERS`,
   `vcon::MAX_JSON_DEPTH` and `vcon::Rejection::TooDeep` name the limits.
 
-[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.5...HEAD
+[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.6...HEAD
+[0.4.6]: https://github.com/NormB/vcon-server/releases/tag/v0.4.6
 [0.4.5]: https://github.com/NormB/vcon-server/releases/tag/v0.4.5
 [0.4.4]: https://github.com/NormB/vcon-server/releases/tag/v0.4.4
 [0.4.3]: https://github.com/NormB/vcon-server/releases/tag/v0.4.3

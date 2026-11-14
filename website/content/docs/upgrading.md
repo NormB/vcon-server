@@ -18,6 +18,30 @@ CI runs every command on this page on each change. It installs the previous
 release, sets it up as [getting started](@/docs/getting-started.md) does,
 upgrades it to the server built from the change, and goes back again.
 
+## From 0.4.5 to 0.4.6
+
+For a deployment with its catalogs in the data directory, the upgrade is
+the binary alone. No stored data and no schema changes: the catalogs keep
+schema version 9. A 0.4.5 configuration is read as it was. A downgrade is
+possible: 0.4.5 opens a data directory that 0.4.6 has served. Copy the
+data directory before the upgrade all the same, as in
+[copy the data directory](#copy-the-data-directory). Two things are
+different in 0.4.6:
+
+- **The release binaries hold the PostgreSQL catalog preview.** They are
+  built with the `postgres` cargo feature, and are about 2 MB larger. The
+  feature does nothing until `catalog.backend` is `"postgres"`. Read
+  [the limits of the preview](@/docs/postgres-catalog.md#the-limits-of-the-preview)
+  before setting it.
+- **A deployment that set `catalog.backend = "postgres"` on 0.4.5 runs
+  `vcon-server migrate` first.** On 0.4.5 its server stopped at start.
+  Release 0.4.6 serves from the database, which is empty of tenants: the
+  tenants of the data directory are not in it. The preview's schema goes
+  from version 6 to 13, so run `migrate` with the new binary before the
+  first start, as
+  [after an upgrade from 0.4.5](@/docs/postgres-catalog.md#after-an-upgrade-from-0-4-5)
+  shows.
+
 ## From 0.4.4 to 0.4.5
 
 The upgrade is the binary alone. No stored data and no schema changes: the
@@ -335,7 +359,7 @@ but do not install it yet. The commands use their own variable names, so
 they do not change the ones from install:
 
 ```sh
-NEW_VERSION=0.4.5
+NEW_VERSION=0.4.6
 NEW_ARCHIVE=vcon-server-$NEW_VERSION-$(uname -m)-unknown-linux-gnu.tar.gz
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/$NEW_ARCHIVE
 curl -fsSL -o SHA256SUMS-$NEW_VERSION.txt https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/SHA256SUMS.txt

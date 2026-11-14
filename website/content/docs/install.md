@@ -133,7 +133,7 @@ archive names:
 
 <!-- docs-test: only release -->
 ```sh
-VERSION=0.4.5
+VERSION=0.4.6
 ARCHIVE=vcon-server-$VERSION-$(uname -m)-unknown-linux-gnu.tar.gz
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$VERSION/$ARCHIVE
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$VERSION/SHA256SUMS.txt
@@ -370,14 +370,15 @@ cargo install vcon-server --locked
 `--locked` builds with the exact dependency versions the release was tested
 with.
 
-That command builds the package's default features. The release binaries
-built from `main` have one feature more, the `postgres` cargo feature: the
+That command builds the package's default features. From 0.4.6 on, the
+release binaries have one feature more, the `postgres` cargo feature: the
 PostgreSQL catalog, a preview whose limits are in
 [the limits of the preview](@/docs/postgres-catalog.md#the-limits-of-the-preview).
 To build it in, run this in place of the command above:
 `cargo install vcon-server --locked --features postgres`
-The package of release 0.4.5 holds the feature as that release had it: its
-server connects, checks the database and stops.
+A server built this way from the package of release 0.4.6 serves from the
+database. The package of release 0.4.5 holds the feature as that release
+had it: its server connects, checks the database and stops.
 
 Cargo prints each crate as it compiles it, and near the end:
 

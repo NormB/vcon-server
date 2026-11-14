@@ -171,7 +171,7 @@ fn the_status_page_names_version_13() {
     let page = flat("../../website/content/docs/status.md");
     assert!(
         page.contains("**Schema version 13 of the PostgreSQL preview.**"),
-        "the entry of what is on main only"
+        "the entry of the PostgreSQL preview's schema version"
     );
 }
 

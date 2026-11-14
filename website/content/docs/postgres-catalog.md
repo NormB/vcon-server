@@ -35,7 +35,7 @@ server built with the `postgres` feature. The messages under
 [when it does not start](#when-it-does-not-start) that no step here prints
 were printed by the server built from this release's source.
 
-**Which builds have it.** The release binaries built from `main` have the
+**Which builds have it.** From 0.4.6 on, the release binaries have the
 `postgres` cargo feature, so a server installed from one of them needs
 nothing more. Release 0.4.5's binaries were built before that: a server
 from one of them stops with
@@ -86,7 +86,7 @@ The other pages link here for these and do not repeat them.
   [the pool is too small](#the-pool-is-too-small)).
 - **Run `migrate` first after an upgrade.** A new binary refuses a
   database of an older schema version. A database that release 0.4.5
-  migrated is at version 6, and a build from `main` needs version 13 (see
+  migrated is at version 6, and release 0.4.6 needs version 13 (see
   [after an upgrade from 0.4.5](#after-an-upgrade-from-0-4-5)).
 - **The data directory stays.** It holds the two lock files of
   [the commands](#commands-beside-a-server-and-alone) and nothing else.
@@ -99,7 +99,7 @@ The other pages link here for these and do not repeat them.
 - **A deployment that set `catalog.backend = "postgres"` on 0.4.5:** on
   0.4.5 its server stopped at start, a release binary because it had no
   PostgreSQL support and a build with the feature after it had checked
-  the database. A build from `main` serves from the database, which is
+  the database. Release 0.4.6 serves from the database, which is
   empty of tenants. Run `migrate` before the first start, as
   [after an upgrade from 0.4.5](#after-an-upgrade-from-0-4-5) shows, and
   read the limits above: the tenants of the data directory are not in
@@ -481,7 +481,7 @@ binary's.
 ### After an upgrade from 0.4.5
 
 Release 0.4.5 and the releases before it leave the schema at version 6.
-A build from `main` makes version 13, so a database that 0.4.5 migrated
+Release 0.4.6 makes version 13, so a database that 0.4.5 migrated
 needs the command once more, with the new binary and before any server
 starts:
 

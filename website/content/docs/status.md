@@ -7,7 +7,7 @@ weight = 60
 group = "project"
 +++
 
-vcon-server 0.4.5 is released: the `vcon` and `vcon-server` crates are on
+vcon-server 0.4.6 is released: the `vcon` and `vcon-server` crates are on
 crates.io, and the server for Linux on x86_64 and aarch64 is on
 [GitHub](https://github.com/NormB/vcon-server/releases). It is not yet for
 production. This page says what works today; each other page describes only
@@ -209,23 +209,22 @@ what is built, unless it says otherwise.
   0.3.0 also a Sigstore signature over the checksums and the provenance as a
   file. The release workflow also publishes both crates to crates.io.
 
-## On `main` only
+## The PostgreSQL catalog preview
 
-The site is built from the `main` branch, so a page can describe what no
-release holds yet. Release 0.4.5 does not have these, all of the
-PostgreSQL catalog preview and behind the `postgres` cargo feature. The
-how-to states
+Release 0.4.6 is the first that has these, all of the PostgreSQL catalog
+preview and behind the `postgres` cargo feature. Release 0.4.5 does not
+have them. The how-to states
 [the limits of the preview](@/docs/postgres-catalog.md#the-limits-of-the-preview)
 once, for every entry here:
 
-- **The feature in the release binaries.** The release binaries built from
-  `main` have the `postgres` cargo feature: the release build names it.
+- **The feature in the release binaries.** From 0.4.6 on, the release
+  binaries have the `postgres` cargo feature: the release build names it.
   Release 0.4.5's binaries were built with the default features alone, and
   `cargo install` and a build from source get it with
   `--features postgres`. A deployment with its catalogs in the data
   directory is unchanged by it.
 - **Schema version 13 of the PostgreSQL preview.** `vcon-server migrate`
-  built from `main` leaves the database at version 13; release 0.4.5 leaves
+  of release 0.4.6 leaves the database at version 13; release 0.4.5 leaves
   it at 6, and its server refuses a database at 13. Version 7 adds the
   column `seq` to the `version` table and, on PostgreSQL 17 and later,
   grants `vcon_app` `MAINTAIN` on three tables. Version 8 adds triggers:
@@ -275,8 +274,8 @@ once, for every entry here:
   verified, logs in by SCRAM-SHA-256 with channel binding or a client
   certificate, refuses a standby, a read-only server, a superuser and a role
   with `BYPASSRLS`, a role that can change the schema and a schema of any
-  other version than the binary's; in release 0.4.5 it then stops, and on
-  `main` it serves (see [on `main` only](#on-main-only)). `vcon-server migrate` makes the schema, with every
+  other version than the binary's; in release 0.4.5 it then stops, and from
+  0.4.6 on it serves (see [the PostgreSQL catalog preview](#the-postgresql-catalog-preview)). `vcon-server migrate` makes the schema, with every
   table under row-level security that gives a query with no tenant no row and refuses it at the first row it examines. Its tests run against PostgreSQL 16 and 18 in CI, and its how-to against Debian 13's PostgreSQL 17. See
   [keep the catalogs in PostgreSQL](@/docs/postgres-catalog.md).
 - **The draft's recommended algorithms** for `vcon::write` (RS256,

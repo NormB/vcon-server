@@ -242,7 +242,8 @@ fn the_how_to_shows_the_upgrade_to_this_binary_s_version() {
     );
     assert!(
         page.contains(&format!(
-            "A build from `main` makes version {SCHEMA_VERSION},"
+            "Release {} makes version {SCHEMA_VERSION},",
+            env!("CARGO_PKG_VERSION")
         )),
         "and the version in words"
     );

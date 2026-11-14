@@ -12,10 +12,10 @@ change. [What is built](@/docs/status.md) says what works today.
 
 - **A PostgreSQL catalog, the rest of it:** a command that moves a data
   directory's tenants into PostgreSQL and back, and several servers on one
-  database. On `main`, a server keeps the registry and the catalogs in
+  database. From 0.4.6 on, a server keeps the registry and the catalogs in
   PostgreSQL, as a preview behind the `postgres` cargo feature, which the
-  release build there names (see
-  [what is built](@/docs/status.md#on-main-only) and
+  release build names (see
+  [what is built](@/docs/status.md#the-postgresql-catalog-preview) and
   [the limits of the preview](@/docs/postgres-catalog.md#the-limits-of-the-preview)).
 - **The draft's recommended algorithms** for `vcon::write` (RS256,
   RSA-OAEP and A256CBC-HS512), as an option of the `vcon` crate.

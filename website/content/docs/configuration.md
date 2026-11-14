@@ -380,8 +380,8 @@ check the server, take their locks on the database, and keep the registry
 and every tenant's catalog there. Run
 `vcon-server migrate` first, with a role that may act as `vcon_owner`, or
 a connection refuses the missing schema. `data_dir` is still required: it
-holds the lock files and nothing else. The release binaries built from
-`main` have the `postgres` cargo feature this needs. A build with the
+holds the lock files and nothing else. From 0.4.6 on, the release
+binaries have the `postgres` cargo feature this needs. A build with the
 default features stops with `this build has no PostgreSQL support`. The
 how-to [keep the catalogs in PostgreSQL](@/docs/postgres-catalog.md) gives
 the database's side, each refusal and what it means, and
