@@ -283,6 +283,13 @@ async fn serve_opened(
         None => None,
     };
     let tenants = Arc::new(tenants);
+    // The start's lines, logged before any background job is spawned: whoever
+    // waits for the serving line finds every listener bound, and no line of
+    // the sweep, the pack run or the rotation warning before it.
+    if let Some((_, _, operator_bound)) = &operator {
+        tracing::info!(operator_listen = %operator_bound, "the operator listener is bound");
+    }
+    tracing::info!(listen = %bound, "serving");
     // The purge sweep: at start, then purge_interval after each sweep ends,
     // until the server stops.
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
@@ -354,10 +361,9 @@ async fn serve_opened(
         }
     };
     let both = async {
-        let Some((operator_listener, operator_tls, operator_bound)) = operator else {
+        let Some((operator_listener, operator_tls, _)) = operator else {
             let full = counts_full("listen");
             let app = app_from(config, tenants, Plane::Both);
-            tracing::info!(listen = %bound, "serving");
             return api::serve_observed(
                 listener,
                 tls,
@@ -371,10 +377,6 @@ async fn serve_opened(
         let (tenant_full, operator_full) = (counts_full("listen"), counts_full("operator.listen"));
         let tenant_app = app_from(config, tenants.clone(), Plane::Tenant);
         let operator_app = app_from(config, tenants, Plane::Operator);
-        // Before the serving line: whoever waits for that line finds both
-        // listeners bound.
-        tracing::info!(operator_listen = %operator_bound, "the operator listener is bound");
-        tracing::info!(listen = %bound, "serving");
         let (tenant, operator) = tokio::join!(
             api::serve_observed(
                 listener,
@@ -593,6 +595,9 @@ fn warn_if_rotation_overdue(tenants: &Tenants, rotation_warn: Duration) {
         Err(_) => tracing::warn!("the key rotation backlog could not be read"),
     }
 }
+
+#[cfg(test)]
+mod start_tests;
 
 #[cfg(test)]
 mod tests {

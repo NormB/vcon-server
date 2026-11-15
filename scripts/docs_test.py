@@ -1263,6 +1263,78 @@ RELATIVE_CACERT = re.compile(r"--cacert[= ]\s*[\"']?(?![/\"'$])\S")
 SERVER_REQUEST = re.compile(r"\bcurl\b[^\n]*https://vcon\.example\.com|https://vcon\.example\.com[^\n]*\bcurl\b")
 
 
+# A `grep` inside an `until` loop: the step waits for a line holding its
+# pattern. The pattern is the first word after grep's options (and `--`),
+# or the words of a quoted one, with or without a backslash before the quote.
+WAIT = re.compile(
+    r"""\buntil\b[^;]*?\bgrep\s+(?:-[A-Za-z]+\s+)*(?:--\s+)?"""
+    r"""(?:\\?'([^'\\]*)\\?'|\\?"([^"\\]*)\\?"|([^\s;'"|)]+))"""
+)
+
+# The lines of serve's background jobs (the purge sweep, the pack run and
+# the rotation warning), by the start of their message. The server logs
+# `serving` before it starts any of them (serve.rs, serve_opened).
+BACKGROUND_LINES = (
+    "purge sweep",
+    "pack run",
+    "key rotation overdue",
+    "the key rotation backlog could not be read",
+)
+SERVE_LINE = re.compile(r"\bvcon_server::serve: (.*)$")
+
+
+def waited_for(code: str) -> str | None:
+    """The pattern the last `until ... grep` of `code` waits for, if any."""
+    found = list(WAIT.finditer(code))
+    if not found:
+        return None
+    last = found[-1]
+    return next(g for g in last.groups() if g is not None)
+
+
+def wait_problems(b: Block) -> list[str]:
+    """A step that waits for a line and shows lines after it: those may
+    not be written yet when the line waited for is."""
+    if b.expect is None:
+        return []
+    word = waited_for(b.code)
+    if word is None:
+        return []
+    shown = [l for l in _clean(b.expect) if l.strip() != ANY_LINES]
+    if not shown or word in shown[-1] or not any(word in l for l in shown):
+        return []
+    return [
+        f"{b.at}: the step waits for {word!r} and shows lines after that one, which may not be "
+        "written yet; wait for a word of the last line it shows"
+    ]
+
+
+def start_order_problems(b: Block) -> list[str]:
+    """A text that shows a background job's line before the `serving` line
+    of the same start. A line after `serving` belongs to that start, up to
+    its `stopped` line."""
+    if b.expect is None:
+        return []
+    problems, before, served = [], [], False
+    for line in _clean(b.expect):
+        m = SERVE_LINE.search(line)
+        if m is None:
+            continue
+        message = m.group(1)
+        if message.startswith("serving"):
+            problems += [
+                f"{b.at}: the text shows {l.strip()!r} before the `serving` line; the server logs "
+                "`serving` before any background job starts"
+                for l in before
+            ]
+            before, served = [], True
+        elif message.startswith("stopped"):
+            served = False
+        elif message.startswith(BACKGROUND_LINES) and not served:
+            before.append(line)
+    return problems
+
+
 def lint_page(blocks: list[Block], tag_sets: list[frozenset], host: bool = False) -> list[str]:
     problems = []
     seen: set[str] = set()
@@ -1301,6 +1373,8 @@ def lint_page(blocks: list[Block], tag_sets: list[frozenset], host: bool = False
             problems.append(f"{b.at}: a terminal step with no screen shown after it")
         if host and b.background is not None:
             problems.append(f"{b.at}: a background step on this host would outlive the run")
+        problems += wait_problems(b)
+        problems += start_order_problems(b)
     return problems
 
 

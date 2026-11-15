@@ -576,6 +576,14 @@ does not run and the runner says so; from then on it runs. `lint` refuses a
 `skip` whose reason names a release, and a `since` block whose text does
 not name its release, so a reader on an older release is told to skip it.
 
+A step that waits for a log line with `until ... grep` must wait for a word
+of the last line its `text` block shows: a line after the one waited for
+may not be written yet when the step reads the log. `lint` refuses a step
+that waits for an earlier line, and a `text` block that shows a line of
+serve's background jobs (`purge sweep`, `pack run`, the key rotation
+warning) before the `serving` line of the same start, since the server
+logs `serving` before it starts those jobs.
+
 A scenario names the pages it runs, the system it runs them on, and its
 tags. The scenarios include Debian 13 and Fedora 44 with the server in the
 foreground, Debian 13 under systemd, each install path on each distribution,

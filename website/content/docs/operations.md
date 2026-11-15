@@ -124,7 +124,10 @@ Structured lines on standard error, so systemd's journal or any collector can
 take them:
 
 - `serving` with the address it listens on once it listens; with port 0 in
-  `listen`, this names the port the system chose;
+  `listen`, this names the port the system chose. It comes before the line
+  of any background job (the purge sweep, the pack run, the key rotation
+  warning), which starts only after it, so a script that waits for one of
+  those lines finds `serving` above it;
 - one `request` line per request: `request_id`, `method`, `route` (the route
   template, never the path), `status`, `duration_ms`;
 - `purge sweep` lines (see [the purge sweep](#the-purge-sweep));

@@ -34,6 +34,14 @@ All notable changes to this project are recorded here. The format follows
   - Docs: [Reveal a part of a
     vCon](https://vcon-server.com/docs/tui/#reveal-a-part-of-a-vcon)
 
+### Fixed
+
+- **The `serving` line always comes before the first purge sweep's line.**
+  - Was: The first sweep, pack run or rotation warning could be logged
+    before `serving`.
+  - Effect: A start logs `serving` first, then the background jobs' lines.
+  - Docs: [Logs](https://vcon-server.com/docs/operations/#logs)
+
 ## [0.4.6] - 2026-11-14
 
 ### Changed

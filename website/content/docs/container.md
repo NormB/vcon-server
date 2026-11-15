@@ -212,7 +212,7 @@ starts it again after a crash or a reboot of the host:
 docker run -d --name vcon-server --restart unless-stopped --ulimit memlock=-1 -p 8443:8443 \
   -v vcon-etc:/etc/vcon-server -v vcon-data:/var/lib/vcon-server -v vcon-backup:/backup \
   vcon-server:$VERSION >/dev/null
-timeout 30 sh -c 'until docker logs vcon-server 2>&1 | grep -q serving; do sleep 1; done'
+timeout 30 sh -c 'until docker logs vcon-server 2>&1 | grep -q "purge sweep"; do sleep 1; done'
 docker logs vcon-server 2>&1 | grep vcon_server
 ```
 

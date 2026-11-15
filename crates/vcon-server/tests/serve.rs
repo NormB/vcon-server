@@ -1119,6 +1119,91 @@ fn serve_sweeps_again_once_purge_interval_has_passed() {
     );
 }
 
+/// The messages of serve's background jobs: none comes before the
+/// serving line (scripts/docs_test.py BACKGROUND_LINES lists the same).
+const BACKGROUND_LINES: [&str; 4] = [
+    "purge sweep",
+    "pack run",
+    "key rotation overdue",
+    "the key rotation backlog could not be read",
+];
+
+/// The lines `started` wrote before its serving line that a background
+/// job logged.
+fn background_before_serving(started: &Started) -> Vec<String> {
+    started
+        .early
+        .iter()
+        .filter(|l| BACKGROUND_LINES.iter().any(|m| l.contains(m)))
+        .cloned()
+        .collect()
+}
+
+// The order on the real binary. The lib tests (serve/start_tests.rs) hold
+// it without timing; on the order before this fix these starts showed the
+// sweep's line first only when the scheduler ran the sweep first, as on
+// main's run 43745634437, so they are the second, end-to-end check.
+#[test]
+fn serve_logs_serving_before_the_first_sweep() {
+    let s = setup();
+    for round in 0..5 {
+        let mut started = start(serve(&s));
+        assert_eq!(
+            background_before_serving(&started),
+            Vec::<String>::new(),
+            "round {round}: no background line before serving"
+        );
+        assert!(
+            started
+                .line_with("purge sweep", Duration::from_secs(20))
+                .is_some(),
+            "round {round}: the first sweep is logged after serving"
+        );
+    }
+}
+
+#[test]
+fn serve_logs_serving_before_the_rotation_warning() {
+    const DAY: Duration = Duration::from_secs(86_400);
+    let s = setup_on(Arc::new(Behind(32 * DAY)));
+    let tenants = registry_on(&s, Arc::new(Behind(31 * DAY)));
+    let store = tenants.store(s.tenant).expect("its store");
+    let (found, body) = {
+        let body = std::fs::read(format!(
+            "{}/../vcon/tests/fixtures/ietf/ab_call_ext_rec.vcon",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .expect("A.4");
+        let found = vcon::read::inspect(
+            &body,
+            Some("application/vcon"),
+            &vcon::read::Limits::new(1 << 20),
+            &Default::default(),
+        )
+        .expect("a valid vCon");
+        (found, body)
+    };
+    let caller = Caller { key: KeyId([7; 8]) };
+    store.create(&caller, &found, &body).expect("stored");
+    store
+        .delete(&caller, found.uuid, Retention::Days(0))
+        .expect("deleted and purged");
+    drop(store);
+    drop(tenants);
+    let mut started = start(serve(&s));
+    assert_eq!(
+        background_before_serving(&started),
+        Vec::<String>::new(),
+        "no background line before serving"
+    );
+    assert!(
+        started
+            .line_with("key rotation overdue", Duration::from_secs(20))
+            .is_some(),
+        "the warning is logged after serving"
+    );
+}
+
 /// The time a log line was written, from the timestamp it starts with.
 fn logged_at(line: &str) -> OffsetDateTime {
     let stamp = line.split_whitespace().next().expect("a timestamp");
@@ -2539,6 +2624,29 @@ mod operator_listener {
     }
 
     const TABLE: &str = "\n[operator]\nlisten = \"127.0.0.1:0\"\n";
+
+    #[test]
+    fn the_operator_line_and_serving_come_before_the_first_sweep() {
+        let (s, _) = setup_with(TABLE);
+        let mut started = start(serve(&s));
+        assert_eq!(
+            background_before_serving(&started),
+            Vec::<String>::new(),
+            "no background line before serving"
+        );
+        assert_eq!(
+            started.early.back().map(|l| l.contains("operator_listen=")),
+            Some(true),
+            "the operator line just before serving: {:?}",
+            started.early
+        );
+        assert!(
+            started
+                .line_with("purge sweep", Duration::from_secs(20))
+                .is_some(),
+            "the first sweep is logged after serving"
+        );
+    }
 
     /// The address the operator listener's line names.
     fn operator_addr(started: &mut Started) -> SocketAddr {

@@ -627,6 +627,326 @@ class Lint(unittest.TestCase):
         self.assertEqual(dt.lint(), [])
 
 
+# ---------------------------------------------------------------------------
+# A step that waits for one log line and then shows the log. On 2026-11-15
+# main's "how-to parquet" job failed at getting-started.md: the step waited
+# for `serving` and showed the purge sweep's line after it. The server now
+# logs `serving` before any background job starts, so the sweep's line comes
+# after it, and may not be written yet when `serving` is: a step must wait
+# for the last line it shows.
+# ---------------------------------------------------------------------------
+
+SERVING = "<time>  INFO vcon_server::serve: serving listen=0.0.0.0:8443"
+SWEEP = "<time>  INFO vcon_server::serve: purge sweep purged=0 failed=0"
+OPERATOR = "<time>  INFO vcon_server::serve: the operator listener is bound operator_listen=127.0.0.1:8444"
+
+
+def waiting_step(wait: str, *shown: str) -> str:
+    """A page with one step that waits with `wait` and shows `shown`."""
+    return (
+        "```sh\n"
+        f"timeout 30 sh -c 'until sudo journalctl -u vcon-server -o cat | {wait}; do sleep 1; done'\n"
+        "sudo journalctl -u vcon-server -o cat | grep vcon_server\n"
+        "```\n\n```text\n" + "".join(f"{l}\n" for l in shown) + "```\n"
+    )
+
+
+def wait_problem(at: str, word: str) -> str:
+    return (
+        f"{at}: the step waits for {word!r} and shows lines after that one, which may not be "
+        "written yet; wait for a word of the last line it shows"
+    )
+
+
+def lint_of(page: str) -> list[str]:
+    return dt.lint_page(dt.parse(page, "p.md"), [frozenset()])
+
+
+class WaitsForTheLastLine(unittest.TestCase):
+    # Success: what the rule leaves alone.
+    def test_a_wait_for_the_one_line_shown_is_clean(self):
+        self.assertEqual(lint_of(waiting_step("grep -q serving", SERVING)), [], "one line, waited for")
+
+    def test_a_wait_for_the_last_of_two_lines_is_clean(self):
+        page = waiting_step("grep -q 'purge sweep'", SERVING, SWEEP)
+        self.assertEqual(lint_of(page), [], "the last line is the one waited for")
+
+    def test_a_wait_for_the_line_before_an_ellipsis_is_clean(self):
+        page = waiting_step("grep -q serving", SERVING, "…")
+        self.assertEqual(lint_of(page), [], "an ellipsis may stand for no line")
+
+    def test_a_wait_for_a_word_the_text_does_not_show_is_clean(self):
+        page = waiting_step("grep -q answering", SERVING, SWEEP)
+        self.assertEqual(lint_of(page), [], "the rule is about lines the text shows")
+
+    def test_a_step_with_no_wait_is_clean(self):
+        page = "```sh\nsudo journalctl -u vcon-server -o cat | grep vcon_server\n```\n\n```text\n"
+        page += f"{SERVING}\n{SWEEP}\n```\n"
+        self.assertEqual(lint_of(page), [], "no until, no wait")
+
+    def test_a_wait_with_no_text_shown_is_clean(self):
+        page = "```sh\ntimeout 30 sh -c 'until grep -q serving out; do sleep 1; done'\n```\n"
+        self.assertEqual(lint_of(page), [], "nothing shown after it")
+
+    def test_a_double_quoted_wait_for_the_last_line_is_clean(self):
+        page = (
+            "```sh\n"
+            'timeout 30 sh -c "until docker logs vcon-server 2>&1 | grep -q \\"purge sweep\\"; do sleep 1; done"\n'
+            "docker logs vcon-server 2>&1 | grep vcon_server\n"
+            f"```\n\n```text\n{SERVING}\n{SWEEP}\n```\n"
+        )
+        self.assertEqual(lint_of(page), [], "the last line holds the quoted words")
+
+    def test_a_docker_logs_wait_for_the_last_line_is_clean(self):
+        page = (
+            "```sh\n"
+            "timeout 30 sh -c 'until docker logs vcon-server 2>&1 | grep -q \"purge sweep\"; do sleep 1; done'\n"
+            "docker logs vcon-server 2>&1 | grep vcon_server\n"
+            f"```\n\n```text\n{SERVING}\n{SWEEP}\n```\n"
+        )
+        self.assertEqual(lint_of(page), [], "the container page's shape, waiting for its last line")
+
+    # Failure: a wait for a line that a later shown line follows.
+    def test_a_wait_for_the_first_of_two_lines_is_found(self):
+        page = waiting_step("grep -q serving", SERVING, SWEEP)
+        self.assertEqual(lint_of(page), [wait_problem("p.md:1", "serving")], "the sweep line may lag")
+
+    def test_a_fixed_string_wait_is_found(self):
+        page = waiting_step("grep -qF serving", SERVING, SWEEP)
+        self.assertEqual(lint_of(page), [wait_problem("p.md:1", "serving")], "-F is still a wait")
+
+    def test_a_wait_after_a_double_dash_is_found(self):
+        page = waiting_step("grep -q -- serving", SERVING, SWEEP)
+        self.assertEqual(lint_of(page), [wait_problem("p.md:1", "serving")], "-- ends the options")
+
+    def test_a_quoted_wait_of_two_words_is_found(self):
+        page = waiting_step("grep -q \"serving listen\"", SERVING, SWEEP)
+        self.assertEqual(lint_of(page), [wait_problem("p.md:1", "serving listen")], "quoted words")
+
+    def test_an_escaped_double_quoted_wait_is_found(self):
+        page = (
+            "```sh\n"
+            'timeout 30 sh -c "until docker logs vcon-server 2>&1 | grep -q \\"serving listen\\"; do sleep 1; done"\n'
+            "docker logs vcon-server 2>&1 | grep vcon_server\n"
+            f"```\n\n```text\n{SERVING}\n{SWEEP}\n```\n"
+        )
+        self.assertEqual(lint_of(page), [wait_problem("p.md:1", "serving listen")], "quotes inside sh -c \"...\"")
+
+    def test_a_wait_with_grouped_options_is_found(self):
+        page = waiting_step("grep -Eq serving", SERVING, SWEEP)
+        self.assertEqual(lint_of(page), [wait_problem("p.md:1", "serving")], "-Eq is -E and -q")
+
+    def test_a_wait_for_the_first_of_three_lines_is_found(self):
+        page = waiting_step("grep -q serving", SERVING, SWEEP, "<time>  INFO vcon_server::serve: stopped")
+        self.assertEqual(lint_of(page), [wait_problem("p.md:1", "serving")], "two lines may lag")
+
+    def test_a_wait_before_an_ellipsis_and_a_later_line_is_found(self):
+        page = waiting_step("grep -q serving", SERVING, "…", SWEEP)
+        self.assertEqual(lint_of(page), [wait_problem("p.md:1", "serving")], "the line after the ellipsis lags")
+
+    def test_the_last_of_two_waits_decides(self):
+        page = (
+            "```sh\n"
+            "timeout 30 sh -c 'until grep -q \"purge sweep\" out; do sleep 1; done'\n"
+            "timeout 30 sh -c 'until grep -q serving out; do sleep 1; done'\n"
+            f"grep vcon_server out\n```\n\n```text\n{SERVING}\n{SWEEP}\n```\n"
+        )
+        self.assertEqual(lint_of(page), [wait_problem("p.md:1", "serving")], "the wait just before the read")
+
+    def test_the_getting_started_step_as_it_was_is_found(self):
+        page = (
+            "<!-- docs-test: only systemd -->\n```sh\n"
+            "timeout 30 sh -c 'until sudo journalctl -u vcon-server -o cat | grep -q serving; do sleep 1; done'\n"
+            "sudo journalctl -u vcon-server -o cat | grep vcon_server\n"
+            f"```\n\n```text\n{SERVING}\n{SWEEP}\n```\n"
+        )
+        problems = dt.lint_page(dt.parse(page, "getting-started.md"), [frozenset({"systemd"})])
+        self.assertEqual(problems, [wait_problem("getting-started.md:2", "serving")], "main's red step")
+
+    def test_the_container_step_as_it_was_is_found(self):
+        page = (
+            "```sh\n"
+            "timeout 30 sh -c 'until docker logs vcon-server 2>&1 | grep -q serving; do sleep 1; done'\n"
+            "docker logs vcon-server 2>&1 | grep vcon_server\n"
+            f"```\n\n```text\n{SERVING}\n{SWEEP}\n```\n"
+        )
+        self.assertEqual(lint_of(page), [wait_problem("p.md:1", "serving")], "container.md's step")
+
+    def test_a_wait_without_q_is_found(self):
+        page = (
+            "```sh\ntimeout 30 sh -c 'until grep serving out >/dev/null; do sleep 1; done'\n"
+            f"grep vcon_server out\n```\n\n```text\n{SERVING}\n{SWEEP}\n```\n"
+        )
+        self.assertEqual(lint_of(page), [wait_problem("p.md:1", "serving")], "a grep in until waits")
+
+    # Edge cases.
+    def test_a_word_in_an_earlier_line_and_in_the_last_is_clean(self):
+        page = waiting_step("grep -q vcon_server", SERVING, SWEEP)
+        self.assertEqual(lint_of(page), [], "the last line holds the word too")
+
+    def test_ellipses_after_the_last_line_waited_for_are_clean(self):
+        page = waiting_step("grep -q 'purge sweep'", SERVING, "…", SWEEP, "…")
+        self.assertEqual(lint_of(page), [], "the last line that is not an ellipsis")
+
+    def test_a_text_of_only_an_ellipsis_is_clean(self):
+        page = waiting_step("grep -q serving", "…")
+        self.assertEqual(lint_of(page), [], "no line shown")
+
+    def test_a_word_with_pattern_characters_is_read_as_text(self):
+        page = waiting_step("grep -qF listen=0.0.0.0", SERVING, SWEEP)
+        self.assertEqual(lint_of(page), [wait_problem("p.md:1", "listen=0.0.0.0")], "dots are text")
+
+    def test_a_wait_with_no_grep_is_clean(self):
+        page = (
+            "```sh\ntimeout 30 sh -c 'until curl -s -o /dev/null https://example.com/health; do sleep 1; done'"
+            " && echo answering\n```\n\n```text\nanswering\n```\n"
+        )
+        self.assertEqual(lint_of(page), [], "a loop on a request, not on a line")
+
+    def test_a_grep_outside_the_wait_is_not_a_wait(self):
+        page = "```sh\nsudo journalctl -o cat | grep -q serving && journalctl -o cat\n```\n\n```text\n"
+        page += f"{SERVING}\n{SWEEP}\n```\n"
+        self.assertEqual(lint_of(page), [], "only a grep inside until waits")
+
+    def test_a_skipped_step_is_not_read(self):
+        page = "<!-- docs-test: skip a reader's own log -->\n" + waiting_step("grep -q serving", SERVING, SWEEP)
+        self.assertEqual(lint_of(page), [], "skipped steps are not run")
+
+    def test_a_background_step_is_compared_after_the_run(self):
+        page = (
+            "<!-- docs-test: background serving -->\n```sh\nvcon-server serve\n```\n\n"
+            f"```text\n{SERVING}\n{SWEEP}\n…\n<time>  INFO vcon_server::serve: stopped\n```\n"
+        )
+        self.assertEqual(lint_of(page), [], "its marker waits, and its text is read at the end")
+
+    def test_an_indented_step_in_a_list_is_found(self):
+        page = (
+            "1. Start it:\n\n   ```sh\n"
+            "   timeout 30 sh -c 'until grep -q serving out; do sleep 1; done'\n   grep vcon_server out\n"
+            f"   ```\n\n   ```text\n   {SERVING}\n   {SWEEP}\n   ```\n"
+        )
+        self.assertEqual(lint_of(page), [wait_problem("p.md:3", "serving")], "a step in a list item")
+
+    def test_the_waited_word_is_read_from_the_wait(self):
+        self.assertEqual(dt.waited_for("until grep -q 'purge sweep' out; do"), "purge sweep", "quoted")
+        self.assertEqual(dt.waited_for("until grep -qF -- serving out; do"), "serving", "options and --")
+        self.assertEqual(dt.waited_for("journalctl | grep -q serving"), None, "not inside until")
+
+
+def order_problem(at: str, line: str) -> str:
+    return (
+        f"{at}: the text shows {line!r} before the `serving` line; the server logs `serving` "
+        "before any background job starts"
+    )
+
+
+def shown(*lines: str) -> str:
+    """A page with a step that shows `lines`."""
+    return "```sh\ngrep vcon_server out\n```\n\n```text\n" + "".join(f"{l}\n" for l in lines) + "```\n"
+
+
+class ServeStartOrder(unittest.TestCase):
+    # Success.
+    def test_serving_then_the_sweep_is_clean(self):
+        self.assertEqual(lint_of(shown(SERVING, SWEEP)), [], "the server's order")
+
+    def test_the_operator_line_serving_and_the_sweep_are_clean(self):
+        self.assertEqual(lint_of(shown(OPERATOR, SERVING, SWEEP)), [], "the operator line first")
+
+    def test_serving_alone_is_clean(self):
+        self.assertEqual(lint_of(shown(SERVING, "…")), [], "one start line")
+
+    def test_a_background_line_with_no_serving_line_is_clean(self):
+        line = "<time>  INFO vcon_server::serve: pack run files=1 versions=1 failed=0"
+        self.assertEqual(lint_of(shown(line)), [], "a later read of the log")
+
+    def test_a_request_line_before_serving_is_clean(self):
+        request = "<time>  INFO vcon_server::api: request method=GET route=/health status=401"
+        self.assertEqual(lint_of(shown(request, SERVING)), [], "not a background job's line")
+
+    # Failure.
+    def test_the_sweep_before_serving_is_found(self):
+        self.assertEqual(lint_of(shown(SWEEP, SERVING)), [order_problem("p.md:1", SWEEP)], "the old race")
+
+    def test_a_pack_run_before_serving_is_found(self):
+        line = "<time>  INFO vcon_server::serve: pack run files=0 versions=0 failed=0"
+        self.assertEqual(lint_of(shown(line, SERVING)), [order_problem("p.md:1", line)], "the packer")
+
+    def test_a_rotation_warning_before_serving_is_found(self):
+        line = "<time>  WARN vcon_server::serve: key rotation overdue: purged vCons stay readable"
+        self.assertEqual(lint_of(shown(line, SERVING)), [order_problem("p.md:1", line)], "the warner")
+
+    def test_an_unread_backlog_before_serving_is_found(self):
+        line = "<time>  WARN vcon_server::serve: the key rotation backlog could not be read"
+        self.assertEqual(lint_of(shown(line, SERVING)), [order_problem("p.md:1", line)], "the warner")
+
+    def test_the_sweep_between_the_operator_line_and_serving_is_found(self):
+        self.assertEqual(
+            lint_of(shown(OPERATOR, SWEEP, SERVING)), [order_problem("p.md:1", SWEEP)], "between the two"
+        )
+
+    def test_each_background_line_before_serving_is_found(self):
+        pack = "<time>  INFO vcon_server::serve: pack run files=0 versions=0 failed=0"
+        self.assertEqual(
+            lint_of(shown(SWEEP, pack, SERVING)),
+            [order_problem("p.md:1", SWEEP), order_problem("p.md:1", pack)],
+            "one problem per line",
+        )
+
+    # Edge cases.
+    def test_a_background_line_after_an_ellipsis_before_serving_is_found(self):
+        self.assertEqual(lint_of(shown(SWEEP, "…", SERVING)), [order_problem("p.md:1", SWEEP)], "still before")
+
+    def test_an_indented_text_is_read(self):
+        page = (
+            "1. Start it:\n\n   ```sh\n   grep vcon_server out\n   ```\n\n"
+            f"   ```text\n   {SWEEP}\n   {SERVING}\n   ```\n"
+        )
+        self.assertEqual(lint_of(page), [order_problem("p.md:3", SWEEP)], "a step in a list item")
+
+    def test_a_second_start_after_a_stop_is_read_on_its_own(self):
+        stopped = "<time>  INFO vcon_server::serve: stopped"
+        page = shown(SERVING, SWEEP, stopped, SERVING, SWEEP)
+        self.assertEqual(lint_of(page), [], "the sweep of the first start comes before the second serving")
+
+    def test_a_sweep_named_in_another_module_is_not_a_background_line(self):
+        line = "<time>  INFO vcon_server::store: purge sweep of one tenant"
+        self.assertEqual(lint_of(shown(line, SERVING)), [], "only vcon_server::serve lines")
+
+    def test_a_restart_with_no_stopped_line_is_clean(self):
+        page = shown(SERVING, SWEEP, SERVING, SWEEP)
+        self.assertEqual(lint_of(page), [], "the first start's sweep belongs to the first start")
+
+    def test_a_line_before_serving_is_found_once_when_a_restart_follows(self):
+        page = shown(SWEEP, SERVING, SERVING)
+        self.assertEqual(lint_of(page), [order_problem("p.md:1", SWEEP)], "one problem for one line")
+
+    def test_a_background_line_before_the_second_start_is_found(self):
+        stopped = "<time>  INFO vcon_server::serve: stopped"
+        page = shown(SERVING, stopped, SWEEP, SERVING)
+        self.assertEqual(lint_of(page), [order_problem("p.md:1", SWEEP)], "after stopped, a new start")
+
+    def test_every_line_a_background_job_logs_is_listed(self):
+        with open(os.path.join(dt.ROOT, "crates", "vcon-server", "src", "serve.rs"), encoding="utf-8") as f:
+            source = f.read()
+        found = []
+        for name in ("pack_all", "sweep", "warn_if_rotation_overdue"):
+            body = re.search(rf"\nfn {name}\(|\npub fn {name}\(", source)
+            self.assertIsNotNone(body, f"serve.rs has {name}")
+            end = source.index("\n}\n", body.start())
+            found += re.findall(r'"([^"]+)"\s*\)', source[body.start() : end])
+        self.assertEqual(len(found), 4, f"the four lines the three jobs log: {found}")
+        for message in found:
+            self.assertTrue(
+                any(message.startswith(m) for m in dt.BACKGROUND_LINES), f"{message!r} is in BACKGROUND_LINES"
+            )
+
+    def test_no_background_line_is_a_start_line(self):
+        for m in dt.BACKGROUND_LINES:
+            self.assertFalse(m.startswith("serving"), f"{m!r} is not the serving line")
+            self.assertFalse(m.startswith("the operator listener"), f"{m!r} is not the operator line")
+
+
 
 # ---------------------------------------------------------------------------
 # Release assets through the runner's pinned mirror. On 2026-11-09 the

@@ -302,12 +302,13 @@ sudo systemctl enable --now vcon-server
 ```
 
 The server logs structured lines to standard error, which the journal keeps.
-It logs `serving` once it listens, a line per request, and `stopped` after
-SIGTERM or SIGINT. Wait for the `serving` line:
+It logs `serving` once it listens, then the first purge sweep's line, a line
+per request, and `stopped` after SIGTERM or SIGINT. Wait for the sweep's
+line, which comes after `serving`:
 
 <!-- docs-test: only systemd -->
 ```sh
-timeout 30 sh -c 'until sudo journalctl -u vcon-server -o cat | grep -q serving; do sleep 1; done'
+timeout 30 sh -c 'until sudo journalctl -u vcon-server -o cat | grep -q "purge sweep"; do sleep 1; done'
 sudo journalctl -u vcon-server -o cat | grep vcon_server
 ```
 
