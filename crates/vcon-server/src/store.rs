@@ -443,7 +443,14 @@ impl Store {
         self.read_as(who, uuid, Action::Reveal(part))
     }
 
-    /// The read behind `get` and `reveal`: every outcome is recorded as
+    /// Reads the current version of `uuid` as [`Store::get`] does, for a
+    /// caller that answers its masked view: the same body, recorded as
+    /// `read_masked`.
+    pub fn read_masked(&self, who: &Caller, uuid: Uuid) -> Result<Stored, StoreError> {
+        self.read_as(who, uuid, Action::ReadMasked)
+    }
+
+    /// The read behind `get`, `reveal` and `read_masked`: every outcome is recorded as
     /// `action`.
     fn read_as(&self, who: &Caller, uuid: Uuid, action: Action) -> Result<Stored, StoreError> {
         let entry = |status, version| Entry {

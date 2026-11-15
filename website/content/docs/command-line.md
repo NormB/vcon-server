@@ -293,8 +293,9 @@ it needs the same memory-lock allowance.
 | `tui --config <client file>` | a full-screen view of a tenant's vCons | yes |
 
 `tui` shows the vCons of one key's tenant in the terminal, read from a
-running server over its HTTP API: the list, and each vCon's uuid, version
-and times, never its content. Like `mcp` it reads a client file (`url`, the
+running server over its HTTP API: the list, and each vCon's uuid, version,
+times and masked view, with no content until a reveal key shows one part,
+which the audit log records. Like `mcp` it reads a client file (`url`, the
 server's address; `key_file`; and the optional `ca`) instead of the server's
 configuration, opens no data directory and no master key, and locks its
 memory. The release binaries, `cargo install` and a build from source carry

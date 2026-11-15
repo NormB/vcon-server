@@ -26,6 +26,7 @@ crates/
         ├── mcp.rs         the MCP server at /mcp; mcp/stdio.rs, the stdio command
         ├── tui.rs         the terminal UI, a client of a running server
         ├── reveal.rs      the reveal marker on a read, for the audit log
+        ├── masked.rs      a vCon's masked view, the console's masking rule ported
         ├── roles.rs       the roles a membership holds, and the scope each gives
         ├── settings.rs    the settings a tenant's administrator sets, and what each may hold
         ├── session.rs     a session's cookie, CSRF token and the origin a request must come from

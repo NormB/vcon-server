@@ -1,0 +1,439 @@
+[
+  {
+    "name": "an unsigned vCon with two parties and a recording",
+    "body": "{\"vcon\":\"0.0.1\",\"uuid\":\"01a07da8-c2bb-83e5-b9a2-279e0d16bc00\",\"created_at\":\"2026-11-10T09:15:00Z\",\"subject\":\"Renewal call\",\"parties\":[{\"tel\":\"+12125550142\",\"name\":\"Ada Example\"},{\"mailto\":\"bo@Example.COM\",\"name\":\"Bo Example\"}],\"dialog\":[{\"type\":\"recording\",\"start\":\"2026-11-10T09:15:05Z\",\"duration\":95,\"parties\":[0,1],\"body\":\"AAAA\",\"encoding\":\"base64url\",\"mediatype\":\"audio/wav\"}],\"analysis\":[{\"type\":\"transcript\",\"body\":\"hello\",\"encoding\":\"none\"}],\"attachments\":[]}",
+    "summary": {
+      "form": "unsigned",
+      "created": "2026-11-10 09:15:00 UTC+00:00",
+      "subject": "present, hidden",
+      "parties": ["Party 1: number ending 0142; name hidden", "Party 2: address at example.com; name hidden"],
+      "dialogs": 1,
+      "dialog": ["Dialog 1: recording, 2026-11-10 09:15:05 UTC+00:00, 95 s, parties 1, 2; content hidden"],
+      "seconds": 95,
+      "attachments": 0,
+      "analyses": 1,
+      "links": 0,
+      "signature": null
+    }
+  },
+  {
+    "name": "times with an offset, a fraction and lower-case letters",
+    "body": "{\"created_at\":\"2026-11-10T11:15:00.999+02:00\",\"subject\":\"\",\"parties\":[{},{\"tel\":\"555-0101\"}],\"dialog\":[{\"type\":\"text\",\"start\":\"2026-11-10t09:15:05.5z\",\"duration\":12.5,\"parties\":1,\"body\":\"hi\"},{\"type\":\"transfer\",\"duration\":0.25}]}",
+    "summary": {
+      "form": "unsigned",
+      "created": "2026-11-10 09:15:00 UTC+00:00",
+      "subject": "none",
+      "parties": ["Party 1: no number, address or name", "Party 2: number hidden"],
+      "dialogs": 2,
+      "dialog": [
+        "Dialog 1: text, 2026-11-10 09:15:05 UTC+00:00, 12.5 s, party 2; content hidden",
+        "Dialog 2: transfer, no start, 0.25 s, no parties; no content"
+      ],
+      "seconds": 12.75,
+      "attachments": 0,
+      "analyses": 0,
+      "links": 0,
+      "signature": null
+    }
+  },
+  {
+    "name": "times that are not RFC 3339 date-times are not shown",
+    "body": "{\"created_at\":\"2026-02-30T00:00:00Z\",\"dialog\":[{\"type\":\"text\",\"start\":\"2026-01-01T24:00:00Z\"},{\"type\":\"text\",\"start\":\"2026-11-10T09:15Z\"},{\"type\":\"text\",\"start\":\"1\"},{\"type\":\"text\",\"start\":\"Ada called UTC+00:00\"},{\"type\":\"text\",\"start\":\"2026-01-01T00:00:00+24:00\"},{\"type\":\"text\",\"start\":\"0000-01-01T00:30:00+01:00\"},{\"type\":\"text\",\"start\":7},{\"type\":\"text\",\"start\":\"2026-01-01T23:59:60Z\"},{\"type\":\"text\",\"start\":\"2026-11-10 09:15:05Z\"},{\"type\":\"text\",\"start\":\"9999-12-31T23:30:00-01:00\"}]}",
+    "summary": {
+      "form": "unsigned",
+      "created": "",
+      "subject": "none",
+      "parties": [],
+      "dialogs": 10,
+      "dialog": [
+        "Dialog 1: text, no start, no length, no parties; no content",
+        "Dialog 2: text, no start, no length, no parties; no content",
+        "Dialog 3: text, no start, no length, no parties; no content",
+        "Dialog 4: text, no start, no length, no parties; no content",
+        "Dialog 5: text, no start, no length, no parties; no content",
+        "Dialog 6: text, no start, no length, no parties; no content",
+        "Dialog 7: text, no start, no length, no parties; no content",
+        "Dialog 8: text, no start, no length, no parties; no content",
+        "Dialog 9: text, no start, no length, no parties; no content",
+        "Dialog 10: text, no start, no length, no parties; no content"
+      ],
+      "seconds": 0,
+      "attachments": 0,
+      "analyses": 0,
+      "links": 0,
+      "signature": null
+    }
+  },
+  {
+    "name": "times at the ends of the years shown",
+    "body": "{\"created_at\":\"0001-01-01T00:00:00Z\",\"dialog\":[{\"type\":\"text\",\"start\":\"2024-02-29T12:00:00+00:00\"},{\"type\":\"text\",\"start\":\"9999-12-31T22:30:00-01:00\"},{\"type\":\"text\",\"start\":\"2026-01-01T00:00:00-00:00\"}]}",
+    "summary": {
+      "form": "unsigned",
+      "created": "0001-01-01 00:00:00 UTC+00:00",
+      "subject": "none",
+      "parties": [],
+      "dialogs": 3,
+      "dialog": [
+        "Dialog 1: text, 2024-02-29 12:00:00 UTC+00:00, no length, no parties; no content",
+        "Dialog 2: text, 9999-12-31 23:30:00 UTC+00:00, no length, no parties; no content",
+        "Dialog 3: text, 2026-01-01 00:00:00 UTC+00:00, no length, no parties; no content"
+      ],
+      "seconds": 0,
+      "attachments": 0,
+      "analyses": 0,
+      "links": 0,
+      "signature": null
+    }
+  },
+  {
+    "name": "links in the dialog, the attachments and the analysis",
+    "body": "{\"dialog\":[{\"type\":\"recording\",\"url\":\"https://media.example.com/a.wav\",\"duration\":30}],\"attachments\":[{\"url\":\"https://files.example.com/x.pdf\"},{\"body\":\"x\"}],\"analysis\":[{\"url\":\"\"},{\"url\":\"https://a.example.com/t\"}]}",
+    "summary": {
+      "form": "unsigned",
+      "created": "",
+      "subject": "none",
+      "parties": [],
+      "dialogs": 1,
+      "dialog": ["Dialog 1: recording, no start, 30 s, no parties; content at a link outside the server"],
+      "seconds": 30,
+      "attachments": 2,
+      "analyses": 2,
+      "links": 3,
+      "signature": null
+    }
+  },
+  {
+    "name": "parties that are not what the format names",
+    "body": "{\"parties\":[\"Ada\",null,{\"tel\":5550100},{\"mailto\":\"@example.com\"},{\"mailto\":\"ada@\"},{\"mailto\":\"ada@ Example.ORG  \"},{\"tel\":\"+1 (212) 555-0199\",\"mailto\":\"a@b@example.net\",\"name\":\"\"},{\"mailto\":\"ada@EXAMPLE.İT\"},{\"mailto\":\"ada@﻿example.com\"}]}",
+    "summary": {
+      "form": "unsigned",
+      "created": "",
+      "subject": "none",
+      "parties": [
+        "Party 1: not an object",
+        "Party 2: not an object",
+        "Party 3: number hidden",
+        "Party 4: address hidden",
+        "Party 5: address hidden",
+        "Party 6: address at example.org",
+        "Party 7: number ending 0199; address at example.net; name hidden",
+        "Party 8: address at example.i̇t",
+        "Party 9: address at example.com"
+      ],
+      "dialogs": 0,
+      "dialog": [],
+      "seconds": 0,
+      "attachments": 0,
+      "analyses": 0,
+      "links": 0,
+      "signature": null
+    }
+  },
+  {
+    "name": "the parties of a dialog by their places",
+    "body": "{\"dialog\":[{\"type\":\"incomplete\",\"parties\":[0,2.0]},{\"type\":\"video\",\"parties\":[0,-1]},{\"type\":\"text\",\"parties\":[]},{\"type\":\"text\",\"parties\":-0},{\"type\":\"text\",\"parties\":1.5},\"not a dialog\"]}",
+    "summary": {
+      "form": "unsigned",
+      "created": "",
+      "subject": "none",
+      "parties": [],
+      "dialogs": 6,
+      "dialog": [
+        "Dialog 1: incomplete, no start, no length, parties 1, 3; no content",
+        "Dialog 2: other type, no start, no length, no parties; no content",
+        "Dialog 3: text, no start, no length, no parties; no content",
+        "Dialog 4: text, no start, no length, party 1; no content",
+        "Dialog 5: text, no start, no length, no parties; no content",
+        "Dialog 6: not an object"
+      ],
+      "seconds": 0,
+      "attachments": 0,
+      "analyses": 0,
+      "links": 0,
+      "signature": null
+    }
+  },
+  {
+    "name": "lengths that count and lengths that do not",
+    "body": "{\"dialog\":[{\"duration\":30},{\"duration\":-5},{\"duration\":\"40\"},{\"duration\":0.1},{\"duration\":0.2},{\"duration\":0},{\"duration\":1e21}]}",
+    "summary": {
+      "form": "unsigned",
+      "created": "",
+      "subject": "none",
+      "parties": [],
+      "dialogs": 7,
+      "dialog": [
+        "Dialog 1: other type, no start, 30 s, no parties; no content",
+        "Dialog 2: other type, no start, no length, no parties; no content",
+        "Dialog 3: other type, no start, no length, no parties; no content",
+        "Dialog 4: other type, no start, 0.1 s, no parties; no content",
+        "Dialog 5: other type, no start, 0.2 s, no parties; no content",
+        "Dialog 6: other type, no start, no length, no parties; no content",
+        "Dialog 7: other type, no start, 1e+21 s, no parties; no content"
+      ],
+      "seconds": 1e21,
+      "attachments": 0,
+      "analyses": 0,
+      "links": 0,
+      "signature": null
+    }
+  },
+  {
+    "name": "lengths whose sum is not a whole number",
+    "body": "{\"dialog\":[{\"type\":\"text\",\"duration\":0.1},{\"type\":\"text\",\"duration\":0.2}]}",
+    "summary": {
+      "form": "unsigned",
+      "created": "",
+      "subject": "none",
+      "parties": [],
+      "dialogs": 2,
+      "dialog": [
+        "Dialog 1: text, no start, 0.1 s, no parties; no content",
+        "Dialog 2: text, no start, 0.2 s, no parties; no content"
+      ],
+      "seconds": 0.30000000000000004,
+      "attachments": 0,
+      "analyses": 0,
+      "links": 0,
+      "signature": null
+    }
+  },
+  {
+    "name": "an empty object",
+    "body": "{}",
+    "summary": {
+      "form": "unsigned",
+      "created": "",
+      "subject": "none",
+      "parties": [],
+      "dialogs": 0,
+      "dialog": [],
+      "seconds": 0,
+      "attachments": 0,
+      "analyses": 0,
+      "links": 0,
+      "signature": null
+    }
+  },
+  {
+    "name": "parts that are not lists count nothing",
+    "body": "{\"dialog\":{\"type\":\"text\"},\"parties\":\"Ada\",\"attachments\":3,\"analysis\":null,\"subject\":42}",
+    "summary": {
+      "form": "unsigned",
+      "created": "",
+      "subject": "none",
+      "parties": [],
+      "dialogs": 0,
+      "dialog": [],
+      "seconds": 0,
+      "attachments": 0,
+      "analyses": 0,
+      "links": 0,
+      "signature": null
+    }
+  },
+  {
+    "name": "a name given twice is read as its last value",
+    "body": "{\"subject\":\"Renewal\",\"subject\":\"\"}",
+    "summary": {
+      "form": "unsigned",
+      "created": "",
+      "subject": "none",
+      "parties": [],
+      "dialogs": 0,
+      "dialog": [],
+      "seconds": 0,
+      "attachments": 0,
+      "analyses": 0,
+      "links": 0,
+      "signature": null
+    }
+  },
+  {
+    "name": "text that is not JSON",
+    "body": "{\"uuid\":",
+    "summary": {
+      "form": "not JSON",
+      "created": "",
+      "subject": "not readable",
+      "parties": [],
+      "dialogs": 0,
+      "dialog": [],
+      "seconds": 0,
+      "attachments": 0,
+      "analyses": 0,
+      "links": 0,
+      "signature": null
+    }
+  },
+  {
+    "name": "JSON that is an array",
+    "body": "[1,2]",
+    "summary": {
+      "form": "not a JSON object",
+      "created": "",
+      "subject": "not readable",
+      "parties": [],
+      "dialogs": 0,
+      "dialog": [],
+      "seconds": 0,
+      "attachments": 0,
+      "analyses": 0,
+      "links": 0,
+      "signature": null
+    }
+  },
+  {
+    "name": "JSON that is a string",
+    "body": "\"Ada Example\"",
+    "summary": {
+      "form": "not a JSON object",
+      "created": "",
+      "subject": "not readable",
+      "parties": [],
+      "dialogs": 0,
+      "dialog": [],
+      "seconds": 0,
+      "attachments": 0,
+      "analyses": 0,
+      "links": 0,
+      "signature": null
+    }
+  },
+  {
+    "name": "an encrypted vCon, even one that also names a payload",
+    "body": "{\"ciphertext\":\"x\",\"protected\":\"y\",\"payload\":\"e30\",\"signatures\":[]}",
+    "summary": {
+      "form": "encrypted (JWE)",
+      "created": "",
+      "subject": "not readable",
+      "parties": [],
+      "dialogs": 0,
+      "dialog": [],
+      "seconds": 0,
+      "attachments": 0,
+      "analyses": 0,
+      "links": 0,
+      "signature": null
+    }
+  },
+  {
+    "name": "a signed vCon",
+    "body": "{\"payload\":\"eyJjcmVhdGVkX2F0IjoiMjAyNi0xMS0xMFQwOToxNTowMFoiLCJwYXJ0aWVzIjpbeyJ0ZWwiOiIrMTIxMjU1NTAxNTAifV0sInN1YmplY3QiOiJSZW5ld2FsIn0\",\"signatures\":[{\"protected\":\"eyJhbGciOiJFUzI1NiIsImtpZCI6ImtleS0xIiwieDV0IjoieDV0LWV4YW1wbGUifQ\",\"signature\":\"c2ln\"}]}",
+    "summary": {
+      "form": "signed (JWS)",
+      "created": "2026-11-10 09:15:00 UTC+00:00",
+      "subject": "present, hidden",
+      "parties": ["Party 1: number ending 0150"],
+      "dialogs": 0,
+      "dialog": [],
+      "seconds": 0,
+      "attachments": 0,
+      "analyses": 0,
+      "links": 0,
+      "signature": {"alg": "ES256", "kid": "key-1", "x5t": "x5t-example"}
+    }
+  },
+  {
+    "name": "a signed vCon whose payload and header cannot be read",
+    "body": "{\"payload\":\"not*base64\",\"signatures\":[{\"protected\":\"!!\"}]}",
+    "summary": {
+      "form": "signed (JWS)",
+      "created": "",
+      "subject": "not readable",
+      "parties": [],
+      "dialogs": 0,
+      "dialog": [],
+      "seconds": 0,
+      "attachments": 0,
+      "analyses": 0,
+      "links": 0,
+      "signature": {"alg": "", "kid": "", "x5t": ""}
+    }
+  },
+  {
+    "name": "a signed vCon with no signature object and a header field that is not text",
+    "body": "{\"payload\":\"e30\",\"signatures\":\"none\",\"extra\":{\"protected\":\"eyJhbGciOjcsImtpZCI6ImtleS0yIn0\"}}",
+    "summary": {
+      "form": "signed (JWS)",
+      "created": "",
+      "subject": "none",
+      "parties": [],
+      "dialogs": 0,
+      "dialog": [],
+      "seconds": 0,
+      "attachments": 0,
+      "analyses": 0,
+      "links": 0,
+      "signature": {"alg": "", "kid": "", "x5t": ""}
+    }
+  },
+  {
+    "name": "a header whose algorithm is a number",
+    "body": "{\"payload\":\"e30\",\"signatures\":[{\"protected\":\"eyJhbGciOjcsImtpZCI6ImtleS0yIn0\"}]}",
+    "summary": {
+      "form": "signed (JWS)",
+      "created": "",
+      "subject": "none",
+      "parties": [],
+      "dialogs": 0,
+      "dialog": [],
+      "seconds": 0,
+      "attachments": 0,
+      "analyses": 0,
+      "links": 0,
+      "signature": {"alg": "", "kid": "key-2", "x5t": ""}
+    }
+  },
+  {
+    "name": "a payload with bits after its last byte",
+    "body": "{\"payload\":\"e31\",\"signatures\":[]}",
+    "summary": {
+      "form": "signed (JWS)",
+      "created": "",
+      "subject": "none",
+      "parties": [],
+      "dialogs": 0,
+      "dialog": [],
+      "seconds": 0,
+      "attachments": 0,
+      "analyses": 0,
+      "links": 0,
+      "signature": {"alg": "", "kid": "", "x5t": ""}
+    }
+  },
+  {
+    "name": "a payload whose JSON starts with a byte order mark",
+    "body": "{\"payload\":\"77u_eyJzdWJqZWN0IjoicyJ9\",\"signatures\":[]}",
+    "summary": {
+      "form": "signed (JWS)",
+      "created": "",
+      "subject": "present, hidden",
+      "parties": [],
+      "dialogs": 0,
+      "dialog": [],
+      "seconds": 0,
+      "attachments": 0,
+      "analyses": 0,
+      "links": 0,
+      "signature": {"alg": "", "kid": "", "x5t": ""}
+    }
+  },
+  {
+    "name": "payloads that are an array, one character too long, or padded",
+    "body": "{\"payload\":\"W10\",\"signatures\":[{\"protected\":\"e\"},{\"protected\":\"e30=\"}]}",
+    "summary": {
+      "form": "signed (JWS)",
+      "created": "",
+      "subject": "not readable",
+      "parties": [],
+      "dialogs": 0,
+      "dialog": [],
+      "seconds": 0,
+      "attachments": 0,
+      "analyses": 0,
+      "links": 0,
+      "signature": {"alg": "", "kid": "", "x5t": ""}
+    }
+  }
+]

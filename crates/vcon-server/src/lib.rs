@@ -59,6 +59,7 @@ pub mod envelope;
 pub(crate) mod export;
 pub mod fs;
 pub mod ids;
+pub mod masked;
 pub mod mcp;
 pub mod query;
 pub mod retention;

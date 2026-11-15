@@ -408,7 +408,7 @@ fn screen_failures() -> Vec<String> {
 
 /// What the screen says in each state in which nothing is wrong.
 fn screen_states() -> Vec<String> {
-    vec![
+    let mut states = vec![
         said(&connecting()),
         said(&reader()),
         said(&listed(0, false)),
@@ -418,7 +418,10 @@ fn screen_states() -> Vec<String> {
         said(&press(listed(3, false), &[Action::Open])),
         said(&press(listed(3, false), &[Action::Open, Action::Refresh])),
         said(&press(listed(3, false), &[Action::Help])),
-    ]
+    ];
+    // The masked view and the reveals, as the screens of the page draw them.
+    states.extend(Screen::ALL.iter().map(|screen| said(&screen.state())));
+    states
 }
 
 /// The message each row of the page's troubleshooting tables quotes.
@@ -567,7 +570,11 @@ fn the_page_quotes_what_the_screen_says_in_each_state_that_is_not_a_failure() {
         "Reading the list again...",
         "Reading the next page...",
         "This tenant has no vCons.",
-        "Content is not shown: this view lists metadata only.",
+        "Reading the masked view...",
+        "Masked view",
+        "Revealing the parties...",
+        "The parties, revealed:",
+        "(never loaded)",
         "more on the server",
     ] {
         assert!(
@@ -610,12 +617,26 @@ fn does(text: &str) -> &str {
 
 /// Whether `action` does anything in `view`: the state changes, or a
 /// request is made. The list holds 30 vCons with more on the server, and
-/// the eleventh is selected, so every movement has somewhere to go.
+/// the eleventh is selected, so every movement has somewhere to go; in the
+/// detail view its masked view has arrived and a long text is revealed and
+/// moved down one screen, so every key of the view has something to act on.
 fn works(view: View, action: Action) -> bool {
     let list = press(listed(30, true), &[Action::Down; 10]);
     let state = match view {
         View::List => list,
-        View::Detail => press(list, &[Action::Open]),
+        View::Detail => {
+            let mut state = press(list, &[Action::Open]);
+            let uuid = state.detail.clone().expect("a vCon open");
+            state.step(
+                Event::Masked(uuid.clone(), Ok(vec!["Masked view".to_owned()])),
+                NOW,
+            );
+            let part = crate::reveal::Part::All;
+            state.step(Event::Action(Action::Reveal(part)), NOW);
+            let long: String = (0..200).map(|n| format!("line {n}\n")).collect();
+            state.step(Event::Revealed(uuid, part, Ok(long)), NOW);
+            press(state, &[Action::PageDown])
+        }
         View::Help => press(list, &[Action::Help]),
     };
     let mut after = state.clone();
@@ -882,6 +903,25 @@ fn the_page_states_the_vcons_read_at_a_time() {
     assert!(
         client::page_path(None).ends_with(&format!("limit={}", client::PAGE)),
         "and it is what the request carries"
+    );
+}
+
+#[test]
+fn the_page_states_the_bytes_one_reveal_may_read() {
+    assert_eq!(
+        limit("Bytes of one reveal, inflated"),
+        format!("{} MiB", client::REVEAL_BODY >> 20),
+        "the limit after which a reveal fails"
+    );
+    assert_eq!(client::REVEAL_BODY % (1 << 20), 0, "a whole number of MiB");
+}
+
+#[test]
+fn the_page_states_the_characters_of_the_whole_vcon_shown() {
+    assert_eq!(
+        limit("Characters of the whole vCon shown"),
+        format!("{}", crate::masked::DISPLAY_LIMIT),
+        "the cut of a reveal of the whole vCon"
     );
 }
 
@@ -1365,22 +1405,31 @@ fn every_page_that_names_the_command_links_to_its_page() {
     }
 }
 
+/// The pages that describe the command say what it shows of a vCon: its
+/// masked view, and content only on a reveal key. None says it never shows
+/// content, which was true before the reveal keys.
 #[test]
-fn no_page_says_the_ui_shows_content() {
+fn every_page_says_the_ui_shows_a_masked_view_and_content_only_on_a_reveal() {
     for path in [
         "README.md",
         "website/content/_index.md",
         "website/content/docs/status.md",
         "website/content/docs/command-line.md",
+        "website/content/docs/tui.md",
     ] {
         let text = read(path).replace('\n', " ");
-        assert!(
-            text.contains("never its content")
-                || text.contains("never a vCon's content")
-                || text.contains("never asks for a vCon's content")
-                || text.contains("never their content"),
-            "{path} says the terminal UI never shows a vCon's content"
-        );
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(text.contains("masked view"), "{path} names the masked view");
+        assert!(text.contains("reveal key"), "{path} names the reveal keys");
+        for old in [
+            "never its content",
+            "never a vCon's content",
+            "never asks for a vCon's content",
+            "never their content",
+            "never asks the server for a vCon's content",
+        ] {
+            assert!(!text.contains(old), "{path} still says {old:?}");
+        }
     }
 }
 
@@ -1561,14 +1610,14 @@ const MOVES: [Action; 6] = [
 ];
 
 #[test]
-fn the_code_lists_25_screens_with_a_name_and_a_title_each() {
+fn the_code_lists_35_screens_with_a_name_and_a_title_each() {
     let names: BTreeSet<&str> = Screen::ALL.iter().map(|s| s.name()).collect();
     let titles: BTreeSet<&str> = Screen::ALL.iter().map(|s| s.title()).collect();
     let anchors: BTreeSet<String> = Screen::ALL.iter().map(|s| anchor(s.title())).collect();
-    assert_eq!(Screen::ALL.len(), 25, "the screens the UI can draw");
-    assert_eq!(names.len(), 25, "a name each");
-    assert_eq!(titles.len(), 25, "a title each");
-    assert_eq!(anchors.len(), 25, "and a link target each");
+    assert_eq!(Screen::ALL.len(), 35, "the screens the UI can draw");
+    assert_eq!(names.len(), 35, "a name each");
+    assert_eq!(titles.len(), 35, "a title each");
+    assert_eq!(anchors.len(), 35, "and a link target each");
 }
 
 #[test]
@@ -1627,12 +1676,22 @@ fn a_key_listed_for_a_screen_does_something_there_and_no_other_key_does() {
     for screen in Screen::ALL {
         let state = screen.state();
         let listed: Vec<Action> = screen.keys().iter().map(|b| b.action).collect();
-        let can_move = MOVES.iter().any(|action| does_something(&state, *action));
+        // In the detail view the page keys move its text: each is judged
+        // by what its own press does.
+        let selects = |action: &Action| {
+            MOVES.contains(action)
+                && !(state.view == View::Detail
+                    && matches!(action, Action::PageUp | Action::PageDown))
+        };
+        let can_move = MOVES
+            .iter()
+            .filter(|action| selects(action))
+            .any(|action| does_something(&state, *action));
         for binding in &BINDINGS {
             let action = binding.action;
             // A key that moves is listed where the selection can move,
             // also when it is at the end that key moves toward.
-            let does = if MOVES.contains(&action) {
+            let does = if selects(&action) {
                 can_move
             } else {
                 does_something(&state, action)
@@ -1704,9 +1763,11 @@ fn the_failure_screens_are_the_ones_that_say_something_failed() {
             "operator-key",
             "no-read-scope",
             "server-error",
-            "detail-failed"
+            "detail-failed",
+            "detail-masked-failed",
+            "reveal-failed"
         ],
-        "a list that could not be read, or a notice above the keys"
+        "a list, a masked view or a reveal that could not be read, or a notice above the keys"
     );
 }
 
@@ -1746,9 +1807,16 @@ fn each_screens_section_says_what_it_shows_and_how_to_get_there_and_leave() {
 fn each_failure_screens_section_quotes_what_the_screen_says() {
     for screen in Screen::ALL.into_iter().filter(|screen| screen.failure()) {
         let state = screen.state();
-        let said = match (&state.listing, &state.notice) {
-            (_, Some(notice)) => notice.clone(),
-            (super::state::Listing::Failed(why), None) => why.clone(),
+        let said = match (
+            &state.listing,
+            &state.notice,
+            &state.content,
+            &state.revealed,
+        ) {
+            (_, Some(notice), _, _) => notice.clone(),
+            (super::state::Listing::Failed(why), None, _, _)
+            | (_, None, super::state::Content::Failed(why), _)
+            | (_, None, _, Some(super::state::Revealed::Failed(_, why))) => why.clone(),
             other => panic!("{} is no failure: {other:?}", screen.name()),
         };
         let quoted = said.split(": ").next().expect("a first part");
@@ -2168,11 +2236,17 @@ fn every_screen_a_leave_sentence_links_is_a_screen_of_the_page() {
 
 /// The screens a Leave sentence says a key press leads to: the screen,
 /// the action, and the screen it shows then.
-const LEADS_TO: [(Screen, Action, Screen); 13] = [
-    (Screen::List, Action::Open, Screen::Detail),
+const LEADS_TO: [(Screen, Action, Screen); 15] = [
+    (Screen::List, Action::Open, Screen::DetailReading),
     (Screen::List, Action::Help, Screen::Help),
     (Screen::List, Action::More, Screen::MoreReading),
-    (Screen::ListOne, Action::Open, Screen::DetailOne),
+    (
+        Screen::Detail,
+        Action::Reveal(crate::reveal::Part::Parties),
+        Screen::Revealing,
+    ),
+    (Screen::RevealParties, Action::Back, Screen::List),
+    (Screen::DetailMaskedFailed, Action::Back, Screen::List),
     (Screen::Empty, Action::Refresh, Screen::Loading),
     (Screen::NotConnected, Action::Refresh, Screen::Connecting),
     (Screen::RefusedKey, Action::Refresh, Screen::Connecting),

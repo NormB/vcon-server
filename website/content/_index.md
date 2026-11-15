@@ -14,7 +14,7 @@ first_look_outro = "Sending the same bytes again answers `200` with the same ver
 # data/tui-screens.json.
 tui_intro = "`vcon-server tui` lists a tenant's vCons in a terminal, over the HTTP API, with one key that holds the `read` scope."
 tui_label = "The vcon-server tui list view: the server, the tenant and connected on the first line, then a vCon on each line with its uuid and the times it was stored and updated, the third one selected, and the keys on the last line."
-tui_outro = "It shows what `GET /vcons` lists and never asks for a vCon's content, and the server's scopes and audit log apply to it as to any client."
+tui_outro = "It shows what `GET /vcons` lists and each vCon's masked view, with no content until a reveal key shows one part, and the server's scopes and audit log apply to it as to any client."
 # The Install and How-to sections: their text is the docs' (see the how-to
 # pages); the layout is the template's. Plain text, not markdown. Every plain
 # key sits above the first [[...]] table, or TOML puts it inside that table.

@@ -13,8 +13,9 @@ use ratatui::widgets::{Paragraph, Wrap};
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
 
+use crate::reveal::Part;
 use crate::tui::keys::{BINDINGS, binding};
-use crate::tui::state::{Action, Connection, Listing, Row, State, View};
+use crate::tui::state::{Action, Connection, Content, Listing, Revealed, Row, State, View};
 
 /// The smallest terminal a view is drawn in.
 const MIN_COLUMNS: u16 = 40;
@@ -369,34 +370,141 @@ fn list(frame: &mut Frame<'_>, state: &State, body: Rect) {
     frame.render_widget(Paragraph::new(lines), body);
 }
 
-/// The detail view: the metadata of one vCon, from its row of the list.
+/// The detail view: one vCon's metadata, from its row of the list, its
+/// masked view and the part revealed, from [`State::scroll`] down.
 fn detail(frame: &mut Frame<'_>, state: &State, body: Rect) {
-    if let Some(lines) = waiting(state, "Reading the list again...") {
-        return message(frame, body, lines);
-    }
-    let lines = match state.detail_row() {
-        Some(row) => metadata(row),
-        None => vec![
-            "This vCon is no longer in the list: it was deleted, or it is past the pages read."
-                .to_owned(),
-            String::new(),
-            "Press Esc to go back.".to_owned(),
-        ],
-    };
-    message(frame, body, lines);
+    let lines = detail_lines(state, body.width);
+    let shown = usize::from(body.height);
+    let first = state.scroll.min(lines.len().saturating_sub(shown));
+    let lines: Vec<Line<'_>> = lines.into_iter().skip(first).map(Line::from).collect();
+    frame.render_widget(Paragraph::new(lines), body);
 }
 
-/// The lines of one vCon's metadata.
-fn metadata(row: &Row) -> Vec<String> {
-    vec![
+/// The lines of the detail view in a terminal of `columns` columns, every
+/// one of them, as [`State`] counts them to move the view and the view
+/// draws them. Text that came from a vCon is made printable first.
+#[must_use]
+pub fn detail_lines(state: &State, columns: u16) -> Vec<String> {
+    let lines = if let Some(lines) = waiting(state, "Reading the list again...") {
+        lines
+    } else {
+        match state.detail_row() {
+            Some(row) => detail_text(state, row),
+            None => vec![
+                "This vCon is no longer in the list: it was deleted, or it is past the pages read."
+                    .to_owned(),
+                String::new(),
+                "Press Esc to go back.".to_owned(),
+            ],
+        }
+    };
+    lines
+        .iter()
+        .flat_map(|line| broken(&printable(line), usize::from(columns)))
+        .collect()
+}
+
+/// What stands for a character a terminal would act on.
+const REPLACED: char = '\u{fffd}';
+
+/// `text` with every control character a terminal acts on replaced, so text
+/// from a vCon cannot move the cursor, change colors or write to the
+/// terminal's title; a tab becomes a space.
+fn printable(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            '\t' => ' ',
+            c if c.is_control() => REPLACED,
+            c => c,
+        })
+        .collect()
+}
+
+/// `line` as lines of at most `columns` characters: broken at the last
+/// space that fits, else where the line ends, so indentation is kept.
+fn broken(line: &str, columns: usize) -> Vec<String> {
+    let columns = columns.max(1);
+    let mut rest: Vec<char> = line.chars().collect();
+    let mut lines = Vec::new();
+    while rest.len() > columns {
+        // A space at the place just past the line is a break too.
+        let room = rest.get(..=columns).unwrap_or_default();
+        let space = room.iter().rposition(|c| *c == ' ').filter(|at| {
+            room.get(..*at)
+                .is_some_and(|head| head.iter().any(|c| *c != ' '))
+        });
+        let at = space.unwrap_or(columns);
+        lines.push(rest.drain(..at).collect());
+        if space.is_some() {
+            rest.remove(0);
+        }
+    }
+    lines.push(rest.into_iter().collect());
+    lines
+}
+
+/// What the detail view says of each part a key reveals.
+fn noun(part: Part) -> &'static str {
+    match part {
+        Part::Parties => "the parties",
+        Part::Subject => "the subject",
+        Part::Dialog => "the dialog",
+        Part::Analysis => "the analysis",
+        Part::Links => "the links",
+        Part::All | Part::Audio => "the whole vCon",
+    }
+}
+
+/// `text` with its first letter in upper case.
+fn sentence(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
+}
+
+/// The lines of one vCon: its metadata, its masked view, and the part
+/// revealed.
+fn detail_text(state: &State, row: &Row) -> Vec<String> {
+    let mut lines = vec![
         format!("vCon {}", row.uuid),
         String::new(),
         format!("Version       {}", row.version),
         format!("First stored  {} {ZONE}", utc(&row.stored_at)),
         format!("Last updated  {} {ZONE}", utc(&row.updated_at)),
         String::new(),
-        "Content is not shown: this view lists metadata only.".to_owned(),
-    ]
+    ];
+    match &state.content {
+        Content::None | Content::Reading => lines.push("Reading the masked view...".to_owned()),
+        Content::Failed(why) => {
+            lines.push(format!("The masked view was not read: {why}."));
+            lines.push("Press r to try again.".to_owned());
+        }
+        Content::Ready(masked) => {
+            lines.extend(masked.iter().cloned());
+            lines.push(String::new());
+            lines.push(
+                "A reveal shows one part, recorded in the audit log; help has the keys.".to_owned(),
+            );
+        }
+    }
+    match &state.revealed {
+        None => {}
+        Some(Revealed::Reading(part)) => {
+            lines.push(String::new());
+            lines.push(format!("Revealing {}...", noun(*part)));
+        }
+        Some(Revealed::Shown(part, text)) => {
+            lines.push(String::new());
+            lines.push(format!("{}, revealed:", sentence(noun(*part))));
+            lines.extend(text.split('\n').map(str::to_owned));
+        }
+        Some(Revealed::Failed(part, why)) => {
+            lines.push(String::new());
+            lines.push(format!("The reveal of {} failed: {why}.", noun(*part)));
+        }
+    }
+    lines
 }
 
 /// The help view: every binding, from the table the key reader uses.
@@ -481,6 +589,14 @@ fn state_hints(state: &State) -> Vec<String> {
             Action::Back,
             Action::Down,
             Action::Up,
+            Action::Reveal(Part::Parties),
+            Action::Reveal(Part::Subject),
+            Action::Reveal(Part::Dialog),
+            Action::Reveal(Part::Analysis),
+            Action::Reveal(Part::Links),
+            Action::Reveal(Part::All),
+            Action::PageDown,
+            Action::PageUp,
             Action::Refresh,
             Action::Help,
             Action::Quit,
@@ -504,7 +620,8 @@ mod tests {
     use time::OffsetDateTime;
     use time::macros::datetime;
 
-    use super::{Theme, draw, theme, utc};
+    use super::{Theme, broken, detail_lines, draw, theme, utc};
+    use crate::reveal::Part;
     use crate::tui::client;
     use crate::tui::keys::BINDINGS;
     use crate::tui::screens::{SHOWN_TENANT, Screen, shown_key, shown_page, shown_refusal};
@@ -680,7 +797,7 @@ mod tests {
     }
 
     #[test]
-    fn the_detail_view_shows_the_metadata_and_says_content_is_not_shown() {
+    fn the_detail_view_shows_the_metadata_and_reads_the_masked_view() {
         let shown = text(&press(listed(2, None), &[Action::Open]));
         assert!(shown.contains(&row(0).uuid), "the uuid: {shown}");
         assert!(shown.contains(&row(0).version), "the version: {shown}");
@@ -693,10 +810,157 @@ mod tests {
             "last updated: {shown}"
         );
         assert!(
-            shown.contains("Content is not shown"),
-            "what is left out: {shown}"
+            shown.contains("Reading the masked view..."),
+            "what is read: {shown}"
         );
         assert!(shown.contains("Esc back"), "how to leave: {shown}");
+    }
+
+    /// The second vCon open, its masked view `lines` arrived.
+    fn masked_open(lines: &[&str]) -> State {
+        let mut state = press(listed(2, None), &[Action::Open]);
+        state.step(
+            Event::Masked(
+                row(0).uuid,
+                Ok(lines.iter().map(|line| (*line).to_owned()).collect()),
+            ),
+            NOW,
+        );
+        state
+    }
+
+    /// `state` after the reveal of `part` answered `answer`.
+    fn answered(mut state: State, part: Part, answer: Result<String, ApiError>) -> State {
+        state.step(Event::Action(Action::Reveal(part)), NOW);
+        state.step(Event::Revealed(row(0).uuid, part, answer), NOW);
+        state
+    }
+
+    #[test]
+    fn the_masked_view_is_shown_under_the_metadata_with_what_a_reveal_does() {
+        let shown = text(&masked_open(&["Masked view", "Form          unsigned"]));
+        assert!(shown.contains("Form          unsigned"), "{shown}");
+        assert!(shown.contains("recorded in the audit log"), "{shown}");
+        assert!(shown.contains("p parties"), "the reveal keys act: {shown}");
+    }
+
+    #[test]
+    fn a_revealed_part_is_shown_under_its_title() {
+        let state = answered(
+            masked_open(&["Masked view"]),
+            Part::Subject,
+            Ok("Renewal call".to_owned()),
+        );
+        let shown = text(&state);
+        assert!(shown.contains("The subject, revealed:"), "{shown}");
+        assert!(shown.contains("Renewal call"), "{shown}");
+    }
+
+    #[test]
+    fn a_reveal_in_flight_says_so() {
+        let mut state = masked_open(&["Masked view"]);
+        state.step(Event::Action(Action::Reveal(Part::All)), NOW);
+        assert!(
+            text(&state).contains("Revealing the whole vCon..."),
+            "{}",
+            text(&state)
+        );
+    }
+
+    #[test]
+    fn a_failed_reveal_says_why_and_shows_no_text() {
+        let error = ApiError::Status(403, Some("forbidden".to_owned()));
+        let shown = text(&answered(
+            masked_open(&["Masked view"]),
+            Part::Dialog,
+            Err(error),
+        ));
+        assert!(
+            shown.contains("The reveal of the dialog failed: the server answered 403 (forbidden)."),
+            "{shown}"
+        );
+        assert!(!shown.contains("revealed:"), "{shown}");
+    }
+
+    #[test]
+    fn a_failed_masked_view_says_why_and_what_to_press() {
+        let mut state = press(listed(2, None), &[Action::Open]);
+        state.step(
+            Event::Masked(row(0).uuid, Err(ApiError::Status(404, None))),
+            NOW,
+        );
+        let shown = text(&state);
+        assert!(
+            shown.contains("The masked view was not read: the server answered 404."),
+            "{shown}"
+        );
+        assert!(shown.contains("Press r to try again."), "{shown}");
+        assert!(!shown.contains("p parties"), "no reveal key acts: {shown}");
+    }
+
+    /// Text from a vCon is drawn, never sent to the terminal as commands.
+    #[test]
+    fn control_characters_from_a_vcon_are_replaced() {
+        let state = answered(
+            masked_open(&["Masked view", "  Party 1: address at \u{1b}]0;title\u{7}"]),
+            Part::Subject,
+            Ok("Renewal\u{1b}[2J\u{9b}call\tnow".to_owned()),
+        );
+        let lines = detail_lines(&state, 80);
+        let joined = lines.join("\n");
+        assert!(
+            !joined.chars().any(|c| c.is_control() && c != '\n'),
+            "{joined:?}"
+        );
+        assert!(
+            joined.contains("Renewal\u{fffd}[2J\u{fffd}call now"),
+            "{joined:?}"
+        );
+        assert!(
+            joined.contains("address at \u{fffd}]0;title\u{fffd}"),
+            "{joined:?}"
+        );
+    }
+
+    #[test]
+    fn a_long_line_is_broken_at_a_space_and_its_indentation_kept() {
+        assert_eq!(
+            broken("    \"name\": \"Ada Example\"", 16),
+            ["    \"name\": \"Ada", "Example\""],
+            "at the space just past the line, which is dropped"
+        );
+        assert_eq!(
+            broken("    \"name\": \"Ada Example\"", 14),
+            ["    \"name\":", "\"Ada Example\""],
+            "at the last space that fits"
+        );
+        assert_eq!(
+            broken("abcdefghij", 4),
+            ["abcd", "efgh", "ij"],
+            "a word longer than a line"
+        );
+        assert_eq!(broken("", 4), [""], "an empty line stays a line");
+        assert_eq!(
+            broken("    abcdefgh", 6),
+            ["    ab", "cdefgh"],
+            "indentation alone is no break"
+        );
+    }
+
+    #[test]
+    fn a_detail_view_moved_down_starts_at_its_line() {
+        let long: String = (0..100).map(|n| format!("line {n}\n")).collect();
+        let mut state = answered(masked_open(&["Masked view"]), Part::All, Ok(long));
+        state.step(Event::Action(Action::PageDown), NOW);
+        let shown = text(&state);
+        assert!(
+            !shown.contains(&format!("vCon {}", row(0).uuid)),
+            "the top is above: {shown}"
+        );
+        assert!(
+            shown.contains("line 20 "),
+            "lines below the first screen: {shown}"
+        );
     }
 
     #[test]

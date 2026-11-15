@@ -314,11 +314,14 @@
       ],
       "get": {
         "operationId": "readVcon",
-        "summary": "Read the current version, as stored",
-        "description": "Needs a key with the read scope. With reveal, the answer is the same and the audit log records the read as a reveal of that part.",
+        "summary": "Read the current version, as stored, or its masked view",
+        "description": "Needs a key with the read scope. With reveal, the answer is the same and the audit log records the read as a reveal of that part. With view=masked, the answer is the vCon's masked view (JSON, no content), recorded as read_masked; view and reveal are not taken together.",
         "parameters": [
           {
             "$ref": "#/components/parameters/reveal"
+          },
+          {
+            "$ref": "#/components/parameters/view"
           }
         ],
         "security": [
@@ -328,7 +331,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The body as stored",
+            "description": "The body as stored; with view=masked, the masked view",
             "content": {
               "application/vcon": {
                 "schema": {
@@ -340,6 +343,11 @@
                 "schema": {
                   "type": "string",
                   "format": "binary"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaskedVcon"
                 }
               }
             },
@@ -4232,9 +4240,124 @@
             "audio"
           ]
         }
+      },
+      "view": {
+        "name": "view",
+        "in": "query",
+        "required": false,
+        "description": "masked answers the vCon's masked view in place of the vCon: its form, counts and parties masked, with no name, subject, full number, address or content. The audit log records the action read_masked in place of read. It must be the only parameter, given once; the legal routes refuse it.",
+        "schema": {
+          "type": "string",
+          "enum": [
+            "masked"
+          ]
+        }
       }
     },
     "schemas": {
+      "MaskedVcon": {
+        "type": "object",
+        "description": "A vCon's masked view (GET /vcons/{uuid}?view=masked)",
+        "required": [
+          "form",
+          "created",
+          "subject",
+          "parties",
+          "dialogs",
+          "dialog",
+          "seconds",
+          "attachments",
+          "analyses",
+          "links",
+          "signature"
+        ],
+        "properties": {
+          "form": {
+            "type": "string",
+            "enum": [
+              "unsigned",
+              "signed (JWS)",
+              "encrypted (JWE)",
+              "not JSON",
+              "not a JSON object"
+            ]
+          },
+          "created": {
+            "type": "string",
+            "description": "created_at as YYYY-MM-DD HH:MM:SS UTC+00:00; empty when it is not an RFC 3339 date-time"
+          },
+          "subject": {
+            "type": "string",
+            "enum": [
+              "present, hidden",
+              "none",
+              "not readable"
+            ]
+          },
+          "parties": {
+            "type": "array",
+            "description": "One line for each party: the last four digits of a number, the domain of an address, and whether it has a name",
+            "items": {
+              "type": "string"
+            }
+          },
+          "dialogs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "dialog": {
+            "type": "array",
+            "description": "One line for each dialog: type, start, length, parties, and whether it has content",
+            "items": {
+              "type": "string"
+            }
+          },
+          "seconds": {
+            "type": "number",
+            "description": "The sum of the dialogs' positive lengths"
+          },
+          "attachments": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "analyses": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "links": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Links to outside the server in the dialog, attachments and analysis"
+          },
+          "signature": {
+            "description": "A signed vCon's first protected header; null for any other form",
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "alg",
+                  "kid",
+                  "x5t"
+                ],
+                "properties": {
+                  "alg": {
+                    "type": "string"
+                  },
+                  "kid": {
+                    "type": "string"
+                  },
+                  "x5t": {
+                    "type": "string"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
       "Problem": {
         "type": "object",
         "description": "An RFC 9457 problem document",

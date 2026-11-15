@@ -1473,7 +1473,7 @@ class TerminalRules(unittest.TestCase):
             "the list as it starts, a vCon opened with Enter, help with ?, and the list again",
         )
         self.assertIn("Enter open", steps[0].expect, "the list's own keys")
-        self.assertIn("Content is not shown", steps[1].expect, "the detail view")
+        self.assertIn("Last updated  <updated>", steps[1].expect, "the detail view")
         self.assertIn("Show or close this help", steps[2].expect, "the help view")
 
     def test_the_views_are_opened_only_once_the_list_is_drawn(self):

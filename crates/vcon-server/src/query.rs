@@ -49,6 +49,18 @@ pub fn pairs(query: Option<&str>, names: &[&str]) -> Result<BTreeMap<String, Str
     Ok(read)
 }
 
+/// Whether `query` names the parameter `name` in any of its pieces, with
+/// or without a value, after percent-decoding: a read that takes a marker
+/// asks this first, so an encoded or bare marker is never passed over.
+#[must_use]
+pub fn names(query: Option<&str>, name: &str) -> bool {
+    query.unwrap_or("").split('&').any(|piece| {
+        form_urlencoded::parse(piece.as_bytes())
+            .next()
+            .is_some_and(|(named, _)| named == name)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

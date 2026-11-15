@@ -3,6 +3,7 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
+use crate::reveal::Part;
 use crate::tui::state::Action;
 
 /// One action and the keys that ask for it.
@@ -23,7 +24,7 @@ pub struct Binding {
 const PLAIN: KeyModifiers = KeyModifiers::NONE;
 
 /// Every binding. A key appears once.
-pub const BINDINGS: [Binding; 12] = [
+pub const BINDINGS: [Binding; 18] = [
     Binding {
         action: Action::Down,
         keys: &[(KeyCode::Char('j'), PLAIN), (KeyCode::Down, PLAIN)],
@@ -57,21 +58,21 @@ pub const BINDINGS: [Binding; 12] = [
         keys: &[(KeyCode::PageUp, PLAIN)],
         label: "PgUp",
         hint: "page up",
-        does: "Move up one screen",
+        does: "Move up one screen of the list or of the detail view's text",
     },
     Binding {
         action: Action::PageDown,
         keys: &[(KeyCode::PageDown, PLAIN)],
         label: "PgDn",
         hint: "page down",
-        does: "Move down one screen",
+        does: "Move down one screen of the list or of the detail view's text",
     },
     Binding {
         action: Action::Open,
         keys: &[(KeyCode::Enter, PLAIN)],
         label: "Enter",
         hint: "open",
-        does: "Open the selected vCon's metadata",
+        does: "Open the selected vCon: its metadata and masked view",
     },
     Binding {
         action: Action::Back,
@@ -79,6 +80,48 @@ pub const BINDINGS: [Binding; 12] = [
         label: "Esc",
         hint: "back",
         does: "Go back to the view before (also Backspace)",
+    },
+    Binding {
+        action: Action::Reveal(Part::Parties),
+        keys: &[(KeyCode::Char('p'), PLAIN)],
+        label: "p",
+        hint: "parties",
+        does: "Reveal the parties of the vCon open: names, numbers, addresses",
+    },
+    Binding {
+        action: Action::Reveal(Part::Subject),
+        keys: &[(KeyCode::Char('s'), PLAIN)],
+        label: "s",
+        hint: "subject",
+        does: "Reveal the subject of the vCon open",
+    },
+    Binding {
+        action: Action::Reveal(Part::Dialog),
+        keys: &[(KeyCode::Char('d'), PLAIN)],
+        label: "d",
+        hint: "dialog",
+        does: "Reveal the dialog of the vCon open: what was said",
+    },
+    Binding {
+        action: Action::Reveal(Part::Analysis),
+        keys: &[(KeyCode::Char('a'), PLAIN)],
+        label: "a",
+        hint: "analysis",
+        does: "Reveal the analysis of the vCon open, transcripts among it",
+    },
+    Binding {
+        action: Action::Reveal(Part::Links),
+        keys: &[(KeyCode::Char('l'), PLAIN)],
+        label: "l",
+        hint: "links",
+        does: "Reveal where the vCon open links to",
+    },
+    Binding {
+        action: Action::Reveal(Part::All),
+        keys: &[(KeyCode::Char('w'), PLAIN)],
+        label: "w",
+        hint: "whole",
+        does: "Reveal the whole vCon open",
     },
     Binding {
         action: Action::Refresh,
@@ -188,6 +231,47 @@ mod tests {
                 assert!(!seen.contains(key), "{key:?} has one meaning");
                 seen.push(*key);
             }
+        }
+    }
+
+    #[test]
+    fn each_reveal_key_reveals_its_part() {
+        use crate::reveal::Part;
+        for (key, part) in [
+            ('p', Part::Parties),
+            ('s', Part::Subject),
+            ('d', Part::Dialog),
+            ('a', Part::Analysis),
+            ('l', Part::Links),
+            ('w', Part::All),
+        ] {
+            assert_eq!(
+                action(KeyCode::Char(key), KeyModifiers::NONE),
+                Some(Action::Reveal(part)),
+                "{key}"
+            );
+        }
+    }
+
+    /// No key plays a recording: the terminal UI has no player.
+    #[test]
+    fn no_key_reveals_a_recording() {
+        assert!(
+            BINDINGS
+                .iter()
+                .all(|b| b.action != Action::Reveal(crate::reveal::Part::Audio)),
+            "audio is the console's"
+        );
+    }
+
+    #[test]
+    fn an_upper_case_reveal_letter_is_no_key() {
+        for key in ['P', 'S', 'D', 'A', 'L', 'W'] {
+            assert_eq!(
+                action(KeyCode::Char(key), KeyModifiers::SHIFT),
+                None,
+                "{key}"
+            );
         }
     }
 

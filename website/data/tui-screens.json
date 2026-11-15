@@ -80,23 +80,88 @@
       [
         {
           "class": "",
-          "text": "Content is not shown: this view lists metadata only."
+          "text": "Masked view"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Form          unsigned"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Created       2026-11-09 16:40:12 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Subject       present, hidden"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Parties       2"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  Party 1: number ending 0142; name hidden"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  Party 2: address at example.com; name hidden"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Dialogs       1, 95 s in all"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  Dialog 1: text, 2026-11-09 16:40:12 UTC+00:00, 95 s, parties 1, 2; content"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "hidden"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Attachments   1"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Analyses      1"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Links         1"
         }
       ],
       [],
-      [],
-      [],
-      [],
-      [],
-      [],
-      [],
-      [],
-      [],
-      [],
-      [],
-      [],
-      [],
-      [],
+      [
+        {
+          "class": "",
+          "text": "A reveal shows one part, recorded in the audit log; help has the keys."
+        }
+      ],
       [
         {
           "class": "",
@@ -106,7 +171,7 @@
       [
         {
           "class": "",
-          "text": "Esc back  j down  k up  r refresh  ? help  q quit"
+          "text": "Esc back  j down  k up  p parties  s subject  d dialog  ? help  q quit"
         }
       ]
     ]
@@ -204,6 +269,94 @@
       ]
     ]
   },
+  "detail-masked-failed": {
+    "columns": 80,
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "vcon.example.com:8443 | tenant 8c41f2d9a07e4b5c9d13e6f0a2b4c7d8 | "
+        },
+        {
+          "class": "bold green",
+          "text": "connected"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "vCon da58fbbe-e87f-854c-be87-f6a99b4b1f77"
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "Version       da58fbbee87fb54c2c7ddf743fdaa66d"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "First stored  2026-11-09 23:54:32 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Last updated  2026-11-10 00:06:32 UTC+00:00"
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "The masked view was not read: the server's answer could not be read: the server"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "sent the whole vCon, not its masked view: it is older than this terminal UI, so"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "upgrade it; nothing of the vCon is shown."
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Press r to try again."
+        }
+      ],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [
+        {
+          "class": "",
+          "text": "3 of 100 read, more on the server | as of 2026-11-10 01:20:00 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Esc back  j down  k up  r refresh  ? help  q quit"
+        }
+      ]
+    ]
+  },
   "detail-one": {
     "columns": 80,
     "lines": [
@@ -246,7 +399,7 @@
       [
         {
           "class": "",
-          "text": "Content is not shown: this view lists metadata only."
+          "text": "Masked view"
         }
       ],
       [
@@ -258,7 +411,66 @@
       [
         {
           "class": "",
-          "text": "Esc back  r refresh  ? help  q quit"
+          "text": "Esc back  p parties  s subject  d dialog  a analysis  l links  ? help  q quit"
+        }
+      ]
+    ]
+  },
+  "detail-reading": {
+    "columns": 80,
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "vcon.example.com:8443 | tenant 8c41f2d9a07e4b5c9d13e6f0a2b4c7d8 | "
+        },
+        {
+          "class": "bold green",
+          "text": "connected"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "vCon da58fbbe-e87f-854c-be87-f6a99b4b1f77"
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "Version       da58fbbee87fb54c2c7ddf743fdaa66d"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "First stored  2026-11-09 23:54:32 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Last updated  2026-11-10 00:06:32 UTC+00:00"
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "Reading the masked view..."
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "3 of 100 read, more on the server | as of 2026-11-10 01:20:00 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Esc back  j down  k up  r refresh  ? help  q quit"
         }
       ]
     ]
@@ -392,25 +604,61 @@
       [
         {
           "class": "",
-          "text": "  PgUp   Move up one screen"
+          "text": "  PgUp   Move up one screen of the list or of the detail view's text"
         }
       ],
       [
         {
           "class": "",
-          "text": "  PgDn   Move down one screen"
+          "text": "  PgDn   Move down one screen of the list or of the detail view's text"
         }
       ],
       [
         {
           "class": "",
-          "text": "  Enter  Open the selected vCon's metadata"
+          "text": "  Enter  Open the selected vCon: its metadata and masked view"
         }
       ],
       [
         {
           "class": "",
           "text": "  Esc    Go back to the view before (also Backspace)"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  p      Reveal the parties of the vCon open: names, numbers, addresses"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  s      Reveal the subject of the vCon open"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  d      Reveal the dialog of the vCon open: what was said"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  a      Reveal the analysis of the vCon open, transcripts among it"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  l      Reveal where the vCon open links to"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  w      Reveal the whole vCon open"
         }
       ],
       [
@@ -444,12 +692,6 @@
           "text": "Every time shown is in UTC (UTC+00:00)."
         }
       ],
-      [],
-      [],
-      [],
-      [],
-      [],
-      [],
       [
         {
           "class": "",
@@ -1340,6 +1582,1130 @@
         {
           "class": "",
           "text": "r refresh  ? help  q quit"
+        }
+      ]
+    ]
+  },
+  "reveal-analysis": {
+    "columns": 80,
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "vcon.example.com:8443 | tenant 8c41f2d9a07e4b5c9d13e6f0a2b4c7d8 | "
+        },
+        {
+          "class": "bold green",
+          "text": "connected"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  Party 1: number ending 0142; name hidden"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  Party 2: address at example.com; name hidden"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Dialogs       1, 95 s in all"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  Dialog 1: text, 2026-11-09 16:40:12 UTC+00:00, 95 s, parties 1, 2; content"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "hidden"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Attachments   1"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Analyses      1"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Links         1"
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "A reveal shows one part, recorded in the audit log; help has the keys."
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "The analysis, revealed:"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "["
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  {"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "    \"body\": \"The customer renewed the annual plan.\","
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "    \"dialog\": 0,"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "    \"encoding\": \"none\","
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "    \"type\": \"summary\","
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "    \"vendor\": \"example\""
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  }"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "]"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "3 of 100 read, more on the server | as of 2026-11-10 01:20:00 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Esc back  j down  k up  p parties  s subject  d dialog  ? help  q quit"
+        }
+      ]
+    ]
+  },
+  "reveal-dialog": {
+    "columns": 80,
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "vcon.example.com:8443 | tenant 8c41f2d9a07e4b5c9d13e6f0a2b4c7d8 | "
+        },
+        {
+          "class": "bold green",
+          "text": "connected"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Attachments   1"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Analyses      1"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Links         1"
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "A reveal shows one part, recorded in the audit log; help has the keys."
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "The dialog, revealed:"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "["
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  {"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "    \"body\": \"Ada: I would like to renew the plan.\\nSupport: It is renewed until"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "November 2027.\","
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "    \"duration\": 95,"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "    \"encoding\": \"none\","
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "    \"parties\": ["
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "      0,"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "      1"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "    ],"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "    \"start\": \"2026-11-09T16:40:12Z\","
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "    \"type\": \"text\""
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  }"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "]"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "3 of 100 read, more on the server | as of 2026-11-10 01:20:00 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Esc back  j down  k up  p parties  s subject  d dialog  ? help  q quit"
+        }
+      ]
+    ]
+  },
+  "reveal-failed": {
+    "columns": 80,
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "vcon.example.com:8443 | tenant 8c41f2d9a07e4b5c9d13e6f0a2b4c7d8 | "
+        },
+        {
+          "class": "bold green",
+          "text": "connected"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "First stored  2026-11-09 23:54:32 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Last updated  2026-11-10 00:06:32 UTC+00:00"
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "Masked view"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Form          unsigned"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Created       2026-11-09 16:40:12 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Subject       present, hidden"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Parties       2"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  Party 1: number ending 0142; name hidden"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  Party 2: address at example.com; name hidden"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Dialogs       1, 95 s in all"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  Dialog 1: text, 2026-11-09 16:40:12 UTC+00:00, 95 s, parties 1, 2; content"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "hidden"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Attachments   1"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Analyses      1"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Links         1"
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "A reveal shows one part, recorded in the audit log; help has the keys."
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "The reveal of the dialog failed: the server answered 503 (The service cannot"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "answer now)."
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "3 of 100 read, more on the server | as of 2026-11-10 01:20:00 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Esc back  j down  k up  p parties  s subject  d dialog  ? help  q quit"
+        }
+      ]
+    ]
+  },
+  "reveal-links": {
+    "columns": 80,
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "vcon.example.com:8443 | tenant 8c41f2d9a07e4b5c9d13e6f0a2b4c7d8 | "
+        },
+        {
+          "class": "bold green",
+          "text": "connected"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "First stored  2026-11-09 23:54:32 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Last updated  2026-11-10 00:06:32 UTC+00:00"
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "Masked view"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Form          unsigned"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Created       2026-11-09 16:40:12 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Subject       present, hidden"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Parties       2"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  Party 1: number ending 0142; name hidden"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  Party 2: address at example.com; name hidden"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Dialogs       1, 95 s in all"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  Dialog 1: text, 2026-11-09 16:40:12 UTC+00:00, 95 s, parties 1, 2; content"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "hidden"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Attachments   1"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Analyses      1"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Links         1"
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "A reveal shows one part, recorded in the audit log; help has the keys."
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "The links, revealed:"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "attachment 1: https://files.example.com/invoices/2026-11-09.pdf (never loaded)"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "3 of 100 read, more on the server | as of 2026-11-10 01:20:00 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Esc back  j down  k up  p parties  s subject  d dialog  ? help  q quit"
+        }
+      ]
+    ]
+  },
+  "reveal-parties": {
+    "columns": 80,
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "vcon.example.com:8443 | tenant 8c41f2d9a07e4b5c9d13e6f0a2b4c7d8 | "
+        },
+        {
+          "class": "bold green",
+          "text": "connected"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  Party 2: address at example.com; name hidden"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Dialogs       1, 95 s in all"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  Dialog 1: text, 2026-11-09 16:40:12 UTC+00:00, 95 s, parties 1, 2; content"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "hidden"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Attachments   1"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Analyses      1"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Links         1"
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "A reveal shows one part, recorded in the audit log; help has the keys."
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "The parties, revealed:"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "["
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  {"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "    \"name\": \"Ada Example\","
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "    \"tel\": \"+12125550142\""
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  },"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  {"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "    \"mailto\": \"support@example.com\","
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "    \"name\": \"Example Support\""
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  }"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "]"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "3 of 100 read, more on the server | as of 2026-11-10 01:20:00 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Esc back  j down  k up  p parties  s subject  d dialog  ? help  q quit"
+        }
+      ]
+    ]
+  },
+  "reveal-subject": {
+    "columns": 80,
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "vcon.example.com:8443 | tenant 8c41f2d9a07e4b5c9d13e6f0a2b4c7d8 | "
+        },
+        {
+          "class": "bold green",
+          "text": "connected"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "First stored  2026-11-09 23:54:32 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Last updated  2026-11-10 00:06:32 UTC+00:00"
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "Masked view"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Form          unsigned"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Created       2026-11-09 16:40:12 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Subject       present, hidden"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Parties       2"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  Party 1: number ending 0142; name hidden"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  Party 2: address at example.com; name hidden"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Dialogs       1, 95 s in all"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  Dialog 1: text, 2026-11-09 16:40:12 UTC+00:00, 95 s, parties 1, 2; content"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "hidden"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Attachments   1"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Analyses      1"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Links         1"
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "A reveal shows one part, recorded in the audit log; help has the keys."
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "The subject, revealed:"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Renewal of the annual service plan"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "3 of 100 read, more on the server | as of 2026-11-10 01:20:00 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Esc back  j down  k up  p parties  s subject  d dialog  ? help  q quit"
+        }
+      ]
+    ]
+  },
+  "reveal-whole": {
+    "columns": 80,
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "vcon.example.com:8443 | tenant 8c41f2d9a07e4b5c9d13e6f0a2b4c7d8 | "
+        },
+        {
+          "class": "bold green",
+          "text": "connected"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Dialogs       1, 95 s in all"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  Dialog 1: text, 2026-11-09 16:40:12 UTC+00:00, 95 s, parties 1, 2; content"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "hidden"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Attachments   1"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Analyses      1"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Links         1"
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "A reveal shows one part, recorded in the audit log; help has the keys."
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "The whole vCon, revealed:"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "{\"vcon\":\"0.0.1\",\"uuid\":\"0193f1c2-5b7a-8e4d-9f60-2a1b3c4d5e6f\",\"created_at\":\"2026"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "-11-09T16:40:12Z\",\"subject\":\"Renewal of the annual service"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "plan\",\"parties\":[{\"tel\":\"+12125550142\",\"name\":\"Ada"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Example\"},{\"mailto\":\"support@example.com\",\"name\":\"Example"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Support\"}],\"dialog\":[{\"type\":\"text\",\"start\":\"2026-11-09T16:40:12Z\",\"duration\":95"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": ",\"parties\":[0,1],\"encoding\":\"none\",\"body\":\"Ada: I would like to renew the"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "plan.\\nSupport: It is renewed until November"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "2027.\"}],\"analysis\":[{\"type\":\"summary\",\"dialog\":0,\"vendor\":\"example\",\"encoding\":"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "\"none\",\"body\":\"The customer renewed the annual"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "plan.\"}],\"attachments\":[{\"type\":\"invoice\",\"url\":\"https://files.example.com/invoi"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "ces/2026-11-09.pdf\"}]}"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "3 of 100 read, more on the server | as of 2026-11-10 01:20:00 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Esc back  j down  k up  p parties  s subject  d dialog  ? help  q quit"
+        }
+      ]
+    ]
+  },
+  "revealing": {
+    "columns": 80,
+    "lines": [
+      [
+        {
+          "class": "",
+          "text": "vcon.example.com:8443 | tenant 8c41f2d9a07e4b5c9d13e6f0a2b4c7d8 | "
+        },
+        {
+          "class": "bold green",
+          "text": "connected"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Version       da58fbbee87fb54c2c7ddf743fdaa66d"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "First stored  2026-11-09 23:54:32 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Last updated  2026-11-10 00:06:32 UTC+00:00"
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "Masked view"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Form          unsigned"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Created       2026-11-09 16:40:12 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Subject       present, hidden"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Parties       2"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  Party 1: number ending 0142; name hidden"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  Party 2: address at example.com; name hidden"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Dialogs       1, 95 s in all"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "  Dialog 1: text, 2026-11-09 16:40:12 UTC+00:00, 95 s, parties 1, 2; content"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "hidden"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Attachments   1"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Analyses      1"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Links         1"
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "A reveal shows one part, recorded in the audit log; help has the keys."
+        }
+      ],
+      [],
+      [
+        {
+          "class": "",
+          "text": "Revealing the parties..."
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "3 of 100 read, more on the server | as of 2026-11-10 01:20:00 UTC+00:00"
+        }
+      ],
+      [
+        {
+          "class": "",
+          "text": "Esc back  j down  k up  p parties  s subject  d dialog  ? help  q quit"
         }
       ]
     ]

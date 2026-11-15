@@ -201,21 +201,8 @@ pub(crate) async fn opened(
 /// A stored version's JSON text, inflated within `limit` when it was
 /// stored gzipped, with the characters the fence never holds raw escaped.
 pub(crate) fn vcon_text(stored: &crate::store::Stored, limit: u64) -> Result<String, Outcome> {
-    use std::io::Read;
     let damaged = || Outcome::Answered(Problem::Store(crate::store::StoreError::Damaged));
-    let text = if stored.gzip {
-        let mut inflated = Vec::new();
-        flate2::read::MultiGzDecoder::new(stored.body.as_slice())
-            .take(limit.saturating_add(1))
-            .read_to_end(&mut inflated)
-            .map_err(|_| damaged())?;
-        if inflated.len() as u64 > limit {
-            return Err(Outcome::Answered(Problem::TooLarge));
-        }
-        inflated
-    } else {
-        stored.body.clone()
-    };
+    let text = api::inflated(stored, limit).map_err(Outcome::Answered)?;
     let text = String::from_utf8(text).map_err(|_| damaged())?;
     Ok(fence::escape_json(&text))
 }

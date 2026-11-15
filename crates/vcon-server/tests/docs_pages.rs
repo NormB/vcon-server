@@ -563,3 +563,56 @@ fn the_development_page_tree_names_every_source_file() {
         "the layout tree names files that are not there: {gone:?}"
     );
 }
+
+/// The HTTP API page's masked view section.
+fn masked_section() -> String {
+    let page = read("website/content/docs/http-api.md");
+    let start = page
+        .find("\n## Masked view\n")
+        .expect("a masked view section");
+    let rest = &page[start + 1..];
+    let end = rest[3..].find("\n## ").map_or(rest.len(), |at| at + 3);
+    rest[..end].to_owned()
+}
+
+// The HTTP API page's example of the masked view is the answer the code
+// gives for the first of the cases the rule is tested against.
+#[test]
+fn the_masked_view_example_is_what_the_code_answers() {
+    let section = masked_section();
+    let start = section.find("```json\n").expect("a JSON example") + "```json\n".len();
+    let end = start + section[start..].find("```").expect("the example's end");
+    let shown: Value = serde_json::from_str(&section[start..end]).expect("the example is JSON");
+    let cases: Vec<Value> =
+        serde_json::from_str(&read("crates/vcon-server/tests/data/masked-cases.json"))
+            .expect("the cases");
+    let body = cases[0]["body"].as_str().expect("a body");
+    let made = serde_json::to_value(vcon_server::masked::summary(body)).expect("JSON");
+    assert_eq!(shown, made, "the page's example");
+}
+
+// The page's table names every field of the answer, and only those.
+#[test]
+fn the_masked_view_table_names_every_field_of_the_answer() {
+    let section = masked_section();
+    let named: BTreeSet<String> = section
+        .lines()
+        .filter(|line| line.starts_with("| `"))
+        .flat_map(|line| {
+            let cell = line.split('|').nth(1).unwrap_or_default();
+            cell.split('`')
+                .skip(1)
+                .step_by(2)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let made = serde_json::to_value(vcon_server::masked::summary("{}")).expect("JSON");
+    let fields: BTreeSet<String> = made
+        .as_object()
+        .expect("an object")
+        .keys()
+        .cloned()
+        .collect();
+    assert_eq!(named, fields, "the table's fields");
+}

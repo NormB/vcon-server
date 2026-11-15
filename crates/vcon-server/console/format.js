@@ -18,6 +18,45 @@ export function utc(value) {
   return `${iso.slice(0, 10)} ${iso.slice(11, 19)} UTC+00:00`;
 }
 
+/** An RFC 3339 date-time: date, time, any fraction, and Z or an offset. */
+const DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:[Zz]|([+-])(\d{2}):(\d{2}))$/;
+
+/**
+ * A vCon's time as `YYYY-MM-DD HH:MM:SS UTC+00:00`, or "" when it is not an
+ * RFC 3339 date-time of a day that exists, in the years 1 to 9999 once in
+ * UTC. Unlike `utc`, text that is not a time is never shown, and the
+ * browser's own date reader, which takes "1" or "Feb 30", is not used. The
+ * server's masked view reads times by the same rule (src/masked.rs).
+ */
+export function instant(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
+  const found = DATE_TIME.exec(value);
+  if (found === null) {
+    return "";
+  }
+  const [year, month, day, hour, minute, second] = found.slice(1, 7).map(Number);
+  const sign = found[7] === "-" ? -1 : 1;
+  const offsetHours = Number(found[8] ?? 0);
+  const offsetMinutes = Number(found[9] ?? 0);
+  if (hour > 23 || minute > 59 || second > 59 || offsetHours > 23 || offsetMinutes > 59) {
+    return "";
+  }
+  const local = new Date(0);
+  local.setUTCFullYear(year, month - 1, day);
+  // A day the month does not have runs into the next month.
+  if (local.getUTCFullYear() !== year || local.getUTCMonth() !== month - 1) {
+    return "";
+  }
+  local.setUTCHours(hour, minute, second, 0);
+  const at = new Date(local.getTime() - sign * (offsetHours * 60 + offsetMinutes) * 60000);
+  if (at.getUTCFullYear() < 1 || at.getUTCFullYear() > 9999) {
+    return "";
+  }
+  return utc(at.toISOString());
+}
+
 /** The fewest digits a number needs before its last four may be shown. */
 const MASKABLE_DIGITS = 8;
 
@@ -118,8 +157,7 @@ export function dialogLine(dialog, index) {
     return `${label}: not an object`;
   }
   const type = DIALOG_TYPES.includes(dialog.type) ? dialog.type : "other type";
-  const at = typeof dialog.start === "string" ? utc(dialog.start) : "";
-  const start = at.endsWith("UTC+00:00") ? at : "no start";
+  const start = instant(dialog.start) || "no start";
   const length = typeof dialog.duration === "number" && dialog.duration > 0 ? `${dialog.duration} s` : "no length";
   let content = "no content";
   if (typeof dialog.body === "string" && dialog.body !== "") {
@@ -253,7 +291,7 @@ function counted(vcon, form) {
   }
   return {
     form,
-    created: typeof vcon.created_at === "string" ? utc(vcon.created_at) : "",
+    created: instant(vcon.created_at),
     subject: typeof vcon.subject === "string" && vcon.subject !== "" ? "present, hidden" : "none",
     parties: items(vcon.parties).map(partyLine),
     dialogs: dialog.length,

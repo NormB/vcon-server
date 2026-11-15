@@ -67,6 +67,13 @@ as before. A record still holds no content: it names the part, never what
 the part held. The server records what the client says it showed; a client
 that reads without the marker and shows everything is recorded as a `read`.
 
+A client can also read the summary from the server: `?view=masked`
+answers the vCon's [masked view](@/docs/http-api.md#masked-view), which
+holds no content, and is recorded as `read_masked`. The
+[terminal UI](@/docs/tui.md) opens a vCon that way, so its log shows
+`read_masked` for each vCon opened and a `reveal_<part>` for each part
+shown. Release 0.4.6 and earlier never write `read_masked`.
+
 ### See who revealed what
 
 The steps that list the reveals of one vCon, with the key that made each

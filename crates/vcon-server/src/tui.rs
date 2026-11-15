@@ -4,9 +4,10 @@
 //! It is a client of the server's HTTP API with one API key, as any other
 //! client is: it opens no data directory, catalog or master key, so the
 //! server's scopes, tenant bounds and audit log apply to everything it
-//! shows. This release reads only: the key's tenant's vCons as the API
-//! lists them (uuid, version and times), and one vCon's row of that list.
-//! It never asks the server for a vCon's content.
+//! shows. It reads only: the key's tenant's vCons as the API lists them
+//! (uuid, version and times), one vCon's masked view (`?view=masked`,
+//! no content), and a part of it when a reveal key asks for it
+//! (`?reveal=<part>`, recorded in the audit log).
 //!
 //! The parts: [`state`] is the state machine, [`view`] draws a state,
 //! [`keys`] is the one table of bindings, and [`client`] is the API behind
@@ -256,6 +257,14 @@ mod tests {
                 next: None,
             })
         }
+
+        fn masked(&self, _uuid: &str) -> Result<Vec<String>, ApiError> {
+            Ok(vec!["Masked view".to_owned()])
+        }
+
+        fn reveal(&self, _uuid: &str, _part: crate::reveal::Part) -> Result<String, ApiError> {
+            Ok("{}".to_owned())
+        }
     }
 
     /// Keys from a list. When the list ends the input fails, so a loop that
@@ -313,7 +322,7 @@ mod tests {
             "both answers were applied before Down, so Down moved to the second vCon"
         );
         assert!(
-            frame.contains("Content is not shown"),
+            frame.contains(&format!("vCon {}", row(1).uuid)),
             "the last frame drawn is the detail view: {frame}"
         );
     }

@@ -6,6 +6,34 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The audit log has a new action, `read_masked`.**
+  - Effect: Each masked view read is recorded as `read_masked` in the
+    tenant's log; a reader that matches a fixed list of actions needs it.
+  - Do: Add `read_masked` to any alert, report or filter that lists actions.
+  - Docs: [Audit log
+    records](https://vcon-server.com/docs/audit-log-records/#every-action)
+- **The library's `audit::Action` has a new variant, `ReadMasked`.**
+  - Effect: Code that matches every `audit::Action` variant no longer
+    compiles until it handles `ReadMasked`.
+  - Do: Add an arm for `Action::ReadMasked`.
+
+### Added
+
+- **A vCon's masked view: `GET /vcons/{uuid}?view=masked`.**
+  - Effect: The server answers a vCon's form, counts and masked parties as
+    JSON, with no name, subject, full number, address or content.
+  - Limit: The legal routes refuse `view`; it needs the `read` scope.
+  - Docs: [Masked view](https://vcon-server.com/docs/http-api/#masked-view)
+- **The terminal UI shows a vCon's masked view and reveals one part on a key.**
+  - Effect: Enter shows the masked view; a reveal key shows the parties,
+    subject, dialog, analysis, links or the whole vCon.
+  - Limit: Each reveal is recorded in the audit log; the server must offer
+    the masked view.
+  - Docs: [Reveal a part of a
+    vCon](https://vcon-server.com/docs/tui/#reveal-a-part-of-a-vcon)
+
 ## [0.4.6] - 2026-11-14
 
 ### Changed

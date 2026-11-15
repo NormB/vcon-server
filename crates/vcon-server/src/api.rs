@@ -25,7 +25,8 @@ use serde::de::{Deserialize, DeserializeOwned, Deserializer, Error as _};
 use crate::access::{self, AuthError, Caller, Plane, Scope, Scopes};
 use crate::audit::{Action, Actor, AuditQuery, Entry};
 use crate::ids::{KeyId, TenantId, VersionId};
-use crate::query::BadQuery;
+use crate::masked;
+use crate::query::{self, BadQuery};
 use crate::retention::Retention;
 use crate::reveal::Part;
 use crate::store::{Caller as StoreCaller, Created, ListQuery, Store, StoreError};
@@ -368,15 +369,21 @@ async fn admin_audit_read(
     }
 }
 
-/// What a read's query makes of it: the part it reveals, if it carries
-/// the marker, and the action it is recorded under. A marker the route
-/// does not take leaves the request the plain read it is refused as.
+/// What a legal read's query makes of it: the part it reveals, if it
+/// carries the marker, and the action it is recorded under. A marker the
+/// route does not take leaves the request the plain read it is refused as.
+/// The masked view is not offered here: a query that asks for it is
+/// refused, so it is never answered with the whole vCon.
 fn marked(
     uri: &Uri,
     read: Action,
     reveal: fn(Part) -> Action,
 ) -> (Result<Option<Part>, BadQuery>, Action) {
-    let marker = Part::from_query(uri.query());
+    let marker = if query::names(uri.query(), masked::PARAMETER) {
+        Err(BadQuery)
+    } else {
+        Part::from_query(uri.query())
+    };
     let action = match marker {
         Ok(Some(part)) => reveal(part),
         Ok(None) | Err(BadQuery) => read,
@@ -384,9 +391,85 @@ fn marked(
     (marker, action)
 }
 
+/// What a tenant read asks for by its query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Asked {
+    /// The vCon as stored.
+    Plain,
+    /// The vCon as stored, recorded as a reveal of the part.
+    Reveal(Part),
+    /// The vCon's masked view (src/masked.rs).
+    Masked,
+}
+
+/// What a tenant read's query asks for, and the action it is recorded
+/// under. A query that asks for both the view and a reveal, or for either
+/// wrongly, is refused, recorded as the plain read.
+fn asked(uri: &Uri) -> (Result<Asked, BadQuery>, Action) {
+    let asked = match (
+        masked::from_query(uri.query()),
+        Part::from_query(uri.query()),
+    ) {
+        (Ok(true), Ok(None)) => Ok(Asked::Masked),
+        (Ok(false), Ok(Some(part))) => Ok(Asked::Reveal(part)),
+        (Ok(false), Ok(None)) => Ok(Asked::Plain),
+        _ => Err(BadQuery),
+    };
+    let action = match asked {
+        Ok(Asked::Masked) => Action::ReadMasked,
+        Ok(Asked::Reveal(part)) => Action::Reveal(part),
+        Ok(Asked::Plain) | Err(BadQuery) => Action::Read,
+    };
+    (asked, action)
+}
+
+/// A stored body as its JSON text's bytes: inflated within `limit` when it
+/// was stored gzipped.
+///
+/// # Errors
+///
+/// [`Problem::TooLarge`] when it inflates past `limit`, and damaged when it
+/// does not inflate.
+pub(crate) fn inflated(stored: &crate::store::Stored, limit: u64) -> Result<Vec<u8>, Problem> {
+    use std::io::Read;
+    if !stored.gzip {
+        return Ok(stored.body.clone());
+    }
+    let mut inflated = Vec::new();
+    flate2::read::MultiGzDecoder::new(stored.body.as_slice())
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut inflated)
+        .map_err(|_| Problem::Store(StoreError::Damaged))?;
+    if inflated.len() as u64 > limit {
+        return Err(Problem::TooLarge);
+    }
+    Ok(inflated)
+}
+
+/// The answer of the masked view of `stored`: its summary as JSON, with the
+/// version's tag, as the plain read gives it.
+fn masked_answer(stored: &crate::store::Stored, limit: u64) -> Response {
+    let made = match inflated(stored, limit) {
+        Ok(text) => masked::summary(&masked::text_of(&text)),
+        Err(refused) => return refused.into_response(),
+    };
+    // A summary is text, numbers and lists of text, which always write.
+    let json = serde_json::to_vec(&made).expect("a summary writes as JSON");
+    (
+        StatusCode::OK,
+        [
+            (CONTENT_TYPE, "application/json".to_owned()),
+            (ETAG, entity_tag(stored.version)),
+        ],
+        json,
+    )
+        .into_response()
+}
+
 /// `GET /vcons/{uuid}`: the current version, as stored. With
 /// `?reveal=<part>` the answer is the same and the read is recorded as a
-/// reveal of that part.
+/// reveal of that part. With `?view=masked` the answer is the vCon's
+/// masked view, recorded as `read_masked`.
 async fn read(
     State(app): State<Arc<App>>,
     UriPath(uuid): UriPath<String>,
@@ -394,7 +477,7 @@ async fn read(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    let (marker, action) = marked(&uri, Action::Read, Action::Reveal);
+    let (marker, action) = asked(&uri);
     let admitted = match admit(&app, &headers, body, Scope::Read, action).await {
         Ok(admitted) => admitted,
         Err(refused) => return refused.into_response(),
@@ -408,15 +491,17 @@ async fn read(
     let Some(uuid) = vcon::parse_uuid(&uuid) else {
         return refuse(Problem::BadPathUuid).await;
     };
-    let Ok(part) = marker else {
+    let Ok(asked) = marker else {
         return refuse(Problem::BadQuery).await;
     };
     let (store, key) = (admitted.store.clone(), admitted.caller.key);
-    let read = move || match part {
-        Some(part) => store.reveal(&StoreCaller { key }, uuid, part),
-        None => store.get(&StoreCaller { key }, uuid),
+    let read = move || match asked {
+        Asked::Reveal(part) => store.reveal(&StoreCaller { key }, uuid, part),
+        Asked::Masked => store.read_masked(&StoreCaller { key }, uuid),
+        Asked::Plain => store.get(&StoreCaller { key }, uuid),
     };
     match blocking(read).await {
+        Ok(stored) if asked == Asked::Masked => masked_answer(&stored, app.limits.inflated),
         Ok(stored) => {
             let content_type = if stored.gzip {
                 "application/vcon+gzip"
@@ -5238,6 +5323,9 @@ mod tests {
 /// pages to the code.
 #[cfg(test)]
 mod reveal_routes;
+
+#[cfg(test)]
+mod masked_routes;
 
 #[cfg(test)]
 mod player_routes;

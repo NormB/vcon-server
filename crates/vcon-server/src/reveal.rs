@@ -61,12 +61,7 @@ impl Part {
     /// [`BadQuery`] if the query names the marker and the marker is not
     /// exactly one known part.
     pub fn from_query(query: Option<&str>) -> Result<Option<Part>, BadQuery> {
-        let marked = query.unwrap_or("").split('&').any(|piece| {
-            form_urlencoded::parse(piece.as_bytes())
-                .next()
-                .is_some_and(|(name, _)| name == MARKER)
-        });
-        if !marked {
+        if !query::names(query, MARKER) {
             return Ok(None);
         }
         let read = query::pairs(query, &[MARKER])?;

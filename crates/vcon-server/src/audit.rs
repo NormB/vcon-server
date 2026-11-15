@@ -50,6 +50,9 @@ pub enum Action {
     Create,
     Replace,
     Read,
+    /// A read of the vCon's masked view (`?view=masked`): its summary,
+    /// with no content.
+    ReadMasked,
     /// A read marked as a reveal of one part of the vCon.
     Reveal(Part),
     Delete,
@@ -131,6 +134,7 @@ impl Action {
             Action::Create => "create",
             Action::Replace => "replace",
             Action::Read => "read",
+            Action::ReadMasked => "read_masked",
             Action::Reveal(Part::Parties) => "reveal_parties",
             Action::Reveal(Part::Subject) => "reveal_subject",
             Action::Reveal(Part::Dialog) => "reveal_dialog",
@@ -705,6 +709,7 @@ mod tests {
             Action::Create => "create",
             Action::Replace => "replace",
             Action::Read => "read",
+            Action::ReadMasked => "read_masked",
             Action::Reveal(Part::Parties) => "reveal_parties",
             Action::Reveal(Part::Subject) => "reveal_subject",
             Action::Reveal(Part::Dialog) => "reveal_dialog",
@@ -768,6 +773,7 @@ mod tests {
             Action::Create,
             Action::Replace,
             Action::Read,
+            Action::ReadMasked,
             Action::Reveal(Part::Parties),
             Action::Reveal(Part::Subject),
             Action::Reveal(Part::Dialog),

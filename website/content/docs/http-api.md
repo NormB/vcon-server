@@ -61,7 +61,7 @@ group = "reference"
 |---|---|---|---|
 | `POST /vcons` | `write` | a vCon body | `201` with `Location: /vcons/{uuid}` and `ETag`; `200` with the same `ETag` when the same bytes are already current |
 | `GET /vcons` | `read` | optional `limit`, `cursor`, `since`, `until` | `200` with a page of the tenant's live vCons, newest first; see [listing](#listing) |
-| `GET /vcons/{uuid}` | `read` | optional `reveal`; see [reveals](#reveals) | `200` with the body as stored, `ETag`, and `Content-Type` `application/vcon` or `application/vcon+gzip` |
+| `GET /vcons/{uuid}` | `read` | optional `reveal` or `view`; see [reveals](#reveals) and [masked view](#masked-view) | `200` with the body as stored, `ETag`, and `Content-Type` `application/vcon` or `application/vcon+gzip`; with `view=masked`, the masked view as `application/json` |
 | `PUT /vcons/{uuid}` | `write` | `If-Match: "<current version>"` and a vCon body with that uuid | `200` with the new `ETag` |
 | `DELETE /vcons/{uuid}` | `delete` | | `204`, also when already deleted or purged |
 
@@ -169,8 +169,58 @@ action too.
 `reveal` must be the only parameter and be given once, with one of the seven
 values, in lower case. Anything else is
 [`bad-query`](@/problems/bad-query.md) (400): no vCon is sent, and the
-refusal is recorded as a `read` or a `legal_read`. A query that does not
-name `reveal` is passed over, as it always was on these routes.
+refusal is recorded as a `read` or a `legal_read`. A query that names
+neither `reveal` nor `view` is passed over, as it always was on these routes.
+
+## Masked view
+
+The `view` parameter is new after 0.4.6: release 0.4.6 and earlier pass
+the query over, answer the whole vCon and record the read as `read`.
+
+`GET /vcons/{uuid}?view=masked` answers what the vCon holds without any
+name, subject, full number, address or content, so a client can show a vCon
+before a person reveals a part of it. The [terminal UI](@/docs/tui.md)
+opens a vCon this way. The answer is `200` with `Content-Type`
+`application/json`, the same `ETag` as the plain read, and this body:
+
+```json
+{
+  "form": "unsigned",
+  "created": "2026-11-10 09:15:00 UTC+00:00",
+  "subject": "present, hidden",
+  "parties": ["Party 1: number ending 0142; name hidden", "Party 2: address at example.com; name hidden"],
+  "dialogs": 1,
+  "dialog": ["Dialog 1: recording, 2026-11-10 09:15:05 UTC+00:00, 95 s, parties 1, 2; content hidden"],
+  "seconds": 95,
+  "attachments": 0,
+  "analyses": 1,
+  "links": 0,
+  "signature": null
+}
+```
+
+| Field | Holds |
+|---|---|
+| `form` | `unsigned`, `signed (JWS)`, `encrypted (JWE)`, `not JSON` or `not a JSON object`; a signed vCon's payload is read, an encrypted one is not |
+| `created`, and the start in each `dialog` line | the time in UTC, shown only when it is an RFC 3339 date-time; otherwise empty, or `no start` |
+| `subject` | `present, hidden`, `none`, or `not readable` |
+| `parties` | for each party: the last four digits of a number of at least 8 digits, the domain of an address, and `name hidden` when it has a name |
+| `dialogs`, `dialog`, `seconds` | how many dialogs, one line for each (type, start, length, parties, whether it has content), and the sum of their lengths |
+| `attachments`, `analyses`, `links` | how many of each; a link is a `url` in the dialog, attachments or analysis |
+| `signature` | a signed vCon's `alg`, `kid` and `x5t`, each empty when the header does not hold it; `null` otherwise |
+
+The view needs the `read` scope, as the plain read does, and is recorded
+as `read_masked` in the [audit log](@/docs/audit-logs.md#reveals). A
+refused view (403, 404, 410) is recorded as `read_masked` too. `view` must be
+the only parameter and be given once, with the value `masked`: any other
+value, `view` beside `reveal`, or `view` on a legal route is
+[`bad-query`](@/problems/bad-query.md) (400), recorded as `read` or
+`legal_read`, and no vCon is sent.
+
+```sh
+# The masked view; the log records read_masked
+curl -s "https://vcon.example.com/vcons/$UUID?view=masked" -H "Authorization: Bearer $KEY"
+```
 
 ## Legal
 

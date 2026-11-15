@@ -11,9 +11,9 @@ use crate::access::{Scope, Scopes};
 use crate::audit::Actor;
 use crate::reveal::Part;
 
-const UUID: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bc46";
+pub(super) const UUID: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bc46";
 
-fn a4() -> Vec<u8> {
+pub(super) fn a4() -> Vec<u8> {
     std::fs::read(format!(
         "{}/../vcon/tests/fixtures/ietf/ab_call_ext_rec.vcon",
         env!("CARGO_MANIFEST_DIR")
@@ -21,7 +21,7 @@ fn a4() -> Vec<u8> {
     .expect("A.4")
 }
 
-async fn call(s: &Server, method: Method, path: &str, token: &str) -> reqwest::Response {
+pub(super) async fn call(s: &Server, method: Method, path: &str, token: &str) -> reqwest::Response {
     s.client()
         .request(method, s.url(path))
         .bearer_auth(token)
@@ -30,12 +30,12 @@ async fn call(s: &Server, method: Method, path: &str, token: &str) -> reqwest::R
         .expect("an answer")
 }
 
-async fn get(s: &Server, path: &str, token: &str) -> reqwest::Response {
+pub(super) async fn get(s: &Server, path: &str, token: &str) -> reqwest::Response {
     call(s, Method::GET, path, token).await
 }
 
 /// Stores `body` as `content_type` and returns its entity tag.
-async fn stored_as(s: &Server, content_type: &str, body: Vec<u8>) -> String {
+pub(super) async fn stored_as(s: &Server, content_type: &str, body: Vec<u8>) -> String {
     let answer = s
         .client()
         .post(s.url("/vcons"))
@@ -50,7 +50,7 @@ async fn stored_as(s: &Server, content_type: &str, body: Vec<u8>) -> String {
 }
 
 /// Stores A.4 and returns its entity tag.
-async fn stored(s: &Server) -> String {
+pub(super) async fn stored(s: &Server) -> String {
     stored_as(s, "application/vcon", a4()).await
 }
 
@@ -79,7 +79,7 @@ async fn whole(answer: reqwest::Response) -> (u16, String, String, String, Vec<u
 }
 
 /// The tenant log's records: each one's action, status, target and version.
-fn recorded(s: &Server) -> Vec<(String, u64, Value, Value)> {
+pub(super) fn recorded(s: &Server) -> Vec<(String, u64, Value, Value)> {
     s.tenants
         .store(s.tenant)
         .expect("its store")
@@ -97,7 +97,7 @@ fn recorded(s: &Server) -> Vec<(String, u64, Value, Value)> {
 }
 
 /// The version id inside an entity tag, as the log writes it.
-fn bare(tag: &str) -> Value {
+pub(super) fn bare(tag: &str) -> Value {
     tag.trim_matches('"').into()
 }
 
@@ -124,7 +124,7 @@ async fn a_marked_read_answers_as_the_read_does_and_is_recorded_as_the_reveal() 
     }
 }
 
-fn gzip(body: &[u8]) -> Vec<u8> {
+pub(super) fn gzip(body: &[u8]) -> Vec<u8> {
     use std::io::Write;
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     encoder.write_all(body).expect("gzip");

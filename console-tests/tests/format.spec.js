@@ -92,6 +92,53 @@ test.describe("masking", () => {
   });
 });
 
+// The server's masked view (GET /vcons/{uuid}?view=masked) is made by a
+// port of summary() in crates/vcon-server/src/masked.rs. Both are tested
+// against these cases, so the two rules give the same answer to each.
+const MASKED_CASES = JSON.parse(
+  readFileSync(new URL("../../crates/vcon-server/tests/data/masked-cases.json", import.meta.url), "utf8"),
+);
+
+test.describe("the cases the server's masked view is tested against too", () => {
+  test("there are cases to compare", () => {
+    expect(MASKED_CASES.length).toBeGreaterThan(20);
+  });
+  for (const { name, body, summary: wanted } of MASKED_CASES) {
+    test(`masked case: ${name}`, () => {
+      expect(summary(body)).toEqual(wanted);
+    });
+  }
+});
+
+test.describe("instants", () => {
+  test("an RFC 3339 date-time is shown in UTC to the second", () => {
+    expect(format.instant("2026-10-23T14:30:05.9+02:00")).toBe("2026-10-23 12:30:05 UTC+00:00");
+  });
+  test("a day the month does not have is no time, not the next month", () => {
+    expect(format.instant("2026-02-30T00:00:00Z")).toBe("");
+  });
+  test("an hour of 24 and a second of 60 are no time", () => {
+    expect(format.instant("2026-01-01T24:00:00Z")).toBe("");
+    expect(format.instant("2026-01-01T23:59:60Z")).toBe("");
+  });
+  test("text that a browser would read as a date is no time", () => {
+    expect(format.instant("1")).toBe("");
+    expect(format.instant("Jan 2 2026")).toBe("");
+    expect(format.instant("2026-11-10T09:15Z")).toBe("");
+  });
+  test("a time that falls outside the years 1 to 9999 in UTC is no time", () => {
+    expect(format.instant("9999-12-31T23:30:00-01:00")).toBe("");
+    expect(format.instant("0001-01-01T00:30:00+01:00")).toBe("");
+  });
+  test("a value that is not text is no time", () => {
+    expect(format.instant(7)).toBe("");
+    expect(format.instant(null)).toBe("");
+  });
+  test("a created time that is not a time is not shown as its text", () => {
+    expect(summary(JSON.stringify({ created_at: "Ada called about her account" })).created).toBe("");
+  });
+});
+
 test.describe("summary", () => {
   const plain = {
     uuid: "0198a1b2-0000-8000-8000-000000000001",

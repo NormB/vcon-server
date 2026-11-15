@@ -39,6 +39,7 @@ action through MCP is recorded as its HTTP route records it.
 | `create` | a vCon stored (`POST /vcons`) | the tenant's |
 | `replace` | a vCon replaced by a new version (`PUT /vcons/{uuid}`) | the tenant's |
 | `read` | a vCon read (`GET /vcons/{uuid}`) | the tenant's |
+| `read_masked` | a vCon's [masked view](@/docs/http-api.md#masked-view) read, which holds no content (`GET /vcons/{uuid}?view=masked`) | the tenant's |
 | `reveal_parties` | a vCon read as a [reveal](@/docs/audit-logs.md#reveals) of the parties (`GET /vcons/{uuid}?reveal=parties`) | the tenant's |
 | `reveal_subject` | a vCon read as a [reveal](@/docs/audit-logs.md#reveals) of the subject (`GET /vcons/{uuid}?reveal=subject`) | the tenant's |
 | `reveal_dialog` | a vCon read as a [reveal](@/docs/audit-logs.md#reveals) of the dialog (`GET /vcons/{uuid}?reveal=dialog`) | the tenant's |

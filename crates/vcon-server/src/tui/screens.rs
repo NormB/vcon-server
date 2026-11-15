@@ -7,9 +7,13 @@ use time::format_description::well_known::Rfc3339;
 use time::macros::datetime;
 use time::{Duration, OffsetDateTime};
 
+use crate::masked;
+use crate::reveal::Part;
 use crate::tui::client;
 use crate::tui::keys::{BINDINGS, Binding};
-use crate::tui::state::{Action, ApiError, Event, KeyInfo, Listing, Page, Row, State, View};
+use crate::tui::state::{
+    Action, ApiError, Content, Event, KeyInfo, Listing, Page, Revealed, Row, State, View,
+};
 
 /// When the screens were read.
 pub const NOW: OffsetDateTime = datetime!(2026-11-10 01:20:00 UTC);
@@ -61,6 +65,26 @@ pub enum Screen {
     DetailGone,
     /// The detail view after a refresh failed.
     DetailFailed,
+    /// The detail view while the masked view is read.
+    DetailReading,
+    /// The detail view of a masked view that was not read.
+    DetailMaskedFailed,
+    /// A reveal in flight.
+    Revealing,
+    /// The parties revealed.
+    RevealParties,
+    /// The subject revealed.
+    RevealSubject,
+    /// The dialog revealed.
+    RevealDialog,
+    /// The analysis revealed.
+    RevealAnalysis,
+    /// The links revealed.
+    RevealLinks,
+    /// The whole vCon revealed.
+    RevealWhole,
+    /// A reveal that failed.
+    RevealFailed,
     /// The help view.
     Help,
     /// The list in a terminal of 120 columns.
@@ -75,7 +99,7 @@ pub enum Screen {
 
 impl Screen {
     /// Every screen, in the order the page describes them.
-    pub const ALL: [Screen; 25] = [
+    pub const ALL: [Screen; 35] = [
         Screen::List,
         Screen::ListEnd,
         Screen::ListOne,
@@ -96,6 +120,16 @@ impl Screen {
         Screen::DetailRefreshing,
         Screen::DetailGone,
         Screen::DetailFailed,
+        Screen::DetailReading,
+        Screen::DetailMaskedFailed,
+        Screen::Revealing,
+        Screen::RevealParties,
+        Screen::RevealSubject,
+        Screen::RevealDialog,
+        Screen::RevealAnalysis,
+        Screen::RevealLinks,
+        Screen::RevealWhole,
+        Screen::RevealFailed,
         Screen::Help,
         Screen::Wide,
         Screen::Narrow,
@@ -126,6 +160,16 @@ impl Screen {
             Screen::DetailRefreshing => "The detail while the list is read again",
             Screen::DetailGone => "The detail of a vCon that left the list",
             Screen::DetailFailed => "The detail after a list that was not read",
+            Screen::DetailReading => "The detail while the masked view is read",
+            Screen::DetailMaskedFailed => "A masked view that was not read",
+            Screen::Revealing => "A reveal being read",
+            Screen::RevealParties => "The parties revealed",
+            Screen::RevealSubject => "The subject revealed",
+            Screen::RevealDialog => "The dialog revealed",
+            Screen::RevealAnalysis => "The analysis revealed",
+            Screen::RevealLinks => "The links revealed",
+            Screen::RevealWhole => "The whole vCon revealed",
+            Screen::RevealFailed => "A reveal that failed",
             Screen::Help => "Help",
             Screen::Wide => "A terminal of 120 columns",
             Screen::Narrow => "A terminal of 60 columns",
@@ -138,7 +182,10 @@ impl Screen {
     /// be read, or a request left a notice above the keys.
     pub fn failure(self) -> bool {
         let state = self.state();
-        matches!(state.listing, Listing::Failed(_)) || state.notice.is_some()
+        matches!(state.listing, Listing::Failed(_))
+            || state.notice.is_some()
+            || matches!(state.content, Content::Failed(_))
+            || matches!(state.revealed, Some(Revealed::Failed(..)))
     }
 
     /// The screen's name in website/data/tui-screens.json and on the page.
@@ -164,6 +211,16 @@ impl Screen {
             Screen::DetailRefreshing => "detail-refreshing",
             Screen::DetailGone => "detail-gone",
             Screen::DetailFailed => "detail-failed",
+            Screen::DetailReading => "detail-reading",
+            Screen::DetailMaskedFailed => "detail-masked-failed",
+            Screen::Revealing => "revealing",
+            Screen::RevealParties => "reveal-parties",
+            Screen::RevealSubject => "reveal-subject",
+            Screen::RevealDialog => "reveal-dialog",
+            Screen::RevealAnalysis => "reveal-analysis",
+            Screen::RevealLinks => "reveal-links",
+            Screen::RevealWhole => "reveal-whole",
+            Screen::RevealFailed => "reveal-failed",
             Screen::Help => "help",
             Screen::Wide => "wide",
             Screen::Narrow => "narrow",
@@ -175,7 +232,18 @@ impl Screen {
     /// The columns and lines of the terminal the screen is drawn in.
     pub fn size(self) -> (u16, u16) {
         match self {
-            Screen::List | Screen::Detail | Screen::Help => (80, 24),
+            Screen::List
+            | Screen::Detail
+            | Screen::Help
+            | Screen::DetailMaskedFailed
+            | Screen::Revealing
+            | Screen::RevealParties
+            | Screen::RevealSubject
+            | Screen::RevealDialog
+            | Screen::RevealAnalysis
+            | Screen::RevealLinks
+            | Screen::RevealWhole
+            | Screen::RevealFailed => (80, 24),
             Screen::Wide => (120, 10),
             Screen::Narrow => (60, 10),
             Screen::Narrowest => (40, 10),
@@ -212,8 +280,32 @@ impl Screen {
             Screen::OperatorKey => shown_key(None, &[]),
             Screen::NoReadScope => shown_key(Some(SHOWN_TENANT), &["write"]),
             Screen::ServerError => failed(reader(), unavailable()),
-            Screen::Detail => press(shown_list(), &[Action::Open]),
-            Screen::DetailOne => press(shown_page(reader(), 0..1, false), &[Action::Open]),
+            Screen::Detail => shown_masked(press(shown_list(), &[Action::Open])),
+            Screen::DetailOne => {
+                shown_masked(press(shown_page(reader(), 0..1, false), &[Action::Open]))
+            }
+            Screen::DetailReading => press(shown_list(), &[Action::Open]),
+            Screen::DetailMaskedFailed => {
+                let mut state = press(shown_list(), &[Action::Open]);
+                let uuid = state.detail.clone().expect("a vCon open");
+                let older = client::masked_answer(200, "application/vcon", SHOWN_VCON.as_bytes())
+                    .expect_err("the whole vCon is not the masked view");
+                state.step(Event::Masked(uuid, Err(older)), NOW);
+                state
+            }
+            Screen::Revealing => press(shown_detail(), &[Action::Reveal(Part::Parties)]),
+            Screen::RevealParties => shown_reveal(Part::Parties),
+            Screen::RevealSubject => shown_reveal(Part::Subject),
+            Screen::RevealDialog => shown_reveal(Part::Dialog),
+            Screen::RevealAnalysis => shown_reveal(Part::Analysis),
+            Screen::RevealLinks => shown_reveal(Part::Links),
+            Screen::RevealWhole => shown_reveal(Part::All),
+            Screen::RevealFailed => {
+                let mut state = press(shown_detail(), &[Action::Reveal(Part::Dialog)]);
+                let uuid = state.detail.clone().expect("a vCon open");
+                state.step(Event::Revealed(uuid, Part::Dialog, Err(unavailable())), NOW);
+                state
+            }
             Screen::DetailRefreshing => press(shown_list(), &[Action::Open, Action::Refresh]),
             // The vCon open in the detail view is deleted; r reads a list
             // without it.
@@ -244,6 +336,33 @@ impl Screen {
             .filter(|binding| state.acts(binding.action))
             .collect()
     }
+}
+
+/// The vCon the detail screens show, as a server stores it: synthetic, with
+/// reserved names (example.com, a 555-01xx number).
+pub const SHOWN_VCON: &str = r#"{"vcon":"0.0.1","uuid":"0193f1c2-5b7a-8e4d-9f60-2a1b3c4d5e6f","created_at":"2026-11-09T16:40:12Z","subject":"Renewal of the annual service plan","parties":[{"tel":"+12125550142","name":"Ada Example"},{"mailto":"support@example.com","name":"Example Support"}],"dialog":[{"type":"text","start":"2026-11-09T16:40:12Z","duration":95,"parties":[0,1],"encoding":"none","body":"Ada: I would like to renew the plan.\nSupport: It is renewed until November 2027."}],"analysis":[{"type":"summary","dialog":0,"vendor":"example","encoding":"none","body":"The customer renewed the annual plan."}],"attachments":[{"type":"invoice","url":"https://files.example.com/invoices/2026-11-09.pdf"}]}"#;
+
+/// `state`, a detail view whose masked view was asked for, once the
+/// masked view of [`SHOWN_VCON`] arrived.
+pub fn shown_masked(mut state: State) -> State {
+    let uuid = state.detail.clone().expect("a vCon open");
+    let lines = client::summary_lines(&masked::summary(SHOWN_VCON));
+    state.step(Event::Masked(uuid, Ok(lines)), NOW);
+    state
+}
+
+/// The shown list's third vCon open, its masked view read.
+pub fn shown_detail() -> State {
+    shown_masked(press(shown_list(), &[Action::Open]))
+}
+
+/// The detail view with `part` of [`SHOWN_VCON`] revealed.
+pub fn shown_reveal(part: Part) -> State {
+    let mut state = press(shown_detail(), &[Action::Reveal(part)]);
+    let uuid = state.detail.clone().expect("a vCon open");
+    let text = client::reveal_text(SHOWN_VCON, part);
+    state.step(Event::Revealed(uuid, part, Ok(text)), NOW);
+    state
 }
 
 /// The state before the server has answered.

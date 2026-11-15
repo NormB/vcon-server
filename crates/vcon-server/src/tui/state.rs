@@ -7,6 +7,8 @@ use std::fmt;
 use serde::Deserialize;
 use time::OffsetDateTime;
 
+use crate::reveal::Part;
+
 /// What `GET /key` answers: the key in use.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct KeyInfo {
@@ -136,6 +138,33 @@ pub enum Action {
     Help,
     /// End the program.
     Quit,
+    /// Reveal a part of the vCon open: ask the server for it as a reveal
+    /// of that part, which the audit log records, and show it.
+    Reveal(Part),
+}
+
+/// The masked view of the vCon open in the detail view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Content {
+    /// No vCon is open.
+    None,
+    /// `GET /vcons/{uuid}?view=masked` is in flight.
+    Reading,
+    /// The masked view, as the lines the detail view shows.
+    Ready(Vec<String>),
+    /// The masked view was not read: why.
+    Failed(String),
+}
+
+/// The part of the vCon open that was revealed, if one was asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Revealed {
+    /// The reveal is in flight.
+    Reading(Part),
+    /// The part, as text.
+    Shown(Part, String),
+    /// The reveal was refused or did not arrive: why.
+    Failed(Part, String),
 }
 
 /// What happened.
@@ -149,6 +178,12 @@ pub enum Event {
     KeyInfo(Result<KeyInfo, ApiError>),
     /// `GET /vcons` finished.
     Page(Result<Page, ApiError>),
+    /// `GET /vcons/{uuid}?view=masked` finished for this uuid: the masked
+    /// view as lines.
+    Masked(String, Result<Vec<String>, ApiError>),
+    /// `GET /vcons/{uuid}?reveal=<part>` finished for this uuid and part:
+    /// the part as text.
+    Revealed(String, Part, Result<String, ApiError>),
 }
 
 /// A request for the caller to make; its answer comes back as an [`Event`].
@@ -158,6 +193,10 @@ pub enum Effect {
     FetchKey,
     /// `GET /vcons`, from this cursor or from the start.
     FetchPage(Option<String>),
+    /// `GET /vcons/{uuid}?view=masked`.
+    FetchMasked(String),
+    /// `GET /vcons/{uuid}?reveal=<part>`.
+    FetchReveal(String, Part),
 }
 
 /// The lines a frame takes around the list's rows: the status line, the
@@ -195,6 +234,15 @@ pub struct State {
     pub size: (u16, u16),
     /// Whether the program should end.
     pub quit: bool,
+    /// The masked view of the vCon open.
+    pub content: Content,
+    /// The part of the vCon open that was revealed. It is dropped when the
+    /// detail view is left, another vCon is shown, or the list is read
+    /// again.
+    pub revealed: Option<Revealed>,
+    /// The first line of the detail view shown, for a text longer than
+    /// the screen.
+    pub scroll: usize,
 }
 
 impl State {
@@ -217,6 +265,9 @@ impl State {
             notice: None,
             size,
             quit: false,
+            content: Content::None,
+            revealed: None,
+            scroll: 0,
         };
         (state, vec![Effect::FetchKey])
     }
@@ -248,7 +299,14 @@ impl State {
     pub fn acts(&self, action: Action) -> bool {
         match (self.view, action) {
             (_, Action::Quit | Action::Help) | (View::Help | View::Detail, Action::Back) => true,
-            (View::Help, _) | (View::List, Action::Back) | (View::Detail, Action::Open) => false,
+            (View::Help, _)
+            | (View::List, Action::Back | Action::Reveal(_))
+            | (View::Detail, Action::Open) => false,
+            (View::Detail, Action::Reveal(_)) => {
+                matches!(self.content, Content::Ready(_)) && self.detail_row().is_some()
+            }
+            (View::Detail, Action::PageDown) => self.scroll < self.scroll_most(),
+            (View::Detail, Action::PageUp) => self.scroll > 0,
             (_, Action::Refresh) => !self.busy() && self.key_refusal().is_none(),
             (_, Action::More) => {
                 !self.busy() && self.listing == Listing::Ready && self.next.is_some()
@@ -315,6 +373,14 @@ impl State {
             }
             Event::Page(Err(error)) => {
                 self.page_failed(&error);
+                Vec::new()
+            }
+            Event::Masked(uuid, answer) => {
+                self.masked_arrived(&uuid, answer);
+                Vec::new()
+            }
+            Event::Revealed(uuid, part, answer) => {
+                self.reveal_arrived(&uuid, part, answer);
                 Vec::new()
             }
         }
@@ -389,13 +455,39 @@ impl State {
         match (self.view, action) {
             (_, Action::Quit) => self.quit = true,
             (View::Help, Action::Help | Action::Back) => self.view = self.behind_help,
-            (View::Help, _) | (View::List, Action::Back) | (View::Detail, Action::Open) => {}
+            (View::Help, _)
+            | (View::List, Action::Back | Action::Reveal(_))
+            | (View::Detail, Action::Open) => {}
             (view, Action::Help) => {
                 self.behind_help = view;
                 self.view = View::Help;
             }
-            (View::Detail, Action::Back) => self.view = View::List,
-            (_, Action::Refresh) => return self.refresh(),
+            (View::Detail, Action::Back) => {
+                self.view = View::List;
+                self.content = Content::None;
+                self.drop_revealed();
+            }
+            (View::Detail, Action::Reveal(part)) => return self.reveal(part),
+            (View::Detail, Action::PageDown) => {
+                let page = Self::page_lines(self.size.1);
+                self.scroll = self.scroll.saturating_add(page).min(self.scroll_most());
+            }
+            (View::Detail, Action::PageUp) => {
+                self.scroll = self.scroll.saturating_sub(Self::page_lines(self.size.1));
+            }
+            (view, Action::Refresh) => {
+                let mut effects = self.refresh();
+                if view == View::Detail {
+                    self.drop_revealed();
+                    if !effects.is_empty()
+                        && let Some(uuid) = self.detail.clone()
+                    {
+                        self.content = Content::Reading;
+                        effects.push(Effect::FetchMasked(uuid));
+                    }
+                }
+                return effects;
+            }
             (_, Action::More) => return self.more(),
             // A message stands in place of the rows: nothing to open or
             // to move from.
@@ -411,8 +503,9 @@ impl State {
             ) if !self.rows_shown() => {}
             (View::List, Action::Open) => {
                 if let Some(row) = self.rows.get(self.selected) {
-                    self.detail = Some(row.uuid.clone());
+                    let uuid = row.uuid.clone();
                     self.view = View::Detail;
+                    return self.show(uuid);
                 }
             }
             (
@@ -427,12 +520,95 @@ impl State {
                 self.travel(action);
                 if view == View::Detail
                     && let Some(row) = self.rows.get(self.selected)
+                    && self.detail.as_deref() != Some(row.uuid.as_str())
                 {
-                    self.detail = Some(row.uuid.clone());
+                    let uuid = row.uuid.clone();
+                    return self.show(uuid);
                 }
             }
         }
         Vec::new()
+    }
+
+    /// Shows `uuid` in the detail view: its masked view is asked for, and
+    /// nothing of another vCon is kept.
+    fn show(&mut self, uuid: String) -> Vec<Effect> {
+        self.detail = Some(uuid.clone());
+        self.content = Content::Reading;
+        self.drop_revealed();
+        vec![Effect::FetchMasked(uuid)]
+    }
+
+    /// Asks for `part` of the vCon open, once its masked view is shown.
+    fn reveal(&mut self, part: Part) -> Vec<Effect> {
+        if !self.acts(Action::Reveal(part)) {
+            return Vec::new();
+        }
+        let Some(uuid) = self.detail.clone() else {
+            return Vec::new();
+        };
+        self.revealed = Some(Revealed::Reading(part));
+        self.scroll_to_revealed();
+        vec![Effect::FetchReveal(uuid, part)]
+    }
+
+    /// Moves the view to the line above the part revealed, as far as the
+    /// text allows, so the part is on the screen.
+    fn scroll_to_revealed(&mut self) {
+        let kept = self.revealed.take();
+        let top = crate::tui::view::detail_lines(self, self.size.0).len();
+        self.revealed = kept;
+        self.scroll = top.min(self.scroll_most());
+    }
+
+    /// Drops the revealed text and goes back to the top of the view.
+    fn drop_revealed(&mut self) {
+        self.revealed = None;
+        self.scroll = 0;
+    }
+
+    /// Whether an answer for `uuid` is for the detail view as it stands:
+    /// that vCon is open, under help or not.
+    fn showing(&self, uuid: &str) -> bool {
+        let detail = self.view == View::Detail
+            || (self.view == View::Help && self.behind_help == View::Detail);
+        detail && self.detail.as_deref() == Some(uuid)
+    }
+
+    /// A masked view arrived: it is shown if it is the one awaited.
+    fn masked_arrived(&mut self, uuid: &str, answer: Result<Vec<String>, ApiError>) {
+        if self.showing(uuid) && self.content == Content::Reading {
+            self.content = match answer {
+                Ok(lines) => Content::Ready(lines),
+                Err(error) => Content::Failed(error.to_string()),
+            };
+        }
+    }
+
+    /// A revealed part arrived: it is shown if it is the one awaited.
+    fn reveal_arrived(&mut self, uuid: &str, part: Part, answer: Result<String, ApiError>) {
+        if self.showing(uuid) && self.revealed == Some(Revealed::Reading(part)) {
+            self.revealed = Some(match answer {
+                Ok(text) => Revealed::Shown(part, text),
+                Err(error) => Revealed::Failed(part, error.to_string()),
+            });
+            self.scroll_to_revealed();
+        }
+    }
+
+    /// The lines PgUp and PgDn move the detail view by, in a terminal of
+    /// `lines` lines: the lines its body shows at least.
+    #[must_use]
+    pub fn page_lines(lines: u16) -> usize {
+        usize::from(Self::list_rows(lines))
+    }
+
+    /// The furthest the detail view can be moved down: its text, at the
+    /// terminal's width, less one page.
+    fn scroll_most(&self) -> usize {
+        crate::tui::view::detail_lines(self, self.size.0)
+            .len()
+            .saturating_sub(Self::page_lines(self.size.1))
     }
 
     /// Moves the selection, staying within the rows.
@@ -620,8 +796,8 @@ mod tests {
         );
         assert_eq!(
             effects,
-            [],
-            "the detail is drawn from the list row: no request"
+            [Effect::FetchMasked(row(1).uuid)],
+            "the metadata is the list row's; the content is asked for masked"
         );
         press(&mut state, Action::Back);
         assert_eq!(state.view, View::List, "back at the list");
@@ -1391,10 +1567,19 @@ mod tests {
     #[test]
     fn the_keys_that_move_act_when_one_of_them_can_move() {
         for (name, state) in states() {
-            let moves = TRAVEL
+            // In the detail view the page keys move its text, not the
+            // selection (page_down_in_the_detail_view_scrolls_...).
+            let travel: Vec<Action> = TRAVEL
+                .into_iter()
+                .filter(|action| {
+                    state.view != View::Detail
+                        || !matches!(action, Action::PageUp | Action::PageDown)
+                })
+                .collect();
+            let moves = travel
                 .iter()
                 .any(|action| acted(&state, *action).0 != state);
-            for action in TRAVEL {
+            for action in travel {
                 assert_eq!(
                     state.acts(action),
                     moves,
@@ -1568,5 +1753,324 @@ mod tests {
             "the detail view shows the row that is left"
         );
         assert!(!state.acts(Action::Down), "then there is nowhere to move");
+    }
+
+    // The masked view and the reveals.
+
+    use super::{Content, Revealed};
+    use crate::reveal::Part;
+
+    /// The parts a key reveals, in the order of the keys.
+    const PARTS: [Part; 6] = [
+        Part::Parties,
+        Part::Subject,
+        Part::Dialog,
+        Part::Analysis,
+        Part::Links,
+        Part::All,
+    ];
+
+    fn summary() -> Vec<String> {
+        vec!["Form          unsigned".to_owned()]
+    }
+
+    /// A list of three, the second vCon open and its masked view read.
+    fn opened() -> State {
+        let mut state = listed(3, None);
+        press(&mut state, Action::Down);
+        press(&mut state, Action::Open);
+        state.step(Event::Masked(row(1).uuid, Ok(summary())), NOW);
+        state
+    }
+
+    /// `state` with `part` revealed as `text`.
+    fn revealed(mut state: State, part: Part, text: &str) -> State {
+        press(&mut state, Action::Reveal(part));
+        state.step(Event::Revealed(row(1).uuid, part, Ok(text.to_owned())), NOW);
+        state
+    }
+
+    #[test]
+    fn open_asks_for_the_masked_view_and_reads_it_until_it_arrives() {
+        let mut state = listed(3, None);
+        let effects = press(&mut state, Action::Open);
+        assert_eq!(effects, [Effect::FetchMasked(row(0).uuid)], "one request");
+        assert_eq!(state.content, Content::Reading, "being read");
+        assert_eq!(state.revealed, None, "nothing revealed");
+    }
+
+    #[test]
+    fn the_masked_view_that_arrives_is_shown() {
+        assert_eq!(opened().content, Content::Ready(summary()), "the summary");
+    }
+
+    #[test]
+    fn a_reveal_key_asks_for_that_part_of_the_vcon_open() {
+        let mut state = opened();
+        let effects = press(&mut state, Action::Reveal(Part::Parties));
+        assert_eq!(
+            effects,
+            [Effect::FetchReveal(row(1).uuid, Part::Parties)],
+            "a reveal of the parties"
+        );
+        assert_eq!(
+            state.revealed,
+            Some(Revealed::Reading(Part::Parties)),
+            "being read"
+        );
+    }
+
+    #[test]
+    fn each_reveal_key_asks_for_its_own_part() {
+        for part in PARTS {
+            let mut state = opened();
+            assert!(state.acts(Action::Reveal(part)), "{part:?} acts");
+            assert_eq!(
+                press(&mut state, Action::Reveal(part)),
+                [Effect::FetchReveal(row(1).uuid, part)],
+                "{part:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_revealed_text_is_shown_once_its_answer_arrives() {
+        let state = revealed(opened(), Part::Subject, "Renewal call");
+        assert_eq!(
+            state.revealed,
+            Some(Revealed::Shown(Part::Subject, "Renewal call".to_owned())),
+            "shown"
+        );
+        assert_eq!(
+            state.content,
+            Content::Ready(summary()),
+            "the summary stays"
+        );
+    }
+
+    #[test]
+    fn page_down_in_the_detail_view_scrolls_a_long_text_and_page_up_returns() {
+        let long: String = (0..200).map(|n| format!("line {n}\n")).collect();
+        let mut state = revealed(opened(), Part::All, &long);
+        let at = state.scroll;
+        assert!(state.acts(Action::PageDown), "there is more below");
+        press(&mut state, Action::PageDown);
+        assert_eq!(state.scroll, at + State::page_lines(24), "one screen down");
+        assert_eq!(state.detail, Some(row(1).uuid), "on the same vCon");
+        press(&mut state, Action::PageUp);
+        assert_eq!(state.scroll, at, "one screen up");
+        while state.acts(Action::PageUp) {
+            press(&mut state, Action::PageUp);
+        }
+        assert_eq!(state.scroll, 0, "at the top");
+    }
+
+    /// The part revealed is below the masked view: the view moves to it,
+    /// so it is on the screen when it arrives.
+    #[test]
+    fn a_reveal_moves_the_view_to_the_part_revealed() {
+        let long: String = (0..200).map(|n| format!("line {n}\n")).collect();
+        let state = revealed(opened(), Part::All, &long);
+        let lines = crate::tui::view::detail_lines(&state, 80);
+        let title = lines
+            .iter()
+            .position(|line| line == "The whole vCon, revealed:")
+            .expect("the part's title");
+        assert_eq!(
+            state.scroll,
+            title - 1,
+            "the view starts above the part's title"
+        );
+        assert!(state.acts(Action::PageUp), "the masked view is above");
+    }
+
+    #[test]
+    fn a_masked_view_that_failed_says_why() {
+        let mut state = listed(3, None);
+        press(&mut state, Action::Open);
+        let error = ApiError::Status(503, Some("The service cannot answer now".to_owned()));
+        state.step(Event::Masked(row(0).uuid, Err(error.clone())), NOW);
+        assert_eq!(
+            state.content,
+            Content::Failed(error.to_string()),
+            "the reason"
+        );
+    }
+
+    #[test]
+    fn a_reveal_that_failed_says_why_and_shows_no_text() {
+        let mut state = opened();
+        press(&mut state, Action::Reveal(Part::Dialog));
+        let error = ApiError::Status(403, Some("Forbidden".to_owned()));
+        state.step(
+            Event::Revealed(row(1).uuid, Part::Dialog, Err(error.clone())),
+            NOW,
+        );
+        assert_eq!(
+            state.revealed,
+            Some(Revealed::Failed(Part::Dialog, error.to_string())),
+            "the reason"
+        );
+    }
+
+    #[test]
+    fn a_reveal_key_in_the_list_does_nothing() {
+        let mut state = listed(3, None);
+        for part in PARTS {
+            assert!(!state.acts(Action::Reveal(part)), "{part:?} does not act");
+            assert_eq!(press(&mut state, Action::Reveal(part)), [], "{part:?}");
+            assert_eq!(state.revealed, None, "{part:?}");
+        }
+    }
+
+    #[test]
+    fn a_reveal_key_before_the_masked_view_arrived_does_nothing() {
+        let mut state = listed(3, None);
+        press(&mut state, Action::Open);
+        assert!(!state.acts(Action::Reveal(Part::All)), "not yet");
+        assert_eq!(
+            press(&mut state, Action::Reveal(Part::All)),
+            [],
+            "no request"
+        );
+    }
+
+    #[test]
+    fn a_reveal_key_after_a_failed_masked_view_does_nothing() {
+        let mut state = listed(3, None);
+        press(&mut state, Action::Open);
+        state.step(
+            Event::Masked(row(0).uuid, Err(ApiError::Status(404, None))),
+            NOW,
+        );
+        assert!(
+            !state.acts(Action::Reveal(Part::Parties)),
+            "nothing to reveal"
+        );
+        assert_eq!(
+            press(&mut state, Action::Reveal(Part::Parties)),
+            [],
+            "no request"
+        );
+    }
+
+    #[test]
+    fn a_reveal_key_in_help_does_nothing() {
+        let mut state = opened();
+        press(&mut state, Action::Help);
+        assert_eq!(
+            press(&mut state, Action::Reveal(Part::Links)),
+            [],
+            "no request"
+        );
+        assert_eq!(state.view, View::Help, "help stays open");
+    }
+
+    #[test]
+    fn esc_drops_the_revealed_text() {
+        let mut state = revealed(opened(), Part::Parties, "Ada Example");
+        press(&mut state, Action::Back);
+        assert_eq!(state.revealed, None, "dropped");
+        assert_eq!(
+            state.content,
+            Content::None,
+            "the masked view is dropped too"
+        );
+    }
+
+    #[test]
+    fn r_drops_the_revealed_text_and_reads_the_masked_view_again() {
+        let mut state = revealed(opened(), Part::Parties, "Ada Example");
+        let effects = press(&mut state, Action::Refresh);
+        assert_eq!(state.revealed, None, "dropped");
+        assert!(
+            effects.contains(&Effect::FetchMasked(row(1).uuid)),
+            "{effects:?}"
+        );
+        assert!(effects.contains(&Effect::FetchPage(None)), "{effects:?}");
+        assert_eq!(state.content, Content::Reading, "read again");
+    }
+
+    #[test]
+    fn moving_to_another_vcon_drops_the_text_and_asks_for_its_masked_view() {
+        let mut state = revealed(opened(), Part::Parties, "Ada Example");
+        let effects = press(&mut state, Action::Down);
+        assert_eq!(state.detail, Some(row(2).uuid), "the next vCon");
+        assert_eq!(
+            effects,
+            [Effect::FetchMasked(row(2).uuid)],
+            "its masked view"
+        );
+        assert_eq!(state.revealed, None, "dropped");
+        assert_eq!(state.scroll, 0, "at the top");
+    }
+
+    #[test]
+    fn a_reveal_that_arrives_after_esc_is_not_shown() {
+        let mut state = opened();
+        press(&mut state, Action::Reveal(Part::Parties));
+        press(&mut state, Action::Back);
+        press(&mut state, Action::Open);
+        state.step(
+            Event::Revealed(row(1).uuid, Part::Parties, Ok("Ada Example".to_owned())),
+            NOW,
+        );
+        assert_eq!(state.revealed, None, "the late answer is dropped");
+    }
+
+    #[test]
+    fn a_masked_view_of_a_vcon_no_longer_open_is_not_shown() {
+        let mut state = listed(3, None);
+        press(&mut state, Action::Open);
+        press(&mut state, Action::Down);
+        state.step(Event::Masked(row(0).uuid, Ok(summary())), NOW);
+        assert_eq!(
+            state.content,
+            Content::Reading,
+            "still reading the open vCon's"
+        );
+    }
+
+    #[test]
+    fn a_reveal_of_another_part_than_the_last_asked_is_not_shown() {
+        let mut state = opened();
+        press(&mut state, Action::Reveal(Part::Parties));
+        press(&mut state, Action::Reveal(Part::Subject));
+        state.step(
+            Event::Revealed(row(1).uuid, Part::Parties, Ok("Ada Example".to_owned())),
+            NOW,
+        );
+        assert_eq!(
+            state.revealed,
+            Some(Revealed::Reading(Part::Subject)),
+            "the subject is awaited"
+        );
+    }
+
+    #[test]
+    fn an_answer_that_arrives_while_help_is_open_is_kept() {
+        let mut state = listed(3, None);
+        press(&mut state, Action::Open);
+        press(&mut state, Action::Help);
+        state.step(Event::Masked(row(0).uuid, Ok(summary())), NOW);
+        press(&mut state, Action::Help);
+        assert_eq!(
+            state.content,
+            Content::Ready(summary()),
+            "kept for the detail view"
+        );
+    }
+
+    #[test]
+    fn page_keys_in_a_detail_view_that_fits_do_nothing() {
+        let mut state = opened();
+        assert!(!state.acts(Action::PageDown), "nothing below");
+        assert!(!state.acts(Action::PageUp), "nothing above");
+        press(&mut state, Action::PageDown);
+        assert_eq!(
+            (state.scroll, state.detail.clone()),
+            (0, Some(row(1).uuid)),
+            "unmoved"
+        );
     }
 }

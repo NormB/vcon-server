@@ -13,9 +13,11 @@ reads them from a running server over HTTPS with one API key.
 
 {{ <tui_screen name="list" label="What the command shows after a start that works, in a terminal of 80 columns by 24 lines: the list of a tenant's vCons, one on each line with its uuid and two times, under a first line with the server's address, the tenant's id and the word connected." /> }}
 
-Press Enter on a vCon to see its version and times. [Keys](#keys) lists
-every key. The command reads and never writes, and it never asks
-the server for a vCon's content.
+Press Enter on a vCon to see its version, its times and its masked view:
+what it holds, with every name, subject, full number, address and content
+hidden. A reveal key then shows one part of it, and the server records each
+reveal in the tenant's audit log. [Keys](#keys) lists every key. The command
+reads and never writes.
 
 ## Every screen
 
@@ -39,11 +41,21 @@ command draws it, what it shows and the screens that follow it.
 | [An operator key](#an-operator-key) | When the token is an operator key's. |
 | [A key without the read scope](#a-key-without-the-read-scope) | When the token is a tenant key's without the `read` scope. |
 | [A list the server did not give](#a-list-the-server-did-not-give) | When the server answered for the key and refused or failed the list. |
-| [The detail of a vCon](#the-detail-of-a-vcon) | After Enter on a vCon in the list. |
+| [The detail of a vCon](#the-detail-of-a-vcon) | After Enter on a vCon in the list, once its masked view has arrived. |
 | [The detail of the only vCon](#the-detail-of-the-only-vcon) | After Enter in the list of one vCon. |
 | [The detail while the list is read again](#the-detail-while-the-list-is-read-again) | After `r` in the detail view, until the server answers. |
 | [The detail of a vCon that left the list](#the-detail-of-a-vcon-that-left-the-list) | When `r` in the detail view read a list without the vCon on the screen. |
 | [The detail after a list that was not read](#the-detail-after-a-list-that-was-not-read) | When `r` in the detail view failed. |
+| [The detail while the masked view is read](#the-detail-while-the-masked-view-is-read) | After Enter on a vCon, until the server answers for its masked view. |
+| [A masked view that was not read](#a-masked-view-that-was-not-read) | When the server refused the masked view or sent something else. |
+| [A reveal being read](#a-reveal-being-read) | After a reveal key, until the server answers. |
+| [The parties revealed](#the-parties-revealed) | After `p` in the detail view. |
+| [The subject revealed](#the-subject-revealed) | After `s` in the detail view. |
+| [The dialog revealed](#the-dialog-revealed) | After `d` in the detail view. |
+| [The analysis revealed](#the-analysis-revealed) | After `a` in the detail view. |
+| [The links revealed](#the-links-revealed) | After `l` in the detail view. |
+| [The whole vCon revealed](#the-whole-vcon-revealed) | After `w` in the detail view. |
+| [A reveal that failed](#a-reveal-that-failed) | When the server refused a reveal or did not answer. |
 | [Help](#help) | After `?` in the list or the detail view. |
 | [A terminal of 120 columns](#a-terminal-of-120-columns) | In a terminal of 114 columns or more. |
 | [A terminal of 60 columns](#a-terminal-of-60-columns) | In a terminal of 59 to 79 columns. |
@@ -259,7 +271,8 @@ To find a vCon by its uuid or by a time, use `GET /vcons/{uuid}` or
 ### See when a vCon was stored
 
 The list shows the stored time and the updated time of every vCon. Press
-Enter on a vCon for its version too:
+Enter on a vCon for its version too, above its
+[masked view](#see-what-a-vcon-holds):
 
 <!-- docs-test: terminal UUID; keys Enter q -->
 ```sh
@@ -274,10 +287,9 @@ Version       <version>
 First stored  <stored> UTC+00:00
 Last updated  <updated> UTC+00:00
 
-Content is not shown: this view lists metadata only.
 …
 1 of <count> read | as of <time> UTC+00:00
-Esc back  j down  k up  r refresh  ? help  q quit
+Esc back  j down  k up  <keys>  ? help  q quit
 ```
 
 The screen: [The detail of a vCon](#the-detail-of-a-vcon).
@@ -330,6 +342,55 @@ mouse does nothing in the command itself. With the uuid, a key that holds
 `read` reads the vCon over the [HTTP API](@/docs/http-api.md)
 (`GET /vcons/{uuid}`), as [store and read a vCon](@/docs/first-vcon.md)
 shows, and the [console](@/docs/console.md) opens it masked.
+
+### See what a vCon holds
+
+1. Select the vCon in the list.
+2. Press Enter.
+
+The detail view asks the server for the vCon's
+[masked view](@/docs/http-api.md#masked-view) and shows it under the
+version and times: the vCon's form, when it was made, whether it has a
+subject, one line for each party (the last four digits of a number, the
+domain of an address, whether it has a name), one line for each dialog
+(type, start, length, parties, whether it has content), and the counts of
+attachments, analyses and links. The server sends no name, subject, full
+number, address or content for this view, and records it as `read_masked`.
+A text longer than the screen moves a screen at a time with the keys in
+[Keys](#keys).
+
+### Reveal a part of a vCon
+
+1. [Open the vCon](#see-what-a-vcon-holds) and wait for its masked view.
+2. Press the key of the part to show; [Keys](#keys) lists one for the
+   parties, the subject, the dialog, the analysis, the links and the whole
+   vCon.
+
+The command reads the vCon again as a
+[reveal](@/docs/audit-logs.md#reveals) of that part, so the tenant's
+audit log records `reveal_<part>` under the key's id, and shows the part
+under the masked view. One part is shown at a time: another reveal key
+replaces it. The command drops the revealed text when you go back to the
+list, show another vCon, or read the list again, and writes it to no file.
+The
+parties, dialog and analysis are shown as JSON, with inline media named by
+its size in place of its bytes; the links are listed, never loaded; the
+whole vCon is its text as stored, up to 2,097,152 characters.
+
+### Keep revealed text off this machine
+
+The command draws on the terminal's alternate screen, which a terminal
+clears when the command ends, so revealed text is not left on the screen.
+It stays on this machine in these cases:
+
+| Where | When | To avoid it |
+|---|---|---|
+| The terminal's scrollback | The terminal or a multiplexer keeps the alternate screen's lines, as tmux does with its `alternate-screen` option off | Keep that option on (tmux's default), or clear the history after you quit (`tmux clear-history`) |
+| A recording of the session | The session runs under `script`, a terminal's own logging, or a screen recorder | Do not record a session in which you reveal |
+| Another person's view | Someone else sees the screen, or shares the session | Reveal only where no one else can see the screen |
+
+To leave nothing to clean up, do not reveal: the masked view holds no
+content.
 
 ### Get help
 
@@ -409,9 +470,10 @@ vCon. The line above the keys says which vCon is selected, how many are
 read, `more on the server`, and when the list was read. The last line
 names the keys.
 
-**Leave.** To [the detail of a vCon](#the-detail-of-a-vcon), to
-[help](#help), or to [the list while the next page is
-read](#the-list-while-the-next-page-is-read).
+**Leave.** To [the detail while the masked view is
+read](#the-detail-while-the-masked-view-is-read), then [the detail of a
+vCon](#the-detail-of-a-vcon), to [help](#help), or to [the list while the
+next page is read](#the-list-while-the-next-page-is-read).
 
 ### The list with every vCon read
 
@@ -423,8 +485,9 @@ read](#the-list-while-the-next-page-is-read).
 **Shows.** The same as [the list](#the-list). The line above the keys has
 no `more on the server`, and the last line has no `n more`.
 
-**Leave.** To [the detail of a vCon](#the-detail-of-a-vcon) or to
-[help](#help).
+**Leave.** To [the detail while the masked view is
+read](#the-detail-while-the-masked-view-is-read), then [the detail of a
+vCon](#the-detail-of-a-vcon), or to [help](#help).
 
 ### The list of one vCon
 
@@ -435,8 +498,9 @@ no `more on the server`, and the last line has no `n more`.
 **Shows.** One line with the vCon, selected, and `1 of 1 read`. The last
 line names no key that moves: there is no other vCon to select.
 
-**Leave.** To [the detail of the only vCon](#the-detail-of-the-only-vcon)
-or to [help](#help).
+**Leave.** To [the detail while the masked view is
+read](#the-detail-while-the-masked-view-is-read), then [the detail of the
+only vCon](#the-detail-of-the-only-vcon), or to [help](#help).
 
 ### The list while the next page is read
 
@@ -647,31 +711,35 @@ screen](#other-messages-on-the-screen) and the server's
 
 ### The detail of a vCon
 
-**When.** You pressed Enter on a vCon in the list.
+**When.** You pressed Enter on a vCon in the list and its masked view
+arrived.
 
-{{ <tui_screen name="detail" label="The detail view of one vCon: the line vCon and its uuid, then Version, First stored and Last updated, each with its value, then the sentence Content is not shown: this view lists metadata only. The keys on the last line start with Esc back." /> }}
+{{ <tui_screen name="detail" label="The detail view of one vCon: the line vCon and its uuid, then Version, First stored and Last updated, then Masked view with the form, the time it was made, Subject present, hidden, two masked party lines, one dialog line, and the counts. The keys on the last line start with Esc back." /> }}
 
 **Shows.** `vCon` and the uuid, then `Version` (the vCon's version on the
-server), `First stored` and `Last updated`, each in UTC, then `Content is
-not shown: this view lists metadata only.` The line above the keys is the
-list's.
+server), `First stored` and `Last updated`, each in UTC, then the
+[masked view](#see-what-a-vcon-holds) under `Masked view`, and a sentence
+that a reveal shows one part and is recorded in the audit log. The line
+above the keys is the list's.
 
-**Leave.** Back to [the list](#the-list), with the same vCon selected, or
-to [help](#help).
+**Leave.** Back to [the list](#the-list), with the same vCon selected, to
+[a reveal being read](#a-reveal-being-read), to [the detail while the list
+is read again](#the-detail-while-the-list-is-read-again), or to
+[help](#help).
 
 ### The detail of the only vCon
 
 **When.** You pressed Enter in [the list of one
 vCon](#the-list-of-one-vcon).
 
-{{ <tui_screen name="detail-one" label="The detail view of a tenant's only vCon: its uuid, version and two times, 1 of 1 read on the line above the keys, and a last line that says Esc back, r refresh, ? help, q quit." /> }}
+{{ <tui_screen name="detail-one" label="The detail view of a tenant's only vCon in a terminal of 10 lines: its uuid, version, two times and the first lines of its masked view, 1 of 1 read on the line above the keys, and a last line that starts with Esc back." /> }}
 
 **Shows.** The same lines as [the detail of a
-vCon](#the-detail-of-a-vcon). The last line names no key that moves:
-there is no other vCon to show.
+vCon](#the-detail-of-a-vcon), as many as fit. The last line names no key
+that selects a vCon: there is no other vCon to show.
 
-**Leave.** Back to [the list of one vCon](#the-list-of-one-vcon), or to
-[help](#help).
+**Leave.** Back to [the list of one vCon](#the-list-of-one-vcon), to [a
+reveal being read](#a-reveal-being-read), or to [help](#help).
 
 ### The detail while the list is read again
 
@@ -726,6 +794,159 @@ asked again, or back to the list view, which shows the same failure.
 **What to do.** The same as for the failure in the list view: find the
 message under [when it does not work](#when-it-does-not-work), then press
 `r`.
+
+### The detail while the masked view is read
+
+**When.** You pressed Enter on a vCon and the server has not answered for
+its masked view yet.
+
+{{ <tui_screen name="detail-reading" label="The detail view just after Enter: the vCon's uuid, version and two times, then Reading the masked view..." /> }}
+
+**Shows.** The vCon's uuid, version and times, then `Reading the masked
+view...`
+
+**Leave.** The screen changes by itself when the server answers: to [the
+detail of a vCon](#the-detail-of-a-vcon), or to [a masked view that was
+not read](#a-masked-view-that-was-not-read). Going back shows [the
+list](#the-list).
+
+### A masked view that was not read
+
+**When.** The server refused the masked view, did not answer, or sent the
+whole vCon in its place, as a server older than the masked view does.
+
+{{ <tui_screen name="detail-masked-failed" label="The detail view after a server older than the masked view sent the whole vCon: The masked view was not read: the server's answer could not be read: the server sent the whole vCon, not its masked view, then Press r to try again." /> }}
+
+**Shows.** `The masked view was not read:` and why, here `the server's
+answer could not be read: the server sent the whole vCon, not its masked
+view`, then `Press r to try again.` Nothing of the vCon the
+server sent is shown, and no reveal key works.
+
+**Leave.** To [the detail while the list is read
+again](#the-detail-while-the-list-is-read-again), back to [the
+list](#the-list), or to [help](#help).
+
+**What to do.** For a server older than the masked view, upgrade the
+server ([upgrading](@/docs/upgrading.md)); it has recorded the request as a
+`read`. For any other reason, find the message under [when it does not
+work](#when-it-does-not-work), then press `r`.
+
+### A reveal being read
+
+**When.** You pressed a reveal key and the server has not answered yet.
+
+{{ <tui_screen name="revealing" label="The detail view of one vCon moved down past its masked view, and Revealing the parties..." /> }}
+
+**Shows.** The view moved down past the masked view, and `Revealing the
+parties...`, or the part asked for.
+
+**Leave.** The screen changes by itself when the server answers: to the
+part revealed, such as [the parties revealed](#the-parties-revealed), or to
+[a reveal that failed](#a-reveal-that-failed). Going back shows [the
+list](#the-list), and the answer is not shown when it arrives.
+
+### The parties revealed
+
+**When.** You pressed `p` in the detail view and the server answered.
+
+{{ <tui_screen name="reveal-parties" label="The detail view with the parties revealed: moved down past the masked view, The parties, revealed: and the parties as indented JSON, with the number, the name Ada Example, the address support@example.com and the name Example Support." /> }}
+
+**Shows.** Below the masked view, which the view has moved past, `The parties, revealed:` and the parties
+as indented JSON: each name, number and address. The tenant's audit log
+holds `reveal_parties` for it.
+
+**Leave.** To [the detail of a vCon](#the-detail-of-a-vcon) without the
+parties, when you read the list again, to another part, such as [the
+subject revealed](#the-subject-revealed), back to [the list](#the-list),
+or to [help](#help).
+
+### The subject revealed
+
+**When.** You pressed `s` in the detail view and the server answered.
+
+{{ <tui_screen name="reveal-subject" label="The detail view with the subject revealed: moved down past the masked view, The subject, revealed: and Renewal of the annual service plan." /> }}
+
+**Shows.** Below the masked view, which the view has moved past, `The subject, revealed:` and the subject,
+or `none`. The audit log holds `reveal_subject`.
+
+**Leave.** To another part, such as [the dialog
+revealed](#the-dialog-revealed), back to [the list](#the-list), or to
+[help](#help).
+
+### The dialog revealed
+
+**When.** You pressed `d` in the detail view and the server answered.
+
+{{ <tui_screen name="reveal-dialog" label="The detail view with the dialog revealed: moved down past the masked view, The dialog, revealed: and the dialog as indented JSON with what Ada and Support said." /> }}
+
+**Shows.** Below the masked view, which the view has moved past, `The dialog, revealed:` and the dialog as
+indented JSON: what was said, with any inline recording named by its size.
+The audit log holds `reveal_dialog`. A dialog longer than the screen moves
+a screen at a time ([Keys](#keys)).
+
+**Leave.** To another part, such as [the analysis
+revealed](#the-analysis-revealed), back to [the list](#the-list), or to
+[help](#help).
+
+### The analysis revealed
+
+**When.** You pressed `a` in the detail view and the server answered.
+
+{{ <tui_screen name="reveal-analysis" label="The detail view with the analysis revealed: moved down past the masked view, The analysis, revealed: and the analysis as indented JSON with its summary The customer renewed the annual plan." /> }}
+
+**Shows.** Below the masked view, which the view has moved past, `The analysis, revealed:` and the
+analysis as indented JSON, transcripts among it, or `none`. The audit log
+holds `reveal_analysis`.
+
+**Leave.** To another part, such as [the links
+revealed](#the-links-revealed), back to [the list](#the-list), or to
+[help](#help).
+
+### The links revealed
+
+**When.** You pressed `l` in the detail view and the server answered.
+
+{{ <tui_screen name="reveal-links" label="The detail view with the links revealed: moved down past the masked view, The links, revealed: and attachment 1: https://files.example.com/invoices/2026-11-09.pdf (never loaded)." /> }}
+
+**Shows.** Below the masked view, which the view has moved past, `The links, revealed:` and one line for
+each link: where it is, the address, and `(never loaded)`; or `No links in
+this vCon.` The command never loads a link. The audit log holds
+`reveal_links`.
+
+**Leave.** To another part, such as [the whole vCon
+revealed](#the-whole-vcon-revealed), back to [the list](#the-list), or to
+[help](#help).
+
+### The whole vCon revealed
+
+**When.** You pressed `w` in the detail view and the server answered.
+
+{{ <tui_screen name="reveal-whole" label="The detail view with the whole vCon revealed: moved down past the masked view, The whole vCon, revealed: and the vCon's JSON text as stored, broken across lines." /> }}
+
+**Shows.** Below the masked view, which the view has moved past, `The whole vCon, revealed:` and the vCon's
+text as stored, up to 2,097,152 characters. The audit log holds
+`reveal_all`.
+
+**Leave.** To another part, such as [the parties
+revealed](#the-parties-revealed), back to [the list](#the-list), or to
+[help](#help).
+
+### A reveal that failed
+
+**When.** The server refused a reveal or did not answer it.
+
+{{ <tui_screen name="reveal-failed" label="The detail view moved down past its masked view, and The reveal of the dialog failed: the server answered 503 (The service cannot answer now)." /> }}
+
+**Shows.** Below the masked view, which the view has moved past, `The reveal of the dialog failed:` and
+why, here `the server answered 503 (The service cannot answer now)`. No
+text of the part is shown. The audit log records the refusal under the
+reveal's action.
+
+**Leave.** To [a reveal being read](#a-reveal-being-read), when you press
+a reveal key again, back to [the list](#the-list), or to [help](#help).
+
+**What to do.** Find the message under [when it does not
+work](#when-it-does-not-work), then press the reveal key again.
 
 ### Help
 
@@ -855,17 +1076,25 @@ A TOML file with these keys and no others.
 | `k`, Up | Select the vCon above | yes | yes | no |
 | `g`, Home | Select the first vCon | yes | yes | no |
 | `G`, End | Select the last vCon read | yes | yes | no |
-| PgUp | Move up one screen | yes | yes | no |
-| PgDn | Move down one screen | yes | yes | no |
-| Enter | Open the selected vCon's metadata | yes | no | no |
+| PgUp | Move up one screen of the list or of the detail view's text | yes | yes | no |
+| PgDn | Move down one screen of the list or of the detail view's text | yes | yes | no |
+| Enter | Open the selected vCon: its metadata and masked view | yes | no | no |
 | Esc, Backspace | Go back to the view before | no | yes | yes |
+| `p` | Reveal the parties of the vCon open: names, numbers, addresses | no | yes | no |
+| `s` | Reveal the subject of the vCon open | no | yes | no |
+| `d` | Reveal the dialog of the vCon open: what was said | no | yes | no |
+| `a` | Reveal the analysis of the vCon open, transcripts among it | no | yes | no |
+| `l` | Reveal where the vCon open links to | no | yes | no |
+| `w` | Reveal the whole vCon open | no | yes | no |
 | `r` | Read the list again from the server | yes | yes | no |
 | `n` | Read the next page of vCons | yes | yes | no |
 | `?` | Show or close this help | yes | yes | yes |
 | `q`, Ctrl-C | Quit | yes | yes | yes |
 
-In the detail view, a key that selects a vCon shows that vCon. Any other
-key does nothing. A key held down repeats.
+In the detail view, a key that selects a vCon shows that vCon and drops
+any revealed text. A reveal key works once the masked view has arrived, and
+a key that moves a screen works while the text is longer than the screen.
+Any other key does nothing. A key held down repeats.
 
 On these screens fewer keys work than their view's column says: a key
 does nothing while it has nothing to act on. Every other screen takes the
@@ -878,8 +1107,12 @@ keys of its view.
 | List | All but `r` and `n` | [The list while the next page is read](#the-list-while-the-next-page-is-read) |
 | List | Only `r`, `?` and `q` | [A tenant with no vCons](#a-tenant-with-no-vcons), [A server that did not answer](#a-server-that-did-not-answer), [A key the server refused](#a-key-the-server-refused), [A certificate that was refused](#a-certificate-that-was-refused), [A list the server did not give](#a-list-the-server-did-not-give) |
 | List | Only `?` and `q` | [Connecting](#connecting), [Loading](#loading), [An operator key](#an-operator-key), [A key without the read scope](#a-key-without-the-read-scope) |
-| Detail | Only Esc, `r`, `?` and `q` | [The detail of the only vCon](#the-detail-of-the-only-vcon), [The detail after a list that was not read](#the-detail-after-a-list-that-was-not-read) |
+| Detail | All but PgUp | [The detail of a vCon](#the-detail-of-a-vcon) |
+| Detail | Only PgDn, Esc, `p`, `s`, `d`, `a`, `l`, `w`, `r`, `?` and `q` | [The detail of the only vCon](#the-detail-of-the-only-vcon) |
 | Detail | Only Esc, `?` and `q` | [The detail while the list is read again](#the-detail-while-the-list-is-read-again) |
+| Detail | Only `j`, `k`, `g`, `G`, Esc, `r`, `n`, `?` and `q` | [The detail of a vCon that left the list](#the-detail-of-a-vcon-that-left-the-list), [The detail while the masked view is read](#the-detail-while-the-masked-view-is-read), [A masked view that was not read](#a-masked-view-that-was-not-read) |
+| Detail | Only Esc, `r`, `?` and `q` | [The detail after a list that was not read](#the-detail-after-a-list-that-was-not-read) |
+| Detail | All but PgDn | [A reveal being read](#a-reveal-being-read), [The parties revealed](#the-parties-revealed), [The subject revealed](#the-subject-revealed), [The dialog revealed](#the-dialog-revealed), [The analysis revealed](#the-analysis-revealed), [The links revealed](#the-links-revealed), [The whole vCon revealed](#the-whole-vcon-revealed), [A reveal that failed](#a-reveal-that-failed) |
 
 ### Environment
 
@@ -899,6 +1132,8 @@ address come from the client file alone.
 |---|---|
 | vCons read at a time | 100 |
 | Time allowed for one request | 15 seconds |
+| Bytes of one reveal, inflated | 16 MiB |
+| Characters of the whole vCon shown | 2097152 |
 | Smallest terminal | 40 columns by 8 lines |
 | Stored time shown from | 59 columns |
 | Updated time shown from | 80 columns |
@@ -1021,8 +1256,8 @@ The screen: [An operator key](#an-operator-key).
 |---|---|
 | Where is the token? | In the file `key_file` names, and in the command's locked memory while it runs. The command refuses a token file that other users can read. It never draws the token, and it takes no token from a command line or the environment. |
 | Is the server's certificate checked? | Always, against `ca`, or against the system's trusted roots without it. No setting turns the check off. |
-| What content reaches the terminal? | None. The command asks the server for the key's own description (`GET /key`) and the list (`GET /vcons`): uuids, versions and times. It never asks for a vCon, so no party, dialog or attachment is on the screen, in the terminal's scrollback or in this machine's memory. |
-| What does the audit log record? | A `key_info` record at each start and a `list` record for each page, under the key's id, as for any client ([audit logs](@/docs/audit-logs.md)). The server's scopes and tenant bounds apply: a key sees its own tenant only. |
+| What content reaches the terminal? | Until a reveal key is pressed, none. The command asks the server for the key's own description (`GET /key`), the list (`GET /vcons`: uuids, versions and times) and, for a vCon opened, its masked view (`GET /vcons/{uuid}?view=masked`), which the server sends without any name, subject, full number, address or content. A reveal key asks for the whole vCon (`GET /vcons/{uuid}?reveal=<part>`) and shows one part of it: that part is on the screen, and the whole vCon is in the command's memory until the part is drawn from it. [Keep revealed text off this machine](#keep-revealed-text-off-this-machine) says where it can stay after that. |
+| What does the audit log record? | A `key_info` record at each start, a `list` record for each page, a `read_masked` record for each vCon opened and a `reveal_<part>` record for each reveal, under the key's id, as for any client ([audit logs](@/docs/audit-logs.md#reveals)). The server's scopes and tenant bounds apply: a key sees its own tenant only. |
 | What can the key do if it leaks? | Read the tenant's vCons over the API until it is revoked. Make it with `read` alone, and revoke it as below. |
 
 ## Remove access

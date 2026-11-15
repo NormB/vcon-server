@@ -1,5 +1,6 @@
-//! The server's HTTP API as the terminal UI uses it: `GET /key` and
-//! `GET /vcons`, with one bearer key over TLS. The requests are behind
+//! The server's HTTP API as the terminal UI uses it: `GET /key`,
+//! `GET /vcons`, a vCon's masked view (`?view=masked`) and its reveals
+//! (`?reveal=<part>`), with one bearer key over TLS. The requests are behind
 //! [`Api`], so the UI is driven in tests without a network; the conversions
 //! a request makes (its path, and its answer to a value) are functions of
 //! their own.
@@ -11,7 +12,9 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use zeroize::Zeroizing;
 
+use crate::masked::{self, Summary};
 use crate::mcp::stdio::{self, ClientConfig};
+use crate::reveal::{self, Part};
 use crate::tui::state::{ApiError, Effect, Event, KeyInfo, Page};
 
 /// The vCons asked for in one page.
@@ -37,13 +40,212 @@ pub trait Api: Send + Sync {
     ///
     /// [`ApiError`] when no answer arrived, or it was a refusal.
     fn page(&self, cursor: Option<&str>) -> Result<Page, ApiError>;
+
+    /// `GET /vcons/{uuid}?view=masked`: the vCon's masked view, as the
+    /// lines the detail view shows ([`summary_lines`]).
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError`] when no answer arrived, it was a refusal, or it was not
+    /// the masked view.
+    fn masked(&self, uuid: &str) -> Result<Vec<String>, ApiError>;
+
+    /// `GET /vcons/{uuid}?reveal=<part>`: the whole vCon's text, inflated,
+    /// read as a reveal of `part`, which the audit log records.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError`] when no answer arrived, it was a refusal, or it could
+    /// not be read.
+    fn reveal(&self, uuid: &str, part: Part) -> Result<String, ApiError>;
 }
 
-/// Makes the request `effect` names and returns its answer as an event.
+/// Makes the request `effect` names and returns its answer as an event. A
+/// reveal's answer is reduced at once to the part it reveals.
 pub fn perform(api: &dyn Api, effect: &Effect) -> Event {
     match effect {
         Effect::FetchKey => Event::KeyInfo(api.key()),
         Effect::FetchPage(cursor) => Event::Page(api.page(cursor.as_deref())),
+        Effect::FetchMasked(uuid) => Event::Masked(uuid.clone(), api.masked(uuid)),
+        Effect::FetchReveal(uuid, part) => Event::Revealed(
+            uuid.clone(),
+            *part,
+            api.reveal(uuid, *part)
+                .map(|text| reveal_text(&text, *part)),
+        ),
+    }
+}
+
+/// The most bytes read of a reveal's answer, and of the vCon it inflates
+/// to: 16 MiB.
+pub const REVEAL_BODY: usize = 16 << 20;
+
+/// A path segment with every byte but the unreserved ones percent-encoded.
+fn segment(text: &str) -> String {
+    text.bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+                char::from(b).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect()
+}
+
+/// The path of a vCon's masked view.
+#[must_use]
+pub fn masked_path(uuid: &str) -> String {
+    format!(
+        "/vcons/{}?{}={}",
+        segment(uuid),
+        masked::PARAMETER,
+        masked::MASKED
+    )
+}
+
+/// The path of a reveal of `part` of a vCon.
+#[must_use]
+pub fn reveal_path(uuid: &str, part: Part) -> String {
+    format!(
+        "/vcons/{}?{}={}",
+        segment(uuid),
+        reveal::MARKER,
+        part.name()
+    )
+}
+
+/// The masked view as the lines the detail view shows.
+#[must_use]
+pub fn summary_lines(made: &Summary) -> Vec<String> {
+    let mut lines = vec![
+        "Masked view".to_owned(),
+        format!("Form          {}", made.form),
+        format!(
+            "Created       {}",
+            if made.created.is_empty() {
+                "not given"
+            } else {
+                &made.created
+            }
+        ),
+        format!("Subject       {}", made.subject),
+    ];
+    if let Some(signature) = &made.signature {
+        let or_none = |text: &str| {
+            if text.is_empty() {
+                "none".to_owned()
+            } else {
+                text.to_owned()
+            }
+        };
+        lines.push(format!(
+            "Signature     alg {}, kid {}, x5t {}",
+            or_none(&signature.alg),
+            or_none(&signature.kid),
+            or_none(&signature.x5t)
+        ));
+    }
+    lines.push(format!("Parties       {}", made.parties.len()));
+    lines.extend(made.parties.iter().map(|line| format!("  {line}")));
+    lines.push(format!(
+        "Dialogs       {}, {} s in all",
+        made.dialogs,
+        masked::js_number(made.seconds)
+    ));
+    lines.extend(made.dialog.iter().map(|line| format!("  {line}")));
+    lines.push(format!("Attachments   {}", made.attachments));
+    lines.push(format!("Analyses      {}", made.analyses));
+    lines.push(format!("Links         {}", made.links));
+    lines
+}
+
+/// The answer to the masked view, as its lines.
+///
+/// # Errors
+///
+/// [`ApiError::Status`] for a refusal; [`ApiError::Malformed`] for a 200
+/// that is not the view, such as the whole vCon a server older than the
+/// view sends, which is never shown.
+pub fn masked_answer(status: u16, media: &str, body: &[u8]) -> Result<Vec<String>, ApiError> {
+    if status == 200 && media.starts_with("application/vcon") {
+        return Err(ApiError::Malformed(
+            "the server sent the whole vCon, not its masked view: it is older than this terminal UI, so upgrade it; nothing of the vCon is shown"
+                .to_owned(),
+        ));
+    }
+    answer::<Summary>(status, body).map(|made| summary_lines(&made))
+}
+
+/// The answer to a reveal, as the vCon's text: inflated within
+/// [`REVEAL_BODY`] when it was stored gzipped, read as a browser reads it.
+///
+/// # Errors
+///
+/// [`ApiError::Status`] for a refusal; [`ApiError::Malformed`] for a body
+/// that does not inflate or inflates past the limit.
+pub fn reveal_answer(status: u16, media: &str, body: &[u8]) -> Result<String, ApiError> {
+    use std::io::Read;
+    if status != 200 {
+        return answer::<serde_json::Value>(status, body).map(|_| String::new());
+    }
+    if !media.starts_with("application/vcon+gzip") {
+        return Ok(masked::text_of(body));
+    }
+    let mut inflated = Vec::new();
+    flate2::read::MultiGzDecoder::new(body)
+        .take(
+            u64::try_from(REVEAL_BODY)
+                .unwrap_or(u64::MAX)
+                .saturating_add(1),
+        )
+        .read_to_end(&mut inflated)
+        .map_err(|e| ApiError::Malformed(format!("the gzipped vCon does not inflate: {e}")))?;
+    if inflated.len() > REVEAL_BODY {
+        return Err(ApiError::Malformed(format!(
+            "the vCon is longer than {REVEAL_BODY} bytes, the most the terminal UI reads"
+        )));
+    }
+    Ok(masked::text_of(&inflated))
+}
+
+/// What the console says of a part of a vCon it cannot read in parts.
+const NO_PARTS: &str = "This vCon cannot be read in parts. Reveal the whole vCon instead.";
+
+/// `part` of the vCon `text`, as the detail view shows it: as the console
+/// shows each reveal (src/masked.rs `section`), links one a line, and the
+/// whole vCon as stored, cut at [`masked::DISPLAY_LIMIT`] characters.
+#[must_use]
+pub fn reveal_text(text: &str, part: Part) -> String {
+    match part {
+        Part::All | Part::Audio => {
+            let (kept, left) = masked::shown(text);
+            if left == 0 {
+                kept.to_owned()
+            } else {
+                format!(
+                    "{kept}\n\nOnly the first {} characters are shown; {left} more are not.",
+                    masked::DISPLAY_LIMIT
+                )
+            }
+        }
+        Part::Links => {
+            if masked::section(text, Part::Subject).is_none() {
+                return NO_PARTS.to_owned();
+            }
+            let found = masked::links(text);
+            if found.is_empty() {
+                return "No links in this vCon.".to_owned();
+            }
+            found
+                .iter()
+                .map(|link| format!("{}: {} (never loaded)", link.place, link.url))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        Part::Parties | Part::Subject | Part::Dialog | Part::Analysis => {
+            masked::section(text, part).unwrap_or_else(|| NO_PARTS.to_owned())
+        }
     }
 }
 
@@ -131,6 +333,13 @@ impl HttpApi {
 
     /// One GET of `path`, read as a `T`.
     fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, ApiError> {
+        let (status, _, body) = self.fetch(path, MAX_BODY)?;
+        answer(status, &body)
+    }
+
+    /// One GET of `path`: its status, media type and body, at most `limit`
+    /// bytes of it.
+    fn fetch(&self, path: &str, limit: usize) -> Result<(u16, String, Vec<u8>), ApiError> {
         let url = format!("{}{path}", self.base);
         let exchange = async {
             let mut response = self
@@ -141,16 +350,22 @@ impl HttpApi {
                 .await
                 .map_err(|e| unreachable(&e))?;
             let status = response.status().as_u16();
+            let media = response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
             let mut body = Vec::new();
             while let Some(chunk) = response.chunk().await.map_err(|e| unreachable(&e))? {
-                if body.len().saturating_add(chunk.len()) > MAX_BODY {
+                if body.len().saturating_add(chunk.len()) > limit {
                     return Err(ApiError::Malformed(format!(
-                        "it is longer than {MAX_BODY} bytes"
+                        "it is longer than {limit} bytes"
                     )));
                 }
                 body.extend_from_slice(&chunk);
             }
-            answer(status, &body)
+            Ok((status, media, body))
         };
         self.runtime.block_on(async {
             tokio::time::timeout(self.timeout, exchange)
@@ -172,6 +387,16 @@ impl Api for HttpApi {
 
     fn page(&self, cursor: Option<&str>) -> Result<Page, ApiError> {
         self.get(&page_path(cursor))
+    }
+
+    fn masked(&self, uuid: &str) -> Result<Vec<String>, ApiError> {
+        let (status, media, body) = self.fetch(&masked_path(uuid), MAX_BODY)?;
+        masked_answer(status, &media, &body)
+    }
+
+    fn reveal(&self, uuid: &str, part: Part) -> Result<String, ApiError> {
+        let (status, media, body) = self.fetch(&reveal_path(uuid, part), REVEAL_BODY)?;
+        reveal_answer(status, &media, &body)
     }
 }
 
@@ -265,6 +490,22 @@ mod tests {
                 next: None,
             })
         }
+
+        fn masked(&self, uuid: &str) -> Result<Vec<String>, ApiError> {
+            self.asked
+                .lock()
+                .expect("the lock")
+                .push(format!("masked {uuid}"));
+            Err(ApiError::Status(404, None))
+        }
+
+        fn reveal(&self, uuid: &str, part: Part) -> Result<String, ApiError> {
+            self.asked
+                .lock()
+                .expect("the lock")
+                .push(format!("reveal {uuid} {}", part.name()));
+            Err(ApiError::Status(404, None))
+        }
     }
 
     // Success.
@@ -319,6 +560,281 @@ mod tests {
             *api.asked.lock().expect("the lock"),
             ["page Some(\"c\")", "key"],
             "one request each, with the cursor"
+        );
+    }
+
+    use super::{
+        REVEAL_BODY, masked_answer, masked_path, reveal_answer, reveal_path, reveal_text,
+        summary_lines,
+    };
+    use crate::masked::{Signature, summary};
+    use crate::reveal::Part;
+
+    const VCON_UUID: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bc46";
+
+    /// The masked view, and the reveals, as `Canned` answers them.
+    struct Revealing;
+
+    impl Api for Revealing {
+        fn key(&self) -> Result<KeyInfo, ApiError> {
+            Err(ApiError::Status(401, None))
+        }
+
+        fn page(&self, _: Option<&str>) -> Result<Page, ApiError> {
+            Err(ApiError::Status(401, None))
+        }
+
+        fn masked(&self, uuid: &str) -> Result<Vec<String>, ApiError> {
+            Ok(vec![format!("masked {uuid}")])
+        }
+
+        fn reveal(&self, _: &str, _: Part) -> Result<String, ApiError> {
+            Ok(r#"{"subject":"Renewal call"}"#.to_owned())
+        }
+    }
+
+    #[test]
+    fn the_masked_and_reveal_effects_are_events_for_their_uuid_and_part() {
+        assert_eq!(
+            perform(&Revealing, &Effect::FetchMasked(VCON_UUID.to_owned())),
+            Event::Masked(
+                VCON_UUID.to_owned(),
+                Ok(vec![format!("masked {VCON_UUID}")])
+            ),
+            "the masked view"
+        );
+        assert_eq!(
+            perform(
+                &Revealing,
+                &Effect::FetchReveal(VCON_UUID.to_owned(), Part::Subject)
+            ),
+            Event::Revealed(
+                VCON_UUID.to_owned(),
+                Part::Subject,
+                Ok("Renewal call".to_owned())
+            ),
+            "the part, as the view shows it"
+        );
+    }
+
+    #[test]
+    fn the_paths_ask_for_the_view_and_name_the_part() {
+        assert_eq!(
+            masked_path(VCON_UUID),
+            format!("/vcons/{VCON_UUID}?view=masked"),
+            "view"
+        );
+        assert_eq!(
+            reveal_path(VCON_UUID, Part::All),
+            format!("/vcons/{VCON_UUID}?reveal=all"),
+            "reveal"
+        );
+    }
+
+    #[test]
+    fn the_masked_view_is_shown_as_labeled_lines_with_one_line_a_party_and_a_dialog() {
+        let text = r#"{"created_at":"2026-11-10T09:15:00Z","subject":"x","parties":[{"tel":"+12125550142"}],
+            "dialog":[{"type":"text","duration":12.5}],"analysis":[{}]}"#;
+        assert_eq!(
+            summary_lines(&summary(text)),
+            [
+                "Masked view",
+                "Form          unsigned",
+                "Created       2026-11-10 09:15:00 UTC+00:00",
+                "Subject       present, hidden",
+                "Parties       1",
+                "  Party 1: number ending 0142",
+                "Dialogs       1, 12.5 s in all",
+                "  Dialog 1: text, no start, 12.5 s, no parties; no content",
+                "Attachments   0",
+                "Analyses      1",
+                "Links         0",
+            ],
+            "the lines"
+        );
+    }
+
+    #[test]
+    fn a_signed_vcons_header_is_a_line_and_no_created_time_is_said() {
+        let mut made = summary("{}");
+        made.signature = Some(Signature {
+            alg: "ES256".to_owned(),
+            kid: "key-1".to_owned(),
+            x5t: String::new(),
+        });
+        let lines = summary_lines(&made);
+        assert!(
+            lines.contains(&"Signature     alg ES256, kid key-1, x5t none".to_owned()),
+            "{lines:?}"
+        );
+        assert!(
+            lines.contains(&"Created       not given".to_owned()),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_masked_answer_is_read_as_its_lines() {
+        let body = serde_json::to_vec(&summary("{}")).expect("JSON");
+        let lines = masked_answer(200, "application/json", &body).expect("read");
+        assert_eq!(
+            lines.first().map(String::as_str),
+            Some("Masked view"),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn each_part_is_shown_as_the_console_shows_it() {
+        let text = r#"{"subject":"Renewal call","parties":[{"name":"Ada Example"}],
+            "dialog":[{"url":"https://media.example.com/a.wav"}],"analysis":[]}"#;
+        assert_eq!(reveal_text(text, Part::Subject), "Renewal call", "subject");
+        assert!(
+            reveal_text(text, Part::Parties).contains("\"name\": \"Ada Example\""),
+            "parties"
+        );
+        assert!(
+            reveal_text(text, Part::Dialog).contains("media.example.com"),
+            "dialog"
+        );
+        assert_eq!(reveal_text(text, Part::Analysis), "none", "analysis");
+        assert_eq!(
+            reveal_text(text, Part::Links),
+            "dialog 1: https://media.example.com/a.wav (never loaded)",
+            "links"
+        );
+        assert_eq!(
+            reveal_text(text, Part::All),
+            text,
+            "the whole vCon as stored"
+        );
+    }
+
+    #[test]
+    fn a_reveal_answer_is_the_vcons_text() {
+        assert_eq!(
+            reveal_answer(200, "application/vcon", br#"{"a":1}"#),
+            Ok(r#"{"a":1}"#.to_owned()),
+            "as stored"
+        );
+    }
+
+    // Failure.
+
+    /// A server older than the view passes the query over and sends the
+    /// whole vCon: it is not shown, and the screen says why.
+    #[test]
+    fn the_whole_vcon_in_answer_to_the_masked_view_is_refused_and_not_shown() {
+        for media in ["application/vcon", "application/vcon+gzip"] {
+            let refused = masked_answer(200, media, br#"{"subject":"Renewal call"}"#);
+            let Err(ApiError::Malformed(why)) = refused else {
+                panic!("{media}: refused, not {refused:?}");
+            };
+            assert!(why.contains("older"), "{why}");
+            assert!(!why.contains("Renewal"), "{why}");
+        }
+    }
+
+    #[test]
+    fn a_refused_masked_view_or_reveal_carries_its_status_and_title() {
+        let body = br#"{"title":"forbidden","status":403}"#;
+        assert_eq!(
+            masked_answer(403, "application/problem+json", body),
+            Err(ApiError::Status(403, Some("forbidden".to_owned()))),
+            "masked"
+        );
+        assert_eq!(
+            reveal_answer(
+                410,
+                "application/problem+json",
+                br#"{"title":"gone","status":410}"#
+            ),
+            Err(ApiError::Status(410, Some("gone".to_owned()))),
+            "reveal"
+        );
+    }
+
+    #[test]
+    fn a_gzipped_reveal_that_does_not_inflate_is_refused() {
+        let refused = reveal_answer(200, "application/vcon+gzip", b"not gzip");
+        assert!(
+            matches!(refused, Err(ApiError::Malformed(_))),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
+    fn a_gzipped_reveal_that_inflates_past_the_limit_is_refused() {
+        use std::io::Write as _;
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        gz.write_all(&vec![b' '; REVEAL_BODY + 1]).expect("gzip");
+        let body = gz.finish().expect("gzip");
+        let refused = reveal_answer(200, "application/vcon+gzip", &body);
+        let Err(ApiError::Malformed(why)) = refused else {
+            panic!("refused, not {refused:?}");
+        };
+        assert!(why.contains(&REVEAL_BODY.to_string()), "{why}");
+    }
+
+    #[test]
+    fn a_masked_answer_that_is_not_the_view_is_malformed() {
+        let refused = masked_answer(200, "application/json", br#"{"form":"unsigned"}"#);
+        assert!(
+            matches!(refused, Err(ApiError::Malformed(_))),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
+    fn a_part_of_a_vcon_that_cannot_be_read_in_parts_says_so() {
+        for part in [Part::Parties, Part::Subject, Part::Links] {
+            assert_eq!(
+                reveal_text(r#"{"ciphertext":"x"}"#, part),
+                "This vCon cannot be read in parts. Reveal the whole vCon instead.",
+                "{part:?}"
+            );
+        }
+    }
+
+    // Edge.
+
+    #[test]
+    fn a_vcon_without_links_says_so() {
+        assert_eq!(
+            reveal_text("{}", Part::Links),
+            "No links in this vCon.",
+            "none"
+        );
+    }
+
+    #[test]
+    fn a_whole_vcon_longer_than_the_limit_is_cut_and_says_how_much_was_left_out() {
+        let text = format!("\"{}\"", "x".repeat(crate::masked::DISPLAY_LIMIT));
+        let shown = reveal_text(&text, Part::All);
+        assert!(
+            shown.ends_with("Only the first 2097152 characters are shown; 2 more are not."),
+            "{}",
+            shown
+                .get(shown.len().saturating_sub(80)..)
+                .unwrap_or_default()
+        );
+    }
+
+    #[test]
+    fn a_uuid_in_a_path_is_percent_encoded() {
+        assert_eq!(
+            masked_path("a b/c"),
+            "/vcons/a%20b%2Fc?view=masked",
+            "encoded"
+        );
+    }
+
+    #[test]
+    fn a_reveal_answer_with_a_byte_order_mark_loses_it() {
+        assert_eq!(
+            reveal_answer(200, "application/vcon", b"\xef\xbb\xbf{}"),
+            Ok("{}".to_owned()),
+            "dropped"
         );
     }
 
@@ -521,6 +1037,61 @@ mod tests {
         assert!(
             heads[0].contains(&format!("authorization: bearer {TOKEN}")),
             "the token goes in the Authorization header"
+        );
+    }
+
+    /// An HTTP/1.1 response with `body` as `content_type`.
+    fn typed(status: &str, content_type: &str, body: &[u8]) -> Vec<u8> {
+        let mut made = format!(
+            "HTTP/1.1 {status}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        made.extend_from_slice(body);
+        made
+    }
+
+    #[test]
+    fn the_masked_request_asks_for_the_view_and_its_answer_is_read_as_lines() {
+        let cert = certificate();
+        let body = serde_json::to_vec(&crate::masked::summary("{}")).expect("JSON");
+        let (port, heads) = server(&cert, typed("200 OK", "application/json", &body));
+        let dir = tempfile::tempdir().expect("temp dir");
+        let api = HttpApi::new(&client(dir.path(), port, &cert, 0o600)).expect("a client");
+        let lines = api.masked(VCON_UUID).expect("the masked view");
+        assert!(
+            lines.contains(&"Form          unsigned".to_owned()),
+            "{lines:?}"
+        );
+        let heads = heads.lock().expect("the lock");
+        assert!(
+            heads[0].starts_with(&format!("get /vcons/{VCON_UUID}?view=masked http/1.1")),
+            "the route: {}",
+            heads[0]
+        );
+        assert!(
+            heads[0].contains(&format!("authorization: bearer {TOKEN}")),
+            "the token goes in the Authorization header"
+        );
+    }
+
+    #[test]
+    fn the_reveal_request_names_its_part_and_a_gzipped_answer_is_inflated() {
+        let cert = certificate();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(br#"{"subject":"Renewal call"}"#)
+            .expect("gzip");
+        let body = gz.finish().expect("gzip");
+        let (port, heads) = server(&cert, typed("200 OK", "application/vcon+gzip", &body));
+        let dir = tempfile::tempdir().expect("temp dir");
+        let api = HttpApi::new(&client(dir.path(), port, &cert, 0o600)).expect("a client");
+        let text = api.reveal(VCON_UUID, Part::Subject).expect("the vCon");
+        assert_eq!(text, r#"{"subject":"Renewal call"}"#, "inflated");
+        let heads = heads.lock().expect("the lock");
+        assert!(
+            heads[0].starts_with(&format!("get /vcons/{VCON_UUID}?reveal=subject http/1.1")),
+            "the route: {}",
+            heads[0]
         );
     }
 
