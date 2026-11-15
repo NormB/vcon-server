@@ -39,7 +39,7 @@ import pathlib
 import re
 import sys
 
-MARKER = "0.4.5"
+MARKER = "0.4.3"
 HEADINGS = ("Added", "Changed", "Fixed", "Security", "Removed", "Deprecated")
 LABELS = ("Effect", "Do", "Limit", "Docs", "Was")
 LEAD_WORDS = 15

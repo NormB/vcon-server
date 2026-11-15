@@ -113,601 +113,423 @@ All notable changes to this project are recorded here. The format follows
 
 ## [0.4.4] - 2026-11-12
 
-There is no downgrade from 0.4.4. The first time 0.4.4 opens a data
-directory it brings the catalogs from schema version 4 to 9, and release
-0.4.3 and earlier refuse a catalog at version 9. Copy the data directory
-before the upgrade, with the server stopped: that copy is the only way
-back, and everything stored after it is lost on the way back. A 0.4.3
-configuration is read as it was. Each of the following is under Security,
-Added or Changed below, and the Upgrade page's "From 0.4.3 to 0.4.4" has
-the steps.
+### Changed
 
-- **New keys expire.** A key made by 0.4.4 expires 90 days after it is
-  made, unless its request names 1 to 365 days or asks for no expiry. An
-  operator can refuse new keys with no expiry by setting `keys.no_expiry`
-  to `false`. Keys made before the upgrade keep working with no expiry.
-- **A request that carries both a key and the session cookie is
-  refused.** A request with an `Authorization` header and a cookie named
-  `__Host-vcs_session` is answered 400 `key-and-session`.
-- **Sessions and users have no sign-in method.** 0.4.4 keeps users,
-  memberships and sessions and serves the two session routes, and nothing
-  in it starts a session: nobody can sign in as a user. The status page
-  says so. API keys work as before.
-- **Readers of the audit log.** Thirteen action names are new:
-  `user_add`, `user_list`, `user_deactivate`, `membership_grant`,
-  `membership_revoke`, `role_cap_set`, `role_cap_read`, `settings_read`,
-  `settings_set`, `membership_list`, `session_start`, `session_read` and
-  `session_end`. The `actor` of a record may be `user:` and a user id,
-  and an `auth_failed` record may have the status 400 or 403.
-- **The PostgreSQL catalog preview.** Run `vcon-server migrate` after the
-  new binary is installed and before a server starts: the database's
-  schema goes from version 1 to 6.
-- **Code that uses the `vcon-server` library.** `config::Config` has two
-  new members, `public_origin` and `keys_no_expiry`, `config::Operator`
-  one, `public_origin`, and `api::App` one, `origin`, so a struct literal
-  of any of them must set them. `audit::Action` has thirteen new
-  variants, one for each action above, and `audit::Actor` one, `User`,
-  which a `match` that lists every variant must take.
-  `catalog::SCHEMA_VERSION` is 9.
+- **No downgrade from 0.4.4: copy the data directory before the upgrade.**
+  - Effect: 0.4.4's first open of a data directory brings the catalogs from
+    schema version 4 to 9; a 0.4.3 configuration is read as it was.
+  - Do: Copy the data directory, with the server stopped, before the
+    upgrade.
+  - Limit: Release 0.4.3 and earlier refuse a catalog at version 9: the copy
+    is the only way back, and what is stored after it is lost.
+  - Docs: [From 0.4.3 to
+    0.4.4](https://vcon-server.com/docs/upgrading/#from-0-4-3-to-0-4-4)
+- **The PostgreSQL catalog preview needs `vcon-server migrate` before a
+  server starts.**
+  - Effect: The database's schema goes from version 1 to 6, and only
+    `vcon-server migrate` changes it.
+  - Do: Run `vcon-server migrate` after the new binary is installed and
+    before a server starts.
+  - Docs: [Schema version 9, and no way back without the
+    copy](https://vcon-server.com/docs/upgrading/#schema-version-9-and-no-way-back-without-the-copy)
+- **A new key expires 90 days after it is made, unless its request says
+  otherwise.**
+  - Effect: This holds for `key create`, `POST /admin/tenants/{id}/keys`,
+    `POST /tenant/keys` and the MCP tool `admin_key_create`.
+  - Do: A script whose key is never replaced stops with 401 `key-expired`
+    after 90 days: replace its key on a schedule, or use `--no-expiry`.
+  - Limit: Keys made before the upgrade are not changed: they have no
+    expiry and keep working.
+  - Docs: [Keys made before the upgrade have no
+    expiry](https://vcon-server.com/docs/upgrading/#keys-made-before-the-upgrade-have-no-expiry)
+- **A request with both a key and the session cookie is refused.**
+  - Effect: Every route answers 400 `key-and-session` to a request with an
+    `Authorization` header and a cookie named `__Host-vcs_session`.
+  - Limit: No release set that cookie, so a client is affected only if it
+    sends a cookie of that name itself.
+  - Docs: [From 0.4.3 to
+    0.4.4](https://vcon-server.com/docs/upgrading/#from-0-4-3-to-0-4-4)
+- **A reader of the audit log meets thirteen new actions and a new actor.**
+  - Effect: The new actions are `user_add`, `user_list`, `user_deactivate`,
+    `membership_grant`, `membership_revoke`, `role_cap_set`, `role_cap_read`,
+    `settings_read`, `settings_set`, `membership_list`, `session_start`,
+    `session_read` and `session_end`.
+  - Do: Add them to a reader that knows a fixed list of actions, and read
+    an `actor` of `user:` and a user id.
+  - Limit: An `auth_failed` record may have the status 400 or 403.
+  - Docs: [Audit log
+    records](https://vcon-server.com/docs/audit-log-records/)
+- **Code that uses the `vcon-server` library sets new members and matches
+  new variants.**
+  - Effect: `config::Config` gains `public_origin` and `keys_no_expiry`,
+    `config::Operator` `public_origin`, `api::App` `origin`;
+    `catalog::SCHEMA_VERSION` is 9.
+  - Do: Set them in a struct literal, and take `audit::Actor::User` and the
+    thirteen new `audit::Action` variants in a `match` that lists every
+    variant.
+- **`vcon-server tui` says a change to its files takes effect at the next
+  start.**
+  - Effect: When a request fails, the screen adds `A change to the client
+    file or the key file takes effect at the next start.`
+  - Limit: The command reads both files once, at start, so `r` never reads
+    a corrected file.
+  - Docs: [Terminal UI](https://vcon-server.com/docs/tui/)
+- **The terminal UI page is rewritten, and shows sixteen screens.**
+  - Effect: It has a quick start, a section and a screen for each task,
+    reference tables, and each message with its cause and what to do.
+  - Docs: [Terminal UI](https://vcon-server.com/docs/tui/)
 
 ### Security
 
-- rusqlite goes from 0.41.1 to 0.42.0, which moves the bundled SQLCipher
-  from 4.19.0 to 4.20.0 and the SQLite inside it from 3.53.4 to 3.54.1
-  (CVE-2026-119375, RUSTSEC-2026-0459). SQLite before 3.54.0 can return
-  uninitialized page-cache memory when a process opens a database file
-  beside a write-ahead-log file (`-wal`) whose page size differs from the
-  database's. The vector is local: someone who can write a crafted pair of
-  files into the data directory, where the server opens `server.sqlite`
-  and each tenant's catalog, could make queries return stale bytes of the
-  server's memory. Releases 0.4.3 and earlier bundle an affected SQLite.
-  The file format does not change: the new build opens the encrypted
-  catalogs that 0.4.3 wrote, and a test now fails if the linked SQLite is
-  older than 3.54.0. The crate requires rusqlite 0.42.0 or later. 0.42.0
-  was published on 2026-11-11, less than the 14 days CONTRIBUTING.md asks
-  of a new version; a published advisory against a shipped dependency
-  comes before that wait, as it does for Dependabot's security updates.
+- **The bundled SQLite moves to 3.54.1 (CVE-2026-119375,
+  RUSTSEC-2026-0459).**
+  - Was: SQLite before 3.54.0, bundled by 0.4.3 and earlier, can return
+    uninitialized page-cache memory beside a `-wal` file of another page
+    size.
+  - Effect: rusqlite goes from 0.41.1 to 0.42.0, SQLCipher from 4.19.0 to
+    4.20.0, SQLite from 3.53.4 to 3.54.1; the file format does not change.
+  - Limit: The vector is local: it needs someone who can write a crafted
+    pair of files into the data directory.
+  - Do: Code that uses the library builds with rusqlite 0.42.0 or later,
+    which the crate now requires.
 
 ### Added
 
-- Users and memberships, the first part of sign-in. `server.sqlite` keeps
-  users (a label, and for a user of an identity provider its issuer and
-  subject) and memberships (a user's roles in one tenant, or the operator
-  role). Five commands on the host make and change them, beside a running
-  server: `user add`, `user list`, `user deactivate`, `membership grant`
-  and `membership revoke`. The tenant roles are `reader`, `producer`,
-  `records`, `legal`, `auditor` and `tenant-admin`. Each command is
-  recorded in the admin audit log as `user_add`, `user_list`,
-  `user_deactivate`, `membership_grant` or `membership_revoke`, and a
-  change to a tenant membership is copied to that tenant's log; a record
-  names ids and role names, never a label, an issuer or a subject. There
-  is no route for either, and no request reads them yet: nobody can sign
-  in as a user until a later release adds a sign-in method. See the how-to
-  "Add users and memberships".
-- Roles as sets of scopes, and a role cap for each tenant. Each role gives
-  one scope: `reader` gives `read`, `producer` `write`, `records` `delete`,
-  `legal` `legal`, `auditor` `audit`, `tenant-admin` the new scope
-  `tenant_admin`, and `operator` `admin`; a membership's scopes are those
-  of its roles. `tenant set-role-cap` sets the roles a membership in a
-  tenant may be given, and `tenant role-cap` prints them; both run on the
-  host, beside a running server. A grant of a role outside the cap is
-  refused, and a role granted before the cap was set stops counting until
-  the cap allows it again. The two commands are recorded as `role_cap_set`
-  (in the admin audit log and the tenant's) and `role_cap_read` (in the
-  admin audit log). See the how-to "Roles, scopes and a tenant's role cap".
-- Routes for a tenant's administrator. A key of a tenant that holds the scope
-  `tenant_admin` reads and changes the tenant's settings (`GET` and
-  `PUT /tenant/settings`), makes, lists and revokes the tenant's keys
-  (`POST` and `GET /tenant/keys`, `DELETE /tenant/keys/{id}`) and lists the
-  tenant's memberships (`GET /tenant/memberships`). Each route works in the
-  tenant of the key that asks; an operator key is refused. The settings are
-  a fixed list: `masking.<role>` for each of the six tenant roles (`true`
-  or `false`, `true` while unset), `session.idle_seconds` (60 to 900) and
-  `session.absolute_seconds` (300 to 28800), with the idle limit never above
-  the absolute one; a change outside the list is refused with the new
-  problem `bad-setting`. Sessions read the two limits; nothing reads the
-  masking settings yet: the console will, in a later release. A key made at
-  `POST /tenant/keys` holds scopes within the tenant's role cap and never
-  `tenant_admin` or `admin`. Each call is recorded in the admin audit log
-  and the tenant's, as `settings_read`, `settings_set`, `key_create`,
-  `key_list`, `key_revoke` or `membership_list`; a `settings_set` record
-  names the settings changed and never a value. The console's key form
-  offers `tenant_admin`. See the how-to "Administer a tenant with a key".
-- Sessions and their CSRF protection, the fourth part of sign-in.
-  `server.sqlite` keeps a session for a user's membership: the SHA-256 of
-  a random 256-bit id, the user, the tenant (none for an operator), the
-  scopes the membership gave when the session started, its times and the
-  SHA-256 of its CSRF token. The id travels in the cookie
-  `__Host-vcs_session` (`Secure`, `HttpOnly`, `SameSite=Strict`, `Path=/`).
-  A session ends when it has not been seen for its idle limit, at its
-  absolute limit, when its user signs out, when a role of its user is
-  granted or taken or the user is deactivated, when its tenant's role cap
-  changes, and with its tenant. The limits are the tenant's settings
-  `session.idle_seconds` and `session.absolute_seconds` as they are when
-  the session starts (15 minutes and 8 hours unless set, and for an
-  operator). Two routes take the cookie and no key: `GET /session` answers
-  the session and its CSRF token to a request with
-  `Sec-Fetch-Site: same-origin`, and `POST /session/logout` ends it for a
-  request with the listener's `Origin` and the token in `X-CSRF-Token`.
-  The origin is the new configuration key `public_origin`, and
-  `operator.public_origin` for the operator listener; a listener without
-  it serves no session, and the two must name different hosts. New problem
-  types: `no-session` (401), `bad-origin` and `bad-csrf` (403), and
-  `key-and-session` (400). New audit actions: `session_start`,
-  `session_end` and the counted `session_read`, with the actor
-  `user:<id>`; a refused request by session is counted as `auth_failed`.
-  No sign-in method exists yet, so nothing starts a session outside the
-  tests: passkeys and single sign-on will, in a later release. The routes
-  that take a key take no session yet. See the how-to "Set a listener's
-  public origin for sessions".
-- Key expiry and last-used time. A key now has an expiry, `expires_at`:
-  90 days after it is made by default, 1 to 365 days with
-  `expires_in_days` (`key create --expires-days`), or none with
-  `"no_expiry": true` (`key create --no-expiry`). The new configuration
-  key `keys.no_expiry` (default `true`) lets an operator refuse new keys
-  with no expiry. The answer that makes a key carries `expires_at`. A
-  request by an expired key is refused with the new problem `key-expired`
-  (401) and counted as `auth_failed`; an expiry a key cannot have is the
-  new problem `bad-expiry` (422). Every list of keys (`key list`, `GET
-  /admin/tenants/{id}/keys`, `GET /tenant/keys`, `admin_key_list`) shows
-  `expires_at` and `last_used_at`. The last-used time is the start of the
-  minute of an accepted request, and the server writes it at most once a
-  minute for each key; a failure to write it refuses no request. The
-  console's key form takes the days, and its key table shows both times.
-  See the how-to "Administer a tenant with a key", under "Set a key's
-  expiry and see when it was last used".
-
-### Changed
-
-- **A request with both a key and the session cookie is refused.** Every
-  route answers 400 `key-and-session` to a request that carries an
-  `Authorization` header and a cookie named `__Host-vcs_session`, before
-  either is read. No release set that cookie, so a client is affected only
-  if it sends a cookie of that name itself.
-- **Breaking for a reader of the audit log:** the `actor` of a record may
-  be `user:` and a user id, and the actions `session_start`,
-  `session_read` and `session_end` are new. `auth_failed` records may have
-  the status 400 or 403.
-- **No downgrade: the catalogs move to schema version 9.** The first time
-  this server or one of its commands opens a data directory, it brings
-  `server.sqlite` from schema version 4 to 9, and each tenant's catalog at
-  that tenant's first use, each in one transaction. Version 5 adds the
-  tables `user_account` and `membership` to `server.sqlite`, and lets every
-  audit log hold a record with no status: the number 0 that a version-4
-  log kept for a `listener_full` record becomes no status, under the same
-  sequence numbers, and readers see `null` as before. Version 6 adds the
-  column `role_cap` to the `tenant` table of `server.sqlite`, empty for
-  every tenant. Version 7 adds the table `tenant_setting` to
-  `server.sqlite`, empty. Version 8 adds the table `session`, empty.
-  Version 9 adds the columns `expires_at` and `last_used_at` to the
-  `api_key` table, empty for every key there is.
-  Release 0.4.3
-  and earlier refuse a catalog at version 9 (`schema version 9 is not one
-  this build knows`), so the way back is the copy of the data directory
-  taken before the upgrade. With the PostgreSQL catalog preview, run
-  `vcon-server migrate` to bring the database from schema version 1 to 6
-  before a server starts. See "Schema version 9" on the upgrade page.
-- **A new key expires 90 days after it is made, unless its request says
-  otherwise.** This holds for `key create`, `POST
-  /admin/tenants/{id}/keys`, `POST /tenant/keys` and the MCP tool
-  `admin_key_create`. A script that makes a key and never replaces it
-  stops working 90 days later with 401 `key-expired`: replace its key on a
-  schedule, or make it with `--no-expiry` (`"no_expiry": true`). Keys made
-  before the upgrade are not changed: they have no expiry and keep
-  working. See "Keys made before the upgrade have no expiry" on the
-  upgrade page.
-- **Breaking for a reader of the audit log that knows a fixed list of
-  actions:** add `user_add`, `user_list`, `user_deactivate`,
-  `membership_grant`, `membership_revoke`, `role_cap_set`,
-  `role_cap_read`, `settings_read`, `settings_set` and `membership_list`.
-- **`user list` prints each membership's `scopes`** beside its `roles`:
-  what the membership lets its user do, under the tenant's role cap.
-- **A tenant key may hold the scope `tenant_admin`.** `key create --scope`
-  and `POST /admin/tenants/{id}/keys` take the name with the five there
-  were. Such a key reaches the routes under `/tenant`.
-- The terminal UI's page is rewritten. It opens with what the command shows
-  and one screen, says when to use the console or the API instead, lists
-  what to have ready in a table, and has a quick start for the server's own
-  machine and a separate procedure for a terminal on another machine. Each
-  task has a section and a screen: reading the screen, finding a vCon,
-  the next page, reading the list again, help, leaving, and narrow and wide
-  terminals. The reference has the client file, the keys by view, the
-  environment, and the sizes and limits as tables. The messages are grouped
-  by where they appear, each with its cause and what to do. The page now
-  shows sixteen screens, all drawn by the UI's own code, and tests hold its
-  keys, client file keys, limits and every message it quotes to the code.
-  The page said a refused list shows `the server answered 503
-  (unavailable)`; the UI shows the problem's title:
-  `the server answered 503 (The service cannot answer now)`.
-- The how-to scenarios open the terminal UI's detail and help views on a
-  live server, and start it with a revoked key: a `terminal` step of
-  `scripts/docs_test.py` may name the keys to type (`keys Enter q`).
-- `vcon-server tui`: when a request fails, the screen adds
-  `A change to the client file or the key file takes effect at the next
-  start.` under `Press r to try again, or q to quit.` The command reads
-  both files once, at start, so `r` never reads a corrected file.
+- **Users and memberships, made and changed by five new commands on the
+  host.**
+  - Effect: `user add`, `user list`, `user deactivate`, `membership grant`
+    and `membership revoke` run beside a running server.
+  - Limit: Nobody can sign in as a user: no route reads them and no sign-in
+    method exists yet; API keys work as before.
+  - Docs: [Add users and
+    memberships](https://vcon-server.com/docs/users-and-memberships/)
+- **Roles give scopes, and a tenant's role cap limits the roles it grants.**
+  - Effect: Each role gives one scope, `tenant-admin` the new scope
+    `tenant_admin`, and `user list` prints each membership's `scopes`
+    beside its `roles`.
+  - Do: Set the cap with `tenant set-role-cap` and print it with
+    `tenant role-cap`, on the host beside a running server.
+  - Limit: A grant outside the cap is refused, and a role granted before
+    the cap stops counting until the cap allows it again.
+  - Docs: [Roles, scopes and a tenant's role
+    cap](https://vcon-server.com/docs/roles-and-scopes/)
+- **A tenant key with `tenant_admin` administers the tenant's settings and
+  keys.**
+  - Effect: It reaches `GET` and `PUT /tenant/settings`, `POST` and
+    `GET /tenant/keys`, `DELETE /tenant/keys/{id}` and
+    `GET /tenant/memberships`, in its own tenant.
+  - Do: Give a key the scope with `key create --scope` or
+    `POST /admin/tenants/{id}/keys`; the console's key form offers it.
+  - Limit: An operator key is refused, and a key made at
+    `POST /tenant/keys` stays within the role cap, never `tenant_admin` or
+    `admin`.
+  - Docs: [Administer a tenant with a
+    key](https://vcon-server.com/docs/tenant-administration/)
+- **Sessions and their CSRF protection, the fourth part of sign-in.**
+  - Effect: `GET /session` and `POST /session/logout` take the cookie
+    `__Host-vcs_session` and no key; nothing outside the tests starts a
+    session yet.
+  - Do: Set `public_origin`, and `operator.public_origin` for the operator
+    listener, with different hosts; a listener without it serves no
+    session.
+  - Limit: The routes that take a key take no session yet.
+  - Docs: [Set a listener's public origin for
+    sessions](https://vcon-server.com/docs/session-origin/)
+- **Keys show their expiry and last-used time; an operator can require an
+  expiry.**
+  - Effect: `key list`, `GET /admin/tenants/{id}/keys`, `GET /tenant/keys`,
+    `admin_key_list` and the console's key table show `expires_at` and
+    `last_used_at`.
+  - Do: Choose 1 to 365 days with `key create --expires-days`,
+    `expires_in_days` or the console's key form; set `keys.no_expiry` to
+    `false` to refuse keys with no expiry.
+  - Limit: The last-used time is the start of the minute, written at most
+    once a minute; a failure to write it refuses no request.
+  - Docs: [Set a key's expiry and see when it was last
+    used](https://vcon-server.com/docs/tenant-administration/#set-a-key-s-expiry-and-see-when-it-was-last-used)
 
 ### Fixed
 
-- `vcon-server tui`: in a terminal narrower than its last line (59 columns
-  in the list, 49 in the detail view), the key hints were cut at the edge,
-  and `? help` and `q quit` were not on screen. The last line now always
-  ends with those two and leaves out, whole, the hints that do not fit.
-- `vcon-server tui`: the line above the key hints was one line and was cut
-  at the terminal's edge. A failed next page showed `The next page was not
-  read: the server did not answer: error sending request for` and no cause.
-  The line now wraps, up to half of the screen.
-- `vcon-server tui`: a key revoked while the command ran left the first
-  line saying `connected`, with the tenant, above `the server refused the
-  key (401)`. The first line now says `not connected`, as at start, and
-  `r` asks for the key again.
+- **The terminal UI page quotes the 503 message the UI shows.**
+  - Was: The page said a refused list shows `the server answered 503
+    (unavailable)`.
+  - Effect: It quotes the problem's title, as the UI shows it:
+    `the server answered 503 (The service cannot answer now)`.
+  - Docs: [Terminal UI](https://vcon-server.com/docs/tui/)
+- **`vcon-server tui` keeps `? help` and `q quit` on a narrow terminal's
+  last line.**
+  - Was: In a terminal narrower than its last line (59 columns in the list,
+    49 in the detail view), the key hints were cut.
+  - Effect: The last line always ends with `? help` and `q quit`, and leaves
+    out, whole, the hints that do not fit.
+- **`vcon-server tui` wraps the line above the key hints.**
+  - Was: A failed next page showed `The next page was not read: the server
+    did not answer: error sending request for`, cut, with no cause.
+  - Effect: The line wraps, up to half of the screen, where it was one line
+    cut at the terminal's edge.
+- **`vcon-server tui` says `not connected` after its key is revoked.**
+  - Was: A key revoked while the command ran left the first line saying
+    `connected`, with the tenant, above `the server refused the key (401)`.
+  - Effect: The first line says `not connected`, as at start, and `r` asks
+    for the key again.
 
 ## [0.4.3] - 2026-11-11
 
-An upgrade from 0.4.2 is the binary alone: the catalogs keep their schema
-version, a 0.4.2 configuration is read as it was, and 0.4.2 opens a data
-directory that 0.4.3 has served. Five changes can break something around a
-0.4.2 deployment, and one breaks code that uses the library; each is under
-Added, Changed or Fixed below, and the Upgrade page's "From 0.4.2 to
-0.4.3" has the steps.
+### Changed
 
-- **Readers of the audit log.** Seventeen action names are new: the
-  fourteen reveal actions (`reveal_parties`, `reveal_subject`,
-  `reveal_dialog`, `reveal_analysis`, `reveal_links`, `reveal_all`,
-  `reveal_audio`, and `legal_reveal_` with the same seven endings),
-  `wrong_listener`, `listener_full` and `csp_report`. A `listener_full`
-  record has `null` as its `status`.
-- **Reverse proxies and firewalls that pass the console's paths by name.**
-  Pass `/console/player.html`, `/console/player.js` and
-  `POST /console/csp-report` as well as `/console/format.js`, and pass
-  each answer's `Content-Security-Policy` header unchanged.
-- **A check that holds the console's content-security policy byte for
-  byte.** Both policies end with a reporting directive,
-  `report-uri /console/csp-report`.
-- **Clients and proxies that hold many connections, or hold them idle.** A
-  listener holds at most `limits.connections` connections (512), and a
-  connection is closed after `limits.timeouts.idle` seconds without a
-  request (120), after a TLS handshake longer than
-  `limits.timeouts.handshake` (10), and after a request head slower than
-  `limits.timeouts.first_head` or `limits.timeouts.head` (30 each). 0.4.2
-  set none of these limits and refuses a configuration that has one of the
-  five keys.
-- **Operator keys, only with the new `[operator]` table.** They then work
-  at `operator.listen` alone. Without the table nothing changes.
-- **Code that uses the `vcon-server` library.** `config::Config` has three
-  new members, `operator`, `connection` and `reports`, and `api::App` two,
-  `plane` and `reports`, so a struct literal of either must set them, and
-  `audit::Action` has five new variants (`Reveal`, `LegalReveal`,
-  `WrongListener`, `ListenerFull` and `CspReport`), which a `match` that
-  lists every variant must take. `console::FILES` holds six
-  files, so its type is `[File; 6]`, where it was `[File; 4]`.
-  `api::serve` takes any `api::Accept` where it took a
-  `tokio::net::TcpListener`, which implements it. No public item is
-  removed.
+- **An upgrade from 0.4.2 is the binary alone.**
+  - Effect: The catalogs keep their schema version, and 0.4.2 opens a data
+    directory that 0.4.3 has served.
+  - Do: Keep the 0.4.2 configuration: it is read as it was.
+  - Limit: Five changes can break something around a 0.4.2 deployment, and
+    one breaks code that uses the library; each is an entry of this section.
+  - Docs: [From 0.4.2 to
+    0.4.3](https://vcon-server.com/docs/upgrading/#from-0-4-2-to-0-4-3)
+- **A reader of the audit log meets seventeen new actions.**
+  - Effect: The fourteen reveal actions, `reveal_<part>` and
+    `legal_reveal_<part>`, and `wrong_listener`, `listener_full` and
+    `csp_report` are new.
+  - Do: Before installing the binary, add them to any rule, parser or report
+    that lists actions.
+  - Limit: A `listener_full` record has `null` as its `status`, and a server
+    without an `[operator]` table never writes `wrong_listener`.
+  - Docs: [Audit log
+    records](https://vcon-server.com/docs/audit-log-records/)
+- **The console's Reveals are recorded as reveals, where 0.4.2 wrote reads.**
+  - Effect: The tenant log holds `reveal_<part>` where 0.4.2 wrote `read`,
+    and `legal_reveal_<part>` where it wrote `legal_read`.
+  - Do: To count every read of content, count the `reveal_` actions with
+    `read`, and the `legal_reveal_` actions with `legal_read`.
+  - Limit: Opening a vCon and **Download** are still `read`.
+  - Docs: [Reveals](https://vcon-server.com/docs/audit-logs/#reveals)
+- **The console has three new paths, and its policies a reporting
+  directive.**
+  - Effect: `/console/player.html`, `/console/player.js` and
+    `POST /console/csp-report` are new; both policies end with
+    `report-uri /console/csp-report`.
+  - Do: In a proxy that passes the console's paths by name, pass all three,
+    and pass each `Content-Security-Policy` header unchanged.
+  - Limit: A check that holds either policy byte for byte needs the new
+    value; a proxy that passes all of `/console/` needs no change.
+  - Docs: [From 0.4.2 to
+    0.4.3](https://vcon-server.com/docs/upgrading/#from-0-4-2-to-0-4-3)
+- **`/openapi.json` lists the answers of a server with an operator
+  listener.**
+  - Effect: It names the problem type `wrong-listener` and lists 403 for
+    `GET /health`, `GET /key` and `GET /openapi.json`.
+  - Limit: Those three routes answer 403 only on a server with an operator
+    listener.
+  - Docs: [Operator listener](https://vcon-server.com/docs/operator-listener/)
+- **Code that builds `config::Config` or `api::App` sets their new
+  members.**
+  - Effect: `config::Config` has `operator`, `connection` and `reports`;
+    `api::App` has `plane` and `reports`, an `api::ReportGate` made from
+    `api::ReportLimits`.
+  - Do: Set them in a struct literal; `None` for `operator` and
+    `access::Plane::Both` for `plane` keep the behavior as it was.
+- **Code that matches `audit::Action` or names the type of
+  `console::FILES` changes.**
+  - Effect: `audit::Action` has five new variants, `Reveal`, `LegalReveal`,
+    `WrongListener`, `ListenerFull` and `CspReport`; `console::FILES` is
+    `[File; 6]`, where it was `[File; 4]`.
+  - Do: Take the five variants in a `match` that lists every variant.
+  - Limit: `api::serve` takes any `api::Accept` (`accept`, and `local` with
+    a default), which `tokio::net::TcpListener` implements; no public item
+    is removed.
+- **The documentation's sidebar folds behind one button on a narrow
+  screen.**
+  - Effect: A page's own content comes first; without JavaScript the
+    sidebar is shown as before.
+- **Three documentation pages each keep to one kind of writing.**
+  - Effect: The audit log's record members and actions, and the steps for
+    reading a log, are on two new pages.
+  - Limit: Every heading the three pages had is still there, so a link to
+    one still lands on it.
+  - Docs: [Audit log records](https://vcon-server.com/docs/audit-log-records/),
+    [Read the audit logs](https://vcon-server.com/docs/read-audit-logs/),
+    [Connect an AI agent over MCP](https://vcon-server.com/docs/connect-mcp/)
+- **The `parquet` crate goes from 60.0.0 to 60.1.0.**
+  - Effect: It writes `export parquet` files and Parquet storage's pack
+    files; the export round trip, DuckDB reads and Parquet storage on S3
+    pass unchanged.
+- **A build from source fetches from crates.io alone.**
+  - Effect: rusqlite goes from 0.41.0 to 0.41.1, and the fork of rusqlite
+    from github.com is gone.
+  - Do: With a mirror of crates.io or `cargo vendor`, a build from source,
+    tests included, needs no other host.
+  - Limit: The catalogs are opened with the same settings as before.
 
 ### Added
 
-- An operator listener. With an `[operator]` table in the configuration,
-  `serve` listens on a second address, `operator.listen`, and each address
-  serves one kind of key: `listen` serves tenant keys only, and
-  `operator.listen` serves operator keys only, so the routes that manage
-  tenants and keys can sit on an address the internet does not reach, such
-  as `127.0.0.1:8444`. A valid key that comes to the other listener is
-  refused with 403 and the new problem type `wrong-listener`, before any
-  route sees the request, on every route and on `/mcp`; a request with no
-  key or a bad one is 401 on both, as before. Each such refusal is counted
-  in the audit log under the new action `wrong_listener`, one record for
-  each key and minute: in the admin log for an operator key and in the
-  tenant's log for a tenant key. The operator listener presents `tls.cert`
-  unless `[operator.tls]` names a certificate and key of its own. Both
-  listeners serve the console, which tells a key of the other kind to use
-  the other address. `serve` binds both addresses before it serves either,
-  and logs `the operator listener is bound operator_listen=<address>`
-  before its `serving` line. Without the table nothing changes: one
-  listener serves both kinds of key. The operator-listener page has the
-  how-to, with what to change in proxies and clients.
-- The console plays a recording that a vCon holds inside a dialog: one
-  **Play** button for each dialog whose `body` is `base64url` or `base64`
-  and whose `mediatype` is `audio/wav`, `audio/mpeg`, `audio/ogg` or
-  `audio/opus`, up to 104,857,600 bytes. Six other names are read as the
-  type each stands for: `audio/x-wav`, `audio/wave` and `audio/vnd.wave`
-  as `audio/wav`; `audio/x-mp3` and `audio/mp3` as `audio/mpeg`; and
-  `audio/x-ogg` as `audio/ogg`. `application/ogg` is not played, because
-  the name does not say whether the stream is audio. The player is a page of its own,
-  `/console/player.html`, opened in a new tab. Its content-security policy
-  alone has `media-src blob:`, and has `connect-src 'none'`; the policy of
-  every other console answer is unchanged. The console reads the vCon with
-  the key as a reveal of `audio`, recorded as `reveal_audio` or
-  `legal_reveal_audio`, checks that the recording's bytes carry the
-  signature of the type the dialog declares, and hands the bytes to the
-  player, which has no key, makes no request, keeps nothing in the browser,
-  never starts by itself and lets go of the recording when playback ends or
-  the tab closes. A recording at a link is never loaded. The console page
-  has the how-to. A proxy that passes the console's paths by name must also
-  pass `/console/player.html` and `/console/player.js`.
-- A how-to, "Get a Let's Encrypt certificate": a free, publicly trusted
-  certificate in place of the self-signed one, by HTTP-01 or DNS-01 with
-  certbot, with a deploy hook that installs each new certificate for the
-  server and restarts it. Clients then need no CA file. CI runs the page
-  once per challenge, with Pebble, Let's Encrypt's test server, and BIND in
-  its place. Getting started, the how-to list and the home page link it.
-- The terminal UI's page and the home page show its list and detail
-  screens, drawn by the UI's own code: a test fails when the site's copy
-  differs from what it draws.
-- A read of a vCon can be marked as a reveal of one part of it:
-  `GET /vcons/{uuid}?reveal=<part>`, and the same parameter on
-  `GET /legal/vcons/{uuid}` and
-  `GET /legal/vcons/{uuid}/versions/{version}`, with the part `parties`,
-  `subject`, `dialog`, `analysis`, `links`, `all` or `audio`. The answer is the one
-  the read gives without the parameter, and the key needs the same scope:
-  the parameter only changes the action the audit log records, to
-  `reveal_<part>`, or `legal_reveal_<part>` on a legal route. A `reveal`
-  that is not the only parameter, is given twice or names no part is
-  refused with `bad-query` (400). A read without the parameter is recorded
-  as `read` or `legal_read`, as before. The audit-logs page has the how-to
-  for listing who revealed what.
-- Reports of a broken console policy. Both of the console's
-  content-security policies now end with
-  `report-uri /console/csp-report`, so a browser that blocks something in
-  a console page reports it to the server. The policies do not use
-  `report-to`: in the browser tests Chromium, given `report-to`, sent no
-  report to the test server within 100 seconds, and with `report-uri`
-  alone it sent one within a second. The new route `POST /console/csp-report` takes no key, since a
-  browser sends a report with none. It reads at most 16384 bytes, checks
-  that the body is JSON of the shape its media type names
-  (`application/csp-report` or `application/reports+json`), stores and
-  logs nothing of it, and answers 204; a request it refuses is answered
-  415, 413, 408 or 400. Each request is counted in the admin audit log
-  under the new action `csp_report` and the status that answered it, one
-  record for each status and minute. Two new configuration keys bound the
-  writes that a sender without a key can cause: a listener takes at most
-  `limits.csp_reports` requests at the route in a minute (default 120)
-  and `limits.csp_reports_per_address` from one source address (default
-  20). A request past either is answered 429 with a `Retry-After` header
-  and no write of its own; the refusals of a minute are written as one
-  record with status 429. The console page says how to list
-  them.
-
-### Changed
-
-- **Breaking for a check that holds the console's content-security policy
-  byte for byte, and for a reader of the audit log that knows a fixed list
-  of actions.** Both policies gained the reporting directive named above
-  and no other change; such a reader must add `csp_report`. A proxy that
-  passes only listed paths must pass `POST /console/csp-report`.
-- For users of the `vcon-server` library: `console` has a new constant
-  `REPORT_PATH`, `console::router()` answers a report at that path with
-  204 and counts nothing, `audit::Action` has a new variant `CspReport`,
-  `config::Config` has a new field `reports`, `api::App` has a new field
-  `reports` (an `api::ReportGate` made from `api::ReportLimits`), and
-  `audit` has a new function `count_many`.
-
-- **Breaking for a reader of the audit log that knows a fixed list of
-  actions, or that counts the console's reveals as `read`.** The console
-  now marks each Reveal, so the tenant log holds `reveal_parties`,
-  `reveal_subject`, `reveal_dialog`, `reveal_analysis`, `reveal_links` or
-  `reveal_all` where 0.4.2 wrote `read`, and the `legal_reveal_` actions
-  with the same six endings where it wrote `legal_read`. Playing a
-  recording, which 0.4.2 could not do, is recorded as `reveal_audio` or
-  `legal_reveal_audio`. Opening a vCon and **Download** are still `read`.
-  Upgrade steps: before installing the new binary, add the fourteen action
-  names to any rule, parser or report that lists actions; to keep a count of every read of content, count the
-  actions that start with `reveal_` together with `read`, and those that
-  start with `legal_reveal_` together with `legal_read`. The record's
-  fields, the catalogs' schema version and every API answer are unchanged,
-  and no other client is affected.
-- The description at `/openapi.json` lists 403 for `GET /health`,
-  `GET /key` and `GET /openapi.json`, which answer it only on a server
-  with an operator listener, and names `wrong-listener` among the problem
-  types. A reader of the audit log that knows a fixed list of actions
-  must add `wrong_listener`; a server without an `[operator]` table never
-  writes it.
-- For users of the `vcon-server` library: `config::Config` has a new
-  member, `operator`, and `api::App` a new member, `plane`, so code that
-  builds either with a struct literal must set them (`None` and
-  `access::Plane::Both` keep the behavior as it was).
-- The console is made of two more files, `/console/player.html` and
-  `/console/player.js`. A reverse proxy or firewall that passes the
-  console's paths by name must pass both, and must pass each answer's
-  `Content-Security-Policy` header unchanged: the player's page has a
-  policy of its own. A proxy that passes everything under `/console/`
-  needs no change.
-- The documentation's sidebar is folded behind one button on a narrow
-  screen, so a page's own content comes first; without JavaScript it is
-  shown as before.
-- Three documentation pages each keep to one kind of writing. The audit
-  log's record members and actions are on a new page, Audit log records,
-  and the steps for reading a log on a new guide, Read the audit logs; the
-  operations page's steps are on the rotation and backup guides and
-  `check`'s members on the command-line page; the MCP client configuration
-  is a step of the Connect an AI agent guide. Every heading the three
-  pages had is still there, so a link to one still lands on it.
-- The PostgreSQL catalog guide's commands are run by CI on each change, as
-  the other guides' are.
-- The `parquet` crate, which writes `export parquet` files and the pack
-  files of Parquet storage, goes from 60.0.0 to 60.1.0. The files written
-  and read are checked as before: the export round trip, the DuckDB reads
-  and Parquet storage on an S3 store all pass unchanged.
-- rusqlite goes from 0.41.0 to 0.41.1, and every dependency now comes from
-  crates.io. rusqlite 0.41.0's pragma helpers refused SQLCipher's own
-  pragma names, so the server set `cipher_log_level` as plain SQL, and the
-  tests used a fork of rusqlite from github.com to check that the helpers
-  would read the same values. 0.41.1 takes the names: the server sets and
-  reads SQLCipher's settings through the helpers, and the fork, the
-  `[patch]` that gave it the server's libsqlite3-sys, and its entry in
-  cargo-deny's allowed sources are gone. A build from source, tests
-  included, no longer fetches from github.com; with a mirror of crates.io
-  or `cargo vendor` it needs no other host. Dependabot proposes rusqlite
-  updates again, which the fork had made it skip. The catalogs are opened
-  with the same settings as before, and tests hold the manifests, both
-  lockfiles and the pages to having no git source.
+- **An operator listener serves operator keys on an address of their own.**
+  - Effect: With an `[operator]` table, `serve` also listens on
+    `operator.listen`, for operator keys only, and `listen` serves tenant
+    keys only.
+  - Limit: A valid key at the other listener is refused with 403
+    `wrong-listener`, on every route and on `/mcp`; without the table
+    nothing changes.
+  - Docs: [Operator listener](https://vcon-server.com/docs/operator-listener/)
+- **The console plays a recording that a vCon holds inside a dialog.**
+  - Effect: Each dialog whose `body` is `base64url` or `base64` and whose
+    `mediatype` is `audio/wav`, `audio/mpeg`, `audio/ogg` or `audio/opus`
+    has a **Play** button.
+  - Limit: A recording is played up to 104,857,600 bytes; one at a link is
+    never loaded, and `application/ogg` is not played.
+  - Docs: [Play a
+    recording](https://vcon-server.com/docs/console/#play-a-recording)
+- **A how-to gets a Let's Encrypt certificate in place of the self-signed
+  one.**
+  - Effect: certbot gets it by HTTP-01 or DNS-01, and a deploy hook installs
+    each new certificate and restarts the server; clients need no CA file.
+  - Docs: [Get a Let's Encrypt
+    certificate](https://vcon-server.com/docs/lets-encrypt/)
+- **The terminal UI's page and the home page show its list and detail
+  screens.**
+  - Effect: The screens are drawn by the UI's own code.
+  - Docs: [Terminal UI](https://vcon-server.com/docs/tui/)
+- **A read of a vCon can be recorded as a reveal of one part.**
+  - Effect: `GET /vcons/{uuid}?reveal=<part>`, also on
+    `GET /legal/vcons/{uuid}` and
+    `GET /legal/vcons/{uuid}/versions/{version}`, records `reveal_<part>` or
+    `legal_reveal_<part>`.
+  - Do: Name the part: `parties`, `subject`, `dialog`, `analysis`, `links`,
+    `all` or `audio`.
+  - Limit: The answer and scope are those of the read without it; a
+    `reveal` given twice, beside another parameter or with no part is
+    `bad-query` (400).
+  - Docs: [Reveals](https://vcon-server.com/docs/audit-logs/#reveals)
+- **A browser reports a broken console policy to `POST /console/csp-report`.**
+  - Effect: The route takes no key, stores and logs nothing of a report, and
+    answers 204; each request is counted as `csp_report`.
+  - Do: Bound a listener's reports a minute with `limits.csp_reports`
+    (default 120) and, from one source address,
+    `limits.csp_reports_per_address` (default 20).
+  - Limit: A request past either is answered 429 with a `Retry-After`
+    header and no write of its own.
+  - Docs: [Reports of a broken
+    policy](https://vcon-server.com/docs/console/#reports-of-a-broken-policy)
+- **The `vcon-server` library has new items for connection limits, reports
+  and the terminal.**
+  - Effect: `api::ConnectionLimits` (`max`, `handshake`, `first_head`,
+    `head`, `idle`, `goodbye`, `accept_pause`), `api::serve_within`,
+    `api::serve_observed`, `console::REPORT_PATH`, `audit::count_many` and
+    `tui::with_terminal` are new.
+  - Do: Call `api::serve_within` for `api::serve` with limits, and
+    `api::serve_observed` to have a function called each time a listener
+    fills.
+  - Limit: `console::router()` answers a report at `REPORT_PATH` with 204
+    and counts nothing.
 
 ### Fixed
 
-- The `vcon` crate's README and the library page passed
-  `application/vcon+json` to `vcon::read::inspect` in their example. The
-  vCon draft registers `application/vcon` and `application/vcon+gzip`, and
-  the server refuses any other vCon media type with
-  `unsupported-media-type`; the example now passes `application/vcon`, and
-  a test holds every vCon media type the pages name to the ones the API
-  takes.
-- The site's pages no longer fetch the search index, a file of over a
-  megabyte, until the search box is used.
-- The documentation's sidebar and index list the pages under five group
-  headings, starting with install, getting started and the first vCon; no
-  two pages share a place in the order, as five pairs did. Each how-to guide says what
-  to do when a step fails, `llms.txt` links every page once, and between
-  releases the status page lists what the newest release does not hold
-  yet.
-- Seven words on the site were not in US spelling, and the
-  tenants-and-keys page left `GET /key` out of the routes any valid key
-  may ask.
-- A server stopped by the PostgreSQL catalog preview said to set
-  `catalog.backend = "local"` to serve. A configuration with that and the
-  `[catalog.postgres]` table still in it is refused, so the message now
-  says to remove the `[catalog]` and `[catalog.postgres]` tables. Only a
-  build with the `postgres` feature prints it.
-- The upgrade and operations pages made `/backup` a directory for root
-  alone (`install -d -m 0700 /backup`), after which `vcon-server backup
-  /backup/vcon-server/...`, run as `vcon` as the backup page shows, was
-  refused. The copies root makes now go in `/backup/stopped`.
-- The operations page's list of what `check` prints left out four members,
-  the tenants-and-keys page said a tenant under a legal hold is refused
-  with `under-hold` whatever the query (without `force=true` the answer is
-  `holds-vcons`), and the development page's layout left out seven source
-  files.
-- On the site, the search box's edge had a contrast of 1.2 to 1 against the
-  page (WCAG 1.4.11 asks 3 to 1), and the focus ring of the sidebar's links
-  and of the home page's code blocks was cut off by the box around them.
-- A listener holds at most `limits.connections` connections at once, 512
-  unless the configuration says another number from 1 to 65536. Before,
-  it took every connection it was offered, so connections alone could use
-  up the process's file descriptors, and with them the catalogs and
-  objects the server must open to answer anyone. At the limit the
-  listener takes no more until one ends or a time limit closes it; a new
-  connection waits in the system's queue. Each listener has its own
-  places, so connections to the tenant listener take none from an
-  operator listener. Keep the number below the process's limit on open
-  files. A listener that fills logs one warning, at most one a minute,
-  with its own address and the limit, and each time it fills is counted
-  in the admin audit log under the new action `listener_full`, with the
-  listener's configuration key as the target. The record answers no
-  request, so its `status` is `null`, the first record whose status is not
-  a number; its `count` is the times the listener became full, not the
-  connections that waited. A reader of the audit log that knows a fixed
-  list of actions must add `listener_full`, and one that reads `status`
-  as a number must take `null` for it.
-- A connection that waits for its next request is closed after
-  `limits.timeouts.idle` seconds, 120 unless the configuration says
-  another number from 1 to 3600. Before, an HTTP/2 connection that had
-  sent one request was kept for as long as the other side kept it, with
-  its file descriptor. The limit applies to an HTTP/2 connection with no
-  stream open and to an HTTP/1.1 connection between requests. An HTTP/2
-  connection is sent GOAWAY with `NO_ERROR`, a request that arrives at
-  that moment is still answered, and the connection is closed five seconds
-  later if the client has not ended it. No limit runs while a request is
-  being answered. A client finds the connection closed and opens another,
-  as HTTP clients do without being told. An idle HTTP/1.1 connection is
-  kept up to 120 seconds; `idle = 30` in `[limits.timeouts]` closes it
-  after 30.
-- For users of the `vcon-server` library, all new in this release:
-  `api::ConnectionLimits` holds the limits (`max`, `handshake`,
-  `first_head`, `head`, `idle`, `goodbye` and `accept_pause`);
-  `api::serve_within` is `api::serve` with limits given;
-  `api::serve_observed` is `api::serve_within` with a function called each
-  time the listener fills; and `api::Accept`, what a listener must do, has
-  `accept` and a method with a default, `local`, the listener's address
-  for the log.
-- The server no longer stops when the system cannot hand it a connection.
-  Before, one failed accept, such as the one a process out of file
-  descriptors gets, ended `serve` with `serving failed`. Now the listener
-  goes on: at once when the failure was one connection's own (it ended
-  before it was taken), and after one second otherwise, with a warning in
-  the log each time.
-- A connection that stalls is closed, where before it was kept for as long
-  as the other side kept it, with its file descriptor. A connection is
-  closed when its TLS handshake is not done 10 seconds after it was taken,
-  when no request head has arrived 30 seconds after the handshake, and when
-  an HTTP/1.1 request head on it takes more than 30 seconds from its first
-  bytes. The three limits are new configuration keys,
-  `limits.timeouts.handshake`, `limits.timeouts.first_head` and
-  `limits.timeouts.head`, each from 1 to 3600 seconds, with those
-  defaults. The wait for the next request on a connection kept open is
-  under its own key, `limits.timeouts.idle`. For users of the `vcon-server`
-  library: `config::Config` has a new member, `connection`, and
-  `api::serve` takes any `api::Accept`, which `tokio::net::TcpListener`
-  implements.
-- A SIGTERM or SIGINT that arrives as soon as `serve` has written its
-  `serving` line stops the server in order, with exit status 0. Before,
-  the server began to take the two signals only after that line, so a
-  supervisor or script that stopped it at once could find it killed by
-  the signal instead. `serve` now takes both signals before it opens the
-  data directory, and a server that cannot take them does not start
-  (`the stop signals cannot be taken`), where before it started and then
-  stopped at once.
-- The release build no longer depends on one package mirror. Its
-  AlmaLinux 9 container installed git and the build tools with
-  `dnf install`, retried five times; on 2026-11-11 each of the five tries
-  read the same mirror, whose `repomd.xml` dnf could not parse, and the
-  build job failed. dnf asks the next mirror only when a download fails,
-  not when a file arrives and does not parse. `scripts/dnf_install.py` now
-  follows a failed try with one from the address each repository file
-  names in its commented `baseurl` line, the distribution's own server,
-  and takes turns between the two sources for at most five tries. Packages
-  are checked against the distribution's key as before. The build jobs
-  check out twice, the first time for the script and the second, with git
-  installed, for `.git`.
-- The release's smoke job no longer depends on one host for each package
-  source. In its debian:12 and ubuntu:22.04 containers it ran `apt-get`
-  against the one host the image names for each source, and apt's retries
-  ask that host again: the failure the how-to runner had on 2026-11-10,
-  when archive.ubuntu.com did not answer on port 80. The job now runs
-  `scripts/apt-mirror-setup.sh` before its first `apt-get`. The script
-  asks each mirror of each source the system reads for its index, keeps
-  those that answer within five seconds, and gives apt that list through
-  its `mirror+file:` method; when no mirror of a source answers it changes
-  nothing and ends with exit code 3. The mirrors are one table,
-  `scripts/apt-mirrors.txt`, which the how-to runner reads too.
-  `scripts/check_workflow_downloads.py` refuses an `apt-get update` or
-  `install` in a container job that comes before the script.
-- `vcon-server tui` is now tested on a terminal. Until now the part of it
-  that takes the terminal (keys one at a time and not echoed, the alternate
-  screen), reads the keyboard and starts a thread for each request had been
-  run by hand only. `tests/tui_terminal.rs` runs the binary on a
-  pseudo-terminal and checks the terminal's modes and screen while it runs
-  and after `q`, Ctrl-C, a new size, a failed request and a start that
-  fails. A new library function, `tui::with_terminal`, is the one place the
-  terminal is taken and put back; the tests use it to check that a panic
-  puts the terminal back before its message is written.
-- CI's object-store jobs wait until the store is ready, not until it first
-  answers. MinIO listens before it is initialized and answers 503 until it
-  is; on 2026-11-11 the MinIO job took that first answer as ready and
-  failed at its first write. `scripts/wait-for-s3.sh` waits for a signed
-  request for the list of buckets to answer 200, for at most 60 seconds,
-  and the MinIO job and the two jobs with a RustFS service use it.
-- The tests of the commit hook no longer run every script's own test once
-  per case. `scripts/test-hooks.sh` commits one change per case, and each
-  commit the scan accepts runs the whole hook, which runs the 23 script
-  tests; CI's "git hooks" job runs that twice and took 15 minutes of its 20
-  on 2026-11-11, after a 12-second script test had ended it at the limit.
-  The fixture's first commit still runs every script test as it is. After
-  it, `scripts/hook_fixture.py` replaces each one no case exercises with a
-  stand-in that records its name and passes, and the test checks that the
-  hook ran each stand-in once. The list is read from the hook, so a script
-  test added to the hook needs no change there.
+- **The library page's example passes `application/vcon` to
+  `vcon::read::inspect`.**
+  - Was: The `vcon` crate's README and the library page passed
+    `application/vcon+json`, which the server refuses with
+    `unsupported-media-type`.
+  - Effect: The example passes `application/vcon`; the vCon draft registers
+    `application/vcon` and `application/vcon+gzip`.
+  - Docs: [The vcon library](https://vcon-server.com/docs/library/)
+- **The site's pages no longer fetch the search index before a search.**
+  - Was: Each page fetched the search index, a file of over a megabyte,
+    before the search box was used.
+  - Effect: A page fetches the index once its search box is used.
+- **The documentation lists its pages under five group headings.**
+  - Was: Five pairs of pages shared a place in the order.
+  - Effect: The sidebar and index start with install, getting started and
+    the first vCon, and no two pages share a place.
+- **Each how-to guide says what to do when a step fails.**
+  - Effect: `llms.txt` links every page once, and between releases the
+    status page lists what the newest release does not hold yet.
+- **The site uses US spelling, and lists `GET /key` among any key's
+  routes.**
+  - Was: Seven words were not in US spelling, and the tenants-and-keys page
+    left `GET /key` out of the routes any valid key may ask.
+  - Effect: The seven words are in US spelling, and the page lists
+    `GET /key`.
+- **The PostgreSQL preview's stop message says which tables to remove.**
+  - Was: It said to set `catalog.backend = "local"`, and a configuration
+    with that and the `[catalog.postgres]` table is refused.
+  - Effect: It says to remove the `[catalog]` and `[catalog.postgres]`
+    tables.
+  - Limit: Only a build with the `postgres` feature prints it.
+- **The upgrade and operations pages put root's copies in
+  `/backup/stopped`.**
+  - Was: They made `/backup` a directory for root alone
+    (`install -d -m 0700 /backup`), so
+    `vcon-server backup /backup/vcon-server/...` run as `vcon` was refused.
+  - Effect: The copies root makes go in `/backup/stopped`.
+  - Docs: [Back up and
+    restore](https://vcon-server.com/docs/backup-and-restore/)
+- **Three pages are corrected: `check`'s members, a held tenant's removal,
+  the source layout.**
+  - Was: The tenants-and-keys page said a tenant under a legal hold is
+    refused with `under-hold` whatever the query.
+  - Effect: It says that without `force=true` the answer is `holds-vcons`;
+    the operations and development pages have the four members and seven
+    files they left out.
+- **The site's search box edge and focus rings are fixed.**
+  - Was: The search box's edge had a contrast of 1.2 to 1 against the page;
+    WCAG 1.4.11 asks 3 to 1.
+  - Effect: The focus ring of the sidebar's links and of the home page's
+    code blocks is no longer cut off by the box around them.
+- **A listener holds at most `limits.connections` connections at once.**
+  - Was: A listener took every connection it was offered, so connections
+    alone could use up the process's file descriptors.
+  - Effect: At 512, or the number set from 1 to 65536, a new connection
+    waits in the system's queue until one ends.
+  - Do: Keep the number below the process's limit on open files.
+  - Limit: 0.4.2 refuses a configuration that has one of this release's five
+    new `limits` keys.
+  - Docs: [Connection
+    limits](https://vcon-server.com/docs/configuration/#connection-limits)
+- **A connection that waits for its next request is closed after
+  `limits.timeouts.idle` seconds.**
+  - Was: An HTTP/2 connection that had sent one request was kept for as
+    long as the other side kept it.
+  - Effect: The limit is 120 seconds unless set from 1 to 3600, for HTTP/2
+    with no stream open and HTTP/1.1 between requests.
+  - Do: Set `idle = 30` in `[limits.timeouts]` to close an idle connection
+    after 30 seconds.
+  - Limit: No limit runs while a request is being answered; a client finds
+    the connection closed and opens another.
+  - Docs: [Connection
+    limits](https://vcon-server.com/docs/configuration/#connection-limits)
+- **A connection whose TLS handshake or request head stalls is closed.**
+  - Was: A stalled connection was kept for as long as the other side kept
+    it, with its file descriptor.
+  - Effect: The limits are 10 seconds for the handshake, 30 for the first
+    request head and 30 for an HTTP/1.1 request head.
+  - Do: Change them with `limits.timeouts.handshake`,
+    `limits.timeouts.first_head` and `limits.timeouts.head`, each from 1 to
+    3600 seconds.
+  - Docs: [Connection
+    limits](https://vcon-server.com/docs/configuration/#connection-limits)
+- **The server no longer stops when the system cannot hand it a
+  connection.**
+  - Was: One failed accept, such as one a process out of file descriptors
+    gets, ended `serve` with `serving failed`.
+  - Effect: The listener goes on, at once after a connection's own failure
+    and after one second otherwise, with a warning in the log.
+- **A stop signal right after the `serving` line stops the server in
+  order.**
+  - Was: The server took SIGTERM and SIGINT only after that line, so a
+    supervisor that stopped it at once could find it killed by the signal.
+  - Effect: It stops with exit status 0: `serve` takes both signals before
+    it opens the data directory.
+  - Limit: A server that cannot take them does not start:
+    `the stop signals cannot be taken`.
 
 ### Security
 
-- rustix goes from 1.1.5 to 1.1.6 (RUSTSEC-2026-0486). Before 1.1.6,
-  rustix's extended-attribute functions (`getxattr`, `listxattr` and their
-  `l` and `f` forms) marked bytes as initialized that the operating system
-  had not written when they were given a zero-length buffer, which is
-  undefined behavior reachable from safe code. vcon-server takes rustix
-  through crossterm, for the terminal UI, and through tempfile, in tests.
-  No source file of vcon-server, of crossterm 0.29.0 or of tempfile 3.27.0
-  names an extended-attribute function, so no call to the affected
-  functions was found; the bump removes the affected version from the
-  build all the same.
+- **rustix goes from 1.1.5 to 1.1.6 (RUSTSEC-2026-0486).**
+  - Was: Its extended-attribute functions, given a zero-length buffer,
+    marked unwritten bytes as initialized: undefined behavior from safe
+    code.
+  - Effect: The affected version leaves the build; vcon-server takes rustix
+    through crossterm, for the terminal UI, and tempfile, in tests.
+  - Limit: No source file of vcon-server, crossterm 0.29.0 or tempfile
+    3.27.0 names an extended-attribute function.
 
 ## [0.4.2] - 2026-11-10
 
