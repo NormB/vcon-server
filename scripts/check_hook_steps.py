@@ -50,9 +50,7 @@ HOOK_NAME = re.compile(r"[a-z]+(?:-[a-z]+)*")
 CI_ONLY = {
     # Tests of the hooks themselves: each commits in a throwaway repository,
     # which runs the commit hook, so the commit hook cannot run them.
-    "scripts/test-hooks.sh": "commits in a throwaway repository, and each commit there runs the commit hook",
-    "scripts/test-pre-push.sh": "pushes in a throwaway repository with a signing key of its own; run by hand when a hook changes",
-    "scripts/test-hook-isolation.sh": "runs the two hook tests from inside a real hook, in a scratch copy of the tree",
+    "scripts/test-hook-isolation.sh": "runs the two hook tests again from inside a real hook, in a scratch copy of the tree (166 s here on 2026-11-15); the push hook runs them from inside a real hook already",
     # Checks that need a tool, a service or a build the commit hook has none of.
     "scripts/check-site.sh": "builds the site with zola, which the commit hook does not install",
     "scripts/test-site.sh": "needs zola, Node and the Playwright browser",

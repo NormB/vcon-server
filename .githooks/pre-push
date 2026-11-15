@@ -11,6 +11,8 @@ zero="0000000000000000000000000000000000000000"
 name="$(git config user.name)"
 email="$(git config user.email)"
 bad=0
+# The files the outgoing commits change, over every ref pushed.
+changed=""
 
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ "$local_sha" = "$zero" ] && continue              # deleting a ref: nothing outgoing
@@ -45,6 +47,30 @@ while read -r local_ref local_sha remote_ref remote_sha; do
       bad=1
     fi
   done <<< "$commits"
+  changed+="$(git log --name-only --format= "${range[@]}")"$'\n'
 done
+
+# CI's "git hooks" job runs two hook tests that no commit hook runs; a push
+# that changes a file they read runs them here (scripts/hook_tests.py holds
+# the rule). Skipped when a commit is already refused.
+if [ "$bad" -eq 0 ]; then
+  set +e
+  printf '%s' "$changed" | python3 -I "$root/scripts/hook_tests.py" needed
+  verdict=$?
+  set -e
+  case "$verdict" in
+    0)
+      if ! "$root/scripts/test-hooks.sh" </dev/null || ! "$root/scripts/test-pre-push.sh" </dev/null; then
+        echo "pre-push: refused: the hook tests failed (scripts/test-hooks.sh, scripts/test-pre-push.sh)" >&2
+        bad=1
+      fi
+      ;;
+    1) ;;
+    *)
+      echo "pre-push: refused: cannot tell whether the hook tests are needed (scripts/hook_tests.py)" >&2
+      bad=1
+      ;;
+  esac
+fi
 
 exit "$bad"

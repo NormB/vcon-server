@@ -330,7 +330,18 @@ git config core.hooksPath .githooks
   request the same way.
 
 `scripts/test-hooks.sh` and `scripts/test-pre-push.sh` test the hooks
-themselves. Every commit on `main` is signed and shows as verified on GitHub.
+themselves, in throwaway repositories made from files of the tree. CI's
+"git hooks" job runs them, and so does **pre-push** when the outgoing
+commits change a file they copy: `scripts/hook_tests.py needed` reads
+each `"$src/<path>"` the two scripts name, and a push that changes one of
+those files, or a file under one of those directories, runs both. The hook
+prints `hook tests: needed: the push changes <path> ...` or `hook tests:
+not needed: ...`, and refuses the push with `pre-push: refused: the hook
+tests failed` when one fails. On the maintainer's build host on
+2026-11-15, `scripts/test-hooks.sh` took 159 to 195 seconds and
+`scripts/test-pre-push.sh` 1 second. CI also runs both again from inside a
+scratch hook; that check stays in CI only. Every commit on `main` is
+signed and shows as verified on GitHub.
 
 ### Feature sets clippy lints
 

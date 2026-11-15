@@ -197,7 +197,8 @@ Test data uses reserved values only: `example.com` addresses, 555-01xx
 numbers, and RFC 5737 and RFC 3849 IP addresses. The one exception is the IETF
 draft's own examples in `crates/vcon/tests/fixtures/ietf/`, kept unchanged.
 `scripts/test-hooks.sh` and `scripts/test-pre-push.sh` test the hooks
-themselves.
+themselves; `.githooks/pre-push` runs them when `scripts/hook_tests.py`
+finds that a push changes a file they read.
 
 ## Support the project
 

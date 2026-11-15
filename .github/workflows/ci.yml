@@ -653,6 +653,9 @@ jobs:
       # held (scripts/advertised_release.py).
       - name: The site names only a published release
         run: python3 -I scripts/test_advertised_release.py
+      # Which pushes run the hook tests in the push hook (scripts/hook_tests.py).
+      - name: A push that changes what the hook tests read runs them
+        run: python3 -I scripts/test_hook_tests.py
 
   hooks:
     name: git hooks

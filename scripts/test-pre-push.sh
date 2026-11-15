@@ -28,7 +28,18 @@ repo="$work/repo"
 mkdir -p "$repo/hooks"
 cp "$src/.githooks/pre-push" "$repo/hooks/"
 mkdir -p "$repo/scripts"
-cp "$src/scripts/scan-commit-messages.sh" "$src/scripts/scan_forbidden.py" "$repo/scripts/"
+cp "$src/scripts/scan-commit-messages.sh" "$src/scripts/scan_forbidden.py" "$src/scripts/hook_tests.py" "$repo/scripts/"
+# Stand-ins for the two hook tests the hook runs (scripts/hook_tests.py):
+# each records its name in $work/calls and passes, or fails when
+# HOOK_TESTS_FAIL is set. Each names the paths watched and watched-dir in
+# the form the rule reads, so a push that changes one must run them. (The
+# form is written with %s, so this file itself names no such path.)
+for name in test-hooks test-pre-push; do
+  printf '#!/bin/sh\n: "%s/watched" "%s/watched-dir"\necho %s >> "%s"\n[ -z "${HOOK_TESTS_FAIL:-}" ]\n' \
+    '$src' '$src' "$name" "$work/calls" > "$repo/scripts/$name.sh"
+  chmod +x "$repo/scripts/$name.sh"
+done
+: > "$work/calls"
 cd "$repo"
 git init -q -b main
 case "$(git rev-parse --absolute-git-dir)" in
@@ -125,6 +136,53 @@ git clone -q -b main "$work/remote.git" "$work/other"
 (cd "$work/other" && git -c user.name="Test User" -c user.email="test@example.com" commit -q --allow-empty --no-gpg-sign -m "Elsewhere" && git push -q --no-verify origin main)
 commit -S
 why='cannot list the commits going to' expect refuse "force push over commits never fetched here" --force origin main
+
+git fetch -q origin
+git reset -q --hard origin/main
+
+# The hook tests: run once a push changes a file they read, never otherwise.
+# called <names...>: the stand-ins that ran since the last check, in order.
+called() {
+  n=$((n + 1))
+  local got
+  got="$(tr '\n' ' ' < "$work/calls" | sed 's/ $//')"
+  if [ "$got" = "$*" ]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL (hook tests run: '$got', expected '$*'): $what_called"; fi
+  : > "$work/calls"
+}
+commit -S
+what_called="a change no hook test reads" expect accept "push of a change no hook test reads" origin main
+what_called="a change no hook test reads" called
+
+echo 1 > watched; git add watched; git commit -q -S -m "Watched"
+expect accept "push of a change a hook test reads" origin main
+what_called="a change a hook test reads" called test-hooks test-pre-push
+
+mkdir -p watched-dir; echo 1 > watched-dir/x; git add watched-dir; git commit -q -S -m "Under a watched directory"
+expect accept "push of a change under a directory a hook test reads" origin main
+what_called="a file under a directory they read" called test-hooks test-pre-push
+
+echo 2 > watched; git add watched; git commit -q -S -m "Watched again"
+HOOK_TESTS_FAIL=1 why='the hook tests failed' expect refuse "push whose hook tests fail" origin main
+what_called="a failing hook test" called test-hooks
+git reset -q --hard origin/main
+
+echo 3 > watched; git add watched; git commit -q --no-gpg-sign -m "Watched, unsigned"
+why='has no good signature from an allowed signer' expect refuse "unsigned push of a change a hook test reads" origin main
+what_called="a push already refused" called
+git reset -q --hard origin/main
+
+echo 4 > watched; git add watched; git commit -q -S -m "Watched, rule unreadable"
+mv scripts/test-pre-push.sh "$work/aside.sh"
+why='cannot tell whether the hook tests are needed' expect refuse "push when the rule cannot be read" origin main
+mv "$work/aside.sh" scripts/test-pre-push.sh
+what_called="an unreadable rule" called
+git reset -q --hard origin/main
+
+git checkout -q -b watched-topic
+echo 5 > watched; git add watched; git commit -q -S -m "Watched on a new branch"
+expect accept "new branch with a change a hook test reads" origin watched-topic
+what_called="a new branch" called test-hooks test-pre-push
+git checkout -q main
 
 echo "test-pre-push: $pass of $n passed"
 [ "$fail" -eq 0 ]
