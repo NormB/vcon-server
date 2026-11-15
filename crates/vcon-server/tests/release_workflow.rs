@@ -190,3 +190,561 @@ fn job_reads_one_job_only() {
     assert_eq!(job(yml, "a"), "    x: 1\n    # c");
     assert_eq!(job(yml, "b"), "    y: 2");
 }
+
+// Each release proves its own binaries: release.yml builds each target a
+// second time, in another checkout with another CARGO_HOME, and compares
+// the binary of the archive with that build before anything is attested
+// or published. Until then no run compared a released binary: the
+// reproducible-build workflow built x86_64 only and never on a tag.
+
+fn workflow(name: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.github/workflows")
+        .join(name);
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+/// The jobs the job `name` names under `needs:`, written as a list on
+/// one line or as one name; none when the job has no such line.
+fn needs(yml: &str, name: &str) -> Vec<String> {
+    code(&job(yml, name))
+        .lines()
+        .find_map(|line| line.strip_prefix("    needs:"))
+        .map(|list| {
+            list.trim()
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .split(',')
+                .map(|job| job.trim().to_owned())
+                .filter(|job| !job.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The names of the jobs of a workflow.
+fn jobs(yml: &str) -> Vec<String> {
+    yml.lines()
+        .skip_while(|line| *line != "jobs:")
+        .skip(1)
+        .filter(|line| line.starts_with("  ") && !line.starts_with("   "))
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .filter_map(|line| line.trim().strip_suffix(':'))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Whether the job `later` cannot start before `earlier` has ended: it
+/// needs it, or needs a job that does.
+fn waits_for(yml: &str, later: &str, earlier: &str) -> bool {
+    let known = jobs(yml);
+    let mut seen: Vec<String> = Vec::new();
+    let mut open = vec![later.to_owned()];
+    while let Some(name) = open.pop() {
+        if seen.contains(&name) || !known.contains(&name) {
+            continue;
+        }
+        for needed in needs(yml, &name) {
+            if needed == earlier {
+                return true;
+            }
+            open.push(needed);
+        }
+        seen.push(name);
+    }
+    false
+}
+
+/// The `target` and `runner` pairs of a job's matrix.
+fn targets(job: &str) -> Vec<(String, String)> {
+    let code = code(job);
+    let lines: Vec<&str> = code.lines().map(str::trim).collect();
+    lines
+        .windows(2)
+        .filter_map(|pair| {
+            let target = pair[0].strip_prefix("- target: ")?;
+            let runner = pair[1].strip_prefix("runner: ")?;
+            Some((target.to_owned(), runner.to_owned()))
+        })
+        .collect()
+}
+
+/// The container image a job runs in.
+fn image(job: &str) -> Option<String> {
+    code(job)
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("image: "))
+        .map(str::to_owned)
+}
+
+/// The events of a workflow's `on:` block.
+fn events(yml: &str) -> Vec<String> {
+    yml.lines()
+        .skip_while(|line| *line != "on:")
+        .skip(1)
+        .take_while(|line| line.is_empty() || line.starts_with(' '))
+        .filter(|line| line.starts_with("  ") && !line.starts_with("   "))
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .filter_map(|line| line.trim().split(':').next())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A workflow of the release's shape, for the readers above.
+const SHAPE: &str = "on:\n  push:\n    tags: ['v*']\n  # pull_request:\n  workflow_dispatch:\n\n\
+jobs:\n  version:\n    runs-on: x\n  build:\n    needs: version\n    container:\n      image: a:1@sha256:00\n    strategy:\n      matrix:\n        include:\n          - target: t-one\n            runner: r-one\n          - target: t-two\n            runner: r-two\n  rebuild:\n    needs: version\n  reproduced:\n    needs: [version, build, rebuild]\n  attest:\n    # needs: [nothing]\n    needs: [version, build, reproduced]\n  publish:\n    needs: [version, attest]\n";
+
+#[test]
+fn the_jobs_a_job_needs_are_read_from_a_list_and_from_one_name() {
+    assert_eq!(
+        needs(SHAPE, "reproduced"),
+        ["version", "build", "rebuild"],
+        "a list"
+    );
+    assert_eq!(needs(SHAPE, "build"), ["version"], "one name");
+}
+
+#[test]
+fn a_job_that_names_no_other_job_needs_none() {
+    assert_eq!(
+        needs(SHAPE, "version"),
+        Vec::<String>::new(),
+        "no needs line"
+    );
+}
+
+#[test]
+fn a_needs_line_in_a_comment_is_not_read() {
+    assert_eq!(
+        needs(SHAPE, "attest"),
+        ["version", "build", "reproduced"],
+        "the comment above the line names another list"
+    );
+}
+
+#[test]
+fn the_jobs_of_a_workflow_are_its_names_under_jobs() {
+    assert_eq!(
+        jobs(SHAPE),
+        [
+            "version",
+            "build",
+            "rebuild",
+            "reproduced",
+            "attest",
+            "publish"
+        ],
+        "each job once, and no key of the on block or of a job"
+    );
+}
+
+#[test]
+fn a_job_waits_for_a_job_it_needs_through_another() {
+    assert!(
+        waits_for(SHAPE, "publish", "rebuild"),
+        "publish needs attest, attest needs reproduced, reproduced needs rebuild"
+    );
+    assert!(waits_for(SHAPE, "attest", "reproduced"), "named directly");
+}
+
+#[test]
+fn a_job_does_not_wait_for_one_that_no_needs_line_leads_to() {
+    assert!(
+        !waits_for(SHAPE, "build", "rebuild"),
+        "the two builds run side by side"
+    );
+    assert!(
+        !waits_for(SHAPE, "rebuild", "publish"),
+        "needs lines are followed one way"
+    );
+}
+
+#[test]
+fn a_workflow_whose_attest_job_skips_the_comparison_is_seen() {
+    let skipped = SHAPE.replace(
+        "    needs: [version, build, reproduced]",
+        "    needs: [version, build]",
+    );
+    assert!(
+        !waits_for(&skipped, "publish", "reproduced"),
+        "nothing leads from publish to the comparison"
+    );
+}
+
+#[test]
+fn a_job_that_needs_itself_or_an_unknown_job_ends_the_walk() {
+    let looped = "jobs:\n  a:\n    needs: [a, ghost]\n  b:\n    needs: a\n";
+    assert!(!waits_for(looped, "b", "c"), "a loop is walked once");
+    assert!(
+        !waits_for(looped, "ghost", "a"),
+        "a job the workflow does not have"
+    );
+}
+
+#[test]
+fn the_targets_of_a_matrix_are_read_with_their_runners() {
+    assert_eq!(
+        targets(&job(SHAPE, "build")),
+        [
+            ("t-one".to_owned(), "r-one".to_owned()),
+            ("t-two".to_owned(), "r-two".to_owned())
+        ],
+        "each target and the runner on the line after it"
+    );
+    assert_eq!(
+        targets(&job(SHAPE, "rebuild")),
+        Vec::new(),
+        "a job without a matrix"
+    );
+}
+
+#[test]
+fn the_image_of_a_job_is_read_and_a_job_without_one_has_none() {
+    assert_eq!(
+        image(&job(SHAPE, "build")).as_deref(),
+        Some("a:1@sha256:00"),
+        "the container's image"
+    );
+    assert_eq!(image(&job(SHAPE, "rebuild")), None, "no container");
+}
+
+#[test]
+fn the_events_of_a_workflow_leave_out_comments_and_their_own_keys() {
+    assert_eq!(
+        events(SHAPE),
+        ["push", "workflow_dispatch"],
+        "pull_request is in a comment, tags is a key of push"
+    );
+}
+
+#[test]
+fn the_release_builds_each_target_a_second_time_in_the_same_container() {
+    let yml = release_yml();
+    let build = job(&yml, "build");
+    let rebuild = job(&yml, "rebuild");
+    assert_eq!(
+        targets(&build).len(),
+        2,
+        "the release builds x86_64 and aarch64"
+    );
+    assert_eq!(
+        targets(&rebuild),
+        targets(&build),
+        "the second build covers each target of the first, on the same runner"
+    );
+    assert!(image(&build).is_some(), "the build names its container");
+    assert_eq!(
+        image(&rebuild),
+        image(&build),
+        "the same image, digest for digest"
+    );
+}
+
+#[test]
+fn the_second_build_is_the_scripts_rebuild_and_not_a_copy_of_the_first() {
+    let yml = release_yml();
+    let rebuild = code(&job(&yml, "rebuild"));
+    assert!(
+        rebuild.contains(
+            "bash scripts/reproducible-build.sh rebuild \"$TARGET\" \"$RUNNER_TEMP/rebuild\""
+        ),
+        "another checkout and another CARGO_HOME, made by the script"
+    );
+    assert!(
+        rebuild.contains("bash scripts/release-build-env.sh"),
+        "the container is prepared as the build's is"
+    );
+    assert!(
+        !rebuild.contains("download-artifact"),
+        "the second build takes nothing from the first"
+    );
+    assert!(
+        !waits_for(&yml, "rebuild", "build"),
+        "the two builds run side by side"
+    );
+}
+
+#[test]
+fn the_archives_binary_is_compared_with_the_second_build_for_each_target() {
+    let yml = release_yml();
+    let reproduced = code(&job(&yml, "reproduced"));
+    for needed in ["build", "rebuild"] {
+        assert!(
+            needs(&yml, "reproduced").contains(&needed.to_owned()),
+            "the comparison waits for {needed}"
+        );
+    }
+    assert!(
+        reproduced.contains("bash scripts/reproducible-build.sh compare"),
+        "the script's verdict: identical with the digest, or the evidence and code 1"
+    );
+    for (target, _) in targets(&job(&yml, "build")) {
+        assert!(
+            reproduced.contains(&target),
+            "the comparison names {target}"
+        );
+    }
+    assert!(
+        reproduced.contains("tar xzf"),
+        "the first binary is the one in the archive that is released"
+    );
+    assert!(
+        !reproduced.contains("continue-on-error") && !reproduced.contains("|| true"),
+        "a difference fails the job"
+    );
+}
+
+#[test]
+fn nothing_is_attested_or_published_before_the_comparison() {
+    let yml = release_yml();
+    for later in ["attest", "publish", "crates-io"] {
+        assert!(
+            waits_for(&yml, later, "reproduced"),
+            "{later} waits for the comparison"
+        );
+    }
+    assert!(
+        !code(&job(&yml, "reproduced")).contains("if:"),
+        "the comparison runs on a tag, on a pull request and by hand"
+    );
+}
+
+#[test]
+fn the_reproducible_workflow_runs_weekly_and_by_hand_for_both_targets() {
+    let yml = workflow("reproducible.yml");
+    assert_eq!(
+        events(&yml),
+        ["schedule", "workflow_dispatch"],
+        "release.yml compares both targets on a pull request that changes the build, so \
+         this workflow does not build them again there"
+    );
+    let job = job(&yml, "reproducible");
+    assert_eq!(
+        targets(&job),
+        targets(&super_build()),
+        "the targets and runners of the release build"
+    );
+    assert_eq!(
+        image(&job),
+        image(&super_build()),
+        "the release build's container"
+    );
+}
+
+/// The release workflow's build job.
+fn super_build() -> String {
+    job(&release_yml(), "build")
+}
+
+#[test]
+fn a_run_by_hand_can_name_the_commit_and_the_build_time() {
+    let yml = workflow("reproducible.yml");
+    let on = &yml[..yml.find("\njobs:").expect("jobs")];
+    for input in ["ref:", "source_date_epoch:"] {
+        assert!(on.contains(input), "the input {input}");
+    }
+    let job = code(&job(&yml, "reproducible"));
+    assert_eq!(
+        job.matches("ref: ${{ inputs.ref }}").count(),
+        2,
+        "both checkouts take the commit asked for"
+    );
+    assert!(
+        job.contains("SOURCE_DATE_EPOCH: ${{ inputs.source_date_epoch }}"),
+        "the build time is given to the script in the environment"
+    );
+    assert!(
+        !job.contains("run: bash scripts/reproducible-build.sh check ${{"),
+        "no input is written into a command line"
+    );
+}
+
+/// Runs scripts/reproducible-build.sh with `args` and `epoch` as
+/// SOURCE_DATE_EPOCH (unset when `None`); its code, stdout and stderr.
+fn script(args: &[&str], epoch: Option<&str>) -> (Option<i32>, String, String) {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut command = std::process::Command::new("bash");
+    command
+        .arg(root.join("scripts/reproducible-build.sh"))
+        .args(args)
+        .env_remove("SOURCE_DATE_EPOCH");
+    if let Some(epoch) = epoch {
+        command.env("SOURCE_DATE_EPOCH", epoch);
+    }
+    let output = command.output().expect("bash runs the script");
+    (
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+/// Two files in a new directory, with the bytes given.
+fn pair(a: &[u8], b: &[u8]) -> (tempfile::TempDir, String, String) {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let (one, two) = (dir.path().join("one"), dir.path().join("two"));
+    std::fs::write(&one, a).expect("write one");
+    std::fs::write(&two, b).expect("write two");
+    let text = |path: &Path| path.to_str().expect("a UTF-8 path").to_owned();
+    let (one, two) = (text(&one), text(&two));
+    (dir, one, two)
+}
+
+#[test]
+fn two_equal_files_compare_identical_with_their_digest() {
+    let (_dir, one, two) = pair(b"abc", b"abc");
+    let (status, out, _) = script(&["compare", &one, &two], None);
+    assert_eq!(status, Some(0), "equal files: {out}");
+    assert!(
+        out.starts_with(
+            "identical: ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  "
+        ),
+        "the SHA-256 of the bytes, for the reader to set beside a release's: {out}"
+    );
+}
+
+#[test]
+fn two_files_that_differ_by_one_byte_fail_with_the_evidence() {
+    let (_dir, one, two) = pair(b"abcdefgh", b"abcdefgX");
+    let (status, out, _) = script(&["compare", &one, &two], None);
+    assert_eq!(status, Some(1), "a difference is code 1: {out}");
+    assert!(out.starts_with("NOT reproducible: "), "the verdict: {out}");
+    assert!(
+        out.contains("differing bytes: 1 "),
+        "how many bytes differ: {out}"
+    );
+    assert!(
+        !out.contains("identical"),
+        "no digest line of a pass: {out}"
+    );
+}
+
+#[test]
+fn a_file_that_is_a_prefix_of_the_other_is_not_identical() {
+    let (_dir, one, two) = pair(b"abc", b"abcd");
+    let (status, out, _) = script(&["compare", &one, &two], None);
+    assert_eq!(status, Some(1), "another length: {out}");
+    assert!(out.starts_with("NOT reproducible: "), "the verdict: {out}");
+}
+
+#[test]
+fn two_empty_files_compare_identical() {
+    let (_dir, one, two) = pair(b"", b"");
+    let (status, out, _) = script(&["compare", &one, &two], None);
+    assert_eq!(status, Some(0), "no bytes differ: {out}");
+    assert!(
+        out.starts_with(
+            "identical: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  "
+        ),
+        "the SHA-256 of no bytes: {out}"
+    );
+}
+
+#[test]
+fn a_comparison_with_a_missing_file_is_refused() {
+    let (dir, one, _) = pair(b"abc", b"abc");
+    let missing = dir.path().join("three");
+    let missing = missing.to_str().expect("a UTF-8 path");
+    let (status, out, err) = script(&["compare", &one, missing], None);
+    assert_eq!(status, Some(1), "no second file: {err}");
+    assert!(err.contains("no such file: "), "the reason: {err}");
+    assert!(out.is_empty(), "no verdict: {out}");
+}
+
+#[test]
+fn a_comparison_of_one_file_is_refused() {
+    let (_dir, one, _) = pair(b"abc", b"abc");
+    let (status, _, err) = script(&["compare", &one], None);
+    assert_eq!(status, Some(1), "one argument: {err}");
+    assert!(err.contains("usage: "), "the usage: {err}");
+}
+
+#[test]
+fn the_build_time_is_the_one_given() {
+    let (status, out, err) = script(&["epoch"], Some("1794686421"));
+    assert_eq!(status, Some(0), "a time in seconds: {err}");
+    assert_eq!(out, "1794686421\n", "the time given, unchanged");
+}
+
+#[test]
+fn the_build_time_is_the_commits_when_none_is_given() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let git = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .args(["log", "-1", "--format=%ct", "HEAD"])
+        .output()
+        .expect("git runs");
+    let commit_time = String::from_utf8_lossy(&git.stdout).into_owned();
+    assert!(
+        commit_time.trim().parse::<u64>().is_ok(),
+        "the commit has a time: {commit_time:?}"
+    );
+    let (status, out, err) = script(&["epoch"], None);
+    assert_eq!(status, Some(0), "from the checkout: {err}");
+    assert_eq!(out, commit_time, "the time of the commit that is built");
+}
+
+#[test]
+fn an_empty_build_time_is_no_build_time() {
+    let (_, unset, _) = script(&["epoch"], None);
+    let (status, out, err) = script(&["epoch"], Some(""));
+    assert_eq!(status, Some(0), "a run by hand that fills no input: {err}");
+    assert_eq!(out, unset, "the commit's time, as with none given");
+}
+
+#[test]
+fn a_build_time_that_is_not_a_number_of_seconds_is_refused() {
+    for epoch in ["yesterday", "1794686421; id", "-5", "17 94", "1.5"] {
+        let (status, out, err) = script(&["epoch"], Some(epoch));
+        assert_eq!(status, Some(1), "{epoch:?} is refused: {out}");
+        assert!(
+            err.contains("SOURCE_DATE_EPOCH must be a whole number of seconds"),
+            "{epoch:?}: the reason: {err}"
+        );
+        assert!(out.is_empty(), "{epoch:?}: no time is printed: {out}");
+    }
+}
+
+#[test]
+fn a_second_build_into_a_directory_that_exists_is_refused() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let there = dir.path().to_str().expect("a UTF-8 path");
+    // A target no toolchain has: were the refusal ever lost, cargo would
+    // end at once instead of building a release binary inside a test.
+    let (status, out, err) = script(&["rebuild", "no-such-target", there], None);
+    assert_eq!(status, Some(1), "the directory is there: {err}");
+    assert!(
+        err.contains("exists; give rebuild a new directory"),
+        "the reason: {err}"
+    );
+    assert!(out.is_empty(), "nothing was built: {out}");
+}
+
+#[test]
+fn a_second_build_without_a_directory_is_refused() {
+    let (status, _, err) = script(&["rebuild", "no-such-target"], None);
+    assert_eq!(status, Some(1), "one argument: {err}");
+    assert!(
+        err.contains("usage: ") && err.contains("rebuild <target-triple> <workdir>"),
+        "the usage: {err}"
+    );
+}
+
+#[test]
+fn the_build_says_which_commit_and_build_time_it_used() {
+    let script = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/reproducible-build.sh"),
+    )
+    .expect("the script");
+    let build = &script[script.find("cmd_build() {").expect("cmd_build")..];
+    let build = &build[..build.find("\n}\n").expect("the function's end")];
+    assert!(
+        build.contains("SOURCE_DATE_EPOCH=$(build_epoch)"),
+        "the build and `epoch` take the time from one function"
+    );
+    assert!(
+        build.contains("printf 'reproducible-build: commit %s, SOURCE_DATE_EPOCH=%s\\n'"),
+        "a log shows the input that makes a pull request's digest differ from a release's"
+    );
+}

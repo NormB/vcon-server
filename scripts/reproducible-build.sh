@@ -17,8 +17,16 @@
 #       each with `build`, the second with a CARGO_HOME of its own, and
 #       compares the two binaries byte for byte. Exits 1 with the evidence
 #       when they differ. <workdir> is deleted on success, kept on failure.
+#   reproducible-build.sh rebuild <target-triple> <workdir>
+#       the second build of a release: clones HEAD into <workdir>/b and
+#       builds it there with `build` and a CARGO_HOME of its own, as
+#       `check` builds its b. Prints the binary's path last. release.yml
+#       compares it with the binary of the archive before it publishes.
 #   reproducible-build.sh compare <file-a> <file-b>
 #       the verdict `check` uses: 0 when identical, else 1 and the evidence.
+#   reproducible-build.sh epoch
+#       prints the SOURCE_DATE_EPOCH a build here uses: the one set, else
+#       the commit's time.
 #
 # Modeled on sipnab's scripts/reproducible-build.sh. Measured on the
 # runners on 2026-10-27: two plain release builds of one commit, in two
@@ -78,15 +86,68 @@ rustflags() {
   printf '%s\n' "$out"
 }
 
+# THE build time: SOURCE_DATE_EPOCH as the caller set it, else the time of
+# the commit that is built. An empty value is no value (a run by hand that
+# fills no input). The binary holds this time (cause 3 above), so two
+# commits with one tree give two binaries: a pull request is built from
+# its merge commit, whose time is not the time of the commit a release is
+# tagged on, and its digest never equals the release's.
+build_epoch() {
+  local epoch="${SOURCE_DATE_EPOCH:-}"
+  if [ -z "$epoch" ]; then
+    epoch=$(git -C "$ROOT" log -1 --format=%ct HEAD 2>/dev/null) \
+      || die "$ROOT is not a git checkout, so there is no commit time for SOURCE_DATE_EPOCH. Build from a checkout, or set it."
+  fi
+  case "$epoch" in
+    ''|*[!0-9]*) die "SOURCE_DATE_EPOCH must be a whole number of seconds, not '$epoch'" ;;
+  esac
+  printf '%s\n' "$epoch"
+}
+
+cmd_epoch() {
+  [ $# -eq 0 ] || die "usage: $0 epoch"
+  build_epoch
+}
+
+# Clones commit $2 into $1/$3, builds it there for target $4 with the
+# CARGO_HOME $5, and copies the binary to $1/$3-dist/vcon-server. The
+# target directory must not exist before and does not exist after.
+build_in_clone() {
+  local work="$1" head="$2" d="$3" target="$4" cargo_home="$5" bin
+  git clone --quiet --no-checkout "$ROOT" "$work/$d"
+  git -C "$work/$d" checkout --quiet --detach "$head"
+  printf '== build %s in %s (CARGO_HOME=%s)\n' "$d" "$work/$d" "$cargo_home" >&2
+  bin=$(CARGO_HOME="$cargo_home" bash "$work/$d/scripts/reproducible-build.sh" build "$target" | tail -1)
+  mkdir -p "$work/$d-dist"
+  cp "$bin" "$work/$d-dist/vcon-server"
+  rm -rf "$TARGET_DIR"
+}
+
+cmd_rebuild() {
+  [ $# -eq 2 ] || die "usage: $0 rebuild <target-triple> <workdir>"
+  local target="$1" work="$2" head
+  [ ! -e "$work" ] || die "$work exists; give rebuild a new directory"
+  # Never removes a directory it did not make.
+  [ ! -e "$TARGET_DIR" ] || die "$TARGET_DIR exists; rebuild needs it empty. Remove it first."
+  head=$(git -C "$ROOT" rev-parse --verify 'HEAD^{commit}')
+  # The time of the commit here, handed to the clone's build as it is.
+  SOURCE_DATE_EPOCH=$(build_epoch)
+  export SOURCE_DATE_EPOCH
+  mkdir -p "$work"
+  work=$(cd "$work" && pwd -P)
+  build_in_clone "$work" "$head" b "$target" "$work/cargo-home-b"
+  printf '%s\n' "$work/b-dist/vcon-server"
+}
+
 cmd_build() {
   [ $# -eq 1 ] || die "usage: $0 build <target-triple>"
   local target="$1"
   cd "$ROOT"
-  if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
-    SOURCE_DATE_EPOCH=$(git -C "$ROOT" log -1 --format=%ct HEAD 2>/dev/null) \
-      || die "$ROOT is not a git checkout, so there is no commit time for SOURCE_DATE_EPOCH. Build from a checkout, or set it."
-  fi
+  SOURCE_DATE_EPOCH=$(build_epoch)
   export SOURCE_DATE_EPOCH
+  # The two inputs beyond the tree, so a log shows why two digests differ.
+  printf 'reproducible-build: commit %s, SOURCE_DATE_EPOCH=%s\n' \
+    "$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || printf 'unknown')" "$SOURCE_DATE_EPOCH" >&2
   # Appended, never replacing what the caller set.
   RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }$(rustflags)"
   export RUSTFLAGS
@@ -124,7 +185,7 @@ cmd_compare() {
 
 cmd_check() {
   [ $# -eq 2 ] || [ $# -eq 3 ] || die "usage: $0 check <target-triple> <workdir> [<rev>]"
-  local target="$1" work="$2" head d bin cargo_home ok=0
+  local target="$1" work="$2" head d cargo_home ok=0
   [ ! -e "$work" ] || die "$work exists; give check a new directory"
   # Never removes a directory it did not make.
   [ ! -e "$TARGET_DIR" ] || die "$TARGET_DIR exists; check needs it empty for each build. Remove it first."
@@ -132,16 +193,10 @@ cmd_check() {
   mkdir -p "$work"
   work=$(cd "$work" && pwd -P)
   for d in a b; do
-    git clone --quiet --no-checkout "$ROOT" "$work/$d"
-    git -C "$work/$d" checkout --quiet --detach "$head"
     # A CARGO_HOME of its own for b, so the registry's path varies as well
     # as the checkout's. rustup's toolchains are found through RUSTUP_HOME.
     if [ "$d" = a ]; then cargo_home="${CARGO_HOME:-$HOME/.cargo}"; else cargo_home="$work/cargo-home-b"; fi
-    printf '== build %s in %s (CARGO_HOME=%s)\n' "$d" "$work/$d" "$cargo_home"
-    bin=$(CARGO_HOME="$cargo_home" bash "$work/$d/scripts/reproducible-build.sh" build "$target" | tail -1)
-    mkdir -p "$work/$d-dist"
-    cp "$bin" "$work/$d-dist/vcon-server"
-    rm -rf "$TARGET_DIR"
+    build_in_clone "$work" "$head" "$d" "$target" "$cargo_home"
   done
   cmd_compare "$work/a-dist/vcon-server" "$work/b-dist/vcon-server" || ok=1
   if [ "$ok" -ne 0 ]; then
@@ -156,7 +211,9 @@ main() {
     build) shift; cmd_build "$@" ;;
     check) shift; cmd_check "$@" ;;
     compare) shift; cmd_compare "$@" ;;
-    *) die "usage: $0 build <target> | check <target> <workdir> [<rev>] | compare <a> <b>" ;;
+    rebuild) shift; cmd_rebuild "$@" ;;
+    epoch) shift; cmd_epoch "$@" ;;
+    *) die "usage: $0 build <target> | rebuild <target> <workdir> | check <target> <workdir> [<rev>] | compare <a> <b> | epoch" ;;
   esac
 }
 

@@ -742,6 +742,49 @@ Findings and what to do:
 | ``CI_ONLY lists `scripts/<name>`, which no workflow runs`` | The step left the workflows, or its subcommand changed. | Remove or correct the line in `CI_ONLY`. |
 | ``CI_ONLY gives no reason for `scripts/<name>` `` | The reason is empty. | Write why no hook can run the script. |
 
+### A release compares its binaries with a second build
+
+`release.yml` builds each target twice. The job `build` makes the binary
+that goes into the archive. The job `rebuild` runs
+`scripts/reproducible-build.sh rebuild <target> <directory>`, which clones
+the same commit into another directory and builds it there with a
+`CARGO_HOME` of its own, in the same container. The job `reproduced` takes
+the binary out of each archive and compares it with the second build:
+`scripts/reproducible-build.sh compare <file> <file>` prints
+`identical: <sha256>` and the path, or `NOT reproducible`, both digests and
+the first bytes that differ, and then ends with exit code 1. The jobs that
+attest, release and publish wait for `reproduced`, so a release whose two
+builds differ publishes nothing. The comparison runs for a tag, for a pull
+request that changes what the build reads, and for a run by hand.
+
+What a run proves is in its log: one `identical:` line for each target,
+with the digest of the binary in that run's archive. Release 0.4.6 was
+made before this job existed. Its `x86_64-unknown-linux-gnu` binary was
+compared afterward by a run of `reproducible.yml` on the tag (the two
+builds and the released binary have one digest); its
+`aarch64-unknown-linux-gnu` binary was compared with no second build.
+
+The binary holds the build time, which the script takes from the commit:
+`SOURCE_DATE_EPOCH` is the time of the commit that is built unless the
+caller sets one, and the build prints the commit and the time it used. A
+pull request is built from its merge commit. That commit has a time of its
+own, so the digest a pull request's run prints is the merge commit's and
+never equals the digest of a release, even when the files are the same.
+
+`reproducible.yml` builds both targets twice each week, and by hand for
+any commit and any build time. To find a release's digest again, or the
+digest a pull request's run printed:
+
+```sh
+gh workflow run reproducible.yml --repo NormB/vcon-server -f ref=v0.4.6
+gh workflow run reproducible.yml --repo NormB/vcon-server \
+  -f ref=v0.4.6 -f source_date_epoch=1794686421
+```
+
+The first builds the tag with its commit's time. The second builds the
+same files with the time of another commit, here the merge commit of the
+pull request that prepared 0.4.6.
+
 ### The text of a GitHub release
 
 `release.yml` makes the text of a release from `CHANGELOG.md`:

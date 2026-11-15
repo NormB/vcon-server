@@ -15,6 +15,20 @@
 
 use std::path::{Path, PathBuf};
 
+#[path = "support/changelog.rs"]
+mod changelog;
+
+/// The release that made `tui` a default feature. From that section up,
+/// no changelog entry may say the terminal UI is off by default; the
+/// sections below it describe releases where it was not in the build.
+const TUI_DEFAULT_SINCE: &str = "0.4.2";
+
+/// The first release whose binaries were built with the features
+/// `release_features` reads from the build script. From that section up,
+/// no changelog entry may say the release binaries lack one; an older
+/// section is true of its own release.
+const RELEASE_FEATURES_SINCE: &str = "0.4.6";
+
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
@@ -284,18 +298,16 @@ fn nothing_names_the_terminal_ui_as_an_extra_feature() {
     );
 }
 
-/// The entries of the changelog's unreleased section that name `needle`:
-/// an entry starts at a line that begins `- ` and holds the lines after it.
-fn unreleased_entries(changelog: &str, needle: &str) -> Vec<String> {
-    let section: Vec<&str> = changelog
-        .lines()
-        .skip_while(|line| !line.starts_with("## [Unreleased]"))
-        .skip(1)
-        .take_while(|line| !line.starts_with("## ["))
-        .collect();
+/// The entries of `sections`, a part of the changelog, that name `needle`:
+/// an entry starts at a line that begins `- ` and holds the lines after
+/// it, to the next entry or heading.
+fn entries_naming(sections: &str, needle: &str) -> Vec<String> {
     let mut entries: Vec<String> = Vec::new();
-    for line in section {
-        if line.starts_with("- ") {
+    for line in sections.lines() {
+        if line.starts_with('#') {
+            // A heading ends the entry before it.
+            entries.push(String::new());
+        } else if line.starts_with("- ") {
             entries.push(line.to_owned());
         } else if line.starts_with("  ")
             && let Some(entry) = entries.last_mut()
@@ -308,28 +320,41 @@ fn unreleased_entries(changelog: &str, needle: &str) -> Vec<String> {
     entries
 }
 
+/// The entries that name the `tui` feature and call it off by default, in
+/// the sections of the releases that have it as a default feature; `None`
+/// when the changelog has no section of that release, so that nothing was
+/// read.
+fn entries_that_call_tui_off_by_default(changelog: &str) -> Option<Vec<String>> {
+    let mut entries = entries_naming(changelog::through(changelog, TUI_DEFAULT_SINCE)?, "`tui`");
+    entries.retain(|entry| entry.contains("off by default"));
+    Some(entries)
+}
+
+/// The denials (`DENIALS`) in the sections of the releases whose binaries
+/// have the release features; `None` when the changelog has no section of
+/// the first such release.
+fn changelog_denials(changelog: &str) -> Option<Vec<&'static str>> {
+    changelog::through(changelog, RELEASE_FEATURES_SINCE).map(denials)
+}
+
 #[test]
 fn the_changelog_does_not_call_the_terminal_ui_off_by_default() {
-    let entries = unreleased_entries(&read("CHANGELOG.md"), "`tui`");
-    let stale: Vec<&String> = entries
-        .iter()
-        .filter(|entry| entry.contains("off by default"))
-        .collect();
     assert_eq!(
-        stale,
-        Vec::<&String>::new(),
-        "tui is a default feature; an entry from before that says otherwise"
+        entries_that_call_tui_off_by_default(&read("CHANGELOG.md")),
+        Some(Vec::new()),
+        "tui is a default feature since {TUI_DEFAULT_SINCE}: no entry of that release or a \
+         later one says otherwise, and the changelog has that release's section"
     );
 }
 
 #[test]
-fn an_entry_is_read_with_its_following_lines_and_only_from_the_unreleased_section() {
-    let changelog =
+fn an_entry_is_read_with_its_following_lines_from_every_section_given() {
+    let sections =
         "## [Unreleased]\n\n### Added\n\n- one `x`\n  more\n- two\n\n## [0.1.0]\n\n- old `x`\n";
     assert_eq!(
-        unreleased_entries(changelog, "`x`"),
-        ["- one `x` more"],
-        "the entry that names it, whole; not a released one"
+        entries_naming(sections, "`x`"),
+        ["- one `x` more", "- old `x`"],
+        "each entry that names it, whole, whichever section holds it"
     );
 }
 
@@ -760,15 +785,13 @@ fn no_page_says_the_release_binaries_lack_a_feature() {
             found.push(format!("{file}: {phrase}"));
         }
     }
-    let changelog = read("CHANGELOG.md");
-    let unreleased: Vec<&str> = changelog
-        .lines()
-        .skip_while(|line| !line.starts_with("## [Unreleased]"))
-        .skip(1)
-        .take_while(|line| !line.starts_with("## ["))
-        .collect();
-    for phrase in denials(&unreleased.join("\n")) {
-        found.push(format!("CHANGELOG.md, unreleased: {phrase}"));
+    let in_changelog = changelog_denials(&read("CHANGELOG.md")).unwrap_or_else(|| {
+        panic!("the changelog has no section [{RELEASE_FEATURES_SINCE}], so nothing was read")
+    });
+    for phrase in in_changelog {
+        found.push(format!(
+            "CHANGELOG.md, from the top through [{RELEASE_FEATURES_SINCE}]: {phrase}"
+        ));
     }
     assert_eq!(
         found,
@@ -1094,4 +1117,343 @@ fn a_build_named_in_a_comment_is_not_a_build() {
         ["cargo build --locked"],
         "comments and other commands are left out"
     );
+}
+
+/// A changelog with the sections the rules above name, one entry in each.
+const LOG: &str = "# Changelog\n\nBefore the sections: `tui` is off by default.\n\n\
+## [Unreleased]\n\n### Added\n\n- **New.** u\n\n\
+## [0.4.6] - 2026-11-14\n\n### Changed\n\n- **Six.** s\n\n\
+## [0.4.5] - 2026-11-12\n\n- **Five.** f\n\n\
+## [0.4.2] - 2026-11-10\n\n- **Two.** t\n\n\
+## [0.4.1] - 2026-11-09\n\n- **One.** o\n\n\
+[Unreleased]: https://example.com/compare/v0.4.6...HEAD\n";
+
+/// `LOG` with the entry `lead` (as `**Six.**`) replaced by `entry`.
+fn log_with(lead: &str, entry: &str) -> String {
+    let old = LOG
+        .lines()
+        .find(|line| line.starts_with(&format!("- {lead}")))
+        .unwrap_or_else(|| panic!("LOG has the entry {lead}"));
+    LOG.replace(old, entry)
+}
+
+#[test]
+fn the_reader_gives_every_section_from_the_top_through_the_release() {
+    let read = changelog::through(LOG, "0.4.6").expect("LOG has the section");
+    assert!(
+        read.starts_with("## [Unreleased]"),
+        "from the first heading"
+    );
+    assert!(read.contains("**New.**"), "the unreleased section's entry");
+    assert!(read.contains("**Six.**"), "the release's own entry");
+    assert!(read.ends_with("- **Six.** s\n\n"), "to the next heading");
+    assert!(!read.contains("**Five.**"), "not the release before it");
+}
+
+#[test]
+fn the_reader_holds_the_sections_between_the_top_and_the_release() {
+    let read = changelog::through(LOG, "0.4.2").expect("LOG has the section");
+    for lead in ["**New.**", "**Six.**", "**Five.**", "**Two.**"] {
+        assert!(read.contains(lead), "{lead} is at or above 0.4.2");
+    }
+    assert!(!read.contains("**One.**"), "0.4.1 is below 0.4.2");
+}
+
+#[test]
+fn the_reader_gives_the_unreleased_section_alone_when_it_is_named() {
+    assert_eq!(
+        changelog::through(LOG, "Unreleased"),
+        Some("## [Unreleased]\n\n### Added\n\n- **New.** u\n\n"),
+        "the first section, to the next heading"
+    );
+}
+
+#[test]
+fn the_oldest_section_is_read_to_the_end_of_the_file() {
+    let read = changelog::through(LOG, "0.4.1").expect("LOG has the section");
+    assert!(read.contains("**One.**"), "the oldest section's entry");
+    assert!(
+        read.ends_with("HEAD\n"),
+        "no heading follows the oldest section, so it ends where the file does"
+    );
+}
+
+#[test]
+fn the_text_before_the_first_section_is_not_read() {
+    let read = changelog::through(LOG, "0.4.1").expect("LOG has the section");
+    assert!(
+        !read.contains("Before the sections"),
+        "the file's opening lines belong to no release"
+    );
+}
+
+#[test]
+fn a_release_without_a_section_reads_nothing() {
+    assert_eq!(
+        changelog::through(LOG, "0.4.7"),
+        None,
+        "no section [0.4.7]: the caller is told, and does not pass on an empty text"
+    );
+}
+
+#[test]
+fn a_changelog_without_sections_reads_nothing() {
+    assert_eq!(
+        changelog::through("# Changelog\n\n- **Six.** s\n", "0.4.6"),
+        None,
+        "entries under no heading"
+    );
+    assert_eq!(changelog::through("", "0.4.6"), None, "an empty file");
+}
+
+#[test]
+fn a_version_that_begins_another_versions_name_is_not_its_section() {
+    assert_eq!(changelog::through(LOG, "0.4"), None, "[0.4] is not [0.4.6]");
+    assert_eq!(
+        changelog::through("## [Unreleased]\n\n## [0.4.60] - 2026-11-14\n", "0.4.6"),
+        None,
+        "[0.4.6] is not [0.4.60]"
+    );
+}
+
+#[test]
+fn a_heading_is_a_line_that_starts_with_it() {
+    let inside = "## [Unreleased]\n\n- **A.** see\n  ## [0.4.6] - 2026-11-14\n- text ## [0.4.6]\n";
+    assert_eq!(
+        changelog::through(inside, "0.4.6"),
+        None,
+        "the words of a heading inside an entry are not a section"
+    );
+}
+
+#[test]
+fn the_words_of_a_heading_inside_an_entry_do_not_end_the_section() {
+    let quoted = "## [Unreleased]\n\n## [0.4.6]\n\n- **Six.** see ## [0.4.5] below\n- **More.** m\n\n## [0.4.5]\n\n- **Five.** f\n";
+    assert_eq!(
+        changelog::through(quoted, "0.4.6"),
+        Some("## [Unreleased]\n\n## [0.4.6]\n\n- **Six.** see ## [0.4.5] below\n- **More.** m\n\n"),
+        "the section ends at the line that starts the next heading, not at a line that \
+         quotes one"
+    );
+}
+
+#[test]
+fn a_link_reference_to_a_release_is_not_its_section() {
+    let links = "## [Unreleased]\n\n- **A.** a\n\n[0.4.6]: https://example.com/v0.4.6\n";
+    assert_eq!(
+        changelog::through(links, "0.4.6"),
+        None,
+        "`[0.4.6]: <address>` is the foot of the file"
+    );
+}
+
+#[test]
+fn a_heading_without_a_date_is_a_section() {
+    let undated = "## [Unreleased]\n\n## [0.4.6]\n\n- **Six.** s\n\n## [0.4.5]\n\n- **Five.** f\n";
+    assert_eq!(
+        changelog::through(undated, "0.4.6"),
+        Some("## [Unreleased]\n\n## [0.4.6]\n\n- **Six.** s\n\n"),
+        "the bracket closes the version; a date may follow or not"
+    );
+}
+
+#[test]
+fn an_entry_of_one_section_does_not_run_into_the_next_sections_text() {
+    let sections = "## [0.4.6]\n\n- **Six `x`.**\n\n## [0.4.5]\n\n  indented text\n- **Five.**\n";
+    assert_eq!(
+        entries_naming(sections, "`x`"),
+        ["- **Six `x`.**"],
+        "a heading ends the entry before it"
+    );
+}
+
+#[test]
+fn a_changelog_that_calls_tui_a_default_feature_has_no_stale_entry() {
+    let log = log_with("**Six.**", "- **The `tui` feature is on by default.**");
+    assert_eq!(
+        entries_that_call_tui_off_by_default(&log),
+        Some(Vec::new()),
+        "an entry that names the feature and does not call it off"
+    );
+}
+
+#[test]
+fn an_unreleased_entry_that_calls_tui_off_by_default_is_found() {
+    let log = log_with("**New.**", "- **The `tui` feature is off by default.**");
+    assert_eq!(
+        entries_that_call_tui_off_by_default(&log),
+        Some(vec![
+            "- **The `tui` feature is off by default.**".to_owned()
+        ]),
+        "the unreleased section is read"
+    );
+}
+
+#[test]
+fn a_released_entry_that_calls_tui_off_by_default_is_found() {
+    let log = log_with("**Six.**", "- **The `tui` feature is off by default.**");
+    assert_eq!(
+        entries_that_call_tui_off_by_default(&log).map(|found| found.len()),
+        Some(1),
+        "a release moved the entry under its version, and it is still read"
+    );
+}
+
+#[test]
+fn an_entry_of_the_release_that_made_tui_a_default_is_found() {
+    let log = log_with("**Two.**", "- **The `tui` feature is off by default.**");
+    assert_eq!(
+        entries_that_call_tui_off_by_default(&log).map(|found| found.len()),
+        Some(1),
+        "the section of {TUI_DEFAULT_SINCE} itself is read"
+    );
+}
+
+#[test]
+fn an_entry_from_before_tui_was_a_default_is_not_judged() {
+    let log = log_with("**One.**", "- **The `tui` feature is off by default.**");
+    assert_eq!(
+        entries_that_call_tui_off_by_default(&log),
+        Some(Vec::new()),
+        "0.4.1 is older than {TUI_DEFAULT_SINCE}: its entry was true of its release"
+    );
+}
+
+#[test]
+fn the_words_off_by_default_are_found_across_an_entrys_lines() {
+    let log = log_with(
+        "**Six.**",
+        "- **The terminal UI.**\n  - Effect: The `tui` feature is off by\n    default.",
+    );
+    assert_eq!(
+        entries_that_call_tui_off_by_default(&log).map(|found| found.len()),
+        Some(1),
+        "an entry is read as one line"
+    );
+}
+
+#[test]
+fn off_by_default_about_another_feature_is_not_about_tui() {
+    let log = log_with(
+        "**Six.**",
+        "- **The `postgres` feature is off by default.**\n- **The `tui` feature draws.**",
+    );
+    assert_eq!(
+        entries_that_call_tui_off_by_default(&log),
+        Some(Vec::new()),
+        "the phrase and the feature's name are in two entries; and the lines before the \
+         first section, which hold both, are not an entry"
+    );
+}
+
+#[test]
+fn a_changelog_without_the_release_that_made_tui_a_default_is_not_passed() {
+    let log = LOG.replace("## [0.4.2] - 2026-11-10", "## [0.4.3] - 2026-11-10");
+    assert_eq!(
+        entries_that_call_tui_off_by_default(&log),
+        None,
+        "no section [{TUI_DEFAULT_SINCE}]: nothing was read, which is not the same as nothing found"
+    );
+}
+
+#[test]
+fn the_release_named_for_tui_is_the_one_whose_section_makes_it_a_default() {
+    let changelog = read("CHANGELOG.md");
+    let section = changelog::through(&changelog, TUI_DEFAULT_SINCE)
+        .expect("the changelog has the section")
+        .rsplit("\n## [")
+        .next()
+        .expect("a section")
+        .to_owned();
+    assert!(
+        section.starts_with(&format!("{TUI_DEFAULT_SINCE}]")),
+        "the last section read is the one named"
+    );
+    assert!(
+        entries_naming(&section, "`tui`")
+            .iter()
+            .any(|entry| entry.contains("default")),
+        "the section of {TUI_DEFAULT_SINCE} has the entry that makes `tui` a default feature"
+    );
+}
+
+#[test]
+fn a_changelog_without_a_denial_has_none() {
+    assert_eq!(
+        changelog_denials(LOG),
+        Some(Vec::new()),
+        "no entry of LOG speaks of the release binaries"
+    );
+}
+
+#[test]
+fn an_unreleased_denial_is_found() {
+    let log = log_with("**New.**", "- **The release binaries lack the feature.**");
+    assert_eq!(
+        changelog_denials(&log),
+        Some(vec!["release binaries lack"]),
+        "the unreleased section is read"
+    );
+}
+
+#[test]
+fn a_denial_in_a_released_section_is_found() {
+    let log = log_with(
+        "**Six.**",
+        "- **The release binaries do not have the `postgres` feature.**",
+    );
+    assert_eq!(
+        changelog_denials(&log),
+        Some(vec!["release binaries do not have"]),
+        "a release moved the entry under its version, and it is still read"
+    );
+}
+
+#[test]
+fn a_denial_from_before_the_release_features_is_not_judged() {
+    let log = log_with(
+        "**Five.**",
+        "- **The release binaries do not have the `postgres` feature.**",
+    );
+    assert_eq!(
+        changelog_denials(&log),
+        Some(Vec::new()),
+        "0.4.5 is older than {RELEASE_FEATURES_SINCE}: the sentence was true of that release"
+    );
+}
+
+#[test]
+fn a_denial_wrapped_over_two_lines_of_an_entry_is_found() {
+    let log = log_with(
+        "**Six.**",
+        "- **PostgreSQL.**\n  - Limit: The feature is not in the release\n    binaries.",
+    );
+    assert_eq!(
+        changelog_denials(&log),
+        Some(vec!["not in the release binaries"]),
+        "the sections are read as one line"
+    );
+}
+
+#[test]
+fn a_changelog_without_the_first_release_of_the_features_is_not_passed() {
+    let log = LOG.replace("## [0.4.6] - 2026-11-14", "## [0.5.0] - 2026-11-14");
+    assert_eq!(
+        changelog_denials(&log),
+        None,
+        "no section [{RELEASE_FEATURES_SINCE}]: nothing was read"
+    );
+}
+
+#[test]
+fn the_repositorys_changelog_has_both_sections_the_rules_read_down_to() {
+    let changelog = read("CHANGELOG.md");
+    for version in [TUI_DEFAULT_SINCE, RELEASE_FEATURES_SINCE] {
+        let read = changelog::through(&changelog, version)
+            .unwrap_or_else(|| panic!("CHANGELOG.md has no section [{version}]"));
+        assert!(
+            read.contains("\n- **") || read.contains("\n- "),
+            "the sections through [{version}] hold entries, so the rules read something"
+        );
+    }
 }

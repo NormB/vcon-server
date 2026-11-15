@@ -7,6 +7,9 @@
 
 use super::super::super::schema::{MIGRATIONS, SCHEMA_VERSION, version_refusal};
 
+#[path = "../../../../../tests/support/changelog.rs"]
+mod changelog;
+
 /// The position of this version's migration.
 const THIS: usize = 12;
 
@@ -155,14 +158,103 @@ fn the_how_to_says_what_version_13_changes_under_schema_versions() {
     );
     // The changelog's entry tells an upgrader to run migrate and links the
     // how-to; it does not walk through the versions.
-    let changelog = flat("../../CHANGELOG.md");
-    let unreleased = changelog
-        .split(" ## [")
-        .find(|section| section.starts_with("Unreleased]"))
-        .expect("an Unreleased section");
-    assert!(
-        !unreleased.contains("Version 13 ") && !unreleased.contains("`storage_claim`"),
-        "the changelog leaves the schema's versions to the how-to"
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../CHANGELOG.md");
+    let changelog =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    assert_eq!(
+        walks_through_version_13(&changelog),
+        Some(false),
+        "the changelog has the section of {FIRST_RELEASE}, and from the top through it the \
+         schema's versions are left to the how-to"
+    );
+}
+
+/// The first release with schema version 13. Its changelog section and
+/// every newer one are in the outline form, which leaves a schema's
+/// versions to the how-to.
+const FIRST_RELEASE: &str = "0.4.6";
+
+/// Whether `changelog` walks through this schema version, from its top
+/// through the section of the first release that has the version; `None`
+/// when it has no such section, so that nothing was read. A release moves
+/// the entries out of the unreleased section, so reading that section
+/// alone checked nothing from the release commit on.
+fn walks_through_version_13(changelog: &str) -> Option<bool> {
+    let read = changelog::through(changelog, FIRST_RELEASE)?
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some(read.contains("Version 13 ") || read.contains("`storage_claim`"))
+}
+
+/// A changelog with the unreleased section, the first release of this
+/// version and the one before it.
+const LOG: &str = "# Changelog\n\n## [Unreleased]\n\n- **New.** u\n\n\
+## [0.4.6] - 2026-11-14\n\n- **Run `vcon-server migrate`.** s\n\n\
+## [0.4.5] - 2026-11-12\n\n- **Five.** f\n";
+
+#[test]
+fn a_changelog_that_names_the_command_alone_does_not_walk_through_the_version() {
+    assert_eq!(
+        walks_through_version_13(LOG),
+        Some(false),
+        "an entry that tells the upgrader what to run"
+    );
+}
+
+#[test]
+fn an_unreleased_entry_that_describes_version_13_is_found() {
+    let log = LOG.replace("- **New.** u", "- **New.** Version 13 makes a table.");
+    assert_eq!(
+        walks_through_version_13(&log),
+        Some(true),
+        "the unreleased section is read"
+    );
+}
+
+#[test]
+fn a_released_entry_that_names_the_table_is_found() {
+    let log = LOG.replace("migrate`.** s", "migrate`.** It fills `storage_claim`.");
+    assert_eq!(
+        walks_through_version_13(&log),
+        Some(true),
+        "a release moved the entry under its version, and it is still read"
+    );
+}
+
+#[test]
+fn an_entry_of_an_older_release_is_not_judged() {
+    let log = LOG.replace(
+        "- **Five.** f",
+        "- **Five.** Version 13 and `storage_claim`.",
+    );
+    assert_eq!(
+        walks_through_version_13(&log),
+        Some(false),
+        "0.4.5 is below the first release of the version"
+    );
+}
+
+#[test]
+fn the_versions_name_is_found_across_two_lines() {
+    let log = LOG.replace(
+        "- **New.** u",
+        "- **New.** The schema's Version\n  13 adds a row.",
+    );
+    assert_eq!(
+        walks_through_version_13(&log),
+        Some(true),
+        "the sections are read as one line"
+    );
+}
+
+#[test]
+fn a_changelog_without_the_first_releases_section_is_not_passed() {
+    let log = LOG.replace("## [0.4.6] - 2026-11-14", "## [0.5.0] - 2026-11-14");
+    assert_eq!(
+        walks_through_version_13(&log),
+        None,
+        "no section [0.4.6]: nothing was read, which is not the same as nothing found"
     );
 }
 

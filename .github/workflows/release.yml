@@ -1,6 +1,7 @@
 name: Release
 
-# Builds the server for Linux on x86_64 and aarch64, writes a CycloneDX SBOM
+# Builds the server for Linux on x86_64 and aarch64, each twice, and goes
+# on only when the two builds of each are identical; writes a CycloneDX SBOM
 # and SHA256SUMS.txt, and attests each archive's build provenance and its SBOM
 # with Sigstore, so anyone can check a download with
 #   gh attestation verify <file> --repo NormB/vcon-server
@@ -146,6 +147,87 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # Each target a second time, beside the first build and taking nothing
+  # from it: scripts/reproducible-build.sh `rebuild` clones the commit into
+  # another directory and builds it there with a CARGO_HOME of its own, in
+  # the build job's container. The job `reproduced` compares the two.
+  rebuild:
+    name: rebuild ${{ matrix.target }}
+    needs: version
+    timeout-minutes: 60
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: almalinux:9@sha256:1dc2f882fd8c5c1eb4747953cf8516e0f36d4d4aeba6a17f97e7b12d495e8547
+    steps:
+      # Two checkouts, as in the build job.
+      - name: Fetch the files (no git yet)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Prepare the build container
+        run: bash scripts/release-build-env.sh
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Build a second time, in another checkout
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          bin="$(bash scripts/reproducible-build.sh rebuild "$TARGET" "$RUNNER_TEMP/rebuild" | tail -1)"
+          mkdir -p second
+          cp "$bin" second/vcon-server
+          sha256sum second/vcon-server
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rebuild-${{ matrix.target }}
+          path: second/vcon-server
+          if-no-files-found: error
+          retention-days: 7
+
+  # The proof each release gives of itself: the binary inside each archive
+  # that is released is, byte for byte, the binary of the second build. A
+  # difference ends the run here, before anything is attested, released or
+  # published. On a pull request and by hand it runs the same way.
+  reproduced:
+    name: both builds identical
+    needs: [version, build, rebuild]
+    timeout-minutes: 10
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: build-*
+          path: first
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: rebuild-*
+          path: second
+      - name: Compare the binary of each archive with the second build
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            stage="vcon-server-${VERSION}-${target}"
+            tar xzf "first/${stage}.tar.gz" -C first
+            echo "== ${target}: archive $(sha256sum "first/${stage}.tar.gz" | cut -d' ' -f1)"
+            bash scripts/reproducible-build.sh compare \
+              "first/${stage}/vcon-server" "second/rebuild-${target}/vcon-server"
+          done
+
   # Each binary as a user runs it, on each distribution at or above the
   # floor: --version, then a vCon stored, listed, read and deleted through
   # the curl client against a live server (scripts/run-clients.sh).
@@ -203,7 +285,7 @@ jobs:
 
   attest:
     name: SBOM, checksums and attestations
-    needs: [version, build, smoke]
+    needs: [version, build, smoke, reproduced]
     if: github.event_name != 'pull_request'
     timeout-minutes: 20
     runs-on: ubuntu-24.04

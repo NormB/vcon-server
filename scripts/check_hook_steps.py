@@ -65,6 +65,8 @@ CI_ONLY = {
     "scripts/fuzz.sh run": "runs a fuzz target for a fixed time on the nightly toolchain",
     "scripts/fuzz.sh plant": "plants a panic and runs a fuzz target until it finds it",
     "scripts/reproducible-build.sh check": "builds the release binary twice in the release container",
+    "scripts/reproducible-build.sh rebuild": "builds the release binary a second time in the release container",
+    "scripts/reproducible-build.sh compare": "compares the two release builds of a release run; tests/release_workflow.rs runs it on files of its own",
     # Steps that prepare or describe a CI job and check nothing of a commit.
     "scripts/retry.sh": "repeats a download of a CI job; the hook downloads nothing",
     "scripts/fetch-pinned.sh": "downloads a pinned file for a CI job",

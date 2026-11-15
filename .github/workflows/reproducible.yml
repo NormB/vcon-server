@@ -1,38 +1,45 @@
 name: Reproducible build
 
-# Builds the x86_64 release binary twice from the same commit, in two
-# checkouts with two CARGO_HOMEs, and fails if the two differ by one byte.
-# The build is scripts/reproducible-build.sh `build`, the command
-# release.yml's build step runs, so this proves the release's own build.
+# Builds each release binary twice from the same commit, in two checkouts
+# with two CARGO_HOMEs, and fails if the two differ by one byte. The build
+# is scripts/reproducible-build.sh `build`, the command release.yml's build
+# step runs.
 #
-# Modeled on sipnab's reproducible.yml, on a GitHub-hosted runner instead of
-# a self-hosted one. Weekly, and on pull requests that change what the build
-# reads beyond the source: the manifests and the lockfile, the toolchain,
-# the script and the release workflow. A change in src/ that breaks it (a
-# build time compiled in, say) is caught by the weekly run.
+# Weekly, so a change in src/ that breaks it (a build time compiled in,
+# say) is caught between releases. Not on a pull request and not on a tag:
+# release.yml builds each target twice and compares the two on every tag,
+# before it publishes, and on each pull request that changes what the
+# build reads beyond the source.
+#
+# By hand, for any commit and any build time: the binary holds the build
+# time (SOURCE_DATE_EPOCH, the commit's time unless one is given), so the
+# digest of a release is found again with `ref` set to its tag, and the
+# digest a pull request's run printed with the pull request's tree and the
+# time of its merge commit.
 on:
   schedule:
     # Fridays 04:23 UTC, clear of the other weekly runs.
     - cron: '23 4 * * 5'
   workflow_dispatch:
-  pull_request:
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'crates/*/Cargo.toml'
-      - 'crates/*/build.rs'
-      - 'rust-toolchain.toml'
-      - 'scripts/reproducible-build.sh'
-      - 'scripts/release-build-env.sh'
-      - 'scripts/dnf_install.py'
-      - '.github/workflows/reproducible.yml'
-      - '.github/workflows/release.yml'
+    inputs:
+      ref:
+        description: >-
+          The commit to build: a tag, a branch or a commit id. Empty builds
+          the branch the run is started on.
+        type: string
+        default: ''
+      source_date_epoch:
+        description: >-
+          The build time, in seconds since 1970. Empty takes the time of
+          the commit that is built.
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: reproducible-${{ github.ref }}
+  group: reproducible-${{ github.ref }}-${{ inputs.ref }}
   cancel-in-progress: true
 
 env:
@@ -40,8 +47,16 @@ env:
 
 jobs:
   reproducible:
-    name: Reproducible build (x86_64-unknown-linux-gnu)
-    runs-on: ubuntu-24.04
+    name: Reproducible build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     # Two release builds from nothing, and the second one's crate fetch.
     timeout-minutes: 60
     permissions:
@@ -56,13 +71,19 @@ jobs:
       - name: Fetch the files (no git yet)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
       - name: Prepare the build container
         run: bash scripts/release-build-env.sh
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
-      # No build cache: the point is two builds from nothing.
+      # No build cache: the point is two builds from nothing. The inputs
+      # reach the script through the environment, never a command line.
       - name: Build twice and compare
-        run: bash scripts/reproducible-build.sh check x86_64-unknown-linux-gnu "$RUNNER_TEMP/reproducible"
+        env:
+          TARGET: ${{ matrix.target }}
+          SOURCE_DATE_EPOCH: ${{ inputs.source_date_epoch }}
+        run: bash scripts/reproducible-build.sh check "$TARGET" "$RUNNER_TEMP/reproducible"
 
