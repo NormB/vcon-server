@@ -1027,8 +1027,10 @@ On the screen:
 - The line above the keys ends with the time the list was read.
 
 On the server, the tenant's [audit log](@/docs/audit-logs.md) has a
-`key_info` record for each start and a `list` record for each page read,
-under the key's id:
+`key_info` record for each start, a `list` record for each page read and a
+`read_masked` record for each vCon whose masked view the server sent, under
+the key's id. The steps above quit right after Enter, so `read_masked` is
+there only when that request reached the server first:
 
 ```sh
 KEY_ID=$(sudo -u vcon vcon-server key list --tenant "$TENANT" --config $CONFIG | jq -r 'select(.label == "tui-1") | .id')
@@ -1039,6 +1041,7 @@ sudo -u vcon vcon-server audit export --tenant "$TENANT" --config $CONFIG \
 ```text
 key_info
 list
+…
 ```
 
 ## Reference
