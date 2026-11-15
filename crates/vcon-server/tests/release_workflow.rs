@@ -537,17 +537,18 @@ fn super_build() -> String {
 }
 
 #[test]
-fn a_run_by_hand_can_name_the_commit_and_the_build_time() {
+fn a_run_by_hand_can_name_the_build_time_and_builds_the_ref_it_runs_on() {
     let yml = workflow("reproducible.yml");
     let on = &yml[..yml.find("\njobs:").expect("jobs")];
-    for input in ["ref:", "source_date_epoch:"] {
-        assert!(on.contains(input), "the input {input}");
-    }
+    assert!(
+        on.contains("source_date_epoch:"),
+        "the input source_date_epoch"
+    );
     let job = code(&job(&yml, "reproducible"));
-    assert_eq!(
-        job.matches("ref: ${{ inputs.ref }}").count(),
-        2,
-        "both checkouts take the commit asked for"
+    assert!(
+        !job.contains("ref:"),
+        "both checkouts take the ref the run is started on (a tag is `--ref v<version>`), \
+         never a ref given as an input"
     );
     assert!(
         job.contains("SOURCE_DATE_EPOCH: ${{ inputs.source_date_epoch }}"),
@@ -556,6 +557,89 @@ fn a_run_by_hand_can_name_the_commit_and_the_build_time() {
     assert!(
         !job.contains("run: bash scripts/reproducible-build.sh check ${{"),
         "no input is written into a command line"
+    );
+}
+
+/// The files of .github/workflows, by name.
+fn workflows() -> Vec<(String, String)> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.github/workflows");
+    let mut found: Vec<(String, String)> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+        .map(|entry| entry.expect("an entry").path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "yml"))
+        .map(|path| {
+            let name = path
+                .file_name()
+                .expect("a name")
+                .to_string_lossy()
+                .into_owned();
+            let text = std::fs::read_to_string(&path).expect("a workflow");
+            (name, text)
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+/// The lines of `yml`, outside comments, that check out a ref a person
+/// typed: an input of a run by hand.
+fn input_checkouts(yml: &str) -> Vec<String> {
+    code(yml)
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("ref:"))
+        .filter(|line| line.contains("inputs.") || line.contains("github.event.inputs"))
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn a_checkout_of_an_input_is_found() {
+    let yml = "    steps:\n      - uses: actions/checkout@x\n        with:\n          ref: ${{ inputs.ref }}\n      - uses: actions/checkout@x\n        with:\n          ref: ${{ github.event.inputs.branch }}\n";
+    assert_eq!(
+        input_checkouts(yml),
+        [
+            "ref: ${{ inputs.ref }}",
+            "ref: ${{ github.event.inputs.branch }}"
+        ],
+        "both ways of naming an input"
+    );
+}
+
+#[test]
+fn a_checkout_of_a_commit_a_workflow_found_is_not_an_inputs() {
+    let yml = "          ref: ${{ steps.ci.outputs.sha }}\n          ref: main\n          # ref: ${{ inputs.ref }}\n";
+    assert_eq!(
+        input_checkouts(yml),
+        Vec::<String>::new(),
+        "a step's output, a branch name, and a comment"
+    );
+}
+
+#[test]
+fn no_workflow_checks_out_a_ref_given_as_an_input() {
+    // CodeQL actions/cache-poisoning/poisonable-step (alerts 75 and 76 on
+    // #211): a run by hand or on a schedule runs in the default branch's
+    // cache scope, and code checked out from a ref a person typed could
+    // write a cache entry that main's jobs restore. A run by hand builds
+    // the ref it was started on instead, whose cache scope is its own.
+    let found: Vec<String> = workflows()
+        .iter()
+        .flat_map(|(name, text)| {
+            input_checkouts(text)
+                .into_iter()
+                .map(move |line| format!("{name}: {line}"))
+        })
+        .collect();
+    assert_eq!(
+        found,
+        Vec::<String>::new(),
+        "a workflow checks out a ref given as an input"
+    );
+    assert!(
+        workflows().len() >= 10,
+        "the workflows were read: {}",
+        workflows().len()
     );
 }
 

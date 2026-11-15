@@ -822,18 +822,25 @@ own, so the digest a pull request's run prints is the merge commit's and
 never equals the digest of a release, even when the files are the same.
 
 `reproducible.yml` builds both targets twice each week, and by hand for
-any commit and any build time. To find a release's digest again, or the
-digest a pull request's run printed:
+the branch or tag the run is started on, with any build time. To find a
+release's digest again, or the digest a pull request's run printed:
 
 ```sh
-gh workflow run reproducible.yml --repo NormB/vcon-server -f ref=v0.4.6
-gh workflow run reproducible.yml --repo NormB/vcon-server \
-  -f ref=v0.4.6 -f source_date_epoch=1794686421
+gh workflow run reproducible.yml --repo NormB/vcon-server --ref v0.4.7
+gh workflow run reproducible.yml --repo NormB/vcon-server --ref v0.4.7 \
+  -f source_date_epoch=<seconds>
 ```
 
 The first builds the tag with its commit's time. The second builds the
-same files with the time of another commit, here the merge commit of the
-pull request that prepared 0.4.6.
+same files with another time, such as the merge commit's time of a pull
+request (`git log -1 --format=%ct <merge commit>`). A run on a tag uses
+the workflow as that tag holds it: from 0.4.7 on, that is this one. The
+workflow takes no commit as an input, because a run by hand or on a
+schedule runs with the main branch's cache, and code from a ref typed into
+a form must not run there. The 0.4.6 proof was made from the branch of
+pull request #211, before this was so: run 43687264721 built the v0.4.6
+files with the time of the 0.4.6 pull request's merge commit and printed
+the digest that pull request's run had printed.
 
 ### The text of a GitHub release
 

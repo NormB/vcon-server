@@ -50,6 +50,11 @@ cat > Cargo.toml <<'TOML'
 resolver = "3"
 members = ["crates/fixture"]
 
+# The version release.yml and scripts/advertised_release.py read, as the
+# real manifest holds it.
+[workspace.package]
+version = "0.1.0"
+
 [workspace.metadata]
 published = ["hook-fixture"]
 TOML

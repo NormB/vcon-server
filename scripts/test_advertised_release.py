@@ -308,7 +308,9 @@ class TreeVersion(unittest.TestCase):
         with self.assertRaises(ar.Refused):
             ar.tree_version("[workspace]\nmembers = []\n")
 
-    def test_this_repositorys_manifest_has_a_version(self):
+    def test_the_manifest_of_the_tree_the_script_is_in_has_the_version_it_reads(self):
+        # The root Cargo.toml next to scripts/: the repository's, or the
+        # hook test's fixture (scripts/test-hooks.sh), which is shaped like it.
         text = (HERE.parent / "Cargo.toml").read_text(encoding="utf-8")
         self.assertIsNotNone(ar.version_key(ar.tree_version(text)))
 

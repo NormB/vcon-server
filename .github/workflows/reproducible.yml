@@ -11,23 +11,21 @@ name: Reproducible build
 # before it publishes, and on each pull request that changes what the
 # build reads beyond the source.
 #
-# By hand, for any commit and any build time: the binary holds the build
-# time (SOURCE_DATE_EPOCH, the commit's time unless one is given), so the
-# digest of a release is found again with `ref` set to its tag, and the
-# digest a pull request's run printed with the pull request's tree and the
-# time of its merge commit.
+# By hand, for the ref the run is started on (`gh workflow run
+# reproducible.yml --ref v<version>` for a release) and any build time: the
+# binary holds the build time (SOURCE_DATE_EPOCH, the commit's time unless
+# one is given), so a release's digest is found again on its tag, and the
+# digest a pull request's run printed with the time of its merge commit.
+# The commit is never an input: a run by hand or on a schedule runs in the
+# default branch's cache scope, and code from a ref a person typed must not
+# run there (CodeQL actions/cache-poisoning). A run on a tag has the tag's
+# own scope.
 on:
   schedule:
     # Fridays 04:23 UTC, clear of the other weekly runs.
     - cron: '23 4 * * 5'
   workflow_dispatch:
     inputs:
-      ref:
-        description: >-
-          The commit to build: a tag, a branch or a commit id. Empty builds
-          the branch the run is started on.
-        type: string
-        default: ''
       source_date_epoch:
         description: >-
           The build time, in seconds since 1970. Empty takes the time of
@@ -39,7 +37,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: reproducible-${{ github.ref }}-${{ inputs.ref }}
+  group: reproducible-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -71,13 +69,11 @@ jobs:
       - name: Fetch the files (no git yet)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ inputs.ref }}
           persist-credentials: false
       - name: Prepare the build container
         run: bash scripts/release-build-env.sh
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ inputs.ref }}
           persist-credentials: false
       # No build cache: the point is two builds from nothing. The inputs
       # reach the script through the environment, never a command line.
