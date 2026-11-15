@@ -344,6 +344,41 @@ tests failed` when one fails. On the maintainer's build host on
 scratch hook; that check stays in CI only. Every commit on `main` is
 signed and shows as verified on GitHub.
 
+**pre-push** also runs the how-to scenarios a push needs
+(`scripts/docs_test.py push <commit>`, with the changed paths on standard
+input), so a change to what a page's command prints fails before CI:
+
+- a scenario runs when the push changes one of its pages
+  (`website/content/docs/<page>`);
+- every scenario given the server under test runs when the push changes a
+  file that server is built from: `Cargo.toml`, `Cargo.lock`,
+  `rust-toolchain.toml`, `.cargo/`, or a file under `crates/` other than a
+  crate's `tests/` directory;
+- every scenario runs when the push changes the runner: `scripts/docs_test.py`
+  or one of the files it reads, its pinned downloads, the script that
+  fetches them and its list of apt mirrors.
+
+It builds the server from the checkout with cargo, once for the default
+features and once more for each feature set a scenario names, so the
+push is refused when the checkout is not the pushed commit or has
+uncommitted changes, and when more than one pushed commit needs scenarios.
+It prints one line per scenario, `docs scenario <name>: ok in <n> s
+(<why>)`, or `FAILED` with the end of its report, and refuses the push with
+`pre-push: refused: a how-to scenario did not run as its pages say`. It
+skips, and names, a scenario that may take longer than 15 minutes (the
+`cargo-*` and `source-*` install scenarios build from source) and, when
+`GH_TOKEN` is not set, a scenario whose steps call `gh attestation
+verify`, `gh api` or `gh release` (the `release-*` scenarios and `upgrade`);
+CI runs those. Each scenario runs in a fresh container, as in CI, so the
+host needs Docker; `container` runs on the host's own Docker.
+
+On the maintainer's build host on 2026-11-15 the scenarios took, from the
+start of the run to its end: `foreground` 48 s, `foreground-fedora` 58 s,
+`systemd` 78 s, `parquet` 35 s, `s3` 60 s, `s3-minio` 41 s and
+`lets-encrypt-http` 186 s. A push that changes the server's source runs
+every scenario given the server under test, which is all of those and
+`lets-encrypt-dns`, `upgrade` and `postgres`.
+
 ### Feature sets clippy lints
 
 `cargo clippy --workspace` compiles the default features only. Code under

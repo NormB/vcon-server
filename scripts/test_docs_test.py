@@ -2257,5 +2257,374 @@ class PackageMirrors(unittest.TestCase):
         self.assertEqual(asked, ["/debian/dists/", "/ubuntu/dists/"], "one slash, with or without the mirror's own")
 
 
+# ---------------------------------------------------------------------------
+# The scenarios a push runs (`docs_test.py push`, from .githooks/pre-push).
+# On #215 a change to what the terminal UI records passed every local gate
+# and failed three how-to jobs in CI: the scenarios ran only there.
+# ---------------------------------------------------------------------------
+
+def fake(name, pages=("a.md",), **kw):
+    return dt.Scenario(name, "debian:trixie-slim", frozenset({"debian"}), tuple(pages), **kw)
+
+
+FAKES = [
+    fake("one", ("a.md", "b.md")),
+    fake("two", ("b.md",), features=("postgres",)),
+    fake("pages-only", ("c.md",), binary=False),
+    fake("tokened", ("d.md",)),
+    fake("long", ("e.md",), binary=False, timeout=3600),
+]
+
+
+def fake_steps(s):
+    """Steps for FAKES: `tokened` calls gh attestation verify."""
+    code = "gh attestation verify x --repo NormB/vcon-server\n" if s.name == "tokened" else "ls\n"
+    return [dt.Block("sh", code, f"docs/{s.pages[0]}:1")]
+
+
+def needed_of(changed, token=False, scenarios=FAKES):
+    run, skipped = dt.needed(changed, scenarios, token, fake_steps)
+    return [n for n, _ in run], [n for n, _ in skipped]
+
+
+class Needed(unittest.TestCase):
+    # Success: what a push runs.
+    def test_a_page_change_runs_the_scenarios_that_show_it(self):
+        self.assertEqual(needed_of(["website/content/docs/b.md"]), (["one", "two"], []), "both show b.md")
+
+    def test_a_page_of_one_scenario_runs_that_one(self):
+        self.assertEqual(needed_of(["website/content/docs/c.md"]), (["pages-only"], []), "c.md alone")
+
+    def test_a_server_source_change_runs_every_scenario_with_the_server_under_test(self):
+        run, skipped = needed_of(["crates/vcon-server/src/serve.rs"])
+        self.assertEqual(run, ["one", "two"], "the scenarios given the pushed server")
+        self.assertEqual(skipped, ["tokened"], "the one that needs a token is named")
+
+    def test_the_lock_file_is_server_source(self):
+        self.assertEqual(needed_of(["Cargo.lock"])[0], ["one", "two"], "dependencies build the server")
+
+    def test_the_workspace_manifest_and_toolchain_are_server_source(self):
+        for path in ("Cargo.toml", "rust-toolchain.toml", "crates/vcon/Cargo.toml", ".cargo/config.toml"):
+            with self.subTest(path=path):
+                self.assertEqual(needed_of([path])[0], ["one", "two"], path)
+
+    def test_the_vcon_library_is_server_source(self):
+        self.assertEqual(needed_of(["crates/vcon/src/read.rs"])[0], ["one", "two"], "the server links it")
+
+    def test_the_console_assets_are_server_source(self):
+        self.assertEqual(needed_of(["crates/vcon-server/console/console.js"])[0], ["one", "two"], "embedded")
+
+    def test_a_runner_change_runs_every_scenario_it_can(self):
+        for path in ("scripts/docs_test.py", "scripts/docs-test-pins.txt", "scripts/fetch-pinned.sh", "scripts/apt-mirrors.txt"):
+            with self.subTest(path=path):
+                self.assertEqual(needed_of([path]), (["one", "two", "pages-only"], ["tokened", "long"]), path)
+
+    def test_with_a_token_the_scenarios_that_call_gh_run(self):
+        self.assertEqual(needed_of(["website/content/docs/d.md"], token=True), (["tokened"], []), "GH_TOKEN set")
+
+    def test_each_scenario_runs_once_in_the_order_listed(self):
+        changed = ["website/content/docs/b.md", "crates/vcon-server/src/api.rs", "website/content/docs/a.md"]
+        self.assertEqual(needed_of(changed)[0], ["one", "two"], "once each, SCENARIOS order")
+
+    def test_the_reason_names_the_page(self):
+        run, _ = dt.needed(["website/content/docs/b.md"], FAKES, False, fake_steps)
+        self.assertEqual(dict(run)["two"], "the push changes docs/b.md, which it runs", "the page")
+
+    def test_the_reason_names_the_source_file(self):
+        run, _ = dt.needed(["Cargo.lock"], FAKES, False, fake_steps)
+        self.assertEqual(
+            dict(run)["one"], "the push changes Cargo.lock, which the server under test is built from", "the file"
+        )
+
+    def test_the_real_scenarios_for_a_server_change(self):
+        run, _ = dt.needed(["crates/vcon-server/src/serve.rs"], dt.SCENARIOS, True)
+        names = [n for n, _ in run]
+        for name in ("foreground", "foreground-fedora", "systemd", "upgrade", "s3", "s3-minio", "postgres", "parquet"):
+            self.assertIn(name, names, f"{name} gets the server under test")
+        for name in ("container", "release-debian", "cargo-debian", "source-fedora"):
+            self.assertNotIn(name, names, f"{name} runs a published release or builds its own")
+
+    # Failure: what a push does not run.
+    def test_a_test_only_change_runs_none(self):
+        self.assertEqual(needed_of(["crates/vcon-server/tests/serve.rs"]), ([], []), "tests are not the server")
+
+    def test_a_test_fixture_change_runs_none(self):
+        self.assertEqual(needed_of(["crates/vcon/tests/fixtures/ietf/a.vcon"]), ([], []), "fixtures are not built in")
+
+    def test_an_unrelated_script_runs_none(self):
+        self.assertEqual(needed_of(["scripts/check_changelog.py"]), ([], []), "not the runner")
+
+    def test_the_readme_and_changelog_run_none(self):
+        self.assertEqual(needed_of(["README.md", "CHANGELOG.md"]), ([], []), "no scenario shows them")
+
+    def test_a_page_no_scenario_runs_runs_none(self):
+        self.assertEqual(needed_of(["website/content/docs/z.md"]), ([], []), "z.md is in no scenario")
+
+    def test_a_page_of_the_same_name_elsewhere_runs_none(self):
+        self.assertEqual(needed_of(["docs/b.md", "website/content/b.md"]), ([], []), "only the docs section")
+
+    def test_a_path_that_only_starts_like_the_source_runs_none(self):
+        self.assertEqual(needed_of(["crates-notes.md", "Cargo.toml.orig"]), ([], []), "a name, not a directory")
+
+    def test_the_fuzz_package_runs_none(self):
+        self.assertEqual(needed_of(["fuzz/Cargo.lock", "fuzz/fuzz_targets/read.rs"]), ([], []), "not the server")
+
+    def test_no_change_runs_none(self):
+        self.assertEqual(needed_of([]), ([], []), "nothing pushed")
+
+    def test_without_a_token_a_scenario_that_calls_gh_is_skipped(self):
+        run, skipped = dt.needed(["website/content/docs/d.md"], FAKES, False, fake_steps)
+        self.assertEqual(run, [], "it cannot verify without a token")
+        self.assertEqual(
+            skipped,
+            [("tokened", "its steps call gh, which needs GH_TOKEN here; CI runs it")],
+            "the reason says what to set",
+        )
+
+    def test_a_long_scenario_is_skipped_even_with_a_token(self):
+        run, skipped = dt.needed(["website/content/docs/e.md"], FAKES, True, fake_steps)
+        self.assertEqual(run, [], "an hour is no push hook")
+        self.assertEqual(skipped, [("long", "it may take up to 60 min; CI runs it")], "the bound is named")
+
+    def test_the_real_release_scenarios_need_a_token(self):
+        run, skipped = dt.needed(["website/content/docs/install.md"], dt.SCENARIOS, False)
+        names = dict(skipped)
+        for name in ("release-debian", "release-ubuntu", "release-fedora", "upgrade"):
+            self.assertIn(name, names, f"{name} verifies with gh")
+        self.assertEqual(run, [], f"nothing runs without a token: {run}")
+
+    # Edge cases.
+    def test_blank_lines_and_spaces_are_ignored(self):
+        self.assertEqual(needed_of(["", "  website/content/docs/c.md  ", "\t"]), (["pages-only"], []), "trimmed")
+
+    def test_the_page_reason_comes_before_the_source_reason(self):
+        run, _ = dt.needed(["Cargo.lock", "website/content/docs/a.md"], FAKES, False, fake_steps)
+        self.assertEqual(dict(run)["one"], "the push changes docs/a.md, which it runs", "the page is named first")
+
+    def test_a_skipped_scenario_is_named_once(self):
+        _, skipped = needed_of(["website/content/docs/d.md", "Cargo.lock", "scripts/docs_test.py"])
+        self.assertEqual(skipped, ["tokened", "long"], "once each")
+
+    def test_gh_that_needs_no_token_does_not_skip(self):
+        steps = lambda s: [dt.Block("sh", "gh attestation --help | sed -n 1p\ngh --version\n", "docs/d.md:1")]
+        run, skipped = dt.needed(["website/content/docs/d.md"], FAKES, False, steps)
+        self.assertEqual(([n for n, _ in run], skipped), (["tokened"], []), "help and version read nothing")
+
+    def test_gh_api_and_release_need_a_token(self):
+        for code in ("gh api repos/NormB/vcon-server/releases\n", "gh release download v0.4.6\n"):
+            with self.subTest(code=code):
+                steps = lambda s, code=code: [dt.Block("sh", code, "docs/d.md:1")]
+                _, skipped = dt.needed(["website/content/docs/d.md"], FAKES, False, steps)
+                self.assertEqual([n for n, _ in skipped], ["tokened"], code)
+
+    def test_a_skipped_step_that_calls_gh_does_not_skip(self):
+        steps = lambda s: [dt.Block("sh", "gh api x\n", "docs/d.md:1", skip="a reader's own")]
+        run, _ = dt.needed(["website/content/docs/d.md"], FAKES, False, steps)
+        self.assertEqual([n for n, _ in run], ["tokened"], "a skipped step never runs")
+
+    def test_a_build_script_is_server_source(self):
+        self.assertEqual(needed_of(["crates/vcon-server/build.rs"])[0], ["one", "two"], "a build script builds it")
+
+    def test_a_crate_named_tests_is_still_source(self):
+        self.assertEqual(needed_of(["crates/vcon-server/src/tests.rs"])[0], ["one", "two"], "src/, not tests/")
+
+
+class FakeRun:
+    """Stands in for subprocess.run: answers each command from `answers`
+    by its first words and records every command."""
+
+    def __init__(self, answers=None):
+        self.calls = []
+        self.answers = answers or {}
+
+    def __call__(self, cmd, **kw):
+        self.calls.append(list(cmd))
+        key = " ".join(cmd[:2]) if cmd[0] != sys.executable else f"run {cmd[cmd.index('run') + 1]}"
+        code, out = self.answers.get(key, (0, ""))
+        if key == "git rev-parse" and key not in self.answers:
+            code, out = 0, "abc123\n"
+        return subprocess.CompletedProcess(cmd, code, out, "")
+
+    def names(self, first):
+        return [c for c in self.calls if c[0] == first]
+
+
+def push_of(changed, run, shas=("abc123",), env=None, scenarios=FAKES):
+    out = io.StringIO()
+    made = []
+
+    def tempdir():
+        d = tempfile.mkdtemp(prefix="docs-push-test-")
+        made.append(d)
+        return d
+
+    code = dt.push(
+        list(shas),
+        changed,
+        run=run,
+        env=env or {},
+        scenarios=scenarios,
+        steps=fake_steps,
+        copy=lambda a, b: open(b, "w").close(),
+        tempdir=tempdir,
+        out=out,
+        clock=iter(range(0, 1000, 7)).__next__,
+    )
+    return code, out.getvalue(), made
+
+
+class Push(unittest.TestCase):
+    # Success.
+    def test_nothing_needed_runs_nothing(self):
+        run = FakeRun()
+        code, out, _ = push_of(["README.md"], run)
+        self.assertEqual(code, 0, "nothing to run is a pass")
+        self.assertEqual(run.calls, [], "not even git")
+        self.assertIn("docs scenarios: not needed", out, "it says so")
+
+    def test_a_page_change_builds_once_and_runs_its_scenario(self):
+        run = FakeRun()
+        code, out, _ = push_of(["website/content/docs/c.md"], run)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(run.names("cargo"), [["cargo", "build", "--locked", "-p", "vcon-server"]], "one build")
+        runs = run.names(sys.executable)
+        self.assertEqual([c[c.index("run") + 1] for c in runs], ["pages-only"], "its scenario")
+
+    def test_each_scenario_gets_the_build_with_its_features(self):
+        run = FakeRun()
+        code, out, _ = push_of(["website/content/docs/b.md"], run)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(
+            run.names("cargo"),
+            [["cargo", "build", "--locked", "-p", "vcon-server"],
+             ["cargo", "build", "--locked", "-p", "vcon-server", "--features", "postgres"]],
+            "one build per feature set",
+        )
+        binaries = {c[c.index("run") + 1]: c[c.index("--binary") + 1] for c in run.names(sys.executable)}
+        self.assertNotEqual(binaries["one"], binaries["two"], "two builds, two binaries")
+        self.assertTrue(binaries["two"].endswith("postgres/vcon-server"), binaries)
+
+    def test_scenarios_with_the_same_features_share_one_build(self):
+        run = FakeRun()
+        code, out, _ = push_of(["scripts/docs_test.py"], run)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(run.names("cargo")), 2, "one and pages-only share the default build")
+        self.assertEqual(len(run.names(sys.executable)), 3, "three scenarios ran")
+
+    def test_each_result_is_printed_with_its_time(self):
+        code, out, _ = push_of(["website/content/docs/b.md"], FakeRun())
+        self.assertRegex(out, r"docs scenario one: ok in \d+ s \(the push changes docs/b\.md, which it runs\)", out)
+        self.assertIn("docs scenarios: 2 of 2 ran as their pages say", out, "the total")
+
+    def test_skipped_scenarios_are_named_beside_the_run(self):
+        code, out, _ = push_of(["Cargo.lock"], FakeRun())
+        self.assertEqual(code, 0, out)
+        self.assertIn(
+            "docs scenarios: skipped tokened: its steps call gh, which needs GH_TOKEN here; CI runs it", out, out
+        )
+
+    def test_a_token_in_the_environment_runs_the_gh_scenario(self):
+        run = FakeRun()
+        code, out, _ = push_of(["website/content/docs/d.md"], run, env={"GH_TOKEN": "x"})
+        self.assertEqual(code, 0, out)
+        self.assertEqual([c[c.index("run") + 1] for c in run.names(sys.executable)], ["tokened"], out)
+
+    def test_the_scenarios_run_from_the_repository_root(self):
+        calls = []
+
+        def run(cmd, **kw):
+            calls.append(kw.get("cwd"))
+            return FakeRun()(cmd, **kw)
+
+        push_of(["website/content/docs/c.md"], run)
+        self.assertEqual(set(calls), {dt.ROOT}, "every command in the root")
+
+    # Failure.
+    def test_a_failing_scenario_refuses_the_push_and_is_named(self):
+        run = FakeRun({"run one": (1, "FAIL     docs/b.md:3: line 1 differs\n")})
+        code, out, _ = push_of(["website/content/docs/b.md"], run)
+        self.assertEqual(code, 1, "refused")
+        self.assertIn("docs scenario one: FAILED in", out, out)
+        self.assertIn("FAIL     docs/b.md:3: line 1 differs", out, "its report is shown")
+        self.assertIn("docs scenarios: 1 of 2 ran as their pages say", out, "the rest still ran")
+
+    def test_a_scenario_that_cannot_start_refuses(self):
+        run = FakeRun({"run two": (2, "docs-test: no scenario two; see `list`\n")})
+        code, out, _ = push_of(["website/content/docs/b.md"], run)
+        self.assertEqual(code, 1, "exit 2 is a failure too")
+        self.assertIn("docs scenario two: FAILED", out, out)
+
+    def test_a_head_other_than_the_pushed_commit_refuses_before_building(self):
+        run = FakeRun({"git rev-parse": (0, "fff999\n")})
+        code, out, _ = push_of(["website/content/docs/c.md"], run)
+        self.assertEqual(code, 1, "refused")
+        self.assertEqual(run.names("cargo"), [], "no build of another commit")
+        self.assertIn("the checkout is at fff999, not the pushed abc123", out, out)
+
+    def test_uncommitted_changes_refuse_before_building(self):
+        run = FakeRun({"git status": (0, " M crates/vcon-server/src/serve.rs\n")})
+        code, out, _ = push_of(["website/content/docs/c.md"], run)
+        self.assertEqual(code, 1, "refused")
+        self.assertEqual(run.names("cargo"), [], "the tree is not the commit")
+        self.assertIn("uncommitted changes", out, out)
+
+    def test_two_pushed_commits_that_differ_refuse(self):
+        run = FakeRun()
+        code, out, _ = push_of(["website/content/docs/c.md"], run, shas=("abc123", "def456"))
+        self.assertEqual(code, 1, "one checkout cannot be both")
+        self.assertIn("push one branch at a time", out, out)
+
+    def test_a_failed_build_refuses_and_runs_no_scenario(self):
+        run = FakeRun({"cargo build": (101, "error[E0425]: cannot find value\n")})
+        code, out, _ = push_of(["website/content/docs/c.md"], run)
+        self.assertEqual(code, 1, "refused")
+        self.assertEqual(run.names(sys.executable), [], "nothing to run it with")
+        self.assertIn("error[E0425]", out, "the build's error is shown")
+
+    def test_a_git_that_fails_refuses(self):
+        run = FakeRun({"git rev-parse": (128, "")})
+        code, out, _ = push_of(["website/content/docs/c.md"], run)
+        self.assertEqual(code, 1, "cannot tell which commit is checked out")
+        self.assertIn("git cannot read which commit is checked out", out, "the reason, not a mismatch")
+
+    # Edge cases.
+    def test_the_builds_are_removed_after_a_pass(self):
+        _, _, made = push_of(["website/content/docs/b.md"], FakeRun())
+        self.assertTrue(made and not any(os.path.exists(d) for d in made), f"removed: {made}")
+
+    def test_the_builds_are_removed_after_a_failure(self):
+        _, _, made = push_of(["website/content/docs/b.md"], FakeRun({"run one": (1, "x\n")}))
+        self.assertTrue(made and not any(os.path.exists(d) for d in made), f"removed: {made}")
+
+    def test_a_failing_report_shows_only_its_last_lines(self):
+        long = "".join(f"line {i}\n" for i in range(200))
+        code, out, _ = push_of(["website/content/docs/c.md"], FakeRun({"run pages-only": (1, long)}))
+        self.assertIn("line 199", out, "the end of the report")
+        self.assertNotIn("line 100\n", out, "not the whole report")
+
+    def test_the_same_commit_pushed_to_two_branches_runs_once(self):
+        run = FakeRun()
+        code, out, _ = push_of(["website/content/docs/c.md"], run, shas=("abc123", "abc123"))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(run.names(sys.executable)), 1, "one run")
+
+    def test_only_skipped_scenarios_is_a_pass_that_says_so(self):
+        run = FakeRun()
+        code, out, _ = push_of(["website/content/docs/e.md"], run)
+        self.assertEqual(code, 0, "nothing this host runs")
+        self.assertEqual(run.calls, [], "no build for nothing")
+        self.assertIn("docs scenarios: skipped long", out, out)
+
+    def test_the_command_reads_the_changed_paths_on_stdin(self):
+        with unittest.mock.patch.object(dt, "push", return_value=0) as push, \
+                unittest.mock.patch("sys.stdin", io.StringIO("README.md\nCargo.lock\n")):
+            self.assertEqual(dt.main(["push", "abc123"]), 0, "its code")
+        self.assertEqual(push.call_args.args, (["abc123"], ["README.md", "Cargo.lock"]), "shas and paths")
+
+    def test_push_with_no_commit_is_a_usage_error(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(dt.main(["push"]), 2, "it needs the pushed commits")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -11,8 +11,10 @@ zero="0000000000000000000000000000000000000000"
 name="$(git config user.name)"
 email="$(git config user.email)"
 bad=0
-# The files the outgoing commits change, over every ref pushed.
+# The files the outgoing commits change, over every ref pushed, and the
+# commits pushed.
 changed=""
+pushed=()
 
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ "$local_sha" = "$zero" ] && continue              # deleting a ref: nothing outgoing
@@ -48,6 +50,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     fi
   done <<< "$commits"
   changed+="$(git log --name-only --format= "${range[@]}")"$'\n'
+  [ -n "$commits" ] && pushed+=("$local_sha")
 done
 
 # CI's "git hooks" job runs two hook tests that no commit hook runs; a push
@@ -71,6 +74,18 @@ if [ "$bad" -eq 0 ]; then
       bad=1
       ;;
   esac
+fi
+
+# CI's how-to jobs run the pages' commands against a live server; a push
+# that changes a page a scenario runs, a file the server is built from, or
+# the runner runs those scenarios here, with the server built from this
+# checkout (scripts/docs_test.py `push` holds the rule and names each
+# scenario it skips). Skipped when a commit is already refused.
+if [ "$bad" -eq 0 ] && [ "${#pushed[@]}" -gt 0 ]; then
+  if ! printf '%s' "$changed" | python3 -I "$root/scripts/docs_test.py" push "${pushed[@]}"; then
+    echo "pre-push: refused: a how-to scenario did not run as its pages say (scripts/docs_test.py push)" >&2
+    bad=1
+  fi
 fi
 
 exit "$bad"

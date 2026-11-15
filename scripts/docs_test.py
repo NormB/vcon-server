@@ -1825,6 +1825,163 @@ def _run_in_container(scenario: Scenario, binary: str | None, work: str, outdir:
         _docker("rm", "-f", name, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+# The scenarios a push runs (`push`, from .githooks/pre-push). The rule:
+# a scenario runs when the push changes a page it runs; every scenario given
+# the server under test runs when the push changes a file that server is
+# built from; every scenario runs when the push changes the runner itself.
+# Skipped, and named: a scenario that may take longer than a push hook
+# should wait (CI runs it), and, with no GH_TOKEN, one whose steps call gh
+# for something that needs a token.
+SERVER_SOURCE_FILES = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml")
+SERVER_SOURCE_DIRS = ("crates/", ".cargo/")
+RUNNER_FILES = ("scripts/docs_test.py", PINS_NAME, "scripts/fetch-pinned.sh", APT_MIRRORS_NAME)
+# The longest a scenario may take to run from a push (a scenario's timeout).
+PUSH_SCENARIO_SECONDS = 900
+# gh calls that read GitHub's API, and so need a token; --help and
+# --version read nothing.
+GH_NEEDS_TOKEN = re.compile(r"\bgh\s+(?:attestation\s+verify|api|release)\b")
+DOCS_PREFIX = "website/content/docs/"
+
+
+def _server_source(path: str) -> bool:
+    if path in SERVER_SOURCE_FILES:
+        return True
+    if not path.startswith(SERVER_SOURCE_DIRS):
+        return False
+    # A crate's tests are not built into the server.
+    parts = path.split("/")
+    return not (len(parts) > 2 and parts[0] == "crates" and parts[2] == "tests")
+
+
+def _scenario_steps(s: Scenario) -> list[Block]:
+    return select([b for p in s.pages for b in page_blocks(p)], s)
+
+
+def needed(changed, scenarios, token: bool, steps=_scenario_steps) -> tuple[list, list]:
+    """The scenarios a push of `changed` runs and those it skips, each as
+    (name, why), in the order of `scenarios`."""
+    paths = [p.strip() for p in changed if p.strip()]
+    pages = [p[len(DOCS_PREFIX) :] for p in paths if p.startswith(DOCS_PREFIX)]
+    source = next((p for p in paths if _server_source(p)), None)
+    runner = next((p for p in paths if p in RUNNER_FILES), None)
+    run, skipped = [], []
+    for s in scenarios:
+        page = next((p for p in pages if p in s.pages), None)
+        if page is not None:
+            why = f"the push changes docs/{page}, which it runs"
+        elif source is not None and s.binary:
+            why = f"the push changes {source}, which the server under test is built from"
+        elif runner is not None:
+            why = f"the push changes {runner}, which runs every scenario"
+        else:
+            continue
+        if s.timeout > PUSH_SCENARIO_SECONDS:
+            skipped.append((s.name, f"it may take up to {s.timeout // 60} min; CI runs it"))
+        elif not token and any(
+            GH_NEEDS_TOKEN.search(b.code) for b in steps(s) if b.kind == "sh" and b.skip is None
+        ):
+            skipped.append((s.name, "its steps call gh, which needs GH_TOKEN here; CI runs it"))
+        else:
+            run.append((s.name, why))
+    return run, skipped
+
+
+def push(
+    shas,
+    changed,
+    *,
+    run=subprocess.run,
+    env=os.environ,
+    scenarios=SCENARIOS,
+    steps=_scenario_steps,
+    copy=shutil.copy2,
+    tempdir=tempfile.mkdtemp,
+    out=sys.stdout,
+    clock=time.monotonic,
+) -> int:
+    """Runs the scenarios a push of `shas` that changes `changed` needs,
+    with the server built from the checkout, which must be that commit.
+    0 when each ran as its pages say (or none was needed), 1 otherwise."""
+
+    def say(line: str) -> None:
+        print(line, file=out, flush=True)
+
+    todo, skipped = needed(changed, scenarios, bool(env.get("GH_TOKEN")), steps)
+    for name, why in skipped:
+        say(f"docs scenarios: skipped {name}: {why}")
+    if not todo:
+        if not skipped:
+            say(
+                "docs scenarios: not needed: the push changes no page a scenario runs, "
+                "no file the server is built from and no file of the runner"
+            )
+        return 0
+    pushed = sorted(set(shas))
+    if len(pushed) != 1:
+        say(f"docs scenarios: refused: the push holds {len(pushed)} commits that need them; push one branch at a time")
+        return 1
+
+    def git(*args):
+        return run(["git", *args], cwd=ROOT, capture_output=True, text=True)
+
+    head = git("rev-parse", "HEAD")
+    if head.returncode != 0:
+        say("docs scenarios: refused: git cannot read which commit is checked out")
+        return 1
+    if head.stdout.strip() != pushed[0]:
+        say(
+            f"docs scenarios: refused: the checkout is at {head.stdout.strip()}, not the pushed {pushed[0]}; "
+            "the scenarios run the server built from the checkout, so push from a checkout of that commit"
+        )
+        return 1
+    status = git("status", "--porcelain", "--untracked-files=no")
+    if status.returncode != 0 or status.stdout.strip():
+        say("docs scenarios: refused: the checkout has uncommitted changes, so its server is not the pushed commit's")
+        return 1
+    by_name = {s.name: s for s in scenarios}
+    target = env.get("CARGO_TARGET_DIR") or os.path.join(ROOT, "target")
+    builds = tempdir()
+    try:
+        binaries: dict = {}
+        for name, _ in todo:
+            features = by_name[name].features
+            if features in binaries:
+                continue
+            command = ["cargo", "build", "--locked", "-p", "vcon-server"]
+            if features:
+                command += ["--features", ",".join(features)]
+            built = run(command, cwd=ROOT, capture_output=True, text=True)
+            if built.returncode != 0:
+                say(f"docs scenarios: refused: {' '.join(command)} failed:")
+                say("".join(f"  {l}\n" for l in (built.stdout + built.stderr).splitlines()[-40:]).rstrip())
+                return 1
+            place = os.path.join(builds, "-".join(features) or "default")
+            os.makedirs(place)
+            binaries[features] = os.path.join(place, "vcon-server")
+            copy(os.path.join(target, "debug", "vcon-server"), binaries[features])
+        passed = 0
+        for name, why in todo:
+            started = clock()
+            done = run(
+                [sys.executable, "-I", os.path.join(ROOT, "scripts", "docs_test.py"), "run", name,
+                 "--binary", binaries[by_name[name].features]],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
+            seconds = int(clock() - started)
+            if done.returncode == 0:
+                passed += 1
+                say(f"docs scenario {name}: ok in {seconds} s ({why})")
+            else:
+                say(f"docs scenario {name}: FAILED in {seconds} s ({why}); the end of its report:")
+                say("".join(f"  {l}\n" for l in (done.stdout + done.stderr).splitlines()[-60:]).rstrip())
+        say(f"docs scenarios: {passed} of {len(todo)} ran as their pages say")
+        return 0 if passed == len(todo) else 1
+    finally:
+        shutil.rmtree(builds, ignore_errors=True)
+
+
 def main(argv: list[str]) -> int:
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)
@@ -1833,6 +1990,11 @@ def main(argv: list[str]) -> int:
     if command == "list":
         print(json.dumps([s.name for s in SCENARIOS]))
         return 0
+    if command == "push":
+        if not rest:
+            print("docs-test: push needs the pushed commits: docs_test.py push <sha>... < changed paths", file=sys.stderr)
+            return 2
+        return push(rest, sys.stdin.read().splitlines())
     if command == "lint":
         problems = lint()
         for p in problems:
