@@ -65,6 +65,9 @@ CI_ONLY = {
     "scripts/fuzz.sh run": "runs a fuzz target for a fixed time on the nightly toolchain",
     "scripts/fuzz.sh plant": "plants a panic and runs a fuzz target until it finds it",
     "scripts/reproducible-build.sh check": "builds the release binary twice in the release container",
+    "scripts/advertised_release.py decide": "reads the repository's GitHub releases; the hook runs its tests, scripts/test_advertised_release.py",
+    "scripts/advertised_release.py live": "reads the live website; the hook runs the script's tests",
+    "scripts/advertised_release.py daily": "reads the GitHub releases and the live website; the hook runs the script's tests",
     "scripts/reproducible-build.sh rebuild": "builds the release binary a second time in the release container",
     "scripts/reproducible-build.sh compare": "compares the two release builds of a release run; tests/release_workflow.rs runs it on files of its own",
     # Steps that prepare or describe a CI job and check nothing of a commit.

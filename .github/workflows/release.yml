@@ -517,3 +517,49 @@ jobs:
               *) echo "crates.io answered ${status} for ${crate} ${version}" >&2; exit 1 ;;
             esac
           done
+
+  # The website, once the release and both crates exist. pages.yml does
+  # not deploy a commit whose version has no complete release, so the site
+  # still shows the release before. This runs it by hand on main, with the
+  # version it must name; it builds main's newest passing commit, docs
+  # changes that landed meanwhile included, and fails unless that commit is
+  # at this version. Then the live site's /advertised-release.txt must name
+  # it: a challenge or an error from the network in front of the site is
+  # "not verified" and fails the job (scripts/advertised_release.py live).
+  # Re-run the job when it fails; any later deploy names the release too.
+  site:
+    name: deploy the site for the release
+    needs: [version, publish, crates-io]
+    if: >-
+      ${{ !cancelled() && github.ref_type == 'tag' &&
+          needs.publish.result == 'success' && needs.crates-io.result == 'success' }}
+    timeout-minutes: 60
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      # To run pages.yml by hand and read its run.
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Deploy the site from main and check that it names the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main -f expect="$VERSION"
+          run=""
+          for _ in $(seq 1 30); do
+            run="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow pages.yml \
+              --event workflow_dispatch --created ">=$since" --limit 1 \
+              --json databaseId --jq '.[0].databaseId // empty')"
+            [ -n "$run" ] && break
+            sleep 10
+          done
+          [ -n "$run" ] || { echo "::error::pages.yml has no run started since $since; the site does not name ${VERSION}"; exit 1; }
+          echo "pages.yml run $run"
+          gh run watch "$run" --repo "$GITHUB_REPOSITORY" --exit-status
+          python3 -I scripts/advertised_release.py live --url https://vcon-server.com/advertised-release.txt --expect "$VERSION" --wait 600

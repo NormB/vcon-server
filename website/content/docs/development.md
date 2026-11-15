@@ -407,6 +407,56 @@ and when the [problem types](@/problems/_index.md) or the
 CI passes on a push to `main`, `.github/workflows/pages.yml` deploys the site
 of that commit to GitHub Pages; Cloudflare fronts it.
 
+### The release the site names
+
+The pages name the version in `Cargo.toml` and give the download commands
+of that release, so the site is deployed only from a commit whose version
+has been released. The job `decide` of `pages.yml` runs
+`scripts/advertised_release.py decide`, which finds the newest GitHub
+release that is tagged `vX.Y.Z`, is not newer than the commit's version, is
+neither a draft nor a prerelease, and has all six release files uploaded.
+When that release is the commit's version, the site is built and deployed,
+with the file `/advertised-release.txt` that holds the version. When the
+commit's version is newer, the deploy is held: the run ends with success
+and the notice `Site deploy held: main is at <version>, which has no
+published release`, and the site keeps the pages of the release before,
+download commands included. Marking a release as a prerelease takes it off
+the site in the same way.
+
+A release commit is held this way from the moment it lands until its
+release exists. The last job of `release.yml`, `site`, runs after the
+GitHub release and the crates.io job have succeeded: it runs `pages.yml`
+by hand on `main` with the input `expect` set to the version, waits for
+that run, and then reads `https://vcon-server.com/advertised-release.txt`
+until it names the version, for at most 600 seconds. A challenge or an
+error from the network in front of the site counts as not verified and
+fails the job. The run by hand builds the newest commit of `main` whose CI
+passed, so a docs change that landed while the deploy was held is
+deployed with the release. If `main` is already at a later version by
+then, the run fails with `expected to deploy the site for <version>, but
+main is at <later version>` and the site keeps the release before; a later
+version is set only by the next release commit.
+
+Every day, `.github/workflows/site-release.yml` runs
+`scripts/advertised_release.py daily`. It fails when the live
+`/advertised-release.txt` does not name the newest complete release more
+than 6 hours after that release was published, when it cannot be read, and
+when `main`'s version has had no release for more than 6 hours. The 0.4.6
+release took 108 minutes from its release commit to the published release,
+so a release in progress stays under the bound, and an abandoned one fails
+the next daily run. The message names both versions and what to do: finish
+the release (push the tag, or run the failed release workflow again), or
+set the version in `Cargo.toml` back to the released one.
+
+`README.md` on GitHub is not the site: it names the new version from the
+release commit on, before the release exists. It holds no download command
+with a version.
+
+The steps of a release are therefore: land the release commit (its Pages
+run ends held), wait for `main`'s CI, push the signed tag, and let
+`release.yml` run to its end, its job `site` included; the site names the
+release when that job has passed.
+
 ```sh
 npm ci --prefix site-tests
 npx --prefix site-tests playwright install --only-shell chromium

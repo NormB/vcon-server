@@ -1,0 +1,49 @@
+name: Site names the newest release
+
+# Once a day: the live site must name the newest complete GitHub release,
+# and a deploy must not have been held for longer than the bound in
+# scripts/advertised_release.py.
+#
+# pages.yml does not deploy a commit whose Cargo.toml version has no
+# published release, so the site never names a release before it exists.
+# The release workflow deploys the site after it has published. If a
+# release commit lands and its release never follows, every later push to
+# main is held too, and no change to the pages is deployed, a docs fix
+# included: this check is what shows that, with both versions and the
+# remedy in its message.
+#
+# It reads /advertised-release.txt, a static file. A challenge from the
+# network in front of the site is "not verified" and fails the run; it is
+# never taken as a pass.
+on:
+  schedule:
+    # 06:47 UTC, clear of the weekly runs.
+    - cron: '47 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-release
+  cancel-in-progress: true
+
+jobs:
+  site-release:
+    name: the live site names the newest release
+    timeout-minutes: 10
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      # The whole history of main: the check asks git when Cargo.toml's
+      # version last changed.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Compare the live site with the releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I scripts/advertised_release.py daily --repo "$GITHUB_REPOSITORY" --url https://vcon-server.com/advertised-release.txt

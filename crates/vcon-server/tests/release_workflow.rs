@@ -748,3 +748,238 @@ fn the_build_says_which_commit_and_build_time_it_used() {
         "a log shows the input that makes a pull request's digest differ from a release's"
     );
 }
+
+// The website names a release only once it exists. The pages name the
+// version of the tree they are built from, and a release commit changes
+// it before its tag exists: at 0.4.6 the site said "0.4.6 is released",
+// with that release's download commands, for 22 minutes 9 seconds before
+// the release was published. pages.yml now deploys a commit only when
+// scripts/advertised_release.py finds a complete release of its version,
+// and release.yml deploys the site, from main, after it has published.
+
+/// The step of `job` named `name`, to the next step.
+fn step(job: &str, name: &str) -> String {
+    let start = job
+        .find(&format!("- name: {name}\n"))
+        .unwrap_or_else(|| panic!("no step {name}"));
+    let rest = &job[start..];
+    let end = rest[2..].find("\n      - ").map_or(rest.len(), |at| at + 3);
+    rest[..end].to_owned()
+}
+
+#[test]
+fn a_step_is_read_to_the_next_step() {
+    let job = "    steps:\n      - name: A\n        run: one\n      - uses: x\n      - name: B\n        run: two\n";
+    assert_eq!(
+        step(job, "A"),
+        "- name: A\n        run: one\n",
+        "to the next step"
+    );
+    assert_eq!(
+        step(job, "B"),
+        "- name: B\n        run: two\n",
+        "the last step"
+    );
+}
+
+#[test]
+fn pages_decides_before_it_builds_and_builds_only_a_released_version() {
+    let yml = workflow("pages.yml");
+    assert!(
+        waits_for(&yml, "build", "decide") && waits_for(&yml, "deploy", "decide"),
+        "the build and the deploy wait for the decision"
+    );
+    let build = code(&job(&yml, "build"));
+    assert!(
+        build.contains("if: needs.decide.outputs.verdict == 'deploy'"),
+        "a held commit is not built, so it is not deployed"
+    );
+    let decide = code(&job(&yml, "decide"));
+    assert!(
+        decide.contains(
+            "python3 -I scripts/advertised_release.py decide --repo \"$GITHUB_REPOSITORY\" \
+             --expect \"$EXPECT\" --github-output \"$GITHUB_OUTPUT\""
+        ),
+        "the one rule decides, and its verdict is the job's output"
+    );
+    for output in ["verdict:", "tree:", "sha:", "id:"] {
+        assert!(decide.contains(output), "the decision's output {output}");
+    }
+}
+
+#[test]
+fn the_decision_reads_the_tree_that_is_built() {
+    let yml = workflow("pages.yml");
+    let decide = code(&job(&yml, "decide"));
+    let build = code(&job(&yml, "build"));
+    assert!(
+        decide.contains("ref: ${{ steps.ci.outputs.sha }}"),
+        "the decision reads Cargo.toml of the commit CI ran"
+    );
+    assert!(
+        build.contains("ref: ${{ needs.decide.outputs.sha }}"),
+        "the build checks out that same commit"
+    );
+    assert!(
+        build.contains("run-id: ${{ needs.decide.outputs.id }}"),
+        "and takes its numbers from that commit's CI run"
+    );
+}
+
+#[test]
+fn a_run_by_hand_builds_mains_newest_green_commit_and_never_the_tag() {
+    let yml = workflow("pages.yml");
+    let decide = code(&job(&yml, "decide"));
+    let find = step(&decide, "Find CI's run of the commit to deploy");
+    assert!(
+        find.contains("--workflow ci.yml --branch main"),
+        "a run by hand takes CI's newest passing run of main, so a docs fix that landed while a \
+         deploy was held is deployed with the release"
+    );
+    assert!(find.contains("--event push --status success"), "{find}");
+    assert!(
+        !yml.contains("refs/tags") && !yml.contains("github.ref_name"),
+        "nothing in pages.yml builds a tag"
+    );
+}
+
+#[test]
+fn a_run_by_hand_can_name_the_release_it_must_deploy() {
+    let yml = workflow("pages.yml");
+    assert_eq!(
+        events(&yml),
+        ["workflow_run", "workflow_dispatch"],
+        "after CI on main, and by hand"
+    );
+    let on = &yml[..yml.find("\njobs:").expect("jobs")];
+    assert!(on.contains("expect:"), "the input expect");
+    let decide = code(&job(&yml, "decide"));
+    assert!(
+        decide.contains("EXPECT: ${{ inputs.expect }}"),
+        "the input reaches the script through the environment"
+    );
+}
+
+#[test]
+fn the_site_holds_the_version_it_names_in_a_static_file() {
+    let yml = workflow("pages.yml");
+    let build = code(&job(&yml, "build"));
+    let write = step(&build, "Record the release the site names");
+    assert!(
+        write.contains("website/public/advertised-release.txt"),
+        "a file beside the pages, read by the release workflow and the daily check"
+    );
+    assert!(
+        write.contains("TREE: ${{ needs.decide.outputs.tree }}"),
+        "the version the decision deployed"
+    );
+    let built = build.find("- name: Build site").expect("the build step");
+    let written = build
+        .find("- name: Record the release the site names")
+        .expect("the step");
+    let uploaded = build.find("upload-pages-artifact").expect("the upload");
+    assert!(
+        built < written && written < uploaded,
+        "after zola build, which empties website/public, and before the upload"
+    );
+}
+
+#[test]
+fn the_release_deploys_the_site_only_after_it_is_published() {
+    let yml = release_yml();
+    for earlier in ["publish", "crates-io"] {
+        assert!(
+            needs(&yml, "site").contains(&earlier.to_owned()),
+            "the site job needs {earlier}"
+        );
+    }
+    let site = code(&job(&yml, "site"));
+    for condition in [
+        "github.ref_type == 'tag'",
+        "needs.publish.result == 'success'",
+        "needs.crates-io.result == 'success'",
+    ] {
+        assert!(site.contains(condition), "{condition}");
+    }
+    assert!(
+        site.contains("actions: write"),
+        "dispatching a workflow needs it"
+    );
+    assert!(
+        !site.contains("contents: write"),
+        "the job changes nothing in the repository"
+    );
+}
+
+#[test]
+fn the_release_deploys_main_and_waits_for_that_run() {
+    let site = code(&job(&release_yml(), "site"));
+    assert!(
+        site.contains(
+            "gh workflow run pages.yml --repo \"$GITHUB_REPOSITORY\" --ref main -f expect=\"$VERSION\""
+        ),
+        "the deploy builds main, not the tag, and must deploy this version"
+    );
+    assert!(
+        site.contains("--event workflow_dispatch --created \">=$since\""),
+        "the run it waits for is the one it started"
+    );
+    assert!(
+        site.contains("gh run watch \"$run\" --repo \"$GITHUB_REPOSITORY\" --exit-status"),
+        "a failed deploy fails the release run"
+    );
+}
+
+#[test]
+fn the_release_checks_the_live_static_file_and_a_challenge_is_no_pass() {
+    let site = code(&job(&release_yml(), "site"));
+    assert!(
+        site.contains(
+            "python3 -I scripts/advertised_release.py live --url \
+             https://vcon-server.com/advertised-release.txt --expect \"$VERSION\""
+        ),
+        "the static file, read by the script whose verdict counts only a match as a pass"
+    );
+    assert!(
+        !site.contains("|| true") && !site.contains("continue-on-error"),
+        "a read that is not verified fails the job"
+    );
+}
+
+#[test]
+fn the_daily_check_reads_main_with_its_history_and_the_static_file() {
+    let yml = workflow("site-release.yml");
+    assert_eq!(
+        events(&yml),
+        ["schedule", "workflow_dispatch"],
+        "daily, and by hand"
+    );
+    let check = code(&job(&yml, "site-release"));
+    assert!(check.contains("ref: main"), "main's Cargo.toml");
+    assert!(
+        check.contains("fetch-depth: 0"),
+        "git tells since when main's version has had no release"
+    );
+    assert!(
+        check.contains("python3 -I scripts/advertised_release.py daily"),
+        "the script"
+    );
+    assert!(
+        check.contains("--url https://vcon-server.com/advertised-release.txt"),
+        "a static file, which the network in front of the site answers to a runner"
+    );
+}
+
+#[test]
+fn the_site_url_is_the_sites_base_url() {
+    let config = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../website/config.toml"),
+    )
+    .expect("the site's config");
+    assert!(
+        config
+            .lines()
+            .any(|line| line == "base_url = \"https://vcon-server.com\""),
+        "the address the workflows read the file from"
+    );
+}

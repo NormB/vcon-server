@@ -649,6 +649,10 @@ jobs:
           set -euo pipefail
           python3 -I scripts/test_check_changelog.py
           python3 -I scripts/check_changelog.py
+      # The rule for the release the website names, and when a deploy is
+      # held (scripts/advertised_release.py).
+      - name: The site names only a published release
+        run: python3 -I scripts/test_advertised_release.py
 
   hooks:
     name: git hooks

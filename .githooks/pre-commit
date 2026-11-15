@@ -67,6 +67,7 @@ python3 -I scripts/test_check_hook_steps.py
 python3 -I scripts/test_tree_files.py
 python3 -I scripts/test_check_runner_images.py
 python3 -I scripts/test_check_changelog.py
+python3 -I scripts/test_advertised_release.py
 # The how-to runner's own tests read the how-to pages: on 2026-11-13 a page
 # lost a line of a step's expected output, and CI's how-to job, the first to
 # run these tests, refused a commit this hook had accepted.
