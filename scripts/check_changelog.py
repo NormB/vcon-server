@@ -30,6 +30,8 @@ are not judged; the marker moves down as they are rewritten):
   one word (a link's address) cannot be wrapped and passes.
 
 A link counts as the words a reader sees: `[two words](address)` is two.
+A link definition, `[label]: address` on a line of its own (the file's
+last lines), is not text of a section or an entry.
 
 Run with: python3 -I scripts/check_changelog.py
 Exits 1 naming the section, the entry's lead and the rule for each problem.
@@ -39,7 +41,7 @@ import pathlib
 import re
 import sys
 
-MARKER = "0.4.3"
+MARKER = "0.1.0"
 HEADINGS = ("Added", "Changed", "Fixed", "Security", "Removed", "Deprecated")
 LABELS = ("Effect", "Do", "Limit", "Docs", "Was")
 LEAD_WORDS = 15
@@ -50,6 +52,13 @@ WRAP = 80
 
 LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 LABELED = re.compile(r"^(\w+): ")
+DEFINITION = re.compile(r"^\[[^\]\s][^\]]*\]: \S+$")
+
+
+def is_definition(line):
+    """Whether a line is a link definition, `[label]: address`, as the
+    changelog's last lines are: not text of an entry or of a section."""
+    return bool(DEFINITION.match(line))
 
 
 def words(text):
@@ -185,7 +194,9 @@ def section_problems(heading, lines):
         # A paragraph before the first heading is named once, by its first line.
         opens_prose = not in_prose
         in_prose = False
-        if line.startswith("### "):
+        if is_definition(line):
+            close()
+        elif line.startswith("### "):
             close()
             under_heading = True
             if line[4:].strip() not in HEADINGS:

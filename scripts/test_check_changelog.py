@@ -294,5 +294,80 @@ class TheEdges(unittest.TestCase):
         self.assertEqual(len(found), 3, found)
 
 
+# The link definitions at the end of a changelog, after its oldest section.
+DEFINITIONS = (
+    "[Unreleased]: https://github.com/example/vcon-server/compare/v0.1.0...HEAD\n"
+    "[0.1.0]: https://github.com/example/vcon-server/releases/tag/v0.1.0\n"
+)
+OLDEST = f"{HEAD}## [Unreleased]\n\n## [0.1.0] - 2026-10-26\n\n### Added\n\n{GOOD}\n"
+
+
+class LinkDefinitions(unittest.TestCase):
+    def test_the_definitions_after_the_oldest_section_pass(self):
+        self.assertEqual(cc.problems(OLDEST + DEFINITIONS, "0.1.0"), [])
+
+    def test_one_definition_after_the_oldest_section_passes(self):
+        self.assertEqual(cc.problems(OLDEST + DEFINITIONS.split("\n")[1] + "\n", "0.1.0"), [])
+
+    def test_a_definition_right_after_an_entry_ends_it_and_passes(self):
+        text = OLDEST.rstrip("\n") + "\n" + DEFINITIONS
+        self.assertEqual(cc.problems(text, "0.1.0"), [])
+
+    def test_the_entry_before_the_definitions_is_still_judged(self):
+        text = f"{HEAD}## [0.1.0] - 2026-10-26\n\n### Added\n\n- No lead here.\n\n{DEFINITIONS}"
+        found = cc.problems(text, "0.1.0")
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("the entry does not start with a bold lead", found[0])
+
+    def test_an_entry_after_a_definition_is_still_judged(self):
+        text = f"{HEAD}## [0.1.0] - 2026-10-26\n\n### Added\n\n{DEFINITIONS}\n- No lead here.\n"
+        found = cc.problems(text, "0.1.0")
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("the entry does not start with a bold lead", found[0])
+
+    def test_a_definition_holds_a_label_a_colon_and_one_address(self):
+        self.assertTrue(cc.is_definition("[0.1.0]: https://github.com/example/vcon-server/releases/tag/v0.1.0"))
+        self.assertTrue(cc.is_definition("[Unreleased]: https://example.com/compare/v0.1.0...HEAD"))
+
+    def test_a_line_with_words_after_the_address_is_not_a_definition(self):
+        self.assertFalse(cc.is_definition("[0.1.0]: see the release page"))
+        text = OLDEST + "[0.1.0]: see the release page for more.\n"
+        found = cc.problems(text, "0.1.0")
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("text outside an entry, under a heading", found[0])
+
+    def test_a_label_without_its_colon_is_not_a_definition(self):
+        self.assertFalse(cc.is_definition("[0.1.0] https://example.com/x"))
+        self.assertFalse(cc.is_definition("[0.1.0]:https://example.com/x"))
+
+    def test_an_empty_label_or_no_address_is_not_a_definition(self):
+        self.assertFalse(cc.is_definition("[]: https://example.com/x"))
+        self.assertFalse(cc.is_definition("[0.1.0]: "))
+        self.assertFalse(cc.is_definition(""))
+
+    def test_an_indented_definition_is_an_entry_line_not_a_definition(self):
+        self.assertFalse(cc.is_definition("  [0.1.0]: https://example.com/x"))
+
+    def test_a_definition_before_the_first_heading_is_not_text_before_it(self):
+        text = f"{HEAD}## [0.1.0] - 2026-10-26\n\n{DEFINITIONS}\n### Added\n\n{GOOD}"
+        self.assertEqual(cc.problems(text, "0.1.0"), [])
+
+    def test_a_definition_below_the_marker_is_not_judged_either(self):
+        text = f"{HEAD}## [Unreleased]\n\n### Added\n\n{GOOD}\n## [0.1.0] - 2026-10-26\n\n- Old prose.\n\n{DEFINITIONS}"
+        self.assertEqual(cc.problems(text, "Unreleased"), [])
+
+    def test_a_definition_ends_the_entry_so_an_indented_line_after_it_is_refused(self):
+        text = OLDEST.rstrip("\n") + "\n" + DEFINITIONS + "  - Effect: a stray line.\n"
+        found = cc.problems(text, "0.1.0")
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("text outside an entry, under a heading", found[0])
+
+    def test_prose_after_the_definitions_is_still_refused(self):
+        text = OLDEST + DEFINITIONS + "\nA closing paragraph.\n"
+        found = cc.problems(text, "0.1.0")
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("text outside an entry, under a heading", found[0])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -533,548 +533,421 @@ All notable changes to this project are recorded here. The format follows
 
 ## [0.4.2] - 2026-11-10
 
-Nothing in this release breaks a 0.4.1 deployment, and an upgrade from
-0.4.1 is the binary alone: see the Upgrade page's "From 0.4.1 to 0.4.2".
+### Changed
+
+- **An upgrade from 0.4.1 is the binary alone.**
+  - Effect: Nothing in this release breaks a 0.4.1 deployment; the catalogs
+    keep their schema version, and 0.4.1 opens a data directory 0.4.2 has
+    served.
+  - Docs: [From 0.4.1 to
+    0.4.2](https://vcon-server.com/docs/upgrading/#from-0-4-1-to-0-4-2)
+- **The console opens a vCon masked, and each reveal reads it again.**
+  - Effect: A summary shows its form, counts and each party as a number's
+    last four digits or an address's domain; a reveal shows the text.
+  - Do: In a proxy that passes the console's paths by name, also pass its
+    fourth file, `/console/format.js`.
+  - Limit: The HTTP API is as it was: `GET /vcons/{uuid}` and the legal
+    reads answer as in 0.4.1.
+  - Docs: [Console](https://vcon-server.com/docs/console/)
+- **The `vcon-server` crate's default features now include `tui`.**
+  - Effect: A build with default features compiles ratatui 0.30.2 and,
+    through it, crossterm 0.29.0.
+  - Do: Depend on the crate with `default-features = false` to build it as
+    before, without them.
+  - Limit: The library's public items are all still there; `tui`,
+    `commands::migrate`, `console::FILES`, `console::File` and
+    `console::path_of` are new.
+- **The PostgreSQL catalog preview needs `vcon-server migrate` before it
+  connects.**
+  - Effect: With `catalog.backend = "postgres"`, a connection refuses a
+    database without the schema, where 0.4.1 connected and stopped.
+  - Limit: `migrate` refuses a configuration whose `catalog.backend` is
+    `"local"`, and neither release serves from PostgreSQL.
+  - Docs: [Make the
+    schema](https://vcon-server.com/docs/postgres-catalog/#make-the-schema)
 
 ### Added
 
-- The console opens a vCon masked, in the vCons and Legal views: a summary
-  with its form, counts and each party as the last four digits of a number
-  or the domain of an address, and the whole text only after a reveal,
-  which reads the vCon again so the audit log holds a record of it. A
-  reveal shows one part (parties, subject, dialog, analysis or links) or
-  the whole text, cut at 2,097,152 characters. A link in a vCon is shown
-  as text and never loaded, and **Download** saves the vCon as
-  `<uuid>.json`. Every
-  list has a loading and an empty state, a request that gets no answer is
-  reported, a refusal says what to do next, releasing a hold asks first,
-  and times are shown in UTC with the offset stated. The page has a skip
-  link, a labeled navigation, a focus ring and scrolling table regions,
-  and its browser tests run axe-core (WCAG 2.2 AA) on every view. The
-  console's files are served from one list that a test holds to the
-  directory and to the published package.
-- `vcon-server tui`: a terminal UI that lists the vCons of one key's tenant
-  and shows each one's uuid, version and times. It is a client of a running
-  server's HTTP API with a `read` key from a client file, so the server's
-  scopes and audit log apply; it reads only, and never a vCon's content. It
-  is in the release binaries, `cargo install` and a build from source: the
-  new cargo feature `tui` is on by default. A build made with
-  `--no-default-features` has the command and says that it has no terminal
-  UI.
-- `vcon-server migrate`, for the PostgreSQL catalog preview: it makes the
-  catalog's schema as `vcon_owner`, one transaction per schema version,
-  alone (it takes the advisory locks every server and command shares). A
-  connection refuses a schema of any other version than the binary's, and a
-  server refuses a role that owns the catalog or can act as its owner.
-  Every table is under `FORCE ROW LEVEL SECURITY` with a policy that raises
-  when no tenant is set, so a query that forgets the tenant is refused. The
-  column codec the catalog will use is in `envelope::column`: AES-256-GCM
-  under a per-row key derived from the catalog key, with associated data
-  binding the tenant, table, column and row, and HMAC-SHA256 under an index
-  key for the values SQL must find.
-
-### Changed
-
-- The console no longer shows a vCon's whole text when it is opened. It
-  shows the masked summary, and each reveal is one more read of the vCon in
-  the audit log. The HTTP API is as it was: `GET /vcons/{uuid}` and the
-  legal reads answer as in 0.4.1. The console's page now loads a fourth
-  file, `/console/format.js`; a proxy in front of the server that
-  passes the console's paths by name must pass that one too.
-- The `vcon-server` crate's default features now include `tui`, so a build
-  with default features compiles ratatui 0.30.2 and, through it, crossterm
-  0.29.0. A dependency on the crate with `default-features = false` is built
-  as before, without them. The library's public items are all still there:
-  `tui`, `commands::migrate`, the column codec's names in `envelope`, and
-  `console::FILES`, `console::File` and `console::path_of` are new.
-- The catalogs in `data_dir` keep their schema version, so a server on the
-  default catalogs has nothing to migrate, and 0.4.1 opens a data directory
-  0.4.2 has served. `vcon-server migrate` is for the PostgreSQL catalog
-  preview only and refuses a configuration whose `catalog.backend` is
-  `"local"`. A build with the `postgres` feature and
-  `catalog.backend = "postgres"` now needs `vcon-server migrate` run first:
-  a connection refuses a database without the schema, where 0.4.1 connected
-  and stopped. Neither release serves from PostgreSQL.
+- **`vcon-server tui` lists the vCons of one key's tenant in a terminal.**
+  - Effect: It shows each one's uuid, version and times, as a client of a
+    running server's HTTP API with a `read` key from a client file.
+  - Do: Use the release binaries, `cargo install` or a build from source:
+    the new cargo feature `tui` is on by default.
+  - Limit: It reads only, and never a vCon's content; a build made with
+    `--no-default-features` says it has no terminal UI.
+  - Docs: [Terminal UI](https://vcon-server.com/docs/tui/)
+- **`vcon-server migrate` makes the PostgreSQL catalog preview's schema.**
+  - Effect: It makes the schema as `vcon_owner`, one transaction per schema
+    version, alone: it takes the locks every server and command shares.
+  - Limit: A connection refuses any schema version but the binary's; a
+    server refuses a role that owns the catalog or can act as its owner.
+  - Docs: [Make the
+    schema](https://vcon-server.com/docs/postgres-catalog/#make-the-schema)
+- **The library has a column codec for the PostgreSQL catalog.**
+  - Effect: `envelope::column` seals a column under a per-row key derived
+    from the catalog key, with AES-256-GCM, and finds values by
+    HMAC-SHA256.
 
 ### Fixed
 
-- `vcon-server tui`: in a terminal narrower than its first line, the
-  server's address is no longer the first part shortened. The connection is
-  always whole; the address loses `https://`, then the tenant's id is
-  shortened, then the tenant is left out, and only then is the address
-  shortened.
-- `vcon-server tui` without a terminal exits with code 1 and
-  `a terminal is required`, with which of standard input and standard
-  output is not one, in place of
-  `the terminal: No such device or address (os error 6)`. It checks before
-  it reads the key file.
-- `vcon-server tui` says what is wrong with a server certificate it
-  refuses, and what to do, in place of the TLS library's text: a
-  certificate marked as a certificate authority (`CA:TRUE`), one no
-  trusted certificate signed, one for another name, one that has expired
-  and one not valid yet. Each is still refused before any request is sent.
-- The documentation builds with rustdoc's warnings denied: two links from
-  public documentation in `mcp/fence.rs` to a private item are gone, and
-  the commit hook and CI now build it that way.
-- The scenario runner that runs the pages' commands in CI gives a
-  container with apt a list of package mirrors that answer, in place of
-  one host; an outage of `archive.ubuntu.com` on port 80 had failed a
-  required check.
+- **`vcon-server tui` keeps the connection whole in a narrow terminal.**
+  - Was: In a terminal narrower than its first line, the server's address
+    was the first part shortened.
+  - Effect: The address loses `https://`, then the tenant's id is
+    shortened, then the tenant is left out, and only then is the address
+    shortened.
+- **`vcon-server tui` without a terminal says `a terminal is required`.**
+  - Was: It said `the terminal: No such device or address (os error 6)`.
+  - Effect: It exits with code 1, says which of standard input and standard
+    output is not a terminal, and checks before it reads the key file.
+- **`vcon-server tui` says what is wrong with a server certificate it
+  refuses.**
+  - Was: It showed the TLS library's text.
+  - Effect: It names a certificate authority's certificate (`CA:TRUE`), an
+    untrusted signer, another name, an expired certificate or one not valid
+    yet, and what to do.
+  - Limit: Each is still refused before any request is sent.
+  - Docs: [Terminal UI](https://vcon-server.com/docs/tui/)
+- **The library's documentation has no link to a private item.**
+  - Was: Two links from public documentation in `mcp/fence.rs` led to a
+    private item.
+  - Effect: The documentation builds with rustdoc's warnings denied.
 
 ## [0.4.1] - 2026-11-09
 
-### Security
-
-- rmcp goes from 3.8.0 to 3.9.0 (RUSTSEC-2026-0462, GHSA-c9f9-cp8h-jcj5).
-  Before 3.9.0, rmcp's Streamable HTTP client read a JSON answer, and an
-  error answer, whole and with no size limit. `vcon-server mcp`, the stdio
-  bridge, uses that client, so a malicious or broken server at its `url`
-  could answer the handshake with a body that never ends, and the bridge
-  would buffer it until its host ran out of memory. 3.9.0 stops at 16 MiB
-  for a JSON answer and 64 KiB for an error answer, and the bridge then
-  stops with an error. The crate now requires rmcp 3.9.0 or later. 3.9.0
-  was published on 2026-11-05, less than the 14 days CONTRIBUTING.md asks
-  of a new version; it is taken now because it is a security update, which
-  Dependabot also takes with no cooldown. A test serves the bridge an
-  endless JSON answer and checks that it gives up near the limit.
 ### Changed
 
-- **Breaking: every secret file is held to one rule.** `master_key`,
-  `tls.key`, `storage.s3.secret_access_key_file`,
-  `export.s3.secret_access_key_file`, `catalog.postgres.password_file` and
-  `catalog.postgres.client_key_file`, the file `rekey master --new-master`
-  names, and the MCP stdio configuration's `key_file` must each be a regular
-  file, owned by the user the process runs as or by root, with no bit of
-  `0027` in its mode: no access for other users and no write for the group.
-  `0600`, `0400` and `0640` pass; `0644`, `0604` and `0660` are refused.
-  Until now only the two `catalog.postgres` files were checked, and a group
-  could write them; a master key, TLS key or S3 secret that every user on the
-  host could read was used without a word. `serve` and each command stop with
-  an error that names the key, the file, its mode and the `chmod` or `chown`
-  that fixes it. A FIFO is refused without being opened, so it cannot block
-  the start. The check is one function, `crate::secret_file`, used by every
-  reader. **Upgrade note:** before installing, run
-  `stat -c '%a %U %n'` on each secret file the configuration names, and
-  `chmod 600` (or `chown` to the server's account) any that would be
-  refused; the Upgrade page's "From 0.4.0 to 0.4.1: the secret-file rule" has the
-  steps. For the `vcon-server` library, `KeyError` gains `Refused(String)`,
-  and `TlsError` gains `KeyFile(String)`; neither enum is
-  `#[non_exhaustive]`, so a `match` on either needs the new arm. A directory
-  given as the master key is now `KeyError::Refused`, not `KeyError::Read`.
+- **Breaking: every secret file is held to one rule, and `serve` stops on
+  a refusal.**
+  - Effect: `master_key`, `tls.key`, the S3 and PostgreSQL secret files,
+    the `rekey master --new-master` file and the MCP `key_file` are all
+    checked.
+  - Do: Before installing, run `stat -c '%a %U %n'` on each secret file,
+    and `chmod 600` (or `chown` to the server's account) any that fails.
+  - Limit: A file passes as a regular file owned by the process's user or
+    root, with no bit of `0027`: `0600`, `0400` and `0640`.
+  - Docs: [From 0.4.0 to 0.4.1: the secret-file
+    rule](https://vcon-server.com/docs/upgrading/#from-0-4-0-to-0-4-1-the-secret-file-rule)
+- **Code that matches the library's `KeyError` or `TlsError` takes a new
+  arm.**
+  - Effect: `KeyError` gains `Refused(String)` and `TlsError` gains
+    `KeyFile(String)`; neither enum is `#[non_exhaustive]`.
+  - Limit: A directory given as the master key is now `KeyError::Refused`,
+    not `KeyError::Read`.
 
 ### Added
 
-- A preview of the PostgreSQL catalog, behind the `postgres` cargo feature
-  (not on by default; it turns on `s3`). The `[catalog]` table names where
-  the catalogs are kept: `backend = "local"`, the default, or `"postgres"`
-  with a `[catalog.postgres]` table, which needs `storage.objects = "s3"`.
-  Every key is checked at start, each refusal naming its key: hosts (DNS
-  names in ASCII or IP addresses, no Unix socket), the port, database and
-  role names of at most 63 bytes with no NUL, a password file or a client
-  certificate, the pool size and the timeouts. With it, `serve` and every
-  command read the password file and the client key once, refusing a file
-  other users may read, connect over TLS with the certificate chain and the
-  host name verified by rustls, log in only by SCRAM-SHA-256 with channel
-  binding or a client certificate (a server that asks for `md5`, a plain
-  password or `trust` is refused before the password is sent), refuse a
-  standby, a read-only server, a superuser and a role with `BYPASSRLS`, and
-  then stop with exit code 1, since the catalogs are not kept in PostgreSQL
-  yet. The connections come from a pool in the crate. New dependencies:
-  tokio-postgres 0.7.18 and tokio-postgres-rustls 0.14.0. The how-to "Keep
-  the catalogs in PostgreSQL" covers the database's side and each refusal.
-- `scripts/pg-test-server.sh` starts the PostgreSQL servers the catalog's
-  tests run against, in containers with TLS (a primary, a hot standby and a
-  server with ssl off), and removes them. CI's "catalog backends
-  (PostgreSQL 16)" and "(PostgreSQL 18)" jobs run those tests, and `serve`
-  with a PostgreSQL catalog beside RustFS.
-- `scripts/check_action_pins.py`, run by CI's scan job and the commit hook,
-  refuses a `uses:` in `.github/workflows/` or `.github/actions/` that is not
-  a local path in the repository or `owner/repo@<40-hex commit> # v<version>`:
-  a tag, a branch, a short commit id, a `docker://` image or a commit without
-  its version comment. The Development page says how to add an action.
-- `.gitignore` ignores `*.local.md` (private spec and plan files) in any
-  directory, and `scripts/check-ignored-exports.sh`, run by the commit hook,
-  refuses a tracked or staged one, including one added with `--force`.
+- **A PostgreSQL catalog preview, behind the `postgres` cargo feature, not
+  on by default.**
+  - Effect: `backend = "postgres"` in `[catalog]`, with a
+    `[catalog.postgres]` table and `storage.objects = "s3"`, checks every
+    key and the database at start.
+  - Do: Build with `--features postgres`, which also turns on `s3`.
+  - Limit: Then `serve` and every command stop with exit code 1: the
+    catalogs are not kept in PostgreSQL yet.
+  - Docs: [Keep the catalogs in
+    PostgreSQL](https://vcon-server.com/docs/postgres-catalog/)
 
 ### Fixed
 
-- CI no longer fails when github.com answers a release download with HTTP
-  504 for a few minutes. On 2026-11-08, and on 2026-11-09 from about 05:15Z,
-  it did so for most of an hour, and main's CI on 2cb225a went red at every
-  job that fetched cargo-nextest, DuckDB, MinIO, cargo-fuzz, cosign or a
-  vcon-server release, while the code was green: each fetch was one `curl`
-  with about 25 seconds of retries. Every release download in the workflows
-  now goes through `scripts/fetch-pinned.sh`, through the new
-  `.github/actions/pinned-download` (cached by name, version and sha256,
-  saved only on main) or `.github/actions/nextest`. The script checks the
-  sha256 of every download and every restored file, retries an outage with
-  a doubling delay for up to five minutes, and exits 1 for an outage, 3 for
-  bytes that are not the pin and 4 for a permanent refusal.
-  `scripts/check_workflow_downloads.py` refuses a step or script that
-  fetches a release asset another way, an `actions/cache` save that is
-  not main-only, and any cache in a workflow run by `workflow_run`. The how-to scenarios get each release asset a page
-  downloads through a mirror in `scripts/docs_test.py` that fetches it the
-  same way, against `scripts/docs-test-pins.txt`; their images are pinned
-  by digest and pulled with retries, and apt in their containers retries
-  each download. The Development page says how to bump a pin.
-- The how-to "Keep vCons in an S3 bucket" waited for RustFS or MinIO to
-  give any answer, then expected `403`; a service still starting answers
-  `503`, which ended the wait and failed the next step (CI's s3 scenario,
-  2026-11-09). Each wait now ends on the `403`.
+- **The S3 how-to waits until RustFS or MinIO answers `403`.**
+  - Was: It waited for any answer, then expected `403`; a service still
+    starting answers `503`, which ended the wait and failed the next step.
+  - Effect: Each wait now ends on the `403`.
+  - Docs: [Keep vCons in an S3
+    bucket](https://vcon-server.com/docs/s3-storage/)
+
+### Security
+
+- **rmcp goes from 3.8.0 to 3.9.0 (RUSTSEC-2026-0462,
+  GHSA-c9f9-cp8h-jcj5).**
+  - Was: The client `vcon-server mcp` uses read an answer whole, so a
+    server at its `url` could make the bridge buffer it out of memory.
+  - Effect: 3.9.0 stops at 16 MiB for a JSON answer and 64 KiB for an error
+    answer, and the bridge then stops with an error.
+  - Do: Code that uses the library builds with rmcp 3.9.0 or later, which
+    the crate now requires.
 
 ## [0.4.0] - 2026-11-06
 
-### Added
-
-- `vcon-server storage move-objects` moves every tenant's sealed objects from
-  the data directory to the bucket `storage.objects = "s3"` names, while no
-  server runs: each object is written, read back and compared byte for byte
-  before its file is removed, so a run that stops loses nothing and the
-  next one moves the rest. It prints, per tenant, how many moved and how
-  many versions `check` then finds without an object. A server that kept
-  its objects locally moves to Parquet storage with it, then with
-  `[storage.parquet]`.
-
-- Parquet storage: with `[storage.parquet]` beside `storage.objects = "s3"`,
-  the server packs each tenant's objects in the bucket into Parquet files,
-  one store date at a time, at
-  `<prefix>tenants/<tenant id>/parquet/date=<yyyy-mm-dd>/part-<file id>.parquet`,
-  in a pack run at start and every `pack_interval` seconds (300 unless set);
-  a sealed object over `pack_limit` (16 MiB unless set) stays an object. A
-  read fetches a packed version's row with one ranged read. A purge lists
-  the version's file in the purge's own transaction, rewrites the file
-  without the row, deletes the old file and checks with HeadObject that it
-  is gone, before `purge_due` returns; start-up recovery and the next sweep
-  finish one cut off. A bucket with versioning on or suspended, whatever
-  `allow_versioning` says, or with Object Lock on, is refused for Parquet
-  storage at start. Start-up recovery removes a pack file no catalog row
-  names, and the object of a packed version. A backup writes each packed
-  version as an object file, so it restores as before. Removing a tenant
-  removes its pack files. Each change of which files hold which rows, and
-  each pack run that finds the live versions changed, writes the next
-  numbered manifest (`<prefix>tenants/<tenant id>/manifest/<20 digits>.json`,
-  `If-None-Match: *`) naming the files and the live versions; start-up
-  recovery writes one left unwritten. Each pack run merges a date's small
-  files into one; a file merged away and an older manifest stay for
-  `reader_grace` seconds (900 unless set), and a purge deletes them at once.
-  The files hold a version's id, store time and sealed bytes only, whatever
-  the tenant's metadata level; queryable columns come from `export
-  parquet`. The how-to [keep vCons as Parquet files in a
-  bucket](https://vcon-server.com/docs/parquet-storage/) turns it on over an
-  existing bucket, and CI runs the store's conformance suite on it against
-  RustFS and MinIO.
-
-- vcon-server can keep its sealed vCon objects in a bucket of an
-  S3-compatible service (RustFS, MinIO, AWS S3): `storage.objects = "s3"`
-  and the `[storage.s3]` table, with the endpoint, region, bucket, prefix,
-  path style (RustFS, MinIO) or virtual-hosted style (AWS S3), an access
-  key id with its secret in a file or the AWS default credential chain,
-  `ca_file` for a service whose certificate a private certificate authority
-  signed, and a request timeout. Each object holds the same sealed bytes as
-  the local file, at `<prefix>tenants/<tenant id>/objects/<version id>`;
-  the catalogs, `server.sqlite`, the locks and the master key stay in
-  `data_dir`. A purge removes the object from the bucket. A bucket with
-  versioning on is refused unless `allow_versioning` is set. The first data
-  directory to start on an empty bucket and prefix claims it
-  (`storage.claim`, `<prefix>vcon-server.claim`), and any other is refused
-  there, since start-up recovery removes every object no catalog of its own
-  names. A start that cannot use the bucket names the cause: the service's
-  error code, a refused connection or an untrusted certificate. Without a
-  `[storage]` table nothing changes. Built with the `s3` cargo feature, on
-  by default. The how-to [keep vCons in an S3
-  bucket](https://vcon-server.com/docs/s3-storage/) sets up RustFS step by
-  step, and CI runs the store's conformance suite against RustFS.
-- CI runs the store's conformance suite, the S3 backend's tests and `serve`
-  against MinIO RELEASE.2025-09-07T16-13-09Z as well (job "storage backends
-  (MinIO)"), including a check that the service refuses a second write with
-  `If-None-Match: *`, and runs the S3 how-to with MinIO as well as RustFS.
-- Start-up recovery logs how many objects it removed (`start-up recovery
-  removed objects that no catalog row names removed=<n>`), for local files
-  and for objects in a bucket. Before, it removed them without a word.
-- Documentation: the S3 how-to gives MinIO and AWS S3 their own setup,
-  checks and troubleshooting, the services' required support for
-  conditional writes, every start-up refusal with the server's message, and
-  a clean-up; a test reads its AWS configuration and IAM policies. The
-  audit-logs page lists every action; the command line page has `serve`;
-  the client examples show gzip, `If-Match`, paging, a legal hold, an audit
-  read, an admin call and MCP; the library page shows `vcon::write`. Tests
-  hold the HTTP API page to the router and the command line page to the
-  binary, both ways.
-- `vcon-server export parquet --tenant <id> --to <dir | s3://bucket/prefix>
-  [--since <time>] [--until <time>]` writes a copy of a tenant's kept
-  versions, current and hidden, as Parquet files under
-  `tenant=<id>/date=<yyyy-mm-dd>/`, then a numbered manifest,
-  `tenant=<id>/manifest/<seq>.json`, naming them. It runs beside a serving
-  server and changes nothing in the store but one `export` record in the
-  tenant's audit log. Each row holds the version's sealed object byte for
-  byte. Each file is written whole under its own name (a temporary name and
-  a rename in a directory; one PutObject with `If-None-Match: *` in a
-  bucket), the manifest last, and a run that fails removes its files. A
-  bucket target is reached with the new `[export.s3]` table, or with
-  `[storage.s3]`'s service and keys. Built with the `parquet` crate's
-  column writer, without Arrow and without a compression codec. The how-to
-  [export to Parquet](https://vcon-server.com/docs/export-parquet/) reads
-  an export with DuckDB, from a directory and from a bucket.
-- Each tenant has a metadata level for its Parquet exports: `none` (the
-  default: only the version id, the store time and the sealed body),
-  `counts` (also the form, gzip, size, the vCon's times, and its party and
-  dialog counts) or `full` (also the uuid, the subject and the parties'
-  `tel`, `mailto` and `name`). It is set with `vcon-server tenant
-  set-metadata` or `PUT /admin/tenants/{id}/metadata`, recorded in both
-  logs, and shown by the tenant list (`metadata`). Statistics are written
-  only for the time and count columns, and no column has a dictionary page.
-- The `vcon` crate reads, in `vcon::read::fields`, the members an export
-  copies from an unsigned vCon or the vCon inside a signed one: `created_at`,
-  `updated_at`, `subject`, each party's `tel`, `mailto` and `name`, and the
-  number of dialogs.
-
 ### Changed
 
-- The tests run under cargo-nextest, pinned to 0.9.148 by
-  `scripts/nextest.sh`, in the commit hook and in CI: a test still running
-  after 60 seconds is reported by name, and after 3 minutes it is ended and
-  fails, where one hung test used to hang the hook. The doc tests still run
-  under `cargo test --doc`. Test builds on aarch64 Linux link with the Rust
-  toolchain's own lld (`scripts/cc-lld.sh`), and fall back to the system
-  linker when the toolchain has none; release binaries link as before.
+- **Every catalog moves to schema version 4, which release 0.3.0 does not
+  open.**
+  - Effect: A server brings an older catalog up to date; the new places for
+    metadata levels and Parquet pack files stay empty until versions are
+    packed.
+  - Do: Copy the data directory before the upgrade: 0.3.0 opens neither
+    version 3 nor 4, so the copy is the way back.
+  - Docs: [From 0.3.0 to
+    0.4.0](https://vcon-server.com/docs/upgrading/#from-0-3-0-to-0-4-0)
+- **`serve` refuses to start without `[storage.parquet]` once a version is
+  packed.**
+  - Effect: The refusal names the table; without it the server packed no
+    more and no longer refused a bucket with Object Lock or versioning.
+  - Limit: `vcon-server check` gives each tenant's `packed` versions and
+    reports them without the table as a problem; other commands run as
+    before.
+  - Docs: [Keep vCons as Parquet files in a
+    bucket](https://vcon-server.com/docs/parquet-storage/)
 
-- Every catalog is at schema version 4: `server.sqlite` has each tenant's
-  metadata level, and each tenant's catalog has a place for each version
-  in a Parquet pack file and the tables of its pack files, all empty until
-  a later change packs versions. A server opens an older catalog and brings
-  it up to date. Release 0.3.0 does not open a data directory at version 3
-  or 4: go back to it only with the copy taken before the upgrade, as
-  [upgrade](https://vcon-server.com/docs/upgrading/) describes.
-- Once a tenant has a version packed into a Parquet file, `serve` refuses
-  to start with a configuration that has no `[storage.parquet]`, naming the
-  table: without it the server packed no more, and its start no longer
-  refused a bucket with Object Lock or versioning, either of which keeps the
-  bytes of a pack file that a purge rewrote. `vcon-server check` gives each
-  tenant's `packed` versions and reports packed versions without the table
-  as a problem; the other commands run as before.
+### Added
+
+- **Sealed vCon objects can be kept in a bucket of an S3-compatible
+  service.**
+  - Effect: With `storage.objects = "s3"` and `[storage.s3]`, RustFS, MinIO
+    or AWS S3 holds each object; the catalogs and the master key stay in
+    `data_dir`.
+  - Do: Set `allow_versioning` for a bucket with versioning on, which is
+    refused without it.
+  - Limit: The first data directory to start on an empty bucket and prefix
+    claims it (`<prefix>vcon-server.claim`), and any other is refused there.
+  - Docs: [Keep vCons in an S3
+    bucket](https://vcon-server.com/docs/s3-storage/)
+- **`vcon-server storage move-objects` moves the sealed objects from the
+  data directory to the bucket.**
+  - Effect: Each object is written, read back and compared byte for byte
+    before its file is removed, so a run that stops loses nothing.
+  - Do: Run it while no server runs; a server that kept its objects
+    locally then moves to Parquet storage with `[storage.parquet]`.
+  - Limit: It prints, per tenant, how many moved and how many versions
+    `check` then finds without an object.
+  - Docs: [Move objects stored in the data
+    directory](https://vcon-server.com/docs/s3-storage/#move-objects-stored-in-the-data-directory)
+- **Parquet storage packs each tenant's objects in the bucket into Parquet
+  files.**
+  - Effect: With `[storage.parquet]`, a pack run at start and every
+    `pack_interval` seconds (300 unless set) packs one store date at a time.
+  - Do: Use `export parquet` for queryable columns: the files hold a
+    version's id, store time and sealed bytes only.
+  - Limit: An object over `pack_limit` (16 MiB unless set) stays an object;
+    a bucket with versioning or Object Lock is refused at start.
+  - Docs: [Keep vCons as Parquet files in a
+    bucket](https://vcon-server.com/docs/parquet-storage/)
+- **`vcon-server export parquet` copies a tenant's kept versions as Parquet
+  files.**
+  - Effect: `vcon-server export parquet --tenant <id> --to <dir |
+    s3://bucket/prefix> [--since <time>] [--until <time>]` writes the files,
+    then a manifest.
+  - Do: Reach a bucket with the new `[export.s3]` table, or with
+    `[storage.s3]`'s service and keys.
+  - Limit: It runs beside a serving server and changes nothing in the store
+    but one `export` record in the tenant's audit log.
+  - Docs: [Export to
+    Parquet](https://vcon-server.com/docs/export-parquet/)
+- **Each tenant has a metadata level for its Parquet exports.**
+  - Effect: `none`, the default, holds the version id, store time and sealed
+    body; `counts` adds sizes, times and counts; `full` the uuid, subject
+    and parties.
+  - Do: Set it with `vcon-server tenant set-metadata` or
+    `PUT /admin/tenants/{id}/metadata`; the tenant list shows it as
+    `metadata`.
+  - Limit: Statistics are written only for the time and count columns, and
+    no column has a dictionary page.
+  - Docs: [Export to
+    Parquet](https://vcon-server.com/docs/export-parquet/)
+- **The `vcon` crate reads the members an export copies, in
+  `vcon::read::fields`.**
+  - Effect: `created_at`, `updated_at`, `subject`, each party's `tel`,
+    `mailto` and `name`, and the number of dialogs, also inside a signed
+    vCon.
+- **Start-up recovery logs how many objects it removed.**
+  - Effect: `start-up recovery removed objects that no catalog row names
+    removed=<n>`, for local files and for objects in a bucket.
+  - Was: It removed them without a word.
+- **The documentation covers MinIO and AWS S3, and more client examples.**
+  - Effect: The S3 how-to has their setup, checks and troubleshooting, the
+    services' required support for conditional writes, and every start-up
+    refusal.
+  - Do: Read the client examples for gzip, `If-Match`, paging, a legal
+    hold, an audit read, an admin call and MCP.
+  - Docs: The audit-logs page lists every action, the command line page has
+    `serve`, and the library page shows `vcon::write`.
 
 ### Fixed
 
-- A purge sweep whose version had already lost its object file (removed by
-  hand, or by a purge cut off after its commit) stopped with an I/O error
-  after deleting the version's row, so the rest of the sweep and the WAL
-  checkpoint that follows it did not run. A missing object now counts as
-  removed.
-- A read whose object the storage failed to give answered `500 damaged`,
-  and `vcon-server check` listed the version as damaged, though the stored
-  data may be sound: an object file the process may not read or that the
-  disk fails to read, a key page the system would not lock, and with the
-  objects in an S3 bucket a service that cannot be reached, refuses the key
-  or does not answer in time. These now answer `500 internal`, and the
-  server logs `a stored version's object could not be read` with the
-  failure's `kind` (such as `permission denied` or `timed out`), never its
-  text, a key or an id. `damaged` is now only an object that is missing
-  while its row is kept, or one that does not decrypt and authenticate.
-- For a tenant whose objects the storage did not read, `vcon-server check`
-  reported `its catalog cannot be opened: Io`, though the catalog had
-  opened. It now reports `its objects cannot be read:` with the failure's
-  kind and, when the system gives one, its error number, such as
-  `permission denied (os error 13)`, as the server's log line gives them,
-  never an object's key; any other failure of the examination is
-  `it could not be examined:` with its error.
-- The vcon-server crate's description and the OpenAPI description spelled
-  "authorised", and four site pages and llms.txt spelled "behaviour",
-  "licence" and "honour(ed)"; each is now in US spelling, and a test holds
-  every `Cargo.toml` description, every site page, llms.txt and the OpenAPI
-  description to the README's US spelling. The development page's
-  "Licence" heading is now "License".
+- **A purge sweep goes on when a version's object file is already gone.**
+  - Was: It stopped with an I/O error after deleting the row, so the rest of
+    the sweep and the WAL checkpoint after it did not run.
+  - Effect: A missing object now counts as removed.
+- **A read the storage fails to give answers `500 internal`, not
+  `500 damaged`.**
+  - Was: An unreadable object file, a key page not locked or an S3 service
+    not reached answered `500 damaged`, and `check` listed the version as
+    damaged.
+  - Effect: The server logs `a stored version's object could not be read`
+    with the failure's `kind`, never its text, a key or an id.
+  - Limit: `damaged` is now only a missing object whose row is kept, or one
+    that does not decrypt and authenticate.
+- **`vcon-server check` says a tenant's objects cannot be read, not its
+  catalog.**
+  - Was: It reported `its catalog cannot be opened: Io`, though the catalog
+    had opened.
+  - Effect: It reports `its objects cannot be read:` with the failure's kind
+    and error number, such as `permission denied (os error 13)`.
+  - Limit: Any other failure of the examination is `it could not be
+    examined:` with its error.
+- **The crate and OpenAPI descriptions and the site use US spelling.**
+  - Was: They spelled "authorised", "behaviour", "licence" and
+    "honour(ed)".
+  - Effect: Each is in US spelling, and the development page's "Licence"
+    heading is now "License".
 
 ## [0.3.0] - 2026-11-04
 
 ### Added
 
-- The MCP server for AI agents: `POST /mcp` on the TLS listener, and
-  `vcon-server mcp --config <client file>`, which speaks MCP on stdin and
-  stdout and forwards to a running server with one key. Every request is
-  authenticated with the bearer key as every route is, and counted in the
-  key's tenant log or the admin log as action `mcp`. 19 tools: `vcon_get`,
-  `vcon_list`, `vcon_store`, `vcon_replace` and `vcon_delete`; `legal_get`,
-  `legal_versions`, `legal_restore`, `legal_hold` and `legal_release`;
-  `audit_read`; and for operator keys `admin_tenant_create`,
-  `admin_tenant_list`, `admin_tenant_retention`, `admin_tenant_remove`,
-  `admin_key_create`, `admin_key_list`, `admin_key_revoke` and
-  `admin_audit_read`. Each tool calls the function its HTTP route calls and
-  leaves the same audit records. Every call passes one gate, in order: the
-  key's rate (`mcp.calls_per_second`), a free slot (`mcp.concurrent`), a
-  known tool, the tool's scope, and arguments that fit the tool. The
-  problems `rate-limited`, `at-capacity`, `unknown-tool` and
-  `invalid-arguments` name the refusals. A result holds at most
-  `mcp.response_bytes` (1 MiB by default), with `next_cursor` to resume, and
-  a vCon's text comes back between untrusted-data markers it cannot close.
-- `vcon::write` in the vcon library: an object model of the vCon core
-  draft (parties, dialogs of each type, attachments, analysis, extension
-  members) and its unsigned and gzip forms. The output is compact JSON
-  with members in the draft's order, so the same model gives the same
-  bytes, and `read::inspect` reads every output back with the same form,
-  gzip flag and uuid. It refuses what core-04 does not allow and names the
-  JSON path: an index to nothing, a member Table 1 forbids or a missing one
-  it requires, content without an https URL and a hash, an inline
-  attachment without a mediatype, both `amended` and `redacted`, an
-  extension member with a reserved name, and output deeper than
-  `read::MAX_JSON_DEPTH`. `Vcon::amend` and `Vcon::redact` copy a vCon
-  under a new uuid and link the prior one; a removed entry leaves a
-  placeholder so no index moves. `uuid_v8` makes the version 8 uuid the
-  draft recommends. The draft's examples A.4, A.8 and A.9 are built with it
-  and equal the draft's files. `WriteError` implements `std::error::Error`.
-- The signed and encrypted forms in `vcon::write`: `sign` writes a General
-  JWS JSON Serialization with one signature per `Signer` and `updated_at`
-  set to the signing time; `sign_again` signs a signed vCon again for a
-  long-term archive, at most `read::MAX_SIGNED_LAYERS` layers; `encrypt`
-  writes a General JWE JSON Serialization of a signed vCon, its content key
-  from a `ContentEncrypter` and wrapped by each `KeyEncrypter`. The
-  cryptography is the caller's, through those three traits; a payload or
-  plaintext can be gzipped first (`Compression`). The input to sign again
-  or encrypt is read under the caller's `read::Limits`, and every output
-  reads back with `read::inspect`. The draft's recommended algorithms
-  follow as an option in a later release.
-- Each release also holds `SHA256SUMS.txt.sigstore.json`, a keyless cosign
-  signature over `SHA256SUMS.txt`, and `vcon-server-<version>.intoto.jsonl`,
-  the build provenance as a file, both made from the release workflow's
-  OIDC identity with no stored key and verified before they are released.
-  The install page shows how to check the signature with cosign; 0.2.0 and
-  earlier have neither file.
+- **An MCP server lets AI agents use the API with one key.**
+  - Effect: `POST /mcp` on the TLS listener, and `vcon-server mcp --config
+    <client file>` on stdin and stdout, offer 19 tools, each counted as
+    action `mcp`.
+  - Limit: Each call passes the key's rate, a free slot, a known tool, its
+    scope and fitting arguments; a result holds at most `mcp.response_bytes`.
+  - Docs: [MCP](https://vcon-server.com/docs/mcp/)
+- **`vcon::write` builds vCons of the core draft, unsigned and gzipped.**
+  - Effect: The output is compact JSON with members in the draft's order,
+    and `read::inspect` reads it back with the same form, gzip flag and uuid.
+  - Do: Use `Vcon::amend` and `Vcon::redact` to copy a vCon under a new uuid
+    that links the prior one, and `uuid_v8` for the draft's uuid.
+  - Limit: It refuses what core-04 does not allow and names the JSON path;
+    `WriteError` implements `std::error::Error`.
+  - Docs: [The vcon library](https://vcon-server.com/docs/library/)
+- **`vcon::write` signs and encrypts vCons with `sign`, `sign_again` and
+  `encrypt`.**
+  - Effect: `sign` writes a General JWS JSON Serialization, `sign_again` up
+    to `read::MAX_SIGNED_LAYERS` layers, and `encrypt` a General JWE of a
+    signed vCon.
+  - Do: Bring the cryptography through the `Signer`, `ContentEncrypter` and
+    `KeyEncrypter` traits; a payload can be gzipped first (`Compression`).
+  - Limit: The input is read under the caller's `read::Limits`, and every
+    output reads back with `read::inspect`.
+- **Each release holds a cosign signature and its build provenance.**
+  - Effect: `SHA256SUMS.txt.sigstore.json` is a keyless signature over
+    `SHA256SUMS.txt`, and `vcon-server-<version>.intoto.jsonl` the build
+    provenance.
+  - Limit: 0.2.0 and earlier have neither file.
+  - Docs: [Check the signed
+    checksums](https://vcon-server.com/docs/install/#check-the-signed-checksums)
 
 ### Changed
 
-- The release binaries are built on glibc 2.34 (AlmaLinux 9), and the
-  release workflow refuses a binary that needs a newer glibc symbol. They
-  run on Debian 12, Ubuntu 22.04 and AlmaLinux 9, where the 0.2.0
-  binaries, which needed glibc 2.38, did not start. Each binary is run
-  on Debian 12, Ubuntu 22.04 and AlmaLinux 9 before a release, and the
-  release build is reproducible: CI builds it twice and compares the bytes.
-- A failure to open `server.sqlite` at start says which step failed, on
-  which file, and the error underneath: a wrong key, an unfinished
-  recovery, or the system's error. It said only `Io` before.
+- **The release binaries run on Debian 12, Ubuntu 22.04 and AlmaLinux 9.**
+  - Was: The 0.2.0 binaries needed glibc 2.38 and did not start there.
+  - Effect: They are built on glibc 2.34 (AlmaLinux 9), run on all three
+    before a release, and built reproducibly.
+- **A failure to open `server.sqlite` at start says which step failed.**
+  - Was: It said only `Io`.
+  - Effect: It names the step, the file and the error underneath: a wrong
+    key, an unfinished recovery, or the system's error.
 
 ### Fixed
 
-- Every file the server and its commands write into the data directory or a
-  backup is made mode `0600` and every directory `0700`, whatever the umask
-  of the process. They followed the umask before: `backup` under umask 0002
-  wrote its files `0664` and its `tenants` directory `0775`, inside its own
-  `0700` directory, and the catalogs were made `0644`.
-- Storing or replacing a vCon, or creating a tenant, removed the new object
-  file or tenant directory whenever the commit returned an error. When
-  SQLite cannot say whether a failed COMMIT was kept, the file now stays,
-  and start-up recovery removes it only if no row names it. Before, a commit
-  kept after such an error left a row without its object, read back as
-  damage, or a tenant without its catalog.
+- **The files the server writes are mode `0600` and its directories `0700`,
+  whatever the umask.**
+  - Was: Under umask 0002, `backup` wrote its files `0664` and its `tenants`
+    directory `0775`, and the catalogs were made `0644`.
+  - Effect: Every file in the data directory or a backup is `0600`, and
+    every directory `0700`.
+- **A commit SQLite may have kept no longer loses its object file.**
+  - Was: Storing, replacing or a new tenant removed the new file on a commit
+    error, so a kept commit left a row without its object.
+  - Effect: The file stays when SQLite cannot say whether a failed COMMIT
+    was kept, and start-up recovery removes it only if no row names it.
 
 ## [0.2.0] - 2026-10-27
 
 ### Added
 
-- The `not-a-vcon` problem (422): the answer to a refusal from the vcon
-  library that this server does not name with a problem of its own.
-- `vcon-server backup <dir>`: a consistent copy of the data directory,
-  taken while the server runs. Each catalog is copied with SQLite's online
-  backup API, then every object file a copied catalog names; a version
-  purged or a tenant removed during the copy makes it try again, at most 5
-  times. The copy is a data directory that opens under the same master key,
-  and the admin log records each run as `backup`.
-- The release workflow publishes `vcon` and `vcon-server` on crates.io by
-  trusted publishing: on a `v*` tag, after the GitHub release, each crate
-  whose version crates.io does not have yet, with a token the job gets from
-  its OIDC identity and that is revoked when the job ends. A run started by
-  hand makes the same token exchange and dry-runs both crates, uploading
-  nothing. 0.1.0 was published by hand.
+- **The `not-a-vcon` problem (422).**
+  - Effect: It answers a refusal from the vcon library that this server
+    does not name with a problem of its own.
+- **`vcon-server backup <dir>` copies the data directory while the server
+  runs.**
+  - Effect: Each catalog is copied with SQLite's online backup API, then its
+    object files; the copy opens under the same master key.
+  - Limit: A purge or tenant removal during the copy makes it try again, at
+    most 5 times; the admin log records each run as `backup`.
+  - Docs: [Back up and
+    restore](https://vcon-server.com/docs/backup-and-restore/)
+- **The `vcon` and `vcon-server` crates are published on crates.io with each
+  release.**
+  - Effect: After the GitHub release, each crate whose version crates.io
+    does not have yet is published.
+  - Limit: 0.1.0 was published by hand.
 
 ### Changed
 
-- vcon 0.2.0: the reading API is in `vcon::read` (`inspect`, `Inspection`,
-  `Limits`, `Rejection`, `MAX_SIGNED_LAYERS` and `MAX_JSON_DEPTH`); `Form`
-  and `parse_uuid` stay at the crate root, for what writing will share.
-  `Inspection`, `Limits` and `Rejection` are `#[non_exhaustive]`, so a later
-  release can add a field or a refusal without a breaking change; limits are
-  made with `Limits::new`. `CRATE_NAME` is gone.
-
-### Fixed
-
-- The release workflow's crates.io job read one version, the workspace's,
-  for both crates, so it would have skipped a vcon version that differs from
-  the server's. It looks each crate up at its own version, and a run by hand
-  dry-runs both crates in one `cargo publish`, so a new vcon version the
-  server needs is verified before it is on crates.io.
-- The commit hook's package check could build the packaged server against
-  an older copy of `vcon` 0.1.0 left in the same target directory by an
-  earlier run, because cargo's own verify step reuses a registry crate it
-  has built at the same version. The check now packages with `--no-verify`
-  in a directory made for each run, and builds each package from its
-  `.crate` with the published crates patched in by path, which cargo
-  checks by content. `scripts/test-check-package.sh`, run in CI, checks a
-  changed `vcon` 0.1.0 in the same target directory and two trees at once.
+- **vcon 0.2.0 moves the reading API into `vcon::read`.**
+  - Effect: `inspect`, `Inspection`, `Limits`, `Rejection`,
+    `MAX_SIGNED_LAYERS` and `MAX_JSON_DEPTH` are there; `Form` and
+    `parse_uuid` stay at the crate root.
+  - Do: Make limits with `Limits::new`: `Inspection`, `Limits` and
+    `Rejection` are `#[non_exhaustive]`.
+  - Limit: `CRATE_NAME` is gone.
 
 ## [0.1.0] - 2026-10-26
 
 ### Added
 
-- Cargo workspace with the `vcon` library and the `vcon-server` binary.
-- `vcon-server --version`.
-- `vcon::inspect`: reads a received vCon without changing it and reports
-  its form (unsigned, signed or encrypted), whether it is gzipped, and its
-  uuid, or why it cannot be stored.
-- Licence files (MIT OR Apache-2.0), README and this changelog.
-- `LICENSES/`: the two licence texts again, named by SPDX identifier
-  (`Apache-2.0.txt`, `MIT.txt`), kept identical to the root files by a test.
-- Git hooks: fmt, clippy and tests on the staged tree, and refusal of personal
-  data and AI-tool attribution in changes and commit messages.
-- Pre-push hook: every outgoing commit must be signed by an allowed signer and
-  carry the pusher's configured identity.
-- `GET /vcons`: a tenant's live vCons, newest first by when each was first
-  stored, a page at a time with a cursor, bounded by `since` and `until`.
-  A tenant catalog made by an earlier build gains the first-store time when
-  it is next opened.
-- `GET /audit` and `GET /admin/audit`: a tenant's audit log, for a tenant key
-  with the new `audit` scope, and the admin log, for an operator key, a page
-  at a time, as the same lines `audit export` writes. Each read is recorded
-  as `audit_read`.
-- The console: a web page at `/console/` that signs in with an API key held
-  in page memory only, served with a strict content-security policy and no
-  framing; browser tests run it against the real server.
-- `GET /key`: the calling key's own id, tenant and scopes, recorded as
-  `key_info`.
-- An OpenAPI 3.1 description of the HTTP API, served at `GET /openapi.json`
-  to any valid key and published at <https://vcon-server.com/openapi.json>.
-- The console's vCons and legal views: list, read (as text, gzip inflated),
-  store from a file and delete, and a vCon's versions for a legal key, each
-  shown only to a key whose scopes allow it.
-- Both crates are ready for crates.io: each has its crates.io README, its
-  page metadata and the two licence texts, and packages only its sources.
-  `scripts/check_package.py`, run by the commit hook and CI, packages and
-  builds each crate, then refuses any file in a `.crate` other than the
-  sources, the files they include, the README and the licences; a missing
-  README or licence; a git or path dependency; a relative README link; and
-  anything the commit scan refuses.
-- Client examples in `clients/` (curl, Python, TypeScript, Go and Rust), each
-  storing, listing, reading and deleting a vCon; CI runs every one against a
-  live server (`scripts/run-clients.sh`).
-- The console's legal actions (hold, release, restore), audit log view
-  (tenant log or admin log, a page at a time), and tenants and keys views
-  for an operator key, each leaving the same audit record as the API.
+- **The first release: the `vcon` library and the `vcon-server` binary.**
+  - Effect: One Cargo workspace holds both, with `vcon-server --version`, a
+    README and this changelog.
+  - Limit: The license is MIT OR Apache-2.0; `LICENSES/` holds both texts
+    by SPDX identifier (`Apache-2.0.txt`, `MIT.txt`).
+- **`vcon::inspect` reads a received vCon without changing it.**
+  - Effect: It reports its form (unsigned, signed or encrypted), whether it
+    is gzipped, and its uuid, or why it cannot be stored.
+- **`GET /vcons` lists a tenant's live vCons, newest first, a page at a
+  time.**
+  - Effect: The order is by when each was first stored, with a cursor, and
+    `since` and `until` bound the list.
+  - Limit: A tenant catalog made by an earlier build gains the first-store
+    time when it is next opened.
+- **`GET /audit` and `GET /admin/audit` read the audit logs a page at a
+  time.**
+  - Effect: A tenant key with the new `audit` scope reads its tenant's log,
+    an operator key the admin log, as the lines `audit export` writes.
+  - Limit: Each read is recorded as `audit_read`.
+- **`GET /key` answers the calling key's own id, tenant and scopes.**
+  - Effect: Each call is recorded as `key_info`.
+- **An OpenAPI 3.1 description of the HTTP API.**
+  - Effect: It is served at `GET /openapi.json` to any valid key and
+    published at <https://vcon-server.com/openapi.json>.
+- **The console, a web page at `/console/`, signs in with an API key.**
+  - Effect: The key is held in page memory only, and the page is served with
+    a strict content-security policy and no framing.
+  - Do: List, read as text (gzip inflated), store from a file and delete
+    vCons; with a legal key, see versions, hold, release and restore.
+  - Limit: Each view shows only to a key whose scopes allow it, and each
+    action leaves the same audit record as the API.
+- **The console shows the audit logs, and tenants and keys to an operator
+  key.**
+  - Effect: The audit log view shows the tenant log or the admin log, a page
+    at a time.
+- **Both crates are ready for crates.io.**
+  - Effect: Each has its crates.io README, page metadata and the two license
+    texts, and packages only its sources.
+- **Client examples in `clients/` for curl, Python, TypeScript, Go and
+  Rust.**
+  - Effect: Each stores, lists, reads and deletes a vCon.
 
 ### Changed
 
-- The tests use a fork of rusqlite (`github.com/NormB/rusqlite`) as a
-  dev-dependency, to check SQLCipher's settings through rusqlite's pragma
-  helpers, which rusqlite 0.41.0 refuses for SQLCipher's pragma names. The
-  server still builds with crates.io rusqlite, but a build of the repository
-  now fetches the fork from github.com; `cargo vendor` copies it for offline
-  builds.
+- **A build of the repository fetches a fork of rusqlite from github.com.**
+  - Effect: The tests use `github.com/NormB/rusqlite` as a dev-dependency,
+    since rusqlite 0.41.0 refuses SQLCipher's pragma names; the server builds
+    with crates.io rusqlite.
+  - Do: Use `cargo vendor` to copy it for offline builds.
 
 ### Security
 
-- A signed vCon's nested JWS layers are read in a loop, not by recursion, and
-  at most 64 are read; JSON is read at most 64 arrays and objects deep. A body
-  past either limit is refused with the `too-deep` problem (422). Before,
-  each layer took a stack frame, so a crafted body under a high
-  `limits.inflated`, or any such body in a debug build, could overflow the
-  stack and abort the server. `vcon::MAX_SIGNED_LAYERS`,
-  `vcon::MAX_JSON_DEPTH` and `vcon::Rejection::TooDeep` name the limits.
+- **A signed vCon's nested layers and deep JSON are read within limits.**
+  - Was: Each layer took a stack frame, so a crafted body under a high
+    `limits.inflated`, or in a debug build, could overflow the stack.
+  - Effect: At most 64 layers and 64 levels of arrays and objects are read;
+    a deeper body is refused with `too-deep` (422).
+  - Limit: `vcon::MAX_SIGNED_LAYERS`, `vcon::MAX_JSON_DEPTH` and
+    `vcon::Rejection::TooDeep` name the limits.
 
 [Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.6...HEAD
 [0.4.6]: https://github.com/NormB/vcon-server/releases/tag/v0.4.6

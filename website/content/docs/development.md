@@ -916,9 +916,9 @@ what changed, what must be done, what the limit is, where the detail is.
 
 `scripts/check_changelog.py` holds the shape, in the commit hook and in
 CI's scan job, for every section from `[Unreleased]` down to the section
-its `MARKER` names. The sections below the marker are in the older prose
-form; a change that rewrites one moves the marker down to it. The script
-prints the section, the entry's lead and the rule for each problem:
+its `MARKER` names, `[0.1.0]`, the oldest: every section is judged. The
+link definitions at the end of the file are not part of a section. The
+script prints the section, the entry's lead and the rule for each problem:
 
 | Message | Fix |
 |---|---|
