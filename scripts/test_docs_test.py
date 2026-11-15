@@ -926,20 +926,9 @@ class ServeStartOrder(unittest.TestCase):
         page = shown(SERVING, stopped, SWEEP, SERVING)
         self.assertEqual(lint_of(page), [order_problem("p.md:1", SWEEP)], "after stopped, a new start")
 
-    def test_every_line_a_background_job_logs_is_listed(self):
-        with open(os.path.join(dt.ROOT, "crates", "vcon-server", "src", "serve.rs"), encoding="utf-8") as f:
-            source = f.read()
-        found = []
-        for name in ("pack_all", "sweep", "warn_if_rotation_overdue"):
-            body = re.search(rf"\nfn {name}\(|\npub fn {name}\(", source)
-            self.assertIsNotNone(body, f"serve.rs has {name}")
-            end = source.index("\n}\n", body.start())
-            found += re.findall(r'"([^"]+)"\s*\)', source[body.start() : end])
-        self.assertEqual(len(found), 4, f"the four lines the three jobs log: {found}")
-        for message in found:
-            self.assertTrue(
-                any(message.startswith(m) for m in dt.BACKGROUND_LINES), f"{message!r} is in BACKGROUND_LINES"
-            )
+    # BACKGROUND_LINES is checked against the messages serve.rs logs by
+    # crates/vcon-server/tests/serve.rs, which has the source tree; the hook
+    # tests run this file in a fixture that holds scripts/ only.
 
     def test_no_background_line_is_a_start_line(self):
         for m in dt.BACKGROUND_LINES:

@@ -1128,6 +1128,63 @@ const BACKGROUND_LINES: [&str; 4] = [
     "the key rotation backlog could not be read",
 ];
 
+/// The text of `path`, relative to the repository root.
+fn repository_file(path: &str) -> String {
+    std::fs::read_to_string(format!("{}/../../{path}", env!("CARGO_MANIFEST_DIR")))
+        .unwrap_or_else(|e| panic!("{path}: {e}"))
+}
+
+/// The pages' lint (scripts/docs_test.py) and these tests name the same
+/// background lines, and those are the lines serve's three jobs log.
+#[test]
+fn the_background_lines_are_the_ones_the_jobs_log() {
+    let script = repository_file("scripts/docs_test.py");
+    let start = script
+        .find("BACKGROUND_LINES = (")
+        .expect("docs_test.py has BACKGROUND_LINES");
+    let end = start + script[start..].find("\n)").expect("the tuple ends");
+    let listed: Vec<&str> = script[start..end]
+        .lines()
+        .skip(1)
+        .map(|l| l.trim().trim_end_matches(',').trim_matches('"'))
+        .collect();
+    assert_eq!(
+        listed, BACKGROUND_LINES,
+        "docs_test.py lists the lines these tests check"
+    );
+    let source = repository_file("crates/vcon-server/src/serve.rs");
+    let mut logged = Vec::new();
+    for name in [
+        "pub fn pack_all(",
+        "pub fn sweep(",
+        "fn warn_if_rotation_overdue(",
+    ] {
+        let at = source
+            .find(&format!("\n{name}"))
+            .unwrap_or_else(|| panic!("serve.rs has {name}"));
+        let body = &source[at..at + source[at..].find("\n}\n").expect("its end")];
+        for (i, _) in body.match_indices("tracing::") {
+            // The message is the call's last argument: the string whose
+            // closing quote the call's `)` follows.
+            let call = &body[i..];
+            let close = call
+                .match_indices('"')
+                .map(|(q, _)| q)
+                .find(|&q| call[q + 1..].trim_start().starts_with(')'))
+                .expect("the call ends with its message");
+            let open = call[..close].rfind('"').expect("the message opens");
+            logged.push(call[open + 1..close].to_owned());
+        }
+    }
+    assert_eq!(logged.len(), 4, "the lines the three jobs log: {logged:?}");
+    for message in &logged {
+        assert!(
+            BACKGROUND_LINES.iter().any(|m| message.starts_with(m)),
+            "{message:?} is listed in BACKGROUND_LINES"
+        );
+    }
+}
+
 /// The lines `started` wrote before its serving line that a background
 /// job logged.
 fn background_before_serving(started: &Started) -> Vec<String> {
