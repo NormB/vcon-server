@@ -78,12 +78,16 @@ fi
 
 # CI's how-to jobs run the pages' commands against a live server; a push
 # that changes a page a scenario runs, a file the server is built from, or
-# the runner runs those scenarios here, with the server built from this
-# checkout (scripts/docs_test.py `push` holds the rule and names each
-# scenario it skips). Skipped when a commit is already refused.
+# the runner needs those scenarios to have passed on the pushed commit
+# (scripts/docs_test.py holds the rule and names each scenario it skips).
+# They run before the push (`docs_test.py push <sha> --since origin/main`),
+# which stamps the commit: git push holds its connection to GitHub open
+# while this hook runs, and GitHub closed it during a 25-minute run on
+# 2026-11-15. Here only the stamp is read. Skipped when a commit is
+# already refused.
 if [ "$bad" -eq 0 ] && [ "${#pushed[@]}" -gt 0 ]; then
-  if ! printf '%s' "$changed" | python3 -I "$root/scripts/docs_test.py" push "${pushed[@]}"; then
-    echo "pre-push: refused: a how-to scenario did not run as its pages say (scripts/docs_test.py push)" >&2
+  if ! printf '%s' "$changed" | python3 -I "$root/scripts/docs_test.py" check "${pushed[@]}"; then
+    echo "pre-push: refused: the how-to scenarios this push needs have not passed on its commit (scripts/docs_test.py check)" >&2
     bad=1
   fi
 fi

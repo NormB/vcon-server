@@ -344,40 +344,51 @@ tests failed` when one fails. On the maintainer's build host on
 scratch hook; that check stays in CI only. Every commit on `main` is
 signed and shows as verified on GitHub.
 
-**pre-push** also runs the how-to scenarios a push needs
-(`scripts/docs_test.py push <commit>`, with the changed paths on standard
-input), so a change to what a page's command prints fails before CI:
+**pre-push** also refuses a push whose how-to scenarios have not passed on
+the pushed commit, so a change to what a page's command prints fails before
+CI. The scenarios run before the push, from a checkout of the commit:
 
-- a scenario runs when the push changes one of its pages
+```sh
+python3 -I scripts/docs_test.py push "$(git rev-parse HEAD)" --since origin/main
+```
+
+That run stamps the commit (`docs-scenarios-<commit>.pass` in the git
+directory, one scenario a line) when each ran as its pages say, and the hook
+reads only the stamp (`scripts/docs_test.py check`): `git push` holds its
+connection to GitHub open while the hook runs, and GitHub closed it during
+a 25-minute run on 2026-11-15. A push needs:
+
+- a scenario when the push changes one of its pages
   (`website/content/docs/<page>`);
-- every scenario given the server under test runs when the push changes a
+- every scenario given the server under test when the push changes a
   file that server is built from: `Cargo.toml`, `Cargo.lock`,
   `rust-toolchain.toml`, `.cargo/`, or a file under `crates/` other than a
   crate's `tests/` directory;
-- every scenario runs when the push changes the runner: `scripts/docs_test.py`
+- every scenario when the push changes the runner: `scripts/docs_test.py`
   or one of the files it reads, its pinned downloads, the script that
   fetches them and its list of apt mirrors.
 
-It builds the server from the checkout with cargo, once for the default
-features and once more for each feature set a scenario names, so the
-push is refused when the checkout is not the pushed commit or has
-uncommitted changes, and when more than one pushed commit needs scenarios.
-It prints one line per scenario, `docs scenario <name>: ok in <n> s
-(<why>)`, or `FAILED` with the end of its report, and refuses the push with
-`pre-push: refused: a how-to scenario did not run as its pages say`. It
-skips, and names, a scenario that may take longer than 15 minutes (the
+The run builds the server from the checkout with cargo, once for the
+default features and once more for each feature set a scenario names, so
+it refuses a checkout that is not the commit or has uncommitted changes. It
+prints one line per scenario, `docs scenario <name>: ok in <n> s
+(<why>)`, or `FAILED` with the end of its report. The hook refuses with
+`pre-push: refused: the how-to scenarios this push needs have not passed
+on its commit` and names the scenarios missing from the stamp and the
+command above, and refuses a push of two commits that both need
+scenarios. Both skip, and name, a scenario that may take longer than 15 minutes (the
 `cargo-*` and `source-*` install scenarios build from source) and, when
 `GH_TOKEN` is not set, a scenario whose steps call `gh attestation
 verify`, `gh api` or `gh release` (the `release-*` scenarios and `upgrade`);
 CI runs those. Each scenario runs in a fresh container, as in CI, so the
 host needs Docker; `container` runs on the host's own Docker.
 
-On the maintainer's build host on 2026-11-15 the scenarios took, from the
-start of the run to its end: `foreground` 48 s, `foreground-fedora` 58 s,
-`systemd` 78 s, `parquet` 35 s, `s3` 60 s, `s3-minio` 41 s and
-`lets-encrypt-http` 186 s. A push that changes the server's source runs
-every scenario given the server under test, which is all of those and
-`lets-encrypt-dns`, `upgrade` and `postgres`.
+On the maintainer's build host on 2026-11-15 one run of every scenario it
+could run took about 25 minutes: `foreground` 62 s, `foreground-fedora`
+57 s, `systemd` 67 s, `s3` 97 s, `s3-minio` 75 s, `postgres` 84 s,
+`parquet` 32 s, `lets-encrypt-http` 296 s, `lets-encrypt-dns` 507 s and
+`container` 91 s, after the builds. A change to the server's source needs
+all of those but `container`, and `upgrade` when `GH_TOKEN` is set.
 
 ### Feature sets clippy lints
 

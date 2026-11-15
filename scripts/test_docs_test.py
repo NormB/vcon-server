@@ -1490,7 +1490,10 @@ class Terminal(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 20, "the wait for the ready text ended with the command")
 
     def test_a_command_that_ends_1_after_its_screen_is_recorded_and_stops_the_run(self):
-        code = "printf READY\nstty -echo -icanon\ndd bs=1 count=1 >/dev/null 2>&1\nexit 1\n"
+        # The terminal is set before the ready text, as a full-screen
+        # program sets it before it draws: the key typed at READY must
+        # find it set.
+        code = "stty -echo -icanon\nprintf READY\ndd bs=1 count=1 >/dev/null 2>&1\nexit 1\n"
         rcs = [rc for rc, _ in self.run_steps(self.terminal_page(code, more="\n```sh\necho after\n```\n"))]
         self.assertEqual(rcs, ["1", None], "the exit is recorded and the next step does not run")
 
@@ -1518,9 +1521,12 @@ class Terminal(unittest.TestCase):
         """The bytes a command read, as hex, when the step's marker names
         `keys`: the command reads `count` bytes as a full-screen program
         does, each as it is typed and none changed by the terminal."""
+        # stty before READY: the runner types the keys once READY is
+        # written, and an Enter typed while ICRNL is still on reads back as
+        # 0a, not 0d (seen once in repeated runs on 2026-11-15).
         code = (
-            "printf READY\n"
             "stty -echo -icanon -icrnl\n"
+            "printf READY\n"
             f"typed=$(for _ in $(seq {count}); do dd bs=1 count=1 2>/dev/null; done | od -An -tx1 | tr -d ' \\n')\n"
             'printf "typed=%s." "$typed"'
         )
@@ -2449,9 +2455,10 @@ class FakeRun:
         return [c for c in self.calls if c[0] == first]
 
 
-def push_of(changed, run, shas=("abc123",), env=None, scenarios=FAKES):
+def push_of(changed, run, shas=("abc123",), env=None, scenarios=FAKES, stamped=None):
     out = io.StringIO()
     made = []
+    stamped = stamped if stamped is not None else []
 
     def tempdir():
         d = tempfile.mkdtemp(prefix="docs-push-test-")
@@ -2469,6 +2476,7 @@ def push_of(changed, run, shas=("abc123",), env=None, scenarios=FAKES):
         tempdir=tempdir,
         out=out,
         clock=iter(range(0, 1000, 7)).__next__,
+        stamp=lambda sha, names: stamped.append((sha, list(names))),
     )
     return code, out.getvalue(), made
 
@@ -2624,6 +2632,150 @@ class Push(unittest.TestCase):
     def test_push_with_no_commit_is_a_usage_error(self):
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(dt.main(["push"]), 2, "it needs the pushed commits")
+
+    # The pass stamp: the hook checks it, so the scenarios run before
+    # `git push`, whose connection to GitHub would not wait for them.
+    def test_a_pass_stamps_the_commit_with_the_scenarios_that_ran(self):
+        stamped = []
+        code, out, _ = push_of(["website/content/docs/b.md"], FakeRun(), stamped=stamped)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(stamped, [("abc123", ["one", "two"])], "the commit and every scenario that passed")
+
+    def test_a_failure_stamps_nothing(self):
+        stamped = []
+        push_of(["website/content/docs/b.md"], FakeRun({"run two": (1, "x\n")}), stamped=stamped)
+        self.assertEqual(stamped, [], "one failed: no stamp")
+
+    def test_a_failed_build_stamps_nothing(self):
+        stamped = []
+        push_of(["website/content/docs/c.md"], FakeRun({"cargo build": (101, "e\n")}), stamped=stamped)
+        self.assertEqual(stamped, [], "nothing ran")
+
+    def test_a_refused_checkout_stamps_nothing(self):
+        stamped = []
+        push_of(["website/content/docs/c.md"], FakeRun({"git rev-parse": (0, "fff999\n")}), stamped=stamped)
+        self.assertEqual(stamped, [], "another commit's server")
+
+    def test_push_since_a_revision_reads_the_changed_paths_from_git(self):
+        with unittest.mock.patch.object(dt, "push", return_value=0) as push, \
+                unittest.mock.patch.object(dt, "changed_since", return_value=["Cargo.lock"]) as since:
+            self.assertEqual(dt.main(["push", "abc123", "--since", "origin/main"]), 0, "its code")
+        since.assert_called_once_with("origin/main", "abc123")
+        self.assertEqual(push.call_args.args, (["abc123"], ["Cargo.lock"]), "the paths git names")
+
+    def test_the_stamp_file_holds_one_scenario_a_line(self):
+        d = tempfile.mkdtemp(prefix="docs-stamp-test-")
+        try:
+            dt.write_stamp("abc123", ["one", "two"], git_dir=d)
+            self.assertEqual(dt.read_stamp("abc123", git_dir=d), {"one", "two"}, "read back")
+            self.assertIsNone(dt.read_stamp("def456", git_dir=d), "another commit has none")
+            self.assertTrue(os.path.exists(os.path.join(d, "docs-scenarios-abc123.pass")), "named by the commit")
+        finally:
+            shutil.rmtree(d)
+
+
+def check_of(changed, stamps, shas=("abc123",), env=None, scenarios=FAKES):
+    out = io.StringIO()
+    code = dt.check(
+        list(shas),
+        changed,
+        env=env or {},
+        scenarios=scenarios,
+        steps=fake_steps,
+        read=lambda sha: stamps.get(sha),
+        out=out,
+    )
+    return code, out.getvalue()
+
+
+class Check(unittest.TestCase):
+    # Success.
+    def test_nothing_needed_passes(self):
+        code, out = check_of(["README.md"], {})
+        self.assertEqual(code, 0, out)
+        self.assertIn("docs scenarios: not needed", out, out)
+
+    def test_a_stamp_with_every_needed_scenario_passes(self):
+        code, out = check_of(["website/content/docs/b.md"], {"abc123": {"one", "two"}})
+        self.assertEqual(code, 0, out)
+        self.assertIn("docs scenarios: one, two passed on abc123 before this push", out, out)
+
+    def test_a_stamp_with_more_scenarios_passes(self):
+        code, out = check_of(["website/content/docs/c.md"], {"abc123": {"one", "two", "pages-only"}})
+        self.assertEqual(code, 0, "a wider run covers this push")
+
+    def test_the_same_commit_on_two_branches_passes(self):
+        code, out = check_of(["website/content/docs/c.md"], {"abc123": {"pages-only"}}, shas=("abc123", "abc123"))
+        self.assertEqual(code, 0, out)
+
+    def test_only_skipped_scenarios_pass_and_are_named(self):
+        code, out = check_of(["website/content/docs/e.md"], {})
+        self.assertEqual(code, 0, out)
+        self.assertIn("docs scenarios: skipped long", out, out)
+
+    def test_a_token_counts_the_gh_scenario_as_needed(self):
+        code, out = check_of(["website/content/docs/d.md"], {"abc123": {"tokened"}}, env={"GH_TOKEN": "x"})
+        self.assertEqual(code, 0, out)
+
+    # Failure.
+    def test_no_stamp_refuses_and_names_the_command(self):
+        code, out = check_of(["website/content/docs/b.md"], {})
+        self.assertEqual(code, 1, "refused")
+        self.assertIn("one, two have not passed on abc123", out, out)
+        self.assertIn("python3 -I scripts/docs_test.py push abc123 --since origin/main", out, "what to run")
+
+    def test_a_stamp_missing_one_scenario_refuses_and_names_it(self):
+        code, out = check_of(["website/content/docs/b.md"], {"abc123": {"one"}})
+        self.assertEqual(code, 1, "two is missing")
+        self.assertIn("two have not passed on abc123", out, out)
+        self.assertNotIn("one, two", out, "only the missing one")
+
+    def test_a_stamp_of_another_commit_refuses(self):
+        code, out = check_of(["website/content/docs/c.md"], {"def456": {"pages-only"}})
+        self.assertEqual(code, 1, "the stamp is for another commit")
+
+    def test_two_pushed_commits_refuse(self):
+        code, out = check_of(["website/content/docs/c.md"], {"abc123": {"pages-only"}}, shas=("abc123", "def456"))
+        self.assertEqual(code, 1, out)
+        self.assertIn("push one branch at a time", out, out)
+
+    def test_an_empty_stamp_refuses(self):
+        code, out = check_of(["website/content/docs/c.md"], {"abc123": set()})
+        self.assertEqual(code, 1, "it names no scenario")
+
+    def test_a_server_change_needs_every_scenario_in_the_stamp(self):
+        code, out = check_of(["Cargo.lock"], {"abc123": {"one"}})
+        self.assertEqual(code, 1, "two gets the server too")
+
+    # Edge cases.
+    def test_check_runs_nothing(self):
+        with unittest.mock.patch.object(dt.subprocess, "run", side_effect=AssertionError("ran")):
+            code, _ = check_of(["website/content/docs/b.md"], {"abc123": {"one", "two"}})
+        self.assertEqual(code, 0, "a stamp is read, nothing is built or run")
+
+    def test_a_skipped_scenario_is_not_asked_of_the_stamp(self):
+        code, out = check_of(["Cargo.lock"], {"abc123": {"one", "two"}})
+        self.assertEqual(code, 0, "tokened is skipped without a token, so not needed")
+
+    def test_the_command_reads_the_changed_paths_on_stdin(self):
+        with unittest.mock.patch.object(dt, "check", return_value=1) as check, \
+                unittest.mock.patch("sys.stdin", io.StringIO("Cargo.lock\n")):
+            self.assertEqual(dt.main(["check", "abc123"]), 1, "its code")
+        self.assertEqual(check.call_args.args, (["abc123"], ["Cargo.lock"]), "shas and paths")
+
+    def test_check_with_no_commit_is_a_usage_error(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(dt.main(["check"]), 2, "it needs the pushed commits")
+
+    def test_a_stamp_line_with_spaces_is_read(self):
+        d = tempfile.mkdtemp(prefix="docs-stamp-test-")
+        try:
+            path = os.path.join(d, "docs-scenarios-abc123.pass")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(" one \n\ntwo\n")
+            self.assertEqual(dt.read_stamp("abc123", git_dir=d), {"one", "two"}, "trimmed, blank lines dropped")
+        finally:
+            shutil.rmtree(d)
 
 
 if __name__ == "__main__":

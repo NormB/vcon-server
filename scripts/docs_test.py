@@ -1886,6 +1886,83 @@ def needed(changed, scenarios, token: bool, steps=_scenario_steps) -> tuple[list
     return run, skipped
 
 
+def _git_dir() -> str:
+    return subprocess.run(
+        ["git", "rev-parse", "--absolute-git-dir"], cwd=ROOT, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
+def _stamp_path(sha: str, git_dir: str | None) -> str:
+    return os.path.join(git_dir or _git_dir(), f"docs-scenarios-{sha}.pass")
+
+
+def write_stamp(sha: str, names, git_dir: str | None = None) -> None:
+    """Records that `names` ran as their pages say on commit `sha`."""
+    with open(_stamp_path(sha, git_dir), "w", encoding="utf-8") as f:
+        f.write("".join(f"{n}\n" for n in names))
+
+
+def read_stamp(sha: str, git_dir: str | None = None) -> set | None:
+    """The scenarios that passed on `sha`, or None when none were recorded."""
+    try:
+        with open(_stamp_path(sha, git_dir), encoding="utf-8") as f:
+            return {l.strip() for l in f if l.strip()}
+    except FileNotFoundError:
+        return None
+
+
+def changed_since(base: str, sha: str) -> list[str]:
+    """The paths the commits from `base` (their merge base) to `sha` change."""
+    return subprocess.run(
+        ["git", "diff", "--name-only", f"{base}...{sha}"], cwd=ROOT, capture_output=True, text=True, check=True
+    ).stdout.splitlines()
+
+
+def check(
+    shas,
+    changed,
+    *,
+    env=os.environ,
+    scenarios=SCENARIOS,
+    steps=_scenario_steps,
+    read=read_stamp,
+    out=sys.stdout,
+) -> int:
+    """What .githooks/pre-push asks: 0 when the scenarios a push of `shas`
+    that changes `changed` needs have passed on that commit (its stamp
+    names each), or none is needed; 1 otherwise, naming what to run. It
+    builds and runs nothing: the connection `git push` holds to GitHub
+    would not wait for the scenarios."""
+
+    def say(line: str) -> None:
+        print(line, file=out, flush=True)
+
+    todo, skipped = needed(changed, scenarios, bool(env.get("GH_TOKEN")), steps)
+    for name, why in skipped:
+        say(f"docs scenarios: skipped {name}: {why}")
+    if not todo:
+        if not skipped:
+            say(
+                "docs scenarios: not needed: the push changes no page a scenario runs, "
+                "no file the server is built from and no file of the runner"
+            )
+        return 0
+    pushed = sorted(set(shas))
+    if len(pushed) != 1:
+        say(f"docs scenarios: refused: the push holds {len(pushed)} commits that need them; push one branch at a time")
+        return 1
+    passed = read(pushed[0]) or set()
+    missing = [n for n, _ in todo if n not in passed]
+    if not missing:
+        say(f"docs scenarios: {', '.join(n for n, _ in todo)} passed on {pushed[0]} before this push")
+        return 0
+    say(
+        f"docs scenarios: {', '.join(missing)} have not passed on {pushed[0]}; run them first, from a checkout of "
+        f"that commit: python3 -I scripts/docs_test.py push {pushed[0]} --since origin/main"
+    )
+    return 1
+
+
 def push(
     shas,
     changed,
@@ -1898,10 +1975,12 @@ def push(
     tempdir=tempfile.mkdtemp,
     out=sys.stdout,
     clock=time.monotonic,
+    stamp=write_stamp,
 ) -> int:
     """Runs the scenarios a push of `shas` that changes `changed` needs,
-    with the server built from the checkout, which must be that commit.
-    0 when each ran as its pages say (or none was needed), 1 otherwise."""
+    with the server built from the checkout, which must be that commit,
+    and stamps the commit when each ran as its pages say (`check` reads
+    the stamp). 0 when each ran so (or none was needed), 1 otherwise."""
 
     def say(line: str) -> None:
         print(line, file=out, flush=True)
@@ -1977,7 +2056,10 @@ def push(
                 say(f"docs scenario {name}: FAILED in {seconds} s ({why}); the end of its report:")
                 say("".join(f"  {l}\n" for l in (done.stdout + done.stderr).splitlines()[-60:]).rstrip())
         say(f"docs scenarios: {passed} of {len(todo)} ran as their pages say")
-        return 0 if passed == len(todo) else 1
+        if passed != len(todo):
+            return 1
+        stamp(pushed[0], [n for n, _ in todo])
+        return 0
     finally:
         shutil.rmtree(builds, ignore_errors=True)
 
@@ -1992,9 +2074,19 @@ def main(argv: list[str]) -> int:
         return 0
     if command == "push":
         if not rest:
-            print("docs-test: push needs the pushed commits: docs_test.py push <sha>... < changed paths", file=sys.stderr)
+            print(
+                "docs-test: push needs the commit: docs_test.py push <sha> [--since <rev>] (or the changed paths on stdin)",
+                file=sys.stderr,
+            )
             return 2
+        if len(rest) == 3 and rest[1] == "--since":
+            return push(rest[:1], changed_since(rest[2], rest[0]))
         return push(rest, sys.stdin.read().splitlines())
+    if command == "check":
+        if not rest:
+            print("docs-test: check needs the pushed commits: docs_test.py check <sha>... < changed paths", file=sys.stderr)
+            return 2
+        return check(rest, sys.stdin.read().splitlines())
     if command == "lint":
         problems = lint()
         for p in problems:

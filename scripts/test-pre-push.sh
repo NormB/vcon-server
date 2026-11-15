@@ -173,18 +173,18 @@ HOOK_TESTS_FAIL=1 why='the hook tests failed' expect refuse "push whose hook tes
 what_called="a failing hook test" called test-hooks
 git reset -q --hard origin/main
 
-# The how-to scenarios: the runner's push gets the pushed commit and the
-# paths the push changes, and its failure refuses the push.
+# The how-to scenarios: the runner's check gets the pushed commit and the
+# paths the push changes, and a check that fails refuses the push.
 : > "$work/docs-args"
 echo 1 > page.md; git add page.md; git commit -q -S -m "A page"
 expect accept "push of a page" origin main
 what_called="a page" called docs-test
 n=$((n + 1))
-if [ "$(cat "$work/docs-args")" = "push $(git rev-parse HEAD)|page.md" ]; then pass=$((pass + 1)); else
+if [ "$(cat "$work/docs-args")" = "check $(git rev-parse HEAD)|page.md" ]; then pass=$((pass + 1)); else
   fail=$((fail + 1)); echo "FAIL (the runner got '$(cat "$work/docs-args")'): the pushed commit and its paths"; fi
 
 echo 2 > page.md; git add page.md; git commit -q -S -m "A page again"
-DOCS_SCENARIOS_FAIL=1 why='a how-to scenario did not run as its pages say' expect refuse "push whose scenarios fail" origin main
+DOCS_SCENARIOS_FAIL=1 why='the how-to scenarios this push needs have not passed on its commit' expect refuse "push whose scenarios have not passed" origin main
 what_called="failing scenarios" called docs-test
 git reset -q --hard origin/main
 
