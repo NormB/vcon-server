@@ -481,9 +481,9 @@ binary's.
 ### After an upgrade from 0.4.5
 
 Release 0.4.5 and the releases before it leave the schema at version 6.
-Release 0.4.6 makes version 13, so a database that 0.4.5 migrated
-needs the command once more, with the new binary and before any server
-starts:
+Release 0.4.7 makes version 13, as 0.4.6 does, so a database that 0.4.5
+migrated needs the command once more, with the new binary and before any
+server starts:
 
 <!-- docs-test: skip the run starts from a new database, which the step above brought to this build's version -->
 ```sh
