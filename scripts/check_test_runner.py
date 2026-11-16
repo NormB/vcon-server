@@ -126,11 +126,19 @@ def extra_features(cargo_text):
     return sorted(f for f in features if f != "default" and f not in default and f not in SERVICE_FEATURES)
 
 
-def runs_feature(line, feature):
-    """Whether one logical line runs every test of the vcon-server package
-    with `feature` on: `scripts/nextest.sh run`, the package (or the whole
-    workspace), the feature among --features, no service feature, and no
-    option that narrows the run to some targets or tests."""
+def package_name(cargo_text):
+    """The [package] name of the server's manifest, or None. (The hook
+    tests' fixture keeps a stand-in crate at the same path.) Raises
+    tomllib.TOMLDecodeError."""
+    name = (tomllib.loads(cargo_text).get("package") or {}).get("name")
+    return name if isinstance(name, str) and name else None
+
+
+def runs_feature(line, feature, package):
+    """Whether one logical line runs every test of `package` with `feature`
+    on: `scripts/nextest.sh run`, the package (or the whole workspace), the
+    feature among --features, no service feature, and no option that
+    narrows the run to some targets or tests."""
     try:
         words = shlex.split(line, comments=True)
     except ValueError:
@@ -155,17 +163,17 @@ def runs_feature(line, feature):
                 features |= {f for f in re.split(r"[,\s]+", value) if f}
         else:
             return False
-    return (workspace or "vcon-server" in packages) and feature in features and not features & SERVICE_FEATURES
+    return (workspace or package in packages) and feature in features and not features & SERVICE_FEATURES
 
 
-def feature_run_problems(where, hook_text, features):
+def feature_run_problems(where, hook_text, features, package):
     lines = commands(hook_text)
     return [
         f"{where}: does not run the tests the {f} feature compiles: add "
-        f"`scripts/nextest.sh run -p vcon-server --locked --features {f}` (none needs a database without "
+        f"`scripts/nextest.sh run -p {package} --locked --features {f}` (none needs a database without "
         "backend-tests)"
         for f in features
-        if not any(runs_feature(line, f) for line in lines)
+        if not any(runs_feature(line, f, package) for line in lines)
     ]
 
 
@@ -176,7 +184,11 @@ def problems(config_text, hook_text, workflows, cargo_toml=None):
     found = []
     if cargo_toml is not None:
         try:
-            found += feature_run_problems(".githooks/pre-commit", hook_text, extra_features(cargo_toml))
+            package = package_name(cargo_toml)
+            if package is None:
+                found.append(f"{MANIFEST} names no [package] name")
+            else:
+                found += feature_run_problems(".githooks/pre-commit", hook_text, extra_features(cargo_toml), package)
         except tomllib.TOMLDecodeError as e:
             found.append(f"{MANIFEST} is not TOML: {e}")
     try:

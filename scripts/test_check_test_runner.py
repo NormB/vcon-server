@@ -159,8 +159,12 @@ def feature_problems(hook=HOOK + PG, cargo=CARGO):
     return problems(hook=hook, cargo_toml=cargo)
 
 
-def runs(line, feature="postgres"):
-    return check.runs_feature(line, feature)
+def runs(line, feature="postgres", package="vcon-server"):
+    return check.runs_feature(line, feature, package)
+
+
+def real_package():
+    return check.package_name((HERE.parent / "crates/vcon-server/Cargo.toml").read_text(encoding="utf-8"))
 
 
 class FeatureTests(unittest.TestCase):
@@ -225,7 +229,15 @@ class FeatureTests(unittest.TestCase):
 
     def test_the_real_hook_runs_it(self):
         text = (HERE.parent / ".githooks/pre-commit").read_text(encoding="utf-8")
-        self.assertTrue(any(runs(l) for l in check.commands(text)), "a postgres run of the package")
+        self.assertTrue(any(runs(l, package=real_package()) for l in check.commands(text)), "a postgres run of the package")
+
+    def test_the_package_is_the_manifests(self):
+        cargo = CARGO.replace('name = "vcon-server"', 'name = "hook-fixture"')
+        hook = HOOK + "scripts/nextest.sh run -p hook-fixture --features postgres\n"
+        self.assertEqual(feature_problems(hook=hook, cargo=cargo), [], "the package the manifest names")
+
+    def test_the_real_manifest_names_the_server(self):
+        self.assertIn(real_package(), ("vcon-server", "hook-fixture"), "the server, or the hook tests' stand-in")
 
     # Failure.
     def test_a_hook_without_the_run_is_refused_and_told_the_command(self):
@@ -288,6 +300,16 @@ class FeatureTests(unittest.TestCase):
 
     def test_the_workspace_without_the_server_is_refused(self):
         self.assertFalse(runs("scripts/nextest.sh run --workspace --exclude vcon-server --features postgres"), "excluded")
+
+    def test_a_manifest_without_a_package_name_is_refused(self):
+        found = feature_problems(cargo='[features]\npostgres = []\n')
+        self.assertEqual(found, ["crates/vcon-server/Cargo.toml names no [package] name"], found)
+
+    def test_a_run_of_the_server_does_not_count_for_another_package(self):
+        cargo = CARGO.replace('name = "vcon-server"', 'name = "hook-fixture"')
+        found = feature_problems(cargo=cargo)
+        self.assertEqual(len(found), 1, f"the manifest's package is hook-fixture: {found}")
+        self.assertIn("scripts/nextest.sh run -p hook-fixture --locked --features postgres", found[0], found)
 
     def test_of_two_features_the_missing_one_is_named(self):
         found = feature_problems(cargo=CARGO + "mcp = []\n")

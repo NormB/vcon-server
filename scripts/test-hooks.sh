@@ -22,7 +22,7 @@ trap 'rm -rf "$work"' EXIT
 export CARGO_TARGET_DIR="$work/target"
 
 repo="$work/repo"
-mkdir -p "$repo/crates/fixture/src"
+mkdir -p "$repo/crates/vcon-server/src"
 cd "$repo"
 git init -q -b main
 case "$(git rev-parse --absolute-git-dir)" in
@@ -48,7 +48,7 @@ cp "$src/website/content/_index.md" website/content/
 cat > Cargo.toml <<'TOML'
 [workspace]
 resolver = "3"
-members = ["crates/fixture"]
+members = ["crates/vcon-server"]
 
 # The version release.yml and scripts/advertised_release.py read, as the
 # real manifest holds it.
@@ -58,7 +58,7 @@ version = "0.1.0"
 [workspace.metadata]
 published = ["hook-fixture"]
 TOML
-cat > crates/fixture/Cargo.toml <<'TOML'
+cat > crates/vcon-server/Cargo.toml <<'TOML'
 [package]
 name = "hook-fixture"
 version = "0.1.0"
@@ -85,10 +85,18 @@ sed 's/-p vcon-server /-p hook-fixture /' "$src/.github/clippy-feature-sets.txt"
 if grep -q 'vcon-server' .github/clippy-feature-sets.txt || ! grep -q -- '-p hook-fixture ' .github/clippy-feature-sets.txt; then
   echo "FAIL: the fixture's list of feature sets does not name the fixture's package in every row"; exit 1
 fi
-printf '# hook-fixture\n\nSee [the site](https://vcon-server.com/).\n' > crates/fixture/README.md
+# The hook runs the server's tests with each feature that is off by default
+# (scripts/check_test_runner.py reads the package from
+# crates/vcon-server/Cargo.toml, where the fixture keeps its crate). The
+# fixture's hook runs them for the fixture's package.
+sed 's/^scripts\/nextest\.sh run -p vcon-server /scripts\/nextest.sh run -p hook-fixture /' "$src/.githooks/pre-commit" > .githooks/pre-commit
+if grep -q -- '-p vcon-server' .githooks/pre-commit || ! grep -q -- '^scripts/nextest.sh run -p hook-fixture --locked --features postgres ' .githooks/pre-commit; then
+  echo "FAIL: the fixture's hook does not run the fixture's package with the postgres feature"; exit 1
+fi
+printf '# hook-fixture\n\nSee [the site](https://vcon-server.com/).\n' > crates/vcon-server/README.md
 cp "$src/LICENSE-MIT" "$src/LICENSE-APACHE" .
-cp "$src/LICENSE-MIT" "$src/LICENSE-APACHE" crates/fixture/
-cat > crates/fixture/src/lib.rs <<'RS'
+cp "$src/LICENSE-MIT" "$src/LICENSE-APACHE" crates/vcon-server/
+cat > crates/vcon-server/src/lib.rs <<'RS'
 /// Adds one.
 pub fn add_one(x: u32) -> u32 {
     x + 1
@@ -180,7 +188,7 @@ expect accept "RFC 3849 IPv6" notes.txt "host 2001:db8::5"
 why="notes.txt: owner's name:" expect refuse "owner surname" notes.txt "by Norm ${sur^}"
 expect accept "owner's credit in the README" README.md "Copyright 2026 Norm ${sur^}"
 expect accept "owner's credit in the site config" website/config.toml "author = \"Norm ${sur^}\""
-expect accept "Best Practices answer linking to a file in the tree" .bestpractices.json "{\"a\": \"$links/crates/fixture/src/lib.rs\"}"
+expect accept "Best Practices answer linking to a file in the tree" .bestpractices.json "{\"a\": \"$links/crates/vcon-server/src/lib.rs\"}"
 why='test_every_path_bestpractices_links_to_exists' expect refuse "Best Practices answer linking to a file that moved" .bestpractices.json "{\"a\": \"$links/src/gone.rs\"}"
 why="website/content/a.md: owner's name:" expect refuse "owner surname in a site page" website/content/a.md "by Norm ${sur^}"
 why="crates/x/README.md: owner's name:" expect refuse "owner surname in a nested README" crates/x/README.md "by Norm ${sur^}"
@@ -194,10 +202,10 @@ why='notes.txt: scope decision id:' expect refuse "scope decision id" notes.txt 
 why='notes.txt: plan task id:' expect refuse "plan task id" notes.txt "done P""0.3"
 why='notes.txt: plan task id:' expect refuse "plan task id past phase ten" notes.txt "done P""11.7"
 why='notes.txt: plan task id:' expect refuse "plan task id in phase fourteen" notes.txt "see P""14.12"
-expect accept "crate README with absolute links" crates/fixture/README.md "# hook-fixture
+expect accept "crate README with absolute links" crates/vcon-server/README.md "# hook-fixture
 
 See [the docs](https://docs.rs/hook-fixture)."
-why="README.md: relative link 'docs/guide.md'" expect refuse "crate README with a relative link" crates/fixture/README.md "# hook-fixture
+why="README.md: relative link 'docs/guide.md'" expect refuse "crate README with a relative link" crates/vcon-server/README.md "# hook-fixture
 
 See [the guide](docs/guide.md)."
 # Ids of any length: phases and tasks past the first ten, and decisions and
@@ -234,8 +242,8 @@ why='<commit message>: plan task id:' expect refuse "plan task id in message" no
 why='<commit message>: plan task id:' expect refuse "later plan task id in message" notes.txt "message case five" "Finish P""14.10"
 why='<commit message>: email address:' expect refuse "email in message" notes.txt "message case three" "Ask someone@gm""ail.com"
 expect accept "clean message" notes.txt "message case four" "Explain the change"
-why='Diff in' expect refuse "unformatted code" crates/fixture/src/lib.rs "pub fn add_one(x:u32)->u32{x+1}"
-why='clippy::needless_return' expect refuse "clippy warning" crates/fixture/src/lib.rs '/// Adds one.
+why='Diff in' expect refuse "unformatted code" crates/vcon-server/src/lib.rs "pub fn add_one(x:u32)->u32{x+1}"
+why='clippy::needless_return' expect refuse "clippy warning" crates/vcon-server/src/lib.rs '/// Adds one.
 pub fn add_one(x: u32) -> u32 {
     let y = x;
     return y + 1;
@@ -252,7 +260,7 @@ mod tests {
         assert_eq!(super::add_one(1), 2, "one more than one is two");
     }
 }'
-why='variable does not need to be mutable' expect refuse "clippy warning in code only the postgres feature compiles" crates/fixture/src/lib.rs '/// Adds one.
+why='variable does not need to be mutable' expect refuse "clippy warning in code only the postgres feature compiles" crates/vcon-server/src/lib.rs '/// Adds one.
 pub fn add_one(x: u32) -> u32 {
     x + 1
 }
@@ -264,7 +272,7 @@ pub fn add_two(x: u32) -> u32 {
     y + 2
 }
 '"$lib_tests"
-why='variable does not need to be mutable' expect refuse "clippy warning in code only the backend-tests feature set compiles" crates/fixture/src/lib.rs '/// Adds one.
+why='variable does not need to be mutable' expect refuse "clippy warning in code only the backend-tests feature set compiles" crates/vcon-server/src/lib.rs '/// Adds one.
 pub fn add_one(x: u32) -> u32 {
     x + 1
 }
@@ -276,7 +284,7 @@ pub fn add_two(x: u32) -> u32 {
     y + 2
 }
 '"$lib_tests"
-expect accept "clean code only the postgres feature compiles" crates/fixture/src/lib.rs '/// Adds one.
+expect accept "clean code only the postgres feature compiles" crates/vcon-server/src/lib.rs '/// Adds one.
 pub fn add_one(x: u32) -> u32 {
     x + 1
 }
@@ -287,7 +295,7 @@ pub fn add_two(x: u32) -> u32 {
     x + 2
 }
 '"$lib_tests"
-why='tests::adds_one' expect refuse "failing test" crates/fixture/src/lib.rs '/// Adds one.
+why='tests::adds_one' expect refuse "failing test" crates/vcon-server/src/lib.rs '/// Adds one.
 pub fn add_one(x: u32) -> u32 {
     x + 2
 }
@@ -299,8 +307,29 @@ mod tests {
         assert_eq!(super::add_one(1), 2, "one more than one is two");
     }
 }'
+# A test only the postgres feature compiles, which needs no database: the
+# hook's default-feature run does not build it, its postgres run does. On
+# 2026-11-16 one such test failed only in CI.
+why='tests::adds_two_with_postgres' expect refuse "failing test only the postgres feature compiles" crates/vcon-server/src/lib.rs '/// Adds one.
+pub fn add_one(x: u32) -> u32 {
+    x + 1
+}
 
-why='crates/fixture/src/lib.rs: 1 assertion(s) without a message' expect refuse "assertion without a message" crates/fixture/src/lib.rs '/// Adds one.
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn adds_one() {
+        assert_eq!(super::add_one(1), 2, "one more than one is two");
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn adds_two_with_postgres() {
+        assert_eq!(super::add_one(1), 3, "postgres builds only");
+    }
+}'
+
+why='crates/vcon-server/src/lib.rs: 1 assertion(s) without a message' expect refuse "assertion without a message" crates/vcon-server/src/lib.rs '/// Adds one.
 pub fn add_one(x: u32) -> u32 {
     x + 1
 }
@@ -312,7 +341,7 @@ mod tests {
         assert_eq!(super::add_one(1), 2);
     }
 }'
-why='glob-import: ' expect refuse "glob import" crates/fixture/src/lib.rs '/// Adds one.
+why='glob-import: ' expect refuse "glob import" crates/vcon-server/src/lib.rs '/// Adds one.
 pub fn add_one(x: u32) -> u32 {
     use std::ops::*;
     x.add(1)
