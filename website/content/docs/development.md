@@ -353,10 +353,32 @@ python3 -I scripts/docs_test.py push "$(git rev-parse HEAD)" --since origin/main
 ```
 
 That run stamps the commit (`docs-scenarios-<commit>.pass` in the git
-directory, one scenario a line) when each ran as its pages say, and the hook
-reads only the stamp (`scripts/docs_test.py check`): `git push` holds its
+directory, one scenario a line) when each ran as its pages say. The hook
+runs nothing (`scripts/docs_test.py check`): `git push` holds its
 connection to GitHub open while the hook runs, and GitHub closed it during
-a 25-minute run on 2026-11-15. A push needs:
+a 25-minute run on 2026-11-15. For each pushed branch it takes the
+commits the push sends, works out the scenarios they need (the list
+below), and accepts each scenario on one of these:
+
+- a stamp of the branch's newest commit (its tip) that names it;
+- a stamp of an earlier commit of the push that names it, when what differs
+  between that commit and the tip is nothing the scenario runs (its pages,
+  the server it is given, the runner). A push of several commits needs one
+  run: stamp the tip once with `--since origin/main`. After a run on one
+  commit, a later commit that changes one page needs only that page's
+  scenarios, and `push` runs only those;
+- CI's job `how-to <scenario> against a live server` on the tip itself,
+  read with `gh api` (its login, or `GH_TOKEN`): a completed, successful job
+  of the CI workflow's newest run on that commit that has the job. A run
+  for a pull request tests GitHub's merge of the commit into `main`, which
+  has the commit's tree only when that `main` is an ancestor of the commit,
+  so such a run counts only for a fast-forward push to `main`, the landing
+  push. The hook does not accept a failed, canceled, skipped or unfinished
+  job, a job of another commit, or an answer `gh` cannot read, and says
+  which it was. When it says CI's results cannot be read, `gh auth status`
+  shows whether `gh` has a login.
+
+A push needs:
 
 - a scenario when the push changes one of its pages
   (`website/content/docs/<page>`);
@@ -372,11 +394,12 @@ The run builds the server from the checkout with cargo, once for the
 default features and once more for each feature set a scenario names, so
 it refuses a checkout that is not the commit or has uncommitted changes. It
 prints one line per scenario, `docs scenario <name>: ok in <n> s
-(<why>)`, or `FAILED` with the end of its report. The hook refuses with
-`pre-push: refused: the how-to scenarios this push needs have not passed
-on its commit` and names the scenarios missing from the stamp and the
-command above, and refuses a push of two commits that both need
-scenarios. Both skip, and name, a scenario that may take longer than 15 minutes (the
+(<why>)`, `FAILED` with the end of its report, or `passed on <commit> ...
+not run again` for one a stamp already holds. The hook prints, for each
+scenario, the stamp or CI job it accepted or why CI's did not count, and
+refuses with `pre-push: refused: the how-to scenarios this push needs have
+not passed on its commit`, naming the scenarios still missing and the
+command above. Both skip, and name, a scenario that may take longer than 15 minutes (the
 `cargo-*` and `source-*` install scenarios build from source) and, when
 `GH_TOKEN` is not set, a scenario whose steps call `gh attestation
 verify`, `gh api` or `gh release` (the `release-*` scenarios and `upgrade`);

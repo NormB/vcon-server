@@ -88,6 +88,8 @@ Usage:
   python3 -I scripts/docs_test.py lint               the rules every tested page keeps
   python3 -I scripts/docs_test.py artifact <scenario>  the CI artifact holding the server it runs
   python3 -I scripts/docs_test.py run <scenario> [--binary <vcon-server>] [--keep <dir>]
+  python3 -I scripts/docs_test.py push <sha> --since <rev>   run what a push of <rev>..<sha> needs; stamp <sha>
+  python3 -I scripts/docs_test.py check [--remote <name>]    pre-push: refs on stdin; reads stamps and CI
 """
 
 from __future__ import annotations
@@ -1918,49 +1920,277 @@ def changed_since(base: str, sha: str) -> list[str]:
     ).stdout.splitlines()
 
 
+ZERO_SHA = "0" * 40
+
+
+@dataclasses.dataclass(frozen=True)
+class Ref:
+    """One line of what git gives pre-push on standard input."""
+
+    local_ref: str
+    local_sha: str
+    remote_ref: str
+    remote_sha: str
+
+
+def parse_refs(lines) -> list[Ref]:
+    """The refs of pre-push's lines; blank lines are left out. A line
+    without four fields is a PageError naming it."""
+    refs = []
+    for line in lines:
+        fields = line.split()
+        if not fields:
+            continue
+        if len(fields) != 4:
+            raise PageError(f"not a pushed ref (<local ref> <local sha> <remote ref> <remote sha>): {line.strip()}")
+        refs.append(Ref(*fields))
+    return refs
+
+
+class Git:
+    """The git questions the stamps rule asks, as pre-push asks them. Each
+    failure is a PageError with git's message."""
+
+    def __init__(self, cwd: str = ROOT, env=None, run=subprocess.run):
+        self.cwd, self.env, self.run = cwd, env, run
+
+    def _call(self, *args: str) -> subprocess.CompletedProcess:
+        return self.run(["git", *args], cwd=self.cwd, env=self.env, capture_output=True, text=True)
+
+    def _lines(self, *args: str) -> list[str]:
+        done = self._call(*args)
+        if done.returncode != 0:
+            raise PageError(done.stderr.strip() or f"git {args[0]} exited {done.returncode}")
+        return [l for l in done.stdout.splitlines() if l.strip()]
+
+    @staticmethod
+    def _range(ref: Ref, remote: str) -> list[str]:
+        # As .githooks/pre-push reads it: a new ref holds the commits the
+        # remote has on no branch.
+        if ref.remote_sha == ZERO_SHA:
+            return [ref.local_sha, "--not", f"--remotes={remote}"]
+        return [f"{ref.remote_sha}..{ref.local_sha}"]
+
+    def commits(self, ref: Ref, remote: str) -> list[str]:
+        """The commits the push of `ref` sends, newest first."""
+        return self._lines("rev-list", *self._range(ref, remote))
+
+    def changed(self, ref: Ref, remote: str) -> list[str]:
+        """The paths each of those commits changes."""
+        return self._lines("log", "--name-only", "--format=", *self._range(ref, remote))
+
+    def diff(self, a: str, b: str) -> list[str]:
+        """The paths whose content differs between the trees of `a` and `b`."""
+        return self._lines("diff", "--name-only", a, b)
+
+    def rev_list(self, *args: str) -> list[str]:
+        return self._lines("rev-list", *args)
+
+    def is_ancestor(self, a: str, b: str) -> bool:
+        done = self._call("merge-base", "--is-ancestor", a, b)
+        if done.returncode in (0, 1):
+            return done.returncode == 0
+        raise PageError(done.stderr.strip() or f"git merge-base exited {done.returncode}")
+
+
+def range_commits(base: str, sha: str) -> list[str]:
+    """The commits from `base` to `sha`, newest first."""
+    return Git().rev_list(sha, "--not", base)
+
+
+def affected(paths, scenarios, steps=_scenario_steps) -> set:
+    """The scenarios a change of `paths` would need. With a token, `needed`
+    skips only a scenario longer than a push waits for, and a push never
+    needs one of those, so the ones it runs are all that can be affected."""
+    return {n for n, _ in needed(paths, scenarios, True, steps)[0]}
+
+
+def carried(names, tip: str, commits, read, delta, scenarios, steps=_scenario_steps) -> dict:
+    """Which of `names` hold for `tip` on a stamp, and the commit of that
+    stamp: one of `commits` (newest first, the tip among them) whose stamp
+    names the scenario, when what differs between that commit's tree and
+    the tip's (`delta(sha)`) is nothing the scenario runs. A scenario reads
+    only its pages, the server it is given and the runner, so its result on
+    that commit is its result on the tip."""
+    found: dict = {}
+    for sha in commits:
+        left = [n for n in names if n not in found]
+        if not left:
+            break
+        stamp = read(sha) or set()
+        here = [n for n in left if n in stamp]
+        if not here:
+            continue
+        voided = set() if sha == tip else affected(delta(sha), scenarios, steps)
+        for n in here:
+            if n not in voided:
+                found[n] = sha
+    return found
+
+
+CI_WORKFLOW = ".github/workflows/ci.yml"
+# A run of these events checks out the commit itself. A pull_request run
+# checks out GitHub's merge of the commit into its base branch instead.
+EXACT_EVENTS = ("push", "workflow_dispatch")
+
+
+def ci_job_name(scenario: str) -> str:
+    """The name of CI's how-to job for `scenario` (ci.yml, job docs)."""
+    return f"how-to {scenario} against a live server"
+
+
+def gh_api(path: str, run=subprocess.run) -> list:
+    """Every page of a GitHub API listing, read with gh (its own login, or
+    GH_TOKEN), as a list of the pages' bodies."""
+    try:
+        done = run(["gh", "api", "--paginate", "--slurp", path], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise PageError(f"gh api {path}: {e}") from None
+    if done.returncode != 0:
+        raise PageError(f"gh api {path}: {(done.stderr or '').strip() or f'gh exited {done.returncode}'}")
+    try:
+        return json.loads(done.stdout)
+    except ValueError:
+        raise PageError(f"gh api {path}: the answer is not JSON") from None
+
+
+def ci_results(tip: str, names, *, pull_requests_ok: bool, api=gh_api) -> tuple[dict, dict]:
+    """Which of `names` CI's how-to jobs passed on commit `tip` itself, each
+    with the job and run that show it, and why each other one does not
+    count. Only runs of ci.yml on `tip` are read; for each scenario the
+    newest such run that has its job decides, and only a completed,
+    successful job on `tip` counts. A pull_request run tested GitHub's
+    merge of `tip` into main, which has `tip`'s tree only when that main is
+    an ancestor of `tip`: it counts only when `pull_requests_ok` says the
+    push is a fast-forward of main (main only moves forward, so the main
+    of any earlier run is an ancestor too)."""
+    names = list(names)
+    if not names:
+        return {}, {}
+    passed: dict = {}
+    problems: dict = {}
+    try:
+        pages = api(f"repos/{REPO}/actions/runs?head_sha={tip}&per_page=100")
+        usable, pull_request_only = [], False
+        for r in (r for p in pages for r in p.get("workflow_runs", [])):
+            if r.get("path") != CI_WORKFLOW or r.get("head_sha") != tip:
+                continue
+            if r.get("event") in EXACT_EVENTS or (r.get("event") == "pull_request" and pull_requests_ok):
+                usable.append(r)
+            elif r.get("event") == "pull_request":
+                pull_request_only = True
+        usable.sort(key=lambda r: (r.get("created_at") or "", r.get("id") or 0), reverse=True)
+        left = list(names)
+        for r in usable:
+            if not left:
+                break
+            jobs = {
+                j.get("name"): j
+                for p in api(f"repos/{REPO}/actions/runs/{r['id']}/jobs?per_page=100")
+                for j in p.get("jobs", [])
+            }
+            for n in list(left):
+                j = jobs.get(ci_job_name(n))
+                if j is None:
+                    continue
+                left.remove(n)
+                if j.get("head_sha") != tip:
+                    problems[n] = f"CI's job for it in run {r['id']} ran on {j.get('head_sha')}, not {tip}"
+                elif j.get("status") == "completed" and j.get("conclusion") == "success":
+                    passed[n] = f'CI\'s job "{ci_job_name(n)}" passed on {tip} (run {r["id"]})'
+                else:
+                    state = j.get("conclusion") or j.get("status") or "unknown"
+                    problems[n] = f"CI's newest job for it on {tip} (run {r['id']}) is {state}"
+    except (PageError, KeyError, TypeError, AttributeError) as e:
+        return {}, {n: f"CI's results for {tip} cannot be read: {e}" for n in names}
+    for n in left:
+        problems[n] = (
+            f"CI ran it on {tip} only for a pull request, which tests the merge with main; that merge is this "
+            "commit's tree only on a fast-forward push to main"
+            if pull_request_only
+            else f"CI has run no how-to job for it on {tip}"
+        )
+    return passed, problems
+
+
 def check(
-    shas,
-    changed,
+    refs,
     *,
+    remote: str = "origin",
     env=os.environ,
     scenarios=SCENARIOS,
     steps=_scenario_steps,
     read=read_stamp,
+    git=None,
+    ci=ci_results,
     out=sys.stdout,
 ) -> int:
-    """What .githooks/pre-push asks: 0 when the scenarios a push of `shas`
-    that changes `changed` needs have passed on that commit (its stamp
-    names each), or none is needed; 1 otherwise, naming what to run. It
+    """What .githooks/pre-push asks of each pushed ref: 0 when every
+    scenario the ref's commits need (or none) has passed on its tip: on a
+    stamp of the tip, on a stamp of a commit of the range that holds for the
+    tip (`carried`), or in CI's how-to job on the tip itself (`ci_results`);
+    1 otherwise, naming what is missing and the command that runs it. It
     builds and runs nothing: the connection `git push` holds to GitHub
     would not wait for the scenarios."""
+    git = git or Git()
 
     def say(line: str) -> None:
         print(line, file=out, flush=True)
 
-    todo, skipped = needed(changed, scenarios, bool(env.get("GH_TOKEN")), steps)
-    for name, why in skipped:
-        say(f"docs scenarios: skipped {name}: {why}")
-    if not todo:
-        if not skipped:
-            say(
-                "docs scenarios: not needed: the push changes no page a scenario runs, "
-                "no file the server is built from and no file of the runner"
+    refused = False
+    for ref in refs:
+        tip = ref.local_sha
+        try:
+            commits = git.commits(ref, remote)
+            if not commits:
+                continue
+            changed = git.changed(ref, remote)
+        except PageError as e:
+            say(f"docs scenarios: refused: cannot read the commits pushed to {ref.remote_ref}: {e}")
+            refused = True
+            continue
+        todo, skipped = needed(changed, scenarios, bool(env.get("GH_TOKEN")), steps)
+        for name, why in skipped:
+            say(f"docs scenarios: skipped {name}: {why}")
+        if not todo:
+            if not skipped:
+                say(
+                    f"docs scenarios: not needed for {ref.remote_ref}: the push changes no page a scenario runs, "
+                    "no file the server is built from and no file of the runner"
+                )
+            continue
+        names = [n for n, _ in todo]
+        try:
+            held = carried(names, tip, commits, read, lambda sha: git.diff(sha, tip), scenarios, steps)
+            missing = [n for n in names if n not in held]
+            pull_requests_ok = (
+                bool(missing)
+                and ref.remote_ref == "refs/heads/main"
+                and ref.remote_sha != ZERO_SHA
+                and git.is_ancestor(ref.remote_sha, tip)
             )
-        return 0
-    pushed = sorted(set(shas))
-    if len(pushed) != 1:
-        say(f"docs scenarios: refused: the push holds {len(pushed)} commits that need them; push one branch at a time")
-        return 1
-    passed = read(pushed[0]) or set()
-    missing = [n for n, _ in todo if n not in passed]
-    if not missing:
-        say(f"docs scenarios: {', '.join(n for n, _ in todo)} passed on {pushed[0]} before this push")
-        return 0
-    say(
-        f"docs scenarios: {', '.join(missing)} have not passed on {pushed[0]}; run them first, from a checkout of "
-        f"that commit: python3 -I scripts/docs_test.py push {pushed[0]} --since origin/main"
-    )
-    return 1
+        except PageError as e:
+            say(f"docs scenarios: refused: cannot compare the commits pushed to {ref.remote_ref}: {e}")
+            refused = True
+            continue
+        for n in names:
+            if n in held and held[n] == tip:
+                say(f"docs scenario {n}: passed on {tip} before this push")
+            elif n in held:
+                say(f"docs scenario {n}: passed on {held[n]}, and the commits after it change nothing it runs")
+        if not missing:
+            continue
+        passed, problems = ci(tip, missing, pull_requests_ok=pull_requests_ok)
+        for n in missing:
+            say(f"docs scenario {n}: {passed[n] if n in passed else problems.get(n, 'not passed')}")
+        still = [n for n in missing if n not in passed]
+        if still:
+            refused = True
+            say(
+                f"docs scenarios: {', '.join(still)} have not passed on {tip}; run them first, from a checkout of "
+                f"that commit: python3 -I scripts/docs_test.py push {tip} --since origin/main"
+            )
+    return 1 if refused else 0
 
 
 def push(
@@ -1976,11 +2206,18 @@ def push(
     out=sys.stdout,
     clock=time.monotonic,
     stamp=write_stamp,
+    read=read_stamp,
+    commits=None,
+    delta=None,
 ) -> int:
     """Runs the scenarios a push of `shas` that changes `changed` needs,
     with the server built from the checkout, which must be that commit,
     and stamps the commit when each ran as its pages say (`check` reads
-    the stamp). 0 when each ran so (or none was needed), 1 otherwise."""
+    the stamp). A scenario a stamp already holds for the commit is not run
+    again (`carried`): one of the commit's own, or of one of `commits` (the
+    range's, newest first; `delta(sha)` names what differs between that
+    commit and this one). 0 when each ran so (or none was needed), 1
+    otherwise."""
 
     def say(line: str) -> None:
         print(line, file=out, flush=True)
@@ -1999,6 +2236,18 @@ def push(
     if len(pushed) != 1:
         say(f"docs scenarios: refused: the push holds {len(pushed)} commits that need them; push one branch at a time")
         return 1
+    tip = pushed[0]
+    held = carried([n for n, _ in todo], tip, commits or [tip], read, delta or (lambda sha: []), scenarios, steps)
+    for name, _ in todo:
+        if name in held and held[name] == tip:
+            say(f"docs scenario {name}: passed on {tip} before; not run again")
+        elif name in held:
+            say(f"docs scenario {name}: passed on {held[name]}, and the commits after it change nothing it runs; "
+                "not run again")
+    todo = [(n, why) for n, why in todo if n not in held]
+    if not todo:
+        say("docs scenarios: each one this push needs has passed already")
+        return 0
 
     def git(*args):
         return run(["git", *args], cwd=ROOT, capture_output=True, text=True)
@@ -2058,7 +2307,7 @@ def push(
         say(f"docs scenarios: {passed} of {len(todo)} ran as their pages say")
         if passed != len(todo):
             return 1
-        stamp(pushed[0], [n for n, _ in todo])
+        stamp(tip, sorted((read(tip) or set()) | {n for n, _ in todo}))
         return 0
     finally:
         shutil.rmtree(builds, ignore_errors=True)
@@ -2080,13 +2329,28 @@ def main(argv: list[str]) -> int:
             )
             return 2
         if len(rest) == 3 and rest[1] == "--since":
-            return push(rest[:1], changed_since(rest[2], rest[0]))
+            sha, base = rest[0], rest[2]
+            return push(
+                rest[:1],
+                changed_since(base, sha),
+                commits=range_commits(base, sha),
+                delta=lambda other: Git().diff(other, sha),
+            )
         return push(rest, sys.stdin.read().splitlines())
     if command == "check":
-        if not rest:
-            print("docs-test: check needs the pushed commits: docs_test.py check <sha>... < changed paths", file=sys.stderr)
+        usage = "docs-test: check reads the pushed refs, as pre-push gets them, on stdin: docs_test.py check [--remote <name>]"
+        if rest and not (len(rest) == 2 and rest[0] == "--remote"):
+            print(usage, file=sys.stderr)
             return 2
-        return check(rest, sys.stdin.read().splitlines())
+        try:
+            refs = parse_refs(sys.stdin.read().splitlines())
+        except PageError as e:
+            print(f"docs-test: {e}", file=sys.stderr)
+            return 2
+        if not refs:
+            print(usage, file=sys.stderr)
+            return 2
+        return check(refs, remote=rest[1] if rest else "origin")
     if command == "lint":
         problems = lint()
         for p in problems:

@@ -173,15 +173,44 @@ HOOK_TESTS_FAIL=1 why='the hook tests failed' expect refuse "push whose hook tes
 what_called="a failing hook test" called test-hooks
 git reset -q --hard origin/main
 
-# The how-to scenarios: the runner's check gets the pushed commit and the
-# paths the push changes, and a check that fails refuses the push.
+# The how-to scenarios: the runner's check gets the remote and each pushed
+# ref as git gave it to the hook (it reads the range, the stamps and CI
+# itself), and a check that fails refuses the push.
+# docs_args_are <description> <expected>: what the runner got since the last check.
+docs_args_are() {
+  n=$((n + 1))
+  if [ "$(cat "$work/docs-args")" = "$2" ]; then pass=$((pass + 1)); else
+    fail=$((fail + 1)); echo "FAIL (the runner got '$(cat "$work/docs-args")', expected '$2'): $1"; fi
+  : > "$work/docs-args"
+}
 : > "$work/docs-args"
+before="$(git rev-parse origin/main)"
 echo 1 > page.md; git add page.md; git commit -q -S -m "A page"
 expect accept "push of a page" origin main
 what_called="a page" called docs-test
-n=$((n + 1))
-if [ "$(cat "$work/docs-args")" = "check $(git rev-parse HEAD)|page.md" ]; then pass=$((pass + 1)); else
-  fail=$((fail + 1)); echo "FAIL (the runner got '$(cat "$work/docs-args")'): the pushed commit and its paths"; fi
+docs_args_are "the pushed ref" "check --remote origin|refs/heads/main,$(git rev-parse HEAD),refs/heads/main,$before"
+
+before="$(git rev-parse origin/main)"
+echo 4 > page.md; git add page.md; git commit -q -S -m "A page, first of two"
+echo 5 > page.md; git add page.md; git commit -q -S -m "A page, second of two"
+expect accept "push of two commits that both change a page" origin main
+what_called="two commits" called docs-test
+docs_args_are "two commits, one ref: one check of the tip" "check --remote origin|refs/heads/main,$(git rev-parse HEAD),refs/heads/main,$before"
+
+before="$(git rev-parse origin/main)"
+git branch -q other-topic
+echo 6 > page.md; git add page.md; git commit -q -S -m "A page on main"
+git checkout -q other-topic
+echo 7 > page.md; git add page.md; git commit -q -S -m "A page on a new branch"
+git checkout -q main
+expect accept "push of two branches that both change a page" origin main other-topic
+what_called="two branches" called docs-test
+docs_args_are "two branches: one check, a line each" \
+  "check --remote origin|refs/heads/main,$(git rev-parse main),refs/heads/main,$before,refs/heads/other-topic,$(git rev-parse other-topic),refs/heads/other-topic,0000000000000000000000000000000000000000"
+expect accept "deletion of the second branch" origin --delete other-topic
+what_called="a deletion" called
+docs_args_are "a deletion asks the runner nothing" ""
+git branch -q -D other-topic
 
 echo 2 > page.md; git add page.md; git commit -q -S -m "A page again"
 DOCS_SCENARIOS_FAIL=1 why='the how-to scenarios this push needs have not passed on its commit' expect refuse "push whose scenarios have not passed" origin main

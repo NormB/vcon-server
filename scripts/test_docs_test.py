@@ -2455,8 +2455,9 @@ class FakeRun:
         return [c for c in self.calls if c[0] == first]
 
 
-def push_of(changed, run, shas=("abc123",), env=None, scenarios=FAKES, stamped=None):
+def push_of(changed, run, shas=("abc123",), env=None, scenarios=FAKES, stamped=None, stamps=None, commits=None, delta=None):
     out = io.StringIO()
+    stamps = stamps or {}
     made = []
     stamped = stamped if stamped is not None else []
 
@@ -2477,6 +2478,9 @@ def push_of(changed, run, shas=("abc123",), env=None, scenarios=FAKES, stamped=N
         out=out,
         clock=iter(range(0, 1000, 7)).__next__,
         stamp=lambda sha, names: stamped.append((sha, list(names))),
+        read=lambda sha: stamps.get(sha),
+        commits=commits,
+        delta=delta,
     )
     return code, out.getvalue(), made
 
@@ -2658,7 +2662,8 @@ class Push(unittest.TestCase):
 
     def test_push_since_a_revision_reads_the_changed_paths_from_git(self):
         with unittest.mock.patch.object(dt, "push", return_value=0) as push, \
-                unittest.mock.patch.object(dt, "changed_since", return_value=["Cargo.lock"]) as since:
+                unittest.mock.patch.object(dt, "changed_since", return_value=["Cargo.lock"]) as since, \
+                unittest.mock.patch.object(dt, "range_commits", return_value=["abc123"]):
             self.assertEqual(dt.main(["push", "abc123", "--since", "origin/main"]), 0, "its code")
         since.assert_called_once_with("origin/main", "abc123")
         self.assertEqual(push.call_args.args, (["abc123"], ["Cargo.lock"]), "the paths git names")
@@ -2674,18 +2679,82 @@ class Push(unittest.TestCase):
             shutil.rmtree(d)
 
 
-def check_of(changed, stamps, shas=("abc123",), env=None, scenarios=FAKES):
+class FakeGit:
+    """Stands in for docs_test.Git over a line of commits on top of the
+    remote's main, "m0": `chain` lists (sha, changed paths), oldest first.
+    A ref's range is the commits after its remote sha (all of them for a
+    new ref or one whose remote sha is not in the line) up to its local sha.
+    `outside` names shas that are not ancestors of anything."""
+
+    def __init__(self, chain, outside=(), fail=None):
+        self.chain = list(chain)
+        self.order = ["m0"] + [sha for sha, _ in self.chain]
+        self.paths = dict(self.chain)
+        self.outside = set(outside)
+        self.fail = fail
+        self.diffs = []
+
+    def _after(self, base, tip):
+        if self.fail:
+            raise dt.PageError(self.fail)
+        if tip not in self.order:
+            raise dt.PageError(f"unknown commit {tip}")
+        end = self.order.index(tip)
+        start = self.order.index(base) + 1 if base in self.order[: end + 1] else 1
+        return self.order[start : end + 1]
+
+    def commits(self, ref, remote):
+        return list(reversed(self._after(ref.remote_sha, ref.local_sha)))
+
+    def changed(self, ref, remote):
+        return [p for sha in self._after(ref.remote_sha, ref.local_sha) for p in self.paths[sha]]
+
+    def diff(self, a, b):
+        self.diffs.append((a, b))
+        return [p for sha in self._after(a, b) for p in self.paths[sha]]
+
+    def is_ancestor(self, a, b):
+        if self.fail:
+            raise dt.PageError(self.fail)
+        if a in self.outside:
+            return False
+        return a in self.order and b in self.order and self.order.index(a) <= self.order.index(b)
+
+
+def ref_of(local, remote="m0", name="refs/heads/topic", remote_ref=None):
+    return dt.Ref(name, local, remote_ref or name, remote)
+
+
+def no_ci(tip, names, *, pull_requests_ok):
+    return {}, {n: f"CI has run no how-to job for it on {tip}" for n in names}
+
+
+def ci_must_not_be_asked(tip, names, *, pull_requests_ok):
+    raise AssertionError(f"CI was asked about {names} on {tip}")
+
+
+def range_check(git, refs, stamps, env=None, ci=no_ci, scenarios=FAKES):
     out = io.StringIO()
     code = dt.check(
-        list(shas),
-        changed,
+        list(refs),
+        remote="origin",
         env=env or {},
         scenarios=scenarios,
         steps=fake_steps,
         read=lambda sha: stamps.get(sha),
+        git=git,
+        ci=ci,
         out=out,
     )
     return code, out.getvalue()
+
+
+def check_of(changed, stamps, shas=("abc123",), env=None, scenarios=FAKES, ci=no_ci):
+    """One commit per pushed sha, each changing `changed`, each pushed to a
+    branch of its own."""
+    git = FakeGit([(sha, list(changed)) for sha in dict.fromkeys(shas)])
+    refs = [ref_of(sha, name=f"refs/heads/b{i}") for i, sha in enumerate(shas)]
+    return range_check(git, refs, stamps, env=env, ci=ci, scenarios=scenarios)
 
 
 class Check(unittest.TestCase):
@@ -2698,7 +2767,8 @@ class Check(unittest.TestCase):
     def test_a_stamp_with_every_needed_scenario_passes(self):
         code, out = check_of(["website/content/docs/b.md"], {"abc123": {"one", "two"}})
         self.assertEqual(code, 0, out)
-        self.assertIn("docs scenarios: one, two passed on abc123 before this push", out, out)
+        self.assertIn("docs scenario one: passed on abc123 before this push", out, out)
+        self.assertIn("docs scenario two: passed on abc123 before this push", out, out)
 
     def test_a_stamp_with_more_scenarios_passes(self):
         code, out = check_of(["website/content/docs/c.md"], {"abc123": {"one", "two", "pages-only"}})
@@ -2734,10 +2804,10 @@ class Check(unittest.TestCase):
         code, out = check_of(["website/content/docs/c.md"], {"def456": {"pages-only"}})
         self.assertEqual(code, 1, "the stamp is for another commit")
 
-    def test_two_pushed_commits_refuse(self):
+    def test_a_second_branch_without_its_stamp_refuses(self):
         code, out = check_of(["website/content/docs/c.md"], {"abc123": {"pages-only"}}, shas=("abc123", "def456"))
         self.assertEqual(code, 1, out)
-        self.assertIn("push one branch at a time", out, out)
+        self.assertIn("pages-only have not passed on def456", out, "the branch whose tip has no stamp")
 
     def test_an_empty_stamp_refuses(self):
         code, out = check_of(["website/content/docs/c.md"], {"abc123": set()})
@@ -2757,15 +2827,21 @@ class Check(unittest.TestCase):
         code, out = check_of(["Cargo.lock"], {"abc123": {"one", "two"}})
         self.assertEqual(code, 0, "tokened is skipped without a token, so not needed")
 
-    def test_the_command_reads_the_changed_paths_on_stdin(self):
+    def test_the_command_reads_the_pushed_refs_on_stdin(self):
+        lines = "refs/heads/a abc123 refs/heads/a 000\nrefs/heads/b def456 refs/heads/main m0\n"
         with unittest.mock.patch.object(dt, "check", return_value=1) as check, \
-                unittest.mock.patch("sys.stdin", io.StringIO("Cargo.lock\n")):
-            self.assertEqual(dt.main(["check", "abc123"]), 1, "its code")
-        self.assertEqual(check.call_args.args, (["abc123"], ["Cargo.lock"]), "shas and paths")
+                unittest.mock.patch("sys.stdin", io.StringIO(lines)):
+            self.assertEqual(dt.main(["check", "--remote", "upstream"]), 1, "its code")
+        self.assertEqual(
+            check.call_args.args,
+            ([dt.Ref("refs/heads/a", "abc123", "refs/heads/a", "000"), dt.Ref("refs/heads/b", "def456", "refs/heads/main", "m0")],),
+            "the refs, in the order the hook read them",
+        )
+        self.assertEqual(check.call_args.kwargs["remote"], "upstream", "the remote the hook pushes to")
 
-    def test_check_with_no_commit_is_a_usage_error(self):
-        with contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(dt.main(["check"]), 2, "it needs the pushed commits")
+    def test_check_with_no_ref_is_a_usage_error(self):
+        with contextlib.redirect_stderr(io.StringIO()), unittest.mock.patch("sys.stdin", io.StringIO("")):
+            self.assertEqual(dt.main(["check", "--remote", "origin"]), 2, "it needs the pushed refs")
 
     def test_a_stamp_line_with_spaces_is_read(self):
         d = tempfile.mkdtemp(prefix="docs-stamp-test-")
@@ -2776,6 +2852,622 @@ class Check(unittest.TestCase):
             self.assertEqual(dt.read_stamp("abc123", git_dir=d), {"one", "two"}, "trimmed, blank lines dropped")
         finally:
             shutil.rmtree(d)
+
+
+SRC = "crates/vcon-server/src/serve.rs"
+PAGE_B = "website/content/docs/b.md"
+PAGE_C = "website/content/docs/c.md"
+
+
+def carried_of(git, tip, stamps, names=("one", "two", "pages-only")):
+    commits = list(reversed(git._after("m0", tip)))
+    return dt.carried(
+        list(names), tip, commits, lambda sha: stamps.get(sha), lambda sha: git.diff(sha, tip), FAKES, fake_steps
+    )
+
+
+class Carried(unittest.TestCase):
+    """A scenario that passed on a commit of the pushed range still holds
+    for the tip when the commits after it change nothing that scenario
+    runs: the tip's tree is the tree it was tested on, as far as it reads."""
+
+    # Success.
+    def test_the_tips_own_stamp_holds(self):
+        git = FakeGit([("c1", [PAGE_B])])
+        self.assertEqual(carried_of(git, "c1", {"c1": {"one", "two"}}), {"one": "c1", "two": "c1"}, "the tip")
+
+    def test_an_earlier_stamp_holds_when_nothing_after_it_is_read(self):
+        git = FakeGit([("c1", [SRC]), ("c2", ["README.md"])])
+        self.assertEqual(carried_of(git, "c2", {"c1": {"one", "two"}}), {"one": "c1", "two": "c1"}, "README")
+
+    def test_two_stamps_together_hold_the_range(self):
+        git = FakeGit([("c1", [SRC]), ("c2", [PAGE_C])])
+        got = carried_of(git, "c2", {"c1": {"one", "two"}, "c2": {"pages-only"}})
+        self.assertEqual(got, {"one": "c1", "two": "c1", "pages-only": "c2"}, "each from its own commit")
+
+    def test_the_newest_stamp_is_named(self):
+        git = FakeGit([("c1", [PAGE_B]), ("c2", ["README.md"])])
+        self.assertEqual(carried_of(git, "c2", {"c1": {"one"}, "c2": {"one"}}), {"one": "c2"}, "the tip first")
+
+    def test_a_change_and_its_undoing_leave_the_stamp_holding(self):
+        git = FakeGit([("c1", [SRC]), ("c2", [])])
+        self.assertEqual(carried_of(git, "c2", {"c1": {"one", "two"}}), {"one": "c1", "two": "c1"}, "same tree")
+
+    # Failure.
+    def test_a_later_change_to_its_page_voids_it(self):
+        git = FakeGit([("c1", [SRC]), ("c2", [PAGE_B])])
+        self.assertEqual(carried_of(git, "c2", {"c1": {"one", "two"}}), {}, "b.md is run by both")
+
+    def test_a_later_server_change_voids_every_server_scenario(self):
+        git = FakeGit([("c1", [PAGE_B]), ("c2", [SRC])])
+        self.assertEqual(carried_of(git, "c2", {"c1": {"one", "two"}}), {}, "the server they run changed")
+
+    def test_a_later_runner_change_voids_every_scenario(self):
+        git = FakeGit([("c1", [PAGE_C]), ("c2", ["scripts/docs_test.py"])])
+        self.assertEqual(carried_of(git, "c2", {"c1": {"pages-only"}}), {}, "the runner runs every scenario")
+
+    def test_a_stamp_outside_the_range_is_not_read(self):
+        git = FakeGit([("c1", [PAGE_C])])
+        self.assertEqual(carried_of(git, "c1", {"m0": {"pages-only"}}), {}, "m0 is not pushed")
+
+    def test_no_stamp_holds_nothing(self):
+        git = FakeGit([("c1", [SRC]), ("c2", [])])
+        self.assertEqual(carried_of(git, "c2", {}), {}, "nothing ran")
+
+    # Edge cases.
+    def test_a_later_page_change_voids_only_the_scenario_that_runs_it(self):
+        git = FakeGit([("c1", [SRC, PAGE_C]), ("c2", [PAGE_C])])
+        got = carried_of(git, "c2", {"c1": {"one", "two", "pages-only"}})
+        self.assertEqual(got, {"one": "c1", "two": "c1"}, "c.md is pages-only's alone")
+
+    def test_a_stamped_scenario_the_push_does_not_need_is_left_out(self):
+        git = FakeGit([("c1", [PAGE_C])])
+        got = carried_of(git, "c1", {"c1": {"pages-only", "one"}}, names=("pages-only",))
+        self.assertEqual(got, {"pages-only": "c1"}, "only what was asked")
+
+    def test_an_unknown_name_in_a_stamp_is_ignored(self):
+        git = FakeGit([("c1", [PAGE_C])])
+        self.assertEqual(carried_of(git, "c1", {"c1": {"retired", "pages-only"}}), {"pages-only": "c1"}, "ignored")
+
+    def test_the_tip_is_not_compared_with_itself(self):
+        git = FakeGit([("c1", [PAGE_B])])
+        carried_of(git, "c1", {"c1": {"one"}})
+        self.assertEqual(git.diffs, [], "no diff of the tip with the tip")
+
+    def test_a_commit_with_no_stamp_costs_no_diff(self):
+        git = FakeGit([("c1", [SRC]), ("c2", [PAGE_C]), ("c3", [])])
+        carried_of(git, "c3", {"c1": {"one", "two"}})
+        self.assertEqual(git.diffs, [("c1", "c3")], "only a stamped commit is compared")
+
+
+class FakeApi:
+    """Stands in for gh_api: answers GitHub's runs and jobs listings from
+    `runs` (each with its jobs) and records each path. The runs listing
+    answers every run, whatever head_sha the path asks for, so a run of
+    another commit in the answer is tested too."""
+
+    def __init__(self, runs, fail=None, split=False):
+        self.runs = runs
+        self.fail = fail
+        self.split = split
+        self.paths = []
+
+    def __call__(self, path):
+        self.paths.append(path)
+        if self.fail:
+            raise dt.PageError(self.fail)
+        if re.fullmatch(r"repos/NormB/vcon-server/actions/runs\?head_sha=\w+&per_page=100", path):
+            runs = [{k: v for k, v in r.items() if k != "jobs"} for r in self.runs]
+            return [{"total_count": len(runs), "workflow_runs": runs}]
+        m = re.fullmatch(r"repos/NormB/vcon-server/actions/runs/(\d+)/jobs\?per_page=100", path)
+        if m:
+            jobs = next(r["jobs"] for r in self.runs if r["id"] == int(m.group(1)))
+            if self.split:
+                return [{"total_count": len(jobs), "jobs": jobs[:1]}, {"total_count": len(jobs), "jobs": jobs[1:]}]
+            return [{"total_count": len(jobs), "jobs": jobs}]
+        raise AssertionError(f"unexpected path {path}")
+
+
+def ci_run(run_id, jobs, event="pull_request", sha="tip", path=".github/workflows/ci.yml", created="2026-11-16T01:00:00Z"):
+    return {"id": run_id, "event": event, "head_sha": sha, "path": path, "created_at": created, "jobs": jobs}
+
+
+def ci_job(name, conclusion="success", sha="tip", status="completed"):
+    return {"name": f"how-to {name} against a live server", "conclusion": conclusion, "status": status, "head_sha": sha}
+
+
+def ci_of(api, names=("one", "two"), tip="tip", pull_requests_ok=True):
+    return dt.ci_results(tip, list(names), pull_requests_ok=pull_requests_ok, api=api)
+
+
+def ci_from(api):
+    return lambda tip, names, *, pull_requests_ok: dt.ci_results(
+        tip, names, pull_requests_ok=pull_requests_ok, api=api
+    )
+
+
+class CiResults(unittest.TestCase):
+    """CI's how-to jobs on the pushed commit itself stand for a local run."""
+
+    # Success.
+    def test_green_jobs_on_the_commit_pass(self):
+        passed, problems = ci_of(FakeApi([ci_run(7, [ci_job("one"), ci_job("two")])]))
+        self.assertEqual(sorted(passed), ["one", "two"], problems)
+        self.assertEqual(problems, {}, "nothing missing")
+
+    def test_the_evidence_names_the_job_and_the_run(self):
+        passed, _ = ci_of(FakeApi([ci_run(7, [ci_job("one")])]), names=("one",))
+        self.assertEqual(passed["one"], 'CI\'s job "how-to one against a live server" passed on tip (run 7)', passed)
+
+    def test_a_push_run_counts_without_the_fast_forward(self):
+        passed, problems = ci_of(FakeApi([ci_run(7, [ci_job("one")], event="push")]), names=("one",), pull_requests_ok=False)
+        self.assertEqual(list(passed), ["one"], problems)
+
+    def test_a_dispatched_run_counts_without_the_fast_forward(self):
+        api = FakeApi([ci_run(7, [ci_job("one")], event="workflow_dispatch")])
+        passed, problems = ci_of(api, names=("one",), pull_requests_ok=False)
+        self.assertEqual(list(passed), ["one"], problems)
+
+    def test_jobs_on_two_pages_are_read(self):
+        passed, problems = ci_of(FakeApi([ci_run(7, [ci_job("one"), ci_job("two")])], split=True))
+        self.assertEqual(sorted(passed), ["one", "two"], problems)
+
+    def test_the_newest_run_decides_when_it_is_green(self):
+        api = FakeApi([
+            ci_run(5, [ci_job("one", "failure")], created="2026-11-16T01:00:00Z"),
+            ci_run(9, [ci_job("one")], created="2026-11-16T02:00:00Z"),
+        ])
+        passed, problems = ci_of(api, names=("one",))
+        self.assertIn("(run 9)", passed.get("one", ""), problems)
+
+    # Failure.
+    def test_a_failed_job_is_named_with_its_conclusion(self):
+        passed, problems = ci_of(FakeApi([ci_run(7, [ci_job("one", "failure"), ci_job("two")])]))
+        self.assertEqual(list(passed), ["two"], "two still passed")
+        self.assertEqual(problems["one"], "CI's newest job for it on tip (run 7) is failure", problems)
+
+    def test_a_job_of_another_commit_is_refused(self):
+        passed, problems = ci_of(FakeApi([ci_run(7, [ci_job("one", sha="other")])]), names=("one",))
+        self.assertEqual(passed, {}, "another commit's job proves nothing about this one")
+        self.assertEqual(problems["one"], "CI's job for it in run 7 ran on other, not tip", problems)
+
+    def test_a_run_of_another_commit_is_not_read(self):
+        api = FakeApi([ci_run(7, [ci_job("one")], sha="other")])
+        passed, problems = ci_of(api, names=("one",))
+        self.assertEqual(passed, {}, "the run is for other")
+        self.assertEqual(problems["one"], "CI has run no how-to job for it on tip", problems)
+        self.assertFalse(any("/jobs" in p for p in api.paths), "its jobs are not even read")
+
+    def test_no_run_at_all_is_refused(self):
+        passed, problems = ci_of(FakeApi([]))
+        self.assertEqual(passed, {}, "unknown is not green")
+        self.assertEqual(problems["two"], "CI has run no how-to job for it on tip", problems)
+
+    def test_an_unreadable_answer_refuses_every_name(self):
+        passed, problems = ci_of(FakeApi([], fail="gh: HTTP 502"))
+        self.assertEqual(passed, {}, "nothing known")
+        self.assertEqual(problems["one"], "CI's results for tip cannot be read: gh: HTTP 502", problems)
+
+    def test_a_running_job_is_not_green(self):
+        api = FakeApi([ci_run(7, [ci_job("one", None, status="in_progress")])])
+        _, problems = ci_of(api, names=("one",))
+        self.assertEqual(problems["one"], "CI's newest job for it on tip (run 7) is in_progress", problems)
+
+    def test_a_skipped_job_is_not_green(self):
+        _, problems = ci_of(FakeApi([ci_run(7, [ci_job("one", "skipped")])]), names=("one",))
+        self.assertEqual(problems["one"], "CI's newest job for it on tip (run 7) is skipped", problems)
+
+    def test_a_newer_failure_beats_an_older_pass(self):
+        api = FakeApi([
+            ci_run(9, [ci_job("one", "failure")], created="2026-11-16T02:00:00Z"),
+            ci_run(5, [ci_job("one")], created="2026-11-16T01:00:00Z"),
+        ])
+        passed, problems = ci_of(api, names=("one",))
+        self.assertEqual(passed, {}, "the newest result stands")
+        self.assertIn("(run 9) is failure", problems["one"], problems)
+
+    def test_a_pull_request_run_does_not_count_without_the_fast_forward(self):
+        passed, problems = ci_of(FakeApi([ci_run(7, [ci_job("one")])]), names=("one",), pull_requests_ok=False)
+        self.assertEqual(passed, {}, "a pull request run tests the merge with main")
+        self.assertIn("only for a pull request", problems["one"], problems)
+
+    def test_another_workflow_with_the_same_job_name_does_not_count(self):
+        api = FakeApi([ci_run(7, [ci_job("one")], path=".github/workflows/sanitizers.yml")])
+        passed, problems = ci_of(api, names=("one",))
+        self.assertEqual(passed, {}, "only CI's how-to jobs")
+        self.assertEqual(problems["one"], "CI has run no how-to job for it on tip", problems)
+
+    # Edge cases.
+    def test_a_run_without_the_job_falls_through_to_an_older_run(self):
+        api = FakeApi([
+            ci_run(9, [ci_job("two")], created="2026-11-16T02:00:00Z"),
+            ci_run(5, [ci_job("one")], created="2026-11-16T01:00:00Z"),
+        ])
+        passed, problems = ci_of(api)
+        self.assertEqual((passed["one"][-7:], passed["two"][-7:]), ("(run 5)", "(run 9)"), problems)
+
+    def test_runs_stop_being_read_once_each_name_is_decided(self):
+        api = FakeApi([
+            ci_run(9, [ci_job("one")], created="2026-11-16T02:00:00Z"),
+            ci_run(5, [ci_job("one")], created="2026-11-16T01:00:00Z"),
+        ])
+        ci_of(api, names=("one",))
+        self.assertEqual([p for p in api.paths if "/jobs" in p], ["repos/NormB/vcon-server/actions/runs/9/jobs?per_page=100"], api.paths)
+
+    def test_the_runs_are_asked_for_by_the_commit(self):
+        api = FakeApi([])
+        ci_of(api, tip="abc123")
+        self.assertEqual(api.paths, ["repos/NormB/vcon-server/actions/runs?head_sha=abc123&per_page=100"], api.paths)
+
+    def test_no_name_asks_nothing(self):
+        api = FakeApi([])
+        self.assertEqual(ci_of(api, names=()), ({}, {}), "nothing to ask")
+        self.assertEqual(api.paths, [], "no request")
+
+    def test_the_job_name_is_cis(self):
+        with open(os.path.join(dt.ROOT, ".github", "workflows", "ci.yml"), encoding="utf-8") as f:
+            workflow = f.read()
+        self.assertIn("name: how-to ${{ matrix.scenario }} against a live server", workflow, "ci.yml's job name")
+        self.assertEqual(dt.ci_job_name("s3"), "how-to s3 against a live server", "the same name")
+        self.assertEqual(dt.CI_WORKFLOW, ".github/workflows/ci.yml", "the workflow read")
+
+    def test_a_job_with_no_conclusion_and_no_status_is_named_unknown(self):
+        api = FakeApi([ci_run(7, [{"name": "how-to one against a live server", "head_sha": "tip"}])])
+        _, problems = ci_of(api, names=("one",))
+        self.assertEqual(problems["one"], "CI's newest job for it on tip (run 7) is unknown", problems)
+
+    def test_gh_reads_every_page(self):
+        run = FakeRun({"gh api": (0, '[{"total_count": 0, "workflow_runs": []}]')})
+        self.assertEqual(dt.gh_api("repos/x", run=run), [{"total_count": 0, "workflow_runs": []}], "the pages")
+        self.assertEqual(run.calls, [["gh", "api", "--paginate", "--slurp", "repos/x"]], "every page, as one list")
+
+    def test_a_failing_gh_is_an_error_with_its_message(self):
+        run = FakeRun({"gh api": (1, "")})
+        with self.assertRaises(dt.PageError):
+            dt.gh_api("repos/x", run=run)
+
+    def test_a_missing_gh_is_an_error(self):
+        def run(cmd, **kw):
+            raise FileNotFoundError("gh")
+
+        with self.assertRaisesRegex(dt.PageError, "gh"):
+            dt.gh_api("repos/x", run=run)
+
+    def test_an_answer_that_is_not_json_is_an_error(self):
+        with self.assertRaises(dt.PageError):
+            dt.gh_api("repos/x", run=FakeRun({"gh api": (0, "<html>")}))
+
+
+class CheckRange(unittest.TestCase):
+    """What pre-push asks, for each pushed ref: the scenarios its range
+    needs have passed on the tip, on a commit of the range whose later
+    commits change nothing they run, or in CI on the tip itself."""
+
+    # Success.
+    def test_two_commits_that_both_need_scenarios_pass_on_one_stamp_of_the_tip(self):
+        git = FakeGit([("c1", [SRC]), ("c2", [SRC, PAGE_C])])
+        code, out = range_check(git, [ref_of("c2")], {"c2": {"one", "two", "pages-only"}})
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("one branch at a time", out, "not refused for its commit count")
+
+    def test_each_commit_stamped_for_its_own_change_passes(self):
+        git = FakeGit([("c1", [SRC]), ("c2", [PAGE_C])])
+        code, out = range_check(git, [ref_of("c2")], {"c1": {"one", "two"}, "c2": {"pages-only"}})
+        self.assertEqual(code, 0, out)
+        self.assertIn("docs scenario one: passed on c1, and the commits after it change nothing it runs", out, out)
+        self.assertIn("docs scenario pages-only: passed on c2 before this push", out, out)
+
+    def test_two_branches_each_with_its_stamp_pass(self):
+        git = FakeGit([("a1", [PAGE_C]), ("b1", [PAGE_C])])
+        refs = [ref_of("a1", name="refs/heads/a"), ref_of("b1", remote="a1", name="refs/heads/b")]
+        code, out = range_check(git, refs, {"a1": {"pages-only"}, "b1": {"pages-only"}})
+        self.assertEqual(code, 0, out)
+
+    def test_a_landing_push_passes_on_cis_green_jobs_for_its_head(self):
+        git = FakeGit([("c1", [SRC])])
+        api = FakeApi([ci_run(7, [ci_job("one", sha="c1"), ci_job("two", sha="c1")], sha="c1")])
+        ref = ref_of("c1", remote="m0", name="refs/heads/topic", remote_ref="refs/heads/main")
+        code, out = range_check(git, [ref], {}, ci=ci_from(api))
+        self.assertEqual(code, 0, out)
+        self.assertIn('docs scenario one: CI\'s job "how-to one against a live server" passed on c1 (run 7)', out, out)
+
+    def test_a_push_run_on_the_tip_passes_a_topic_branch(self):
+        git = FakeGit([("c1", [PAGE_C])])
+        api = FakeApi([ci_run(7, [ci_job("pages-only", sha="c1")], sha="c1", event="push")])
+        code, out = range_check(git, [ref_of("c1")], {}, ci=ci_from(api))
+        self.assertEqual(code, 0, out)
+
+    def test_stamps_and_ci_together_pass(self):
+        git = FakeGit([("c1", [SRC])])
+        api = FakeApi([ci_run(7, [ci_job("two", sha="c1")], sha="c1")])
+        ref = ref_of("c1", remote_ref="refs/heads/main")
+        code, out = range_check(git, [ref], {"c1": {"one"}}, ci=ci_from(api))
+        self.assertEqual(code, 0, out)
+        self.assertEqual([p for p in api.paths if "/jobs" in p], ["repos/NormB/vcon-server/actions/runs/7/jobs?per_page=100"], "CI asked once")
+
+    def test_ci_is_not_asked_when_the_stamps_hold(self):
+        git = FakeGit([("c1", [SRC])])
+        code, out = range_check(git, [ref_of("c1")], {"c1": {"one", "two"}}, ci=ci_must_not_be_asked)
+        self.assertEqual(code, 0, out)
+
+    def test_a_ref_with_no_new_commit_is_not_checked(self):
+        git = FakeGit([("c1", [SRC])])
+        code, out = range_check(git, [ref_of("c1", remote="c1")], {}, ci=ci_must_not_be_asked)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out, "", "nothing to say about a ref that sends nothing")
+
+    def test_ci_is_told_a_fast_forward_of_main(self):
+        seen = []
+        git = FakeGit([("c1", [PAGE_C])])
+        ci = lambda tip, names, *, pull_requests_ok: (seen.append(pull_requests_ok), no_ci(tip, names, pull_requests_ok=pull_requests_ok))[1]
+        range_check(git, [ref_of("c1", remote_ref="refs/heads/main")], {}, ci=ci)
+        range_check(git, [ref_of("c1")], {}, ci=ci)
+        self.assertEqual(seen, [True, False], "main, then a topic branch")
+
+    # Failure.
+    def test_a_stamp_voided_by_a_later_commit_refuses_and_names_it(self):
+        git = FakeGit([("c1", [SRC]), ("c2", [PAGE_C, PAGE_B])])
+        code, out = range_check(git, [ref_of("c2")], {"c1": {"one", "two", "pages-only"}, "c2": {"pages-only"}})
+        self.assertEqual(code, 1, out)
+        self.assertIn("docs scenarios: one, two have not passed on c2", out, out)
+        self.assertIn("python3 -I scripts/docs_test.py push c2 --since origin/main", out, "what to run")
+
+    def test_cis_failed_job_refuses_with_its_reason(self):
+        git = FakeGit([("c1", [PAGE_C])])
+        api = FakeApi([ci_run(7, [ci_job("pages-only", "failure", sha="c1")], sha="c1", event="push")])
+        code, out = range_check(git, [ref_of("c1")], {}, ci=ci_from(api))
+        self.assertEqual(code, 1, out)
+        self.assertIn("docs scenario pages-only: CI's newest job for it on c1 (run 7) is failure", out, out)
+
+    def test_cis_green_job_on_another_commit_refuses(self):
+        git = FakeGit([("c1", [PAGE_C]), ("c2", [PAGE_C])])
+        api = FakeApi([ci_run(7, [ci_job("pages-only", sha="c1")], sha="c1", event="push")])
+        code, out = range_check(git, [ref_of("c2", remote="c1")], {}, ci=ci_from(api))
+        self.assertEqual(code, 1, "c1's job is not c2's")
+        self.assertIn("pages-only have not passed on c2", out, out)
+
+    def test_a_pull_request_run_does_not_pass_a_topic_branch(self):
+        git = FakeGit([("c1", [PAGE_C])])
+        api = FakeApi([ci_run(7, [ci_job("pages-only", sha="c1")], sha="c1")])
+        code, out = range_check(git, [ref_of("c1")], {}, ci=ci_from(api))
+        self.assertEqual(code, 1, out)
+        self.assertIn("only for a pull request", out, out)
+
+    def test_a_pull_request_run_does_not_pass_a_push_to_main_that_is_not_a_fast_forward(self):
+        git = FakeGit([("c1", [PAGE_C])], outside={"x9"})
+        api = FakeApi([ci_run(7, [ci_job("pages-only", sha="c1")], sha="c1")])
+        code, out = range_check(git, [ref_of("c1", remote="x9", remote_ref="refs/heads/main")], {}, ci=ci_from(api))
+        self.assertEqual(code, 1, "main moved past the run's base")
+
+    def test_unreadable_ci_refuses(self):
+        git = FakeGit([("c1", [PAGE_C])])
+        code, out = range_check(git, [ref_of("c1")], {}, ci=ci_from(FakeApi([], fail="gh: no network")))
+        self.assertEqual(code, 1, out)
+        self.assertIn("cannot be read: gh: no network", out, out)
+
+    def test_a_git_failure_refuses(self):
+        git = FakeGit([("c1", [PAGE_C])], fail="fatal: bad revision")
+        code, out = range_check(git, [ref_of("c1")], {})
+        self.assertEqual(code, 1, out)
+        self.assertIn("docs scenarios: refused: cannot read the commits pushed to refs/heads/topic: fatal: bad revision", out, out)
+
+    def test_one_refused_branch_refuses_the_push(self):
+        git = FakeGit([("a1", [PAGE_C]), ("b1", [PAGE_C])])
+        refs = [ref_of("a1", name="refs/heads/a"), ref_of("b1", remote="a1", name="refs/heads/b")]
+        code, out = range_check(git, refs, {"a1": {"pages-only"}})
+        self.assertEqual(code, 1, out)
+        self.assertIn("pages-only have not passed on b1", out, out)
+
+    def test_a_ci_failure_on_one_scenario_refuses_though_the_rest_passed(self):
+        git = FakeGit([("c1", [SRC])])
+        api = FakeApi([ci_run(7, [ci_job("one", sha="c1"), ci_job("two", "cancelled", sha="c1")], sha="c1", event="push")])
+        code, out = range_check(git, [ref_of("c1")], {}, ci=ci_from(api))
+        self.assertEqual(code, 1, out)
+        self.assertIn("docs scenarios: two have not passed on c1", out, out)
+
+    # Edge cases.
+    def test_a_page_changed_and_changed_back_still_needs_its_scenario_on_a_stamp(self):
+        git = FakeGit([("c1", [PAGE_C]), ("c2", [])])
+        code, out = range_check(git, [ref_of("c2")], {"c1": {"pages-only"}})
+        self.assertEqual(code, 0, "c1 ran it and nothing after it changed c.md")
+
+    def test_the_same_tip_on_two_branches_reads_one_stamp(self):
+        git = FakeGit([("c1", [PAGE_C])])
+        refs = [ref_of("c1", name="refs/heads/a"), ref_of("c1", name="refs/heads/b")]
+        code, out = range_check(git, refs, {"c1": {"pages-only"}})
+        self.assertEqual(code, 0, out)
+
+    def test_only_skipped_scenarios_need_no_ci(self):
+        git = FakeGit([("c1", ["website/content/docs/e.md"])])
+        code, out = range_check(git, [ref_of("c1")], {}, ci=ci_must_not_be_asked)
+        self.assertEqual(code, 0, out)
+        self.assertIn("docs scenarios: skipped long", out, out)
+
+    def test_a_ref_line_with_too_few_fields_is_a_usage_error(self):
+        with contextlib.redirect_stderr(io.StringIO()) as err, unittest.mock.patch("sys.stdin", io.StringIO("refs/heads/a abc123\n")):
+            self.assertEqual(dt.main(["check", "--remote", "origin"]), 2, "the hook's lines have four fields")
+        self.assertIn("refs/heads/a abc123", err.getvalue(), "the line is named")
+
+    def test_an_unknown_check_argument_is_a_usage_error(self):
+        with contextlib.redirect_stderr(io.StringIO()), unittest.mock.patch("sys.stdin", io.StringIO("a b c d\n")):
+            self.assertEqual(dt.main(["check", "abc123"]), 2, "the commits come on stdin now")
+
+    def test_blank_ref_lines_are_ignored(self):
+        self.assertEqual(dt.parse_refs(["", "a b c d", "  "]), [dt.Ref("a", "b", "c", "d")], "one ref")
+
+    def test_the_default_remote_is_origin(self):
+        with unittest.mock.patch.object(dt, "check", return_value=0) as check, \
+                unittest.mock.patch("sys.stdin", io.StringIO("a b c d\n")):
+            dt.main(["check"])
+        self.assertEqual(check.call_args.kwargs["remote"], "origin", "as the hook pushes")
+
+    def test_a_new_branch_counts_from_what_the_remote_lacks(self):
+        git = FakeGit([("c1", [SRC]), ("c2", [PAGE_C])])
+        code, out = range_check(git, [ref_of("c2", remote=dt.ZERO_SHA)], {"c2": {"pages-only"}})
+        self.assertEqual(code, 1, "c1's server change is in the range of a new branch too")
+        self.assertIn("one, two have not passed on c2", out, out)
+
+
+def clean_git_env():
+    """The caller's environment without GIT_* (the commit hook sets GIT_DIR
+    and GIT_INDEX_FILE) and without the user's git configuration."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+    return env
+
+
+class RealGit(unittest.TestCase):
+    """docs_test.Git against a throwaway repository: the ranges the hook
+    asks about are the ones git names."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="docs-git-test-")
+        self.env = clean_git_env()
+        self.git = dt.Git(cwd=self.dir, env=self.env)
+        self.sh("init", "-q", "-b", "main")
+        self.shas = {}
+        for name, path, text in (("c0", "crates/x.rs", "0"), ("c1", "crates/x.rs", "1"), ("c2", "crates/x.rs", "0"), ("c3", "b.txt", "3")):
+            os.makedirs(os.path.dirname(os.path.join(self.dir, path)) or self.dir, exist_ok=True)
+            with open(os.path.join(self.dir, path), "w", encoding="utf-8") as f:
+                f.write(text)
+            self.sh("add", path)
+            self.sh("-c", "user.name=T", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false",
+                    "commit", "-q", "-m", name)
+            self.shas[name] = self.sh("rev-parse", "HEAD").strip()
+        self.sh("update-ref", "refs/remotes/origin/main", self.shas["c0"])
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def sh(self, *args):
+        return subprocess.run(["git", *args], cwd=self.dir, env=self.env, capture_output=True, text=True, check=True).stdout
+
+    def ref(self, local, remote):
+        return dt.Ref("refs/heads/main", self.shas[local], "refs/heads/main", self.shas.get(remote, remote))
+
+    # Success.
+    def test_the_commits_of_a_ref_are_the_new_ones_newest_first(self):
+        got = self.git.commits(self.ref("c3", "c0"), "origin")
+        self.assertEqual(got, [self.shas["c3"], self.shas["c2"], self.shas["c1"]], "after c0")
+
+    def test_the_paths_of_a_range_are_every_commits(self):
+        self.assertEqual(sorted(set(self.git.changed(self.ref("c3", "c0"), "origin"))), ["b.txt", "crates/x.rs"], "both")
+
+    def test_a_change_and_its_undoing_diff_to_nothing(self):
+        self.assertEqual(self.git.diff(self.shas["c0"], self.shas["c2"]), [], "the same tree")
+
+    def real_check(self, stamps):
+        out = io.StringIO()
+        code = dt.check(
+            [self.ref("c3", "c0")], remote="origin", env={}, scenarios=FAKES, steps=fake_steps,
+            read=lambda sha: stamps.get(sha), git=self.git, ci=no_ci, out=out,
+        )
+        return code, out.getvalue()
+
+    def test_check_over_a_real_range_carries_a_stamp_whose_tree_holds(self):
+        code, out = self.real_check({self.shas["c2"]: {"one", "two"}})
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"docs scenario one: passed on {self.shas['c2']}, and the commits after it change nothing it runs", out, out)
+
+    def test_an_ancestor_is_named(self):
+        self.assertTrue(self.git.is_ancestor(self.shas["c0"], self.shas["c3"]), "c0 is under c3")
+        self.assertFalse(self.git.is_ancestor(self.shas["c3"], self.shas["c0"]), "c3 is not under c0")
+
+    # Failure.
+    def test_an_unknown_commit_is_an_error(self):
+        with self.assertRaises(dt.PageError):
+            self.git.commits(self.ref("c3", "f" * 40), "origin")
+
+    def test_check_over_a_real_range_refuses_a_stamp_whose_server_changed_after_it(self):
+        code, out = self.real_check({self.shas["c1"]: {"one", "two"}})
+        self.assertEqual(code, 1, "c2 changed crates/x.rs after c1 ran them")
+        self.assertIn(f"one, two have not passed on {self.shas['c3']}", out, out)
+
+    def test_an_unknown_ancestor_is_an_error(self):
+        with self.assertRaises(dt.PageError):
+            self.git.is_ancestor("f" * 40, self.shas["c3"])
+
+    # Edge cases.
+    def test_a_new_ref_counts_only_what_the_remote_lacks(self):
+        got = self.git.commits(self.ref("c3", dt.ZERO_SHA), "origin")
+        self.assertEqual(got, [self.shas["c3"], self.shas["c2"], self.shas["c1"]], "origin/main has c0")
+
+    def test_a_diff_compares_the_two_trees_not_their_merge_base(self):
+        self.sh("checkout", "-q", "-b", "side", self.shas["c0"])
+        with open(os.path.join(self.dir, "side.txt"), "w", encoding="utf-8") as f:
+            f.write("s")
+        self.sh("add", "side.txt")
+        self.sh("-c", "user.name=T", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "side")
+        side = self.sh("rev-parse", "HEAD").strip()
+        self.assertEqual(self.git.diff(self.shas["c3"], side), ["b.txt", "side.txt"], "what differs between the two")
+
+    def test_a_diff_names_each_path_once(self):
+        self.assertEqual(self.git.diff(self.shas["c0"], self.shas["c3"]), ["b.txt"], "x.rs is back as it was")
+
+
+class PushCarries(unittest.TestCase):
+    """`push --since` runs only what no stamp of its range already holds."""
+
+    # Success.
+    def test_a_scenario_an_earlier_stamp_holds_is_not_run_again(self):
+        run, stamped = FakeRun(), []
+        code, out, _ = push_of([SRC, PAGE_C], run, stamps={"c1": {"one", "two"}}, commits=["abc123", "c1"],
+                               delta=lambda sha: [PAGE_C], stamped=stamped)
+        self.assertEqual(code, 0, out)
+        self.assertEqual([c[c.index("run") + 1] for c in run.names(sys.executable)], ["pages-only"], out)
+        self.assertEqual(stamped, [("abc123", ["pages-only"])], "the tip records what ran on it")
+        self.assertIn("docs scenario one: passed on c1, and the commits after it change nothing it runs; not run again", out, out)
+
+    def test_nothing_left_to_run_builds_nothing(self):
+        run, stamped = FakeRun(), []
+        code, out, _ = push_of([SRC], run, stamps={"c1": {"one", "two"}}, commits=["abc123", "c1"],
+                               delta=lambda sha: ["README.md"], stamped=stamped)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(run.calls, [], "no git, no build, no run")
+        self.assertEqual(stamped, [], "nothing new ran")
+        self.assertIn("docs scenarios: each one this push needs has passed already", out, out)
+
+    def test_a_second_run_on_the_tip_keeps_its_first_stamp(self):
+        stamped = []
+        code, out, _ = push_of([PAGE_B, PAGE_C], FakeRun(), stamps={"abc123": {"pages-only"}}, stamped=stamped)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(stamped, [("abc123", ["one", "pages-only", "two"])], "both runs' scenarios")
+
+    def test_push_since_passes_the_range_to_push(self):
+        with unittest.mock.patch.object(dt, "push", return_value=0) as push, \
+                unittest.mock.patch.object(dt, "changed_since", return_value=["Cargo.lock"]), \
+                unittest.mock.patch.object(dt, "range_commits", return_value=["abc123", "c1"]) as commits:
+            self.assertEqual(dt.main(["push", "abc123", "--since", "origin/main"]), 0, "its code")
+        commits.assert_called_once_with("origin/main", "abc123")
+        self.assertEqual(push.call_args.kwargs["commits"], ["abc123", "c1"], "the range's commits")
+        self.assertTrue(callable(push.call_args.kwargs["delta"]), "and how to compare one with the tip")
+
+    # Failure.
+    def test_a_stamp_a_later_commit_voids_runs_again(self):
+        run = FakeRun()
+        code, out, _ = push_of([SRC], run, stamps={"c1": {"one", "two"}}, commits=["abc123", "c1"],
+                               delta=lambda sha: [SRC])
+        self.assertEqual(code, 0, out)
+        self.assertEqual([c[c.index("run") + 1] for c in run.names(sys.executable)], ["one", "two"], out)
+
+    def test_a_carried_scenario_does_not_hide_a_failure(self):
+        stamped = []
+        code, out, _ = push_of([SRC, PAGE_C], FakeRun({"run pages-only": (1, "x\n")}), stamps={"c1": {"one", "two"}},
+                               commits=["abc123", "c1"], delta=lambda sha: [PAGE_C], stamped=stamped)
+        self.assertEqual(code, 1, out)
+        self.assertEqual(stamped, [], "a failure stamps nothing")
+
+    # Edge cases.
+    def test_without_a_range_only_the_tips_own_stamp_is_read(self):
+        run = FakeRun()
+        code, out, _ = push_of([PAGE_C], run, stamps={"c1": {"pages-only"}})
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(run.names(sys.executable)), 1, "c1 is not in a range nobody gave")
+
+    def test_everything_carried_needs_no_checkout_of_the_commit(self):
+        run = FakeRun({"git rev-parse": (0, "fff999\n")})
+        code, out, _ = push_of([PAGE_C], run, stamps={"abc123": {"pages-only"}})
+        self.assertEqual(code, 0, "nothing is built, so the checkout does not matter")
 
 
 if __name__ == "__main__":
