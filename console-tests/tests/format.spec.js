@@ -207,7 +207,11 @@ test.describe("the server's masked view", () => {
     expect(got.recordings).toEqual([]);
   });
   test("a field named like one every object has is not read from the object", () => {
-    const text = JSON.stringify(without("form")).replace("{", '{"__proto__":{"form":"unsigned"},');
+    // A member named __proto__ first, then the view's other fields: the
+    // JSON text is built by joining, so nothing in it is replaced.
+    const rest = JSON.stringify(without("form")).slice(1);
+    const text = `{"__proto__":{"form":"unsigned"},${rest}`;
+    expect(text.startsWith('{"__proto__":{"form":"unsigned"},"created":')).toBe(true);
     expect(maskedView(text)).toBeNull();
   });
   test("a recording of a type the console does not know is kept for the player to refuse", () => {
