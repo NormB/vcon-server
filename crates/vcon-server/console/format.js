@@ -1,6 +1,9 @@
 // What the console shows, worked out from what the server sent: times,
-// masked party values, a vCon's summary and what a refusal means. Nothing
-// here touches the page or the network, so each function is tested alone.
+// the server's masked view of a vCon, the parts a Reveal shows, a
+// recording to play and what a refusal means. The masked view is the
+// server's (src/masked.rs); the console makes no summary of its own.
+// Nothing here touches the page or the network, so each function is
+// tested alone.
 
 /** A time as `YYYY-MM-DD HH:MM:SS UTC+00:00`; other text as it was sent. */
 export function utc(value) {
@@ -18,95 +21,9 @@ export function utc(value) {
   return `${iso.slice(0, 10)} ${iso.slice(11, 19)} UTC+00:00`;
 }
 
-/** An RFC 3339 date-time: date, time, any fraction, and Z or an offset. */
-const DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:[Zz]|([+-])(\d{2}):(\d{2}))$/;
-
-/**
- * A vCon's time as `YYYY-MM-DD HH:MM:SS UTC+00:00`, or "" when it is not an
- * RFC 3339 date-time of a day that exists, in the years 1 to 9999 once in
- * UTC. Unlike `utc`, text that is not a time is never shown, and the
- * browser's own date reader, which takes "1" or "Feb 30", is not used. The
- * server's masked view reads times by the same rule (src/masked.rs).
- */
-export function instant(value) {
-  if (typeof value !== "string") {
-    return "";
-  }
-  const found = DATE_TIME.exec(value);
-  if (found === null) {
-    return "";
-  }
-  const [year, month, day, hour, minute, second] = found.slice(1, 7).map(Number);
-  const sign = found[7] === "-" ? -1 : 1;
-  const offsetHours = Number(found[8] ?? 0);
-  const offsetMinutes = Number(found[9] ?? 0);
-  if (hour > 23 || minute > 59 || second > 59 || offsetHours > 23 || offsetMinutes > 59) {
-    return "";
-  }
-  const local = new Date(0);
-  local.setUTCFullYear(year, month - 1, day);
-  // A day the month does not have runs into the next month.
-  if (local.getUTCFullYear() !== year || local.getUTCMonth() !== month - 1) {
-    return "";
-  }
-  local.setUTCHours(hour, minute, second, 0);
-  const at = new Date(local.getTime() - sign * (offsetHours * 60 + offsetMinutes) * 60000);
-  if (at.getUTCFullYear() < 1 || at.getUTCFullYear() > 9999) {
-    return "";
-  }
-  return utc(at.toISOString());
-}
-
-/** The fewest digits a number needs before its last four may be shown. */
-const MASKABLE_DIGITS = 8;
-
-/** A telephone number as its last four digits, or hidden whole. */
-export function maskTel(value) {
-  if (typeof value !== "string") {
-    return "number hidden";
-  }
-  const digits = value.replace(/\D/g, "");
-  if (digits.length < MASKABLE_DIGITS) {
-    return "number hidden";
-  }
-  return `number ending ${digits.slice(-4)}`;
-}
-
-/** An email address as its domain, or hidden whole. */
-export function maskMail(value) {
-  if (typeof value !== "string") {
-    return "address hidden";
-  }
-  const at = value.lastIndexOf("@");
-  const domain = at < 0 ? "" : value.slice(at + 1).trim().toLowerCase();
-  if (at < 1 || domain === "") {
-    return "address hidden";
-  }
-  return `address at ${domain}`;
-}
-
 /** Whether a value is a JSON object, not an array or null. */
 function isObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** One party as a line that names what it holds and shows none of it. */
-export function partyLine(party, index) {
-  const label = `Party ${index + 1}`;
-  if (!isObject(party)) {
-    return `${label}: not an object`;
-  }
-  const parts = [];
-  if ("tel" in party) {
-    parts.push(maskTel(party.tel));
-  }
-  if ("mailto" in party) {
-    parts.push(maskMail(party.mailto));
-  }
-  if ("name" in party) {
-    parts.push("name hidden");
-  }
-  return parts.length === 0 ? `${label}: no number, address or name` : `${label}: ${parts.join("; ")}`;
 }
 
 /** Base64url JSON as an object, or null when it is anything else. */
@@ -128,44 +45,9 @@ function items(value) {
   return Array.isArray(value) ? value : [];
 }
 
-/** The dialog types the vCon format names; any other is not shown. */
-const DIALOG_TYPES = ["recording", "text", "transfer", "incomplete"];
-
-/** Whether a value is a party's place in the parties list. */
+/** Whether a value is a place in a list, counted from zero. */
 function isIndex(value) {
   return Number.isInteger(value) && value >= 0;
-}
-
-/** A dialog's parties as their numbers, counted from one. */
-function partiesOf(parties) {
-  if (isIndex(parties)) {
-    return `party ${parties + 1}`;
-  }
-  if (Array.isArray(parties) && parties.length > 0 && parties.every(isIndex)) {
-    return `parties ${parties.map((p) => p + 1).join(", ")}`;
-  }
-  return "no parties";
-}
-
-/**
- * One dialog as a line with its type, start, length and parties, and
- * whether it has content, never the content or where a link points.
- */
-export function dialogLine(dialog, index) {
-  const label = `Dialog ${index + 1}`;
-  if (!isObject(dialog)) {
-    return `${label}: not an object`;
-  }
-  const type = DIALOG_TYPES.includes(dialog.type) ? dialog.type : "other type";
-  const start = instant(dialog.start) || "no start";
-  const length = typeof dialog.duration === "number" && dialog.duration > 0 ? `${dialog.duration} s` : "no length";
-  let content = "no content";
-  if (typeof dialog.body === "string" && dialog.body !== "") {
-    content = "content hidden";
-  } else if (typeof dialog.url === "string" && dialog.url !== "") {
-    content = "content at a link outside the server";
-  }
-  return `${label}: ${type}, ${start}, ${length}, ${partiesOf(dialog.parties)}; ${content}`;
 }
 
 /** The parts of a vCon that may hold a link, and what one item is called. */
@@ -263,83 +145,63 @@ export function section(text, name) {
   return make === undefined || vcon === null ? null : make(vcon);
 }
 
-/** A summary of nothing, in the given form. */
-function empty(form, subject) {
-  return {
-    form,
-    created: "",
-    subject,
-    parties: [],
-    dialogs: 0,
-    dialog: [],
-    seconds: 0,
-    attachments: 0,
-    analyses: 0,
-    links: 0,
-    signature: null,
-  };
-}
+/** The fields of a masked view that are text. */
+const VIEW_TEXTS = ["form", "created", "subject"];
 
-/** The counts and masked parties of an unsigned vCon object. */
-function counted(vcon, form) {
-  const dialog = items(vcon.dialog);
-  let seconds = 0;
-  for (const d of dialog) {
-    if (isObject(d) && typeof d.duration === "number" && d.duration > 0) {
-      seconds += d.duration;
-    }
-  }
-  return {
-    form,
-    created: instant(vcon.created_at),
-    subject: typeof vcon.subject === "string" && vcon.subject !== "" ? "present, hidden" : "none",
-    parties: items(vcon.parties).map(partyLine),
-    dialogs: dialog.length,
-    dialog: dialog.map(dialogLine),
-    seconds,
-    attachments: items(vcon.attachments).length,
-    analyses: items(vcon.analysis).length,
-    links: linksOf(vcon).length,
-    signature: null,
-  };
-}
+/** The fields of a masked view that are counts. */
+const VIEW_COUNTS = ["dialogs", "attachments", "analyses", "links"];
 
-/** A header field when it is text, or nothing. */
-function textField(header, name) {
-  return header !== null && typeof header[name] === "string" ? header[name] : "";
-}
+/** The fields of a masked view that are lists of lines. */
+const VIEW_LINES = ["parties", "dialog"];
+
+/** The fields of a signature's header a masked view names. */
+const VIEW_SIGNATURE = ["alg", "kid", "x5t"];
 
 /**
- * What a vCon body holds, without any name, subject, full number or
- * address: its form, counts and masked parties. A signed vCon's payload is
- * read; an encrypted one is not decoded.
+ * The server's masked view of a vCon (`?view=masked`, made by
+ * src/masked.rs), read from the text of its answer and checked to hold
+ * every field the console shows, or null when it does not. An older server
+ * sends no `recordings`; that is read as none. The console makes no
+ * summary of its own: the server holds the one rule.
  */
-export function summary(text) {
-  let vcon;
+export function maskedView(text) {
+  let view;
   try {
-    vcon = JSON.parse(text);
+    view = JSON.parse(text);
   } catch {
-    return empty("not JSON", "not readable");
+    return null;
   }
-  if (!isObject(vcon)) {
-    return empty("not a JSON object", "not readable");
+  if (!isObject(view)) {
+    return null;
   }
-  if ("ciphertext" in vcon) {
-    return empty("encrypted (JWE)", "not readable");
+  const isText = (value) => typeof value === "string";
+  const recordings = "recordings" in view ? view.recordings : [];
+  const signature = view.signature;
+  const whole =
+    VIEW_TEXTS.every((name) => isText(view[name])) &&
+    VIEW_COUNTS.every((name) => Number.isInteger(view[name]) && view[name] >= 0) &&
+    typeof view.seconds === "number" &&
+    VIEW_LINES.every((name) => Array.isArray(view[name]) && view[name].every(isText)) &&
+    (signature === null || (isObject(signature) && VIEW_SIGNATURE.every((name) => isText(signature[name])))) &&
+    Array.isArray(recordings) &&
+    recordings.every((r) => isObject(r) && Number.isInteger(r.dialog) && r.dialog >= 1 && isText(r.type));
+  if (!whole) {
+    return null;
   }
-  if ("payload" in vcon && "signatures" in vcon) {
-    const first = items(vcon.signatures)[0];
-    const header = isObject(first) ? decoded(first.protected) : null;
-    const payload = decoded(vcon.payload);
-    const made = payload === null ? empty("signed (JWS)", "not readable") : counted(payload, "signed (JWS)");
-    made.signature = {
-      alg: textField(header, "alg"),
-      kid: textField(header, "kid"),
-      x5t: textField(header, "x5t"),
-    };
-    return made;
-  }
-  return counted(vcon, "unsigned");
+  return {
+    form: view.form,
+    created: view.created,
+    subject: view.subject,
+    parties: view.parties,
+    dialogs: view.dialogs,
+    dialog: view.dialog,
+    seconds: view.seconds,
+    attachments: view.attachments,
+    analyses: view.analyses,
+    links: view.links,
+    signature: signature === null ? null : { alg: signature.alg, kid: signature.kid, x5t: signature.x5t },
+    recordings: recordings.map((r) => ({ dialog: r.dialog, type: r.type })),
+  };
 }
 
 /** The end of the problem type a listener answers a key of the other kind with. */
@@ -418,6 +280,21 @@ export function revealPath(path, part) {
   }
   return `${path}?reveal=${part}`;
 }
+
+/**
+ * The path of a read asking for the server's masked view of the vCon at
+ * `path`. The view is the only parameter of its read.
+ */
+export function maskedPath(path) {
+  if (path.includes("?") || path.includes("#")) {
+    throw new RangeError("the masked view is the only parameter of its read");
+  }
+  return `${path}?view=masked`;
+}
+
+/** What the console says when the server's masked view cannot be read. */
+export const VIEW_UNREADABLE =
+  "The server's masked view of this vCon could not be read. Open it again; if this repeats, tell the server's operator.";
 
 /**
  * The audio type a recording's first bytes are the signature of, or null
@@ -565,22 +442,6 @@ export function recording(text, index, limit = AUDIO_LIMIT) {
     );
   }
   return { ok: true, type: offer.type, bytes };
-}
-
-/**
- * The dialogs of a vCon body that say they hold a recording the console
- * plays, by place and type, read without decoding any.
- */
-export function recordings(text, limit = AUDIO_LIMIT) {
-  const found = [];
-  const vcon = readable(text);
-  items(vcon === null ? null : vcon.dialog).forEach((dialog, index) => {
-    const offer = isObject(dialog) ? offered(dialog, index, limit) : refused("");
-    if (offer.ok) {
-      found.push({ index, type: offer.type });
-    }
-  });
-  return found;
 }
 
 /**

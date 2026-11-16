@@ -51,6 +51,7 @@ action through MCP is recorded as its HTTP route records it.
 | `list` | a page of the vCon list (`GET /vcons`) | the tenant's |
 | `purge` | a version erased, by the purge sweep (actor `sweep`), or at once by a delete when the period is `0d` | the tenant's |
 | `legal_read` | a read through the legal routes of the latest kept version or of one version (`GET /legal/vcons/{uuid}`, `GET /legal/vcons/{uuid}/versions/{version}`) | the tenant's |
+| `legal_read_masked` | the [masked view](@/docs/http-api.md#masked-view) of that version read through a legal route, which holds no content (`?view=masked` on either legal read route); new in 0.4.8 | the tenant's |
 | `legal_reveal_parties` | a legal read as a [reveal](@/docs/audit-logs.md#reveals) of the parties (`?reveal=parties` on either legal read route) | the tenant's |
 | `legal_reveal_subject` | a legal read as a [reveal](@/docs/audit-logs.md#reveals) of the subject (`?reveal=subject` on either legal read route) | the tenant's |
 | `legal_reveal_dialog` | a legal read as a [reveal](@/docs/audit-logs.md#reveals) of the dialog (`?reveal=dialog` on either legal read route) | the tenant's |

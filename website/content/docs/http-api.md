@@ -180,8 +180,9 @@ the query over, answer the whole vCon and record the read as `read`.
 `GET /vcons/{uuid}?view=masked` answers what the vCon holds without any
 name, subject, full number, address or content, so a client can show a vCon
 before a person reveals a part of it. The [terminal UI](@/docs/tui.md)
-opens a vCon this way. The answer is `200` with `Content-Type`
-`application/json`, the same `ETag` as the plain read, and this body:
+and, from 0.4.8 on, the [console](@/docs/console.md) open a vCon this way.
+The answer is `200` with `Content-Type` `application/json`, the same `ETag`
+as the plain read, and this body:
 
 ```json
 {
@@ -195,7 +196,8 @@ opens a vCon this way. The answer is `200` with `Content-Type`
   "attachments": 0,
   "analyses": 1,
   "links": 0,
-  "signature": null
+  "signature": null,
+  "recordings": [{"dialog": 1, "type": "audio/wav"}]
 }
 ```
 
@@ -208,12 +210,19 @@ opens a vCon this way. The answer is `200` with `Content-Type`
 | `dialogs`, `dialog`, `seconds` | how many dialogs, one line for each (type, start, length, parties, whether it has content), and the sum of their lengths |
 | `attachments`, `analyses`, `links` | how many of each; a link is a `url` in the dialog, attachments or analysis |
 | `signature` | a signed vCon's `alg`, `kid` and `x5t`, each empty when the header does not hold it; `null` otherwise |
+| `recordings` | the dialogs that hold, inside the vCon, a recording the [console plays](@/docs/console.md#play-a-recording): each dialog's number, counted from one, and the type it plays as (`audio/wav`, `audio/mpeg`, `audio/ogg` or `audio/opus`); new in 0.4.8, absent from 0.4.7's answer |
+
+A dialog is listed in `recordings` when its `body` is text encoded as
+`base64url` or `base64`, its `mediatype` (or, without one, `mimetype`)
+names a type in the console's table without its case or parameters, and
+the body is at most 104,857,600 bytes. The list is read without decoding
+any body, and holds nothing of the vCon's text.
 
 The view needs the `read` scope, as the plain read does, and is recorded
 as `read_masked` in the [audit log](@/docs/audit-logs.md#reveals). A
 refused view (403, 404, 410) is recorded as `read_masked` too. `view` must be
 the only parameter and be given once, with the value `masked`: any other
-value, `view` beside `reveal`, or `view` on a legal route is
+value, or `view` beside `reveal`, is
 [`bad-query`](@/problems/bad-query.md) (400), recorded as `read` or
 `legal_read`, and no vCon is sent.
 
@@ -222,15 +231,28 @@ value, `view` beside `reveal`, or `view` on a legal route is
 curl -s "https://vcon.example.com/vcons/$UUID?view=masked" -H "Authorization: Bearer $KEY"
 ```
 
+From 0.4.8 on, the two legal reads take `view=masked` too:
+`GET /legal/vcons/{uuid}?view=masked` and
+`GET /legal/vcons/{uuid}/versions/{version}?view=masked` answer the masked
+view of the version they read, with its `ETag` and `Vcon-State`. They need
+the `legal` scope, and each is recorded as `legal_read_masked`, a refused
+one (403, 404, 410) too. Release 0.4.7 refuses `view` on the legal routes
+as `bad-query`.
+
+```sh
+# The masked view of the current or last kept version; the log records legal_read_masked
+curl -s -i "https://vcon.example.com/legal/vcons/$UUID?view=masked" -H "Authorization: Bearer $LEGAL_KEY"
+```
+
 ## Legal
 
 All need the `legal` scope. See [retention and legal holds](@/docs/retention-and-holds.md).
 
 | Route | Answers |
 |---|---|
-| `GET /legal/vcons/{uuid}` | `200`: the current version, or the latest kept version of a deleted uuid, with `ETag` and `Vcon-State: live` or `deleted` |
+| `GET /legal/vcons/{uuid}` | `200`: the current version, or the latest kept version of a deleted uuid, with `ETag` and `Vcon-State: live` or `deleted`; with `view=masked`, its [masked view](#masked-view) |
 | `GET /legal/vcons/{uuid}/versions` | `200`: JSON array, oldest first, of `{"version", "stored_at", "hidden_at", "current"}` |
-| `GET /legal/vcons/{uuid}/versions/{version}` | `200`: that kept version, as stored, with `ETag` |
+| `GET /legal/vcons/{uuid}/versions/{version}` | `200`: that kept version, as stored, with `ETag` and `Vcon-State`; with `view=masked`, its [masked view](#masked-view) |
 | `POST /legal/vcons/{uuid}/restore` | `200` with the restored version's `ETag`; [`not-deleted`](@/problems/not-deleted.md) if it is live |
 | `PUT /legal/vcons/{uuid}/hold` | `204`: the uuid is held |
 | `DELETE /legal/vcons/{uuid}/hold` | `204`: the hold is released |

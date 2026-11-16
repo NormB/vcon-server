@@ -216,6 +216,22 @@ what is built, unless it says otherwise.
   0.3.0 also a Sigstore signature over the checksums and the provenance as a
   file. The release workflow also publishes both crates to crates.io.
 
+## On `main` only
+
+The site is built from the `main` branch, so a page can describe what no
+release holds yet. Release 0.4.7 does not have these:
+
+- **The console opens a vCon by the masked view.** The
+  [console](@/docs/console.md#open-a-vcon-masked) asks the server for a
+  vCon's masked view, so the browser receives no name, number, subject or
+  content until a Reveal, Play or Download; release 0.4.7 sends the console
+  the whole vCon, which the console masks in the browser.
+- **The masked view on the legal reads, and its recordings.** The legal
+  read routes take `?view=masked`, recorded as `legal_read_masked`, and the
+  [masked view](@/docs/http-api.md#masked-view) has a `recordings` field
+  that lists the recordings the console plays; release 0.4.7 refuses
+  `view` on the legal routes and sends no `recordings`.
+
 ## The PostgreSQL catalog preview
 
 Release 0.4.6 is the first that has these, all of the PostgreSQL catalog

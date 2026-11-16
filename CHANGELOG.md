@@ -13,6 +13,38 @@ All notable changes to this project are recorded here. The format follows
     Producers page links to the Conserver at
     [github.com/vcon-dev/vcon-server](https://github.com/vcon-dev/vcon-server).
   - Docs: [Producers](https://vcon-server.com/docs/producers/)
+- **The console opens a vCon by the server's masked view.**
+  - Effect: The browser gets no name, number, subject or content until a
+    Reveal, Play or Download; an open is recorded as `read_masked`.
+  - Do: Count console opens as `read_masked`, or `legal_read_masked` in the
+    Legal view, in any alert or report.
+  - Docs: [Open a vCon
+    masked](https://vcon-server.com/docs/console/#open-a-vcon-masked)
+- **The audit log has a new action, `legal_read_masked`.**
+  - Effect: Each masked view read through a legal route is recorded as
+    `legal_read_masked` in the tenant's log.
+  - Do: Add `legal_read_masked` to any alert, report or filter that lists
+    actions.
+  - Docs: [Audit log
+    records](https://vcon-server.com/docs/audit-log-records/#every-action)
+- **The library's `audit::Action` and `masked::Summary` have new members.**
+  - Effect: Code that matches every `audit::Action` variant, or builds a
+    `masked::Summary`, no longer compiles until it handles them.
+  - Do: Add an arm for `Action::LegalReadMasked`, and set `recordings` in a
+    `Summary`.
+
+### Added
+
+- **The legal reads take `?view=masked`.**
+  - Effect: `GET /legal/vcons/{uuid}` and `/versions/{version}` answer the
+    version's masked view, with `ETag` and `Vcon-State`.
+  - Limit: It needs the `legal` scope; release 0.4.7 refuses it as
+    `bad-query`.
+  - Docs: [Masked view](https://vcon-server.com/docs/http-api/#masked-view)
+- **The masked view lists the recordings the console plays.**
+  - Effect: A `recordings` field names each such dialog and the audio type
+    it plays as, with no content.
+  - Docs: [Masked view](https://vcon-server.com/docs/http-api/#masked-view)
 
 ## [0.4.7] - 2026-11-16
 

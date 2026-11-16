@@ -30,7 +30,9 @@ request it makes is checked and recorded in the
 Three things on this page are new in 0.4.3. Release 0.4.2 records each
 Reveal as `read` or `legal_read`, not under a reveal action, it has no
 [recording player](#play-a-recording), and it has no
-[operator listener](@/docs/operator-listener.md).
+[operator listener](@/docs/operator-listener.md). From 0.4.8 on, the
+console opens a vCon by the server's masked view; see
+[open a vCon masked](#open-a-vcon-masked).
 
 ## Open it
 
@@ -80,9 +82,10 @@ Choose **vCons**.
   `GET /vcons`.
 - **Read one** (`read`): choose **Open** beside it in the list, or type its
   uuid under **vCon uuid** and choose **Open**. The console shows its
-  version (`ETag`) and a masked summary (`GET /vcons/{uuid}`); see
+  version (`ETag`) and the server's masked view of it
+  (`GET /vcons/{uuid}?view=masked`); see
   [open a vCon masked](#open-a-vcon-masked). A vCon stored gzipped is
-  inflated first.
+  summarized from its inflated text.
 - **Store one** (`write`): under **Store a vCon from a file**, pick the file
   and choose **Store**. The console sends the file's bytes unchanged
   (`POST /vcons`) and shows the stored uuid and version, or why the server
@@ -99,15 +102,22 @@ was said on the screen, and leave a record each time the content itself is
 shown.
 
 **Prerequisites:** a key with the `read` scope, and a browser that reaches
-the server's TLS listener. Nothing changes on any other system: masking is
-part of the console page the server already serves, and needs no setting.
+the server's TLS listener. Nothing changes on any other system: the server
+makes the [masked view](@/docs/http-api.md#masked-view) the console shows,
+and needs no setting. A proxy in front of the server must pass the `view`
+query parameter unchanged.
+
+From 0.4.8 on, the console opens a vCon by the server's masked view, so the
+browser receives no name, subject, full number, address or content until a
+Reveal, Play or Download asks for it. Release 0.4.7 and earlier send the
+console the whole vCon, and the console masks it in the browser.
 
 **Steps:**
 
 1. Sign in, choose **vCons**, and choose **Open** beside a vCon. With a
    `legal` key, choose **Legal** and **Find** a vCon instead: the version
    found, and each kept version you **Open**, is masked the same way.
-2. Read the summary. It shows:
+2. Read the summary, as the server made it. It shows:
    - the form: `unsigned`, `signed (JWS)` or `encrypted (JWE)`;
    - when the vCon says it was created, in UTC;
    - whether it has a subject (`present, hidden` or `none`);
@@ -146,18 +156,30 @@ part of the console page the server already serves, and needs no setting.
 
 **Verify:** read the tenant's [audit log](@/docs/audit-logs.md) with an
 `audit` key, in the **Audit log** view or over the API. Opening a vCon
-leaves one `read` record for its uuid, and each **Download** leaves one
-more. From 0.4.3 on (release 0.4.2 records each Reveal as one more `read`
-or `legal_read`), each Reveal leaves a record that names the part it
-showed:
+leaves one `read_masked` record for its uuid (release 0.4.7 and earlier
+record `read`), and each **Download** leaves one `read`. From 0.4.3 on
+(release 0.4.2 records each Reveal as one more `read` or `legal_read`),
+each Reveal leaves a record that names the part it showed:
 `reveal_parties`, `reveal_subject`, `reveal_dialog`, `reveal_analysis`,
 `reveal_links`, or `reveal_all` for the whole vCon. In the Legal view each
-find and each version opened leaves a `legal_read` record, and each Reveal
-a `legal_reveal_` record with the same part names. Opening another vCon,
-or the same one again, masks it again.
+find and each version opened leaves a `legal_read_masked` record (release
+0.4.7 and earlier record `legal_read`), each Reveal a `legal_reveal_`
+record with the same part names, and each Download a `legal_read`. Opening
+another vCon, or the same one again, masks it again.
 
 **Troubleshoot:**
 
+- *`The server's masked view of this vCon could not be read. Open it again; if this repeats, tell the server's operator.`:*
+  the answer to the masked view was not one: it was not JSON or lacked a
+  field the summary shows. Nothing of the vCon is shown. Two causes: a
+  proxy that changed the answer or dropped the `view` parameter, or a
+  server of 0.4.6 or earlier, which passes `view` over and sends the whole
+  vCon. The operator checks that the proxy passes `/vcons/` requests and
+  answers unchanged, and that the page and the server are of one version
+  (reload the page).
+- *Finding a vCon in the Legal view answers `(400)`:* the server is 0.4.7,
+  whose legal routes refuse the masked view. Reload the page, so the page
+  and the server are of one version.
 - *The summary says `not JSON` or `not a JSON object`:* the stored bytes are
   not a vCon the console can summarize. **Reveal the whole vCon** still
   shows them as text.
@@ -177,10 +199,12 @@ or the same one again, masks it again.
 - *The audit log shows `read` where you expect a reveal:* the page in the
   browser is from before the server was upgraded. Reload it.
 
-Masking is what the console shows, not what the server sends: the API
-answers a `read` key with the whole vCon, and the console keeps it only long
-enough to make the summary. A reveal is recorded under an action of its
-own because the console marks the read it makes for one; see
+The server makes the masked view, and the console makes no summary of its
+own, so the console and the [terminal UI](@/docs/tui.md) show a vCon by one
+rule. The masking covers what the console asks for, not what a key may read:
+the API still answers a `read` key's plain read with the whole vCon, as
+Reveal, Play and Download use it. A reveal is recorded under an action of
+its own because the console marks the read it makes for one; see
 [reveals](@/docs/audit-logs.md#reveals) for what the marker does and does
 not do.
 
@@ -227,7 +251,8 @@ the console does not read far enough into a stream to tell.
 1. Open the vCon, as in [open a vCon masked](#open-a-vcon-masked). Under
    the reveal buttons there is one button for each dialog with a recording
    the console plays: **Play dialog 1 recording (opens the player in a new
-   tab)**.
+   tab)**. The server names those dialogs in the masked view's
+   `recordings` list, so the buttons appear before any content is read.
 2. Choose it. The console opens the player's tab, reads the vCon again as
    a [reveal](@/docs/audit-logs.md#reveals) of `audio`, checks that the
    recording's first bytes are the type the dialog declares, and hands the
@@ -251,7 +276,9 @@ leaves one `reveal_audio` record for the vCon's uuid, or
 
 - *There is no Play button for a dialog:* its recording is at a link, or
   its body is not declared as a type in the table above, is not encoded as
-  `base64url` or `base64`, or is over the size limit. **Download** has
+  `base64url` or `base64`, or is over the size limit. A server of 0.4.7
+  sends no `recordings` list, so no dialog has a Play button; reload the
+  page so the page and the server are of one version. **Download** has
   the whole vCon. The IETF draft's example vCons are of the first kind:
   each keeps its recording at a link (`url`), declared `audio/x-mp3`, so
   they have no Play button as published; with the recording put inside
@@ -310,7 +337,8 @@ Choose **Legal**, type the vCon's uuid and choose **Find**. The console shows
 whether the vCon is `live` or `deleted`, its current version (or, once
 deleted, the last kept one) as text, and every kept version with when it was
 stored and hidden. Choose **Open** beside a version to read it. Both are
-shown masked first; see [open a vCon masked](#open-a-vcon-masked). These use
+shown by the server's masked view first (`?view=masked`); see
+[open a vCon masked](#open-a-vcon-masked). These use
 `GET /legal/vcons/{uuid}`, `GET /legal/vcons/{uuid}/versions` and
 `GET /legal/vcons/{uuid}/versions/{version}`.
 

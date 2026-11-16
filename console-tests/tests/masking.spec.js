@@ -1,6 +1,7 @@
-// An opened vCon is masked first: a summary with counts and masked parties,
-// and the whole text only after Reveal, which reads it again so the audit
-// log holds one record for the summary and one for each reveal. Times are
+// An opened vCon is masked first: the server's masked view, with counts and
+// masked parties, and the whole text only after Reveal, which reads it
+// again so the audit log holds one read_masked record for the summary and
+// one for each reveal. Times are
 // shown in UTC with the offset stated.
 import { randomUUID } from "node:crypto";
 import { test, expect, signIn, store, openView, auditLog } from "./fixtures.js";
@@ -55,13 +56,13 @@ test("Reveal shows the whole vCon as text", async ({ page, request, tenant }) =>
   await expect(page.locator("#reveal")).toBeHidden();
 });
 
-test("the summary is a recorded read and the reveal a recorded reveal", async ({ page, request, tenant }) => {
+test("the summary is a recorded masked read and the reveal a recorded reveal", async ({ page, request, tenant }) => {
   const uuid = await opened(page, request, tenant);
   await page.click("#reveal");
   await expect(page.locator("#vcon-body")).toBeVisible();
   const log = await auditLog(request, await tenant.key(["audit"]), "/audit");
   const recorded = log.filter((r) => r.target === uuid && r.status === 200).map((r) => r.action);
-  expect(recorded).toEqual(["read", "reveal_all"]);
+  expect(recorded).toEqual(["read_masked", "reveal_all"]);
 });
 
 test("opening another vCon masks again", async ({ page, request, tenant }) => {

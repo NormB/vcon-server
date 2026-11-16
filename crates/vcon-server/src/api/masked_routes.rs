@@ -203,32 +203,25 @@ async fn a_path_uuid_not_in_text_form_is_refused_and_recorded_as_read_masked() {
     assert_eq!(last(&s).0, "read_masked", "the record");
 }
 
-/// The legal routes have no masked view yet: one that asks for it is
-/// refused, never answered with the whole vCon.
+// Edge.
+
+/// `Vcon-State` belongs to the legal reads: the tenant read, plain or
+/// masked, answers only a live vCon and names no state.
 #[tokio::test]
-async fn the_legal_routes_refuse_the_view_and_send_no_vcon() {
+async fn the_tenant_masked_view_names_no_state() {
     let s = server().await;
-    let tag = stored(&s).await;
-    let legal = s.key(&[Scope::Legal]);
-    for path in [
-        format!("/legal/vcons/{UUID}?view=masked"),
-        format!(
-            "/legal/vcons/{UUID}/versions/{}?view=masked",
-            tag.trim_matches('"')
-        ),
-    ] {
-        let answer = get(&s, &path, &legal).await;
-        assert_eq!(answer.status(), 400, "{path}");
-        assert_eq!(problem(answer).await, "bad-query", "{path}");
-        assert_eq!(
-            last(&s),
-            ("legal_read".to_owned(), 400, Value::Null, Value::Null),
-            "{path}"
+    stored(&s).await;
+    let reader = s.key(&[Scope::Read]);
+    for path in [masked_path(), format!("/vcons/{UUID}")] {
+        let answer = get(&s, &path, &reader).await;
+        assert_eq!(answer.status(), 200, "{path}");
+        assert!(
+            answer.headers().get("vcon-state").is_none(),
+            "{path}: {:?}",
+            answer.headers().get("vcon-state")
         );
     }
 }
-
-// Edge.
 
 #[tokio::test]
 async fn an_encoded_view_is_the_view() {
@@ -271,7 +264,7 @@ async fn after_a_replace_the_view_is_of_the_new_version() {
 }
 
 #[test]
-fn the_description_names_the_view_on_the_tenant_read_only() {
+fn the_description_names_the_view_on_the_tenant_read() {
     let doc = document();
     let view = &doc["components"]["parameters"]["view"];
     assert_eq!(view["name"], "view", "the name");
@@ -290,7 +283,7 @@ fn the_description_names_the_view_on_the_tenant_read_only() {
             })
     };
     assert!(names("/vcons/{uuid}"), "the tenant read takes it");
-    assert!(!names("/legal/vcons/{uuid}"), "the legal read does not");
+    assert!(!names("/vcons"), "the list does not");
 }
 
 /// The schema of the answer names each field the code writes, all required.

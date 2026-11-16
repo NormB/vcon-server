@@ -64,7 +64,7 @@ for (const [part, button, revealed] of [
     const uuid = await opened(page, request, tenant);
     await page.click(button);
     await expect(page.locator(revealed)).not.toHaveText("");
-    expect(await actions(request, tenant, uuid)).toEqual(["read", `reveal_${part}`]);
+    expect(await actions(request, tenant, uuid)).toEqual(["read_masked", `reveal_${part}`]);
   });
 }
 
@@ -135,7 +135,7 @@ test("a reveal that gets no answer says so, shows nothing and leaves no record",
   await page.click("#vcon-reveal-parties");
   await expect(page.locator("#vcon-message")).toContainText("could not be reached");
   await expect(page.locator("#vcon-section")).toBeHidden();
-  expect(await actions(request, tenant, uuid)).toEqual(["read"]);
+  expect(await actions(request, tenant, uuid)).toEqual(["read_masked"]);
 });
 
 test("revealing the same part twice leaves two records", async ({ page, request, tenant }) => {
@@ -146,7 +146,7 @@ test("revealing the same part twice leaves two records", async ({ page, request,
   await expect(page.locator("#vcon-section")).toContainText("Alice Example");
   await page.click("#vcon-reveal-subject");
   await expect(page.locator("#vcon-section")).toHaveText("Billing question");
-  expect(await actions(request, tenant, uuid)).toEqual(["read", "reveal_subject", "reveal_parties", "reveal_subject"]);
+  expect(await actions(request, tenant, uuid)).toEqual(["read_masked", "reveal_subject", "reveal_parties", "reveal_subject"]);
 });
 
 test("a reveal adds the marker to its request and nothing else", async ({ page, request, tenant }) => {

@@ -108,7 +108,7 @@ test("Play is recorded as a reveal of audio", async ({ page, request, tenant }) 
   const player = await play(page);
   await expect(player.locator("#audio")).toBeVisible();
   expect(await actions(request, tenant, uuid)).toEqual([
-    ["read", 200],
+    ["read_masked", 200],
     ["reveal_audio", 200],
   ]);
 });
@@ -223,7 +223,7 @@ test("a blocked tab is said, with what to do, and nothing is read", async ({ pag
   await expect(page.locator("#vcon-recordings-state")).toHaveText(
     "The browser blocked the player's tab. Allow pop-ups for this site, then choose Play again.",
   );
-  expect(await actions(request, tenant, uuid)).toEqual([["read", 200]]);
+  expect(await actions(request, tenant, uuid)).toEqual([["read_masked", 200]]);
 });
 
 test("the player opened by itself says it plays only what the console hands it", async ({ page }) => {

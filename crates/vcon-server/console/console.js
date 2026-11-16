@@ -6,13 +6,14 @@
 
 import {
   utc,
-  summary,
+  maskedView,
+  maskedPath,
+  VIEW_UNREADABLE,
   refusalText,
   section,
   links,
   shown,
   revealPath,
-  recordings,
   recording,
   handOver,
   accepts,
@@ -390,21 +391,22 @@ function maskedVcon(name, reveal, label, say) {
   return {
     nodes: [etag, masked, note, buttons, playList, playState, partTitle, part, linkList, linkState, whole, cut, body],
     /**
-     * Shows `got` masked. `read` reads the same vCon again, for a Reveal
-     * of the part it is given or, given null, for a Download, which saves
-     * it as `<uuid>.json`.
+     * Shows `got`, the server's masked view with its version, and a Play
+     * button for each recording the view lists. `read` reads the same
+     * vCon again, for a Reveal of the part it is given or, given null,
+     * for a Download, which saves it as `<uuid>.json`.
      */
     show(got, read, uuid) {
       again = read;
       saveAs = uuid;
       etag.textContent = got.etag;
       mask();
-      showSummary(masked, summary(got.text));
+      showSummary(masked, got.view);
       clear(playList);
       playState.textContent = "";
-      for (const { index } of recordings(got.text)) {
+      for (const { dialog } of got.view.recordings) {
         const item = el("li");
-        item.append(playButton(index));
+        item.append(playButton(dialog - 1));
         playList.append(item);
       }
     },
@@ -414,6 +416,25 @@ function maskedVcon(name, reveal, label, say) {
 /** A vCon answer as its version and text. */
 async function versionAndText(answer) {
   return { etag: answer.headers.get("ETag") || "", text: await bodyText(answer) };
+}
+
+/**
+ * Reads the server's masked view of the vCon at `path`: its version and
+ * the view, or null, with what went wrong given to `say`. The browser
+ * receives no content of the vCon by it.
+ */
+async function readMasked(path, say) {
+  const answer = await request("GET", maskedPath(path));
+  if (answer.status !== 200) {
+    say(await refusal(answer));
+    return null;
+  }
+  const view = maskedView(await answer.text());
+  if (view === null) {
+    say(VIEW_UNREADABLE);
+    return null;
+  }
+  return { etag: answer.headers.get("ETag") || "", state: answer.headers.get("Vcon-State") || "", view };
 }
 
 /** A row of text cells, and any controls in a last cell. */
@@ -510,9 +531,12 @@ function vconsView(view) {
     return versionAndText(answer);
   }
 
-  /** Opens a vCon masked: its summary, and none of its content. */
+  /** Opens a vCon by the server's masked view: none of its content. */
   async function open(uuid) {
-    const got = await read(uuid);
+    message.textContent = "";
+    const got = await readMasked(vconPath("/vcons", uuid), (text) => {
+      message.textContent = text;
+    });
     if (got === null) {
       shown.hidden = true;
       return;
@@ -713,7 +737,7 @@ function legalView(view) {
     clear(versions.tBodies[0]);
     opened.hidden = true;
     const path = vconPath("/legal/vcons", uuid);
-    const got = await read(path);
+    const got = await readMasked(path, say);
     if (got === null) {
       return;
     }
@@ -731,7 +755,7 @@ function legalView(view) {
       opener.addEventListener("click", async () => {
         message.textContent = "";
         const one = vconPath("/legal/vcons", uuid, `/versions/${encodeURIComponent(v.version)}`);
-        const kept = await read(one);
+        const kept = await readMasked(one, say);
         if (kept === null) {
           opened.hidden = true;
           return;

@@ -1525,10 +1525,13 @@
       "get": {
         "operationId": "legalRead",
         "summary": "The current version, or the latest kept one of a deleted uuid",
-        "description": "Needs a key with the legal scope. With reveal, the answer is the same and the audit log records the read as a reveal of that part.",
+        "description": "Needs a key with the legal scope. With reveal, the answer is the same and the audit log records the read as a reveal of that part. With view=masked, the answer is the version's masked view and the audit log records the read as legal_read_masked.",
         "parameters": [
           {
             "$ref": "#/components/parameters/reveal"
+          },
+          {
+            "$ref": "#/components/parameters/view"
           }
         ],
         "security": [
@@ -1538,7 +1541,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The body as stored",
+            "description": "The body as stored; with view=masked, the masked view",
             "content": {
               "application/vcon": {
                 "schema": {
@@ -1550,6 +1553,11 @@
                 "schema": {
                   "type": "string",
                   "format": "binary"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaskedVcon"
                 }
               }
             },
@@ -1799,10 +1807,13 @@
       "get": {
         "operationId": "legalVersion",
         "summary": "A kept version, as stored",
-        "description": "Needs a key with the legal scope. With reveal, the answer is the same and the audit log records the read as a reveal of that part.",
+        "description": "Needs a key with the legal scope. With reveal, the answer is the same and the audit log records the read as a reveal of that part. With view=masked, the answer is the version's masked view and the audit log records the read as legal_read_masked.",
         "parameters": [
           {
             "$ref": "#/components/parameters/reveal"
+          },
+          {
+            "$ref": "#/components/parameters/view"
           }
         ],
         "security": [
@@ -1812,7 +1823,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The body as stored",
+            "description": "The body as stored; with view=masked, the masked view",
             "content": {
               "application/vcon": {
                 "schema": {
@@ -1824,6 +1835,11 @@
                 "schema": {
                   "type": "string",
                   "format": "binary"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaskedVcon"
                 }
               }
             },
@@ -4245,7 +4261,7 @@
         "name": "view",
         "in": "query",
         "required": false,
-        "description": "masked answers the vCon's masked view in place of the vCon: its form, counts and parties masked, with no name, subject, full number, address or content. The audit log records the action read_masked in place of read. It must be the only parameter, given once; the legal routes refuse it.",
+        "description": "masked answers the vCon's masked view in place of the vCon: its form, counts and parties masked, with no name, subject, full number, address or content. The audit log records the action read_masked in place of read, and legal_read_masked in place of legal_read on the legal routes. It must be the only parameter, given once.",
         "schema": {
           "type": "string",
           "enum": [
@@ -4257,7 +4273,7 @@
     "schemas": {
       "MaskedVcon": {
         "type": "object",
-        "description": "A vCon's masked view (GET /vcons/{uuid}?view=masked)",
+        "description": "A vCon's masked view (GET /vcons/{uuid}?view=masked, and view=masked on the two legal reads)",
         "required": [
           "form",
           "created",
@@ -4269,7 +4285,8 @@
           "attachments",
           "analyses",
           "links",
-          "signature"
+          "signature",
+          "recordings"
         ],
         "properties": {
           "form": {
@@ -4355,6 +4372,32 @@
                 }
               }
             ]
+          },
+          "recordings": {
+            "type": "array",
+            "description": "The dialogs that hold, inside the vCon, a recording the console plays (audio/wav, audio/mpeg, audio/ogg or audio/opus, at most 100 MiB): the dialog's number, counted from one, and the type it plays as. Release 0.4.7 and earlier do not send it.",
+            "items": {
+              "type": "object",
+              "required": [
+                "dialog",
+                "type"
+              ],
+              "properties": {
+                "dialog": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "audio/wav",
+                    "audio/mpeg",
+                    "audio/ogg",
+                    "audio/opus"
+                  ]
+                }
+              }
+            }
           }
         }
       },

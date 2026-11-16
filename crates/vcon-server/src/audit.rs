@@ -58,6 +58,9 @@ pub enum Action {
     Delete,
     Purge,
     LegalRead,
+    /// A legal read of the version's masked view (`?view=masked`): its
+    /// summary, with no content.
+    LegalReadMasked,
     /// A legal read marked as a reveal of one part of the version read.
     LegalReveal(Part),
     LegalVersions,
@@ -145,6 +148,7 @@ impl Action {
             Action::Delete => "delete",
             Action::Purge => "purge",
             Action::LegalRead => "legal_read",
+            Action::LegalReadMasked => "legal_read_masked",
             Action::LegalReveal(Part::Parties) => "legal_reveal_parties",
             Action::LegalReveal(Part::Subject) => "legal_reveal_subject",
             Action::LegalReveal(Part::Dialog) => "legal_reveal_dialog",
@@ -720,6 +724,7 @@ mod tests {
             Action::Delete => "delete",
             Action::Purge => "purge",
             Action::LegalRead => "legal_read",
+            Action::LegalReadMasked => "legal_read_masked",
             Action::LegalReveal(Part::Parties) => "legal_reveal_parties",
             Action::LegalReveal(Part::Subject) => "legal_reveal_subject",
             Action::LegalReveal(Part::Dialog) => "legal_reveal_dialog",
@@ -784,6 +789,7 @@ mod tests {
             Action::Delete,
             Action::Purge,
             Action::LegalRead,
+            Action::LegalReadMasked,
             Action::LegalReveal(Part::Parties),
             Action::LegalReveal(Part::Subject),
             Action::LegalReveal(Part::Dialog),

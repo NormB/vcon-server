@@ -69,10 +69,14 @@ that reads without the marker and shows everything is recorded as a `read`.
 
 A client can also read the summary from the server: `?view=masked`
 answers the vCon's [masked view](@/docs/http-api.md#masked-view), which
-holds no content, and is recorded as `read_masked`. The
-[terminal UI](@/docs/tui.md) opens a vCon that way, so its log shows
-`read_masked` for each vCon opened and a `reveal_<part>` for each part
-shown. Release 0.4.6 and earlier never write `read_masked`.
+holds no content, and is recorded as `read_masked`, or as
+`legal_read_masked` on the legal read routes. The
+[terminal UI](@/docs/tui.md) and, from 0.4.8 on, the
+[console](@/docs/console.md) open a vCon that way, so their log shows
+`read_masked` (or `legal_read_masked` in the console's Legal view) for
+each vCon opened and a `reveal_<part>` for each part shown. Release 0.4.6
+and earlier never write `read_masked`; release 0.4.7 and earlier never
+write `legal_read_masked`.
 
 ### See who revealed what
 

@@ -73,7 +73,7 @@ test("each part revealed is a record of its own in the audit log", async ({ page
   await expect(page.locator("#vcon-section")).toContainText("hello there");
   const log = await auditLog(request, await tenant.key(["audit"]), "/audit");
   const recorded = log.filter((r) => r.target === uuid && r.status === 200).map((r) => r.action);
-  expect(recorded).toEqual(["read", "reveal_parties", "reveal_subject", "reveal_dialog"]);
+  expect(recorded).toEqual(["read_masked", "reveal_parties", "reveal_subject", "reveal_dialog"]);
 });
 
 test("a link is shown as text with a label, and nothing is loaded from it", async ({ page, request, tenant }) => {
@@ -169,7 +169,9 @@ test("Download saves the vCon under its uuid, and is a recorded read", async ({ 
   expect(JSON.parse(text).uuid).toBe(uuid);
   await expect(page.locator("#vcon-message")).toHaveText(`Downloaded ${uuid}`);
   const log = await auditLog(request, await tenant.key(["audit"]), "/audit");
-  expect(log.filter((r) => r.action === "read" && r.target === uuid && r.status === 200)).toHaveLength(2);
+  // The open is the masked view; the Download is the one read.
+  const mine = log.filter((r) => r.target === uuid && r.status === 200).map((r) => r.action);
+  expect(mine).toEqual(["read_masked", "read"]);
 });
 
 test("a vCon past the display limit is cut, and says to download the rest", async ({ page, request, tenant }) => {

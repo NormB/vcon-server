@@ -1,16 +1,17 @@
-// What the console works out before it shows anything: times in UTC, masked
-// party values, a vCon's summary and what a refusal means. These run in
-// Node, on the same file the server serves, with no browser and no server.
+// What the console works out before it shows anything: times in UTC, the
+// server's masked view read and checked, the parts a Reveal shows and what
+// a refusal means. These run in Node, on the same file the server serves,
+// with no browser and no server. The masked view itself is the server's
+// rule (crates/vcon-server/src/masked.rs, tested there and through the
+// console's display in masked-view.spec.js).
 import { readFileSync } from "node:fs";
 import { test, expect } from "@playwright/test";
 import {
   utc,
-  maskTel,
-  maskMail,
-  partyLine,
-  summary,
+  maskedView,
+  maskedPath,
+  VIEW_UNREADABLE,
   refusalText,
-  dialogLine,
   section,
   links,
   shown,
@@ -46,199 +47,173 @@ test.describe("times", () => {
   });
 });
 
-test.describe("masking", () => {
-  test("a telephone number shows its last four digits only", () => {
-    expect(maskTel("tel:+15555550123")).toBe("number ending 0123");
-  });
-  test("punctuation in a number is not counted as digits", () => {
-    expect(maskTel("+1 (555) 555-0199")).toBe("number ending 0199");
-  });
-  test("a number too short to mask is hidden whole", () => {
-    expect(maskTel("tel:5550123")).toBe("number hidden");
-    expect(maskTel("")).toBe("number hidden");
-  });
-  test("a number that is not text is hidden whole", () => {
-    expect(maskTel(15555550123)).toBe("number hidden");
-    expect(maskTel(null)).toBe("number hidden");
-  });
-  test("an email address shows its domain only", () => {
-    expect(maskMail("mailto:alice@example.com")).toBe("address at example.com");
-    expect(maskMail("bob@example.com")).toBe("address at example.com");
-  });
-  test("the domain is the part after the last at sign, in lower case", () => {
-    expect(maskMail('mailto:"a@b"@EXAMPLE.com')).toBe("address at example.com");
-  });
-  test("an address with no local part is hidden whole", () => {
-    expect(maskMail("@example.com")).toBe("address hidden");
-  });
-  test("an address with no domain is hidden whole", () => {
-    expect(maskMail("mailto:alice")).toBe("address hidden");
-    expect(maskMail("alice@")).toBe("address hidden");
-    expect(maskMail(null)).toBe("address hidden");
-  });
-  test("a party line names what the party holds and shows none of it", () => {
-    const line = partyLine({ tel: "+15555550123", mailto: "alice@example.com", name: "Alice Example" }, 0);
-    expect(line).toBe("Party 1: number ending 0123; address at example.com; name hidden");
-    expect(line).not.toContain("Alice");
-    expect(line).not.toContain("555555");
-  });
-  test("a party with nothing to mask says so", () => {
-    expect(partyLine({}, 1)).toBe("Party 2: no number, address or name");
-  });
-  test("a party that is not an object is named and not read", () => {
-    expect(partyLine("<b>Alice</b>", 2)).toBe("Party 3: not an object");
-    expect(partyLine(null, 0)).toBe("Party 1: not an object");
-    expect(partyLine(["x"], 0)).toBe("Party 1: not an object");
-  });
-});
-
-// The server's masked view (GET /vcons/{uuid}?view=masked) is made by a
-// port of summary() in crates/vcon-server/src/masked.rs. Both are tested
-// against these cases, so the two rules give the same answer to each.
+/** The summaries the server's rule makes of its test cases (src/masked.rs). */
 const MASKED_CASES = JSON.parse(
   readFileSync(new URL("../../crates/vcon-server/tests/data/masked-cases.json", import.meta.url), "utf8"),
 );
 
-test.describe("the cases the server's masked view is tested against too", () => {
-  test("there are cases to compare", () => {
-    expect(MASKED_CASES.length).toBeGreaterThan(20);
-  });
-  for (const { name, body, summary: wanted } of MASKED_CASES) {
-    test(`masked case: ${name}`, () => {
-      expect(summary(body)).toEqual(wanted);
-    });
-  }
-});
-
-test.describe("instants", () => {
-  test("an RFC 3339 date-time is shown in UTC to the second", () => {
-    expect(format.instant("2026-10-23T14:30:05.9+02:00")).toBe("2026-10-23 12:30:05 UTC+00:00");
-  });
-  test("a day the month does not have is no time, not the next month", () => {
-    expect(format.instant("2026-02-30T00:00:00Z")).toBe("");
-  });
-  test("an hour of 24 and a second of 60 are no time", () => {
-    expect(format.instant("2026-01-01T24:00:00Z")).toBe("");
-    expect(format.instant("2026-01-01T23:59:60Z")).toBe("");
-  });
-  test("text that a browser would read as a date is no time", () => {
-    expect(format.instant("1")).toBe("");
-    expect(format.instant("Jan 2 2026")).toBe("");
-    expect(format.instant("2026-11-10T09:15Z")).toBe("");
-  });
-  test("a time that falls outside the years 1 to 9999 in UTC is no time", () => {
-    expect(format.instant("9999-12-31T23:30:00-01:00")).toBe("");
-    expect(format.instant("0001-01-01T00:30:00+01:00")).toBe("");
-  });
-  test("a value that is not text is no time", () => {
-    expect(format.instant(7)).toBe("");
-    expect(format.instant(null)).toBe("");
-  });
-  test("a created time that is not a time is not shown as its text", () => {
-    expect(summary(JSON.stringify({ created_at: "Ada called about her account" })).created).toBe("");
-  });
-});
-
-test.describe("summary", () => {
-  const plain = {
-    uuid: "0198a1b2-0000-8000-8000-000000000001",
-    created_at: "2026-10-23T12:00:00Z",
-    subject: "Billing question",
-    parties: [{ tel: "+15555550123", name: "Alice Example" }, { mailto: "bob@example.com" }],
-    dialog: [{ type: "text", duration: 30 }, { type: "text", duration: 12.5 }],
-    attachments: [{}],
-    analysis: [{}, {}, {}],
+/** A masked view as the server writes it, with a recording. */
+function view(changes = {}) {
+  return {
+    form: "unsigned",
+    created: "2026-11-10 09:15:00 UTC+00:00",
+    subject: "present, hidden",
+    parties: ["Party 1: number ending 0142; name hidden"],
+    dialogs: 1,
+    dialog: ["Dialog 1: recording, no start, 95 s, party 1; content hidden"],
+    seconds: 95,
+    attachments: 0,
+    analyses: 1,
+    links: 0,
+    signature: null,
+    recordings: [{ dialog: 1, type: "audio/wav" }],
+    ...changes,
   };
+}
 
-  test("an unsigned vCon is summarized by counts and masked parties", () => {
-    expect(summary(JSON.stringify(plain))).toEqual({
-      form: "unsigned",
-      created: "2026-10-23 12:00:00 UTC+00:00",
-      subject: "present, hidden",
-      parties: ["Party 1: number ending 0123; name hidden", "Party 2: address at example.com"],
-      dialogs: 2,
-      dialog: [
-        "Dialog 1: text, no start, 30 s, no parties; no content",
-        "Dialog 2: text, no start, 12.5 s, no parties; no content",
-      ],
-      seconds: 42.5,
-      attachments: 1,
-      analyses: 3,
-      links: 0,
-      signature: null,
-    });
+/** `view()` without the field `name`. */
+function without(name) {
+  const made = view();
+  delete made[name];
+  return made;
+}
+
+/** The fields every masked view must hold. */
+const REQUIRED = ["form", "created", "subject", "parties", "dialogs", "dialog", "seconds", "attachments", "analyses", "links", "signature"];
+
+test.describe("the server's masked view", () => {
+  // Success.
+  test("a masked view is read as the summary it holds", () => {
+    expect(maskedView(JSON.stringify(view()))).toEqual(view());
   });
-  test("the summary holds no name, subject, full number or address", () => {
-    const text = JSON.stringify(summary(JSON.stringify(plain)));
-    for (const hidden of ["Alice", "Billing", "5555550123", "bob@"]) {
-      expect(text).not.toContain(hidden);
+  test("each summary of the server's rule is read back as itself", () => {
+    expect(MASKED_CASES.length).toBeGreaterThan(20);
+    for (const { name, summary } of MASKED_CASES) {
+      expect(maskedView(JSON.stringify(summary)), name).toEqual(summary);
     }
   });
-  test("a vCon with no optional parts counts zero of each", () => {
-    expect(summary('{"uuid":"u"}')).toEqual({
-      form: "unsigned",
-      created: "",
-      subject: "none",
-      parties: [],
-      dialogs: 0,
-      dialog: [],
-      seconds: 0,
-      attachments: 0,
-      analyses: 0,
-      links: 0,
-      signature: null,
-    });
+  test("a signed vCon's view keeps the header fields it names", () => {
+    const signature = { alg: "RS256", kid: "key-1", x5t: "" };
+    expect(maskedView(JSON.stringify(view({ form: "signed (JWS)", signature }))).signature).toEqual(signature);
   });
-  test("parts of the wrong type count as none instead of failing", () => {
-    const odd = summary(JSON.stringify({ parties: "x", dialog: { a: 1 }, attachments: 7, analysis: null, subject: 5 }));
-    expect(odd.parties).toEqual([]);
-    expect(odd.dialogs).toBe(0);
-    expect(odd.attachments).toBe(0);
-    expect(odd.analyses).toBe(0);
-    expect(odd.subject).toBe("none");
+  test("the recordings are kept in the order the server lists them", () => {
+    const recordings = [
+      { dialog: 3, type: "audio/ogg" },
+      { dialog: 1, type: "audio/wav" },
+    ];
+    expect(maskedView(JSON.stringify(view({ recordings }))).recordings).toEqual(recordings);
   });
-  test("a duration that is not a positive number adds nothing", () => {
-    const body = { dialog: [{ duration: "90" }, { duration: -5 }, { duration: 7 }, {}, null] };
-    expect(summary(JSON.stringify(body)).seconds).toBe(7);
-    expect(summary(JSON.stringify(body)).dialogs).toBe(5);
+  test("the masked view is asked for as the only parameter of the read", () => {
+    expect(maskedPath("/vcons/0199e5c6-0d7a-7c11-8000-000000000001")).toBe("/vcons/0199e5c6-0d7a-7c11-8000-000000000001?view=masked");
+    expect(maskedPath("/legal/vcons/u/versions/v")).toBe("/legal/vcons/u/versions/v?view=masked");
   });
-  test("a signed vCon shows its header and the summary of its payload", () => {
-    const signed = {
-      payload: b64url(plain),
-      signatures: [{ protected: b64url({ alg: "RS256", kid: "key-1", x5t: "abc" }), signature: "c2ln" }],
-    };
-    const s = summary(JSON.stringify(signed));
-    expect(s.form).toBe("signed (JWS)");
-    expect(s.signature).toEqual({ alg: "RS256", kid: "key-1", x5t: "abc" });
-    expect(s.dialogs).toBe(2);
-    expect(s.parties).toHaveLength(2);
+  test("what the console says of an unreadable view tells the user what to do", () => {
+    expect(VIEW_UNREADABLE).toBe(
+      "The server's masked view of this vCon could not be read. Open it again; if this repeats, tell the server's operator.",
+    );
   });
-  test("a signed vCon whose header cannot be read still shows as signed", () => {
-    const signed = { payload: "%%%", signatures: [{ protected: "%%%" }] };
-    const s = summary(JSON.stringify(signed));
-    expect(s.form).toBe("signed (JWS)");
-    expect(s.signature).toEqual({ alg: "", kid: "", x5t: "" });
-    expect(s.dialogs).toBe(0);
+
+  // Failure.
+  test("text that is not JSON is no view", () => {
+    for (const text of ["", "not JSON", "{", "<html>"]) {
+      expect(maskedView(text), text).toBeNull();
+    }
   });
-  test("a header field that is not text is not shown", () => {
-    const signed = { payload: b64url({}), signatures: [{ protected: b64url({ alg: { a: 1 }, kid: 7 }) }] };
-    expect(summary(JSON.stringify(signed)).signature).toEqual({ alg: "", kid: "", x5t: "" });
+  test("JSON that is not an object is no view", () => {
+    for (const text of ["[]", "null", '"text"', "7", "true", JSON.stringify([view()])]) {
+      expect(maskedView(text), text).toBeNull();
+    }
   });
-  test("an encrypted vCon shows as encrypted and nothing is decoded", () => {
-    const s = summary(JSON.stringify({ protected: "eA", ciphertext: b64url(plain), iv: "aXY", tag: "dGFn" }));
-    expect(s.form).toBe("encrypted (JWE)");
-    expect(s.parties).toEqual([]);
-    expect(s.dialogs).toBe(0);
-    expect(s.subject).toBe("not readable");
+  test("a view without one of its fields is no view", () => {
+    for (const name of REQUIRED) {
+      expect(maskedView(JSON.stringify(without(name))), name).toBeNull();
+    }
   });
-  test("a body that is not JSON is named as such", () => {
-    expect(summary("<html>").form).toBe("not JSON");
-    expect(summary("").form).toBe("not JSON");
+  test("a text field that is not text is no view", () => {
+    for (const name of ["form", "created", "subject"]) {
+      for (const value of [null, 7, [], {}]) {
+        expect(maskedView(JSON.stringify(view({ [name]: value }))), `${name} ${JSON.stringify(value)}`).toBeNull();
+      }
+    }
   });
-  test("a JSON body that is not an object is named as such", () => {
-    expect(summary("[1,2]").form).toBe("not a JSON object");
-    expect(summary("null").form).toBe("not a JSON object");
-    expect(summary('"text"').form).toBe("not a JSON object");
+  test("a count that is not a whole number from zero is no view", () => {
+    for (const name of ["dialogs", "attachments", "analyses", "links"]) {
+      for (const value of [-1, 1.5, "1", null]) {
+        expect(maskedView(JSON.stringify(view({ [name]: value }))), `${name} ${JSON.stringify(value)}`).toBeNull();
+      }
+    }
+  });
+  test("seconds that are not a number are no view", () => {
+    for (const value of ["95", null, [95]]) {
+      expect(maskedView(JSON.stringify(view({ seconds: value }))), JSON.stringify(value)).toBeNull();
+    }
+  });
+  test("a list of lines that is not a list of text is no view", () => {
+    for (const name of ["parties", "dialog"]) {
+      for (const value of ["Party 1", [7], [null], ["a", {}], {}]) {
+        expect(maskedView(JSON.stringify(view({ [name]: value }))), `${name} ${JSON.stringify(value)}`).toBeNull();
+      }
+    }
+  });
+  test("a signature that is not a header of three text fields is no view", () => {
+    for (const signature of ["RS256", [], { alg: "RS256", kid: "k" }, { alg: 7, kid: "", x5t: "" }, { alg: "", kid: "", x5t: null }]) {
+      expect(maskedView(JSON.stringify(view({ signature }))), JSON.stringify(signature)).toBeNull();
+    }
+  });
+  test("recordings that are not a list of dialog numbers and types are no view", () => {
+    for (const recordings of [
+      null,
+      "dialog 1",
+      { dialog: 1, type: "audio/wav" },
+      [null],
+      [{ dialog: 0, type: "audio/wav" }],
+      [{ dialog: 1.5, type: "audio/wav" }],
+      [{ dialog: "1", type: "audio/wav" }],
+      [{ dialog: 1 }],
+      [{ dialog: 1, type: 7 }],
+    ]) {
+      expect(maskedView(JSON.stringify(view({ recordings }))), JSON.stringify(recordings)).toBeNull();
+    }
+  });
+  test("a path that already has a query or a fragment is refused", () => {
+    expect(() => maskedPath("/vcons/u?reveal=all")).toThrow(RangeError);
+    expect(() => maskedPath("/vcons/u#x")).toThrow(RangeError);
+    expect(() => maskedPath("/vcons/u?view=masked")).toThrow(RangeError);
+  });
+
+  // Edge.
+  test("a view from an older server, without recordings, has none", () => {
+    expect(maskedView(JSON.stringify(without("recordings"))).recordings).toEqual([]);
+  });
+  test("fields the console does not show are dropped", () => {
+    const got = maskedView(JSON.stringify(view({ body: "hello there", recordings: [{ dialog: 1, type: "audio/wav", body: "AAAA" }] })));
+    expect(got).toEqual(view());
+    expect(JSON.stringify(got)).not.toContain("hello there");
+    expect(JSON.stringify(got)).not.toContain("AAAA");
+  });
+  test("a signature's other header fields are dropped", () => {
+    const got = maskedView(JSON.stringify(view({ signature: { alg: "RS256", kid: "", x5t: "", x5c: ["MIIB"] } })));
+    expect(got.signature).toEqual({ alg: "RS256", kid: "", x5t: "" });
+  });
+  test("seconds of any size or fraction are read as sent", () => {
+    for (const seconds of [0, 0.30000000000000004, 1e21, -1]) {
+      expect(maskedView(JSON.stringify(view({ seconds }))).seconds, String(seconds)).toBe(seconds);
+    }
+  });
+  test("empty text and empty lists are a view", () => {
+    const got = maskedView(JSON.stringify(view({ created: "", parties: [], dialog: [], dialogs: 0, recordings: [] })));
+    expect(got.created).toBe("");
+    expect(got.parties).toEqual([]);
+    expect(got.recordings).toEqual([]);
+  });
+  test("a field named like one every object has is not read from the object", () => {
+    const text = JSON.stringify(without("form")).replace("{", '{"__proto__":{"form":"unsigned"},');
+    expect(maskedView(text)).toBeNull();
+  });
+  test("a recording of a type the console does not know is kept for the player to refuse", () => {
+    expect(maskedView(JSON.stringify(view({ recordings: [{ dialog: 2, type: "audio/flac" }] }))).recordings).toEqual([
+      { dialog: 2, type: "audio/flac" },
+    ]);
   });
 });
 
@@ -315,49 +290,6 @@ test.describe("refusals", () => {
   });
   test("no answer at all is told to check the connection", () => {
     expect(refusalText(0, undefined)).toBe("The server could not be reached. Check the connection and try again.");
-  });
-});
-
-test.describe("dialog lines", () => {
-  test("a dialog line shows its type, start, length and parties, and no content", () => {
-    const d = { type: "text", start: "2026-10-23T12:00:00Z", duration: 30, parties: [0, 1], body: "hello there" };
-    expect(dialogLine(d, 0)).toBe("Dialog 1: text, 2026-10-23 12:00:00 UTC+00:00, 30 s, parties 1, 2; content hidden");
-  });
-  test("a recording kept elsewhere says its content is at a link", () => {
-    const d = { type: "recording", parties: 1, url: "https://media.example.com/a.wav" };
-    const line = dialogLine(d, 2);
-    expect(line).toBe("Dialog 3: recording, no start, no length, party 2; content at a link outside the server");
-    expect(line).not.toContain("media.example.com");
-  });
-  test("a type the vCon format does not name is not shown", () => {
-    expect(dialogLine({ type: "Alice said hello" }, 0)).toBe("Dialog 1: other type, no start, no length, no parties; no content");
-  });
-  test("each type the vCon format names is shown", () => {
-    for (const type of ["recording", "text", "transfer", "incomplete"]) {
-      expect(dialogLine({ type }, 0)).toContain(`Dialog 1: ${type},`);
-    }
-  });
-  test("parties that are not whole numbers from zero are not shown", () => {
-    for (const parties of [-1, 1.5, "0", [0, "x"], [], null, { a: 1 }]) {
-      expect(dialogLine({ type: "text", parties }, 0), JSON.stringify(parties)).toContain(", no parties;");
-    }
-  });
-  test("a start that is not a time is not shown", () => {
-    expect(dialogLine({ type: "text", start: "Alice called" }, 0)).toContain(", no start,");
-    expect(dialogLine({ type: "text", start: 7 }, 0)).toContain(", no start,");
-  });
-  test("a dialog that is not an object is named and not read", () => {
-    expect(dialogLine("hello", 1)).toBe("Dialog 2: not an object");
-    expect(dialogLine(null, 0)).toBe("Dialog 1: not an object");
-  });
-  test("the summary lists a line for each dialog", () => {
-    const body = { dialog: [{ type: "text", body: "secret words" }, { type: "recording", url: "https://media.example.com/a" }] };
-    const s = summary(JSON.stringify(body));
-    expect(s.dialog).toEqual([
-      "Dialog 1: text, no start, no length, no parties; content hidden",
-      "Dialog 2: recording, no start, no length, no parties; content at a link outside the server",
-    ]);
-    expect(s.links).toBe(1);
   });
 });
 
@@ -690,31 +622,6 @@ test.describe("recordings", () => {
     expect(got.reason).toContain(`is declared as ${hostile.slice(0, 80)}…, which the console does not play.`);
     expect(got.reason).not.toContain("a".repeat(100));
   });
-  test("the dialogs that hold a recording the console plays are listed by place and type", () => {
-    const text = withDialogs(inline(wav()), { type: "text", body: "hello", encoding: "none" }, inline(opus(), "audio/opus"));
-    expect(format.recordings(text)).toEqual([
-      { index: 0, type: "audio/wav" },
-      { index: 2, type: "audio/opus" },
-    ]);
-  });
-  test("a vCon that cannot be read, or has no dialog list, lists no recording", () => {
-    const sealed = JSON.stringify({ protected: "eA", ciphertext: "Y2lwaGVy", iv: "aXY", tag: "dGFn" });
-    for (const text of [sealed, "not json", "{}", JSON.stringify({ dialog: "x" }), JSON.stringify({ dialog: [null, 7, "x", []] })]) {
-      expect(format.recordings(text), text).toEqual([]);
-    }
-  });
-  test("a dialog the console would refuse to play is not listed as a recording", () => {
-    const text = withDialogs(
-      { type: "recording", mediatype: "audio/wav", url: "https://media.example.com/a.wav" },
-      inline(wav(), "image/svg+xml"),
-      inline(wav(), "video/mp4"),
-      { ...inline(wav()), encoding: "none" },
-      { ...inline(wav()), mediatype: undefined },
-      inline(wav(200)),
-      inline(mp3(), "audio/mpeg"),
-    );
-    expect(format.recordings(text, 100)).toEqual([{ index: 6, type: "audio/mpeg" }]);
-  });
 });
 
 /** The message the console hands the player: a recording, its type and a line naming it. */
@@ -838,7 +745,6 @@ test.describe("other names for the audio types", () => {
       const got = format.recording(withDialogs(inline(wav(), type)), 0);
       expect(got.ok, type).toBe(false);
       expect(got.reason, type).toContain(`is declared as ${type}, which the console does not play.`);
-      expect(format.recordings(withDialogs(inline(wav(), type))), type).toEqual([]);
     }
   });
   test("the table of other names maps each to a type the console plays, and names none of those types", () => {
@@ -877,14 +783,12 @@ test.describe("other names for the audio types", () => {
     expect(typeof url).toBe("string");
     example.dialog[0] = { ...dialog, encoding: "base64url", body: Buffer.from(mp3()).toString("base64url") };
     const text = JSON.stringify(example);
-    expect(format.recordings(text)).toEqual([{ index: 0, type: "audio/mpeg" }]);
     const got = format.recording(text, 0);
     expect(got.ok).toBe(true);
     expect(got.type).toBe("audio/mpeg");
   });
   test("the IETF example as published keeps its recording at a link, which is never played", () => {
     const text = readFileSync(new URL("../../crates/vcon/tests/fixtures/ietf/ab_call_ext_rec.vcon", import.meta.url), "utf8");
-    expect(format.recordings(text)).toEqual([]);
     expect(format.recording(text, 0)).toEqual({
       ok: false,
       reason: "Dialog 1's recording is at a link outside the server, which the console never loads.",

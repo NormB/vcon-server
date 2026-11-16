@@ -26,7 +26,7 @@ use crate::access::{self, AuthError, Caller, Plane, Scope, Scopes};
 use crate::audit::{Action, Actor, AuditQuery, Entry};
 use crate::ids::{KeyId, TenantId, VersionId};
 use crate::masked;
-use crate::query::{self, BadQuery};
+use crate::query::BadQuery;
 use crate::retention::Retention;
 use crate::reveal::Part;
 use crate::store::{Caller as StoreCaller, Created, ListQuery, Store, StoreError};
@@ -369,29 +369,7 @@ async fn admin_audit_read(
     }
 }
 
-/// What a legal read's query makes of it: the part it reveals, if it
-/// carries the marker, and the action it is recorded under. A marker the
-/// route does not take leaves the request the plain read it is refused as.
-/// The masked view is not offered here: a query that asks for it is
-/// refused, so it is never answered with the whole vCon.
-fn marked(
-    uri: &Uri,
-    read: Action,
-    reveal: fn(Part) -> Action,
-) -> (Result<Option<Part>, BadQuery>, Action) {
-    let marker = if query::names(uri.query(), masked::PARAMETER) {
-        Err(BadQuery)
-    } else {
-        Part::from_query(uri.query())
-    };
-    let action = match marker {
-        Ok(Some(part)) => reveal(part),
-        Ok(None) | Err(BadQuery) => read,
-    };
-    (marker, action)
-}
-
-/// What a tenant read asks for by its query.
+/// What a tenant or legal read asks for by its query.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Asked {
     /// The vCon as stored.
@@ -402,10 +380,33 @@ enum Asked {
     Masked,
 }
 
-/// What a tenant read's query asks for, and the action it is recorded
-/// under. A query that asks for both the view and a reveal, or for either
-/// wrongly, is refused, recorded as the plain read.
-fn asked(uri: &Uri) -> (Result<Asked, BadQuery>, Action) {
+/// The actions a read route records: its plain read, its masked view and
+/// its reveal of a part.
+#[derive(Clone, Copy)]
+struct Actions {
+    read: Action,
+    masked: Action,
+    reveal: fn(Part) -> Action,
+}
+
+/// The actions of `GET /vcons/{uuid}`.
+const TENANT_READ: Actions = Actions {
+    read: Action::Read,
+    masked: Action::ReadMasked,
+    reveal: Action::Reveal,
+};
+
+/// The actions of the two legal reads.
+const LEGAL_READ: Actions = Actions {
+    read: Action::LegalRead,
+    masked: Action::LegalReadMasked,
+    reveal: Action::LegalReveal,
+};
+
+/// What a read's query asks for, and the action of `actions` it is
+/// recorded under. A query that asks for both the view and a reveal, or
+/// for either wrongly, is refused, recorded as the plain read.
+fn asked(uri: &Uri, actions: Actions) -> (Result<Asked, BadQuery>, Action) {
     let asked = match (
         masked::from_query(uri.query()),
         Part::from_query(uri.query()),
@@ -416,9 +417,9 @@ fn asked(uri: &Uri) -> (Result<Asked, BadQuery>, Action) {
         _ => Err(BadQuery),
     };
     let action = match asked {
-        Ok(Asked::Masked) => Action::ReadMasked,
-        Ok(Asked::Reveal(part)) => Action::Reveal(part),
-        Ok(Asked::Plain) | Err(BadQuery) => Action::Read,
+        Ok(Asked::Masked) => actions.masked,
+        Ok(Asked::Reveal(part)) => (actions.reveal)(part),
+        Ok(Asked::Plain) | Err(BadQuery) => actions.read,
     };
     (asked, action)
 }
@@ -447,15 +448,20 @@ pub(crate) fn inflated(stored: &crate::store::Stored, limit: u64) -> Result<Vec<
 }
 
 /// The answer of the masked view of `stored`: its summary as JSON, with the
-/// version's tag, as the plain read gives it.
-fn masked_answer(stored: &crate::store::Stored, limit: u64) -> Response {
+/// version's tag, as the plain read gives it, and with `state` as
+/// `Vcon-State` when the read is a legal one.
+fn masked_answer(
+    stored: &crate::store::Stored,
+    limit: u64,
+    state: Option<&'static str>,
+) -> Response {
     let made = match inflated(stored, limit) {
         Ok(text) => masked::summary(&masked::text_of(&text)),
         Err(refused) => return refused.into_response(),
     };
     // A summary is text, numbers and lists of text, which always write.
     let json = serde_json::to_vec(&made).expect("a summary writes as JSON");
-    (
+    let mut answer = (
         StatusCode::OK,
         [
             (CONTENT_TYPE, "application/json".to_owned()),
@@ -463,7 +469,13 @@ fn masked_answer(stored: &crate::store::Stored, limit: u64) -> Response {
         ],
         json,
     )
-        .into_response()
+        .into_response();
+    if let Some(state) = state {
+        answer
+            .headers_mut()
+            .insert(VCON_STATE, HeaderValue::from_static(state));
+    }
+    answer
 }
 
 /// `GET /vcons/{uuid}`: the current version, as stored. With
@@ -477,7 +489,7 @@ async fn read(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    let (marker, action) = asked(&uri);
+    let (marker, action) = asked(&uri, TENANT_READ);
     let admitted = match admit(&app, &headers, body, Scope::Read, action).await {
         Ok(admitted) => admitted,
         Err(refused) => return refused.into_response(),
@@ -501,7 +513,7 @@ async fn read(
         Asked::Plain => store.get(&StoreCaller { key }, uuid),
     };
     match blocking(read).await {
-        Ok(stored) if asked == Asked::Masked => masked_answer(&stored, app.limits.inflated),
+        Ok(stored) if asked == Asked::Masked => masked_answer(&stored, app.limits.inflated, None),
         Ok(stored) => {
             let content_type = if stored.gzip {
                 "application/vcon+gzip"
@@ -650,7 +662,8 @@ async fn legal_admit(
 /// `GET /legal/vcons/{uuid}`: the current version, or the latest kept one
 /// of a deleted uuid, as stored, with `Vcon-State`. With `?reveal=<part>`
 /// the answer is the same and the read is recorded as a legal reveal of
-/// that part.
+/// that part. With `?view=masked` the answer is that version's masked
+/// view, recorded as `legal_read_masked`.
 async fn legal_read(
     State(app): State<Arc<App>>,
     UriPath(uuid): UriPath<String>,
@@ -658,7 +671,7 @@ async fn legal_read(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    let (marker, action) = marked(&uri, Action::LegalRead, Action::LegalReveal);
+    let (marker, action) = asked(&uri, LEGAL_READ);
     match legal_admit(&app, &headers, body, action, &uuid).await {
         Ok((admitted, uuid)) => legal_body(&app, &admitted, uuid, None, marker).await,
         Err(refused) => refused.into_response(),
@@ -667,7 +680,8 @@ async fn legal_read(
 
 /// `GET /legal/vcons/{uuid}/versions/{version}`: that kept version, as
 /// stored. With `?reveal=<part>` the answer is the same and the read is
-/// recorded as a legal reveal of that part.
+/// recorded as a legal reveal of that part. With `?view=masked` the answer
+/// is that version's masked view, recorded as `legal_read_masked`.
 async fn legal_version(
     State(app): State<Arc<App>>,
     UriPath((uuid, version)): UriPath<(String, String)>,
@@ -675,7 +689,7 @@ async fn legal_version(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    let (marker, action) = marked(&uri, Action::LegalRead, Action::LegalReveal);
+    let (marker, action) = asked(&uri, LEGAL_READ);
     let (admitted, uuid) = match legal_admit(&app, &headers, body, action, &uuid).await {
         Ok(admitted) => admitted,
         Err(refused) => return refused.into_response(),
@@ -691,38 +705,42 @@ async fn legal_version(
     legal_body(&app, &admitted, uuid, Some(version), marker).await
 }
 
-/// A legal read's answer: the body as stored, its tag and the uuid's
-/// state. A marker the route does not take is refused here, after the
-/// path, and recorded as the legal read it is.
+/// A legal read's answer: the body as stored, or its masked view, with its
+/// tag and the uuid's state. A query the route does not take is refused
+/// here, after the path, and recorded as the legal read it is.
 async fn legal_body(
     app: &Arc<App>,
     admitted: &Admitted,
     uuid: Uuid,
     version: Option<VersionId>,
-    marker: Result<Option<Part>, BadQuery>,
+    marker: Result<Asked, BadQuery>,
 ) -> Response {
     let (store, key) = (admitted.store.clone(), admitted.caller.key);
-    let Ok(part) = marker else {
+    let Ok(asked) = marker else {
         let refused = Problem::BadQuery;
-        let entry = refusal(key, Action::LegalRead, refused);
+        let entry = refusal(key, LEGAL_READ.read, refused);
         return app
             .refuse(Some(admitted.tenant), entry, refused)
             .await
             .into_response();
     };
-    let read = move || match part {
-        Some(part) => store.legal_reveal(&StoreCaller { key }, uuid, version, part),
-        None => store.legal_get(&StoreCaller { key }, uuid, version),
+    let read = move || match asked {
+        Asked::Reveal(part) => store.legal_reveal(&StoreCaller { key }, uuid, version, part),
+        Asked::Masked => store.legal_read_masked(&StoreCaller { key }, uuid, version),
+        Asked::Plain => store.legal_get(&StoreCaller { key }, uuid, version),
     };
     // Store records its own outcomes.
     match blocking(read).await {
         Ok(read) => {
+            let state = if read.deleted { "deleted" } else { "live" };
+            if asked == Asked::Masked {
+                return masked_answer(&read.stored, app.limits.inflated, Some(state));
+            }
             let content_type = if read.stored.gzip {
                 "application/vcon+gzip"
             } else {
                 "application/vcon"
             };
-            let state = if read.deleted { "deleted" } else { "live" };
             (
                 StatusCode::OK,
                 [
@@ -5326,6 +5344,9 @@ mod reveal_routes;
 
 #[cfg(test)]
 mod masked_routes;
+
+#[cfg(test)]
+mod legal_masked_routes;
 
 #[cfg(test)]
 mod player_routes;

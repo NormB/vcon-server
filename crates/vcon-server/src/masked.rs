@@ -1,15 +1,23 @@
-//! The masked view of a vCon (`GET /vcons/{uuid}?view=masked`): what it
-//! holds, without any name, subject, full number, address or content, so a
-//! client can show a vCon before anyone reveals a part of it.
+//! The masked view of a vCon (`GET /vcons/{uuid}?view=masked`, and
+//! `?view=masked` on the two legal reads): what it holds, without any name,
+//! subject, full number, address or content, so a client can show a vCon
+//! before anyone reveals a part of it.
 //!
-//! THE RULE is the console's: `summary` in console/format.js, which the
-//! browser applies to a vCon it has read whole. This module is its port, and
-//! tests/data/masked-cases.json holds the cases both are tested against
-//! (here and in console-tests/tests/format.spec.js), so the two give the
-//! same answer. A change to one is a change to both and to the cases.
+//! THIS MODULE IS THE ONE RULE. The console and the terminal UI both show
+//! the view the server makes here; neither makes a summary of its own.
+//! tests/data/masked-cases.json holds the cases the rule is tested against
+//! here, and console-tests/tests/masked-view.spec.js shows each case's
+//! summary through the console's display. A change to the rule is a change
+//! to the cases.
 //!
-//! The parts a reveal shows (`section`, `links`) are ported here too, for
-//! the terminal UI, which shows a reveal as the console does.
+//! The view also lists the recordings the console plays (`recordings`), so
+//! the console offers Play without receiving any content; their types and
+//! size limit are the console player's (console/format.js), held equal by
+//! tests here.
+//!
+//! The parts a reveal shows (`section`, `links`) are ported here from
+//! console/format.js, for the terminal UI, which shows a reveal as the
+//! console does.
 
 use base64::engine::DecodePaddingMode;
 use base64::engine::general_purpose::{GeneralPurpose, GeneralPurposeConfig};
@@ -137,6 +145,7 @@ fn empty(form: &str, subject: &str) -> Summary {
         analyses: 0,
         links: 0,
         signature: None,
+        recordings: Vec::new(),
     }
 }
 
@@ -172,6 +181,7 @@ fn counted(vcon: &Map<String, Value>, form: &str) -> Summary {
         analyses: items(vcon.get("analysis")).len(),
         links: links_of(vcon).len(),
         signature: None,
+        recordings: recordings_within(vcon, AUDIO_LIMIT),
     }
 }
 
@@ -221,6 +231,99 @@ pub struct Summary {
     pub links: usize,
     /// A signed vCon's first signature header, else none.
     pub signature: Option<Signature>,
+    /// The dialogs that hold, inside the vCon, a recording of a type in
+    /// [`AUDIO_TYPES`] or [`AUDIO_ALIASES`] and of at most [`AUDIO_LIMIT`]
+    /// bytes: the recordings the console plays.
+    #[serde(default)]
+    pub recordings: Vec<Recording>,
+}
+
+/// A recording the console plays: the dialog that holds it, counted from
+/// one, and the type it plays as, one of [`AUDIO_TYPES`]. No text of the
+/// vCon is in it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Recording {
+    /// The dialog's number, counted from one.
+    pub dialog: usize,
+    /// The type it plays as.
+    #[serde(rename = "type")]
+    pub r#type: String,
+}
+
+/// The most bytes of one recording the console plays: 100 MiB, as
+/// `AUDIO_LIMIT` in console/format.js.
+pub const AUDIO_LIMIT: u64 = 100 * 1024 * 1024;
+
+/// The audio types the console plays, as `AUDIO_TYPES` in
+/// console/format.js.
+pub const AUDIO_TYPES: [&str; 4] = ["audio/wav", "audio/mpeg", "audio/ogg", "audio/opus"];
+
+/// Other names producers give the types the console plays, each with the
+/// type it is a name for, as `AUDIO_ALIASES` in console/format.js.
+pub const AUDIO_ALIASES: [(&str, &str); 6] = [
+    ("audio/x-wav", "audio/wav"),
+    ("audio/wave", "audio/wav"),
+    ("audio/vnd.wave", "audio/wav"),
+    ("audio/x-mp3", "audio/mpeg"),
+    ("audio/mp3", "audio/mpeg"),
+    ("audio/x-ogg", "audio/ogg"),
+];
+
+/// The dialogs of `vcon` that hold, inside the vCon, a recording the
+/// console plays, of at most `limit` bytes, read without decoding any, as
+/// `offered` in console/format.js reads them before a Play.
+fn recordings_within(vcon: &Map<String, Value>, limit: u64) -> Vec<Recording> {
+    items(vcon.get("dialog"))
+        .iter()
+        .enumerate()
+        .filter_map(|(index, dialog)| {
+            let played = played_within(dialog.as_object()?, limit)?;
+            Some(Recording {
+                dialog: index + 1,
+                r#type: played.to_owned(),
+            })
+        })
+        .collect()
+}
+
+/// The type a dialog's recording plays as, when the dialog holds, inside
+/// the vCon, an encoded recording of a type the console plays and of at
+/// most `limit` bytes; else none.
+fn played_within(dialog: &Map<String, Value>, limit: u64) -> Option<&'static str> {
+    let body = dialog
+        .get("body")?
+        .as_str()
+        .filter(|body| !body.is_empty())?;
+    let encoding = dialog.get("encoding")?.as_str()?;
+    if !MEDIA_ENCODINGS.contains(&encoding) {
+        return None;
+    }
+    // As format.js: `mediatype` when the dialog names it, else `mimetype`,
+    // the name older vCons use; without its parameters, in lower case.
+    let declared = match dialog.get("mediatype") {
+        Some(named) => named,
+        None => dialog.get("mimetype")?,
+    };
+    let declared = declared
+        .as_str()?
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim_matches(trimmed_by_javascript)
+        .to_lowercase();
+    let played = AUDIO_TYPES
+        .into_iter()
+        .find(|known| *known == declared)
+        .or_else(|| {
+            AUDIO_ALIASES
+                .into_iter()
+                .find(|(name, _)| *name == declared)
+                .map(|(_, played)| played)
+        })?;
+    // The size format.js counts: three bytes for each four characters
+    // (UTF-16 code units) of the body without its padding.
+    let characters = body.trim_end_matches('=').encode_utf16().count() as u64;
+    (characters * 3 / 4 <= limit).then_some(played)
 }
 
 /// The fields of a signature's protected header the view names; each is
@@ -642,7 +745,8 @@ mod tests {
 
     use super::*;
 
-    /// The cases format.js is tested against too.
+    /// The cases of the rule; the console's display is tested against them
+    /// too (console-tests/tests/masked-view.spec.js).
     const CASES: &str = include_str!("../tests/data/masked-cases.json");
 
     fn cases() -> Vec<(String, String, Value)> {
@@ -666,7 +770,7 @@ mod tests {
     // Success.
 
     #[test]
-    fn each_case_is_summarized_as_format_js_summarizes_it() {
+    fn each_case_is_summarized_as_the_case_states() {
         let cases = cases();
         assert!(cases.len() > 20, "there are cases to compare");
         for (name, body, wanted) in cases {
@@ -1127,5 +1231,256 @@ mod tests {
             Some("none"),
             "no subject"
         );
+    }
+
+    // The recordings the console plays, listed by the view.
+
+    /// A dialog holding `body` as an inline recording declared as `type`.
+    fn inline(body: &str, declared: &str) -> Value {
+        json!({"type": "recording", "body": body, "encoding": "base64url", "mediatype": declared})
+    }
+
+    fn listed(dialogs: &[Value], limit: u64) -> Vec<Recording> {
+        let vcon = json!({ "dialog": dialogs });
+        recordings_within(vcon.as_object().expect("an object"), limit)
+    }
+
+    fn recording(dialog: usize, played: &str) -> Recording {
+        Recording {
+            dialog,
+            r#type: played.to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_recording_the_console_plays_is_listed_by_its_dialog_number() {
+        let made = masked(&json!({"dialog": [{"type": "text"}, inline("AAAA", "audio/wav")]}));
+        assert_eq!(
+            made.recordings,
+            vec![recording(2, "audio/wav")],
+            "the second dialog"
+        );
+    }
+
+    #[test]
+    fn a_recording_is_listed_as_the_type_it_plays_as_not_the_name_it_was_given() {
+        for (declared, played) in [
+            ("audio/x-wav", "audio/wav"),
+            ("audio/wave", "audio/wav"),
+            ("audio/vnd.wave", "audio/wav"),
+            ("audio/x-mp3", "audio/mpeg"),
+            ("audio/mp3", "audio/mpeg"),
+            ("audio/x-ogg", "audio/ogg"),
+            ("audio/opus", "audio/opus"),
+        ] {
+            assert_eq!(
+                listed(&[inline("AAAA", declared)], 100),
+                vec![recording(1, played)],
+                "{declared}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_recording_of_the_size_limit_is_listed() {
+        // Four characters of base64 are three bytes.
+        assert_eq!(
+            listed(&[inline("AAAA", "audio/wav")], 3),
+            vec![recording(1, "audio/wav")],
+            "at the limit"
+        );
+    }
+
+    #[test]
+    fn the_padding_of_a_body_is_not_counted_in_its_size() {
+        // "AAA=" is two bytes once its padding is dropped.
+        assert_eq!(
+            listed(&[inline("AAA=", "audio/wav")], 2),
+            vec![recording(1, "audio/wav")],
+            "two bytes"
+        );
+    }
+
+    #[test]
+    fn the_view_lists_the_recordings_up_to_the_consoles_limit() {
+        assert_eq!(AUDIO_LIMIT, 100 * 1024 * 1024, "100 MiB");
+        let console = include_str!("../console/format.js");
+        assert!(
+            console.contains("export const AUDIO_LIMIT = 100 * 1024 * 1024;"),
+            "format.js plays the same size"
+        );
+    }
+
+    #[test]
+    fn the_view_lists_the_types_and_names_the_console_plays() {
+        let console = include_str!("../console/format.js");
+        let types = AUDIO_TYPES
+            .iter()
+            .map(|t| format!("\"{t}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        assert!(
+            console.contains(&format!(
+                "export const AUDIO_TYPES = Object.freeze([{types}]);"
+            )),
+            "format.js plays {types}"
+        );
+        for (name, played) in AUDIO_ALIASES {
+            assert!(
+                console.contains(&format!("  \"{name}\": \"{played}\",\n")),
+                "format.js plays {name} as {played}"
+            );
+        }
+        assert_eq!(
+            console.matches("\": \"audio/").count(),
+            AUDIO_ALIASES.len(),
+            "format.js has no other name"
+        );
+    }
+
+    #[test]
+    fn a_summary_without_recordings_reads_back_with_none() {
+        let mut made = serde_json::to_value(masked(&json!({}))).expect("JSON");
+        made.as_object_mut()
+            .expect("an object")
+            .remove("recordings");
+        let back: Summary = serde_json::from_value(made).expect("read back");
+        assert!(back.recordings.is_empty(), "none");
+    }
+
+    #[test]
+    fn a_recording_reads_back_as_the_same_recording() {
+        let made = masked(&json!({"dialog": [inline("AAAA", "audio/ogg")]}));
+        let text = serde_json::to_string(&made).expect("JSON");
+        assert!(
+            text.contains(r#""recordings":[{"dialog":1,"type":"audio/ogg"}]"#),
+            "{text}"
+        );
+        let back: Summary = serde_json::from_str(&text).expect("read back");
+        assert_eq!(back, made, "the same");
+    }
+
+    #[test]
+    fn a_recording_over_the_size_limit_is_not_listed() {
+        assert_eq!(
+            listed(&[inline("AAAA", "audio/wav")], 2),
+            vec![],
+            "one byte over"
+        );
+    }
+
+    #[test]
+    fn a_recording_kept_at_a_link_is_not_listed() {
+        let dialog = json!({"type": "recording", "url": "https://media.example.com/a.wav", "mediatype": "audio/wav"});
+        assert_eq!(listed(&[dialog], 100), vec![], "at a link");
+    }
+
+    #[test]
+    fn a_body_that_is_not_encoded_media_is_not_listed() {
+        for encoding in [
+            json!("none"),
+            json!("json"),
+            json!(""),
+            json!(null),
+            json!(64),
+        ] {
+            let dialog = json!({"body": "AAAA", "encoding": encoding, "mediatype": "audio/wav"});
+            assert_eq!(listed(&[dialog], 100), vec![], "{encoding}");
+        }
+    }
+
+    #[test]
+    fn a_body_that_is_not_text_is_not_listed() {
+        for body in [json!(null), json!(7), json!(["AAAA"]), json!("")] {
+            let dialog = json!({"body": body, "encoding": "base64", "mediatype": "audio/wav"});
+            assert_eq!(listed(&[dialog], 100), vec![], "{body}");
+        }
+    }
+
+    #[test]
+    fn a_type_the_console_does_not_play_is_not_listed() {
+        for declared in [
+            "video/mp4",
+            "application/ogg",
+            "audio/flac",
+            "audio",
+            "",
+            "  ",
+        ] {
+            assert_eq!(
+                listed(&[inline("AAAA", declared)], 100),
+                vec![],
+                "{declared:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_recording_that_declares_no_type_is_not_listed() {
+        let dialog = json!({"body": "AAAA", "encoding": "base64url"});
+        assert_eq!(listed(&[dialog], 100), vec![], "no type");
+    }
+
+    #[test]
+    fn a_media_type_that_is_not_text_hides_the_older_name() {
+        // As in format.js: `mediatype` is read when present, so `mimetype`
+        // is not read in its place.
+        let dialog = json!({"body": "AAAA", "encoding": "base64url", "mediatype": 7, "mimetype": "audio/wav"});
+        assert_eq!(listed(&[dialog], 100), vec![], "no type");
+    }
+
+    #[test]
+    fn an_encrypted_or_unreadable_vcon_lists_no_recording() {
+        for text in [
+            json!({"ciphertext": "x", "dialog": [inline("AAAA", "audio/wav")]}).to_string(),
+            "not JSON".to_owned(),
+            "[]".to_owned(),
+        ] {
+            assert_eq!(summary(&text).recordings, vec![], "{text}");
+        }
+    }
+
+    #[test]
+    fn the_older_name_of_the_media_type_is_read_when_there_is_no_media_type() {
+        let dialog = json!({"body": "AAAA", "encoding": "base64", "mimetype": "audio/mpeg"});
+        assert_eq!(
+            listed(&[dialog], 100),
+            vec![recording(1, "audio/mpeg")],
+            "mimetype"
+        );
+    }
+
+    #[test]
+    fn a_type_is_read_in_any_case_without_its_parameters() {
+        for declared in ["AUDIO/WAV", " audio/wav ; codecs=1", "Audio/Wav;rate=8000"] {
+            assert_eq!(
+                listed(&[inline("AAAA", declared)], 100),
+                vec![recording(1, "audio/wav")],
+                "{declared:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_parameter_of_the_type_never_reaches_the_view() {
+        let made = masked(&json!({"dialog": [inline("AAAA", "audio/wav; name=Ada Example")]}));
+        let text = serde_json::to_string(&made).expect("JSON");
+        assert!(!text.contains("Ada"), "{text}");
+        assert_eq!(made.recordings, vec![recording(1, "audio/wav")], "listed");
+    }
+
+    #[test]
+    fn dialogs_that_are_not_objects_keep_the_numbers_of_the_others() {
+        assert_eq!(
+            listed(&[json!("x"), json!(null), inline("AAAA", "audio/wav")], 100),
+            vec![recording(3, "audio/wav")],
+            "the third dialog"
+        );
+    }
+
+    #[test]
+    fn a_dialog_list_that_is_not_a_list_lists_no_recording() {
+        let made = masked(&json!({"dialog": inline("AAAA", "audio/wav")}));
+        assert_eq!(made.recordings, vec![], "not a list");
     }
 }

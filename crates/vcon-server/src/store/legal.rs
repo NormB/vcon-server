@@ -94,7 +94,20 @@ impl Store {
         self.legal_read_as(who, uuid, version, Action::LegalReveal(part))
     }
 
-    /// The read behind `legal_get` and `legal_reveal`: the answer is
+    /// Reads as [`Store::legal_get`] does, for a caller about to show the
+    /// version's masked view: the same answer, recorded as
+    /// `legal_read_masked`.
+    pub fn legal_read_masked(
+        &self,
+        who: &Caller,
+        uuid: Uuid,
+        version: Option<VersionId>,
+    ) -> Result<Legal, StoreError> {
+        self.legal_read_as(who, uuid, version, Action::LegalReadMasked)
+    }
+
+    /// The read behind `legal_get`, `legal_reveal` and
+    /// `legal_read_masked`: the answer is
     /// recorded as `action`.
     fn legal_read_as(
         &self,
