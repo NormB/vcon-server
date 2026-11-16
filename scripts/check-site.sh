@@ -37,7 +37,8 @@ grep -qF "<title>vcon-server — ${headline,}</title>" "$home" || fail "the home
 grep -qF 'https://github.com/NormB/vcon-server' "$home" || fail "the home page does not link to the repository"
 # The note under the lead: this project is not the vCon Conserver, with the
 # link to the Conserver, rendered as a link (readme_sync holds its words).
-grep -qP '<p class="notice">This vcon-server, [^<]*<a href="https://github\.com/vcon-dev/vcon-server">' "$home" \
+# Zola writes rel="external" on a markdown link to another site.
+grep -qP '<p class="notice">This vcon-server, [^<]*<a [^>]*href="https://github\.com/vcon-dev/vcon-server"[^>]*>' "$home" \
   || fail "the home page has no note under the lead linking to the vCon Conserver"
 [ "$(cat "$site/CNAME" 2>/dev/null)" = "vcon-server.com" ] || fail "CNAME is not vcon-server.com"
 grep -qF 'https://www.linkedin.com/in/nbrandinger' "$home" || fail "the home page lacks the author's credit"
