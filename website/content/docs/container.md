@@ -213,6 +213,13 @@ docker run -d --name vcon-server --restart unless-stopped --ulimit memlock=-1 -p
   -v vcon-etc:/etc/vcon-server -v vcon-data:/var/lib/vcon-server -v vcon-backup:/backup \
   vcon-server:$VERSION >/dev/null
 timeout 30 sh -c 'until docker logs vcon-server 2>&1 | grep -q "purge sweep"; do sleep 1; done'
+```
+
+From 0.4.7 the server logs `serving` before the first purge sweep's line;
+release 0.4.6 can log the sweep's line first:
+
+<!-- docs-test: since 0.4.7 -->
+```sh
 docker logs vcon-server 2>&1 | grep vcon_server
 ```
 
