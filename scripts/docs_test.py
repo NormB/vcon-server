@@ -1627,6 +1627,34 @@ def latest_release(token: str | None, run=subprocess.run) -> str:
 
 
 RELEASE_VARIABLES = ("VERSION", "NEW_VERSION")
+# What `run` prints (as "docs-test: <note>") when it runs a page's release
+# variable with the newest published release; `push` reads it back with
+# `substituted`, so the summary and the stamp name the release that ran.
+SUBSTITUTED_NOTE = "the release a page names is not published yet; running with {name}={value}"
+_SUBSTITUTED = re.compile(
+    "^docs-test: "
+    + re.escape(SUBSTITUTED_NOTE)
+    .replace(re.escape("{name}"), "(" + "|".join(RELEASE_VARIABLES) + ")")
+    .replace(re.escape("{value}"), r"(\S+)")
+    + "$",
+    re.M,
+)
+
+
+def substituted(output: str) -> list[str]:
+    """The NAME=VALUE of each release a run's output says it ran in place
+    of a page's unpublished one, in order, each once."""
+    return list(dict.fromkeys(f"{m.group(1)}={m.group(2)}" for m in _SUBSTITUTED.finditer(output)))
+
+
+def release_words(note: str) -> str:
+    """The words a summary line gives a stamp's release note
+    ("VERSION=0.4.6", comma-separated), or "" for none."""
+    runs = [r for r in note.split(",") if r]
+    if not runs:
+        return ""
+    plural = "releases" if len(runs) > 1 else "release"
+    return f"it ran {' and '.join(runs)} in place of the unpublished {plural} its page names"
 
 
 def release_sets(steps: list[Block], sets: dict, released, latest) -> dict:
@@ -1657,11 +1685,7 @@ def plan(steps: list[Block], scenario_sets: dict, released, latest) -> tuple[lis
     reader of its log: the release it runs with in place of one not yet
     published, and each `since` step that release is too old for."""
     sets = release_sets(steps, scenario_sets, released, latest)
-    notes = [
-        f"the release a page names is not published yet; running with {name}={value}"
-        for name, value in sets.items()
-        if name not in scenario_sets
-    ]
+    notes = [SUBSTITUTED_NOTE.format(name=name, value=value) for name, value in sets.items() if name not in scenario_sets]
     steps, left_out = release_steps(steps, sets)
     notes += [
         f"{b.at} is for release {b.since} and later; this run's release is older, so it does not run"
@@ -1845,26 +1869,95 @@ GH_NEEDS_TOKEN = re.compile(r"\bgh\s+(?:attestation\s+verify|api|release)\b")
 DOCS_PREFIX = "website/content/docs/"
 
 
-def _server_source(path: str) -> bool:
+_MOD = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
+_CFG_TEST = re.compile(r"^#\[cfg\(\s*(?:test\s*|all\(\s*test\s*,.*\))\)\]$")
+
+
+def _declarations(text: str, name: str) -> list[list[str]]:
+    """The attributes of each `mod <name>;` in a module file: the `#[...]`
+    lines directly above it (doc and comment lines between are passed)."""
+    lines = text.splitlines()
+    found = []
+    for i, line in enumerate(lines):
+        m = _MOD.match(line)
+        if not m or m.group(1) != name:
+            continue
+        attributes = []
+        for above in reversed(lines[:i]):
+            above = above.strip()
+            if above.startswith("#["):
+                attributes.append(above)
+            elif above.startswith("//"):
+                continue
+            else:
+                break
+        found.append(attributes)
+    return found
+
+
+def test_only(path: str, read, _depth: int = 0) -> bool:
+    """Whether `path`, a file under a crate's src/, compiles only into the
+    crate's tests: each `mod` declaration of its module carries
+    `#[cfg(test)]` (or `cfg(all(test, ...))`), or sits in a module file that
+    is itself test-only. `read(path)` gives a file's text at the commit, or
+    None. A crate root, a file that is not Rust, a module whose declaration
+    is not found or has `#[path]`, and an unreadable module file all count
+    as server source (False)."""
+    parts = path.split("/")
+    if _depth > 32 or len(parts) < 4 or parts[0] != "crates" or parts[2] != "src" or not path.endswith(".rs"):
+        return False
+    directory, file = path.rsplit("/", 1)
+    name = file[:-3]
+    if name == "mod":
+        directory, name = directory.rsplit("/", 1)
+    if directory.endswith("/src") and len(directory.split("/")) == 3:
+        if name in ("lib", "main", "build"):
+            return False
+        parents = [f"{directory}/lib.rs", f"{directory}/main.rs"]
+    else:
+        parents = [f"{directory}.rs", f"{directory}/mod.rs"]
+    declared = []
+    for parent in parents:
+        text = read(parent)
+        if text is None:
+            continue
+        for attributes in _declarations(text, name):
+            declared.append((parent, attributes))
+    if not declared:
+        return False
+    for parent, attributes in declared:
+        if any(a.startswith("#[path") for a in attributes):
+            return False
+        if not (any(_CFG_TEST.match(a) for a in attributes) or test_only(parent, read, _depth + 1)):
+            return False
+    return True
+
+
+def _server_source(path: str, test_only=None) -> bool:
     if path in SERVER_SOURCE_FILES:
         return True
     if not path.startswith(SERVER_SOURCE_DIRS):
         return False
     # A crate's tests are not built into the server.
     parts = path.split("/")
-    return not (len(parts) > 2 and parts[0] == "crates" and parts[2] == "tests")
+    if len(parts) > 2 and parts[0] == "crates" and parts[2] == "tests":
+        return False
+    # Nor is a file only `#[cfg(test)] mod` declarations reach.
+    return not (test_only is not None and len(parts) > 2 and parts[2] == "src" and test_only(path))
 
 
 def _scenario_steps(s: Scenario) -> list[Block]:
     return select([b for p in s.pages for b in page_blocks(p)], s)
 
 
-def needed(changed, scenarios, token: bool, steps=_scenario_steps) -> tuple[list, list]:
+def needed(changed, scenarios, token: bool, steps=_scenario_steps, test_only=None) -> tuple[list, list]:
     """The scenarios a push of `changed` runs and those it skips, each as
-    (name, why), in the order of `scenarios`."""
+    (name, why), in the order of `scenarios`. `test_only(path)` says whether
+    a file under a crate's src/ compiles only into its tests (None: every
+    such file is server source)."""
     paths = [p.strip() for p in changed if p.strip()]
     pages = [p[len(DOCS_PREFIX) :] for p in paths if p.startswith(DOCS_PREFIX)]
-    source = next((p for p in paths if _server_source(p)), None)
+    source = next((p for p in paths if _server_source(p, test_only)), None)
     runner = next((p for p in paths if p in RUNNER_FILES), None)
     run, skipped = [], []
     for s in scenarios:
@@ -1898,17 +1991,26 @@ def _stamp_path(sha: str, git_dir: str | None) -> str:
     return os.path.join(git_dir or _git_dir(), f"docs-scenarios-{sha}.pass")
 
 
-def write_stamp(sha: str, names, git_dir: str | None = None) -> None:
-    """Records that `names` ran as their pages say on commit `sha`."""
+def _stamp_entries(entries) -> dict:
+    """A stamp's scenarios as {name: release note}, from a dict or from
+    names alone (no note)."""
+    return dict(entries) if isinstance(entries, dict) else dict.fromkeys(entries, "")
+
+
+def write_stamp(sha: str, entries, git_dir: str | None = None) -> None:
+    """Records that the scenarios of `entries` ran as their pages say on
+    commit `sha`: one a line, with the releases it ran in place of a page's
+    unpublished one after it ("container VERSION=0.4.6")."""
     with open(_stamp_path(sha, git_dir), "w", encoding="utf-8") as f:
-        f.write("".join(f"{n}\n" for n in names))
+        f.write("".join(f"{n} {note}\n" if note else f"{n}\n" for n, note in _stamp_entries(entries).items()))
 
 
-def read_stamp(sha: str, git_dir: str | None = None) -> set | None:
-    """The scenarios that passed on `sha`, or None when none were recorded."""
+def read_stamp(sha: str, git_dir: str | None = None) -> dict | None:
+    """The scenarios that passed on `sha`, each with its release note ("" for
+    none), or None when none were recorded."""
     try:
         with open(_stamp_path(sha, git_dir), encoding="utf-8") as f:
-            return {l.strip() for l in f if l.strip()}
+            return {name: note.strip() for name, _, note in (l.strip().partition(" ") for l in f) if name}
     except FileNotFoundError:
         return None
 
@@ -1983,6 +2085,11 @@ class Git:
         """The paths whose content differs between the trees of `a` and `b`."""
         return self._lines("diff", "--name-only", a, b)
 
+    def show(self, sha: str, path: str) -> str | None:
+        """The text of `path` in commit `sha`, or None when git cannot give it."""
+        done = self._call("show", f"{sha}:{path}")
+        return done.stdout if done.returncode == 0 else None
+
     def rev_list(self, *args: str) -> list[str]:
         return self._lines("rev-list", *args)
 
@@ -1998,14 +2105,27 @@ def range_commits(base: str, sha: str) -> list[str]:
     return Git().rev_list(sha, "--not", base)
 
 
-def affected(paths, scenarios, steps=_scenario_steps) -> set:
+def affected(paths, scenarios, steps=_scenario_steps, test_only=None) -> set:
     """The scenarios a change of `paths` would need. With a token, `needed`
     skips only a scenario longer than a push waits for, and a push never
     needs one of those, so the ones it runs are all that can be affected."""
-    return {n for n, _ in needed(paths, scenarios, True, steps)[0]}
+    return {n for n, _ in needed(paths, scenarios, True, steps, test_only)[0]}
 
 
-def carried(names, tip: str, commits, read, delta, scenarios, steps=_scenario_steps) -> dict:
+def test_only_at(sha: str, show) -> "callable":
+    """`test_only` for the tree of commit `sha`, reading each module file
+    once with `show(sha, path)`."""
+    texts: dict = {}
+
+    def read(path):
+        if path not in texts:
+            texts[path] = show(sha, path)
+        return texts[path]
+
+    return lambda path: test_only(path, read)
+
+
+def carried(names, tip: str, commits, read, delta, scenarios, steps=_scenario_steps, test_only=None) -> dict:
     """Which of `names` hold for `tip` on a stamp, and the commit of that
     stamp: one of `commits` (newest first, the tip among them) whose stamp
     names the scenario, when what differs between that commit's tree and
@@ -2021,7 +2141,7 @@ def carried(names, tip: str, commits, read, delta, scenarios, steps=_scenario_st
         here = [n for n in left if n in stamp]
         if not here:
             continue
-        voided = set() if sha == tip else affected(delta(sha), scenarios, steps)
+        voided = set() if sha == tip else affected(delta(sha), scenarios, steps, test_only)
         for n in here:
             if n not in voided:
                 found[n] = sha
@@ -2149,7 +2269,8 @@ def check(
             say(f"docs scenarios: refused: cannot read the commits pushed to {ref.remote_ref}: {e}")
             refused = True
             continue
-        todo, skipped = needed(changed, scenarios, bool(env.get("GH_TOKEN")), steps)
+        at_tip = test_only_at(tip, git.show)
+        todo, skipped = needed(changed, scenarios, bool(env.get("GH_TOKEN")), steps, at_tip)
         for name, why in skipped:
             say(f"docs scenarios: skipped {name}: {why}")
         if not todo:
@@ -2161,7 +2282,7 @@ def check(
             continue
         names = [n for n, _ in todo]
         try:
-            held = carried(names, tip, commits, read, lambda sha: git.diff(sha, tip), scenarios, steps)
+            held = carried(names, tip, commits, read, lambda sha: git.diff(sha, tip), scenarios, steps, at_tip)
             missing = [n for n in names if n not in held]
             pull_requests_ok = (
                 bool(missing)
@@ -2174,10 +2295,14 @@ def check(
             refused = True
             continue
         for n in names:
-            if n in held and held[n] == tip:
-                say(f"docs scenario {n}: passed on {tip} before this push")
-            elif n in held:
-                say(f"docs scenario {n}: passed on {held[n]}, and the commits after it change nothing it runs")
+            if n not in held:
+                continue
+            ran = release_words(_stamp_entries(read(held[n]) or {}).get(n, ""))
+            ran = f"; {ran}" if ran else ""
+            if held[n] == tip:
+                say(f"docs scenario {n}: passed on {tip} before this push{ran}")
+            else:
+                say(f"docs scenario {n}: passed on {held[n]}, and the commits after it change nothing it runs{ran}")
         if not missing:
             continue
         passed, problems = ci(tip, missing, pull_requests_ok=pull_requests_ok)
@@ -2209,20 +2334,22 @@ def push(
     read=read_stamp,
     commits=None,
     delta=None,
+    test_only=None,
 ) -> int:
     """Runs the scenarios a push of `shas` that changes `changed` needs,
     with the server built from the checkout, which must be that commit,
     and stamps the commit when each ran as its pages say (`check` reads
-    the stamp). A scenario a stamp already holds for the commit is not run
-    again (`carried`): one of the commit's own, or of one of `commits` (the
+    the stamp), with the release each ran in place of a page's unpublished
+    one. A scenario a stamp already holds for the commit is not run again
+    (`carried`): one of the commit's own, or of one of `commits` (the
     range's, newest first; `delta(sha)` names what differs between that
-    commit and this one). 0 when each ran so (or none was needed), 1
-    otherwise."""
+    commit and this one). `test_only` is `needed`'s, for the commit's tree.
+    0 when each ran so (or none was needed), 1 otherwise."""
 
     def say(line: str) -> None:
         print(line, file=out, flush=True)
 
-    todo, skipped = needed(changed, scenarios, bool(env.get("GH_TOKEN")), steps)
+    todo, skipped = needed(changed, scenarios, bool(env.get("GH_TOKEN")), steps, test_only)
     for name, why in skipped:
         say(f"docs scenarios: skipped {name}: {why}")
     if not todo:
@@ -2237,13 +2364,19 @@ def push(
         say(f"docs scenarios: refused: the push holds {len(pushed)} commits that need them; push one branch at a time")
         return 1
     tip = pushed[0]
-    held = carried([n for n, _ in todo], tip, commits or [tip], read, delta or (lambda sha: []), scenarios, steps)
+    held = carried(
+        [n for n, _ in todo], tip, commits or [tip], read, delta or (lambda sha: []), scenarios, steps, test_only
+    )
     for name, _ in todo:
-        if name in held and held[name] == tip:
-            say(f"docs scenario {name}: passed on {tip} before; not run again")
-        elif name in held:
-            say(f"docs scenario {name}: passed on {held[name]}, and the commits after it change nothing it runs; "
-                "not run again")
+        if name not in held:
+            continue
+        ran = release_words(_stamp_entries(read(held[name]) or {}).get(name, ""))
+        ran = f"; {ran}" if ran else ""
+        if held[name] == tip:
+            say(f"docs scenario {name}: passed on {tip} before{ran}; not run again")
+        else:
+            say(f"docs scenario {name}: passed on {held[name]}, and the commits after it change nothing it runs"
+                f"{ran}; not run again")
     todo = [(n, why) for n, why in todo if n not in held]
     if not todo:
         say("docs scenarios: each one this push needs has passed already")
@@ -2288,6 +2421,7 @@ def push(
             binaries[features] = os.path.join(place, "vcon-server")
             copy(os.path.join(target, "debug", "vcon-server"), binaries[features])
         passed = 0
+        ran: dict = {}
         for name, why in todo:
             started = clock()
             done = run(
@@ -2300,14 +2434,17 @@ def push(
             seconds = int(clock() - started)
             if done.returncode == 0:
                 passed += 1
-                say(f"docs scenario {name}: ok in {seconds} s ({why})")
+                ran[name] = ",".join(substituted(done.stdout))
+                words = release_words(ran[name])
+                say(f"docs scenario {name}: ok in {seconds} s ({why}){'; ' + words if words else ''}")
             else:
                 say(f"docs scenario {name}: FAILED in {seconds} s ({why}); the end of its report:")
                 say("".join(f"  {l}\n" for l in (done.stdout + done.stderr).splitlines()[-60:]).rstrip())
         say(f"docs scenarios: {passed} of {len(todo)} ran as their pages say")
         if passed != len(todo):
             return 1
-        stamp(tip, sorted((read(tip) or set()) | {n for n, _ in todo}))
+        merged = {**_stamp_entries(read(tip) or {}), **ran}
+        stamp(tip, dict(sorted(merged.items())))
         return 0
     finally:
         shutil.rmtree(builds, ignore_errors=True)
@@ -2335,8 +2472,9 @@ def main(argv: list[str]) -> int:
                 changed_since(base, sha),
                 commits=range_commits(base, sha),
                 delta=lambda other: Git().diff(other, sha),
+                test_only=test_only_at(sha, Git().show),
             )
-        return push(rest, sys.stdin.read().splitlines())
+        return push(rest, sys.stdin.read().splitlines(), test_only=test_only_at(rest[0], Git().show))
     if command == "check":
         usage = "docs-test: check reads the pushed refs, as pre-push gets them, on stdin: docs_test.py check [--remote <name>]"
         if rest and not (len(rest) == 2 and rest[0] == "--remote"):

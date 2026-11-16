@@ -391,7 +391,13 @@ A push needs:
 - every scenario given the server under test when the push changes a
   file that server is built from: `Cargo.toml`, `Cargo.lock`,
   `rust-toolchain.toml`, `.cargo/`, or a file under `crates/` other than a
-  crate's `tests/` directory;
+  crate's `tests/` directory and other than a file under `src/` that only
+  `#[cfg(test)]` module declarations reach (each `mod` line of its module,
+  in the parent module file of the pushed commit, has `#[cfg(test)]` or
+  `#[cfg(all(test, ...))]` directly above it, or sits in a file that is
+  itself test-only). A file with code beside its test module, a module
+  declared with `#[path]`, and a file whose declaration cannot be found or
+  read still count;
 - every scenario when the push changes the runner: `scripts/docs_test.py`
   or one of the files it reads, its pinned downloads, the script that
   fetches them and its list of apt mirrors.
@@ -401,7 +407,12 @@ default features and once more for each feature set a scenario names, so
 it refuses a checkout that is not the commit or has uncommitted changes. It
 prints one line per scenario, `docs scenario <name>: ok in <n> s
 (<why>)`, `FAILED` with the end of its report, or `passed on <commit> ...
-not run again` for one a stamp already holds. The hook prints, for each
+not run again` for one a stamp already holds. When a scenario ran a
+page's release variable with the newest published release, because the
+release the page names is not published yet, the line ends `it ran
+VERSION=<release> in place of the unpublished release its page names`,
+the stamp keeps that after the scenario's name
+(`container VERSION=0.4.6`), and the hook repeats it. The hook prints, for each
 scenario, the stamp or CI job it accepted or why CI's did not count, and
 refuses with `pre-push: refused: the how-to scenarios this push needs have
 not passed on its commit`, naming the scenarios still missing and the

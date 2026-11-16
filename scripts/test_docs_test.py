@@ -2455,7 +2455,8 @@ class FakeRun:
         return [c for c in self.calls if c[0] == first]
 
 
-def push_of(changed, run, shas=("abc123",), env=None, scenarios=FAKES, stamped=None, stamps=None, commits=None, delta=None):
+def push_of(changed, run, shas=("abc123",), env=None, scenarios=FAKES, stamped=None, stamps=None, commits=None, delta=None,
+            test_only=None):
     out = io.StringIO()
     stamps = stamps or {}
     made = []
@@ -2477,10 +2478,11 @@ def push_of(changed, run, shas=("abc123",), env=None, scenarios=FAKES, stamped=N
         tempdir=tempdir,
         out=out,
         clock=iter(range(0, 1000, 7)).__next__,
-        stamp=lambda sha, names: stamped.append((sha, list(names))),
+        stamp=lambda sha, entries: stamped.append((sha, dict(entries))),
         read=lambda sha: stamps.get(sha),
         commits=commits,
         delta=delta,
+        test_only=test_only,
     )
     return code, out.getvalue(), made
 
@@ -2643,7 +2645,7 @@ class Push(unittest.TestCase):
         stamped = []
         code, out, _ = push_of(["website/content/docs/b.md"], FakeRun(), stamped=stamped)
         self.assertEqual(code, 0, out)
-        self.assertEqual(stamped, [("abc123", ["one", "two"])], "the commit and every scenario that passed")
+        self.assertEqual(stamped, [("abc123", {"one": "", "two": ""})], "the commit and every scenario that passed")
 
     def test_a_failure_stamps_nothing(self):
         stamped = []
@@ -2672,7 +2674,7 @@ class Push(unittest.TestCase):
         d = tempfile.mkdtemp(prefix="docs-stamp-test-")
         try:
             dt.write_stamp("abc123", ["one", "two"], git_dir=d)
-            self.assertEqual(dt.read_stamp("abc123", git_dir=d), {"one", "two"}, "read back")
+            self.assertEqual(dt.read_stamp("abc123", git_dir=d), {"one": "", "two": ""}, "read back")
             self.assertIsNone(dt.read_stamp("def456", git_dir=d), "another commit has none")
             self.assertTrue(os.path.exists(os.path.join(d, "docs-scenarios-abc123.pass")), "named by the commit")
         finally:
@@ -2712,6 +2714,9 @@ class FakeGit:
     def diff(self, a, b):
         self.diffs.append((a, b))
         return [p for sha in self._after(a, b) for p in self.paths[sha]]
+
+    def show(self, sha, path):
+        return None
 
     def is_ancestor(self, a, b):
         if self.fail:
@@ -2849,7 +2854,7 @@ class Check(unittest.TestCase):
             path = os.path.join(d, "docs-scenarios-abc123.pass")
             with open(path, "w", encoding="utf-8") as f:
                 f.write(" one \n\ntwo\n")
-            self.assertEqual(dt.read_stamp("abc123", git_dir=d), {"one", "two"}, "trimmed, blank lines dropped")
+            self.assertEqual(dt.read_stamp("abc123", git_dir=d), {"one": "", "two": ""}, "trimmed, blank lines dropped")
         finally:
             shutil.rmtree(d)
 
@@ -3405,6 +3410,339 @@ class RealGit(unittest.TestCase):
         self.assertEqual(self.git.diff(self.shas["c0"], self.shas["c3"]), ["b.txt"], "x.rs is back as it was")
 
 
+TREE = {
+    "crates/vcon-server/src/lib.rs": "pub mod serve;\n#[cfg(test)]\nmod lib_tests;\npub mod mixed;\n",
+    "crates/vcon-server/src/main.rs": "fn main() {}\n",
+    "crates/vcon-server/src/serve.rs": (
+        "mod listen;\n"
+        "#[cfg(test)]\n"
+        "mod start_tests;\n"
+        "#[cfg(all(test, feature = \"postgres\"))]\n"
+        "mod pg_tests;\n"
+        "/// Docs.\n"
+        "#[cfg(test)]\n"
+        "// a note\n"
+        "pub(crate) mod helper_tests;\n"
+        "#[cfg(feature = \"s3\")]\n"
+        "mod s3;\n"
+        "#[cfg(not(test))]\n"
+        "mod real;\n"
+        "#[cfg(test)]\n"
+        "#[path = \"elsewhere.rs\"]\n"
+        "mod moved;\n"
+    ),
+    "crates/vcon-server/src/serve/start_tests.rs": "mod cases;\n",
+    "crates/vcon-server/src/serve/start_tests/cases.rs": "#[test]\nfn t() {}\n",
+    "crates/vcon-server/src/serve/listen.rs": "pub fn listen() {}\n",
+    "crates/vcon-server/src/mixed.rs": "pub fn f() {}\n#[cfg(test)]\nmod tests {}\n",
+    "crates/vcon-server/src/lib_tests/mod.rs": "mod deep;\n",
+    "crates/vcon-server/src/lib_tests/deep.rs": "",
+    "crates/vcon/src/lib.rs": "mod read;\n#[cfg(test)]\nmod read_tests;\n",
+}
+
+
+def test_only(path, tree=None):
+    tree = TREE if tree is None else tree
+    return dt.test_only(path, tree.get)
+
+
+class TestOnlySource(unittest.TestCase):
+    """A file that only `#[cfg(test)] mod` declarations reach is not built
+    into the server the scenarios run; any other file under src/ is."""
+
+    # Success: test-only files.
+    def test_a_cfg_test_module_is_test_only(self):
+        self.assertTrue(test_only("crates/vcon-server/src/serve/start_tests.rs"), "#[cfg(test)] mod start_tests;")
+
+    def test_a_module_inside_a_test_module_is_test_only(self):
+        self.assertTrue(test_only("crates/vcon-server/src/serve/start_tests/cases.rs"), "its parent is test-only")
+
+    def test_cfg_all_with_test_is_test_only(self):
+        self.assertTrue(test_only("crates/vcon-server/src/serve/pg_tests.rs"), "cfg(all(test, ...))")
+
+    def test_doc_and_comment_lines_between_do_not_hide_the_attribute(self):
+        self.assertTrue(test_only("crates/vcon-server/src/serve/helper_tests.rs"), "/// and // skipped, pub(crate)")
+
+    def test_a_mod_rs_module_is_read_from_its_parent(self):
+        self.assertTrue(test_only("crates/vcon-server/src/lib_tests/mod.rs"), "lib_tests/mod.rs, declared in lib.rs")
+
+    def test_a_module_of_a_mod_rs_test_module_is_test_only(self):
+        self.assertTrue(test_only("crates/vcon-server/src/lib_tests/deep.rs"), "declared in lib_tests/mod.rs")
+
+    def test_the_library_crate_follows_the_same_rule(self):
+        self.assertTrue(test_only("crates/vcon/src/read_tests.rs"), "crates/vcon too")
+
+    def test_a_test_only_change_needs_no_scenario(self):
+        run, skipped = dt.needed(["crates/vcon-server/src/serve/start_tests.rs"], FAKES, False, fake_steps,
+                                 test_only=lambda p: test_only(p))
+        self.assertEqual((run, skipped), ([], []), "nothing built into the server changed")
+
+    def test_a_test_only_change_beside_a_page_runs_the_pages_scenario_only(self):
+        run, _ = dt.needed(["crates/vcon-server/src/serve/start_tests.rs", PAGE_C], FAKES, False, fake_steps,
+                           test_only=lambda p: test_only(p))
+        self.assertEqual([n for n, _ in run], ["pages-only"], "the page still needs its scenario")
+
+    def test_check_reads_the_declarations_at_the_tip(self):
+        git = FakeGit([("c1", ["crates/vcon-server/src/serve/start_tests.rs"])])
+        git.show = lambda sha, path: TREE.get(path) if sha == "c1" else None
+        code, out = range_check(git, [ref_of("c1")], {}, ci=ci_must_not_be_asked)
+        self.assertEqual(code, 0, out)
+        self.assertIn("docs scenarios: not needed", out, out)
+
+    def test_a_later_test_only_change_does_not_void_a_stamp(self):
+        git = FakeGit([("c1", [SRC]), ("c2", ["crates/vcon-server/src/serve/start_tests.rs"])])
+        git.show = lambda sha, path: TREE.get(path)
+        code, out = range_check(git, [ref_of("c2")], {"c1": {"one", "two"}}, ci=ci_must_not_be_asked)
+        self.assertEqual(code, 0, out)
+
+    def test_push_runs_nothing_for_a_test_only_change(self):
+        run = FakeRun()
+        code, out, _ = push_of(["crates/vcon-server/src/serve/start_tests.rs"], run, test_only=lambda p: test_only(p))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(run.calls, [], "no build, no run")
+
+    # Failure: still server source.
+    def test_a_plain_module_is_server_source(self):
+        self.assertFalse(test_only("crates/vcon-server/src/serve/listen.rs"), "mod listen;")
+
+    def test_a_mixed_file_is_server_source(self):
+        self.assertFalse(test_only("crates/vcon-server/src/mixed.rs"), "code beside its test module")
+
+    def test_a_feature_cfg_is_server_source(self):
+        self.assertFalse(test_only("crates/vcon-server/src/serve/s3.rs"), "cfg(feature)")
+
+    def test_cfg_not_test_is_server_source(self):
+        self.assertFalse(test_only("crates/vcon-server/src/serve/real.rs"), "built only outside tests")
+
+    def test_a_path_attribute_is_server_source(self):
+        self.assertFalse(test_only("crates/vcon-server/src/serve/moved.rs"), "#[path] moves the file")
+
+    def test_a_crate_root_is_server_source(self):
+        for path in ("crates/vcon-server/src/lib.rs", "crates/vcon-server/src/main.rs"):
+            with self.subTest(path=path):
+                self.assertFalse(test_only(path), "the crate itself")
+
+    def test_an_undeclared_file_is_server_source(self):
+        self.assertFalse(test_only("crates/vcon-server/src/serve/nowhere.rs"), "no declaration found")
+
+    def test_an_unreadable_parent_is_server_source(self):
+        tree = {k: v for k, v in TREE.items() if k != "crates/vcon-server/src/serve.rs"}
+        self.assertFalse(test_only("crates/vcon-server/src/serve/start_tests.rs", tree), "cannot read serve.rs")
+
+    def test_a_file_that_is_not_rust_is_server_source(self):
+        self.assertFalse(test_only("crates/vcon-server/src/backend/postgres/schema_v13.sql"), "include_str!")
+
+    def test_a_module_under_a_plain_module_is_server_source(self):
+        tree = dict(TREE, **{"crates/vcon-server/src/serve/listen/inner.rs": "", "crates/vcon-server/src/serve/listen.rs": "mod inner;\n"})
+        self.assertFalse(test_only("crates/vcon-server/src/serve/listen/inner.rs", tree), "listen is built in")
+
+    def test_a_test_module_of_a_mixed_file_needs_every_scenario_when_the_file_changes(self):
+        run, _ = dt.needed(["crates/vcon-server/src/mixed.rs"], FAKES, False, fake_steps, test_only=lambda p: test_only(p))
+        self.assertEqual([n for n, _ in run], ["one", "two"], "mixed files count")
+
+    def test_a_declaration_in_lib_and_main_counts_unless_both_are_test_only(self):
+        tree = dict(TREE, **{"crates/vcon-server/src/main.rs": "mod both;\n",
+                             "crates/vcon-server/src/lib.rs": "#[cfg(test)]\nmod both;\n",
+                             "crates/vcon-server/src/both.rs": ""})
+        self.assertFalse(test_only("crates/vcon-server/src/both.rs", tree), "the binary builds it")
+
+    # Edge cases.
+    def test_a_declaration_in_both_roots_under_cfg_test_is_test_only(self):
+        tree = dict(TREE, **{"crates/vcon-server/src/main.rs": "#[cfg(test)]\nmod both;\n",
+                             "crates/vcon-server/src/lib.rs": "#[cfg(test)]\nmod both;\n",
+                             "crates/vcon-server/src/both.rs": ""})
+        self.assertTrue(test_only("crates/vcon-server/src/both.rs", tree), "neither crate builds it outside tests")
+
+    def test_a_blank_line_ends_the_attributes(self):
+        tree = dict(TREE, **{"crates/vcon-server/src/lib.rs": "#[cfg(test)]\n\nmod gap;\n", "crates/vcon-server/src/gap.rs": ""})
+        self.assertFalse(test_only("crates/vcon-server/src/gap.rs", tree), "rustc applies it, but this rule reads only adjacent lines")
+
+    def test_a_similar_module_name_is_not_its_declaration(self):
+        tree = dict(TREE, **{"crates/vcon-server/src/lib.rs": "#[cfg(test)]\nmod start_tests;\n"})
+        self.assertFalse(test_only("crates/vcon-server/src/start.rs", tree), "start is not declared; start_tests is")
+
+    def test_a_crate_root_declared_under_cfg_test_elsewhere_is_still_server_source(self):
+        tree = dict(TREE, **{"crates/vcon-server/src/main.rs": "#[cfg(test)]\nmod lib;\n"})
+        self.assertFalse(test_only("crates/vcon-server/src/lib.rs", tree), "lib.rs is the library crate's root")
+
+    def test_an_asset_named_like_a_test_module_is_server_source(self):
+        self.assertFalse(test_only("crates/vcon-server/src/lib_tests.js"), "not Rust, whatever its stem")
+
+    def test_a_commented_out_declaration_does_not_count(self):
+        tree = dict(TREE, **{"crates/vcon-server/src/lib.rs": "// #[cfg(test)]\n// mod old;\n"})
+        self.assertFalse(test_only("crates/vcon-server/src/old.rs", tree), "no declaration")
+
+    def test_a_raw_identifier_module_is_server_source(self):
+        tree = dict(TREE, **{"crates/vcon-server/src/lib.rs": "#[cfg(test)]\nmod r#type;\n"})
+        self.assertFalse(test_only("crates/vcon-server/src/type.rs", tree), "not read: counts")
+
+    def test_cfg_test_with_spaces_is_read(self):
+        tree = dict(TREE, **{"crates/vcon-server/src/lib.rs": "#[cfg( test )]\nmod spaced;\n"})
+        self.assertTrue(test_only("crates/vcon-server/src/spaced.rs", tree), "spaces inside")
+
+    def test_cfg_any_with_test_is_server_source(self):
+        tree = dict(TREE, **{"crates/vcon-server/src/lib.rs": "#[cfg(any(test, feature = \"x\"))]\nmod either;\n"})
+        self.assertFalse(test_only("crates/vcon-server/src/either.rs", tree), "built with the feature too")
+
+    def test_a_tests_directory_path_is_not_asked(self):
+        asked = []
+        dt.needed(["crates/vcon-server/tests/serve.rs"], FAKES, False, fake_steps, test_only=lambda p: asked.append(p))
+        self.assertEqual(asked, [], "a crate's tests/ is never server source")
+
+    def test_a_page_change_never_asks(self):
+        asked = []
+        dt.needed([PAGE_B], FAKES, False, fake_steps, test_only=lambda p: asked.append(p))
+        self.assertEqual(asked, [], "only files under src/")
+
+    def test_without_a_reader_every_src_file_counts(self):
+        self.assertEqual(needed_of(["crates/vcon-server/src/serve/start_tests.rs"])[0], ["one", "two"], "no reader")
+
+    def test_git_show_reads_a_file_at_a_commit(self):
+        run = FakeRun({"git show": (0, "mod x;\n")})
+        self.assertEqual(dt.Git(run=run).show("abc", "crates/a/src/lib.rs"), "mod x;\n", "the text")
+        self.assertEqual(run.calls[0][-1], "abc:crates/a/src/lib.rs", "sha:path")
+
+    def test_git_show_of_a_missing_file_is_none(self):
+        self.assertIsNone(dt.Git(run=FakeRun({"git show": (128, "")})).show("abc", "x.rs"), "unreadable")
+
+    def test_each_module_file_is_read_once_per_commit(self):
+        asked = []
+        at = dt.test_only_at("c1", lambda sha, path: asked.append((sha, path)) or TREE.get(path))
+        at("crates/vcon-server/src/serve/start_tests.rs")
+        at("crates/vcon-server/src/serve/listen.rs")
+        self.assertEqual(asked.count(("c1", "crates/vcon-server/src/serve.rs")), 1, asked)
+        self.assertTrue(all(sha == "c1" for sha, _ in asked), "the commit pushed")
+
+    def test_a_deep_chain_stops_at_the_crate_root(self):
+        tree = {"crates/c/src/lib.rs": "#[cfg(test)]\nmod a;\n", "crates/c/src/a.rs": "mod b;\n", "crates/c/src/a/b.rs": "mod c;\n"}
+        self.assertTrue(test_only("crates/c/src/a/b/c.rs", tree), "three levels under a test module")
+
+
+def run_output(note):
+    return f"docs-test: {note}\nok       docs/c.md:3\n"
+
+
+class SubstitutedRelease(unittest.TestCase):
+    """The summary line and the stamp name the release a scenario really
+    ran when the page's release is not published yet."""
+
+    NOTE = "the release a page names is not published yet; running with VERSION=0.4.6"
+
+    # Success.
+    def test_the_note_is_the_one_plan_prints(self):
+        steps = [dt.Block("sh", "VERSION=0.4.7\necho $VERSION\n", "docs/c.md:1")]
+        _, _, notes = dt.plan(steps, {}, lambda v: False, lambda: "0.4.6")
+        self.assertEqual(notes, [self.NOTE], "plan's note")
+        self.assertEqual(dt.substituted(run_output(notes[0])), ["VERSION=0.4.6"], "read back by the same rule")
+
+    def test_the_summary_names_the_release_run(self):
+        run = FakeRun({"run pages-only": (0, run_output(self.NOTE))})
+        code, out, _ = push_of([PAGE_C], run)
+        self.assertEqual(code, 0, out)
+        self.assertIn("docs scenario pages-only: ok in ", out, out)
+        self.assertIn("; it ran VERSION=0.4.6 in place of the unpublished release its page names", out, out)
+
+    def test_the_stamp_names_the_release_run(self):
+        stamped = []
+        push_of([PAGE_C], FakeRun({"run pages-only": (0, run_output(self.NOTE))}), stamped=stamped)
+        self.assertEqual(stamped, [("abc123", {"pages-only": "VERSION=0.4.6"})], "kept beside the name")
+
+    def test_a_run_of_the_named_release_has_no_note(self):
+        stamped = []
+        code, out, _ = push_of([PAGE_C], FakeRun(), stamped=stamped)
+        self.assertNotIn("in place of", out, out)
+        self.assertEqual(stamped, [("abc123", {"pages-only": ""})], "nothing substituted")
+
+    def test_two_substitutions_are_both_named(self):
+        text = run_output(self.NOTE) + "docs-test: the release a page names is not published yet; running with NEW_VERSION=0.4.6\n"
+        self.assertEqual(dt.substituted(text), ["VERSION=0.4.6", "NEW_VERSION=0.4.6"], "both")
+
+    def test_the_stamp_file_keeps_the_release(self):
+        d = tempfile.mkdtemp(prefix="docs-stamp-test-")
+        try:
+            dt.write_stamp("abc123", {"container": "VERSION=0.4.6", "s3": ""}, git_dir=d)
+            self.assertEqual(dt.read_stamp("abc123", git_dir=d), {"container": "VERSION=0.4.6", "s3": ""}, "read back")
+            with open(os.path.join(d, "docs-scenarios-abc123.pass"), encoding="utf-8") as f:
+                self.assertEqual(f.read(), "container VERSION=0.4.6\ns3\n", "one scenario a line, the release after it")
+        finally:
+            shutil.rmtree(d)
+
+    def test_check_repeats_the_release_of_a_stamp(self):
+        git = FakeGit([("c1", [PAGE_C])])
+        code, out = range_check(git, [ref_of("c1")], {"c1": {"pages-only": "VERSION=0.4.6"}})
+        self.assertEqual(code, 0, out)
+        self.assertIn("docs scenario pages-only: passed on c1 before this push; it ran VERSION=0.4.6 in place of", out, out)
+
+    # Failure.
+    def test_a_failed_run_with_a_substitution_stamps_nothing(self):
+        stamped = []
+        code, out, _ = push_of([PAGE_C], FakeRun({"run pages-only": (1, run_output(self.NOTE))}), stamped=stamped)
+        self.assertEqual((code, stamped), (1, []), out)
+
+    def test_a_since_note_is_not_a_substitution(self):
+        text = "docs-test: docs/c.md:3 is for release 0.4.7 and later; this run's release is older, so it does not run\n"
+        self.assertEqual(dt.substituted(text), [], "a step left out names no release run")
+
+    def test_a_note_in_a_steps_output_is_not_read(self):
+        text = "ok       docs/c.md:3\n    the release a page names is not published yet; running with VERSION=9\n"
+        self.assertEqual(dt.substituted(text), [], "only the runner's own docs-test: lines")
+
+    def test_the_note_inside_another_line_is_not_read(self):
+        text = "FAIL     docs/c.md:3: line 1 differs: docs-test: the release a page names is not published yet; running with VERSION=9\n"
+        self.assertEqual(dt.substituted(text), [], "only a line of the runner's own")
+
+    def test_a_note_without_a_value_is_not_read(self):
+        self.assertEqual(dt.substituted("docs-test: the release a page names is not published yet; running with VERSION=\n"), [], "no value")
+
+    def test_an_unknown_variable_is_not_read(self):
+        text = "docs-test: the release a page names is not published yet; running with PATH=/x\n"
+        self.assertEqual(dt.substituted(text), [], "only the release variables")
+
+    def test_a_note_cut_short_is_not_read(self):
+        self.assertEqual(dt.substituted("docs-test: the release a page names is not published yet\n"), [], "partial")
+
+    # Edge cases.
+    def test_a_stamp_line_without_a_release_reads_as_none_given(self):
+        d = tempfile.mkdtemp(prefix="docs-stamp-test-")
+        try:
+            with open(os.path.join(d, "docs-scenarios-abc123.pass"), "w", encoding="utf-8") as f:
+                f.write("one\ntwo VERSION=0.4.6\n")
+            self.assertEqual(dt.read_stamp("abc123", git_dir=d), {"one": "", "two": "VERSION=0.4.6"}, "old and new lines")
+        finally:
+            shutil.rmtree(d)
+
+    def test_a_second_run_keeps_the_first_runs_release(self):
+        stamped = []
+        push_of([PAGE_B, PAGE_C], FakeRun(), stamps={"abc123": {"pages-only": "VERSION=0.4.6"}}, stamped=stamped)
+        self.assertEqual(stamped, [("abc123", {"one": "", "pages-only": "VERSION=0.4.6", "two": ""})], "merged")
+
+    def test_a_carried_scenario_names_its_release(self):
+        run = FakeRun()
+        code, out, _ = push_of([PAGE_C], run, stamps={"abc123": {"pages-only": "VERSION=0.4.6"}})
+        self.assertIn("passed on abc123 before; it ran VERSION=0.4.6 in place of", out, out)
+
+    def test_a_set_stamp_still_reads(self):
+        git = FakeGit([("c1", [PAGE_C])])
+        code, out = range_check(git, [ref_of("c1")], {"c1": {"pages-only"}})
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("in place of", out, "no release named")
+
+    def test_the_same_substitution_twice_is_named_once(self):
+        self.assertEqual(dt.substituted(run_output(self.NOTE) * 2), ["VERSION=0.4.6"], "once")
+
+    def test_the_note_format_has_one_place(self):
+        self.assertEqual(dt.SUBSTITUTED_NOTE.format(name="VERSION", value="1.2.3"),
+                         "the release a page names is not published yet; running with VERSION=1.2.3", "the format")
+
+    def test_the_summary_without_a_why_still_names_it(self):
+        self.assertEqual(dt.release_words("VERSION=0.4.6"), "it ran VERSION=0.4.6 in place of the unpublished release its page names", "the words")
+        self.assertEqual(dt.release_words(""), "", "nothing to say")
+
+    def test_two_releases_join_with_and(self):
+        self.assertEqual(dt.release_words("VERSION=0.4.6,NEW_VERSION=0.4.6"),
+                         "it ran VERSION=0.4.6 and NEW_VERSION=0.4.6 in place of the unpublished releases its page names", "plural")
+
+
 class PushCarries(unittest.TestCase):
     """`push --since` runs only what no stamp of its range already holds."""
 
@@ -3415,7 +3753,7 @@ class PushCarries(unittest.TestCase):
                                delta=lambda sha: [PAGE_C], stamped=stamped)
         self.assertEqual(code, 0, out)
         self.assertEqual([c[c.index("run") + 1] for c in run.names(sys.executable)], ["pages-only"], out)
-        self.assertEqual(stamped, [("abc123", ["pages-only"])], "the tip records what ran on it")
+        self.assertEqual(stamped, [("abc123", {"pages-only": ""})], "the tip records what ran on it")
         self.assertIn("docs scenario one: passed on c1, and the commits after it change nothing it runs; not run again", out, out)
 
     def test_nothing_left_to_run_builds_nothing(self):
@@ -3431,7 +3769,7 @@ class PushCarries(unittest.TestCase):
         stamped = []
         code, out, _ = push_of([PAGE_B, PAGE_C], FakeRun(), stamps={"abc123": {"pages-only"}}, stamped=stamped)
         self.assertEqual(code, 0, out)
-        self.assertEqual(stamped, [("abc123", ["one", "pages-only", "two"])], "both runs' scenarios")
+        self.assertEqual(stamped, [("abc123", {"one": "", "pages-only": "", "two": ""})], "both runs' scenarios")
 
     def test_push_since_passes_the_range_to_push(self):
         with unittest.mock.patch.object(dt, "push", return_value=0) as push, \
