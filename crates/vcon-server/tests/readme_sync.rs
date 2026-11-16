@@ -26,7 +26,7 @@ mod markdown;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use markdown::{is_relative, link_targets};
+use markdown::{heading_ids, is_relative, link_targets};
 
 /// The site's address, as the README links it.
 const SITE: &str = "https://vcon-server.com/";
@@ -267,36 +267,6 @@ fn site_source(url: &str) -> Option<(String, Option<String>)> {
         format!("website/content/{path}.md")
     };
     Some((source, anchor))
-}
-
-/// Zola's id for a heading: lower case, each run of other characters than
-/// letters and digits made one `-`, none at either end.
-fn slug(heading: &str) -> String {
-    let mut slug = String::new();
-    for c in heading.chars() {
-        if c.is_alphanumeric() {
-            slug.extend(c.to_lowercase());
-        } else if !slug.is_empty() && !slug.ends_with('-') {
-            slug.push('-');
-        }
-    }
-    slug.trim_end_matches('-').to_string()
-}
-
-/// The ids of the headings of a Markdown page, outside fenced blocks.
-fn heading_ids(text: &str) -> BTreeSet<String> {
-    let mut fenced = false;
-    let mut ids = BTreeSet::new();
-    for line in text.lines() {
-        if line.trim_start().starts_with("```") {
-            fenced = !fenced;
-            continue;
-        }
-        if !fenced && line.starts_with('#') {
-            ids.insert(slug(line.trim_start_matches('#')));
-        }
-    }
-    ids
 }
 
 /// Each vcon-server.com link in `text` whose page is not in

@@ -8,7 +8,9 @@ group = "project"
 +++
 
 These are the next milestones. They have no dates, and their order may
-change. [What is built](@/docs/status.md) says what works today.
+change. [What is built](@/docs/status.md) says what works today, and
+[the 1.0 checklist](@/docs/production-checklist.md) what release 1.0, the
+first for production, needs.
 
 - **A PostgreSQL catalog, the rest of it:** a command that moves a data
   directory's tenants into PostgreSQL and back, and several servers on one

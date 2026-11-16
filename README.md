@@ -23,7 +23,9 @@ vCons through chains of processing steps, is at
 **Status: 0.4.8 released, not yet for production.** The `vcon` and
 `vcon-server` crates are on crates.io, and the server for Linux on x86_64 and
 aarch64 is on [GitHub](https://github.com/NormB/vcon-server/releases).
-[What is built](https://vcon-server.com/docs/status/) says what works today.
+[What is built](https://vcon-server.com/docs/status/) says what works today,
+and [the 1.0 checklist](https://vcon-server.com/docs/production-checklist/)
+what production needs.
 The documentation is at [vcon-server.com](https://vcon-server.com/docs/).
 
 ## What is built

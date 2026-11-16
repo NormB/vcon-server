@@ -181,7 +181,9 @@ summary = "Every how-to guide, with the install and getting-started pages."
 > with its tools are built and tested. From 0.4.0 the sealed objects can be kept in an S3 bucket
 > (RustFS, MinIO or AWS S3) and packed there into Parquet files, and a
 > tenant's vCons can be exported as Parquet files. See
-> [what is built](@/docs/status.md).
+> [what is built](@/docs/status.md), and
+> [the 1.0 checklist](@/docs/production-checklist.md) for what production
+> needs.
 
 ## What it is for
 

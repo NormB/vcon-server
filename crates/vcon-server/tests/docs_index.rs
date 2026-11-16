@@ -24,7 +24,7 @@ mod markdown;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use markdown::{is_relative, link_targets};
+use markdown::{heading_ids, is_relative, link_targets, slug};
 
 /// The repository root, two levels above this crate.
 fn root() -> PathBuf {
@@ -691,20 +691,6 @@ const PUBLISHED_ANCHORS: [(&str, &[&str]); 3] = [
     ),
 ];
 
-/// The id Zola gives a heading: lower case, with each run of other
-/// characters as one hyphen.
-fn slug(heading: &str) -> String {
-    let mut slug = String::new();
-    for c in heading.chars() {
-        if c.is_alphanumeric() {
-            slug.extend(c.to_lowercase());
-        } else if !slug.is_empty() && !slug.ends_with('-') {
-            slug.push('-');
-        }
-    }
-    slug.trim_end_matches('-').to_string()
-}
-
 /// The text of one documentation page.
 fn page_text(file: &str) -> String {
     let path = root().join("website/content/docs").join(file);
@@ -740,7 +726,7 @@ fn the_slug_reader_writes_ids_as_zola_does() {
 fn every_anchor_published_before_the_split_is_still_a_heading_of_its_page() {
     let mut gone = Vec::new();
     for (file, anchors) in PUBLISHED_ANCHORS {
-        let ids: BTreeSet<String> = headings(&page_text(file)).into_iter().map(slug).collect();
+        let ids = heading_ids(&page_text(file));
         for anchor in anchors {
             if !ids.contains(*anchor) {
                 gone.push(format!("/docs/{}/#{anchor}", file.trim_end_matches(".md")));

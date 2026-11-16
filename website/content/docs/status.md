@@ -10,8 +10,10 @@ group = "project"
 vcon-server 0.4.8 is released: the `vcon` and `vcon-server` crates are on
 crates.io, and the server for Linux on x86_64 and aarch64 is on
 [GitHub](https://github.com/NormB/vcon-server/releases). It is not yet for
-production. This page says what works today; each other page describes only
-what is built, unless it says otherwise.
+production: [the 1.0 checklist](@/docs/production-checklist.md) says what
+release 1.0, the first for production, needs. This page says what works
+today; each other page describes only what is built, unless it says
+otherwise.
 
 ## Built and tested
 

@@ -64,3 +64,4 @@ below open each page's source in the repository.
 - [Development](../website/content/docs/development.md): The code's layout, how it is tested, the gates every commit passes, and how to work on this site.
 - [What is built](../website/content/docs/status.md): Which parts of vcon-server work today, and which are being built.
 - [Roadmap](../website/content/docs/roadmap.md): The next milestones for vcon-server.
+- [The 1.0 checklist](../website/content/docs/production-checklist.md): What vcon-server needs before release 1.0, the first release for production: each item's state, what is left, and the evidence.
