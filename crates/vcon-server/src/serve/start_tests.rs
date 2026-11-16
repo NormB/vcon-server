@@ -194,6 +194,20 @@ fn tenants(w: &World) -> Tenants {
     .expect("the registry opens")
 }
 
+/// The registry of `w`, opened as a command beside a running server opens
+/// it: without start-up recovery, which would race the server's own purge
+/// sweep over the same objects (`tenants` opened here while the server
+/// swept failed 25 of 200 runs with `its store: Io`).
+fn beside(w: &World) -> Tenants {
+    Tenants::open_beside(
+        w.dir.path(),
+        Key::load_master(&w.dir.path().join("master.key")).expect("the master key"),
+        Arc::new(OsFs),
+        Arc::new(SystemClock),
+    )
+    .expect("the registry opens beside the server")
+}
+
 /// The runtime a start runs on.
 #[derive(Debug, Clone, Copy)]
 enum Flavor {
@@ -416,7 +430,7 @@ mod order {
             .set_retention(Actor::Cli, id, Some(Retention::Days(0)))
             .expect("due at once");
         drop(store);
-        let polled = tenants(&w);
+        let polled = beside(&w);
         let ran = run_with(&w.config, registry, Flavor::MultiThread, async move {
             let deadline = Instant::now() + Duration::from_secs(20);
             while polled
