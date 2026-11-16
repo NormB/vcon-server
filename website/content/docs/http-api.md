@@ -174,7 +174,7 @@ neither `reveal` nor `view` is passed over, as it always was on these routes.
 
 ## Masked view
 
-The `view` parameter is new after 0.4.6: release 0.4.6 and earlier pass
+The `view` parameter is new in 0.4.7: release 0.4.6 and earlier pass
 the query over, answer the whole vCon and record the read as `read`.
 
 `GET /vcons/{uuid}?view=masked` answers what the vCon holds without any

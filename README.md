@@ -15,7 +15,7 @@ A server that stores [vCons](https://datatracker.ietf.org/wg/vcon/about/), the
 IETF conversation-record format, encrypted at rest, and returns them only to
 the keys allowed to see them.
 
-**Status: 0.4.6 released, not yet for production.** The `vcon` and
+**Status: 0.4.7 released, not yet for production.** The `vcon` and
 `vcon-server` crates are on crates.io, and the server for Linux on x86_64 and
 aarch64 is on [GitHub](https://github.com/NormB/vcon-server/releases).
 [What is built](https://vcon-server.com/docs/status/) says what works today.
@@ -54,6 +54,8 @@ where each item is described in full:
   until a reveal key shows one part.
 - **Reveals in the audit log:** a read that shows masked content is
   recorded under an action that names the part shown.
+- **A vCon's masked view:** what a vCon holds, with no name, number,
+  subject or content, for a client to show before a reveal.
 - **An operator listener:** operator keys on an address of their own.
 - **A recording player in the console:** a dialog's inline recording plays
   in a page with its own policy.
@@ -140,8 +142,8 @@ The `postgres` cargo feature adds a preview of the
 [PostgreSQL catalog](https://vcon-server.com/docs/postgres-catalog/):
 `vcon-server migrate` makes the schema, and a server keeps its registry
 and every tenant's catalog in PostgreSQL, reached over TLS, with the
-objects in an S3 bucket. The release binaries have the `postgres` feature, from
-0.4.6 on. `cargo install` and a build from source get it with
+objects in an S3 bucket. The release binaries have the `postgres` feature.
+`cargo install` and a build from source get it with
 `--features postgres`. It does nothing
 until `catalog.backend` is `"postgres"`. Read
 [the limits of the preview](https://vcon-server.com/docs/postgres-catalog/#the-limits-of-the-preview)

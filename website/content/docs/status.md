@@ -7,7 +7,7 @@ weight = 60
 group = "project"
 +++
 
-vcon-server 0.4.6 is released: the `vcon` and `vcon-server` crates are on
+vcon-server 0.4.7 is released: the `vcon` and `vcon-server` crates are on
 crates.io, and the server for Linux on x86_64 and aarch64 is on
 [GitHub](https://github.com/NormB/vcon-server/releases). It is not yet for
 production. This page says what works today; each other page describes only
@@ -73,7 +73,7 @@ what is built, unless it says otherwise.
 - **The terminal UI:** `vcon-server tui`, in the release binaries from
   0.4.2 on, lists the vCons of one key's tenant and shows each one's uuid,
   version and times, read over the HTTP API with a `read` key. It reads
-  only. Releases 0.4.2 to 0.4.6 read no vCon content; after 0.4.6 it also
+  only. Releases 0.4.2 to 0.4.6 read no vCon content; from 0.4.7 on it also
   shows each vCon's masked view, with no content until a reveal key shows
   one part, recorded in the audit log. From 0.4.5 on, the last line of each
   screen names only the keys that act on it; releases 0.4.2 to 0.4.4 show
@@ -86,6 +86,11 @@ what is built, unless it says otherwise.
   way. Release 0.4.2 has no `reveal` parameter: it passes the query over
   and records `read` or `legal_read`. See
   [reveals](@/docs/http-api.md#reveals).
+- **A vCon's masked view**, from 0.4.7: `GET /vcons/{uuid}?view=masked`
+  answers what a vCon holds without any name, subject, full number,
+  address or content, recorded as `read_masked`. Release 0.4.6 passes the
+  `view` parameter over and answers the whole vCon. See
+  [masked view](@/docs/http-api.md#masked-view).
 - **An operator listener**, from 0.4.3: with an `[operator]` table in the
   configuration, the server listens on a second address that serves
   operator keys only, and `listen` serves tenant keys only; a valid key at
@@ -210,20 +215,6 @@ what is built, unless it says otherwise.
   checksums, every file with a signed build provenance attestation; from
   0.3.0 also a Sigstore signature over the checksums and the provenance as a
   file. The release workflow also publishes both crates to crates.io.
-
-## On `main` only
-
-The site is built from the `main` branch, so a page can describe what no
-release holds yet. Release 0.4.6 does not have these:
-
-- **The masked view.** `GET /vcons/{uuid}?view=masked` answers a vCon's
-  [masked view](@/docs/http-api.md#masked-view), recorded as
-  `read_masked`; release 0.4.6 passes the `view` parameter over and answers
-  the whole vCon.
-- **The terminal UI's masked view and reveal keys.** The
-  [terminal UI](@/docs/tui.md#reveal-a-part-of-a-vcon) shows a vCon's
-  masked view and reveals one part on a key; release 0.4.6 shows the
-  metadata only.
 
 ## The PostgreSQL catalog preview
 

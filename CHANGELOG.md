@@ -6,8 +6,15 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.7] - 2026-11-16
+
 ### Changed
 
+- **The upgrade from 0.4.6 is the binary alone.**
+  - Effect: No stored data, configuration or schema changes; 0.4.6 opens a
+    data directory that 0.4.7 has served.
+  - Docs: [From 0.4.6 to
+    0.4.7](https://vcon-server.com/docs/upgrading/#from-0-4-6-to-0-4-7)
 - **The audit log has a new action, `read_masked`.**
   - Effect: Each masked view read is recorded as `read_masked` in the
     tenant's log; a reader that matches a fixed list of actions needs it.
@@ -985,7 +992,8 @@ All notable changes to this project are recorded here. The format follows
   - Limit: `vcon::MAX_SIGNED_LAYERS`, `vcon::MAX_JSON_DEPTH` and
     `vcon::Rejection::TooDeep` name the limits.
 
-[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.6...HEAD
+[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.7...HEAD
+[0.4.7]: https://github.com/NormB/vcon-server/releases/tag/v0.4.7
 [0.4.6]: https://github.com/NormB/vcon-server/releases/tag/v0.4.6
 [0.4.5]: https://github.com/NormB/vcon-server/releases/tag/v0.4.5
 [0.4.4]: https://github.com/NormB/vcon-server/releases/tag/v0.4.4
