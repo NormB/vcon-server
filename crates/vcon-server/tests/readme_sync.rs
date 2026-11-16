@@ -94,6 +94,80 @@ fn readme() -> String {
     read("README.md")
 }
 
+/// The vCon community's Conserver, which this project is not.
+const CONSERVER_URL: &str = "https://github.com/vcon-dev/vcon-server";
+
+/// The `[extra]` string `key` of a page's TOML front matter (between the
+/// first two `+++` lines), or None.
+fn front_matter_extra(page: &str, key: &str) -> Option<String> {
+    let rest = page.strip_prefix("+++\n")?;
+    let end = rest.find("\n+++")?;
+    let table: toml::Table = rest[..end].parse().ok()?;
+    table
+        .get("extra")?
+        .as_table()?
+        .get(key)?
+        .as_str()
+        .map(str::to_owned)
+}
+
+/// `text` with every run of whitespace made one space, trimmed.
+fn squeeze(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// What is wrong with the home page's notice (`notice`, its front matter's
+/// `[extra] notice`) and its copy in the README: it must link to the
+/// Conserver, say this project is not it and what this project is, be one
+/// line, and stand word for word in the README above the status line.
+fn conserver_notice_findings(notice: Option<&str>, readme: &str) -> Vec<String> {
+    let Some(notice) = notice.map(str::trim).filter(|n| !n.is_empty()) else {
+        return vec!["the home page has no notice".to_owned()];
+    };
+    let mut found = Vec::new();
+    if !notice.contains(&format!("]({CONSERVER_URL})")) {
+        found.push(format!("the notice does not link to {CONSERVER_URL}"));
+    }
+    if !notice.contains("is not the vCon Conserver") {
+        found.push("the notice does not say this project is not the vCon Conserver".to_owned());
+    }
+    if !notice.contains("an encrypted vCon store") {
+        found.push("the notice does not say what this project is".to_owned());
+    }
+    if notice.contains('\n') {
+        found.push("the notice is more than one line".to_owned());
+    }
+    let readme = squeeze(readme);
+    match readme.find(&squeeze(notice)) {
+        None => found.push("README.md does not carry the notice word for word".to_owned()),
+        Some(at) => {
+            if readme.find("**Status:").is_some_and(|status| status < at) {
+                found.push("README.md carries the notice after its status line".to_owned());
+            }
+        }
+    }
+    found
+}
+
+/// What is wrong with how the home template shows the notice: in the
+/// first hero section, as markdown, after the lead and before the buttons.
+fn hero_notice_findings(template: &str) -> Vec<String> {
+    let Some(start) = template.find("<section class=\"hero\">") else {
+        return vec!["the home page has no hero section".to_owned()];
+    };
+    let hero = &template[start..];
+    let hero = &hero[..hero.find("</section>").unwrap_or(hero.len())];
+    let Some(notice) = hero.find("{{ x.notice | markdown(inline=true) | safe }}") else {
+        return vec!["the home page's hero does not render x.notice".to_owned()];
+    };
+    let lead = hero.find("class=\"lead\"");
+    let cta = hero.find("class=\"cta\"");
+    if lead.is_none_or(|lead| lead > notice) || cta.is_none_or(|cta| cta < notice) {
+        return vec!["the notice is not directly after the lead".to_owned()];
+    }
+    Vec::new()
+}
+
 /// The text under the `## {heading}` line, up to the next `## ` heading.
 fn section<'a>(text: &'a str, heading: &str) -> &'a str {
     let start_line = format!("## {heading}\n");
@@ -959,4 +1033,549 @@ fn the_two_past_exceptions_are_written_in_the_form() {
         ],
         "the exception lines of crates/vcon-server/Cargo.toml"
     );
+}
+
+// The note that this project is not the vCon Conserver (owner, 2026-11-16:
+// "we should note on the web page that this is not the conserver and we
+// should provide a link to the conserver instead"), on the home page under
+// the lead and in the README above the status line.
+
+const NOTICE: &str = "This vcon-server, an encrypted vCon store with retention, legal holds and an audit log, \
+is not the vCon Conserver. The Conserver, a pipeline that runs vCons through chains of processing steps, \
+is at [github.com/vcon-dev/vcon-server](https://github.com/vcon-dev/vcon-server).";
+
+const HOME: &str =
+    "+++\ntitle = \"vcon-server\"\n[extra]\ntagline = \"t\"\nnotice = \"N\"\n+++\n\nBody.\n";
+
+const HERO: &str = "<section class=\"hero\">\n  <h1>{{ x.headline }}</h1>\n  <p class=\"lead\">{{ section.description }}</p>\n  \
+<p class=\"notice\">{{ x.notice | markdown(inline=true) | safe }}</p>\n  <p class=\"cta\">\n  </p>\n</section>\n";
+
+fn readme_with(notice: &str) -> String {
+    format!(
+        "# vcon-server\n\nA server that stores vCons.\n\n{notice}\n\n**Status: 0.4.7 released.** More.\n"
+    )
+}
+
+fn home_with(notice: &str) -> String {
+    HOME.replace("\"N\"", &format!("{notice:?}"))
+}
+
+// What must work.
+
+#[test]
+fn the_notice_and_its_readme_copy_pass() {
+    assert_eq!(
+        conserver_notice_findings(Some(NOTICE), &readme_with(NOTICE)),
+        Vec::<String>::new(),
+        "the note as written"
+    );
+}
+
+#[test]
+fn a_readme_copy_wrapped_over_lines_passes() {
+    let wrapped = NOTICE
+        .replace(" is not the", "\nis not the")
+        .replace(" a pipeline", "\na pipeline");
+    assert_eq!(
+        conserver_notice_findings(Some(NOTICE), &readme_with(&wrapped)),
+        Vec::<String>::new(),
+        "line breaks are spaces"
+    );
+}
+
+#[test]
+fn the_front_matter_notice_is_read() {
+    assert_eq!(
+        front_matter_extra(&home_with("A note."), "notice").as_deref(),
+        Some("A note."),
+        "[extra] notice"
+    );
+}
+
+#[test]
+fn another_extra_key_is_read_the_same_way() {
+    assert_eq!(
+        front_matter_extra(HOME, "tagline").as_deref(),
+        Some("t"),
+        "[extra] tagline"
+    );
+}
+
+#[test]
+fn the_hero_template_passes() {
+    assert_eq!(
+        hero_notice_findings(HERO),
+        Vec::<String>::new(),
+        "after the lead, before the buttons, as markdown"
+    );
+}
+
+#[test]
+fn the_notice_names_the_conserver_url() {
+    assert!(
+        NOTICE.contains(&format!("]({CONSERVER_URL})")),
+        "a markdown link to the Conserver"
+    );
+}
+
+#[test]
+fn the_url_is_the_conserver_repository() {
+    assert_eq!(
+        CONSERVER_URL, "https://github.com/vcon-dev/vcon-server",
+        "the owner's link"
+    );
+}
+
+#[test]
+fn the_real_home_page_and_readme_carry_the_notice() {
+    let home = read("website/content/_index.md");
+    let notice = front_matter_extra(&home, "notice");
+    assert_eq!(
+        conserver_notice_findings(notice.as_deref(), &readme()),
+        Vec::<String>::new(),
+        "the home page and README.md"
+    );
+}
+
+#[test]
+fn the_real_crate_readme_carries_the_notice() {
+    // crates.io shows this README on the vcon-server crate's page.
+    let crate_readme = read("crates/vcon-server/README.md");
+    assert_eq!(
+        conserver_notice_findings(Some(NOTICE), &crate_readme),
+        Vec::<String>::new(),
+        "crates/vcon-server/README.md"
+    );
+}
+
+#[test]
+fn the_real_notice_is_the_one_written_here() {
+    let home = read("website/content/_index.md");
+    assert_eq!(
+        front_matter_extra(&home, "notice").as_deref(),
+        Some(NOTICE),
+        "the home page's notice"
+    );
+}
+
+#[test]
+fn the_real_hero_renders_the_notice() {
+    assert_eq!(
+        hero_notice_findings(&read("website/templates/index.html")),
+        Vec::<String>::new(),
+        "index.html's hero"
+    );
+}
+
+#[test]
+fn the_real_producers_page_names_the_conserver_link() {
+    let page = read("website/content/docs/producers.md");
+    assert!(
+        page.contains(&format!("]({CONSERVER_URL})")),
+        "producers.md, which names a conserver pipeline, links to it"
+    );
+}
+
+#[test]
+fn the_real_notice_says_what_this_project_is() {
+    let home = read("website/content/_index.md");
+    let notice = front_matter_extra(&home, "notice").unwrap_or_default();
+    assert!(
+        notice.contains("an encrypted vCon store with retention, legal holds and an audit log"),
+        "which project the reader is on: {notice}"
+    );
+}
+
+#[test]
+fn a_readme_with_the_notice_at_the_very_top_passes() {
+    let readme = format!("{NOTICE}\n\n# vcon-server\n\n**Status: 0.4.7 released.**\n");
+    assert_eq!(
+        conserver_notice_findings(Some(NOTICE), &readme),
+        Vec::<String>::new(),
+        "before the status line"
+    );
+}
+
+// What must be refused.
+
+#[test]
+fn no_notice_is_refused() {
+    assert_eq!(
+        conserver_notice_findings(None, &readme_with(NOTICE)),
+        ["the home page has no notice"],
+        "missing"
+    );
+}
+
+#[test]
+fn an_empty_notice_is_refused() {
+    assert_eq!(
+        conserver_notice_findings(Some("  "), &readme_with(NOTICE)),
+        ["the home page has no notice"],
+        "blank"
+    );
+}
+
+#[test]
+fn a_notice_without_the_link_is_refused() {
+    let notice = NOTICE.replace(
+        "[github.com/vcon-dev/vcon-server](https://github.com/vcon-dev/vcon-server)",
+        "github.com/vcon-dev/vcon-server",
+    );
+    assert_eq!(
+        conserver_notice_findings(Some(&notice), &readme_with(&notice)),
+        ["the notice does not link to https://github.com/vcon-dev/vcon-server"],
+        "a bare name is not a link"
+    );
+}
+
+#[test]
+fn a_notice_linking_elsewhere_is_refused() {
+    let notice = NOTICE.replace(
+        "](https://github.com/vcon-dev/vcon-server)",
+        "](https://github.com/NormB/vcon-server)",
+    );
+    assert_eq!(
+        conserver_notice_findings(Some(&notice), &readme_with(&notice)),
+        ["the notice does not link to https://github.com/vcon-dev/vcon-server"],
+        "this repository is not the Conserver"
+    );
+}
+
+#[test]
+fn a_notice_linking_into_the_repository_is_refused() {
+    let notice = NOTICE.replace(
+        "](https://github.com/vcon-dev/vcon-server)",
+        "](https://github.com/vcon-dev/vcon-server/tree/main)",
+    );
+    assert_eq!(
+        conserver_notice_findings(Some(&notice), &readme_with(&notice)).len(),
+        1,
+        "the repository itself, exactly"
+    );
+}
+
+#[test]
+fn a_notice_that_does_not_say_it_is_not_the_conserver_is_refused() {
+    let notice = NOTICE.replace(
+        "is not the vCon Conserver",
+        "differs from the vCon Conserver",
+    );
+    assert_eq!(
+        conserver_notice_findings(Some(&notice), &readme_with(&notice)),
+        ["the notice does not say this project is not the vCon Conserver"],
+        "the plain statement"
+    );
+}
+
+#[test]
+fn a_notice_that_does_not_say_what_this_is_is_refused() {
+    let notice = NOTICE.replace(
+        "an encrypted vCon store with retention, legal holds and an audit log",
+        "a project",
+    );
+    assert_eq!(
+        conserver_notice_findings(Some(&notice), &readme_with(&notice)),
+        ["the notice does not say what this project is"],
+        "the reader must know which one they are on"
+    );
+}
+
+#[test]
+fn a_notice_over_two_lines_is_refused() {
+    let notice = NOTICE.replace(" The Conserver", "\nThe Conserver");
+    assert!(
+        conserver_notice_findings(Some(&notice), &readme_with(&notice))
+            .contains(&"the notice is more than one line".to_owned()),
+        "one line"
+    );
+}
+
+#[test]
+fn a_readme_without_the_notice_is_refused() {
+    assert_eq!(
+        conserver_notice_findings(
+            Some(NOTICE),
+            "# vcon-server\n\n**Status: 0.4.7 released.**\n"
+        ),
+        ["README.md does not carry the notice word for word"],
+        "README = site"
+    );
+}
+
+#[test]
+fn a_readme_with_other_words_is_refused() {
+    let other = NOTICE.replace("chains of processing steps", "processing steps");
+    assert_eq!(
+        conserver_notice_findings(Some(NOTICE), &readme_with(&other)),
+        ["README.md does not carry the notice word for word"],
+        "word for word"
+    );
+}
+
+#[test]
+fn a_readme_with_the_notice_after_the_status_is_refused() {
+    let readme = format!("# vcon-server\n\n**Status: 0.4.7 released.**\n\n{NOTICE}\n");
+    assert_eq!(
+        conserver_notice_findings(Some(NOTICE), &readme),
+        ["README.md carries the notice after its status line"],
+        "near the top"
+    );
+}
+
+#[test]
+fn a_hero_without_the_notice_is_refused() {
+    let hero = HERO.replace(
+        "  <p class=\"notice\">{{ x.notice | markdown(inline=true) | safe }}</p>\n",
+        "",
+    );
+    assert_eq!(
+        hero_notice_findings(&hero),
+        ["the home page's hero does not render x.notice"],
+        "missing"
+    );
+}
+
+#[test]
+fn a_notice_before_the_lead_is_refused() {
+    let hero = HERO
+        .replace(
+            "  <p class=\"notice\">{{ x.notice | markdown(inline=true) | safe }}</p>\n",
+            "",
+        )
+        .replace(
+            "  <h1>",
+            "  <p class=\"notice\">{{ x.notice | markdown(inline=true) | safe }}</p>\n  <h1>",
+        );
+    assert_eq!(
+        hero_notice_findings(&hero),
+        ["the notice is not directly after the lead"],
+        "under the lead"
+    );
+}
+
+#[test]
+fn a_notice_after_the_buttons_is_refused() {
+    let hero = HERO
+        .replace("  <p class=\"notice\">{{ x.notice | markdown(inline=true) | safe }}</p>\n", "")
+        .replace("  </p>\n</section>", "  </p>\n  <p class=\"notice\">{{ x.notice | markdown(inline=true) | safe }}</p>\n</section>");
+    assert_eq!(
+        hero_notice_findings(&hero),
+        ["the notice is not directly after the lead"],
+        "above the buttons"
+    );
+}
+
+#[test]
+fn a_notice_not_rendered_as_markdown_is_refused() {
+    let hero = HERO.replace(" | markdown(inline=true) | safe", "");
+    assert_eq!(
+        hero_notice_findings(&hero),
+        ["the home page's hero does not render x.notice"],
+        "the link must render"
+    );
+}
+
+#[test]
+fn a_notice_outside_the_hero_is_refused() {
+    let template = HERO.replace(
+        "  <p class=\"notice\">{{ x.notice | markdown(inline=true) | safe }}</p>\n",
+        "",
+    ) + "<p class=\"notice\">{{ x.notice | markdown(inline=true) | safe }}</p>\n";
+    assert_eq!(
+        hero_notice_findings(&template),
+        ["the home page's hero does not render x.notice"],
+        "below the fold"
+    );
+}
+
+#[test]
+fn a_template_without_a_hero_is_refused() {
+    assert_eq!(
+        hero_notice_findings("<main></main>"),
+        ["the home page has no hero section"],
+        "no hero"
+    );
+}
+
+#[test]
+fn front_matter_without_the_key_is_none() {
+    assert_eq!(front_matter_extra(HOME, "notice_x"), None, "no such key");
+}
+
+#[test]
+fn a_page_without_front_matter_is_none() {
+    assert_eq!(
+        front_matter_extra("# Title\n", "notice"),
+        None,
+        "no +++ block"
+    );
+}
+
+// The edges.
+
+#[test]
+fn front_matter_that_is_not_toml_is_none() {
+    assert_eq!(
+        front_matter_extra("+++\n[extra\nnotice = 1\n+++\n", "notice"),
+        None,
+        "unparsable"
+    );
+}
+
+#[test]
+fn a_key_outside_extra_is_not_read() {
+    assert_eq!(
+        front_matter_extra("+++\nnotice = \"top\"\n[extra]\n+++\n", "notice"),
+        None,
+        "only [extra]"
+    );
+}
+
+#[test]
+fn a_number_is_not_a_notice() {
+    assert_eq!(
+        front_matter_extra("+++\n[extra]\nnotice = 3\n+++\n", "notice"),
+        None,
+        "a string only"
+    );
+}
+
+#[test]
+fn a_front_matter_end_inside_a_value_does_not_cut_it() {
+    let home = home_with("a +++ b");
+    assert_eq!(
+        front_matter_extra(&home, "notice").as_deref(),
+        Some("a +++ b"),
+        "the closing line, not the text"
+    );
+}
+
+#[test]
+fn surrounding_spaces_of_the_notice_are_trimmed() {
+    let padded = format!("  {NOTICE}  ");
+    assert_eq!(
+        conserver_notice_findings(Some(&padded), &readme_with(NOTICE)),
+        Vec::<String>::new(),
+        "trimmed"
+    );
+}
+
+#[test]
+fn several_findings_are_all_named() {
+    let found = conserver_notice_findings(Some("A note."), "# vcon-server\n");
+    assert_eq!(
+        found.len(),
+        4,
+        "link, not-the-Conserver, what this is, README: {found:?}"
+    );
+}
+
+#[test]
+fn a_readme_without_a_status_line_needs_only_the_notice() {
+    let readme = format!("# vcon-server\n\n{NOTICE}\n");
+    assert_eq!(
+        conserver_notice_findings(Some(NOTICE), &readme),
+        Vec::<String>::new(),
+        "nothing to be above"
+    );
+}
+
+#[test]
+fn a_double_space_in_the_notice_matches_one_in_the_readme() {
+    let spaced = NOTICE.replace("is at [", "is at  [");
+    assert_eq!(
+        conserver_notice_findings(Some(&spaced), &readme_with(NOTICE)),
+        Vec::<String>::new(),
+        "whitespace on both sides"
+    );
+}
+
+#[test]
+fn tabs_in_the_readme_copy_are_spaces() {
+    let tabbed = NOTICE.replace(" is not", "\tis not");
+    assert_eq!(
+        conserver_notice_findings(Some(NOTICE), &readme_with(&tabbed)),
+        Vec::<String>::new(),
+        "whitespace"
+    );
+}
+
+#[test]
+fn the_notice_inside_a_longer_readme_paragraph_still_counts() {
+    let readme = readme_with(&format!("Before. {NOTICE} After."));
+    assert_eq!(
+        conserver_notice_findings(Some(NOTICE), &readme),
+        Vec::<String>::new(),
+        "contained"
+    );
+}
+
+#[test]
+fn a_hero_with_spaces_inside_the_expression_is_refused() {
+    let hero = HERO.replace(
+        "{{ x.notice | markdown(inline=true) | safe }}",
+        "{{x.notice|markdown(inline=true)|safe}}",
+    );
+    assert_eq!(
+        hero_notice_findings(&hero),
+        ["the home page's hero does not render x.notice"],
+        "the one written form"
+    );
+}
+
+#[test]
+fn a_second_hero_section_is_not_read() {
+    let template = format!("{HERO}<section class=\"hero\"></section>\n");
+    assert_eq!(
+        hero_notice_findings(&template),
+        Vec::<String>::new(),
+        "the first hero"
+    );
+}
+
+#[test]
+fn the_notice_between_the_lead_and_the_buttons_with_other_lines_passes() {
+    let hero = HERO.replace(
+        "  <p class=\"notice\">",
+        "  <!-- the note -->\n  <p class=\"notice\">",
+    );
+    assert_eq!(
+        hero_notice_findings(&hero),
+        Vec::<String>::new(),
+        "a comment beside it"
+    );
+}
+
+#[test]
+fn the_notice_uses_us_spelling() {
+    assert_eq!(non_us_spellings(NOTICE), Vec::<&str>::new(), "US English");
+}
+
+#[test]
+fn the_notice_names_no_rename() {
+    assert!(
+        !NOTICE.contains("rename") && !NOTICE.contains("formerly"),
+        "the name stays (owner, 2026-11-16)"
+    );
+}
+
+#[test]
+fn the_notice_judges_nothing() {
+    for word in ["better", "worse", "official", "real ", "only ", "unlike"] {
+        assert!(
+            !NOTICE.contains(word),
+            "facts only, no judgement of the other project: {word}"
+        );
+    }
+}
+
+#[test]
+fn the_squeeze_joins_any_whitespace() {
+    assert_eq!(squeeze(" a\n\tb  c "), "a b c", "one space between words");
+}
+
+#[test]
+fn the_squeeze_of_nothing_is_empty() {
+    assert_eq!(squeeze(" \n "), "", "no words");
 }

@@ -6,6 +6,7 @@
   <img class="hero-mark" src="{{ get_url(path='favicon.svg') }}" alt="" width="88" height="88">
   <h1>{{ x.headline }}</h1>
   <p class="lead">{{ section.description }}</p>
+  <p class="notice">{{ x.notice | markdown(inline=true) | safe }}</p>
   <p class="cta">
     <a class="button button-primary" href="{{ get_url(path=x.install_link) }}">Install</a>
     <a class="button" href="{{ get_url(path='@/docs/_index.md') }}">Docs</a>

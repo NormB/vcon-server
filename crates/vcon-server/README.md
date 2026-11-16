@@ -8,6 +8,11 @@ hidden, until its tenant's retention period has passed since it was stored,
 and then erased, unless a legal hold keeps it. Every request is recorded in
 an audit log.
 
+This vcon-server, an encrypted vCon store with retention, legal holds and an
+audit log, is not the vCon Conserver. The Conserver, a pipeline that runs
+vCons through chains of processing steps, is at
+[github.com/vcon-dev/vcon-server](https://github.com/vcon-dev/vcon-server).
+
 **Status: 0.4.7 released, not yet for production.** What works today is on
 [what is built](https://vcon-server.com/docs/status/).
 

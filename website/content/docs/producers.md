@@ -9,7 +9,9 @@ group = "concepts"
 
 A producer is anything that makes vCons: a call recorder, a contact-center
 platform, a conserver pipeline, a capture tool. vcon-server takes them over
-one route, `POST /vcons`, with a bearer key.
+one route, `POST /vcons`, with a bearer key. The vCon Conserver, at
+[github.com/vcon-dev/vcon-server](https://github.com/vcon-dev/vcon-server),
+is one such pipeline and a separate project from this server.
 
 ## Give each producer its own key
 

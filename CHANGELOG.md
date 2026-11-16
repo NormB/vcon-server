@@ -6,6 +6,14 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The site and the READMEs say this project is not the vCon Conserver.**
+  - Effect: A note under the home page's lead, in both READMEs and on the
+    Producers page links to the Conserver at
+    [github.com/vcon-dev/vcon-server](https://github.com/vcon-dev/vcon-server).
+  - Docs: [Producers](https://vcon-server.com/docs/producers/)
+
 ## [0.4.7] - 2026-11-16
 
 ### Changed

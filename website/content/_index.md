@@ -4,6 +4,10 @@ description = "vcon-server stores vCons, the IETF format for conversation record
 [extra]
 tagline = "encrypted, multi-tenant, audited storage for vCons"
 headline = "Encrypted, multi-tenant, audited storage for vCons"
+# Under the lead, inline markdown: which project this is, and the link to
+# the vCon Conserver for a reader who came for it. README.md carries the
+# same sentence (crates/vcon-server/tests/readme_sync.rs).
+notice = "This vcon-server, an encrypted vCon store with retention, legal holds and an audit log, is not the vCon Conserver. The Conserver, a pipeline that runs vCons through chains of processing steps, is at [github.com/vcon-dev/vcon-server](https://github.com/vcon-dev/vcon-server)."
 # The target of the hero's primary button.
 install_link = "@/docs/install.md"
 

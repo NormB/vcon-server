@@ -15,6 +15,11 @@ A server that stores [vCons](https://datatracker.ietf.org/wg/vcon/about/), the
 IETF conversation-record format, encrypted at rest, and returns them only to
 the keys allowed to see them.
 
+This vcon-server, an encrypted vCon store with retention, legal holds and an
+audit log, is not the vCon Conserver. The Conserver, a pipeline that runs
+vCons through chains of processing steps, is at
+[github.com/vcon-dev/vcon-server](https://github.com/vcon-dev/vcon-server).
+
 **Status: 0.4.7 released, not yet for production.** The `vcon` and
 `vcon-server` crates are on crates.io, and the server for Linux on x86_64 and
 aarch64 is on [GitHub](https://github.com/NormB/vcon-server/releases).
