@@ -18,6 +18,27 @@ CI runs every command on this page on each change. It installs the previous
 release, sets it up as [getting started](@/docs/getting-started.md) does,
 upgrades it to the server built from the change, and goes back again.
 
+## From 0.4.7 to 0.4.8
+
+The upgrade is the binary alone. No stored data, configuration or schema
+changes: the catalogs in the data directory keep schema version 9, and a
+PostgreSQL catalog keeps version 13. A downgrade is possible: 0.4.7 opens a
+data directory that 0.4.8 has served. Copy the data directory before the
+upgrade all the same, as in
+[copy the data directory](#copy-the-data-directory). Two things are
+different in 0.4.8:
+
+- **The console opens a vCon by the server's masked view.** Opening a vCon
+  in the [console](@/docs/console.md#open-a-vcon-masked) is recorded as
+  `read_masked`, not `read`, and finding one in its Legal view as
+  `legal_read_masked`, not `legal_read`; an alert or a report that counts
+  console opens needs the new names. Reload a console page that was open
+  during the upgrade.
+- **The audit log has a new action, `legal_read_masked`.** Each read of a
+  vCon's [masked view](@/docs/http-api.md#masked-view) through a legal
+  route is recorded under it, so an alert, a report or a filter that lists
+  actions needs it.
+
 ## From 0.4.6 to 0.4.7
 
 The upgrade is the binary alone. No stored data, configuration or schema
@@ -376,7 +397,7 @@ but do not install it yet. The commands use their own variable names, so
 they do not change the ones from install:
 
 ```sh
-NEW_VERSION=0.4.7
+NEW_VERSION=0.4.8
 NEW_ARCHIVE=vcon-server-$NEW_VERSION-$(uname -m)-unknown-linux-gnu.tar.gz
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/$NEW_ARCHIVE
 curl -fsSL -o SHA256SUMS-$NEW_VERSION.txt https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/SHA256SUMS.txt

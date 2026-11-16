@@ -7,7 +7,7 @@ weight = 60
 group = "project"
 +++
 
-vcon-server 0.4.7 is released: the `vcon` and `vcon-server` crates are on
+vcon-server 0.4.8 is released: the `vcon` and `vcon-server` crates are on
 crates.io, and the server for Linux on x86_64 and aarch64 is on
 [GitHub](https://github.com/NormB/vcon-server/releases). It is not yet for
 production. This page says what works today; each other page describes only
@@ -91,6 +91,14 @@ what is built, unless it says otherwise.
   address or content, recorded as `read_masked`. Release 0.4.6 passes the
   `view` parameter over and answers the whole vCon. See
   [masked view](@/docs/http-api.md#masked-view).
+- **The console opens a vCon by the masked view**, from 0.4.8: the
+  [console](@/docs/console.md#open-a-vcon-masked) asks the server for a
+  vCon's masked view, so the browser receives no name, number, subject or
+  content until a Reveal, Play or Download. The legal read routes take
+  `?view=masked`, recorded as `legal_read_masked`, and the view's
+  `recordings` field lists the recordings the console plays. Release 0.4.7
+  sends the console the whole vCon, which the console masks in the
+  browser, and refuses `view` on the legal routes.
 - **An operator listener**, from 0.4.3: with an `[operator]` table in the
   configuration, the server listens on a second address that serves
   operator keys only, and `listen` serves tenant keys only; a valid key at
@@ -215,22 +223,6 @@ what is built, unless it says otherwise.
   checksums, every file with a signed build provenance attestation; from
   0.3.0 also a Sigstore signature over the checksums and the provenance as a
   file. The release workflow also publishes both crates to crates.io.
-
-## On `main` only
-
-The site is built from the `main` branch, so a page can describe what no
-release holds yet. Release 0.4.7 does not have these:
-
-- **The console opens a vCon by the masked view.** The
-  [console](@/docs/console.md#open-a-vcon-masked) asks the server for a
-  vCon's masked view, so the browser receives no name, number, subject or
-  content until a Reveal, Play or Download; release 0.4.7 sends the console
-  the whole vCon, which the console masks in the browser.
-- **The masked view on the legal reads, and its recordings.** The legal
-  read routes take `?view=masked`, recorded as `legal_read_masked`, and the
-  [masked view](@/docs/http-api.md#masked-view) has a `recordings` field
-  that lists the recordings the console plays; release 0.4.7 refuses
-  `view` on the legal routes and sends no `recordings`.
 
 ## The PostgreSQL catalog preview
 

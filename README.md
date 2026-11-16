@@ -20,7 +20,7 @@ audit log, is not the vCon Conserver. The Conserver, a pipeline that runs
 vCons through chains of processing steps, is at
 [github.com/vcon-dev/vcon-server](https://github.com/vcon-dev/vcon-server).
 
-**Status: 0.4.7 released, not yet for production.** The `vcon` and
+**Status: 0.4.8 released, not yet for production.** The `vcon` and
 `vcon-server` crates are on crates.io, and the server for Linux on x86_64 and
 aarch64 is on [GitHub](https://github.com/NormB/vcon-server/releases).
 [What is built](https://vcon-server.com/docs/status/) says what works today.
@@ -61,6 +61,8 @@ where each item is described in full:
   recorded under an action that names the part shown.
 - **A vCon's masked view:** what a vCon holds, with no name, number,
   subject or content, for a client to show before a reveal.
+- **The console opens a vCon by the masked view:** the browser receives
+  no content until a Reveal, Play or Download.
 - **An operator listener:** operator keys on an address of their own.
 - **A recording player in the console:** a dialog's inline recording plays
   in a page with its own policy.
