@@ -184,7 +184,9 @@ the same lint for each feature set CI lints, read from
 `.github/clippy-feature-sets.txt` (`scripts/clippy_features.py run --quiet`),
 builds the documentation with rustdoc's warnings denied
 (`cargo doc --workspace --no-deps --locked --quiet`), and runs the
-tests with `scripts/nextest.sh run --workspace --locked` and the doc tests with
+tests with `scripts/nextest.sh run --workspace --locked`, the server's tests with
+the `postgres` feature (`scripts/nextest.sh run -p vcon-server --locked --features postgres`),
+and the doc tests with
 `cargo test --workspace --locked --quiet --doc` (on aarch64, linked by
 `scripts/cc-lld.sh` with the toolchain's lld), the same for the fuzz package, the
 tests of the scripts, and `scripts/check_package.py`, which checks what each

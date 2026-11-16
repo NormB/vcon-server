@@ -23,6 +23,15 @@ deadline in .config/nextest.toml and fails it by name. The rule:
   the commit hook and    run the workspace with `scripts/nextest.sh run
   ci.yml's rust job      --workspace` and the doc tests with `cargo test
                          --workspace --doc`
+  the commit hook        also runs the vcon-server package's tests with each
+                         cargo feature of crates/vcon-server/Cargo.toml that
+                         is off by default (postgres), backend-tests aside:
+                         `scripts/nextest.sh run -p vcon-server --features
+                         postgres`, every target, no filter. Without
+                         backend-tests none of those tests needs a database.
+                         On 2026-11-16 a postgres-only test that reads a
+                         how-to page failed only in CI, after the version
+                         bump of 0.4.7 had passed this hook.
 
 Run with: python3 -I scripts/check_test_runner.py
 (from anywhere in the repository; needs PyYAML). Exits 1 naming each place
@@ -31,6 +40,7 @@ that breaks the rule.
 
 import pathlib
 import re
+import shlex
 import sys
 import tomllib
 
@@ -99,10 +109,76 @@ def runs_workspace_and_doc_tests(where, text):
     return found
 
 
-def problems(config_text, hook_text, workflows):
+# Features whose tests need live services (backend/s3.rs, backend/postgres.rs):
+# without the services the suite fails, so CI runs them beside the services.
+SERVICE_FEATURES = {"backend-tests"}
+MANIFEST = "crates/vcon-server/Cargo.toml"
+RUN_FLAGS = {"--locked", "--no-fail-fast", "--cargo-quiet", "--workspace", "--no-default-features", "${nextest_quiet[@]}"}
+RUN_OPTIONS = {"--status-level", "--final-status-level", "-p", "--package", "--features"}
+
+
+def extra_features(cargo_text):
+    """The server's cargo features that are not on by default and need no
+    live service, sorted: the commit hook's workspace run does not compile
+    the tests they add. Raises tomllib.TOMLDecodeError."""
+    features = tomllib.loads(cargo_text).get("features") or {}
+    default = set(features.get("default") or [])
+    return sorted(f for f in features if f != "default" and f not in default and f not in SERVICE_FEATURES)
+
+
+def runs_feature(line, feature):
+    """Whether one logical line runs every test of the vcon-server package
+    with `feature` on: `scripts/nextest.sh run`, the package (or the whole
+    workspace), the feature among --features, no service feature, and no
+    option that narrows the run to some targets or tests."""
+    try:
+        words = shlex.split(line, comments=True)
+    except ValueError:
+        return False
+    at = next((i for i, w in enumerate(words) if w.endswith("scripts/nextest.sh")), None)
+    if at is None or words[at + 1 : at + 2] != ["run"]:
+        return False
+    packages, features, workspace = set(), set(), False
+    rest = words[at + 2 :]
+    while rest:
+        word, rest = rest[0], rest[1:]
+        name, eq, value = word.partition("=")
+        if eq and name in RUN_OPTIONS:
+            word, rest = name, [value, *rest]
+        if word in RUN_FLAGS:
+            workspace |= word == "--workspace"
+        elif word in RUN_OPTIONS and rest:
+            value, rest = rest[0], rest[1:]
+            if word in ("-p", "--package"):
+                packages.add(value)
+            elif word == "--features":
+                features |= {f for f in re.split(r"[,\s]+", value) if f}
+        else:
+            return False
+    return (workspace or "vcon-server" in packages) and feature in features and not features & SERVICE_FEATURES
+
+
+def feature_run_problems(where, hook_text, features):
+    lines = commands(hook_text)
+    return [
+        f"{where}: does not run the tests the {f} feature compiles: add "
+        f"`scripts/nextest.sh run -p vcon-server --locked --features {f}` (none needs a database without "
+        "backend-tests)"
+        for f in features
+        if not any(runs_feature(line, f) for line in lines)
+    ]
+
+
+def problems(config_text, hook_text, workflows, cargo_toml=None):
     """One line per break of the rule. `workflows` maps a file name to its
-    parsed YAML."""
+    parsed YAML; `cargo_toml` is the server's manifest (None: its features
+    are not asked of the hook)."""
     found = []
+    if cargo_toml is not None:
+        try:
+            found += feature_run_problems(".githooks/pre-commit", hook_text, extra_features(cargo_toml))
+        except tomllib.TOMLDecodeError as e:
+            found.append(f"{MANIFEST} is not TOML: {e}")
     try:
         config = tomllib.loads(config_text)
     except tomllib.TOMLDecodeError as e:
@@ -145,11 +221,15 @@ def repository_problems(root):
     root = pathlib.Path(root)
     workflows = {p.name: yaml.safe_load(p.read_text(encoding="utf-8")) for p in sorted((root / ".github/workflows").glob("*.yml"))}
     config = root / ".config/nextest.toml"
+    manifest = root / MANIFEST
     found = problems(
         config.read_text(encoding="utf-8") if config.exists() else "",
         (root / ".githooks/pre-commit").read_text(encoding="utf-8"),
         workflows,
+        manifest.read_text(encoding="utf-8") if manifest.is_file() else None,
     )
+    if not manifest.is_file():
+        found.append(f"{MANIFEST} is missing")
     action = root / ".github/actions/nextest/action.yml"
     uses = any(str(s.get("uses", "")) == NEXTEST_ACTION for w in workflows.values() for j in ((w or {}).get("jobs") or {}).values() for s in (j or {}).get("steps") or [])
     if uses:

@@ -308,7 +308,13 @@ git config core.hooksPath .githooks
   the documentation with rustdoc's warnings denied
   (`cargo doc --workspace --no-deps --locked --quiet`),
   the tests with `scripts/nextest.sh run --workspace --locked` (each test
-  under the deadline in `.config/nextest.toml`) and the doc tests with
+  under the deadline in `.config/nextest.toml`), the server's tests again
+  with the `postgres` feature, which is off by default
+  (`scripts/nextest.sh run -p vcon-server --locked --features postgres`,
+  every target; without `backend-tests` none of them needs a database, and
+  `scripts/check_test_runner.py` holds the hook to a run like it for each
+  feature that is off by default; about 50 seconds for the tests on the
+  maintainer's build host), and the doc tests with
   `cargo test --workspace --locked --quiet --doc`, then the same for the fuzz
   package (its format, clippy and its own tests). On aarch64 it links the
   test builds with the staged `scripts/cc-lld.sh` (see

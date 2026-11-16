@@ -128,6 +128,13 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked --quiet
 # does not run doc tests, so cargo test runs those.
 nextest_quiet=(--cargo-quiet --status-level slow --final-status-level slow)
 scripts/nextest.sh run --workspace --locked "${nextest_quiet[@]}"
+# The tests the postgres feature (off by default) compiles, every target:
+# without backend-tests none of them needs a database. On 2026-11-16 one
+# that reads a how-to page failed only in CI, after this hook had passed
+# the commit (scripts/check_test_runner.py holds this run to each feature
+# of crates/vcon-server/Cargo.toml that is off by default). Measured on
+# thor-02 2026-11-16: 3022 tests, 49 s, 91 s with the build.
+scripts/nextest.sh run -p vcon-server --locked --features postgres "${nextest_quiet[@]}"
 cargo test --workspace --locked --quiet --doc
 # The fuzz package is a workspace of its own, which --workspace does not
 # reach; it is checked with the same toolchain.
