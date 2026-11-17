@@ -1,0 +1,9 @@
+# osv-scanner's configuration (.github/workflows/osv-scanner.yml passes it
+# with --config, for every lockfile the scan finds). Each ignore names one
+# advisory, says why, and ends on a date, so it is reviewed again; nothing
+# else is ignored. tests/osv_ignores.rs holds this file.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0543"
+ignoreUntil = 2027-02-15
+reason = "chrono is unmaintained: informational, no patched version; required non-optionally by rmcp and parquet in their newest releases; no direct chrono use in vcon-server"
