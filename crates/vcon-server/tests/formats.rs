@@ -1036,6 +1036,78 @@ fn the_older_tests_cover_exactly_the_releases_that_wrote_an_older_version() {
     );
 }
 
+/// The releases named by the lines `<name>!(<module>, "<release>"...)` of
+/// `source`, in the file's order: the test modules a macro makes.
+fn macro_releases(source: &str, name: &str) -> Vec<String> {
+    let call = format!("{name}!(");
+    source
+        .lines()
+        .filter_map(|line| line.strip_prefix(&call))
+        .filter_map(|rest| rest.split('"').nth(1))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// This file's own text, to read its macro lines.
+const SOURCE: &str = include_str!("formats.rs");
+
+#[test]
+fn every_fixture_has_its_test_module_and_every_module_a_fixture() {
+    let mut fixtures = fixture_releases();
+    fixtures.sort_by_key(|r| release_order(r));
+    assert_eq!(
+        macro_releases(SOURCE, "release"),
+        fixtures,
+        "one release! line per directory under tests/data/formats, oldest first"
+    );
+    let mut pg = releases_in(&pg_formats_dir());
+    pg.sort_by_key(|r| release_order(r));
+    assert_eq!(
+        macro_releases(SOURCE, "pg_release"),
+        pg,
+        "one pg_release! line per directory under tests/data/formats-postgres, oldest first"
+    );
+}
+
+#[test]
+fn a_macro_line_names_its_release() {
+    let source =
+        "release!(release_0_4_0, \"0.4.0\");\nrelease!(release_0_4_1, \"0.4.1\", older);\n";
+    assert_eq!(
+        macro_releases(source, "release"),
+        ["0.4.0", "0.4.1"],
+        "with and without `older`"
+    );
+}
+
+#[test]
+fn a_macro_line_of_another_macro_is_not_read() {
+    let source = "pg_release!(pg_release_0_4_6, \"0.4.6\");\nrelease!(release_0_4_0, \"0.4.0\");\n";
+    assert_eq!(macro_releases(source, "release"), ["0.4.0"], "release!");
+    assert_eq!(
+        macro_releases(source, "pg_release"),
+        ["0.4.6"],
+        "pg_release!"
+    );
+}
+
+#[test]
+fn the_macro_definition_and_indented_text_are_not_lines() {
+    let source = "macro_rules! release {\n    release!(release_x, \"9.9.9\");\n// release!(release_0_1_0, \"0.1.0\");\n";
+    assert!(
+        macro_releases(source, "release").is_empty(),
+        "only a line that starts with the call"
+    );
+}
+
+#[test]
+fn a_macro_line_without_a_quoted_release_is_skipped() {
+    assert!(
+        macro_releases("release!(release_0_4_0);\n", "release").is_empty(),
+        "no release text"
+    );
+}
+
 // ---- The PostgreSQL deployments. ----
 //
 // Each directory under tests/data/formats-postgres/<release>/ was written
@@ -1282,6 +1354,115 @@ fn no_postgres_fixture_wrote_an_older_schema_than_this_build() {
     }
 }
 
+// ---- Where CI runs the `postgres` modules. ----
+
+/// Whether the `backends-postgres` job of the workflow `ci` runs the
+/// `postgres::` tests of the test target `target`: a nextest line of that
+/// job with the postgres and backend-tests features, `--test <target>`
+/// and the `"postgres::"` filter.
+fn ci_runs_postgres_modules_of(ci: &str, target: &str) -> bool {
+    let mut in_job = false;
+    for line in ci.lines() {
+        if line.starts_with("  ") && !line.starts_with("   ") && line.trim_end().ends_with(':') {
+            in_job = line.trim() == "backends-postgres:";
+            continue;
+        }
+        if !in_job || !line.contains("scripts/nextest.sh run") {
+            continue;
+        }
+        let words: Vec<&str> = line.split_whitespace().collect();
+        let names_target = words.windows(2).any(|w| w[0] == "--test" && w[1] == target);
+        let features = words.windows(2).any(|w| {
+            w[0] == "--features"
+                && w[1].split(',').any(|f| f == "postgres")
+                && w[1].split(',').any(|f| f == "backend-tests")
+        });
+        if names_target && features && words.contains(&"\"postgres::\"") {
+            return true;
+        }
+    }
+    false
+}
+
+#[test]
+fn ci_runs_the_postgres_modules_of_this_file() {
+    let ci = std::fs::read_to_string(root().join(".github/workflows/ci.yml")).expect("ci.yml");
+    assert!(
+        ci_runs_postgres_modules_of(&ci, "formats"),
+        "backends-postgres runs `--test formats` with the \"postgres::\" filter, on PostgreSQL 16 and 18"
+    );
+}
+
+const CI_SAMPLE: &str = "\
+jobs:
+  backends:
+    steps:
+      - run: scripts/nextest.sh run -p vcon-server --features postgres,backend-tests --test formats \"postgres::\"
+  backends-postgres:
+    steps:
+      - run: |
+          scripts/nextest.sh run -p vcon-server --locked --features postgres,backend-tests --no-fail-fast --test serve --test formats \"postgres::\"
+  docs:
+    steps: []
+";
+
+#[test]
+fn a_nextest_line_of_the_job_names_the_target() {
+    assert!(ci_runs_postgres_modules_of(CI_SAMPLE, "formats"), "formats");
+    assert!(ci_runs_postgres_modules_of(CI_SAMPLE, "serve"), "serve");
+}
+
+#[test]
+fn a_target_the_job_does_not_run_is_not_found() {
+    assert!(
+        !ci_runs_postgres_modules_of(CI_SAMPLE, "rotation"),
+        "rotation is not on the line"
+    );
+}
+
+#[test]
+fn a_line_in_another_job_does_not_count() {
+    let ci = CI_SAMPLE.replace("--test serve --test formats", "--test serve");
+    assert!(
+        !ci_runs_postgres_modules_of(&ci, "formats"),
+        "only backends-postgres has the servers"
+    );
+}
+
+#[test]
+fn a_line_without_the_filter_or_the_features_does_not_count() {
+    let ci = CI_SAMPLE.replace(
+        "--test formats \"postgres::\"\n  docs",
+        "--test formats\n  docs",
+    );
+    assert!(!ci_runs_postgres_modules_of(&ci, "formats"), "no filter");
+    let ci = CI_SAMPLE.replace(
+        "--locked --features postgres,backend-tests",
+        "--locked --features postgres",
+    );
+    assert!(
+        !ci_runs_postgres_modules_of(&ci, "formats"),
+        "the live module needs backend-tests"
+    );
+}
+
+#[test]
+fn a_target_whose_name_starts_another_does_not_count() {
+    let ci = CI_SAMPLE.replace(
+        "--test formats \"postgres::\"\n  docs",
+        "--test formats_x \"postgres::\"\n  docs",
+    );
+    assert!(!ci_runs_postgres_modules_of(&ci, "formats"), "formats_x");
+}
+
+#[test]
+fn a_workflow_without_the_job_runs_nothing() {
+    assert!(
+        !ci_runs_postgres_modules_of("jobs:\n  rust:\n    steps: []\n", "formats"),
+        "no job"
+    );
+}
+
 // ---- How git reads the fixtures. ----
 //
 // The fixtures are bytes: git must not diff, merge or convert them, and the
@@ -1480,6 +1661,12 @@ fn a_manifest_below_a_release_directory_is_bytes() {
         "one level down"
     );
     assert!(!git_reads_as_text("manifest.json"), "no release directory");
+    // `*/manifest.json` in .gitattributes names that path only, not the
+    // files of a directory so named.
+    assert!(
+        !git_reads_as_text("0.4.6/manifest.json/x"),
+        "a file under a directory named manifest.json"
+    );
 }
 
 #[test]
@@ -2596,3 +2783,4 @@ macro_rules! pg_release {
 pg_release!(pg_release_0_4_6, "0.4.6");
 pg_release!(pg_release_0_4_7, "0.4.7");
 pg_release!(pg_release_0_4_8, "0.4.8");
+pg_release!(pg_release_0_4_9, "0.4.9");

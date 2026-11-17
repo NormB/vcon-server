@@ -135,13 +135,15 @@ format with its version and what each release wrote, and a test holds the
 page to the code. The repository keeps a data directory written by each
 released binary from 0.4.0 to 0.4.9; on every change, CI opens each one
 with the new build, checks it, reads every kept version back byte-equal,
-and refuses a catalog one version past the build. CI also upgrades the
-previous release to this one and back.
+and refuses a catalog one version past the build. From 0.4.6 to 0.4.9 it
+also keeps each release's deployment with its catalogs in PostgreSQL and
+its objects in Parquet storage, which CI restores and opens the same way on
+PostgreSQL 16 and 18. CI also upgrades the previous release to this one and
+back.
 
-Left: a written rule for what 1.0 keeps unchanged; checks in CI that refuse
-a change that breaks the HTTP API or the configuration, against a frozen
-copy of each; and data written by the released binaries in a PostgreSQL
-catalog and in Parquet storage, opened the same way.
+Left: a written rule for what 1.0 keeps unchanged; and checks in CI that
+refuse a change that breaks the HTTP API or the configuration, against a
+frozen copy of each.
 
 Evidence:
 
@@ -155,6 +157,15 @@ Evidence:
 - the data of each release, in
   [manifest.json](https://github.com/NormB/vcon-server/blob/main/crates/vcon-server/tests/data/formats/0.4.0/manifest.json)
   and the directories beside it
+- [the data in PostgreSQL and Parquet storage](@/docs/on-disk-format.md#the-data-in-postgresql-and-parquet-storage)
+- the PostgreSQL data of each release, in
+  [manifest.json](https://github.com/NormB/vcon-server/blob/main/crates/vcon-server/tests/data/formats-postgres/0.4.6/manifest.json)
+  and the directories beside it
+- test `every_fixture_has_its_test_module_and_every_module_a_fixture` in
+  [formats.rs](https://github.com/NormB/vcon-server/blob/main/crates/vcon-server/tests/formats.rs)
+- CI job `backends-postgres` in
+  [ci.yml](https://github.com/NormB/vcon-server/blob/main/.github/workflows/ci.yml),
+  which restores each release's PostgreSQL data on PostgreSQL 16 and 18
 - [before you upgrade](@/docs/upgrading.md#before-you-upgrade)
 - test `a_failed_upgrade_from_0_4_2_keeps_none_of_its_steps` in
   [v6_tests.rs](https://github.com/NormB/vcon-server/blob/main/crates/vcon-server/src/catalog/v6_tests.rs)

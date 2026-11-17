@@ -24,6 +24,16 @@ For each release (every one in RELEASES when none is named) it:
    kept version with the SHA-256 of its body, the purged uuids, the tenants,
    the users, and what made the fixture).
 
+With --postgres, for each release in PG_RELEASES (0.4.6 on) it writes
+PG_OUT/<release>/ instead: the same binary with its catalogs in the
+primary of scripts/pg-test-server.sh (PG_IMAGE) and its objects in a
+RustFS container (RUSTFS_IMAGE) on that network; `migrate`, the same
+workload, a restart, then Parquet storage on, whose pack run at start packs
+every object, then LATE_VCONS more vCons per tenant, stored as objects. It
+keeps `dump.sql` (pg_dump --inserts, without its \\restrict lines), every
+bucket object by key under `bucket/`, the lock files, the master key and a
+manifest that also names each version's place and the schema version.
+
 The master key of each fixture is SHA-256 of a fixed text and the release,
 so the key is published with the fixture: it protects test data only. Every
 party is a reserved value (example.com, 555-01xx numbers).
@@ -256,9 +266,10 @@ def tree_bytes(path):
 
 # ---- The PostgreSQL fixtures (--postgres). ----
 
-# The releases whose binaries have the `postgres` feature: `strings` finds
-# tokio-postgres in 0.4.6's binary and in none before it.
-PG_RELEASES = ("0.4.6", "0.4.7", "0.4.8")
+# The releases whose binaries have the `postgres` feature: every release
+# from 0.4.6 on (`strings` finds tokio-postgres in 0.4.6's binary and in
+# none before it), so a release added to RELEASES is added here too.
+PG_RELEASES = RELEASES[RELEASES.index("0.4.6"):]
 
 # The images of CI's backends-postgres job: PostgreSQL 16.15, the oldest
 # major CI runs, so its pg_dump loads into each newer one; RustFS 1.0.4.
@@ -769,6 +780,17 @@ def build_pg(rel, dep, out_root):
     return tree_bytes(dest)
 
 
+def cache_dir(path):
+    """The cache directory `path`, made with its parents when missing; a
+    file there is refused by name. Both modes make their work directories
+    in it, so a first run with a new path must not fail on it."""
+    cache = pathlib.Path(path)
+    if cache.exists() and not cache.is_dir():
+        raise SystemExit(f"make-format-fixtures: --cache {path}: not a directory")
+    cache.mkdir(parents=True, exist_ok=True)
+    return cache
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--cache", required=True, help="where the release archives are kept")
@@ -782,6 +804,7 @@ def main(argv=None):
     if args.postgres and not set(releases) <= set(PG_RELEASES):
         parser.error(f"--postgres takes only {', '.join(PG_RELEASES)}")
     out = args.out or str(PG_OUT if args.postgres else OUT)
+    args.cache = str(cache_dir(args.cache))
     total = 0
     for release in releases:
         size = (make_pg if args.postgres else make)(release, args.arch, args.cache, out)

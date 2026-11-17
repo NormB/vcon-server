@@ -9,8 +9,10 @@ they wrote are checked by crates/vcon-server/tests/formats.rs.
 Run with: python3 -I scripts/test_make_format_fixtures.py
 """
 
+import contextlib
 import hashlib
 import importlib.util
+import io
 import json
 import pathlib
 import sys
@@ -276,8 +278,12 @@ CI = (HERE.parent / ".github" / "workflows" / "ci.yml").read_text()
 
 class PostgresReleases(unittest.TestCase):
     # success
-    def test_the_postgres_releases_are_0_4_6_to_0_4_8(self):
-        self.assertEqual(mff.PG_RELEASES, ("0.4.6", "0.4.7", "0.4.8"), "the release binaries with `postgres`")
+    def test_the_postgres_releases_are_0_4_6_to_0_4_9(self):
+        self.assertEqual(mff.PG_RELEASES, ("0.4.6", "0.4.7", "0.4.8", "0.4.9"), "the release binaries with `postgres`")
+
+    def test_every_release_from_0_4_6_on_is_a_postgres_release(self):
+        # A release added to RELEASES gets its PostgreSQL data too.
+        self.assertEqual(mff.PG_RELEASES, mff.RELEASES[mff.RELEASES.index("0.4.6"):], "one list, not two")
 
     def test_each_postgres_release_is_a_release(self):
         for release in mff.PG_RELEASES:
@@ -515,6 +521,49 @@ class PgManifest(unittest.TestCase):
     def test_no_postgres_section_by_default(self):
         doc = json.loads(mff.manifest("0.4.6", SHA_A, SHA_B, [], [], [], []))
         self.assertNotIn("postgres", doc, "the data directory fixtures are unchanged")
+
+
+class CacheDir(unittest.TestCase):
+    # success
+    def test_a_missing_cache_is_made_with_its_parents(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "a" / "cache"
+            self.assertEqual(mff.cache_dir(str(path)), path, "the path given")
+            self.assertTrue(path.is_dir(), "made, with its parent")
+
+    def test_an_existing_cache_is_kept_with_what_it_holds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (pathlib.Path(tmp) / "archive.tar.gz").write_bytes(b"x")
+            mff.cache_dir(tmp)
+            self.assertEqual((pathlib.Path(tmp) / "archive.tar.gz").read_bytes(), b"x", "unchanged")
+
+    # failure
+    def test_a_file_where_the_cache_should_be_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "cache"
+            path.write_bytes(b"")
+            with self.assertRaises(SystemExit) as caught:
+                mff.cache_dir(str(path))
+            self.assertIn("not a directory", str(caught.exception), "named")
+
+    def test_main_makes_the_cache_before_a_release_is_made(self):
+        # make() itself needs Docker; a stand-in records the cache it got.
+        seen = []
+        real = mff.make
+        mff.make = lambda release, arch, cache, out: seen.append(pathlib.Path(cache).is_dir()) or 0
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    rc = mff.main(["--cache", f"{tmp}/new/cache", "--release", "0.4.0", "--out", tmp])
+        finally:
+            mff.make = real
+        self.assertEqual((rc, seen), (0, [True]), "the cache was there when make ran")
+
+    # edge
+    def test_a_cache_named_with_a_trailing_slash_is_the_same_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            made = mff.cache_dir(tmp + "/c/")
+            self.assertEqual(made, pathlib.Path(tmp) / "c", "one directory")
 
 
 if __name__ == "__main__":
