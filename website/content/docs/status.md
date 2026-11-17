@@ -7,7 +7,7 @@ weight = 60
 group = "project"
 +++
 
-vcon-server 0.4.8 is released: the `vcon` and `vcon-server` crates are on
+vcon-server 0.4.9 is released: the `vcon` and `vcon-server` crates are on
 crates.io, and the server for Linux on x86_64 and aarch64 is on
 [GitHub](https://github.com/NormB/vcon-server/releases). It is not yet for
 production: [the 1.0 checklist](@/docs/production-checklist.md) says what

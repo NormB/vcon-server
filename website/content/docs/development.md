@@ -968,7 +968,7 @@ publish job gives its output to `gh release create --notes-file`. Before
 a tag, see the text a release will have:
 
 ```sh
-python3 -I scripts/release_notes.py 0.4.8 --repo NormB/vcon-server
+python3 -I scripts/release_notes.py 0.4.9 --repo NormB/vcon-server
 ```
 
 `scripts/test_release_notes.py` tests the script, and that the workflow
