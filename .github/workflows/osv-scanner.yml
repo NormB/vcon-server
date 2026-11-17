@@ -49,14 +49,15 @@ jobs:
           persist-credentials: false
 
       # osv-scanner exits non-zero when it finds a vulnerability, which
-      # fails this step and the job. --config names osv-scanner.toml for
-      # every lockfile: without it, the scanner reads a config only beside
-      # each lockfile, so fuzz/Cargo.lock would not get the root's ignores.
+      # fails this step and the job. It reads osv-scanner.toml only beside
+      # each lockfile, and so does Scorecard's Vulnerabilities check, which
+      # takes no config option; so each lockfile has a copy of the root's
+      # file beside it, and this scan passes no override: it finds what
+      # Scorecard finds. tests/osv_ignores.rs holds both.
       - name: Scan every lockfile
         uses: google/osv-scanner-action/osv-scanner-action@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
         with:
           scan-args: |-
-            --config=osv-scanner.toml
             --format=sarif
             --output-file=osv.sarif
             --recursive

@@ -1,7 +1,10 @@
-# osv-scanner's configuration (.github/workflows/osv-scanner.yml passes it
-# with --config, for every lockfile the scan finds). Each ignore names one
-# advisory, says why, and ends on a date, so it is reviewed again; nothing
-# else is ignored. tests/osv_ignores.rs holds this file.
+# osv-scanner's configuration. osv-scanner reads this file only from the
+# directory of the lockfile it scans, never from a parent, and Scorecard's
+# Vulnerabilities check scans with no --config. So a copy of this file, byte
+# for byte, sits beside every lockfile, and .github/workflows/osv-scanner.yml
+# reads the copies the same way. Each ignore names one advisory, says why,
+# and ends on a date, so it is reviewed again; nothing else is ignored.
+# tests/osv_ignores.rs holds this file and its copies.
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2026-0543"

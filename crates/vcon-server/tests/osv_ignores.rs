@@ -1,7 +1,17 @@
 //! osv-scanner.toml, the advisories the OSV job lets through: each one
 //! named here, with its reason, ending within 90 days so it is reviewed;
-//! the workflow passes the file for every lockfile; and the reason's claim
-//! that no crate of this repository depends on chrono itself still holds.
+//! a copy of the file, byte for byte, beside every lockfile the scanner
+//! reads; the workflow reads those copies as Scorecard does; and the
+//! reason's claim that no crate of this repository depends on chrono
+//! itself still holds.
+//!
+//! Why a copy beside each lockfile: osv-scanner reads `osv-scanner.toml`
+//! only from the directory of the lockfile it scans, never from a parent
+//! (internal/config/manager.go, normalizeConfigLoadPath, v2.5.1). Scorecard's
+//! Vulnerabilities check (v5.6.0, clients/osv.go) scans the repository with
+//! that library and no `--config`, so a root-only file left fuzz/Cargo.lock's
+//! chrono reported (code-scanning alert 61) while the OSV job, which passed
+//! `--config`, was green.
 
 use std::path::{Path, PathBuf};
 
@@ -98,6 +108,109 @@ fn depends_on_chrono(text: &str) -> bool {
     direct || workspace
 }
 
+/// The configuration's name, which osv-scanner looks for beside a lockfile.
+const CONFIG: &str = "osv-scanner.toml";
+
+/// Whether osv-scanner reads the file at `path` as a lockfile. The names
+/// of its extractors for the ecosystems a repository like this one can
+/// hold; the seven this repository has were read from a run of
+/// osv-scanner 2.7.0's `Scanned ... file` lines.
+fn is_lockfile(path: &str) -> bool {
+    const NAMES: &[&str] = &[
+        "Cargo.lock",
+        "package-lock.json",
+        "npm-shrinkwrap.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "go.mod",
+        "poetry.lock",
+        "uv.lock",
+        "Pipfile.lock",
+        "Gemfile.lock",
+    ];
+    let name = path.rsplit('/').next().unwrap_or(path);
+    NAMES.contains(&name) || (name.ends_with(".txt") && name.contains("requirements"))
+}
+
+/// The directory of a tracked `path`, "" for the root.
+fn directory(path: &str) -> &str {
+    path.rsplit_once('/').map_or("", |(dir, _)| dir)
+}
+
+/// What is wrong with the copies of the root configuration `root_text`,
+/// given the `tracked` files (as `git ls-files` lists them) and `read`,
+/// which gives a tracked file's text.
+fn copy_problems(
+    tracked: &[&str],
+    root_text: &str,
+    read: &dyn Fn(&str) -> Option<String>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut lockfile_dirs = Vec::new();
+    for path in tracked.iter().filter(|p| is_lockfile(p)) {
+        let dir = directory(path);
+        if dir.is_empty() || lockfile_dirs.contains(&dir) {
+            continue;
+        }
+        lockfile_dirs.push(dir);
+        let copy = format!("{dir}/{CONFIG}");
+        if !tracked.contains(&copy.as_str()) {
+            out.push(format!("{dir}: no {CONFIG} beside {path}"));
+            continue;
+        }
+        match read(&copy) {
+            None => out.push(format!("{copy} cannot be read")),
+            Some(text) if text != root_text => {
+                out.push(format!("{copy} differs from the root's {CONFIG}"));
+            }
+            Some(_) => {}
+        }
+    }
+    for path in tracked {
+        let dir = directory(path);
+        let is_copy = path.rsplit('/').next() == Some(CONFIG) && !dir.is_empty();
+        if is_copy && !lockfile_dirs.contains(&dir) {
+            out.push(format!("{path}: no lockfile beside it"));
+        }
+    }
+    out
+}
+
+/// What is wrong with the OSV workflow `text`: it must scan every lockfile
+/// and read the configuration beside each, as Scorecard does.
+fn workflow_problems(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in text.lines().map(str::trim) {
+        if line.starts_with("--config") {
+            out.push(format!(
+                "`{line}`: Scorecard reads the copy beside each lockfile; so must the OSV job"
+            ));
+        }
+    }
+    if !text.lines().any(|l| l.trim() == "--recursive") {
+        out.push(
+            "no `--recursive`: the scan must read every lockfile, as Scorecard's does".to_owned(),
+        );
+    }
+    out
+}
+
+fn tracked_files() -> Vec<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root())
+        .args(["ls-files", "-z"])
+        .output()
+        .expect("git runs");
+    assert!(out.status.success(), "git ls-files: {:?}", out.status);
+    String::from_utf8(out.stdout)
+        .expect("tracked paths are UTF-8")
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
 fn today() -> time::Date {
     time::OffsetDateTime::now_utc().date()
 }
@@ -122,18 +235,122 @@ fn the_repositorys_configuration_passes() {
 }
 
 #[test]
-fn the_workflow_passes_the_configuration_for_every_lockfile() {
+fn the_workflow_reads_the_configuration_beside_each_lockfile_as_scorecard_does() {
     let text = std::fs::read_to_string(root().join(".github/workflows/osv-scanner.yml"))
         .expect("the workflow");
-    assert!(
-        text.lines()
-            .any(|l| l.trim() == "--config=osv-scanner.toml"),
-        "scan-args name the file"
+    assert_eq!(
+        workflow_problems(&text),
+        Vec::<String>::new(),
+        "osv-scanner.yml"
     );
-    assert!(
-        text.lines().any(|l| l.trim() == "--recursive"),
-        "and every lockfile is scanned"
+}
+
+#[test]
+fn every_lockfile_has_the_root_configuration_beside_it() {
+    let tracked = tracked_files();
+    let tracked: Vec<&str> = tracked.iter().map(String::as_str).collect();
+    let root_text = std::fs::read_to_string(root().join(CONFIG)).expect("osv-scanner.toml");
+    let read = |path: &str| std::fs::read_to_string(root().join(path)).ok();
+    assert_eq!(
+        copy_problems(&tracked, &root_text, &read),
+        Vec::<String>::new(),
+        "Scorecard reads only the copy beside each lockfile"
     );
+}
+
+#[test]
+fn the_repository_has_lockfiles_outside_the_root() {
+    // Without them the copy rule above would hold nothing.
+    let tracked = tracked_files();
+    let outside = tracked
+        .iter()
+        .filter(|p| is_lockfile(p) && !directory(p).is_empty())
+        .count();
+    assert!(outside >= 6, "fuzz, three npm, go, scripts: {outside}");
+}
+
+#[test]
+fn copies_beside_each_lockfile_pass() {
+    let tracked = [
+        "Cargo.lock",
+        CONFIG,
+        "fuzz/Cargo.lock",
+        "fuzz/osv-scanner.toml",
+        "clients/go/go.mod",
+        "clients/go/osv-scanner.toml",
+    ];
+    let read = |_: &str| Some(GOOD.to_owned());
+    assert_eq!(
+        copy_problems(&tracked, GOOD, &read),
+        Vec::<String>::new(),
+        "every copy is the root's"
+    );
+}
+
+#[test]
+fn a_root_lockfile_alone_needs_no_copy() {
+    let read = |_: &str| None;
+    assert_eq!(
+        copy_problems(&["Cargo.lock", CONFIG, "README.md"], GOOD, &read),
+        Vec::<String>::new(),
+        "the root file is the one beside it"
+    );
+}
+
+#[test]
+fn two_lockfiles_in_one_directory_share_one_copy() {
+    let tracked = [
+        "site/package-lock.json",
+        "site/requirements.txt",
+        "site/osv-scanner.toml",
+    ];
+    let read = |_: &str| Some(GOOD.to_owned());
+    assert_eq!(
+        copy_problems(&tracked, GOOD, &read),
+        Vec::<String>::new(),
+        "one copy per directory"
+    );
+}
+
+#[test]
+fn the_lockfiles_osv_scanner_read_here_are_lockfiles() {
+    for path in [
+        "Cargo.lock",
+        "fuzz/Cargo.lock",
+        "site-tests/package-lock.json",
+        "clients/go/go.mod",
+        "scripts/icons-requirements.txt",
+        "requirements.txt",
+    ] {
+        assert!(is_lockfile(path), "{path}");
+    }
+}
+
+#[test]
+fn other_lockfile_names_of_the_scanner_are_lockfiles() {
+    for path in [
+        "a/yarn.lock",
+        "a/pnpm-lock.yaml",
+        "a/npm-shrinkwrap.json",
+        "a/poetry.lock",
+        "a/uv.lock",
+        "a/Pipfile.lock",
+        "a/Gemfile.lock",
+    ] {
+        assert!(is_lockfile(path), "{path}");
+    }
+}
+
+#[test]
+fn a_workflow_that_scans_every_lockfile_without_an_override_passes() {
+    let text = "          scan-args: |-\n            --format=sarif\n            --recursive\n            ./\n";
+    assert_eq!(workflow_problems(text), Vec::<String>::new(), "no --config");
+}
+
+#[test]
+fn a_comment_that_names_the_option_is_not_the_option() {
+    let text = "      # Not --config: Scorecard has none.\n            --recursive\n";
+    assert_eq!(workflow_problems(text), Vec::<String>::new(), "a comment");
 }
 
 #[test]
@@ -244,6 +461,102 @@ fn a_direct_chrono_dependency_is_found() {
 }
 
 #[test]
+fn a_lockfile_without_a_copy_beside_it_is_refused() {
+    let read = |_: &str| Some(GOOD.to_owned());
+    assert_eq!(
+        copy_problems(&["Cargo.lock", CONFIG, "fuzz/Cargo.lock"], GOOD, &read),
+        ["fuzz: no osv-scanner.toml beside fuzz/Cargo.lock"],
+        "the case of alert 61"
+    );
+}
+
+#[test]
+fn each_directory_without_a_copy_is_named_once() {
+    let tracked = [
+        "fuzz/Cargo.lock",
+        "web/package-lock.json",
+        "web/requirements.txt",
+    ];
+    let read = |_: &str| None;
+    assert_eq!(
+        copy_problems(&tracked, GOOD, &read),
+        [
+            "fuzz: no osv-scanner.toml beside fuzz/Cargo.lock",
+            "web: no osv-scanner.toml beside web/package-lock.json"
+        ],
+        "by its first lockfile"
+    );
+}
+
+#[test]
+fn a_copy_that_differs_from_the_root_is_refused() {
+    let tracked = ["fuzz/Cargo.lock", "fuzz/osv-scanner.toml"];
+    let read = |_: &str| Some(GOOD.replace("2027-02-15", "2027-02-14"));
+    assert_eq!(
+        copy_problems(&tracked, GOOD, &read),
+        ["fuzz/osv-scanner.toml differs from the root's osv-scanner.toml"],
+        "byte for byte"
+    );
+}
+
+#[test]
+fn a_copy_on_disk_that_git_does_not_track_is_refused() {
+    // A clone, as Scorecard's, has only what is tracked.
+    let read = |_: &str| Some(GOOD.to_owned());
+    assert_eq!(
+        copy_problems(&["fuzz/Cargo.lock"], GOOD, &read),
+        ["fuzz: no osv-scanner.toml beside fuzz/Cargo.lock"],
+        "tracked, not on disk"
+    );
+}
+
+#[test]
+fn a_tracked_copy_that_cannot_be_read_is_refused() {
+    let tracked = ["fuzz/Cargo.lock", "fuzz/osv-scanner.toml"];
+    let read = |_: &str| None;
+    assert_eq!(
+        copy_problems(&tracked, GOOD, &read),
+        ["fuzz/osv-scanner.toml cannot be read"],
+        "named, not skipped"
+    );
+}
+
+#[test]
+fn a_copy_where_no_lockfile_is_is_refused() {
+    let read = |_: &str| Some(GOOD.to_owned());
+    assert_eq!(
+        copy_problems(
+            &["Cargo.lock", CONFIG, "docs/osv-scanner.toml"],
+            GOOD,
+            &read
+        ),
+        ["docs/osv-scanner.toml: no lockfile beside it"],
+        "a left-over copy"
+    );
+}
+
+#[test]
+fn a_workflow_that_overrides_the_configuration_is_refused() {
+    let text = "            --config=osv-scanner.toml\n            --recursive\n";
+    assert_eq!(
+        workflow_problems(text),
+        [
+            "`--config=osv-scanner.toml`: Scorecard reads the copy beside each lockfile; so must the OSV job"
+        ],
+        "the job would be green while Scorecard reports"
+    );
+}
+
+#[test]
+fn a_workflow_that_does_not_recurse_is_refused() {
+    assert_eq!(
+        workflow_problems("            --format=sarif\n            ./\n"),
+        ["no `--recursive`: the scan must read every lockfile, as Scorecard's does"],
+        "every lockfile"
+    );
+}
+
+#[test]
 fn a_file_that_is_not_toml_is_refused() {
     let found = problems("[[IgnoredVulns", today());
     assert_eq!(found.len(), 1, "{found:?}");
@@ -274,6 +587,60 @@ fn a_chrono_named_only_in_a_feature_is_not_a_dependency() {
     assert!(
         !depends_on_chrono("[features]\nchrono = []\n"),
         "a feature name"
+    );
+}
+
+#[test]
+fn a_copy_that_differs_only_in_its_last_newline_is_refused() {
+    let tracked = ["fuzz/Cargo.lock", "fuzz/osv-scanner.toml"];
+    let read = |_: &str| Some(GOOD.trim_end().to_owned());
+    assert_eq!(
+        copy_problems(&tracked, GOOD, &read),
+        ["fuzz/osv-scanner.toml differs from the root's osv-scanner.toml"],
+        "byte for byte, so the copies cannot drift"
+    );
+}
+
+#[test]
+fn a_deep_directory_needs_its_own_copy() {
+    let read = |_: &str| Some(GOOD.to_owned());
+    assert_eq!(
+        copy_problems(&["a/b/c/Cargo.lock", "a/osv-scanner.toml"], GOOD, &read),
+        [
+            "a/b/c: no osv-scanner.toml beside a/b/c/Cargo.lock",
+            "a/osv-scanner.toml: no lockfile beside it"
+        ],
+        "a parent's copy is not read"
+    );
+}
+
+#[test]
+fn names_that_only_look_like_lockfiles_are_not_lockfiles() {
+    for path in [
+        "Cargo.toml",
+        "fuzz/Cargo.lock.orig",
+        "package.json",
+        "go.sum",
+        "requirements.in",
+        "docs/requirements.md",
+        "notCargo.lock",
+    ] {
+        assert!(!is_lockfile(path), "{path}");
+    }
+}
+
+#[test]
+fn the_root_directory_is_the_empty_path() {
+    assert_eq!(directory("Cargo.lock"), "", "the root");
+    assert_eq!(directory("a/b/go.mod"), "a/b", "a nested one");
+}
+
+#[test]
+fn an_empty_tree_has_no_problem() {
+    let read = |_: &str| None;
+    assert!(
+        copy_problems(&[], GOOD, &read).is_empty(),
+        "nothing tracked"
     );
 }
 
