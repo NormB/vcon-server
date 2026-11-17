@@ -52,6 +52,7 @@
 - [Command line](https://vcon-server.com/docs/command-line/): every command, its output and exit codes, and which may run beside a serving server
 - [Configuration](https://vcon-server.com/docs/configuration/): every key of the configuration file and its default
 - [The vcon library](https://vcon-server.com/docs/library/): reading, checking and writing vCons in Rust with the vcon crate
+- [On-disk formats](https://vcon-server.com/docs/on-disk-format/): every on-disk format and its version, what each release wrote, and the data of each release the tests open
 
 ## Project
 

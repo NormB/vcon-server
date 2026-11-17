@@ -1,0 +1,7 @@
+# The data each release wrote (crates/vcon-server/tests/formats.rs) is bytes:
+# sealed objects, catalogs, keys and empty lock files. Git's own test for
+# binary looks for a NUL byte, which some of these lack, and would then diff,
+# merge and grep them as text; the commit hook's scan of staged lines would
+# read their bytes as UTF-8. The manifests are JSON and stay text.
+crates/vcon-server/tests/data/formats/** binary
+crates/vcon-server/tests/data/formats/*/manifest.json diff merge text

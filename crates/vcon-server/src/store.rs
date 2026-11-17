@@ -33,7 +33,7 @@ mod examine;
 mod export;
 mod legal;
 mod list;
-mod manifest;
+pub(crate) mod manifest;
 pub(crate) mod packed;
 pub(crate) mod packer;
 mod purge;

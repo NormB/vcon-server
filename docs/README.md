@@ -50,6 +50,7 @@ below open each page's source in the repository.
 - [Retention and legal holds](../website/content/docs/retention-and-holds.md): How long a deleted vCon is kept, when it is erased, how a legal hold stops that, and what the legal routes can read and restore.
 - [Audit logs](../website/content/docs/audit-logs.md): What vcon-server records about each request, where, and what it never records.
 - [Audit log records](../website/content/docs/audit-log-records.md): The members of an audit record, and every action a record can name, with what it records and which log holds it.
+- [On-disk formats](../website/content/docs/on-disk-format.md): Every format vcon-server writes to disk or to a bucket, with its version; what each release since 0.4.0 wrote; the rule a new build keeps for the data of an older one; and how a release's data is kept in the repository and tested.
 - [Read the audit logs](../website/content/docs/read-audit-logs.md): Read a tenant's audit log and the admin log, with a command on the host and over HTTPS a page at a time, and list who revealed which part of a vCon. Every command and what it prints is shown.
 
 ## Security

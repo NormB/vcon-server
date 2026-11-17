@@ -34,8 +34,9 @@ pub(crate) const MIGRATIONS: &[&str] = &[
 ];
 
 /// The schema version this binary makes and reads:
-/// [`MIGRATIONS`]`.len()`, a test holds them equal.
-pub(crate) const SCHEMA_VERSION: i32 = 13;
+/// [`MIGRATIONS`]`.len()`, a test holds them equal. It is defined in
+/// [`crate::formats`], the list of every on-disk format.
+pub(crate) const SCHEMA_VERSION: i32 = crate::formats::POSTGRES_SCHEMA;
 
 /// The advisory lock every server takes, a constant all instances share.
 pub(crate) const SERVERS_LOCK: i64 = 0x7663_6f6e_5352_0001;

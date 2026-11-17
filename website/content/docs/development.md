@@ -37,6 +37,7 @@ crates/
         ├── tenants.rs     the registry: tenants, their keys, API keys, users, memberships, the admin log
         ├── envelope.rs    keys in locked memory; seal, wrap, HKDF
         ├── catalog.rs     SQLCipher catalogs
+        ├── formats.rs     every on-disk format and its version
         ├── audit.rs       the audit log
         ├── retention.rs   calendar retention periods
         ├── config.rs      the configuration file

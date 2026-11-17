@@ -535,6 +535,10 @@ jobs:
           set -euo pipefail
           python3 -I scripts/test_check_glibc.py
           python3 -I scripts/check_glibc.py --docs .
+      # The steps of the script that writes each release's on-disk data
+      # (tests/formats.rs opens that data in the test job).
+      - name: The on-disk format fixtures' generator
+        run: python3 -I scripts/test_make_format_fixtures.py
       # A second class or test method of one name replaces the first,
       # whose tests then never run.
       - name: No test module defines a name twice

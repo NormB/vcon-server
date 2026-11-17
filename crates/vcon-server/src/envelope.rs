@@ -26,7 +26,7 @@ const KEY_LEN: usize = 32;
 
 /// The first byte of every blob, naming its layout and algorithm:
 /// AES-256-GCM with a 96-bit nonce and a 128-bit tag.
-const FORMAT: u8 = 1;
+pub(crate) const FORMAT: u8 = 1;
 const NONCE_LEN: usize = 12;
 const TAG_LEN: usize = 16;
 
