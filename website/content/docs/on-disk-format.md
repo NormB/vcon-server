@@ -63,6 +63,7 @@ describes the key hierarchy.
 | 0.4.6 | 9 | 13 | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
 | 0.4.7 | 9 | 13 | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
 | 0.4.8 | 9 | 13 | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
+| 0.4.9 | 9 | 13 | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
 
 `none`: the release binary has no PostgreSQL catalog. The `postgres`
 feature, a preview, is in the release binaries from 0.4.6 on. A build from
@@ -90,7 +91,7 @@ the request under `0d`), legal holds on a live, a deleted and a replaced
 vCon, a restart whose sweep purges what is due, and the audit records of
 every step. From 0.4.4, which added users, it also makes two users with
 memberships. The sizes measured on 2026-11-17: 246,084 bytes for each of
-0.4.0 to 0.4.3, and 299,479 bytes for each of 0.4.4 to 0.4.8.
+0.4.0 to 0.4.3, and 299,479 bytes for each of 0.4.4 to 0.4.9.
 
 The test
 [formats.rs](https://github.com/NormB/vcon-server/blob/main/crates/vcon-server/tests/formats.rs)

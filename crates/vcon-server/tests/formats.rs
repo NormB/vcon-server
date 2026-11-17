@@ -1002,6 +1002,7 @@ release!(release_0_4_5, "0.4.5");
 release!(release_0_4_6, "0.4.6");
 release!(release_0_4_7, "0.4.7");
 release!(release_0_4_8, "0.4.8");
+release!(release_0_4_9, "0.4.9");
 
 #[test]
 fn the_older_tests_cover_exactly_the_releases_that_wrote_an_older_version() {

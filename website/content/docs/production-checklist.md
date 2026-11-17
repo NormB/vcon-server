@@ -133,7 +133,7 @@ HTTP API page. Every table of the configuration file refuses a key it does
 not know. [On-disk formats](@/docs/on-disk-format.md) lists every on-disk
 format with its version and what each release wrote, and a test holds the
 page to the code. The repository keeps a data directory written by each
-released binary from 0.4.0 to 0.4.8; on every change, CI opens each one
+released binary from 0.4.0 to 0.4.9; on every change, CI opens each one
 with the new build, checks it, reads every kept version back byte-equal,
 and refuses a catalog one version past the build. CI also upgrades the
 previous release to this one and back.
