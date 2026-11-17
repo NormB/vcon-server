@@ -647,11 +647,85 @@ fn no_workflow_checks_out_a_ref_given_as_an_input() {
 /// SOURCE_DATE_EPOCH (unset when `None`); its code, stdout and stderr.
 fn script(args: &[&str], epoch: Option<&str>) -> (Option<i32>, String, String) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let mut command = std::process::Command::new("bash");
-    command
-        .arg(root.join("scripts/reproducible-build.sh"))
+    script_at(&root.join("scripts/reproducible-build.sh"), args, epoch)
+}
+
+/// The commit time and the author time of the fixture's commits: they
+/// differ, so the build time is seen to be the commit's, not the author's.
+const COMMITTED: u64 = 1_794_686_400;
+const AUTHORED: u64 = 1_794_600_000;
+
+/// The fixture repository's settings: a reserved identity, no signing and
+/// no hooks of the caller's.
+const FIXTURE_CONFIG: &[&str] = &[
+    "-c",
+    "user.name=Fixture",
+    "-c",
+    "user.email=fixture@example.com",
+    "-c",
+    "commit.gpgsign=false",
+    "-c",
+    "core.hooksPath=/dev/null",
+];
+
+/// git, in `dir`, with nothing of the caller's: a test run by a commit hook
+/// inherits GIT_DIR and GIT_INDEX_FILE, which would point every command at
+/// the caller's repository (scripts/test-hooks.sh, 2026-10-28).
+fn fixture_git(dir: &Path, args: &[&str], committed: u64) {
+    let mut command = std::process::Command::new("git");
+    for (name, _) in std::env::vars_os() {
+        if name.to_string_lossy().starts_with("GIT_") {
+            command.env_remove(name);
+        }
+    }
+    let out = command
+        .arg("-C")
+        .arg(dir)
+        .args(FIXTURE_CONFIG)
         .args(args)
-        .env_remove("SOURCE_DATE_EPOCH");
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_DATE", format!("@{AUTHORED} +0000"))
+        .env("GIT_COMMITTER_DATE", format!("@{committed} +0000"))
+        .output()
+        .expect("git runs");
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// A new directory holding scripts/reproducible-build.sh, and with `commits`
+/// a repository of it with one commit at each of those commit times.
+fn build_tree(commits: &[u64]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    std::fs::create_dir(dir.path().join("scripts")).expect("scripts/");
+    std::fs::copy(
+        root.join("scripts/reproducible-build.sh"),
+        dir.path().join("scripts/reproducible-build.sh"),
+    )
+    .expect("the script");
+    if !commits.is_empty() {
+        fixture_git(dir.path(), &["init", "-q"], COMMITTED);
+    }
+    for (n, &committed) in commits.iter().enumerate() {
+        std::fs::write(dir.path().join("n"), n.to_string()).expect("a change");
+        fixture_git(dir.path(), &["add", "-A"], committed);
+        fixture_git(dir.path(), &["commit", "-q", "-m", "fixture"], committed);
+    }
+    dir
+}
+
+fn script_at(path: &Path, args: &[&str], epoch: Option<&str>) -> (Option<i32>, String, String) {
+    let mut command = std::process::Command::new("bash");
+    for (name, _) in std::env::vars_os() {
+        if name.to_string_lossy().starts_with("GIT_") {
+            command.env_remove(name);
+        }
+    }
+    command.arg(path).args(args).env_remove("SOURCE_DATE_EPOCH");
     if let Some(epoch) = epoch {
         command.env("SOURCE_DATE_EPOCH", epoch);
     }
@@ -750,31 +824,112 @@ fn the_build_time_is_the_one_given() {
     assert_eq!(out, "1794686421\n", "the time given, unchanged");
 }
 
+// The build time tests run the script from a checkout of their own: the
+// commit hook runs the tests in a copy of the staged files, which is no
+// repository, so a test that read this tree's commit failed there when
+// the hook was run by hand or from a main checkout (2026-11-17).
+
+fn epoch_in(dir: &tempfile::TempDir, epoch: Option<&str>) -> (Option<i32>, String, String) {
+    script_at(
+        &dir.path().join("scripts/reproducible-build.sh"),
+        &["epoch"],
+        epoch,
+    )
+}
+
 #[test]
 fn the_build_time_is_the_commits_when_none_is_given() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let git = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&root)
-        .args(["log", "-1", "--format=%ct", "HEAD"])
-        .output()
-        .expect("git runs");
-    let commit_time = String::from_utf8_lossy(&git.stdout).into_owned();
-    assert!(
-        commit_time.trim().parse::<u64>().is_ok(),
-        "the commit has a time: {commit_time:?}"
-    );
-    let (status, out, err) = script(&["epoch"], None);
+    let dir = build_tree(&[COMMITTED]);
+    let (status, out, err) = epoch_in(&dir, None);
     assert_eq!(status, Some(0), "from the checkout: {err}");
-    assert_eq!(out, commit_time, "the time of the commit that is built");
+    assert_eq!(
+        out,
+        format!("{COMMITTED}\n"),
+        "the time of the commit that is built"
+    );
 }
 
 #[test]
 fn an_empty_build_time_is_no_build_time() {
-    let (_, unset, _) = script(&["epoch"], None);
-    let (status, out, err) = script(&["epoch"], Some(""));
+    let dir = build_tree(&[COMMITTED]);
+    let (status, out, err) = epoch_in(&dir, Some(""));
     assert_eq!(status, Some(0), "a run by hand that fills no input: {err}");
-    assert_eq!(out, unset, "the commit's time, as with none given");
+    assert_eq!(
+        out,
+        format!("{COMMITTED}\n"),
+        "the commit's time, as with none given"
+    );
+}
+
+#[test]
+fn the_build_time_is_the_commit_time_not_the_author_time() {
+    let dir = build_tree(&[COMMITTED]);
+    let (_, out, err) = epoch_in(&dir, None);
+    assert_ne!(
+        out,
+        format!("{AUTHORED}\n"),
+        "a rebase keeps the author time: {err}"
+    );
+}
+
+#[test]
+fn the_build_time_is_the_newest_commits() {
+    let dir = build_tree(&[COMMITTED - 100, COMMITTED]);
+    let (status, out, err) = epoch_in(&dir, None);
+    assert_eq!(status, Some(0), "two commits: {err}");
+    assert_eq!(out, format!("{COMMITTED}\n"), "HEAD, the commit built");
+}
+
+#[test]
+fn a_tree_that_is_no_checkout_needs_a_build_time() {
+    let dir = build_tree(&[]);
+    let (status, out, err) = epoch_in(&dir, None);
+    assert_eq!(status, Some(1), "no commit, no time: {out}");
+    assert!(
+        err.contains("is not a git checkout, so there is no commit time for SOURCE_DATE_EPOCH"),
+        "the reason: {err}"
+    );
+    assert!(out.is_empty(), "no time is printed: {out}");
+}
+
+#[test]
+fn an_empty_build_time_in_a_tree_that_is_no_checkout_is_refused() {
+    let dir = build_tree(&[]);
+    let (status, _, err) = epoch_in(&dir, Some(""));
+    assert_eq!(status, Some(1), "empty is none: {err}");
+    assert!(err.contains("is not a git checkout"), "the reason: {err}");
+}
+
+#[test]
+fn a_build_time_given_needs_no_checkout() {
+    let dir = build_tree(&[]);
+    let (status, out, err) = epoch_in(&dir, Some("1794686421"));
+    assert_eq!(status, Some(0), "the hook's copy, with a time: {err}");
+    assert_eq!(out, "1794686421\n", "the time given, unchanged");
+}
+
+#[test]
+fn a_build_time_given_wins_over_the_commits() {
+    let dir = build_tree(&[COMMITTED]);
+    let (status, out, err) = epoch_in(&dir, Some("1794686421"));
+    assert_eq!(status, Some(0), "both: {err}");
+    assert_eq!(out, "1794686421\n", "the caller's time first");
+}
+
+#[test]
+fn the_fixture_leaves_the_callers_repository_alone() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let before = std::fs::read(root.join("Cargo.toml")).expect("Cargo.toml");
+    let dir = build_tree(&[COMMITTED]);
+    assert!(
+        dir.path().join(".git").is_dir(),
+        "the fixture's own repository"
+    );
+    assert_eq!(
+        std::fs::read(root.join("Cargo.toml")).expect("Cargo.toml"),
+        before,
+        "this tree is untouched"
+    );
 }
 
 #[test]

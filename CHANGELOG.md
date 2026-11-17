@@ -6,6 +6,15 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Parquet storage page waits for each pack run to end.**
+  - Was: Its check could list the files mid-run and miss the merged file.
+  - Effect: The check waits for the run's `pack run` log line before it
+    lists the files.
+  - Docs: [Check that the server packs its
+    objects](https://vcon-server.com/docs/parquet-storage/#check-that-the-server-packs-its-objects)
+
 ## [0.4.9] - 2026-11-17
 
 ### Changed

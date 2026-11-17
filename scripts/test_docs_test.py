@@ -833,6 +833,313 @@ class WaitsForTheLastLine(unittest.TestCase):
         self.assertEqual(dt.waited_for("journalctl | grep -q serving"), None, "not inside until")
 
 
+# ---------------------------------------------------------------------------
+# A step that waits for a pack run by watching its objects leave the bucket.
+# On 2026-11-17 main's "how-to s3" job (run 44188522706) failed at
+# parquet-storage.md:206, :221 and :326: the wait ended when no object was
+# left, but a pack run removes the objects of each file it records before it
+# merges the date's small files, writes the manifest and logs `pack run`
+# (Store::pack, serve.rs pack_all). The listing missed the merged file, the
+# log's last line was the run before, and the purge checked 2 files, not 3.
+# A local run with an 8 s delay between the two showed all three each time.
+# ---------------------------------------------------------------------------
+
+LIST_OBJECTS = 'curl -sS --fail-with-body "${S3[@]}" "$LIST"'
+
+OBJECTS_WAIT = (
+    "for i in $(seq 30); do\n"
+    f"  {LIST_OBJECTS} | grep -q '/objects/' || break\n"
+    "  sleep 2\n"
+    "done\n"
+)
+
+# parquet-storage.md's two waits as d09bccd had them, with their text.
+OLD_PARQUET_WAITS = (
+    "The pack run at start packs the objects.\n\n"
+    "<!-- docs-test: only rustfs -->\n```sh\n" + OBJECTS_WAIT
+    + 'BEFORE=$(curl -sS "${S3[@]}" "$FILES" | grep -o \'<Key>[^<]*\' | cut -c6-)\necho "$BEFORE"\n```\n\n'
+    "```text\ntenants/<tenant id>/parquet/date=<yyyy-mm-dd>/part-<file id>.parquet\n```\n\n"
+    "Wait for the next run:\n\n"
+    "<!-- docs-test: only rustfs -->\n```sh\n" + OBJECTS_WAIT
+    + 'AFTER=$(curl -sS "${S3[@]}" "$FILES" | grep -o \'<Key>[^<]*\' | cut -c6-)\necho "$AFTER" | wc -l\n```\n\n'
+    "```text\n3\n```\n"
+)
+
+
+def objects_wait_problem(at: str) -> str:
+    return (
+        f"{at}: the step waits for the objects to leave the bucket, which a pack run does before "
+        "it merges files, writes the manifest and logs `pack run`; wait for that run's `pack run` line"
+    )
+
+
+def step(code: str, shown: str | None = "3", marker: str = "") -> str:
+    """A page with one sh step running `code`, and `shown` after it."""
+    page = (marker + "\n" if marker else "") + "```sh\n" + code + "```\n"
+    if shown is not None:
+        page += "\n```text\n" + shown + "\n```\n"
+    return page
+
+
+def rustfs_lint(page: str) -> list[str]:
+    return dt.lint_page(dt.parse(page, "p.md"), [frozenset({"rustfs", "debian"})])
+
+
+class WaitsForThePackRunNotItsObjects(unittest.TestCase):
+    # Success: waits on the run's own line, and other loops, are left alone.
+    def test_a_wait_for_the_pack_run_line_is_clean(self):
+        code = "timeout 60 sh -c 'until sudo journalctl -u vcon-server -o cat | grep -q \"pack run\"; do sleep 1; done'\n"
+        self.assertEqual(rustfs_lint(step(code, None)), [], "the run's own line is the right signal")
+
+    def test_a_count_of_pack_run_lines_is_clean(self):
+        code = (
+            "for i in $(seq 30); do\n"
+            '  [ "$(sudo journalctl -o cat | grep \'pack run\' | grep -c -v \'versions=0\')" -ge 2 ] && break\n'
+            "  sleep 2\ndone\n"
+        )
+        self.assertEqual(rustfs_lint(step(code)), [], "the page's new shape waits on the log")
+
+    def test_a_one_time_count_of_objects_is_clean(self):
+        code = f"{LIST_OBJECTS} | grep -c '/objects/'\n"
+        self.assertEqual(rustfs_lint(step(code, "0")), [], "a count outside a loop is not a wait")
+
+    def test_a_loop_over_keys_that_greps_a_uuid_is_clean(self):
+        code = (
+            "for key in $AFTER; do\n"
+            '  if curl -sS "${S3[@]}" "https://objects.example.com:9000/vcon/$key" | grep -q -a "$UUID"; then\n'
+            '    echo "$key"\n  fi\ndone\n'
+        )
+        self.assertEqual(rustfs_lint(step(code, "none")), [], "the purge page's check of each file")
+
+    def test_a_loop_that_lists_the_parquet_keys_is_clean(self):
+        code = "for i in 1 2; do\n  curl -sS \"$FILES\" | grep -q '/parquet/' && break\n  sleep 1\ndone\n"
+        self.assertEqual(rustfs_lint(step(code)), [], "files, not objects")
+
+    def test_a_while_loop_reading_lines_is_clean(self):
+        code = "while read -r key; do\n  echo \"$key\"\ndone < keys.txt\n"
+        self.assertEqual(rustfs_lint(step(code)), [], "no grep at all")
+
+    def test_a_step_with_no_loop_is_clean(self):
+        self.assertEqual(rustfs_lint(step("echo 3\n")), [], "nothing waits")
+
+    def test_the_health_wait_is_clean(self):
+        code = (
+            "timeout 30 sh -c 'until curl -s -o /dev/null --cacert /usr/local/share/vcon-server/ca.pem "
+            "https://vcon.example.com:8443/health; do sleep 1; done' && echo answering\n"
+        )
+        self.assertEqual(rustfs_lint(step(code, "answering")), [], "the pages' usual wait")
+
+    def test_a_text_block_that_names_objects_is_clean(self):
+        page = "```text\nfor i in 1; do grep -q '/objects/'; done\n```\n"
+        self.assertEqual(rustfs_lint(page), [], "a text block is output, not a step")
+
+    def test_prose_about_the_objects_is_clean(self):
+        page = "Wait until no `/objects/` key is left: for i in 1; do grep /objects/; done.\n"
+        self.assertEqual(rustfs_lint(page), [], "prose is not a step")
+
+    def test_a_skipped_step_is_clean(self):
+        page = step(OBJECTS_WAIT, marker="<!-- docs-test: skip the reader lists the bucket by hand -->")
+        self.assertEqual(rustfs_lint(page), [], "a skipped step never runs")
+
+    def test_a_file_block_that_names_objects_is_clean(self):
+        page = "<!-- docs-test: file notes.toml -->\n```toml\nwait = \"for i in 1; do grep -q '/objects/'; done\"\n```\n"
+        self.assertEqual(rustfs_lint(page), [], "a file the page writes is not run as a step")
+
+    def test_a_head_loop_over_the_files_is_clean(self):
+        code = (
+            "for key in $AFTER; do\n"
+            '  curl -sS -o /dev/null -w \'%{http_code}\\n\' "${S3[@]}" -I "https://objects.example.com:9000/vcon/$key"\n'
+            "done\n"
+        )
+        self.assertEqual(rustfs_lint(step(code, "404")), [], "the purge step's HEAD of each file")
+
+    def test_a_docker_logs_pack_run_wait_is_clean(self):
+        code = "timeout 60 sh -c 'until docker logs vcon-server 2>&1 | grep -q \"pack run\"; do sleep 1; done'\n"
+        self.assertEqual(rustfs_lint(step(code, None)), [], "the container's log is the signal")
+
+    def test_an_objects_grep_only_in_a_comment_is_clean(self):
+        code = "for i in $(seq 30); do\n  # grep -q '/objects/' would end mid-run\n  sleep 2\ndone\n"
+        self.assertEqual(rustfs_lint(step(code)), [], "a comment runs nothing")
+
+    def test_the_parquet_page_keeps_the_rule(self):
+        problems = dt.lint_page(dt.page_blocks("parquet-storage.md"), [frozenset({"debian", "apt", "systemd", "rustfs"})])
+        self.assertEqual([p for p in problems if "leave the bucket" in p], [], "the page waits on its pack runs' lines")
+
+    # Failure: every shape of a wait on the objects is found.
+    def test_the_old_parquet_waits_are_both_found(self):
+        self.assertEqual(
+            rustfs_lint(OLD_PARQUET_WAITS),
+            [objects_wait_problem("p.md:4"), objects_wait_problem("p.md:20")],
+            "d09bccd's two waits, the second of which failed main",
+        )
+
+    def test_a_single_quoted_objects_wait_is_found(self):
+        self.assertEqual(rustfs_lint(step(OBJECTS_WAIT)), [objects_wait_problem("p.md:1")], "the page's shape")
+
+    def test_a_double_quoted_objects_wait_is_found(self):
+        code = OBJECTS_WAIT.replace("'/objects/'", '"/objects/"')
+        self.assertEqual(rustfs_lint(step(code)), [objects_wait_problem("p.md:1")], "double quotes")
+
+    def test_an_unquoted_objects_wait_is_found(self):
+        code = OBJECTS_WAIT.replace("'/objects/'", "/objects/")
+        self.assertEqual(rustfs_lint(step(code)), [objects_wait_problem("p.md:1")], "no quotes")
+
+    def test_an_until_not_objects_wait_is_found(self):
+        code = f"until ! {LIST_OBJECTS} | grep -q '/objects/'; do sleep 2; done\n"
+        self.assertEqual(rustfs_lint(step(code)), [objects_wait_problem("p.md:1")], "until !")
+
+    def test_a_while_objects_wait_is_found(self):
+        code = f"while {LIST_OBJECTS} | grep -q '/objects/'; do sleep 2; done\n"
+        self.assertEqual(rustfs_lint(step(code)), [objects_wait_problem("p.md:1")], "while")
+
+    def test_a_timeout_sh_c_objects_wait_is_found(self):
+        code = "timeout 60 sh -c 'until ! curl -s \"$U\" | grep -q /objects/; do sleep 1; done'\n"
+        self.assertEqual(rustfs_lint(step(code)), [objects_wait_problem("p.md:1")], "the pages' timeout shape")
+
+    def test_a_fixed_string_objects_wait_is_found(self):
+        code = OBJECTS_WAIT.replace("grep -q", "grep -qF")
+        self.assertEqual(rustfs_lint(step(code)), [objects_wait_problem("p.md:1")], "-F is still a wait")
+
+    def test_a_count_of_objects_in_a_loop_is_found(self):
+        code = (
+            "for i in $(seq 30); do\n"
+            f"  [ \"$({LIST_OBJECTS} | grep -c '/objects/')\" = 0 ] && break\n"
+            "  sleep 2\ndone\n"
+        )
+        self.assertEqual(rustfs_lint(step(code)), [objects_wait_problem("p.md:1")], "a count of 0 is the same end")
+
+    def test_a_tenant_objects_prefix_wait_is_found(self):
+        code = OBJECTS_WAIT.replace("'/objects/'", "\"tenants/$TENANT/objects/\"")
+        self.assertEqual(rustfs_lint(step(code)), [objects_wait_problem("p.md:1")], "one tenant's prefix")
+
+    def test_an_aws_cli_objects_wait_is_found(self):
+        code = "until [ -z \"$(aws s3 ls s3://vcon/tenants/ --recursive | grep /objects/)\" ]; do sleep 2; done\n"
+        self.assertEqual(rustfs_lint(step(code)), [objects_wait_problem("p.md:1")], "another listing tool")
+
+    def test_an_mc_objects_wait_is_found(self):
+        code = "while mc ls --recursive local/vcon/tenants/ | grep -q objects/; do sleep 2; done\n"
+        self.assertEqual(rustfs_lint(step(code)), [objects_wait_problem("p.md:1")], "MinIO's client")
+
+    def test_a_one_line_objects_wait_is_found(self):
+        code = f"for i in $(seq 30); do {LIST_OBJECTS} | grep -q '/objects/' || break; sleep 2; done\n"
+        self.assertEqual(rustfs_lint(step(code)), [objects_wait_problem("p.md:1")], "on one line")
+
+    def test_an_indented_objects_wait_in_a_list_is_found(self):
+        body = "".join(f"   {l}\n" for l in OBJECTS_WAIT.splitlines())
+        page = "1. Wait:\n\n   ```sh\n" + body + "   ```\n\n   ```text\n   3\n   ```\n"
+        self.assertEqual(rustfs_lint(page), [objects_wait_problem("p.md:3")], "a step in a list item")
+
+    def test_an_objects_wait_with_no_text_shown_is_found(self):
+        self.assertEqual(rustfs_lint(step(OBJECTS_WAIT, None)), [objects_wait_problem("p.md:1")], "no output")
+
+    def test_an_objects_wait_after_a_good_wait_is_found(self):
+        code = "timeout 60 sh -c 'until sudo journalctl -o cat | grep -q \"pack run\"; do sleep 1; done'\n" + OBJECTS_WAIT
+        self.assertEqual(rustfs_lint(step(code)), [objects_wait_problem("p.md:1")], "the bad wait still ends early")
+
+    def test_an_extended_pattern_objects_wait_is_found(self):
+        code = OBJECTS_WAIT.replace("grep -q '/objects/'", "grep -qE '/(objects)/'")
+        self.assertEqual(rustfs_lint(step(code)), [], "a pattern the rule cannot read is not claimed")
+        code = OBJECTS_WAIT.replace("grep -q", "grep -qE")
+        self.assertEqual(rustfs_lint(step(code)), [objects_wait_problem("p.md:1")], "-E with a plain pattern")
+
+    def test_an_objects_wait_under_an_only_marker_is_found(self):
+        page = step(OBJECTS_WAIT, marker="<!-- docs-test: only rustfs -->")
+        self.assertEqual(rustfs_lint(page), [objects_wait_problem("p.md:2")], "the marker moves the fence")
+
+    def test_an_objects_wait_after_a_double_dash_is_found(self):
+        code = OBJECTS_WAIT.replace("grep -q", "grep -q --")
+        self.assertEqual(rustfs_lint(step(code)), [objects_wait_problem("p.md:1")], "-- ends the options")
+
+    # Edge cases.
+    def test_two_objects_waits_in_one_step_are_one_problem(self):
+        self.assertEqual(rustfs_lint(step(OBJECTS_WAIT + OBJECTS_WAIT)), [objects_wait_problem("p.md:1")], "one per step")
+
+    def test_two_steps_are_two_problems_in_page_order(self):
+        page = step(OBJECTS_WAIT) + "\n" + step(OBJECTS_WAIT)
+        self.assertEqual(
+            rustfs_lint(page), [objects_wait_problem("p.md:1"), objects_wait_problem("p.md:12")], "each step, in order"
+        )
+
+    def test_the_problem_says_what_to_wait_for(self):
+        (problem,) = rustfs_lint(step(OBJECTS_WAIT))
+        self.assertIn("`pack run` line", problem, "it names the run's own line")
+        self.assertIn("before it merges files, writes the manifest", problem, "and why the objects end too early")
+
+    def test_objects_without_a_slash_are_not_claimed(self):
+        code = OBJECTS_WAIT.replace("'/objects/'", "objects")
+        self.assertEqual(rustfs_lint(step(code)), [], "the rule reads a key prefix, objects/")
+
+    def test_a_grep_after_the_loop_is_not_in_it(self):
+        code = f"for i in 1 2; do\n  sleep 1\ndone\n{LIST_OBJECTS} | grep -c '/objects/'\n"
+        self.assertEqual(rustfs_lint(step(code, "0")), [], "the loop ends at its done")
+
+    def test_a_grep_between_two_loops_is_in_neither(self):
+        code = (
+            f"for i in 1 2; do\n  sleep 1\ndone\n{LIST_OBJECTS} | grep -c '/objects/'\n"
+            "for key in $AFTER; do\n  echo \"$key\"\ndone\n"
+        )
+        self.assertEqual(rustfs_lint(step(code, "0")), [], "each loop ends at its own done")
+
+    def test_a_later_command_of_the_pipe_naming_objects_is_clean(self):
+        code = "for k in $KEYS; do\n  curl -sS \"$k\" | grep -a \"$UUID\" | tee \"objects/$k.txt\"\ndone\n"
+        self.assertEqual(rustfs_lint(step(code, "none")), [], "grep's pattern ends at the pipe")
+
+    def test_a_nested_loop_objects_wait_is_found(self):
+        code = "for t in a b; do\n" + "".join(f"  {l}\n" for l in OBJECTS_WAIT.splitlines()) + "done\n"
+        self.assertEqual(rustfs_lint(step(code)), [objects_wait_problem("p.md:1")], "a loop inside a loop")
+
+    def test_a_continued_line_objects_wait_is_found(self):
+        code = "for i in $(seq 30); do\n  curl -sS \"$LIST\" \\\n    | grep -q '/objects/' || break\n  sleep 2\ndone\n"
+        self.assertEqual(rustfs_lint(step(code)), [objects_wait_problem("p.md:1")], "a backslash continues the pipe")
+        code = "for i in $(seq 30); do\n  curl -sS \"$LIST\" | grep -q \\\n    '/objects/' || break\n  sleep 2\ndone\n"
+        self.assertEqual(rustfs_lint(step(code)), [objects_wait_problem("p.md:1")], "the pattern on the next line")
+
+    def test_a_trailing_comment_naming_objects_is_clean(self):
+        code = "for i in $(seq 30); do\n  sleep 2  # grep -q /objects/ ends mid-run\ndone\n"
+        self.assertEqual(rustfs_lint(step(code)), [], "a trailing comment runs nothing")
+
+    def test_objects_in_the_url_not_the_pattern_is_clean(self):
+        code = "for k in $KEYS; do\n  curl -sS \"https://objects.example.com:9000/vcon/tenants/t/objects/$k\" | grep -q \"$UUID\"\ndone\n"
+        self.assertEqual(rustfs_lint(step(code, "none")), [], "objects/ in a URL is not what grep waits for")
+
+    def test_a_pattern_in_a_variable_is_not_claimed(self):
+        code = OBJECTS_WAIT.replace("'/objects/'", '"$PREFIX"')
+        self.assertEqual(rustfs_lint(step(code)), [], "a pattern the rule cannot read is not claimed")
+
+    def test_an_objects_wait_in_a_background_step_is_found(self):
+        page = step(OBJECTS_WAIT, None, "<!-- docs-test: background packed -->")
+        self.assertEqual(rustfs_lint(page), [objects_wait_problem("p.md:2")], "a background step waits too")
+
+    def test_an_objects_wait_in_an_exit_1_step_is_found(self):
+        page = step(OBJECTS_WAIT, None, "<!-- docs-test: exit 1 -->")
+        self.assertEqual(rustfs_lint(page), [objects_wait_problem("p.md:2")], "an expected failure waits too")
+
+    def test_undone_does_not_end_the_loop(self):
+        code = "for i in $(seq 30); do\n  echo undone\n" + f"  {LIST_OBJECTS} | grep -q '/objects/' || break\ndone\n"
+        self.assertEqual(rustfs_lint(step(code)), [objects_wait_problem("p.md:1")], "done is a word of its own")
+
+    def test_the_predicate_reads_the_code(self):
+        self.assertTrue(dt.waits_for_objects(OBJECTS_WAIT), "the page's old wait")
+        self.assertFalse(dt.waits_for_objects("grep -q '/objects/' out\n"), "no loop")
+        self.assertFalse(dt.waits_for_objects("for i in 1; do grep -q x; done\n"), "no objects")
+
+    def test_lint_reports_the_old_parquet_waits(self):
+        old = dt.parse(OLD_PARQUET_WAITS, "docs/parquet-storage.md")
+        real = dt.page_blocks
+        with unittest.mock.patch.object(dt, "page_blocks", lambda name: old if name == "parquet-storage.md" else real(name)):
+            problems = [p for p in dt.lint() if "leave the bucket" in p]
+        self.assertEqual(
+            problems,
+            [objects_wait_problem("docs/parquet-storage.md:4"), objects_wait_problem("docs/parquet-storage.md:20")],
+            "lint holds every page a scenario runs to the rule",
+        )
+
+    def test_the_parquet_page_counts_its_pack_runs(self):
+        waits = [b for b in dt.page_blocks("parquet-storage.md") if b.kind == "sh" and "packed_runs" in b.code]
+        counts = [m for b in waits for m in re.findall(r'\[ "\$\(packed_runs\)" -ge (\d) \]', b.code)]
+        self.assertEqual(counts, ["1", "2"], "the start's run, then the run that packs the new vCon")
+
+
 def order_problem(at: str, line: str) -> str:
     return (
         f"{at}: the text shows {line!r} before the `serving` line; the server logs `serving` "

@@ -162,22 +162,33 @@ answering
 
 ## Check that the server packs its objects
 
-The pack run at start packs the objects the earlier pages stored. Wait
-until no object is left under the tenant's name, and note the files:
+The pack run at start packs the objects the earlier pages stored. A run
+is over when it logs its `pack run` line: it removes each file's objects
+as soon as the catalog records the file, then merges small files, writes
+the manifest and logs the line, so a bucket with no object left can still
+be in the middle of a run. `packed_runs` counts the runs of this start of
+the server that packed a version. Wait for the first, then note the
+objects left and the files:
 
 <!-- docs-test: only rustfs -->
 ```sh
 LIST="https://objects.example.com:9000/vcon?list-type=2&prefix=tenants/"
 FILES="https://objects.example.com:9000/vcon?list-type=2&prefix=tenants/$TENANT/parquet/"
+packed_runs() {
+  sudo journalctl _SYSTEMD_INVOCATION_ID="$(systemctl show -p InvocationID --value vcon-server)" -o cat \
+    | grep 'pack run' | grep -c -v 'versions=0'
+}
 for i in $(seq 30); do
-  curl -sS --fail-with-body "${S3[@]}" "$LIST" | grep -q '/objects/' || break
+  [ "$(packed_runs)" -ge 1 ] && break
   sleep 2
 done
+echo "pack runs: $(packed_runs), objects: $(curl -sS --fail-with-body "${S3[@]}" "$LIST" | grep -c '/objects/')"
 BEFORE=$(curl -sS --fail-with-body "${S3[@]}" "$FILES" | grep -o '<Key>[^<]*' | cut -c6-)
 echo "$BEFORE"
 ```
 
 ```text
+pack runs: 1, objects: 0
 tenants/<tenant id>/parquet/date=<yyyy-mm-dd>/part-<file id>.parquet
 ```
 
@@ -198,21 +209,24 @@ curl -sS -o /dev/null -w '%{http_code}\n' --cacert /usr/local/share/vcon-server/
 
 Its object is in the bucket until the next pack run takes it. That run
 packs it into a file of its own, then merges the date's two small files
-into a third. Wait for it, then list the tenant's files: the file from
-before and the new one, both merged away and kept for the reader grace,
-and the merged file, which the catalog names now:
+into a third. Wait for that run's `pack run` line, the second of this
+start, then list the tenant's files: the file from before and the new
+one, both merged away and kept for the reader grace, and the merged file,
+which the catalog names now:
 
 <!-- docs-test: only rustfs -->
 ```sh
 for i in $(seq 30); do
-  curl -sS --fail-with-body "${S3[@]}" "$LIST" | grep -q '/objects/' || break
+  [ "$(packed_runs)" -ge 2 ] && break
   sleep 2
 done
+echo "pack runs: $(packed_runs), objects: $(curl -sS --fail-with-body "${S3[@]}" "$LIST" | grep -c '/objects/')"
 AFTER=$(curl -sS --fail-with-body "${S3[@]}" "$FILES" | grep -o '<Key>[^<]*' | cut -c6-)
 echo "$AFTER" | wc -l
 ```
 
 ```text
+pack runs: 2, objects: 0
 3
 ```
 

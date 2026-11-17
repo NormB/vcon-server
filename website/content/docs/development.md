@@ -672,6 +672,12 @@ serve's background jobs (`purge sweep`, `pack run`, the key rotation
 warning) before the `serving` line of the same start, since the server
 logs `serving` before it starts those jobs.
 
+A step that waits for a pack run waits for that run's `pack run` line,
+not for the objects to leave the bucket: a pack run removes each file's
+objects as soon as the catalog records the file, then merges small files,
+writes the manifest and logs the line. `lint` refuses a step whose loop
+greps for the `objects/` keys.
+
 A scenario names the pages it runs, the system it runs them on, and its
 tags. The scenarios include Debian 13 and Fedora 44 with the server in the
 foreground, Debian 13 under systemd, each install path on each distribution,

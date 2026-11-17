@@ -195,7 +195,54 @@ fn workflow_problems(text: &str) -> Vec<String> {
     out
 }
 
+/// Directories a walk does not enter, as scripts/tree_files.py's
+/// WALK_SKIPS: git's own files, build output and installed packages.
+const WALK_SKIPS: &[&str] = &[".git", "target", "node_modules"];
+
+/// Every file under `root`, sorted, named as git names a tracked file.
+fn walked(root: &Path) -> Vec<String> {
+    fn walk(dir: &Path, name: &str, out: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).expect("a directory of the tree") {
+            let entry = entry.expect("an entry");
+            let file = entry.file_name().into_string().expect("UTF-8 names");
+            let path = if name.is_empty() {
+                file.clone()
+            } else {
+                format!("{name}/{file}")
+            };
+            // A symlink is one entry, as git tracks it: never entered.
+            if entry.file_type().expect("its type").is_dir() {
+                if !WALK_SKIPS.contains(&file.as_str()) {
+                    walk(&entry.path(), &path, out);
+                }
+            } else {
+                out.push(path);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, "", &mut out);
+    out.sort();
+    out
+}
+
+/// The files of the tree at `root`: in a checkout, the ones `git` lists;
+/// in the commit hook's copy of the staged files, which is no repository,
+/// every file under it, which are exactly the staged files. A checkout has
+/// `.git` at its root: a directory, or in a worktree a file.
+fn listed(root: &Path, git: &dyn Fn() -> Vec<String>) -> Vec<String> {
+    if root.join(".git").exists() {
+        git()
+    } else {
+        walked(root)
+    }
+}
+
 fn tracked_files() -> Vec<String> {
+    listed(&root(), &git_ls_files)
+}
+
+fn git_ls_files() -> Vec<String> {
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(root())
@@ -650,5 +697,157 @@ fn a_date_and_time_counts_by_its_date() {
     assert!(
         problems(&text, on(2026, time::Month::November, 17)).is_empty(),
         "the date part"
+    );
+}
+
+// The commit hook runs these tests in a copy of the staged files
+// (`git checkout-index`), which is no repository; run by hand, as the
+// gates are, `git ls-files` there exits 128 and two tests above failed on
+// 2026-11-17. Under `git commit` the hook inherits GIT_DIR, which hid it.
+
+/// A tree under a new temporary directory, with `files` (paths with `/`)
+/// written empty.
+fn tree(files: &[&str]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    for file in files {
+        let path = dir.path().join(file);
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("its directory");
+        std::fs::write(&path, "").expect("the file");
+    }
+    dir
+}
+
+fn no_git() -> Vec<String> {
+    panic!("a copy that is no repository must not ask git")
+}
+
+#[test]
+fn a_copy_lists_every_file_under_it() {
+    let dir = tree(&["Cargo.lock", "fuzz/Cargo.lock", "fuzz/osv-scanner.toml"]);
+    assert_eq!(
+        listed(dir.path(), &no_git),
+        ["Cargo.lock", "fuzz/Cargo.lock", "fuzz/osv-scanner.toml"],
+        "the staged files, as git names them"
+    );
+}
+
+#[test]
+fn a_walk_is_sorted() {
+    let dir = tree(&["b", "a/z", "a/b", "c/a"]);
+    assert_eq!(
+        walked(dir.path()),
+        ["a/b", "a/z", "b", "c/a"],
+        "sorted by path"
+    );
+}
+
+#[test]
+fn a_walk_names_nested_paths_with_slashes_from_the_root() {
+    let dir = tree(&["clients/go/go.mod"]);
+    assert_eq!(
+        walked(dir.path()),
+        ["clients/go/go.mod"],
+        "relative, with `/`, no leading ./"
+    );
+}
+
+#[test]
+fn a_walk_skips_git_target_and_node_modules() {
+    let dir = tree(&[
+        ".git/HEAD",
+        "target/debug/x",
+        "node_modules/a/package-lock.json",
+        "site-tests/node_modules/b/package-lock.json",
+        "site-tests/package-lock.json",
+    ]);
+    assert_eq!(
+        walked(dir.path()),
+        ["site-tests/package-lock.json"],
+        "at any depth, as scripts/tree_files.py's WALK_SKIPS"
+    );
+}
+
+#[test]
+fn a_file_named_like_a_skipped_directory_is_listed() {
+    let dir = tree(&["target", "docs/node_modules"]);
+    assert_eq!(
+        walked(dir.path()),
+        ["docs/node_modules", "target"],
+        "only directories are skipped"
+    );
+}
+
+#[test]
+fn an_empty_copy_lists_nothing() {
+    let dir = tree(&[]);
+    assert!(listed(dir.path(), &no_git).is_empty(), "no file staged");
+}
+
+#[test]
+fn a_checkout_lists_what_git_tracks() {
+    let dir = tree(&[".git/HEAD", "Cargo.lock", "untracked.txt"]);
+    let git = || vec!["Cargo.lock".to_owned()];
+    assert_eq!(
+        listed(dir.path(), &git),
+        ["Cargo.lock"],
+        "git's list, not the files on disk"
+    );
+}
+
+#[test]
+fn a_worktree_checkout_lists_what_git_tracks() {
+    let dir = tree(&[".git", "Cargo.lock"]);
+    let git = || vec!["Cargo.lock".to_owned(), "fuzz/Cargo.lock".to_owned()];
+    assert_eq!(
+        listed(dir.path(), &git),
+        ["Cargo.lock", "fuzz/Cargo.lock"],
+        "a worktree's .git is a file"
+    );
+}
+
+#[test]
+fn a_symlinked_directory_is_listed_and_not_entered() {
+    let dir = tree(&["real/Cargo.lock"]);
+    std::os::unix::fs::symlink(dir.path().join("real"), dir.path().join("link")).expect("a link");
+    assert_eq!(
+        walked(dir.path()),
+        ["link", "real/Cargo.lock"],
+        "git tracks a symlink as one entry"
+    );
+}
+
+#[test]
+fn the_copy_rule_holds_in_a_copy() {
+    let dir = tree(&["Cargo.lock", "fuzz/Cargo.lock", "fuzz/osv-scanner.toml"]);
+    std::fs::write(dir.path().join("fuzz/osv-scanner.toml"), GOOD).expect("the copy");
+    let files = listed(dir.path(), &no_git);
+    let files: Vec<&str> = files.iter().map(String::as_str).collect();
+    let read = |path: &str| std::fs::read_to_string(dir.path().join(path)).ok();
+    assert!(
+        copy_problems(&files, GOOD, &read).is_empty(),
+        "the copy beside fuzz/Cargo.lock is found"
+    );
+}
+
+#[test]
+fn a_missing_copy_is_found_in_a_copy() {
+    let dir = tree(&["Cargo.lock", "fuzz/Cargo.lock"]);
+    let files = listed(dir.path(), &no_git);
+    let files: Vec<&str> = files.iter().map(String::as_str).collect();
+    let read = |path: &str| std::fs::read_to_string(dir.path().join(path)).ok();
+    assert_eq!(
+        copy_problems(&files, GOOD, &read),
+        ["fuzz: no osv-scanner.toml beside fuzz/Cargo.lock"],
+        "the rule still refuses in the hook's copy"
+    );
+}
+
+#[test]
+fn this_tree_is_listed_either_way() {
+    let files = tracked_files();
+    assert!(
+        files.iter().any(|f| f == "fuzz/Cargo.lock"),
+        "a checkout or the hook's copy holds fuzz/Cargo.lock: {} files",
+        files.len()
     );
 }

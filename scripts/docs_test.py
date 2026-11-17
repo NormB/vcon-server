@@ -1311,6 +1311,34 @@ def wait_problems(b: Block) -> list[str]:
     ]
 
 
+# A loop, from its `for`, `while` or `until` to its first `done`, and a
+# `grep` whose pattern holds the key prefix `objects/`.
+LOOP = re.compile(r"\b(?:for|while|until)\b(.*?)\bdone\b", re.S)
+OBJECTS_GREP = re.compile(r"\bgrep\b[^|\n;]*?objects/")
+# A comment: a line that starts with `#`, or ` #` and what follows it.
+COMMENT = re.compile(r"(?m)(?:^\s*|\s+)#.*$")
+
+
+def waits_for_objects(code: str) -> bool:
+    """A loop of `code` greps for the `objects/` keys: it waits for a pack
+    run's objects to leave the bucket."""
+    code = COMMENT.sub("", code.replace("\\\n", " "))
+    return any(OBJECTS_GREP.search(m.group(1)) for m in LOOP.finditer(code))
+
+
+def objects_wait_problems(b: Block) -> list[str]:
+    """A step that waits for a pack run by its objects. A pack run removes
+    the objects of each file it records before it merges the date's small
+    files, writes the manifest and logs `pack run` (Store::pack, then
+    serve.rs pack_all), so the objects are gone while the run goes on."""
+    if b.kind != "sh" or not waits_for_objects(b.code):
+        return []
+    return [
+        f"{b.at}: the step waits for the objects to leave the bucket, which a pack run does before "
+        "it merges files, writes the manifest and logs `pack run`; wait for that run's `pack run` line"
+    ]
+
+
 def start_order_problems(b: Block) -> list[str]:
     """A text that shows a background job's line before the `serving` line
     of the same start. A line after `serving` belongs to that start, up to
@@ -1376,6 +1404,7 @@ def lint_page(blocks: list[Block], tag_sets: list[frozenset], host: bool = False
         if host and b.background is not None:
             problems.append(f"{b.at}: a background step on this host would outlive the run")
         problems += wait_problems(b)
+        problems += objects_wait_problems(b)
         problems += start_order_problems(b)
     return problems
 
