@@ -271,5 +271,251 @@ class TreeBytes(unittest.TestCase):
             self.assertEqual(mff.tree_bytes(d), 0, "nothing")
 
 
+CI = (HERE.parent / ".github" / "workflows" / "ci.yml").read_text()
+
+
+class PostgresReleases(unittest.TestCase):
+    # success
+    def test_the_postgres_releases_are_0_4_6_to_0_4_8(self):
+        self.assertEqual(mff.PG_RELEASES, ("0.4.6", "0.4.7", "0.4.8"), "the release binaries with `postgres`")
+
+    def test_each_postgres_release_is_a_release(self):
+        for release in mff.PG_RELEASES:
+            self.assertIn(release, mff.RELEASES, release)
+
+    def test_the_postgres_image_is_the_oldest_one_ci_runs(self):
+        # pg_dump of the oldest major loads into every newer one.
+        self.assertIn(f"image: {mff.PG_IMAGE} # 16.15-alpine", CI, "the 16.15 pin of backends-postgres")
+
+    def test_the_rustfs_image_is_the_one_ci_runs(self):
+        self.assertIn(f"image: {mff.RUSTFS_IMAGE} # 1.0.4", CI, "the RustFS pin of backends-postgres")
+
+    # edge
+    def test_both_images_are_pinned_by_digest(self):
+        for image in (mff.PG_IMAGE, mff.RUSTFS_IMAGE):
+            name, _, digest = image.partition("@sha256:")
+            self.assertEqual(len(digest), 64, image)
+            self.assertNotIn(":", name, f"no tag beside the digest: {image}")
+
+
+class PgConfigText(unittest.TestCase):
+    def doc(self, user="vcon_app", parquet=False):
+        return tomllib.loads(mff.pg_config_text(f"0.0.0.0:{mff.PORT}", user, parquet))
+
+    # success
+    def test_the_catalogs_are_in_the_primary_over_tls(self):
+        pg = self.doc()["catalog"]
+        self.assertEqual(pg["backend"], "postgres", "backend")
+        self.assertEqual(
+            pg["postgres"],
+            {"hosts": ["primary"], "port": 5432, "dbname": "vcon", "user": "vcon_app",
+             "ca_file": "/w/pg-ca.pem", "password_file": "/w/pg.password"},
+            "the primary pg-test-server.sh starts, by its certificate's name",
+        )
+
+    def test_the_objects_are_in_the_rustfs_bucket(self):
+        doc = self.doc()
+        self.assertEqual(doc["storage"]["objects"], "s3", "objects in a bucket")
+        self.assertEqual(
+            doc["storage"]["s3"],
+            {"endpoint": "http://rustfs:9000", "region": "us-east-1", "bucket": mff.BUCKET,
+             "path_style": True, "allow_http": True},
+            "the RustFS container, by its network alias",
+        )
+
+    def test_migrate_logs_in_as_vcon_migrate(self):
+        self.assertEqual(self.doc("vcon_migrate")["catalog"]["postgres"]["user"], "vcon_migrate", "the migrate role")
+
+    def test_the_parquet_table_names_the_pack_interval(self):
+        self.assertEqual(self.doc(parquet=True)["storage"]["parquet"], {"pack_interval": mff.PACK_INTERVAL}, "parquet")
+
+    def test_the_base_keys_are_those_of_the_data_directory_fixtures(self):
+        base = tomllib.loads(mff.config_text("x"))
+        doc = self.doc()
+        for key in ("listen", "data_dir", "master_key", "tls"):
+            self.assertEqual(doc[key], base[key] if key != "listen" else f"0.0.0.0:{mff.PORT}", key)
+
+    # failure
+    def test_another_login_role_is_refused(self):
+        with self.assertRaisesRegex(mff.FixtureError, "no role vcon_owner"):
+            mff.pg_config_text("x", "vcon_owner", False)
+
+    # edge
+    def test_without_parquet_there_is_no_parquet_table(self):
+        self.assertNotIn("parquet", self.doc()["storage"], "objects only until the pack phase")
+
+    def test_the_pack_interval_outlasts_the_late_writes(self):
+        # The late vCons must stay objects: no second pack run comes while
+        # the script stores them and stops the server.
+        self.assertGreaterEqual(mff.PACK_INTERVAL, 3600, "an hour at least")
+
+
+class Places(unittest.TestCase):
+    # success
+    def test_the_workload_vcons_are_packed(self):
+        for n in range(mff.VCONS_PER_TENANT):
+            self.assertEqual(mff.place(n), "packed", n)
+
+    def test_the_late_vcons_stay_objects(self):
+        for n in mff.late_numbers():
+            self.assertEqual(mff.place(n), "object", n)
+
+    def test_there_are_late_vcons_after_the_workload_ones(self):
+        self.assertEqual(list(mff.late_numbers()), [10, 11], "two per tenant, numbered on")
+
+    # failure
+    def test_a_negative_number_is_refused(self):
+        with self.assertRaisesRegex(mff.FixtureError, "no vCon -1"):
+            mff.place(-1)
+
+    def test_a_number_past_the_late_ones_is_refused(self):
+        with self.assertRaisesRegex(mff.FixtureError, "no vCon 12"):
+            mff.place(12)
+
+    # edge
+    def test_the_late_uuids_are_not_workload_uuids(self):
+        workload = {mff.vcon_uuid(t, n) for t, _ in mff.TENANTS for n in range(mff.VCONS_PER_TENANT)}
+        late = {mff.vcon_uuid(t, n) for t, _ in mff.TENANTS for n in mff.late_numbers()}
+        self.assertFalse(workload & late, "distinct uuids")
+
+    def test_a_late_body_holds_reserved_values_only(self):
+        for n in mff.late_numbers():
+            doc = json.loads(mff.vcon_body("tenant-b", n, 0))
+            self.assertTrue(100 <= int(doc["parties"][0]["tel"][-4:]) <= 199, doc["parties"][0])
+
+
+class StripDump(unittest.TestCase):
+    DUMP = (
+        "--\n-- PostgreSQL database dump\n--\n\n"
+        "\\restrict AbC123xyz\n\n"
+        "SET statement_timeout = 0;\n"
+        "INSERT INTO vcon.audit VALUES (1, '\\x00ff');\n"
+        "\\unrestrict AbC123xyz\n"
+    )
+
+    # success
+    def test_the_restrict_lines_are_removed(self):
+        out = mff.strip_dump(self.DUMP)
+        self.assertNotIn("restrict", out, "both meta-commands gone")
+
+    def test_every_other_line_is_kept_as_it_was(self):
+        out = mff.strip_dump(self.DUMP)
+        kept = [l for l in self.DUMP.splitlines(keepends=True) if "restrict" not in l]
+        self.assertEqual(out, "".join(kept), "byte-equal otherwise")
+
+    # failure
+    def test_another_meta_command_is_refused(self):
+        with self.assertRaisesRegex(mff.FixtureError, r"line 2: \\connect vcon"):
+            mff.strip_dump("SET x = 0;\n\\connect vcon\n")
+
+    def test_copy_data_is_refused(self):
+        with self.assertRaisesRegex(mff.FixtureError, "--inserts"):
+            mff.strip_dump("COPY vcon.audit FROM stdin;\n1\tx\n\\.\n")
+
+    def test_a_restrict_line_without_a_key_is_refused(self):
+        with self.assertRaisesRegex(mff.FixtureError, "line 1"):
+            mff.strip_dump("\\restrict\n")
+
+    def test_a_dump_with_no_restrict_line_is_refused(self):
+        # pg_dump 16.10 and later write one; its absence means another tool.
+        with self.assertRaisesRegex(mff.FixtureError, "no \\\\restrict line"):
+            mff.strip_dump("SET x = 0;\n")
+
+    # edge
+    def test_a_backslash_inside_a_value_is_kept(self):
+        out = mff.strip_dump(self.DUMP)
+        self.assertIn("'\\x00ff'", out, "a bytea literal is data")
+
+    def test_an_indented_restrict_is_a_statement_line_and_refused(self):
+        # psql reads a meta-command only at a line's start; anything else
+        # is SQL the server would refuse, so the script refuses it first.
+        with self.assertRaisesRegex(mff.FixtureError, "line 2"):
+            mff.strip_dump("\\restrict K\n  \\restrict K\n")
+
+
+LISTING = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+    "<Name>b</Name><IsTruncated>{t}</IsTruncated>{keys}</ListBucketResult>"
+)
+
+
+def listing(keys, truncated="false"):
+    return LISTING.format(t=truncated, keys="".join(f"<Contents><Key>{k}</Key></Contents>" for k in keys))
+
+
+class ListedKeys(unittest.TestCase):
+    # success
+    def test_every_key_is_read_in_order(self):
+        self.assertEqual(mff.listed_keys(listing(["a/1", "b/2"])), ["a/1", "b/2"], "both")
+
+    def test_an_empty_bucket_lists_nothing(self):
+        self.assertEqual(mff.listed_keys(listing([])), [], "none")
+
+    # failure
+    def test_a_truncated_listing_is_refused(self):
+        with self.assertRaisesRegex(mff.FixtureError, "truncated"):
+            mff.listed_keys(listing(["a"], "true"))
+
+    def test_an_answer_that_is_not_a_listing_is_refused(self):
+        with self.assertRaisesRegex(mff.FixtureError, "not a bucket listing"):
+            mff.listed_keys("<Error><Code>NoSuchBucket</Code></Error>")
+
+    # edge
+    def test_a_listing_without_the_namespace_is_read(self):
+        text = "<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>k</Key></Contents></ListBucketResult>"
+        self.assertEqual(mff.listed_keys(text), ["k"], "no xmlns")
+
+    def test_an_escaped_key_is_unescaped(self):
+        self.assertEqual(mff.listed_keys(listing(["a&amp;b"])), ["a&b"], "XML entities")
+
+
+class BucketPath(unittest.TestCase):
+    # success
+    def test_a_key_is_a_relative_path(self):
+        self.assertEqual(mff.bucket_path("tenants/ab/objects/cd"), pathlib.PurePosixPath("tenants/ab/objects/cd"), "as is")
+
+    def test_a_parquet_key_is_a_relative_path(self):
+        key = "tenants/ab/parquet/date=2026-11-17/part-01.parquet"
+        self.assertEqual(str(mff.bucket_path(key)), key, "as is")
+
+    # failure
+    def test_a_parent_step_is_refused(self):
+        with self.assertRaisesRegex(mff.FixtureError, "not a plain path"):
+            mff.bucket_path("tenants/../x")
+
+    def test_an_absolute_key_is_refused(self):
+        with self.assertRaisesRegex(mff.FixtureError, "not a plain path"):
+            mff.bucket_path("/etc/x")
+
+    def test_an_empty_step_is_refused(self):
+        with self.assertRaisesRegex(mff.FixtureError, "not a plain path"):
+            mff.bucket_path("a//b")
+
+    def test_a_dot_step_is_refused(self):
+        with self.assertRaisesRegex(mff.FixtureError, "not a plain path"):
+            mff.bucket_path("a/./b")
+
+    # edge
+    def test_an_empty_key_is_refused(self):
+        with self.assertRaisesRegex(mff.FixtureError, "not a plain path"):
+            mff.bucket_path("")
+
+    def test_a_trailing_slash_is_refused(self):
+        with self.assertRaisesRegex(mff.FixtureError, "not a plain path"):
+            mff.bucket_path("a/")
+
+
+class PgManifest(unittest.TestCase):
+    def test_the_postgres_section_is_written_when_given(self):
+        section = {"schema": 13, "dump": "dump.sql"}
+        doc = json.loads(mff.manifest("0.4.6", SHA_A, SHA_B, [], [], [], [], postgres=section))
+        self.assertEqual(doc["postgres"], section, "as given")
+
+    def test_no_postgres_section_by_default(self):
+        doc = json.loads(mff.manifest("0.4.6", SHA_A, SHA_B, [], [], [], []))
+        self.assertNotIn("postgres", doc, "the data directory fixtures are unchanged")
+
+
 if __name__ == "__main__":
     unittest.main()

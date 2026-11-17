@@ -1,0 +1,25 @@
+{
+  "bytes": 6240,
+  "files": [
+    {
+      "bytes": 6240,
+      "path": "parquet/date=2026-11-17/part-821c58287f69b6fd62029a09acb03558.parquet",
+      "rows": 10
+    }
+  ],
+  "format": "vcon-server.parquet-storage/1",
+  "live": [
+    "103fc9c1d38be9417b3ed49275d30a21",
+    "1e297f90b3e7e1ac6689dfb2fceb3278",
+    "395d03ceac111c9eef347d6fa604d4c7",
+    "5b3de6a3567e01ae208b67ae181dc6aa",
+    "5fbb5769c3445e106b634f9fb8fc52fe",
+    "71d3eec5c672127f4c3d9fe486ca7245",
+    "da747f567345590fd555e3a0e1f307f8",
+    "dec093f719f1bf93fbfaf63ff7397008"
+  ],
+  "rows": 10,
+  "seq": 4,
+  "tenant": "b50dd7af538c83a987d0889f76e31d4f",
+  "written_at": "2026-11-17T04:55:34.995253761Z"
+}

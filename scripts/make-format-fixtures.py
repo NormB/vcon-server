@@ -222,9 +222,11 @@ def expected(workload=None):
     return out
 
 
-def manifest(release, archive_sha, binary_sha, kept_versions, purged, tenants, users):
+def manifest(release, archive_sha, binary_sha, kept_versions, purged, tenants, users, postgres=None):
     """The manifest.json text. `kept_versions` is a list of
-    {"tenant", "uuid", "version", "state", "sha256", "bytes"}."""
+    {"tenant", "uuid", "version", "state", "sha256", "bytes"} (and "place"
+    in a PostgreSQL fixture); `postgres`, when given, is that fixture's own
+    section."""
     doc = {
         "release": release,
         "archive_sha256": archive_sha,
@@ -237,6 +239,8 @@ def manifest(release, archive_sha, binary_sha, kept_versions, purged, tenants, u
         "versions": sorted(kept_versions, key=lambda r: (r["tenant"], r["uuid"], r["order"])),
         "purged": sorted(purged, key=lambda r: (r["tenant"], r["uuid"])),
     }
+    if postgres is not None:
+        doc["postgres"] = postgres
     return json.dumps(doc, indent=1, sort_keys=True) + "\n"
 
 
@@ -248,6 +252,140 @@ def has_users(help_text):
 def tree_bytes(path):
     """The total size of the regular files under `path`."""
     return sum(p.stat().st_size for p in pathlib.Path(path).rglob("*") if p.is_file())
+
+
+# ---- The PostgreSQL fixtures (--postgres). ----
+
+# The releases whose binaries have the `postgres` feature: `strings` finds
+# tokio-postgres in 0.4.6's binary and in none before it.
+PG_RELEASES = ("0.4.6", "0.4.7", "0.4.8")
+
+# The images of CI's backends-postgres job: PostgreSQL 16.15, the oldest
+# major CI runs, so its pg_dump loads into each newer one; RustFS 1.0.4.
+PG_IMAGE = "postgres@sha256:f4610795587492cd4fb887c2dc3de301b813278bb6f616992061141b5f15ac36"
+RUSTFS_IMAGE = "rustfs/rustfs@sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2"
+
+PG_SERVER = ROOT / "scripts" / "pg-test-server.sh"
+PG_OUT = ROOT / "crates" / "vcon-server" / "tests" / "data" / "formats-postgres"
+
+# The bucket and the keys of the RustFS container, as CI sets them.
+BUCKET = "vcon-formats"
+S3_ACCESS_KEY = "vcontest"
+S3_SECRET_KEY = "vcon-ci-only-secret"
+
+# The pack run comes at start, then not again while the script stores the
+# late vCons and stops the server, so those stay objects.
+PACK_INTERVAL = 3600
+
+# vCons stored per tenant after the pack run, numbered on from the workload's.
+LATE_VCONS = 2
+
+LOGIN_ROLES = ("vcon_app", "vcon_migrate")
+
+
+def pg_config_text(listen, user, parquet):
+    """The configuration of a PostgreSQL fixture: the base one, the objects
+    in the RustFS bucket and the catalogs in the primary of
+    scripts/pg-test-server.sh, reached by its certificate's name. `user` is
+    the login role, vcon_app for the server and the commands, vcon_migrate
+    for `migrate`; `parquet` adds the [storage.parquet] table."""
+    if user not in LOGIN_ROLES:
+        raise FixtureError(f"no role {user} logs in: one of {', '.join(LOGIN_ROLES)}")
+    text = config_text(listen) + (
+        "\n[storage]\n"
+        'objects = "s3"\n'
+        "\n[storage.s3]\n"
+        'endpoint = "http://rustfs:9000"\n'
+        'region = "us-east-1"\n'
+        f'bucket = "{BUCKET}"\n'
+        "path_style = true\n"
+        "allow_http = true\n"
+    )
+    if parquet:
+        text += f"\n[storage.parquet]\npack_interval = {PACK_INTERVAL}\n"
+    return text + (
+        "\n[catalog]\n"
+        'backend = "postgres"\n'
+        "\n[catalog.postgres]\n"
+        'hosts = ["primary"]\n'
+        "port = 5432\n"
+        'dbname = "vcon"\n'
+        f'user = "{user}"\n'
+        'ca_file = "/w/pg-ca.pem"\n'
+        'password_file = "/w/pg.password"\n'
+    )
+
+
+def late_numbers():
+    """The numbers of the vCons stored after the pack run."""
+    return range(VCONS_PER_TENANT, VCONS_PER_TENANT + LATE_VCONS)
+
+
+def place(n):
+    """Where vCon `n`'s versions are kept in a PostgreSQL fixture: the
+    workload's were packed into Parquet files by the pack run, the late
+    ones stay objects."""
+    if 0 <= n < VCONS_PER_TENANT:
+        return "packed"
+    if n in late_numbers():
+        return "object"
+    raise FixtureError(f"no vCon {n}")
+
+
+def strip_dump(text):
+    """`pg_dump`'s plain text without its `\\restrict` and `\\unrestrict`
+    lines (pg_dump 16.10 and later write them for psql), so that the test
+    can send it to the server as one simple query. Any other line that
+    starts with a backslash, a psql meta-command or COPY data, is refused:
+    the server would not take it."""
+    out, restricts = [], 0
+    for number, line in enumerate(text.splitlines(keepends=True), 1):
+        bare = line.rstrip("\n")
+        if not bare.lstrip().startswith("\\"):
+            out.append(line)
+            continue
+        words = bare.split(" ")
+        if len(words) == 2 and words[0] in ("\\restrict", "\\unrestrict") and words[1].isalnum():
+            restricts += 1
+            continue
+        if bare == "\\.":
+            raise FixtureError(f"line {number}: COPY data; dump with --inserts")
+        raise FixtureError(f"line {number}: {bare[:60]} is a psql meta-command")
+    if restricts == 0:
+        raise FixtureError("the dump has no \\restrict line: it is not pg_dump 16.10 or later's")
+    return "".join(out)
+
+
+def listed_keys(xml_text):
+    """The keys of a ListObjectsV2 answer, in order. A truncated listing is
+    refused: a fixture's bucket holds far fewer than one page."""
+    import xml.etree.ElementTree as ET
+
+    try:
+        doc = ET.fromstring(xml_text)
+    except ET.ParseError as e:
+        raise FixtureError(f"not a bucket listing: {e}") from e
+    local = lambda tag: tag.rsplit("}", 1)[-1]  # noqa: E731
+    if local(doc.tag) != "ListBucketResult":
+        raise FixtureError(f"not a bucket listing: {local(doc.tag)}")
+    keys, truncated = [], None
+    for child in doc:
+        if local(child.tag) == "IsTruncated":
+            truncated = child.text
+        elif local(child.tag) == "Contents":
+            keys.extend(k.text for k in child if local(k.tag) == "Key")
+    if truncated != "false":
+        raise FixtureError(f"the bucket listing is truncated ({truncated})")
+    return keys
+
+
+def bucket_path(key):
+    """The path under the fixture's `bucket/` of the object `key`: only a
+    key made of plain names separated by single slashes."""
+    parts = key.split("/")
+    if not key or any(p in ("", ".", "..") for p in parts):
+        raise FixtureError(f"the key {key!r} is not a plain path")
+    return pathlib.PurePosixPath(*parts)
 
 
 # ---- The parts below need Docker and a release binary. ----
@@ -295,16 +433,20 @@ class Release:
         (self.work / "key.pem").chmod(0o400)
         self.name = f"vcon-format-fixture-{release}-{os.getpid()}"
         self.containers = []
+        # The commands run with no network and the server on a bridge,
+        # unless a PostgreSQL deployment puts both on its network.
+        self.cli_network, self.serve_network = "none", "bridge"
+        self.env = []
 
     def docker(self, extra, args, network="none"):
         return [
             "docker", "run", "--rm", "--network", network, "--ulimit", "memlock=-1",
-            "--user", f"{os.getuid()}:{os.getgid()}", "-v", f"{self.work}:/w", *extra,
+            "--user", f"{os.getuid()}:{os.getgid()}", "-v", f"{self.work}:/w", *self.env, *extra,
             IMAGE, "/w/bin/vcon-server", *args,
         ]
 
-    def cli(self, *args):
-        out = run(self.docker([], [*args, "--config", "/w/vcon-server.toml"]))
+    def cli(self, *args, config="vcon-server.toml"):
+        out = run(self.docker([], [*args, "--config", f"/w/{config}"], network=self.cli_network))
         return out.stdout
 
     def help(self):
@@ -318,11 +460,14 @@ class Release:
         return Http(f"https://127.0.0.1:{port}", self.work / "cert.pem", name)
 
     def serve_args(self, name):
-        # A published port needs a bridge network. This configuration names
-        # no S3 service and no PostgreSQL, so the server connects to nothing.
+        # A published port needs a bridge network. The data directory
+        # configuration names no S3 service and no PostgreSQL, so that
+        # server connects to nothing; a PostgreSQL deployment's network
+        # holds only its database servers and its RustFS.
         # Docker's HOST_IP::CONTAINER_PORT: the loopback address, a port Docker picks.
         publish = f"{LOOPBACK}::{PORT}"
-        args = self.docker(["-d", "--name", name, "-p", publish], ["serve", "--config", "/w/vcon-server.toml"], network="bridge")
+        args = self.docker(["-d", "--name", name, "-p", publish], ["serve", "--config", "/w/vcon-server.toml"],
+                           network=self.serve_network)
         args.remove("--rm")
         return args
 
@@ -381,7 +526,9 @@ def make(release, arch, cache, out_root):
         shutil.rmtree(work)
 
 
-def build(rel, out_root):
+def prepare(rel):
+    """The tenants, their keys and the users, made by the commands while no
+    server runs: (tenant ids, each tenant's producer token, the users)."""
     ids, keys = {}, {}
     for tenant, retention in TENANTS:
         args = ["tenant", "create", tenant] + (["--retention", retention] if retention else [])
@@ -401,8 +548,12 @@ def build(rel, out_root):
         rel.cli("membership", "grant", b, "--tenant", ids["tenant-b"], "--role", "records")
         users = [{"label": "Reader Example", "roles": "reader in tenant-a"},
                  {"label": "Records Example", "roles": "records in tenant-b"}]
+    return ids, keys, users
 
-    http = rel.serve()
+
+def store_workload(http, keys):
+    """Stores each tenant's vCons and runs the WORKLOAD: what was sent,
+    {tenant: {n: [(etag, body), ...]}}, oldest edition first."""
     sent = {}
     for tenant, _ in TENANTS:
         token = keys[tenant]
@@ -423,14 +574,18 @@ def build(rel, out_root):
             elif op == "delete":
                 http.call("DELETE", f"/vcons/{uuid}", token, None, None, (204,))
         sent[tenant] = editions
-    rel.stop(http.name)
-    # The start-up sweep purges what is due.
-    http = rel.serve()
-    want = expected()
+    return sent
+
+
+def read_back(http, keys, sent, want, placed=False):
+    """Checks over the legal routes that each tenant kept exactly the
+    versions `want` names, in order and byte-equal to what was sent, and
+    that each purged uuid answers 410: (the manifest's kept rows, its
+    purged rows). `placed` adds each row's place (a PostgreSQL fixture)."""
     kept, purged = [], []
     for tenant, _ in TENANTS:
         token = keys[tenant]
-        for n in range(VCONS_PER_TENANT):
+        for n in sorted(sent[tenant]):
             uuid = vcon_uuid(tenant, n)
             if uuid in want[tenant]["purged"]:
                 http.call("GET", f"/legal/vcons/{uuid}/versions", token, None, None, (410,))
@@ -448,8 +603,22 @@ def build(rel, out_root):
                 _, got, _ = http.call("GET", f"/legal/vcons/{uuid}/versions/{etag}", token, None, None, (200,))
                 if got != body:
                     raise FixtureError(f"{tenant} {uuid} {etag}: the body read back differs")
-                kept.append({"tenant": tenant, "uuid": uuid, "version": etag, "order": order,
-                             "state": state, "sha256": hashlib.sha256(body).hexdigest(), "bytes": len(body)})
+                row = {"tenant": tenant, "uuid": uuid, "version": etag, "order": order,
+                       "state": state, "sha256": hashlib.sha256(body).hexdigest(), "bytes": len(body)}
+                if placed:
+                    row["place"] = place(n)
+                kept.append(row)
+    return kept, purged
+
+
+def build(rel, out_root):
+    ids, keys, users = prepare(rel)
+    http = rel.serve()
+    sent = store_workload(http, keys)
+    rel.stop(http.name)
+    # The start-up sweep purges what is due.
+    http = rel.serve()
+    kept, purged = read_back(http, keys, sent, expected())
     rel.stop(http.name)
 
     dest = pathlib.Path(out_root) / rel.release
@@ -465,16 +634,157 @@ def build(rel, out_root):
     return tree_bytes(dest)
 
 
+class Deployment:
+    """The PostgreSQL servers of scripts/pg-test-server.sh and a RustFS on
+    their network, for one release's fixture; `close` removes them."""
+
+    def __init__(self, rel):
+        self.rel = rel
+        self.dir = rel.work / "pg"
+        self.rustfs = None
+        run(["bash", str(PG_SERVER), "start", PG_IMAGE, str(self.dir)], timeout=300)
+        self.net = (self.dir / "network").read_text().strip()
+        self.primary = (self.dir / "containers").read_text().split()[0]
+        shutil.copyfile(self.dir / "ca.pem", rel.work / "pg-ca.pem")
+        shutil.copyfile(self.dir / "password", rel.work / "pg.password")
+        (rel.work / "pg.password").chmod(0o600)
+        name = f"{rel.name}-rustfs"
+        # Published on the loopback address, at a free host port docker
+        # picks (the empty middle part), to the container's port 9000.
+        publish = ":".join((LOOPBACK, "", "9000"))
+        run(["docker", "run", "-d", "--name", name, "--network", self.net, "--network-alias", "rustfs",
+             "-p", publish, "-e", f"RUSTFS_ACCESS_KEY={S3_ACCESS_KEY}",
+             "-e", f"RUSTFS_SECRET_KEY={S3_SECRET_KEY}", RUSTFS_IMAGE])
+        self.rustfs = name
+        port = run(["docker", "port", name, "9000/tcp"]).stdout.split()[0].rsplit(":", 1)[1]
+        self.s3 = f"http://{LOOPBACK}:{port}"
+        deadline = time.monotonic() + SERVE_START
+        while self.curl("GET", "", check=False).returncode != 0:
+            if time.monotonic() > deadline:
+                raise FixtureError("RustFS never answered a signed request")
+            time.sleep(0.5)
+        self.curl("PUT", BUCKET)
+        rel.cli_network = rel.serve_network = self.net
+        rel.env = ["-e", f"AWS_ACCESS_KEY_ID={S3_ACCESS_KEY}", "-e", f"AWS_SECRET_ACCESS_KEY={S3_SECRET_KEY}",
+                   "-e", "AWS_EC2_METADATA_DISABLED=true"]
+
+    def curl(self, method, path, out=None, check=True):
+        args = ["curl", "-sS", "--fail-with-body", "-X", method, "--aws-sigv4", "aws:amz:us-east-1:s3",
+                "--user", f"{S3_ACCESS_KEY}:{S3_SECRET_KEY}", f"{self.s3}/{path}"]
+        if out is not None:
+            args[1:1] = ["-o", str(out)]
+        return run(args, timeout=60, check=check)
+
+    def keys(self):
+        return listed_keys(self.curl("GET", f"{BUCKET}?list-type=2").stdout)
+
+    def psql(self, sql):
+        return run(["docker", "exec", self.primary, "psql", "-U", "postgres", "-d", "vcon", "-At",
+                    "-v", "ON_ERROR_STOP=1", "-c", sql]).stdout.strip()
+
+    def dump(self):
+        # As the superuser, which row-level security does not filter.
+        out = run(["docker", "exec", self.primary, "pg_dump", "-U", "postgres", "--inserts", "vcon"], timeout=120)
+        return strip_dump(out.stdout)
+
+    def close(self):
+        if self.rustfs:
+            run(["docker", "rm", "-f", self.rustfs], check=False)
+        if (self.dir / "containers").exists():
+            run(["bash", str(PG_SERVER), "stop", str(self.dir)], timeout=120, check=False)
+
+
+def objects_left(keys):
+    """The keys of a bucket listing that are versions' own objects."""
+    return [k for k in keys if k.startswith("tenants/") and "/objects/" in k]
+
+
+def make_pg(release, arch, cache, out_root):
+    work = pathlib.Path(tempfile.mkdtemp(prefix=f"fixture-pg-{release}-", dir=cache))
+    rel = Release(release, arch, cache, work)
+    deployment = None
+    try:
+        deployment = Deployment(rel)
+        return build_pg(rel, deployment, out_root)
+    finally:
+        rel.cleanup()
+        if deployment is not None:
+            deployment.close()
+        shutil.rmtree(work)
+
+
+def build_pg(rel, dep, out_root):
+    listen = f"0.0.0.0:{PORT}"
+    (rel.work / "vcon-migrate.toml").write_text(pg_config_text(listen, "vcon_migrate", False))
+    (rel.work / "vcon-server.toml").write_text(pg_config_text(listen, "vcon_app", False))
+    rel.cli("migrate", config="vcon-migrate.toml")
+    _, keys, users = prepare(rel)
+    http = rel.serve()
+    sent = store_workload(http, keys)
+    rel.stop(http.name)
+    # The start-up sweep purges what is due.
+    http = rel.serve()
+    read_back(http, keys, sent, expected())
+    rel.stop(http.name)
+
+    # Parquet storage on: the pack run at start packs every object.
+    (rel.work / "vcon-server.toml").write_text(pg_config_text(listen, "vcon_app", True))
+    http = rel.serve()
+    deadline = time.monotonic() + SERVE_START
+    while objects_left(dep.keys()):
+        if time.monotonic() > deadline:
+            raise FixtureError(f"the pack run left {len(objects_left(dep.keys()))} objects")
+        time.sleep(1)
+    want = expected()
+    for tenant, _ in TENANTS:
+        for n in late_numbers():
+            body = vcon_body(tenant, n, 0)
+            _, _, etag = http.call("POST", "/vcons", keys[tenant], body, {"Content-Type": "application/vcon"}, (201,))
+            sent[tenant][n] = [(etag, body)]
+            want[tenant]["kept"][vcon_uuid(tenant, n)] = [(0, "current")]
+    kept, purged = read_back(http, keys, sent, want, placed=True)
+    rel.stop(http.name)
+    late = sum(1 for r in kept if r["place"] == "object")
+    if len(objects_left(dep.keys())) != late:
+        raise FixtureError(f"{len(objects_left(dep.keys()))} objects in the bucket, {late} late versions")
+
+    schema = int(dep.psql("SELECT max(version) FROM vcon.schema_version"))
+    dest = pathlib.Path(out_root) / rel.release
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True)
+    (dest / "dump.sql").write_text(dep.dump())
+    for key in dep.keys():
+        path = dest / "bucket" / bucket_path(key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        dep.curl("GET", f"{BUCKET}/{key}", out=path)
+    shutil.copytree(rel.work / "data", dest / "data")
+    shutil.copyfile(rel.work / "master.key", dest / "master.key")
+    tenants = [{"name": t, "retention": r or "default"} for t, r in TENANTS]
+    section = {"schema": schema, "dump": "dump.sql", "bucket": "bucket", "image": PG_IMAGE,
+               "rustfs": RUSTFS_IMAGE, "pack_interval": PACK_INTERVAL}
+    (dest / "manifest.json").write_text(
+        manifest(rel.release, rel.archive_sha, rel.binary_sha, kept, purged, tenants, users, postgres=section)
+    )
+    return tree_bytes(dest)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--cache", required=True, help="where the release archives are kept")
     parser.add_argument("--release", action="append", choices=RELEASES)
-    parser.add_argument("--out", default=str(OUT))
+    parser.add_argument("--postgres", action="store_true",
+                        help="the PostgreSQL deployments of the releases in PG_RELEASES")
+    parser.add_argument("--out")
     parser.add_argument("--arch", default=os.uname().machine)
     args = parser.parse_args(argv)
+    releases = args.release or (PG_RELEASES if args.postgres else RELEASES)
+    if args.postgres and not set(releases) <= set(PG_RELEASES):
+        parser.error(f"--postgres takes only {', '.join(PG_RELEASES)}")
+    out = args.out or str(PG_OUT if args.postgres else OUT)
     total = 0
-    for release in args.release or RELEASES:
-        size = make(release, args.arch, args.cache, args.out)
+    for release in releases:
+        size = (make_pg if args.postgres else make)(release, args.arch, args.cache, out)
         total += size
         print(f"{release}: {size} bytes")
     print(f"total: {total} bytes")

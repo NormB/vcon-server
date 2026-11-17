@@ -41,7 +41,24 @@ pub fn password() -> String {
 /// first column of each row it answered. It runs on a thread and runtime
 /// of its own, so a test may call it inside its runtime or outside one.
 pub fn tester(dbname: &str, sql: &str) -> Result<Vec<String>, String> {
-    let (dbname, sql) = (dbname.to_owned(), sql.to_owned());
+    query_as("vcon_tester", dbname, sql)
+}
+
+/// Runs `sql` in the database `dbname` as the superuser `vcon_super`,
+/// which row-level security does not filter, as `tester` runs it: for a
+/// test that reads every row of every tenant.
+#[allow(
+    dead_code,
+    reason = "this module is part of several test crates; only tests/formats.rs calls it"
+)]
+pub fn superuser(dbname: &str, sql: &str) -> Result<Vec<String>, String> {
+    query_as("vcon_super", dbname, sql)
+}
+
+/// Runs `sql` in the database `dbname` as the login role `role`, with the
+/// test password over verified TLS.
+fn query_as(role: &str, dbname: &str, sql: &str) -> Result<Vec<String>, String> {
+    let (role, dbname, sql) = (role.to_owned(), dbname.to_owned(), sql.to_owned());
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -66,7 +83,7 @@ pub fn tester(dbname: &str, sql: &str) -> Result<Vec<String>, String> {
             config
                 .host("localhost")
                 .port(var("VCON_TEST_PG_PORT").parse().map_err(|_| "the port")?)
-                .user("vcon_tester")
+                .user(&role)
                 .password(password())
                 .dbname(&dbname)
                 .ssl_mode(tokio_postgres::config::SslMode::Require)
@@ -74,7 +91,7 @@ pub fn tester(dbname: &str, sql: &str) -> Result<Vec<String>, String> {
             let (client, connection) = config
                 .connect(tokio_postgres_rustls::MakeRustlsConnect::new(tls))
                 .await
-                .map_err(|e| format!("the tester cannot connect: {e}"))?;
+                .map_err(|e| format!("{role} cannot connect: {e}"))?;
             let driving = tokio::spawn(connection);
             let answered = client
                 .simple_query(&sql)
