@@ -6,6 +6,18 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A server whose log pipe closed goes on answering requests.**
+  - Was: Once standard error was closed, every request was reset and
+    commands exited with status 101.
+  - Effect: Log lines that cannot be written are dropped; requests are
+    answered and a refused command exits 1.
+  - Limit: A log reader that stays open but stops reading still stalls the
+    server.
+  - Docs: [When the log's reader goes
+    away](https://vcon-server.com/docs/operations/#when-the-log-s-reader-goes-away)
+
 ## [0.4.8] - 2026-11-16
 
 ### Changed

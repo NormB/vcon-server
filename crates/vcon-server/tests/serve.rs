@@ -383,6 +383,404 @@ async fn mlock_serve_stores_reads_keeps_its_memory_locked_and_stops_on_sigterm()
     assert!(status.success(), "it stopped cleanly: {status:?}");
 }
 
+// ---- A server or a command whose stderr is closed. ----
+//
+// A log reader can go away while the server runs (a `serve 2>&1 | tee`
+// whose reader ends, a log collector restarted). Each write to stderr then
+// fails with EPIPE; the server must go on serving and the commands must
+// still exit with their own status, never by a panic (101).
+
+/// Starts `command` with its stderr piped, reads it up to the `serving`
+/// line, then closes the reading end: the server's next write to stderr
+/// fails. The running server and the address it listens on.
+fn start_then_close_stderr(mut command: Command) -> (Running, SocketAddr) {
+    use std::io::BufRead;
+    let mut running = Running(
+        command
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("starts"),
+    );
+    let mut reader = std::io::BufReader::new(running.0.stderr.take().expect("piped"));
+    let mut line = String::new();
+    let addr = loop {
+        line.clear();
+        let read = reader.read_line(&mut line).expect("reads stderr");
+        assert_ne!(read, 0, "serve ended before its serving line");
+        if let Some(addr) = bound(&line) {
+            break addr;
+        }
+    };
+    drop(reader);
+    (running, addr)
+}
+
+/// A client that trusts `s`'s certificate and reaches `addr` as localhost.
+fn client_at(s: &Setup, addr: SocketAddr) -> reqwest::Client {
+    reqwest::Client::builder()
+        .tls_certs_only([reqwest::Certificate::from_pem(s.pem.as_bytes()).expect("pem")])
+        .resolve("localhost", addr)
+        .no_proxy()
+        .build()
+        .expect("a client")
+}
+
+fn url_at(addr: SocketAddr, path: &str) -> String {
+    format!("https://localhost:{}{path}", addr.port())
+}
+
+/// Runs `command` with a stderr whose reading end is closed before it
+/// starts: its exit status.
+fn status_with_stderr_closed(mut command: Command) -> std::process::ExitStatus {
+    let (reader, writer) = std::io::pipe().expect("a pipe");
+    drop(reader);
+    let mut child = command
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(writer))
+        .spawn()
+        .expect("starts");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Some(status) = child.try_wait().expect("wait") {
+            return status;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the command did not end");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Sends SIGTERM to `running` and waits up to 20 s for it to end.
+fn terminate(running: &mut Running) -> std::process::ExitStatus {
+    // SAFETY: the pid is our running child's.
+    let sent = unsafe { libc::kill(running.0.id() as libc::pid_t, libc::SIGTERM) };
+    assert_eq!(sent, 0, "SIGTERM is sent");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Some(status) = running.0.try_wait().expect("wait") {
+            return status;
+        }
+        assert!(Instant::now() < deadline, "serve did not stop on SIGTERM");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+// Success.
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_whose_stderr_closed_still_answers_health() {
+    let s = setup();
+    let (_running, addr) = start_then_close_stderr(serve(&s));
+    let client = client_at(&s, addr);
+    for round in 0..5 {
+        let answer = client
+            .get(url_at(addr, "/health"))
+            .bearer_auth(&s.token)
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("round {round}: an answer, not a reset stream: {e:?}"));
+        assert_eq!(answer.status(), 200, "round {round}: healthy");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_whose_stderr_closed_still_stores_and_reads_a_vcon() {
+    let s = setup();
+    let (_running, addr) = start_then_close_stderr(serve(&s));
+    let client = client_at(&s, addr);
+    let body = std::fs::read(format!(
+        "{}/../vcon/tests/fixtures/ietf/ab_call_ext_rec.vcon",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .expect("A.4");
+    let stored = client
+        .post(url_at(addr, "/vcons"))
+        .bearer_auth(&s.token)
+        .header("content-type", "application/vcon")
+        .body(body.clone())
+        .send()
+        .await
+        .expect("an answer to the store");
+    assert_eq!(stored.status(), 201, "stored");
+    let read = client
+        .get(url_at(addr, &format!("/vcons/{UUID}")))
+        .bearer_auth(&s.token)
+        .send()
+        .await
+        .expect("an answer to the read");
+    assert_eq!(read.status(), 200, "read");
+    assert_eq!(
+        read.bytes().await.expect("a body").as_ref(),
+        body.as_slice(),
+        "the bytes stored"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_whose_stderr_closed_answers_many_requests() {
+    // Each request writes a log line, so each one fails to write.
+    let s = setup();
+    let (_running, addr) = start_then_close_stderr(serve(&s));
+    let client = client_at(&s, addr);
+    for round in 0..50 {
+        let answer = client
+            .get(url_at(addr, "/health"))
+            .bearer_auth(&s.token)
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("request {round}: an answer: {e:?}"));
+        assert_eq!(answer.status(), 200, "request {round}");
+    }
+}
+
+// Failure.
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_whose_stderr_closed_still_refuses_a_wrong_key_with_401() {
+    let s = setup();
+    let (_running, addr) = start_then_close_stderr(serve(&s));
+    let answer = client_at(&s, addr)
+        .get(url_at(addr, &format!("/vcons/{UUID}")))
+        .bearer_auth("vcs_not-a-key")
+        .send()
+        .await
+        .expect("an answer, not a reset stream");
+    assert_eq!(answer.status(), 401, "refused as without a log");
+}
+
+#[test]
+fn serve_refused_with_stderr_closed_exits_1_without_a_panic() {
+    let s = setup();
+    std::fs::write(&s.config, "listen = 3\n").expect("a configuration serve refuses");
+    let status = status_with_stderr_closed(serve(&s));
+    assert_eq!(
+        status.code(),
+        Some(1),
+        "the refusal's own status, not 101: {status:?}"
+    );
+}
+
+#[test]
+fn a_command_refused_with_stderr_closed_exits_1_without_a_panic() {
+    let s = setup();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_vcon-server"));
+    command
+        .args(["tenant", "list", "--config"])
+        .arg(s.dir.path().join("no-such.toml"));
+    let status = status_with_stderr_closed(command);
+    assert_eq!(
+        status.code(),
+        Some(1),
+        "the refusal's own status, not 101: {status:?}"
+    );
+}
+
+#[test]
+fn a_second_server_refused_with_stderr_closed_exits_1_without_a_panic() {
+    // Refused after the log is set up: the data directory is in use.
+    let s = setup();
+    let (_running, _) = start_then_close_stderr(serve(&s));
+    let status = status_with_stderr_closed(serve(&s));
+    assert_eq!(
+        status.code(),
+        Some(1),
+        "the refusal's own status, not 101: {status:?}"
+    );
+}
+
+// Edge.
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_whose_stderr_closed_stops_cleanly_on_sigterm() {
+    let s = setup();
+    let (mut running, addr) = start_then_close_stderr(serve(&s));
+    let answer = client_at(&s, addr)
+        .get(url_at(addr, "/health"))
+        .bearer_auth(&s.token)
+        .send()
+        .await
+        .expect("an answer");
+    assert_eq!(answer.status(), 200, "served first");
+    let status = terminate(&mut running);
+    assert_eq!(status.code(), Some(0), "stops as with a log: {status:?}");
+}
+
+#[test]
+fn a_server_whose_stderr_closed_stops_cleanly_with_no_request() {
+    let s = setup();
+    let (mut running, _) = start_then_close_stderr(serve(&s));
+    let status = terminate(&mut running);
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "its stop lines fail to write, and it stops: {status:?}"
+    );
+}
+
+#[test]
+fn a_command_that_succeeds_with_stderr_closed_exits_0() {
+    let s = setup();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_vcon-server"));
+    command.args(["tenant", "list", "--config"]).arg(&s.config);
+    let status = status_with_stderr_closed(command);
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "nothing to write to stderr: {status:?}"
+    );
+}
+
+/// Runs the binary with `args` and `s`'s configuration, its stderr closed
+/// before it starts, and asserts the refusal's own exit status, 1.
+fn refuses_with_stderr_closed(s: &Setup, args: &[&str]) {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_vcon-server"));
+    command.args(args).arg("--config").arg(&s.config);
+    let status = status_with_stderr_closed(command);
+    assert_eq!(
+        status.code(),
+        Some(1),
+        "{args:?} is refused with exit 1, not 101: {status:?}"
+    );
+}
+
+/// An id of the right form that names nothing.
+const NO_SUCH_ID: &str = "00000000000000000000000000000000";
+
+#[test]
+fn check_refused_with_stderr_closed_exits_1() {
+    let s = setup();
+    std::fs::remove_file(&s.master_key).expect("the master key taken away");
+    refuses_with_stderr_closed(&s, &["check"]);
+}
+
+#[test]
+fn migrate_refused_with_stderr_closed_exits_1() {
+    // A configuration without a PostgreSQL catalog has nothing to migrate.
+    let s = setup();
+    refuses_with_stderr_closed(&s, &["migrate"]);
+}
+
+#[test]
+fn tenant_create_refused_with_stderr_closed_exits_1() {
+    // setup made a tenant of this name.
+    let s = setup();
+    refuses_with_stderr_closed(&s, &["tenant", "create", "acme"]);
+}
+
+#[test]
+fn tenant_remove_refused_with_stderr_closed_exits_1() {
+    let s = setup();
+    refuses_with_stderr_closed(&s, &["tenant", "remove", NO_SUCH_ID]);
+}
+
+#[test]
+fn key_create_refused_with_stderr_closed_exits_1() {
+    let s = setup();
+    refuses_with_stderr_closed(
+        &s,
+        &[
+            "key", "create", "--tenant", NO_SUCH_ID, "--scope", "read", "--label", "x",
+        ],
+    );
+}
+
+#[test]
+fn key_revoke_refused_with_stderr_closed_exits_1() {
+    let s = setup();
+    refuses_with_stderr_closed(&s, &["key", "revoke", NO_SUCH_ID]);
+}
+
+#[test]
+fn user_deactivate_refused_with_stderr_closed_exits_1() {
+    let s = setup();
+    refuses_with_stderr_closed(&s, &["user", "deactivate", NO_SUCH_ID]);
+}
+
+#[test]
+fn audit_export_refused_with_stderr_closed_exits_1() {
+    let s = setup();
+    refuses_with_stderr_closed(&s, &["audit", "export", "--tenant", NO_SUCH_ID]);
+}
+
+#[test]
+fn export_parquet_refused_with_stderr_closed_exits_1() {
+    let s = setup();
+    let to = s.dir.path().join("export");
+    refuses_with_stderr_closed(
+        &s,
+        &[
+            "export",
+            "parquet",
+            "--tenant",
+            NO_SUCH_ID,
+            "--to",
+            to.to_str().expect("UTF-8"),
+        ],
+    );
+}
+
+#[test]
+fn rekey_tenant_refused_with_stderr_closed_exits_1() {
+    let s = setup();
+    refuses_with_stderr_closed(&s, &["rekey", "tenant", NO_SUCH_ID]);
+}
+
+#[test]
+fn backup_refused_with_stderr_closed_exits_1() {
+    // The destination is a file, not a directory to write into.
+    let s = setup();
+    let to = s.dir.path().join("a-file");
+    std::fs::write(&to, b"x").expect("write");
+    refuses_with_stderr_closed(&s, &["backup", to.to_str().expect("UTF-8")]);
+}
+
+#[test]
+fn mcp_refused_with_stderr_closed_exits_1() {
+    // A server's configuration is not an MCP client file.
+    let s = setup();
+    refuses_with_stderr_closed(&s, &["mcp"]);
+}
+
+#[test]
+fn tui_refused_with_stderr_closed_exits_1() {
+    let s = setup();
+    refuses_with_stderr_closed(&s, &["tui"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_whose_reader_closes_mid_run_goes_on_answering() {
+    // The reader reads the lines of the first requests, then goes away.
+    let s = setup();
+    let started = start(serve(&s));
+    let client = started.client(&s);
+    let url = started.url("/health");
+    let health = |round: usize| {
+        let (client, url, token) = (client.clone(), url.clone(), s.token.clone());
+        async move {
+            let answer = client
+                .get(url)
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap_or_else(|e| panic!("request {round}: an answer: {e:?}"));
+            assert_eq!(answer.status(), 200, "request {round}");
+        }
+    };
+    for round in 0..3 {
+        health(round).await;
+    }
+    let Started { running, lines, .. } = started;
+    drop(lines);
+    for round in 3..13 {
+        health(round).await;
+    }
+    drop(running);
+}
+
 /// Starts a server and sends it `signal` as soon as its serving line is
 /// read, `rounds` times over; each must stop as it does on a signal that
 /// comes later: cleanly, with exit status 0.

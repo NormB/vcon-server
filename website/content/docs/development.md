@@ -31,6 +31,7 @@ crates/
         ├── settings.rs    the settings a tenant's administrator sets, and what each may hold
         ├── session.rs     a session's cookie, CSRF token and the origin a request must come from
         ├── access.rs      tokens, scopes, authentication
+        ├── stderr.rs      the one writer of standard error, which drops a write that fails
         ├── store.rs       one tenant's vCons: versions, deletes, purges, legal reads
         ├── backend.rs     where the data is kept: local files, an S3 bucket, PostgreSQL
         ├── export.rs      export parquet: a tenant's versions as Parquet files

@@ -124,7 +124,7 @@ pub(crate) fn run(harness: &dyn Harness) {
         ),
     ];
     for (name, check) in checks {
-        eprintln!("conformance: {name}");
+        crate::stderr::line(&format!("conformance: {name}"));
         check(harness);
     }
 }

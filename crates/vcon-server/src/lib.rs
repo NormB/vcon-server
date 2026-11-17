@@ -75,6 +75,7 @@ pub(crate) mod secret_file;
 pub mod serve;
 pub mod session;
 pub mod settings;
+pub mod stderr;
 #[expect(
     missing_docs,
     missing_debug_implementations,

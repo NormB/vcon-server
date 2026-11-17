@@ -256,6 +256,7 @@ mod tests {
         let subscriber = tracing_subscriber::fmt()
             .with_writer(capture.clone())
             .with_ansi(false)
+            .log_internal_errors(false)
             .finish();
         let read = tracing::subscriber::with_default(subscriber, || f.store.sealed_of(&kept[0]));
         assert_eq!(read, Err(StoreError::Io), "a storage failure is Io");

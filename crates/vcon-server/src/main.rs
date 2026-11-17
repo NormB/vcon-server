@@ -605,7 +605,7 @@ fn migrate(config: &Path) -> ExitCode {
 }
 
 fn fail(message: impl std::fmt::Display) -> ExitCode {
-    eprintln!("vcon-server: {message}");
+    vcon_server::stderr::line(&format!("vcon-server: {message}"));
     ExitCode::FAILURE
 }
 
@@ -618,8 +618,12 @@ fn serve(config: &Path) -> ExitCode {
 
 /// `vcon-server serve` until it stops, or the exit for why it stopped.
 fn run_serve(config: &Path) -> Result<(), ExitCode> {
+    // A log line that cannot be written is dropped (crate::stderr says
+    // why); the builder's fallback for a failed write, `eprintln!`, would
+    // panic in the request that logged it.
     tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
+        .with_writer(vcon_server::stderr::stderr)
+        .log_internal_errors(false)
         .init();
     let config = config::load(config).map_err(|e| fail(format!("configuration: {e}")))?;
     runtime()?.block_on(async {

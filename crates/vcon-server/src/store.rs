@@ -2019,6 +2019,7 @@ pub(crate) mod tests {
         let subscriber = tracing_subscriber::fmt()
             .with_writer(capture.clone())
             .with_ansi(false)
+            .log_internal_errors(false)
             .finish();
         let read =
             tracing::subscriber::with_default(subscriber, || f.store.get(&f.caller, found.uuid));
@@ -2053,6 +2054,7 @@ pub(crate) mod tests {
         let subscriber = tracing_subscriber::fmt()
             .with_writer(capture.clone())
             .with_ansi(false)
+            .log_internal_errors(false)
             .finish();
         tracing::subscriber::with_default(subscriber, || f.store.get(&f.caller, found.uuid))
             .expect_err("fails");

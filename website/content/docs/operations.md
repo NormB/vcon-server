@@ -179,6 +179,20 @@ A server started, asked for its health with no key, and stopped:
 No line holds a uuid, a tenant id, a token or any content. Who did what is in
 the [audit logs](@/docs/audit-logs.md), inside the encrypted catalogs.
 
+### When the log's reader goes away
+
+A line that cannot be written is dropped, and the server goes on serving: a
+reader that closed standard error (a `vcon-server serve 2>&1 | tee` whose
+`tee` ended, a log collector that restarted) loses the lines written while
+it was gone. A command refused with its standard error closed still exits
+with status 1. Releases 0.4.0 to 0.4.8 answered no request once standard
+error was closed.
+
+A reader that stays open but stops reading is not the same: each line waits
+for room in the pipe, and once the pipe is full the server stops answering
+until the reader reads again. Run the server under systemd's journal or a
+collector that keeps reading.
+
 ## Health checks
 
 `GET /health` with any valid key answers `200` while `server.sqlite` answers,
