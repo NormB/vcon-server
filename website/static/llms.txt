@@ -53,6 +53,7 @@
 - [Configuration](https://vcon-server.com/docs/configuration/): every key of the configuration file and its default
 - [The vcon library](https://vcon-server.com/docs/library/): reading, checking and writing vCons in Rust with the vcon crate
 - [On-disk formats](https://vcon-server.com/docs/on-disk-format/): every on-disk format and its version, what each release wrote, and the data of each release the tests open
+- [Stability](https://vcon-server.com/docs/stability/): what a release keeps compatible, which changes break a client, and how to compare the HTTP API of two releases
 
 ## Project
 

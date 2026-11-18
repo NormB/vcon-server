@@ -4412,6 +4412,7 @@
         "properties": {
           "type": {
             "type": "string",
+            "x-vcon-server-open-enum": true,
             "enum": [
               "https://vcon-server.com/problems/ambiguous-form",
               "https://vcon-server.com/problems/at-capacity",

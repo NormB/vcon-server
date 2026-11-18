@@ -139,13 +139,21 @@ and refuses a catalog one version past the build. From 0.4.6 to 0.4.10 it
 also keeps each release's deployment with its catalogs in PostgreSQL and
 its objects in Parquet storage, which CI restores and opens the same way on
 PostgreSQL 16 and 18. CI also upgrades the previous release to this one and
-back.
+back. [Stability](@/docs/stability.md) states what 1.0 keeps unchanged
+and which changes break a client, and `scripts/contract_diff.py` tells a
+breaking change to the HTTP API or its problem types from an additive one,
+against any release tag.
 
-Left: a written rule for what 1.0 keeps unchanged; and checks in CI that
-refuse a change that breaks the HTTP API or the configuration, against a
-frozen copy of each.
+Left: the same comparison for the configuration, against a frozen copy of
+it; and a CI job that runs the comparisons on every change.
 
 Evidence:
+
+- [Stability](@/docs/stability.md#which-changes-break-a-client)
+- the classifier, in
+  [contract_diff.py](https://github.com/NormB/vcon-server/blob/main/scripts/contract_diff.py)
+- its tests, in
+  [test_contract_diff.py](https://github.com/NormB/vcon-server/blob/main/scripts/test_contract_diff.py)
 
 - the OpenAPI description, in
   [openapi.json](https://github.com/NormB/vcon-server/blob/main/crates/vcon-server/openapi.json)

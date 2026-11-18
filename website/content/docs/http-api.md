@@ -43,7 +43,9 @@ group = "reference"
   ```
 
   The `type` is a page on this site; [problem types](@/problems/_index.md)
-  lists them all. No problem repeats any part of the request.
+  lists them all. No problem repeats any part of the request. A later
+  release may add types: handle a type you do not know by the status code
+  ([stability](@/docs/stability.md#problem-types-and-open-lists)).
 - **Every request is recorded** in an [audit log](@/docs/audit-logs.md),
   refused ones included.
 - **An OpenAPI 3.1 description** of every route, status and problem type is

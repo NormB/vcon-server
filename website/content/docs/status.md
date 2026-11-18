@@ -283,6 +283,16 @@ once, for every entry here:
   changes no audit record. The command holds the database's locks, so it
   runs with every server stopped.
 
+## On `main` only
+
+The site is built from the `main` branch, so a page can describe what no
+release holds yet. Release 0.4.10 does not have these:
+
+- **The stability page and its script.** [Stability](@/docs/stability.md)
+  says which changes break a client, and `scripts/contract_diff.py`
+  compares the HTTP API of two releases; the openapi.json of release
+  0.4.10 does not mark the problem `type` as a list that may grow.
+
 ## Being built
 
 - **A PostgreSQL catalog**, a preview behind the `postgres` cargo feature:
