@@ -133,9 +133,9 @@ HTTP API page. Every table of the configuration file refuses a key it does
 not know. [On-disk formats](@/docs/on-disk-format.md) lists every on-disk
 format with its version and what each release wrote, and a test holds the
 page to the code. The repository keeps a data directory written by each
-released binary from 0.4.0 to 0.4.9; on every change, CI opens each one
+released binary from 0.4.0 to 0.4.10; on every change, CI opens each one
 with the new build, checks it, reads every kept version back byte-equal,
-and refuses a catalog one version past the build. From 0.4.6 to 0.4.9 it
+and refuses a catalog one version past the build. From 0.4.6 to 0.4.10 it
 also keeps each release's deployment with its catalogs in PostgreSQL and
 its objects in Parquet storage, which CI restores and opens the same way on
 PostgreSQL 16 and 18. CI also upgrades the previous release to this one and

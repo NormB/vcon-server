@@ -269,7 +269,10 @@ fn the_release_table_has_a_column_for_every_format() {
 #[test]
 fn the_release_table_lists_exactly_the_releases_with_a_fixture() {
     let releases = page_releases(&page()).expect("the page's release table");
-    let listed: Vec<&String> = releases.keys().collect();
+    // The map's keys are in text order ("0.4.10" before "0.4.2"); the
+    // fixtures are in release order.
+    let mut listed: Vec<&String> = releases.keys().collect();
+    listed.sort_by_key(|r| release_order(r));
     let fixtures = fixture_releases();
     assert_eq!(
         listed,
@@ -1022,6 +1025,7 @@ release!(release_0_4_6, "0.4.6");
 release!(release_0_4_7, "0.4.7");
 release!(release_0_4_8, "0.4.8");
 release!(release_0_4_9, "0.4.9");
+release!(release_0_4_10, "0.4.10");
 
 #[test]
 fn the_older_tests_cover_exactly_the_releases_that_wrote_an_older_version() {
@@ -2982,3 +2986,4 @@ pg_release!(pg_release_0_4_6, "0.4.6");
 pg_release!(pg_release_0_4_7, "0.4.7");
 pg_release!(pg_release_0_4_8, "0.4.8");
 pg_release!(pg_release_0_4_9, "0.4.9");
+pg_release!(pg_release_0_4_10, "0.4.10");
