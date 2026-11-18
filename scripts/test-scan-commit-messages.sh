@@ -4,7 +4,11 @@
 # and a real-looking email address are each refused and named, with the
 # commit; one bad commit among clean ones fails the whole run. GitHub's
 # own service address, which Dependabot signs with, passes; any other
-# address at github.com does not.
+# address at github.com does not. A Signed-off-by line naming a GitHub
+# noreply address passes, and the same address elsewhere in a message does
+# not. Then .githooks/commit-msg itself: it refuses what the scan refuses,
+# and warns, without refusing, on a message with no DCO sign-off the `DCO`
+# job would accept, unless `dco.exempt` is set.
 # Forbidden samples are assembled at run time, so this file holds none.
 set -euo pipefail
 src="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -70,5 +74,56 @@ expect 0 "Dependabot's sign-off with GitHub's service address" "" "$bot"
 expect 1 "anyone else's address at github.com" "<commit message>: email address:" "$staff"
 expect 1 "one bad commit among clean ones" "refused: $plan" "$clean" "$plan" "$clean"
 expect 1 "a commit that does not exist" "cannot read" "0000000000000000000000000000000000000000"
+# A DCO sign-off may name a GitHub noreply address, on a Signed-off-by line
+# only (scripts/scan_forbidden.py); any other address stays refused.
+nr="users.noreply.""github.com"
+noreply="12345+contributor@$nr"
+gmail="someone@gm""ail.com"
+signed="$(commit "Change it
+
+Signed-off-by: A Contributor <$noreply>")"
+signed_real="$(commit "Change it
+
+Signed-off-by: A Contributor <$gmail>")"
+loose="$(commit "Ask $noreply about it")"
+expect 0 "a sign-off naming a GitHub noreply address" "" "$signed"
+expect 1 "a sign-off naming a real address" "<commit message>: email address:" "$signed_real"
+expect 1 "a noreply address outside a sign-off line" "<commit message>: email address:" "$loose"
+# The commit-msg hook: the same scan, then a warning, never a refusal, for
+# a message without a sign-off the DCO job would accept. It runs against
+# the scripts of the repository it is in, so they are copied in.
+mkdir -p scripts
+cp "$src/scan_forbidden.py" "$src/check_dco.py" scripts/
+# hook <0|1> <description> <text the output must hold, or "" for none> <message>
+hook() {
+  local want="$1" what="$2" holds="$3" rc=0
+  printf '%s\n' "$4" > msg
+  bash "$src/../.githooks/commit-msg" msg > out 2>&1 || rc=$?
+  if [ "$rc" = "$want" ] && { if [ -z "$holds" ]; then [ ! -s out ]; else grep -qF -- "$holds" out; fi; }; then
+    pass=$((pass + 1))
+  else
+    fail=$((fail + 1))
+    echo "FAIL (exit $want and '${holds:-no output}' expected, got exit $rc): $what"
+    sed 's/^/    /' out | tail -8
+  fi
+}
+git config user.email "$noreply"
+hook 0 "the hook warns on a message without a sign-off" "commit-msg: warning: no Signed-off-by line" "Change it"
+hook 0 "the hook is silent on a noreply sign-off of the author" "" "Change it
+
+Signed-off-by: A Contributor <$noreply>"
+hook 0 "the hook warns on a sign-off of another noreply address" "commit-msg: warning: no Signed-off-by line" "Change it
+
+Signed-off-by: B <9+other@$nr>"
+hook 1 "the hook refuses a sign-off naming a real address" "commit-msg: refused" "Change it
+
+Signed-off-by: A Contributor <$gmail>"
+git config dco.exempt true
+hook 0 "the hook is silent for a maintainer with dco.exempt" "" "Change it"
+git config --unset dco.exempt
+git config user.email "test@example.com"
+hook 0 "the hook asks for a noreply author email" "not a GitHub noreply address" "Change it
+
+Signed-off-by: Test User <test@example.com>"
 echo "test-scan-commit-messages: $pass of $((pass + fail)) passed"
 [ "$fail" -eq 0 ]

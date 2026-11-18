@@ -5,9 +5,13 @@ that runs on every pull request is required or gated by a required job.
 Run with: python3 -I scripts/test_check_required_checks.py
 """
 
+import contextlib
 import importlib.util
+import io
+import json
 import pathlib
 import sys
+import tempfile
 import unittest
 
 sys.dont_write_bytecode = True
@@ -177,6 +181,89 @@ class Contexts(unittest.TestCase):
     def test_rules_with_no_required_checks_are_refused(self):
         with self.assertRaises(ValueError):
             check.required_contexts([{"type": "deletion"}])
+
+
+def dco(**more):
+    """dco.yml as it is shaped: one job, on every pull request."""
+    return {"dco.yml": {True: {"pull_request": None}, "jobs": {"dco": job("DCO", **more)}}}
+
+
+ADVISORY_REQUIRED = "the ruleset requires 'DCO', which ADVISORY in scripts/check_required_checks.py still lists: remove it from ADVISORY"
+ADVISORY_STALE = "ADVISORY lists 'DCO', which no job that runs on every pull request reports"
+DCO_UNNEEDED = "dco.yml: 'DCO' runs on every pull request, but no required check needs it"
+
+
+class Advisory(unittest.TestCase):
+    """A job named in ADVISORY reports on every pull request without being
+    required: the `DCO` check until the owner requires it."""
+
+    def test_an_advisory_job_may_run_on_every_pr_unrequired(self):
+        self.assertEqual(check.problems(workflows(**dco()), REQUIRED, {"DCO"}), [])
+
+    def test_without_the_list_the_same_job_is_refused(self):
+        self.assertEqual(check.problems(workflows(**dco()), REQUIRED), [DCO_UNNEEDED])
+
+    def test_an_unlisted_job_beside_it_is_still_refused(self):
+        wfs = workflows(**dco())
+        wfs["dco.yml"]["jobs"]["other"] = job("Other")
+        found = check.problems(wfs, REQUIRED, {"DCO"})
+        self.assertEqual(found, ["dco.yml: 'Other' runs on every pull request, but no required check needs it"])
+
+    def test_an_advisory_check_the_ruleset_requires_is_refused(self):
+        self.assertEqual(check.problems(workflows(**dco()), REQUIRED + ["DCO"], {"DCO"}), [ADVISORY_REQUIRED])
+
+    def test_an_advisory_name_no_job_reports_is_refused(self):
+        self.assertEqual(check.problems(workflows(), REQUIRED, {"DCO"}), [ADVISORY_STALE])
+
+    def test_an_advisory_job_of_a_path_filtered_workflow_is_refused(self):
+        wfs = workflows(**dco())
+        wfs["dco.yml"][True]["pull_request"] = {"paths": ["scripts/**"]}
+        self.assertEqual(check.problems(wfs, REQUIRED, {"DCO"}), [ADVISORY_STALE])
+
+    def test_an_advisory_job_a_required_job_needs_is_refused(self):
+        ci = workflows()["ci.yml"]
+        ci["jobs"]["dco"] = job("DCO")
+        ci["jobs"]["ci-success"]["needs"] = ["rust", "fuzz-targets", "fuzz", "dco"]
+        found = check.problems(workflows(**{"ci.yml": ci}), REQUIRED, {"DCO"})
+        self.assertEqual(found, ["ADVISORY lists 'DCO', but a required check needs it, so a red result blocks the merge: remove it from ADVISORY"])
+
+    def test_advisory_names_compare_exactly(self):
+        found = check.problems(workflows(**dco()), REQUIRED, {"dco"})
+        self.assertEqual(found, ["ADVISORY lists 'dco', which no job that runs on every pull request reports", DCO_UNNEEDED])
+
+    def test_one_stale_name_of_two_is_named(self):
+        found = check.problems(workflows(**dco()), REQUIRED, {"DCO", "Contract"})
+        self.assertEqual(found, ["ADVISORY lists 'Contract', which no job that runs on every pull request reports"])
+
+    def test_each_matrix_name_of_an_advisory_job_is_listed_on_its_own(self):
+        more = {"strategy": {"matrix": {"part": ["a", "b"]}}}
+        wfs = workflows(**{"dco.yml": {True: {"pull_request": None}, "jobs": {"dco": job("DCO (${{ matrix.part }})", **more)}}})
+        self.assertEqual(check.problems(wfs, REQUIRED, {"DCO (a)", "DCO (b)"}), [])
+        self.assertEqual(check.problems(wfs, REQUIRED, {"DCO (a)"}),
+                         ["dco.yml: 'DCO (b)' runs on every pull request, but no required check needs it"])
+
+    def test_the_list_is_the_dco_check(self):
+        # Decision (ix), recorded by recommendation: the advisory jobs are
+        # named here, and a name leaves when the ruleset requires it.
+        self.assertEqual(check.ADVISORY, frozenset({"DCO"}))
+
+    def test_this_repository_s_dco_job_runs_on_every_pr_and_is_advisory(self):
+        real = check.read_workflows(HERE.parent)
+        names = {n for file, _, ns in check.every_pr_jobs(real) if file == "dco.yml" for n in (ns or [])}
+        self.assertEqual(names, {"DCO"})
+        self.assertEqual([f for f in check.problems(real, [], check.ADVISORY) if "'DCO'" in f], [])
+
+    def test_main_applies_the_list(self):
+        real = check.read_workflows(HERE.parent)
+        required = sorted({n for _, _, ns in check.every_pr_jobs(real) for n in (ns or [])} - check.ADVISORY)
+        rules = [{"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": c} for c in required + ["license/cla", "CodeQL"]]}}]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp, "rules.json")
+            path.write_text(json.dumps(rules), encoding="utf-8")
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = check.main(["check_required_checks.py", str(path)])
+        self.assertEqual(rc, 0, err.getvalue())
 
 
 class Repository(unittest.TestCase):

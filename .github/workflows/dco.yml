@@ -1,0 +1,68 @@
+name: DCO
+
+# Every commit of a pull request carries a Developer Certificate of Origin
+# sign-off (CONTRIBUTING.md, "Signing off commits"). scripts/check_dco.py
+# holds the rule: a `Signed-off-by:` line naming the author's email, which
+# must be a GitHub noreply address; or a verified commit authored and
+# committed by the repository owner; or a verified commit by a GitHub Bot
+# account.
+#
+# Advisory for now: the main ruleset does not require `DCO`, and
+# `license/cla` stays required. scripts/check_required_checks.py lists the
+# job in ADVISORY, so a job that runs on every pull request without being
+# required is allowed for it. The repository owner decides when `DCO`
+# replaces `license/cla`; that change removes it from ADVISORY.
+#
+# A workflow of its own, not a job of ci.yml: "CI success" needs every job
+# of ci.yml (scripts/ci_success.py), so a job there would be required at once.
+#
+# GitHub's commit API is asked once per commit, because the author's
+# account type and the signature verdict are not in git; that endpoint
+# needs only `contents: read`.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dco-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dco:
+    name: DCO
+    runs-on: ubuntu-24.04
+    # A few API calls per commit; this bounds a hang.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          # The whole history, so base..head excludes everything main has.
+          fetch-depth: 0
+
+      - name: Every commit is signed off
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          for v in "$BASE_SHA" "$HEAD_SHA"; do
+            if ! printf '%s\n' "$v" | grep -qxE '[0-9a-f]{40}'; then
+              echo "::error::The event carries no usable commit SHA, so nothing was checked."
+              exit 1
+            fi
+          done
+          dir="$RUNNER_TEMP/dco"
+          mkdir -p "$dir"
+          # Not a process substitution: a failed rev-list must end the step.
+          git rev-list --reverse "$BASE_SHA..$HEAD_SHA" > "$dir/shas"
+          : > "$dir/commits.json"
+          while IFS= read -r sha; do
+            scripts/retry.sh gh api "repos/$REPO/commits/$sha" --jq '[.]' >> "$dir/commits.json"
+          done < "$dir/shas"
+          python3 -I scripts/check_dco.py --owner "$OWNER" "$dir/commits.json"

@@ -551,6 +551,10 @@ jobs:
           python3 -I scripts/check_test_names.py
       - name: The rule for AI attribution and personal data
         run: python3 -I scripts/test_scan_forbidden.py
+      # The rule the advisory DCO job (dco.yml) and the commit-msg
+      # warning apply to a pull request's sign-offs.
+      - name: The DCO sign-off rule
+        run: python3 -I scripts/test_check_dco.py
       # The step of each CodeQL Analyze job that fails it when code
       # scanning did not process its results or a pull request adds an alert.
       - name: The CodeQL gate of pull requests

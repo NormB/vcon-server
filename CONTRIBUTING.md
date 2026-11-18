@@ -156,6 +156,66 @@ The check covers crates. For npm and pip packages, GitHub Actions and
 container images, a security fix inside the 14 days is stated in the pull
 request with the advisory's id.
 
+## Signing off commits
+
+**Purpose:** each commit carries a Developer Certificate of Origin
+sign-off, a `Signed-off-by:` line that states you have the right to submit
+it under the project's licenses (<https://developercertificate.org/>). The
+`DCO` check reads every commit of a pull request. While the project
+switches from the Contributor License Agreement, both apply: sign the
+[agreement](#contributor-license-agreement) once and sign off each commit.
+`DCO` is advisory today: the `main` branch does not require it, but a red
+`DCO` still holds up a merge.
+
+**Prerequisites:**
+
+- GitHub's "Keep my email addresses private" turned on, under Settings,
+  Emails. GitHub then shows your noreply address, of the form
+  `<ID>+<login>@users.noreply.github.com`. A sign-off can name only that
+  address: any other address in a commit message is personal data, which
+  the commit hook and CI refuse.
+- The signing setup of [Your first change](#your-first-change), step 3, with
+  the same address in the allowed signers line.
+- Nothing changes on any other system.
+
+**Steps:**
+
+1. Use the noreply address for your commits in this clone:
+
+   ```sh
+   git config user.email '<ID>+<login>@users.noreply.github.com'
+   ```
+
+2. Commit with `-s`, which adds `Signed-off-by: <user.name> <user.email>`:
+
+   ```sh
+   git commit -s
+   ```
+
+3. Commits made before, on your branch, get the line and the address
+   again, each signed again:
+
+   ```sh
+   git rebase --exec 'git commit --amend --no-edit --reset-author -s' origin/main
+   ```
+
+4. Push the branch to your fork.
+
+**Verify:** `git log -1 --format=%B` ends with the `Signed-off-by:` line;
+the commit hook printed no `commit-msg: warning:` line; on the pull
+request, `DCO` is green.
+
+**Troubleshoot:** `DCO` prints one line per commit, and the commit hook the
+same rule as a warning.
+
+| Message | Fix |
+|---|---|
+| `no Signed-off-by line` | Step 3, or `git commit --amend --no-edit -s` for the last commit only. |
+| `no Signed-off-by line names the author email ... with a name` | The line names another address than the commit's author, or no name: set `user.name` and `user.email`, then step 3. |
+| `the author email is not a GitHub noreply address` | Step 1, then step 3: `--reset-author` puts the new address on each commit. |
+| `<commit message>: email address:` from the commit hook | The sign-off names a real address; use the noreply address (step 1). |
+| `DCO: cannot read ...; nothing was checked` | GitHub's API did not answer; run the job again. |
+
 ## Contributor License Agreement
 
 Sign the vcon-server [Contributor License Agreement](CLA.md) before your first

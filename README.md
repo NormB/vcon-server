@@ -201,7 +201,9 @@ and the doc tests with
 `scripts/cc-lld.sh` with the toolchain's lld), the same for the fuzz package, the
 tests of the scripts, and `scripts/check_package.py`, which checks what each
 crate would publish. `.githooks/commit-msg` runs the same scan over the commit
-message. Before each push, `.githooks/pre-push` refuses any outgoing commit
+message, and warns, without refusing, when it has no DCO sign-off
+(`scripts/check_dco.py`, see
+[Signing off commits](CONTRIBUTING.md#signing-off-commits)). Before each push, `.githooks/pre-push` refuses any outgoing commit
 that has no good signature from an allowed signer, whose author or committer
 is not the pusher's configured name and email, or whose message
 `scripts/scan-commit-messages.sh` refuses. The

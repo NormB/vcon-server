@@ -57,6 +57,37 @@ RESERVED_DOMAINS = ("example.com", "example.net", "example.org")
 SERVICE_ADDRESSES = ("support@github.com",)
 RESERVED_TLDS = (".example", ".invalid", ".test", ".localhost")
 
+# GitHub's private commit address: `<ID>+<login>@users.noreply.github.com`,
+# or `<login>@users.noreply.github.com` for an older account; a bot's login
+# ends in `[bot]`. A login is letters, digits and single inner hyphens, at most
+# 39 characters. It is GitHub's alias, not a person's address, so a
+# contributor's DCO sign-off can name it (CONTRIBUTING.md, "Signing off
+# commits"): on a Signed-off-by line of a commit message only, and only as
+# the whole address. scripts/check_dco.py reads the same rule.
+GITHUB_NOREPLY = re.compile(
+    r"(?:[0-9]+\+)?[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?(?:\[bot\])?@users\.noreply\.github\.com",
+    re.IGNORECASE,
+)
+COMMIT_MESSAGE = "<commit message>"
+NOREPLY_SIGN_OFF = re.compile(
+    r"signed-off-by:[ \t]*[^<\r\n]*?[ \t]*<(" + GITHUB_NOREPLY.pattern + r")>[ \t]*\r?",
+    re.IGNORECASE,
+)
+
+
+def is_noreply(address):
+    """Whether `address`, whole, is a GitHub noreply address."""
+    return GITHUB_NOREPLY.fullmatch(address) is not None
+
+
+def allowed_address_span(path, text):
+    """Where the one address a line may hold is: the noreply address of a
+    commit message line that is a whole Signed-off-by line; else None."""
+    if path != COMMIT_MESSAGE:
+        return None
+    m = NOREPLY_SIGN_OFF.fullmatch(text)
+    return m.span(1) if m else None
+
 PHONE_NANP = re.compile(r"(?<![\d.])(?:\+?1[\s.-]?)?\(?([2-9]\d{2})\)?[\s.-](\d{3})[\s.-](\d{4})(?![\d.])")
 PHONE_E164 = re.compile(r"(?<![\w+])\+([1-9]\d{7,14})\b")
 
@@ -85,7 +116,10 @@ def reserved_phone(exchange, line):
 
 
 def personal_data(text, path=""):
+    allowed = allowed_address_span(path, text)
     for m in EMAIL.finditer(text):
+        if m.span() == allowed:
+            continue
         if not reserved_domain(m.group(1)) and m.group(0).lower() not in SERVICE_ADDRESSES:
             yield "email address", m.group(0)
     for m in PHONE_NANP.finditer(text):

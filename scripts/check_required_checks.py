@@ -13,7 +13,15 @@
    CodeQL and OSV jobs ran on every PR without being required.
 
 Contexts that no workflow reports (the CLA assistant's "license/cla") are
-named in EXTERNAL. "CodeQL" is code scanning's own check-run (app
+named in EXTERNAL.
+
+ADVISORY names the checks that run on every pull request on purpose
+without being required: `DCO` (.github/workflows/dco.yml) until the
+repository owner requires it in place of `license/cla`. A name there is
+refused when the ruleset requires it, when a required job needs it (it is
+then not advisory), and when no job that runs on every pull request
+reports it, so the list holds no stale name and the change that requires
+a check also takes it off the list. "CodeQL" is code scanning's own check-run (app
 github-advanced-security), not a job: it reports on a pull request once a
 CodeQL analysis of it is uploaded, and fails on a new alert in the code the
 pull request changes, while the "Analyze (...)" jobs pass whatever they
@@ -34,6 +42,7 @@ import re
 import sys
 
 EXTERNAL = {"license/cla"}
+ADVISORY = frozenset({"DCO"})
 CODE_SCANNING = "CodeQL"
 ANALYZE = "github/codeql-action/analyze@"
 NO_UPLOAD = {"never", "false"}
@@ -115,7 +124,10 @@ def every_pr_jobs(workflows):
     return out
 
 
-def problems(workflows, required):
+def problems(workflows, required, advisory=frozenset()):
+    """Each problem of the workflows against the `required` contexts, with
+    the checks of `advisory` allowed to run unrequired (main passes
+    ADVISORY; a test passes its own)."""
     found = []
     every = every_pr_jobs(workflows)
     reported = {n for _, _, ns in every for n in (ns or [])}
@@ -141,6 +153,12 @@ def problems(workflows, required):
         found.append(f"a workflow that runs on every pull request uploads a CodeQL analysis, but the ruleset does not require '{CODE_SCANNING}', the check that fails on a new alert")
 
     required_set = set(required)
+    gated_names = set()
+    for name in sorted(advisory):
+        if name in required_set:
+            found.append(f"the ruleset requires '{name}', which ADVISORY in scripts/check_required_checks.py still lists: remove it from ADVISORY")
+        elif name not in reported:
+            found.append(f"ADVISORY lists '{name}', which no job that runs on every pull request reports")
     for file, wf in sorted(workflows.items()):
         if not on_every_pr(wf or {}):
             continue
@@ -156,10 +174,13 @@ def problems(workflows, required):
         for job_id, job in jobs.items():
             ns = names(job_id, job or {})
             if job_id in gated:
+                gated_names.update(ns or [])
                 continue
             for n in ns or [str((job or {}).get("name", job_id))]:
-                if n not in required_set:
+                if n not in required_set and n not in advisory:
                     found.append(f"{file}: '{n}' runs on every pull request, but no required check needs it")
+    for name in sorted(advisory & gated_names - required_set):
+        found.append(f"ADVISORY lists '{name}', but a required check needs it, so a red result blocks the merge: remove it from ADVISORY")
     return found
 
 
@@ -192,7 +213,7 @@ def main(argv):
     except (ValueError, KeyError, AttributeError) as e:
         print(f"check_required_checks: {argv[1]}: {e}", file=sys.stderr)
         return 1
-    found = problems(read_workflows(pathlib.Path(__file__).resolve().parent.parent), required)
+    found = problems(read_workflows(pathlib.Path(__file__).resolve().parent.parent), required, ADVISORY)
     for problem in found:
         print(f"check_required_checks: {problem}", file=sys.stderr)
     if found:

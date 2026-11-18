@@ -330,7 +330,12 @@ git config core.hooksPath .githooks
   path, in the manifest or the lock file; a relative link in the README; and
   anything the scan above refuses.
 - **commit-msg** refuses the same in the message, every line of it,
-  including lines that start with `#`, which `git commit -m` keeps.
+  including lines that start with `#`, which `git commit -m` keeps. The
+  one address it lets through is a GitHub noreply address on a
+  `Signed-off-by:` line. It then warns, and never refuses, when the
+  message has no DCO sign-off that the advisory `DCO` check would accept
+  (`scripts/check_dco.py`; see
+  [Signing off commits](https://github.com/NormB/vcon-server/blob/main/CONTRIBUTING.md#signing-off-commits)).
 - **pre-push** refuses any outgoing commit that is not signed by an allowed
   signer, whose author and committer are not the pusher's configured
   identity, or whose whole message the same scan refuses

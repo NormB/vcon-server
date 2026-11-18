@@ -372,5 +372,66 @@ class StandardInputAsBytes(unittest.TestCase):
         self.assertIsNone(TEXT_STDIN.search("sys.stdin_bytes = 1"))
 
 
+# A GitHub noreply address, assembled at run time like every sample here:
+# this file is scanned too, as a tracked file, where no such address passes.
+AT = "@"
+NOREPLY = "users.noreply.github.com"
+
+
+def emails(path, line):
+    return [hit for reason, hit in scan_forbidden.scan(path, line) if reason == "email address"]
+
+
+class SignOffs(unittest.TestCase):
+    """A Signed-off-by line of a commit message may name a GitHub noreply
+    address (CONTRIBUTING.md, "Signing off commits"); every other address
+    stays personal data, there and everywhere else."""
+
+    def test_a_noreply_sign_off_in_a_message_passes(self):
+        self.assertEqual(message(f"Fix it\n\nSigned-off-by: A Contributor <12345+contributor{AT}{NOREPLY}>"), [])
+
+    def test_a_noreply_sign_off_without_an_id_passes(self):
+        self.assertEqual(message(f"Signed-off-by: A Contributor <contributor{AT}{NOREPLY}>"), [])
+
+    def test_the_key_and_the_domain_compare_without_case(self):
+        self.assertEqual(message(f"signed-off-by: A <12345+a{AT}Users.NoReply.GitHub.com>"), [])
+
+    def test_a_sign_off_with_a_real_address_is_refused(self):
+        found = emails("<commit message>", f"Signed-off-by: A <someone{AT}gm" "ail.com>")
+        self.assertEqual(found, [f"someone{AT}gmail.com"])
+
+    def test_a_noreply_address_outside_a_sign_off_is_refused(self):
+        found = emails("<commit message>", f"Ask 12345+contributor{AT}{NOREPLY} about it")
+        self.assertEqual(found, [f"12345+contributor{AT}{NOREPLY}"])
+
+    def test_a_noreply_sign_off_in_a_tracked_file_is_refused(self):
+        found = emails("CONTRIBUTING.md", f"Signed-off-by: A <12345+contributor{AT}{NOREPLY}>")
+        self.assertEqual(found, [f"12345+contributor{AT}{NOREPLY}"])
+
+    def test_a_second_address_on_the_sign_off_line_is_refused(self):
+        line = f"Signed-off-by: A <12345+a{AT}{NOREPLY}> and b{AT}gm" "ail.com"
+        self.assertEqual(len(emails("<commit message>", line)), 2)
+
+    def test_a_real_address_in_the_name_of_a_noreply_sign_off_is_refused(self):
+        line = f"Signed-off-by: b{AT}gm" "ail.com" f" <12345+a{AT}{NOREPLY}>"
+        self.assertEqual(emails("<commit message>", line), [f"b{AT}gmail.com"])
+
+    def test_a_lookalike_domain_is_refused(self):
+        found = emails("<commit message>", f"Signed-off-by: A <a{AT}{NOREPLY}.evil.co>")
+        self.assertEqual(len(found), 1)
+
+    def test_a_phone_number_in_the_name_is_still_refused(self):
+        found = list(scan_forbidden.scan("<commit message>", f"Signed-off-by: A 212-867-" "5309" f" <12345+a{AT}{NOREPLY}>"))
+        self.assertEqual([reason for reason, _ in found], ["phone number"])
+
+    def test_a_sign_off_inside_a_line_is_refused(self):
+        self.assertEqual(len(emails("<commit message>", f"See Signed-off-by: A <12345+a{AT}{NOREPLY}>")), 1)
+
+    def test_the_noreply_rule_reads_whole_addresses(self):
+        self.assertTrue(scan_forbidden.is_noreply(f"49699333+dependabot[bot]{AT}{NOREPLY}"))
+        self.assertFalse(scan_forbidden.is_noreply(f"a{AT}{NOREPLY}.example.com"))
+        self.assertFalse(scan_forbidden.is_noreply(f"-a{AT}{NOREPLY}"))
+
+
 if __name__ == "__main__":
     unittest.main()

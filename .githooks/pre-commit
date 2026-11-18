@@ -40,6 +40,7 @@ git checkout-index -a -f --prefix="$staged/"
 cd "$staged"
 # Every path .bestpractices.json links to on main still exists.
 python3 -I scripts/test_scan_forbidden.py
+python3 -I scripts/test_check_dco.py
 python3 -I scripts/test_workflow_downloads.py
 python3 -I scripts/test_dnf_install.py
 python3 -I scripts/test_apt_mirror_setup.py
