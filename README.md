@@ -162,7 +162,8 @@ before using it.
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) first. Every contributor signs the
 [Contributor License Agreement](CLA.md) once, before a first pull request
-merges.
+merges. [GOVERNANCE.md](GOVERNANCE.md) says who decides and how, and
+[MAINTAINERS.md](MAINTAINERS.md) lists the maintainers.
 
 Enable the repository's git hooks once per clone:
 

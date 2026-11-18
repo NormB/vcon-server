@@ -9,7 +9,8 @@ says what the server guarantees; a change must keep every guarantee there.
 
 Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
 [GOVERNANCE.md](GOVERNANCE.md) says who decides and what a contributor and the
-maintainer each do.
+maintainer each do; [MAINTAINERS.md](MAINTAINERS.md) lists the maintainers.
+For a first pull request, see [Your first change](#your-first-change).
 
 Each change comes with the test that encodes it, written first and seen
 failing for the right reason. Test data uses reserved values only:
@@ -40,6 +41,72 @@ Send it as a pull request against `main`. CI runs the same checks as the
 hooks on every pull request. The check `CI success` passes only when every
 job of `.github/workflows/ci.yml` succeeded, and a pull request merges only
 after it passes.
+
+## Your first change
+
+**Purpose:** a first pull request, from a starter task to a merge.
+
+**Prerequisites:**
+
+- A GitHub account and git.
+- Rust: rustup installs the toolchain that `rust-toolchain.toml` names on
+  the first build. Python 3 runs the script checks of the commit hook.
+- An SSH key registered on GitHub as a signing key. The `main` branch
+  refuses a commit without a signature that GitHub verifies, and the
+  pre-push hook refuses one that git cannot verify.
+- Nothing changes on any other system.
+
+**Steps:**
+
+1. Pick an issue opened from the
+   [starter-task form](.github/ISSUE_TEMPLATE/starter_task.yml), or open
+   one with it at <https://github.com/NormB/vcon-server/issues/new?template=starter_task.yml>.
+   Say on the issue that you are taking it.
+2. Fork the repository, clone your fork, and turn on the hooks:
+
+   ```sh
+   git config core.hooksPath .githooks
+   ```
+
+3. Sign your commits with your SSH key, and let git verify them:
+
+   ```sh
+   git config gpg.format ssh
+   git config user.signingkey ~/.ssh/id_ed25519.pub
+   git config commit.gpgsign true
+   git config gpg.ssh.allowedSignersFile ~/.config/git/allowed_signers
+   ```
+
+   The file `~/.config/git/allowed_signers` holds one line: your
+   `user.email`, a space, and the contents of `~/.ssh/id_ed25519.pub`.
+4. Make a branch from `main`. Write the test the issue's "How to test it
+   first" describes, run it, and read the failure: it must fail because the
+   behavior is missing, not because the test is wrong.
+5. Make the change, run the test until it passes, and commit. The commit
+   hook runs the same checks as CI.
+6. Push the branch to your fork and open a pull request against `main` that
+   names the issue. Sign the
+   [Contributor License Agreement](#contributor-license-agreement) when the
+   bot asks.
+
+**Verify:** `git log -1 --show-signature` reports a good signature; on the
+pull request, `CI success` and `license/cla` are green.
+
+**Troubleshoot:**
+
+- `pre-push: refused: <sha> has no good signature from an allowed signer`:
+  step 3 is not complete. Check the allowed signers line, then sign the
+  branch's commits again with
+  `git rebase --exec 'git commit --amend --no-edit -S' origin/main`.
+- The pre-push hook refuses a commit whose author or committer is not your
+  configured `user.name` and `user.email`: set them, and sign again as
+  above.
+- The commit hook refuses personal data: test data uses reserved values only
+  (`example.com` addresses, 555-01xx numbers, RFC 5737 and RFC 3849
+  addresses).
+- A CI job fails: its log names the gate. The
+  [development page](https://vcon-server.com/docs/development/#gates)
+  describes each one and how to run it before a push.
 
 ## Dependency versions
 

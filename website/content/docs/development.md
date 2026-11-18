@@ -1244,7 +1244,15 @@ local path that does not exist or leaves the repository.
 - **A change:** send a pull request against `main`. Read
   [CONTRIBUTING.md](https://github.com/NormB/vcon-server/blob/main/CONTRIBUTING.md)
   first, and sign the [Contributor License Agreement](@/cla.md) before
-  your first pull request merges.
+  your first pull request merges. Its
+  [Your first change](https://github.com/NormB/vcon-server/blob/main/CONTRIBUTING.md#your-first-change)
+  takes a first pull request from a starter task to a merge.
+- **Who decides:**
+  [GOVERNANCE.md](https://github.com/NormB/vcon-server/blob/main/GOVERNANCE.md)
+  sets out the roles, how a contributor becomes a committer and how the
+  project decides;
+  [MAINTAINERS.md](https://github.com/NormB/vcon-server/blob/main/MAINTAINERS.md)
+  lists the maintainers.
 - **A new dependency or version:** take it only once that version has been
   public for 14 days. Dependabot waits the same 14 days (`cooldown` in
   `.github/dependabot.yml`), and `scripts/check_dependabot.py` fails on an

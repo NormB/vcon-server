@@ -1,0 +1,4 @@
+# GitHub asks these accounts to review each pull request that changes a
+# matching path. The last matching line wins. MAINTAINERS.md lists the same
+# accounts; crates/vcon-server/tests/governance_docs.rs holds the two equal.
+* @NormB

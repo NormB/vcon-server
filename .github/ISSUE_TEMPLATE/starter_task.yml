@@ -1,0 +1,41 @@
+name: Starter task
+description: A small, self-contained change for a first contribution.
+title: "Starter task: "
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        A starter task is small enough for a first pull request. Read
+        "Your first change" in CONTRIBUTING.md before you start. Use
+        reserved test data only (example.com addresses, 555-01xx numbers,
+        RFC 5737 and RFC 3849 addresses).
+  - type: textarea
+    id: what
+    attributes:
+      label: What to change
+      description: The behavior or the text that changes, in one or two sentences.
+    validations:
+      required: true
+  - type: textarea
+    id: where
+    attributes:
+      label: Where in the code
+      description: The files, functions or pages the change touches.
+    validations:
+      required: true
+  - type: textarea
+    id: test-first
+    attributes:
+      label: How to test it first
+      description: >-
+        The test that encodes the change, and how to run it so that it fails
+        before the change for the right reason.
+    validations:
+      required: true
+  - type: textarea
+    id: done-when
+    attributes:
+      label: Done when
+      description: What is true when the task is complete, such as the test passing and CI green.
+    validations:
+      required: true
