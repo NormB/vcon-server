@@ -2372,7 +2372,15 @@ mod live {
                 .arg(format!("https://localhost:{}{path}", self.port))
                 .output()
                 .expect("runs curl");
-            assert!(out.status.success(), "GET {path}: {out:?}\n{}", self.log());
+            // The message does not name `path`: it holds a vCon's uuid, a
+            // value the catalog seals, which is not written out
+            // (rust/cleartext-logging; scripts/check_style.py uuid-in-message
+            // sees a uuid only under its own name).
+            assert!(
+                out.status.success(),
+                "GET: curl failed: {out:?}\n{}",
+                self.log()
+            );
             let status = String::from_utf8_lossy(&out.stdout)
                 .parse()
                 .expect("a status");
