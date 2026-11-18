@@ -9,6 +9,7 @@ import pathlib
 import subprocess
 import sys
 import unittest
+import unittest.mock
 
 # Loading a script by path would otherwise leave a __pycache__ beside it.
 sys.dont_write_bytecode = True
@@ -193,6 +194,70 @@ class Command(unittest.TestCase):
     def test_an_unknown_command_answers_2(self):
         out = subprocess.run([sys.executable, "-I", str(HERE / "hook_tests.py"), "nope"], capture_output=True, text=True, timeout=60, check=False)
         self.assertEqual(out.returncode, 2)
+
+
+class NotUtf8Paths(unittest.TestCase):
+    """`git log --name-only` prints a path's bytes as they are when
+    core.quotePath is false. A path that is not UTF-8 crashed the rule, and
+    the crash exited 1, which pre-push reads as "not needed": the hook
+    tests were skipped for a push that needed them."""
+
+    def run_bytes(self, stdin):
+        args = [sys.executable, "-I", str(HERE / "hook_tests.py"), "needed"]
+        return subprocess.run(args, input=stdin, capture_output=True, timeout=60, check=False)
+
+    def test_a_push_with_a_path_that_is_not_utf8_still_needs_them(self):
+        out = self.run_bytes(b"caf\xe9.txt\nscripts/test-hooks.sh\n")
+        self.assertNotIn(b"Traceback", out.stderr, out.stderr)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(out.stdout, b"hook tests: needed: the push changes scripts/test-hooks.sh, which they read\n")
+
+    def test_a_path_that_is_not_utf8_under_a_read_directory_needs_them(self):
+        out = self.run_bytes(b"scripts/caf\xe9.py\n")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(out.stdout, b"hook tests: needed: the push changes scripts/caf\\udce9.py, which they read\n")
+
+    def test_only_a_path_that_is_not_utf8_and_not_read_answers_1(self):
+        out = self.run_bytes(b"crates/caf\xe9.rs\n")
+        self.assertNotIn(b"Traceback", out.stderr, out.stderr)
+        self.assertEqual(out.returncode, 1, out.stderr)
+
+    def test_a_path_in_utf8_is_named_as_it_is(self):
+        out = self.run_bytes("scripts/café.py\n".encode())
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(out.stdout, "hook tests: needed: the push changes scripts/café.py, which they read\n".encode())
+
+    def test_the_paths_are_read_as_bytes_with_each_bad_byte_kept(self):
+        import io
+
+        self.assertEqual(ht.changed_paths(io.BytesIO(b"a\xff\nb\n")), ["a\udcff", "b"])
+
+    def test_a_hook_test_that_is_not_utf8_answers_2_not_1(self):
+        # read_text raises UnicodeDecodeError, which is no OSError: before,
+        # it was an uncaught exception, exit 1, "not needed".
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            (pathlib.Path(d) / "scripts").mkdir()
+            for name in ht.TESTS:
+                (pathlib.Path(d) / name).write_bytes(b'cp "$src/caf\xe9" .\n')
+            out = subprocess.run(
+                [sys.executable, "-I", str(HERE / "hook_tests.py"), "needed", "--root", d],
+                input=b"scripts/a.py\n", capture_output=True, timeout=60, check=False,
+            )
+        self.assertEqual(out.returncode, 2, out.stderr)
+        self.assertIn(b"hook_tests: cannot tell: ", out.stderr)
+
+    def test_a_rule_that_fails_answers_2_not_1(self):
+        import io
+
+        def broken(_root):
+            raise RuntimeError("no such thing")
+
+        err = io.StringIO()
+        with unittest.mock.patch.object(ht, "tree_read_paths", broken), unittest.mock.patch("sys.stderr", err):
+            self.assertEqual(ht.run(["needed"], io.BytesIO(b"scripts/a.py\n")), 2, "1 would skip the hook tests")
+        self.assertIn("hook_tests: cannot tell: no such thing", err.getvalue())
 
 
 class PushHook(unittest.TestCase):

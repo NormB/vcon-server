@@ -1,7 +1,8 @@
 """Finds text that must never be committed.
 
 Reads lines of the form "<path>\t<text>" on standard input and prints one
-line per finding. Exits 1 if anything was found, else 0. The same rules
+line per finding. Exits 1 if anything was found, else 0, and 2 if it could
+not scan. A line that is not UTF-8 is scanned too (see `decode`). The same rules
 scan staged lines, staged paths and commit messages, so they live only here.
 
 Patterns that name forbidden words are written so that this file does not
@@ -134,15 +135,53 @@ def scan(path, text):
                 yield reason, m.group(0)
 
 
-def main():
+def decode(raw):
+    """The text of one input line, and whether it was UTF-8. A file git
+    takes for text can hold bytes that are not UTF-8 (another encoding, or a
+    binary file with no NUL byte). Each such byte reads as U+FFFD, which is
+    not a word character, so a word beside it is still found."""
+    try:
+        return raw.decode("utf-8"), True
+    except UnicodeDecodeError:
+        return raw.decode("utf-8", errors="replace"), False
+
+
+def main(stdin, out, err):
+    """Scans the "<path>\\t<text>" lines of the byte stream `stdin`; prints
+    each finding on `out` and, once per path, a note on `err` for a line
+    that is not UTF-8. 1 if anything was found, else 0."""
     found = False
-    for raw in sys.stdin:
-        path, _, text = raw.rstrip("\n").partition("\t")
+    noted = set()
+    for raw in stdin:
+        line, utf8 = decode(raw.rstrip(b"\n"))
+        path, _, text = line.partition("\t")
+        if not utf8 and path not in noted:
+            noted.add(path)
+            print(f"{path}: not UTF-8: scanned with U+FFFD for each byte that is not", file=err)
         for reason, hit in scan(path, text):
             found = True
-            print(f"{path}: {reason}: {hit!r}")
+            print(f"{path}: {reason}: {hit!r}", file=out)
     return 1 if found else 0
 
 
+def run(stdin, out, err):
+    """main, with a scan that cannot run answered 2: an exit of 1 would read
+    as a finding, and no scan took place."""
+    try:
+        return main(stdin, out, err)
+    except Exception as error:  # noqa: BLE001 - any failure is "no verdict"
+        print(f"scan_forbidden: cannot scan: {error}", file=err)
+        return 2
+
+
+def utf8_out(*streams):
+    """Each text stream writes UTF-8 whatever the locale, and a character
+    UTF-8 cannot hold (a lone surrogate) as an escape: no finding fails to
+    print."""
+    for stream in streams:
+        stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    utf8_out(sys.stdout, sys.stderr)
+    sys.exit(run(sys.stdin.buffer, sys.stdout, sys.stderr))

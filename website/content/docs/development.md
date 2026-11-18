@@ -399,7 +399,14 @@ A push needs:
   `#[cfg(all(test, ...))]` directly above it, or sits in a file that is
   itself test-only). A file with code beside its test module, a module
   declared with `#[path]`, and a file whose declaration cannot be found or
-  read still count;
+  read still count. A crate's readme (the file its `Cargo.toml` names in
+  `readme`) does not count unless a build reads it: an `include!`,
+  `include_str!` or `include_bytes!` in the crate sources names it (or names
+  a path that is not one plain string), or the crate's build script names
+  it. `crates/vcon/README.md` counts, since `crates/vcon/src/lib.rs`
+  includes it as the crate's documentation; `crates/vcon-server/README.md`
+  does not. The package check (`scripts/check_package.py`) still reads
+  every readme;
 - every scenario when the push changes the runner: `scripts/docs_test.py`
   or one of the files it reads, its pinned downloads, the script that
   fetches them and its list of apt mirrors.
@@ -773,6 +780,21 @@ job and the commit hook check it (see
 [adding a GitHub Action](#adding-a-github-action)), and for release assets,
 `scripts/check_workflow_downloads.py` (see
 [pinned tool downloads](#pinned-tool-downloads)).
+
+`.github/workflows/codeql.yml` runs one Analyze job per language
+(`actions`, `javascript-typescript`, `rust`) on every pull request, every
+push to `main` and each Tuesday, and uploads the results to code scanning.
+The analyze action waits about 2.5 minutes for code scanning to process
+them and passes when that wait ends. So each job ends with
+`scripts/codeql_pr_gate.py check`. It fails the job when code scanning
+does not report the upload processed within 15 minutes, and, on a pull
+request, when the pull request's merge commit has an open CodeQL alert of
+the job's language that `main` does not have. The refusal names each
+alert, its rule, file, line and link. On #224 (2026-11-16) the JavaScript
+upload was not processed, the pull request's `CodeQL` check concluded
+neutral, which a required check accepts, and alert 77 opened on `main`
+after the merge. `scripts/test_codeql_pr_gate.py` tests the step without
+the GitHub API.
 
 The release build and the reproducible-build check run in an AlmaLinux 9
 container, which has neither git nor a C compiler. Every `dnf install`

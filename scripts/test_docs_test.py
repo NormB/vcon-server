@@ -8,6 +8,7 @@ Run: python3 -I scripts/test_docs_test.py
 """
 
 import os
+import pathlib
 import re
 import shutil
 import tempfile
@@ -23,6 +24,12 @@ import unittest.mock
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import docs_test as dt  # noqa: E402
+
+
+def stdin_of(data):
+    """A standard input that holds `data` (text is written as UTF-8), with
+    the byte stream under it that the commands read."""
+    return io.TextIOWrapper(io.BytesIO(data.encode() if isinstance(data, str) else data), encoding="utf-8")
 
 PAGE = """+++
 title = "A page"
@@ -2938,7 +2945,7 @@ class Push(unittest.TestCase):
 
     def test_the_command_reads_the_changed_paths_on_stdin(self):
         with unittest.mock.patch.object(dt, "push", return_value=0) as push, \
-                unittest.mock.patch("sys.stdin", io.StringIO("README.md\nCargo.lock\n")):
+                unittest.mock.patch("sys.stdin", stdin_of("README.md\nCargo.lock\n")):
             self.assertEqual(dt.main(["push", "abc123"]), 0, "its code")
         self.assertEqual(push.call_args.args, (["abc123"], ["README.md", "Cargo.lock"]), "shas and paths")
 
@@ -3023,6 +3030,9 @@ class FakeGit:
         return [p for sha in self._after(a, b) for p in self.paths[sha]]
 
     def show(self, sha, path):
+        return None
+
+    def includes(self, sha):
         return None
 
     def is_ancestor(self, a, b):
@@ -3142,7 +3152,7 @@ class Check(unittest.TestCase):
     def test_the_command_reads_the_pushed_refs_on_stdin(self):
         lines = "refs/heads/a abc123 refs/heads/a 000\nrefs/heads/b def456 refs/heads/main m0\n"
         with unittest.mock.patch.object(dt, "check", return_value=1) as check, \
-                unittest.mock.patch("sys.stdin", io.StringIO(lines)):
+                unittest.mock.patch("sys.stdin", stdin_of(lines)):
             self.assertEqual(dt.main(["check", "--remote", "upstream"]), 1, "its code")
         self.assertEqual(
             check.call_args.args,
@@ -3152,7 +3162,7 @@ class Check(unittest.TestCase):
         self.assertEqual(check.call_args.kwargs["remote"], "upstream", "the remote the hook pushes to")
 
     def test_check_with_no_ref_is_a_usage_error(self):
-        with contextlib.redirect_stderr(io.StringIO()), unittest.mock.patch("sys.stdin", io.StringIO("")):
+        with contextlib.redirect_stderr(io.StringIO()), unittest.mock.patch("sys.stdin", stdin_of("")):
             self.assertEqual(dt.main(["check", "--remote", "origin"]), 2, "it needs the pushed refs")
 
     def test_a_stamp_line_with_spaces_is_read(self):
@@ -3596,12 +3606,12 @@ class CheckRange(unittest.TestCase):
         self.assertIn("docs scenarios: skipped long", out, out)
 
     def test_a_ref_line_with_too_few_fields_is_a_usage_error(self):
-        with contextlib.redirect_stderr(io.StringIO()) as err, unittest.mock.patch("sys.stdin", io.StringIO("refs/heads/a abc123\n")):
+        with contextlib.redirect_stderr(io.StringIO()) as err, unittest.mock.patch("sys.stdin", stdin_of("refs/heads/a abc123\n")):
             self.assertEqual(dt.main(["check", "--remote", "origin"]), 2, "the hook's lines have four fields")
         self.assertIn("refs/heads/a abc123", err.getvalue(), "the line is named")
 
     def test_an_unknown_check_argument_is_a_usage_error(self):
-        with contextlib.redirect_stderr(io.StringIO()), unittest.mock.patch("sys.stdin", io.StringIO("a b c d\n")):
+        with contextlib.redirect_stderr(io.StringIO()), unittest.mock.patch("sys.stdin", stdin_of("a b c d\n")):
             self.assertEqual(dt.main(["check", "abc123"]), 2, "the commits come on stdin now")
 
     def test_blank_ref_lines_are_ignored(self):
@@ -3609,9 +3619,62 @@ class CheckRange(unittest.TestCase):
 
     def test_the_default_remote_is_origin(self):
         with unittest.mock.patch.object(dt, "check", return_value=0) as check, \
-                unittest.mock.patch("sys.stdin", io.StringIO("a b c d\n")):
+                unittest.mock.patch("sys.stdin", stdin_of("a b c d\n")):
             dt.main(["check"])
         self.assertEqual(check.call_args.kwargs["remote"], "origin", "as the hook pushes")
+
+    # Standard input is read as bytes and decoded as git's paths are (UTF-8,
+    # each byte that is not kept as a surrogate escape), so a path or a ref
+    # that is not UTF-8 is no crash.
+    def test_a_ref_that_is_not_utf8_is_read(self):
+        with unittest.mock.patch.object(dt, "check", return_value=0) as check, \
+                unittest.mock.patch("sys.stdin", stdin_of(b"refs/heads/caf\xe9 abc refs/heads/caf\xe9 000\n")):
+            self.assertEqual(dt.main(["check"]), 0, "its code")
+        self.assertEqual(check.call_args.args[0][0].local_ref, "refs/heads/caf\udce9", "the byte, kept")
+
+    def test_a_short_ref_line_that_is_not_utf8_is_a_usage_error_that_names_it(self):
+        with contextlib.redirect_stderr(io.StringIO()) as err, unittest.mock.patch("sys.stdin", stdin_of(b"refs/heads/\xff abc\n")):
+            self.assertEqual(dt.main(["check"]), 2, "a usage error, not a crash")
+        self.assertIn("refs/heads/\udcff abc", err.getvalue(), "the line is named")
+
+    def test_a_changed_path_that_is_not_utf8_is_read(self):
+        with unittest.mock.patch.object(dt, "push", return_value=0) as push, \
+                unittest.mock.patch.object(dt, "test_only_at", return_value=None), \
+                unittest.mock.patch("sys.stdin", stdin_of(b"docs/caf\xe9.md\nCargo.lock\n")):
+            self.assertEqual(dt.main(["push", "abc123"]), 0, "its code")
+        self.assertEqual(push.call_args.args[1], ["docs/caf\udce9.md", "Cargo.lock"], "both paths, in order")
+
+    def test_a_changed_path_in_utf8_is_read_as_it_is(self):
+        with unittest.mock.patch.object(dt, "push", return_value=0) as push, \
+                unittest.mock.patch.object(dt, "test_only_at", return_value=None), \
+                unittest.mock.patch("sys.stdin", stdin_of("docs/café.md\n")):
+            dt.main(["push", "abc123"])
+        self.assertEqual(push.call_args.args[1], ["docs/café.md"], "no escape for UTF-8")
+
+    def test_the_lines_split_where_they_did(self):
+        with unittest.mock.patch("sys.stdin", stdin_of(b"a\r\nb\n\nc")):
+            self.assertEqual(dt.stdin_lines(), ["a", "b", "", "c"], "as str.splitlines")
+
+    def test_the_command_does_not_crash_on_a_ref_that_is_not_utf8(self):
+        done = subprocess.run(
+            [sys.executable, "-I", os.path.join(os.path.dirname(os.path.abspath(__file__)), "docs_test.py"), "check"],
+            input=b"refs/heads/\xff abc\n", capture_output=True, timeout=60, check=False,
+        )
+        self.assertNotIn(b"Traceback", done.stderr, done.stderr)
+        self.assertEqual(done.returncode, 2, done.stderr)
+        self.assertIn(b"refs/heads/\\udcff abc", done.stderr, "the byte is shown, escaped")
+
+    def test_the_command_names_a_ref_that_is_not_utf8_on_stdout(self):
+        # No such commit: check says it cannot read the commits pushed to
+        # the ref, on stdout, with the ref's name.
+        ref = b"refs/heads/a 1111111111111111111111111111111111111111 refs/heads/\xff 0000000000000000000000000000000000000000\n"
+        done = subprocess.run(
+            [sys.executable, "-I", os.path.join(os.path.dirname(os.path.abspath(__file__)), "docs_test.py"), "check"],
+            input=ref, capture_output=True, timeout=60, check=False,
+        )
+        self.assertNotIn(b"Traceback", done.stderr, done.stderr)
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertIn(b"cannot read the commits pushed to refs/heads/\\udcff", done.stdout, done.stdout)
 
     def test_a_new_branch_counts_from_what_the_remote_lacks(self):
         git = FakeGit([("c1", [SRC]), ("c2", [PAGE_C])])
@@ -3923,6 +3986,263 @@ class TestOnlySource(unittest.TestCase):
     def test_a_deep_chain_stops_at_the_crate_root(self):
         tree = {"crates/c/src/lib.rs": "#[cfg(test)]\nmod a;\n", "crates/c/src/a.rs": "mod b;\n", "crates/c/src/a/b.rs": "mod c;\n"}
         self.assertTrue(test_only("crates/c/src/a/b/c.rs", tree), "three levels under a test module")
+
+
+SERVER_README = "crates/vcon-server/README.md"
+LIB_README = "crates/vcon/README.md"
+MANIFESTS = {
+    "crates/vcon-server/Cargo.toml": '[package]\nname = "vcon-server"\nreadme = "README.md"\n',
+    "crates/vcon/Cargo.toml": '[package]\nname = "vcon"\nreadme = "README.md"\n',
+}
+# The include lines of the crates as on main: the library's README is its
+# crate documentation; the server includes SQL, not its README.
+INCLUDES = [
+    ("crates/vcon/src/lib.rs", '#![doc = include_str!("../README.md")]'),
+    ("crates/vcon-server/src/backend/postgres/schema.rs", 'const V1: &str = include_str!("schema_v1.sql");'),
+]
+
+
+def readme(path, tree=None, includes=INCLUDES):
+    tree = MANIFESTS if tree is None else tree
+    return dt.crate_readme(path, tree.get, lambda: includes)
+
+
+def at_readme(tree=None, includes=INCLUDES):
+    """`needed`'s test_only for a commit with `tree` and `includes`."""
+    tree = MANIFESTS if tree is None else tree
+    return dt.test_only_at("c1", lambda sha, path: tree.get(path), lambda sha: includes)
+
+
+def tree_includes(root):
+    """The include lines of the real crates, as Git.includes reads them."""
+    found = []
+    for path in sorted(pathlib.Path(root, "crates").rglob("*.rs")):
+        rel = path.relative_to(root).as_posix()
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if dt.INCLUDE_MACRO.search(line):
+                found.append((rel, line))
+    return found
+
+
+class CrateReadme(unittest.TestCase):
+    """The file a crate's manifest names as its readme is packaged by cargo
+    and read by no build, unless an include macro reads it: a change to it
+    alone runs no scenario (check_package.py still checks the package)."""
+
+    # Success: the server crate's README is not server source.
+    def test_the_server_readme_is_no_server_source(self):
+        self.assertTrue(readme(SERVER_README), "no include reads it")
+
+    def test_a_server_readme_change_needs_no_scenario(self):
+        run, skipped = dt.needed([SERVER_README], FAKES, False, fake_steps, test_only=at_readme())
+        self.assertEqual((run, skipped), ([], []), "nothing a build reads changed")
+
+    def test_a_server_readme_change_beside_a_page_runs_the_pages_scenario_only(self):
+        run, _ = dt.needed([SERVER_README, PAGE_C], FAKES, False, fake_steps, test_only=at_readme())
+        self.assertEqual([n for n, _ in run], ["pages-only"], "the page still needs its scenario")
+
+    def test_a_server_readme_change_beside_server_source_runs_every_scenario(self):
+        run, _ = dt.needed([SERVER_README, SRC], FAKES, False, fake_steps, test_only=at_readme())
+        self.assertEqual([n for n, _ in run], ["one", "two"], "the source still counts")
+
+    def test_push_runs_nothing_for_a_server_readme_change(self):
+        run = FakeRun()
+        code, out, _ = push_of([SERVER_README], run, test_only=at_readme())
+        self.assertEqual(code, 0, out)
+        self.assertEqual(run.calls, [], "no build, no run")
+
+    def test_check_reads_the_manifest_and_the_includes_at_the_tip(self):
+        git = FakeGit([("c1", [SERVER_README])])
+        git.show = lambda sha, path: MANIFESTS.get(path) if sha == "c1" else None
+        git.includes = lambda sha: INCLUDES if sha == "c1" else None
+        code, out = range_check(git, [ref_of("c1")], {}, ci=ci_must_not_be_asked)
+        self.assertEqual(code, 0, out)
+        self.assertIn("docs scenarios: not needed", out, out)
+
+    def test_a_later_server_readme_change_does_not_void_a_stamp(self):
+        git = FakeGit([("c1", [SRC]), ("c2", [SERVER_README])])
+        git.show = lambda sha, path: MANIFESTS.get(path)
+        git.includes = lambda sha: INCLUDES
+        code, out = range_check(git, [ref_of("c2")], {"c1": {"one", "two"}}, ci=ci_must_not_be_asked)
+        self.assertEqual(code, 0, out)
+
+    def test_a_readme_in_a_subdirectory_is_the_one_named(self):
+        tree = {"crates/x/Cargo.toml": '[package]\nname = "x"\nreadme = "docs/README.md"\n'}
+        self.assertTrue(readme("crates/x/docs/README.md", tree), "the manifest names it")
+
+    def test_a_readme_named_with_a_dot_slash_is_the_same_file(self):
+        tree = {"crates/x/Cargo.toml": '[package]\nname = "x"\nreadme = "./README.md"\n'}
+        self.assertTrue(readme("crates/x/README.md", tree), "the path, normalized")
+
+    def test_an_include_of_another_file_does_not_count(self):
+        self.assertTrue(readme(SERVER_README, includes=[("crates/vcon-server/src/a.rs", 'include_str!("notes.md")')]), "notes.md is not it")
+
+    def test_the_library_readme_include_does_not_count_for_the_server(self):
+        self.assertTrue(readme(SERVER_README, includes=INCLUDES[:1]), "crates/vcon's README is another file")
+
+    def test_the_real_server_readme_is_no_server_source(self):
+        root = pathlib.Path(dt.ROOT)
+        read = lambda p: (root / p).read_text(encoding="utf-8") if (root / p).is_file() else None  # noqa: E731
+        self.assertTrue(dt.crate_readme(SERVER_README, read, lambda: tree_includes(root)), "as the tree is")
+
+    def test_git_includes_reads_each_include_line_at_a_commit(self):
+        run = FakeRun({"git grep": (0, 'abc:crates/vcon/src/lib.rs\x003\x00#![doc = include_str!("../README.md")]\n')})
+        self.assertEqual(dt.Git(run=run).includes("abc"), [("crates/vcon/src/lib.rs", '#![doc = include_str!("../README.md")]')])
+
+    def test_git_includes_with_no_match_is_empty(self):
+        self.assertEqual(dt.Git(run=FakeRun({"git grep": (1, "")})).includes("abc"), [], "git grep exits 1: no line")
+
+    def test_git_includes_leaves_out_a_file_that_is_not_rust(self):
+        run = FakeRun({"git grep": (0, 'abc:crates/vcon/notes.md\x001\x00use include_str!("../README.md")\n')})
+        self.assertEqual(dt.Git(run=run).includes("abc"), [], "a page that shows an include is no source")
+
+    def test_both_push_forms_read_the_includes(self):
+        seen = []
+        with unittest.mock.patch.object(dt, "push", return_value=0), \
+                unittest.mock.patch.object(dt, "test_only_at", lambda *a: seen.append(len(a))), \
+                unittest.mock.patch.object(dt, "changed_since", return_value=[]), \
+                unittest.mock.patch.object(dt, "range_commits", return_value=[]), \
+                unittest.mock.patch("sys.stdin", stdin_of("")):
+            dt.main(["push", "abc123"])
+            dt.main(["push", "abc123", "--since", "origin/main"])
+        self.assertEqual(seen, [3, 3], "show and includes, for each form")
+
+    def test_git_includes_asks_git_grep_at_the_commit_under_crates(self):
+        run = FakeRun({"git grep": (1, "")})
+        dt.Git(run=run).includes("abc")
+        self.assertIn("abc", run.calls[0], run.calls[0])
+        self.assertEqual(run.calls[0][-2:], ["--", "crates/"], run.calls[0])
+
+    # Failure: still server source.
+    def test_the_library_readme_is_server_source(self):
+        self.assertFalse(readme(LIB_README), "lib.rs includes it as the crate's documentation")
+
+    def test_a_library_readme_change_needs_every_scenario(self):
+        run, _ = dt.needed([LIB_README], FAKES, False, fake_steps, test_only=at_readme())
+        self.assertEqual([n for n, _ in run], ["one", "two"], "a build reads it")
+
+    def test_the_real_library_readme_is_server_source(self):
+        root = pathlib.Path(dt.ROOT)
+        read = lambda p: (root / p).read_text(encoding="utf-8") if (root / p).is_file() else None  # noqa: E731
+        self.assertFalse(dt.crate_readme(LIB_README, read, lambda: tree_includes(root)), "include_str! in lib.rs")
+
+    def test_a_manifest_with_no_readme_field_is_server_source(self):
+        self.assertFalse(readme("crates/x/README.md", {"crates/x/Cargo.toml": '[package]\nname = "x"\n'}), "not named")
+
+    def test_readme_false_is_server_source(self):
+        self.assertFalse(readme("crates/x/README.md", {"crates/x/Cargo.toml": '[package]\nreadme = false\n'}), "none named")
+
+    def test_a_workspace_inherited_readme_is_server_source(self):
+        self.assertFalse(readme("crates/x/README.md", {"crates/x/Cargo.toml": '[package]\nreadme.workspace = true\n'}), "not read here")
+
+    def test_an_unreadable_manifest_is_server_source(self):
+        self.assertFalse(readme(SERVER_README, {}), "no manifest at the commit")
+
+    def test_a_manifest_that_is_not_toml_is_server_source(self):
+        self.assertFalse(readme(SERVER_README, {"crates/vcon-server/Cargo.toml": "[package\nreadme = "}), "cannot read it")
+
+    def test_includes_that_cannot_be_read_are_server_source(self):
+        self.assertFalse(readme(SERVER_README, includes=None), "cannot tell")
+
+    def test_an_include_that_is_not_a_plain_literal_is_server_source(self):
+        line = '#![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]'
+        self.assertFalse(readme(SERVER_README, includes=[("crates/vcon-server/src/lib.rs", line)]), "it may read it")
+
+    def test_include_bytes_of_the_readme_is_server_source(self):
+        self.assertFalse(readme(SERVER_README, includes=[("crates/vcon-server/src/a.rs", 'include_bytes!("../README.md")')]), "bytes")
+
+    def test_include_of_the_readme_is_server_source(self):
+        self.assertFalse(readme(SERVER_README, includes=[("crates/vcon-server/src/a.rs", 'include!("../README.md");')]), "include!")
+
+    def test_a_build_script_that_names_the_readme_is_server_source(self):
+        tree = dict(MANIFESTS, **{"crates/vcon-server/build.rs": 'fn main() { std::fs::read("README.md").unwrap(); }\n'})
+        self.assertFalse(readme(SERVER_README, tree), "build.rs reads it")
+
+    def test_a_named_build_script_that_names_the_readme_is_server_source(self):
+        tree = {"crates/x/Cargo.toml": '[package]\nreadme = "README.md"\nbuild = "tools/gen.rs"\n', "crates/x/tools/gen.rs": '// README.md\n'}
+        self.assertFalse(readme("crates/x/README.md", tree), "the manifest's build script reads it")
+
+    def test_a_file_that_is_not_the_named_readme_is_server_source(self):
+        tree = {"crates/x/Cargo.toml": '[package]\nreadme = "docs/intro.md"\n'}
+        self.assertFalse(readme("crates/x/README.md", tree), "the readme is docs/intro.md")
+
+    def test_the_crate_manifest_is_server_source(self):
+        run, _ = dt.needed(["crates/vcon-server/Cargo.toml"], FAKES, False, fake_steps, test_only=at_readme())
+        self.assertEqual([n for n, _ in run], ["one", "two"], "the manifest builds the server")
+
+    def test_a_raw_string_include_is_server_source(self):
+        self.assertFalse(readme(SERVER_README, includes=[("crates/vcon-server/src/a.rs", 'include_str!(r"../README.md")')]), "not a plain literal")
+
+    def test_an_include_with_an_escape_is_server_source(self):
+        self.assertFalse(readme(SERVER_README, includes=[("crates/vcon-server/src/a.rs", 'include_str!("..\\x2fREADME.md")')]), "not read")
+
+    def test_git_includes_that_fail_are_none(self):
+        self.assertIsNone(dt.Git(run=FakeRun({"git grep": (128, "")})).includes("abc"), "cannot tell")
+
+    def test_a_readme_named_with_another_case_is_server_source(self):
+        self.assertFalse(readme("crates/vcon-server/readme.md"), "README.md is named")
+
+    # Edge cases.
+    def test_a_readme_outside_the_crates_is_never_asked(self):
+        asked = []
+        dt.needed(["README.md"], FAKES, False, fake_steps, test_only=lambda p: asked.append(p))
+        self.assertEqual(asked, [], "not under crates/")
+
+    def test_a_path_with_no_crate_is_not_a_readme(self):
+        self.assertFalse(readme("crates/README.md", {"crates/Cargo.toml": '[package]\nreadme = "README.md"\n'}), "no crate")
+
+    def test_an_include_with_spaces_is_read(self):
+        self.assertFalse(readme(SERVER_README, includes=[("crates/vcon-server/src/a.rs", 'include_str!( "../README.md" )')]), "resolved")
+
+    def test_an_include_from_a_nested_module_is_resolved_from_its_file(self):
+        self.assertFalse(readme(SERVER_README, includes=[("crates/vcon-server/src/a/b.rs", 'include_str!("../../README.md")')]), "two up")
+
+    def test_an_include_of_a_readme_of_the_same_name_elsewhere_does_not_count(self):
+        self.assertTrue(readme(SERVER_README, includes=[("crates/vcon-server/src/a.rs", 'include_str!("README.md")')]), "src/README.md")
+
+    def test_the_second_include_on_a_line_counts(self):
+        line = 'const A: &str = include_str!("a.sql"); const B: &str = include_str!("../README.md");'
+        self.assertFalse(readme(SERVER_README, includes=[("crates/vcon-server/src/a.rs", line)]), "both are read")
+
+    def test_an_include_from_another_crate_counts(self):
+        self.assertFalse(readme(SERVER_README, includes=[("crates/vcon/src/a.rs", 'include_str!("../../vcon-server/README.md")')]), "across crates")
+
+    def test_a_commented_out_include_still_counts(self):
+        # Comments are not parsed: counting is the safe side.
+        self.assertFalse(readme(SERVER_README, includes=[("crates/vcon-server/src/a.rs", '// include_str!("../README.md")')]), "safe side")
+
+    def test_a_readme_under_src_that_is_named_and_not_included_is_no_source(self):
+        tree = {"crates/x/Cargo.toml": '[package]\nreadme = "src/README.md"\n'}
+        self.assertTrue(readme("crates/x/src/README.md", tree), "not Rust, not included")
+
+    def test_without_a_reader_the_readme_counts(self):
+        self.assertEqual(needed_of([SERVER_README])[0], ["one", "two"], "no reader")
+
+    def test_the_includes_are_read_once_per_commit(self):
+        asked = []
+        at = dt.test_only_at("c1", lambda sha, path: MANIFESTS.get(path), lambda sha: asked.append(sha) or INCLUDES)
+        at(SERVER_README)
+        at(LIB_README)
+        self.assertEqual(asked, ["c1"], "one git grep for the commit")
+
+    def test_a_source_change_reads_no_includes(self):
+        asked = []
+        at = dt.test_only_at("c1", lambda sha, path: TREE.get(path), lambda sha: asked.append(sha) or INCLUDES)
+        at("crates/vcon-server/src/serve/listen.rs")
+        self.assertEqual(asked, [], "only a readme asks")
+
+    def test_a_readme_value_that_is_not_text_is_server_source(self):
+        self.assertFalse(readme("crates/x/README.md", {"crates/x/Cargo.toml": '[package]\nreadme = 5\n'}), "not a path")
+
+    def test_a_manifest_with_no_package_table_is_server_source(self):
+        self.assertFalse(readme("crates/x/README.md", {"crates/x/Cargo.toml": '[workspace]\nmembers = []\n'}), "no [package]")
+
+    def test_a_dot_slash_include_is_resolved(self):
+        self.assertFalse(readme(SERVER_README, includes=[("crates/vcon-server/src/a.rs", 'include_str!("./../README.md")')]), "normalized")
+
+    def test_without_a_grep_the_readme_counts(self):
+        at = dt.test_only_at("c1", lambda sha, path: MANIFESTS.get(path))
+        self.assertFalse(at(SERVER_README), "no include list: cannot tell")
 
 
 def run_output(note):

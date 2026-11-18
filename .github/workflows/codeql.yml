@@ -21,10 +21,12 @@ permissions:
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
-    timeout-minutes: 30
+    # The analysis (the Rust one took 11 min on 2026-11-16) and up to
+    # 15 min of waiting for code scanning to process its results.
+    timeout-minutes: 45
     runs-on: ubuntu-24.04
     permissions:
-      # Upload the findings to code scanning.
+      # Upload the findings to code scanning, and read its alerts back.
       security-events: write
       contents: read
       actions: read
@@ -42,8 +44,24 @@ jobs:
           languages: ${{ matrix.language }}
           build-mode: none
       - name: Analyze
+        id: analyze
         uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           category: "/language:${{ matrix.language }}"
           # The findings go up as SARIF; the database is not needed.
           upload-database: false
+      # The analyze step waits about 2.5 min for code scanning to process
+      # the SARIF and then passes anyway. On #224 the processing never
+      # finished, the pull request's `CodeQL` check concluded neutral and a
+      # new alert reached main. This step fails the job unless code
+      # scanning processed the SARIF and, on a pull request, the merge
+      # commit has no open alert of this category that main does not have
+      # (scripts/codeql_pr_gate.py).
+      - name: Code scanning processed the results, and the pull request adds no alert
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SARIF_ID: ${{ steps.analyze.outputs.sarif-id }}
+          CATEGORY: "/language:${{ matrix.language }}"
+          PR: ${{ github.event.pull_request.number }}
+          BASE: ${{ github.base_ref }}
+        run: python3 -I scripts/codeql_pr_gate.py check --sarif-id "$SARIF_ID" --category "$CATEGORY" --pr "$PR" --base "${BASE:-main}" --wait 900

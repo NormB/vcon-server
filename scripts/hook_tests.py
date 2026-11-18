@@ -17,7 +17,8 @@ change here.
 
 `needed` reads the changed paths, one per line, on stdin. Exit 0 and one
 line when the tests are needed, 1 and one line when they are not, 2 with
-the reason on stderr when the rule cannot be read. .githooks/pre-push asks
+the reason on stderr when the rule cannot be read or fails in any other
+way (never 1, which would skip the tests). .githooks/pre-push asks
 it once per push and runs TESTS when it answers 0.
 """
 
@@ -76,7 +77,24 @@ def needed(changed, read) -> list[str]:
     return out
 
 
-def main(argv=None) -> int:
+def changed_paths(stream) -> list[str]:
+    """The paths of the byte stream `stream`, one per line. git prints a
+    path's bytes as they are when core.quotePath is false; each byte that is
+    not UTF-8 is kept as a surrogate escape, as Python names such a file."""
+    return stream.read().decode("utf-8", errors="surrogateescape").splitlines()
+
+
+def run(argv, stdin) -> int:
+    """main, with a rule that fails for any other reason answered 2: the
+    exit of an uncaught exception, 1, would read as "not needed"."""
+    try:
+        return main(argv, stdin)
+    except Exception as error:  # noqa: BLE001 - any failure is "cannot tell"
+        print(f"hook_tests: cannot tell: {error}", file=sys.stderr)
+        return 2
+
+
+def main(argv=None, stdin=None) -> int:
     parser = argparse.ArgumentParser(description="Whether a push must run the hook tests.")
     sub = parser.add_subparsers(dest="command")
     one = sub.add_parser("needed")
@@ -89,7 +107,7 @@ def main(argv=None) -> int:
         print("hook_tests: usage: hook_tests.py needed [--root DIR]", file=sys.stderr)
         return 2
     try:
-        found = needed(sys.stdin.read().splitlines(), tree_read_paths(args.root))
+        found = needed(changed_paths(sys.stdin.buffer if stdin is None else stdin), tree_read_paths(args.root))
     except HookTestsError as error:
         print(f"hook_tests: {error}", file=sys.stderr)
         return 2
@@ -102,4 +120,7 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # A path with a byte that is not UTF-8 prints as \udcXX, never a crash.
+    sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
+    sys.exit(run(sys.argv[1:], sys.stdin.buffer))

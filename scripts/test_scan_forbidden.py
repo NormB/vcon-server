@@ -9,7 +9,10 @@ Run with: python3 -I scripts/test_scan_forbidden.py
 """
 
 import importlib.util
+import io
 import pathlib
+import re
+import subprocess
 import sys
 import unittest
 
@@ -80,6 +83,293 @@ class OrdinaryWords(unittest.TestCase):
         for text in ("move the " + "cur" + "sor to the end", "an " + "ai" + "der of the build", "said the maintainer"):
             with self.subTest(text=text):
                 self.assertEqual(message(text), [])
+
+
+# Values the scan finds, assembled so that this file holds none whole (the
+# CI scan reads every tracked file).
+EMAIL = ("jane" + "@" + "corp.net").encode()
+PHONE = ("202-456" + "-7890").encode()
+ADDRESS = ("10.1." + "2.3").encode()
+TOOL = ("cl" + "aude").encode()
+LATIN1 = b"caf\xe9"  # "cafe" with an acute e in ISO 8859-1: not UTF-8
+
+
+def run_bytes(data):
+    """The scan of `data` through scan_forbidden.run: (code, stdout, stderr)."""
+    out, err = io.StringIO(), io.StringIO()
+    code = scan_forbidden.run(io.BytesIO(data), out, err)
+    return code, out.getvalue(), err.getvalue()
+
+
+def run_script(data):
+    """The scan of `data` as the hooks and CI run it: the script, bytes on stdin."""
+    return subprocess.run(
+        [sys.executable, "-I", str(HERE / "scan_forbidden.py")], input=data, capture_output=True, timeout=60, check=False
+    )
+
+
+def text_mode_findings(data):
+    """What the scan found before it read bytes, for input that is UTF-8."""
+    found = []
+    # newline="\n" splits as sys.stdin did on POSIX: at "\n" only.
+    for raw in io.StringIO(data.decode("utf-8"), newline="\n"):
+        path, _, text = raw.rstrip("\n").partition("\t")
+        found += [f"{path}: {reason}: {hit!r}\n" for reason, hit in scan_forbidden.scan(path, text)]
+    return "".join(found)
+
+
+class Utf8Input(unittest.TestCase):
+    """Input that is UTF-8 is scanned as it was before the scan read bytes."""
+
+    def test_a_clean_line_passes_with_no_output(self):
+        self.assertEqual(run_bytes(b"a.txt\tnothing to see\n"), (0, "", ""))
+
+    def test_a_line_with_an_email_address_is_refused(self):
+        code, out, err = run_bytes(b"a.txt\tmail " + EMAIL + b"\n")
+        self.assertEqual(code, 1, err)
+        self.assertEqual(out, f"a.txt: email address: {EMAIL.decode()!r}\n")
+        self.assertEqual(err, "", "a UTF-8 line has no note")
+
+    def test_a_line_with_accented_letters_passes_with_no_note(self):
+        self.assertEqual(run_bytes("a.md\tcafé, naïve, Straße\n".encode()), (0, "", ""))
+
+    def test_the_robot_emoji_is_found_and_printed_as_it_is(self):
+        code, out, _ = run_bytes("a.md\tbuilt \U0001F916\n".encode())
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "a.md: robot emoji: '\U0001F916'\n")
+
+    def test_a_crlf_line_keeps_its_carriage_return_as_before(self):
+        data = b"a.txt\tmail " + EMAIL + b"\r\n"
+        self.assertEqual(run_bytes(data)[1], text_mode_findings(data))
+
+    def test_a_last_line_with_no_newline_is_scanned(self):
+        self.assertEqual(run_bytes(b"a.txt\tok\nb.txt\t" + EMAIL)[0], 1)
+
+    def test_every_line_is_scanned(self):
+        data = b"".join(b"f%d.txt\tline %d\n" % (i, i) for i in range(200)) + b"z.txt\t" + PHONE + b"\n"
+        code, out, _ = run_bytes(data)
+        self.assertEqual(code, 1)
+        self.assertTrue(out.startswith("z.txt: phone number"), out)
+
+    def test_the_path_ends_at_the_first_tab(self):
+        code, out, _ = run_bytes(b"a.txt\tone\t" + EMAIL + b"\n")
+        self.assertEqual(code, 1)
+        self.assertTrue(out.startswith("a.txt: email address"), out)
+
+    def test_no_input_passes(self):
+        self.assertEqual(run_bytes(b""), (0, "", ""))
+
+    def test_the_findings_are_those_of_the_text_reading_it_replaces(self):
+        data = (
+            b"a.txt\t" + EMAIL + b"\n" + "b.md\tStraße \U0001F916\n".encode() + b"c.txt\t" + ADDRESS + b" and " + PHONE + b"\n"
+            + b"\xef\xbb\xbfd.txt\tbom " + TOOL + b"\n" + b"e.txt\tlone\rcarriage " + EMAIL + b"\n"
+        )
+        self.assertEqual(run_bytes(data)[1], text_mode_findings(data))
+
+    def test_the_script_passes_a_clean_utf8_line(self):
+        done = run_script("a.md\tcafé\n".encode())
+        self.assertEqual((done.returncode, done.stdout, done.stderr), (0, b"", b""))
+
+    def test_the_script_prints_a_utf8_finding_in_utf8(self):
+        done = run_script("a.md\t\U0001F916\n".encode())
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertEqual(done.stdout, "a.md: robot emoji: '\U0001F916'\n".encode())
+
+
+class NotUtf8Input(unittest.TestCase):
+    """A line that is not UTF-8 (a file git takes for text, in another
+    encoding) is scanned, never a crash: each byte that is not UTF-8 reads
+    as U+FFFD, which is not a word character."""
+
+    def test_the_script_does_not_crash_on_a_latin1_line(self):
+        done = run_script(b"a.txt\t" + LATIN1 + b"\n")
+        self.assertNotIn(b"Traceback", done.stderr, done.stderr)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_the_script_refuses_an_email_address_on_a_latin1_line(self):
+        done = run_script(b"a.txt\t" + LATIN1 + b" " + EMAIL + b"\n")
+        self.assertNotIn(b"Traceback", done.stderr, done.stderr)
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertEqual(done.stdout, b"a.txt: email address: '" + EMAIL + b"'\n")
+
+    def test_an_email_address_beside_a_bad_byte_is_found(self):
+        code, out, _ = run_bytes(b"a.txt\t" + LATIN1 + b" " + EMAIL + b"\n")
+        self.assertEqual(code, 1)
+        self.assertIn("email address", out)
+
+    def test_a_tool_name_beside_a_bad_byte_is_found(self):
+        code, out, _ = run_bytes(b"a.txt\t\xff" + TOOL + b"\xff\n")
+        self.assertEqual(code, 1)
+        self.assertIn("AI tool name", out)
+
+    def test_a_phone_number_on_a_latin1_line_is_found(self):
+        code, out, _ = run_bytes(b"a.txt\t" + LATIN1 + b" " + PHONE + b"\n")
+        self.assertEqual(code, 1)
+        self.assertIn("phone number", out)
+
+    def test_an_ip_address_on_a_latin1_line_is_found(self):
+        code, out, _ = run_bytes(b"a.txt\t" + LATIN1 + b" " + ADDRESS + b"\n")
+        self.assertEqual(code, 1)
+        self.assertIn("IP address", out)
+
+    def test_a_finding_after_a_bad_line_is_found(self):
+        code, out, _ = run_bytes(b"a.txt\t" + LATIN1 + b"\nb.txt\t" + EMAIL + b"\n")
+        self.assertEqual(code, 1)
+        self.assertTrue(out.startswith("b.txt: email address"), out)
+
+    def test_a_finding_before_a_bad_line_is_found(self):
+        code, out, _ = run_bytes(b"b.txt\t" + EMAIL + b"\na.txt\t" + LATIN1 + b"\n")
+        self.assertEqual(code, 1)
+        self.assertTrue(out.startswith("b.txt: email address"), out)
+
+    def test_a_path_that_is_not_utf8_is_named_with_the_replacement(self):
+        code, out, _ = run_bytes(b"caf\xe9.txt\t" + EMAIL + b"\n")
+        self.assertEqual(code, 1)
+        self.assertTrue(out.startswith("caf�.txt: email address"), out)
+
+    def test_a_path_that_is_not_utf8_is_itself_scanned(self):
+        # The hook gives each staged path as "<path>\t<path>".
+        path = b"\xff" + TOOL + b".txt"
+        code, out, _ = run_bytes(path + b"\t" + path + b"\n")
+        self.assertEqual(code, 1)
+        self.assertIn("AI tool name", out)
+
+    def test_a_commit_message_that_is_not_utf8_is_scanned(self):
+        trailer = ("Co-Authored" + "-By: Co" + "pilot <c@example.invalid>").encode()
+        code, out, _ = run_bytes(b"<commit message>\tR\xe9sum\xe9\n<commit message>\t" + trailer + b"\n")
+        self.assertEqual(code, 1)
+        self.assertIn("AI co-author trailer", out)
+
+    def test_a_truncated_sequence_at_the_end_of_a_line_is_scanned(self):
+        code, out, _ = run_bytes(b"a.txt\t" + EMAIL + b" \xe2\x82\n")
+        self.assertEqual(code, 1)
+        self.assertIn("email address", out)
+
+
+class Edges(unittest.TestCase):
+    def test_a_clean_latin1_line_passes_with_a_note_naming_the_path(self):
+        code, out, err = run_bytes(b"docs/a.txt\t" + LATIN1 + b"\n")
+        self.assertEqual((code, out), (0, ""))
+        self.assertEqual(err, "docs/a.txt: not UTF-8: scanned with U+FFFD for each byte that is not\n")
+
+    def test_the_note_is_given_once_per_path(self):
+        _, _, err = run_bytes(b"a.txt\t" + LATIN1 + b"\na.txt\t" + LATIN1 + b"\n")
+        self.assertEqual(err.count("a.txt: not UTF-8"), 1, err)
+
+    def test_the_note_is_given_for_each_path(self):
+        _, _, err = run_bytes(b"a.txt\t" + LATIN1 + b"\nb.txt\t" + LATIN1 + b"\n")
+        self.assertEqual(err.splitlines(), [f"{p}: not UTF-8: scanned with U+FFFD for each byte that is not" for p in ("a.txt", "b.txt")])
+
+    def test_a_nul_free_binary_line_passes(self):
+        data = b"blob.bin\t" + bytes(range(0x80, 0x100)) * 4 + b"\n"
+        code, out, _ = run_bytes(data)
+        self.assertEqual((code, out), (0, ""))
+
+    def test_a_line_of_only_bad_bytes_passes(self):
+        self.assertEqual(run_bytes(b"a.bin\t\xff\xfe\xfd\n")[:2], (0, ""))
+
+    def test_a_nul_byte_is_no_crash(self):
+        self.assertEqual(run_bytes(b"a.bin\tx\x00y\n")[0], 0)
+
+    def test_an_overlong_encoding_is_not_utf8(self):
+        code, _, err = run_bytes(b"a.txt\t\xc0\xaf\n")
+        self.assertEqual(code, 0)
+        self.assertIn("a.txt: not UTF-8", err)
+
+    def test_an_encoded_surrogate_is_not_utf8(self):
+        code, _, err = run_bytes(b"a.txt\t\xed\xa0\x80\n")
+        self.assertEqual(code, 0)
+        self.assertIn("a.txt: not UTF-8", err)
+
+    def test_a_lone_continuation_byte_is_not_utf8(self):
+        self.assertIn("not UTF-8", run_bytes(b"a.txt\t\x80\n")[2])
+
+    def test_a_long_bad_line_is_scanned_to_its_end(self):
+        code, out, _ = run_bytes(b"a.txt\t" + b"\xe9" * 1_000_000 + b" " + EMAIL + b"\n")
+        self.assertEqual(code, 1)
+        self.assertIn("email address", out)
+
+    def test_a_scan_that_cannot_read_answers_2_not_a_verdict(self):
+        class Broken(io.RawIOBase):
+            def readable(self):
+                return True
+
+            def readinto(self, _buffer):
+                raise OSError("input/output error")
+
+        out, err = io.StringIO(), io.StringIO()
+        self.assertEqual(scan_forbidden.run(io.BufferedReader(Broken()), out, err), 2)
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("scan_forbidden: cannot scan: input/output error", err.getvalue())
+
+    def test_the_script_names_a_bad_path_on_stderr(self):
+        done = run_script(b"x\xe9.txt\tok\n")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stderr, "x�.txt: not UTF-8: scanned with U+FFFD for each byte that is not\n".encode())
+
+    # The locale of this host and of CI is UTF-8, and python3 -I turns a C
+    # locale into UTF-8, so a run of the script cannot show what an ASCII
+    # or ISO 8859-1 locale would do; the conversion is tested on a stream.
+    def test_the_output_is_utf8_on_a_stream_of_another_encoding(self):
+        raw = io.BytesIO()
+        stream = io.TextIOWrapper(raw, encoding="ascii")
+        scan_forbidden.utf8_out(stream)
+        stream.write("caf� \U0001F916")
+        stream.flush()
+        self.assertEqual(raw.getvalue(), "caf� \U0001F916".encode())
+
+    def test_a_character_utf8_cannot_hold_is_written_as_an_escape(self):
+        raw = io.BytesIO()
+        stream = io.TextIOWrapper(raw, encoding="latin-1")
+        scan_forbidden.utf8_out(stream)
+        stream.write("x\udce9")
+        stream.flush()
+        self.assertEqual(raw.getvalue(), b"x\\udce9")
+
+    def test_the_script_writes_a_finding_with_a_replacement_in_utf8(self):
+        done = run_script(b"x\xe9.txt\t" + EMAIL + b"\n")
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertTrue(done.stdout.startswith("x�.txt: email address".encode()), done.stdout)
+
+
+# A script that reads standard input as text decodes it with the locale's
+# codec, strictly: a byte that is not UTF-8 crashes it, and an uncaught
+# exception exits 1, which some callers read as a verdict (hook_tests.py:
+# "not needed"). Every script reads the bytes and decodes them itself.
+TEXT_STDIN = re.compile(r"\bsys\.stdin\b(?!\.buffer\b)")
+
+
+def text_stdin_readers(root):
+    """Each "<path>:<line>" of a script under `root`/scripts (not a test)
+    that reads sys.stdin as text."""
+    found = []
+    for path in sorted((pathlib.Path(root) / "scripts").glob("*.py")):
+        if path.name.startswith("test_"):
+            continue
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if TEXT_STDIN.search(line.split("#", 1)[0]):
+                found.append(f"{path.name}:{number}")
+    return found
+
+
+class StandardInputAsBytes(unittest.TestCase):
+    def test_no_script_reads_standard_input_as_text(self):
+        self.assertEqual(text_stdin_readers(HERE.parent), [])
+
+    def test_the_rule_finds_a_loop_over_stdin(self):
+        self.assertTrue(TEXT_STDIN.search("for raw in sys.stdin:"))
+
+    def test_the_rule_finds_a_read_of_stdin(self):
+        self.assertTrue(TEXT_STDIN.search("lines = sys.stdin.read().splitlines()"))
+
+    def test_the_rule_passes_a_read_of_the_bytes(self):
+        self.assertIsNone(TEXT_STDIN.search("data = sys.stdin.buffer.read()"))
+
+    def test_the_rule_finds_a_reconfigured_text_stream(self):
+        self.assertTrue(TEXT_STDIN.search("sys.stdin.reconfigure(errors='replace')"))
+
+    def test_the_rule_passes_a_name_that_only_begins_the_same(self):
+        self.assertIsNone(TEXT_STDIN.search("sys.stdin_bytes = 1"))
 
 
 if __name__ == "__main__":

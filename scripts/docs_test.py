@@ -99,6 +99,7 @@ import ipaddress
 import json
 import os
 import platform
+import posixpath
 import re
 import shutil
 import subprocess
@@ -106,6 +107,7 @@ import sys
 import tempfile
 import threading
 import time
+import tomllib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOCS = os.path.join(ROOT, "website", "content", "docs")
@@ -1962,6 +1964,59 @@ def test_only(path: str, read, _depth: int = 0) -> bool:
     return True
 
 
+# An include macro, and the path it reads when its argument is one plain
+# string literal (no escape, not raw, not built by another macro).
+INCLUDE_GREP = r"\binclude(_str|_bytes)?!"  # git grep -E (Git.includes) and Python read it alike
+INCLUDE_MACRO = re.compile(INCLUDE_GREP)
+_INCLUDE_LITERAL = re.compile(r'\binclude(?:_str|_bytes)?!\s*\(\s*"([^"\\]*)"\s*\)')
+
+
+def crate_readme(path: str, read, includes) -> bool:
+    """Whether `path` is the readme a crate's manifest names (`readme` in
+    [package], a string) and no build reads it: cargo packages it for
+    crates.io, so scripts/check_package.py checks it, but no scenario runs
+    it. `read(path)` gives a file's text at the commit, or None;
+    `includes()` gives (file, line) for each line of the crates' Rust files
+    that holds an include macro, or None when git cannot tell. It counts as
+    read by a build (False) when an include's literal path, taken from the
+    file that holds it, is `path`; when an include on a line is not a plain
+    literal (it may name any file); when the crate's build script names the
+    file; and whenever the manifest or the includes cannot be read. Comments
+    are not parsed, so a commented-out include counts."""
+    parts = path.split("/")
+    if len(parts) < 3 or parts[0] != "crates":
+        return False
+    crate = "/".join(parts[:2])
+    manifest = read(f"{crate}/Cargo.toml")
+    if manifest is None:
+        return False
+    try:
+        package = tomllib.loads(manifest).get("package")
+    except tomllib.TOMLDecodeError:
+        return False
+    if not isinstance(package, dict) or not isinstance(package.get("readme"), str):
+        return False
+    if posixpath.normpath(f"{crate}/{package['readme']}") != path:
+        return False
+    name = posixpath.basename(path)
+    build = package.get("build", "build.rs")
+    if isinstance(build, str):
+        script = read(posixpath.normpath(f"{crate}/{build}"))
+        if script is not None and name in script:
+            return False
+    lines = includes()
+    if lines is None:
+        return False
+    for file, line in lines:
+        literals = _INCLUDE_LITERAL.findall(line)
+        if len(literals) != len(INCLUDE_MACRO.findall(line)):
+            return False
+        for literal in literals:
+            if posixpath.normpath(posixpath.join(posixpath.dirname(file), literal)) == path:
+                return False
+    return True
+
+
 def _server_source(path: str, test_only=None) -> bool:
     if path in SERVER_SOURCE_FILES:
         return True
@@ -1971,8 +2026,9 @@ def _server_source(path: str, test_only=None) -> bool:
     parts = path.split("/")
     if len(parts) > 2 and parts[0] == "crates" and parts[2] == "tests":
         return False
-    # Nor is a file only `#[cfg(test)] mod` declarations reach.
-    return not (test_only is not None and len(parts) > 2 and parts[2] == "src" and test_only(path))
+    # Nor is a file only `#[cfg(test)] mod` declarations reach, or the
+    # crate's readme when no build reads it (test_only_at says which).
+    return not (test_only is not None and len(parts) > 2 and test_only(path))
 
 
 def _scenario_steps(s: Scenario) -> list[Block]:
@@ -2119,6 +2175,25 @@ class Git:
         done = self._call("show", f"{sha}:{path}")
         return done.stdout if done.returncode == 0 else None
 
+    def includes(self, sha: str) -> list[tuple[str, str]] | None:
+        """(path, line) for each line of a Rust file under crates/ in commit
+        `sha` that holds an include macro (`crate_readme` reads them), or
+        None when git cannot give them."""
+        done = self._call("grep", "-z", "-n", "-I", "-E", INCLUDE_GREP, sha, "--", "crates/")
+        if done.returncode == 1:
+            return []
+        if done.returncode != 0:
+            return None
+        found = []
+        for record in done.stdout.splitlines():
+            # <sha>:<path> NUL <line number> NUL <text>
+            name, _, rest = record.partition("\0")
+            text = rest.partition("\0")[2]
+            path = name[len(sha) + 1 :] if name.startswith(f"{sha}:") else name
+            if path.endswith(".rs"):
+                found.append((path, text))
+        return found
+
     def rev_list(self, *args: str) -> list[str]:
         return self._lines("rev-list", *args)
 
@@ -2141,17 +2216,26 @@ def affected(paths, scenarios, steps=_scenario_steps, test_only=None) -> set:
     return {n for n, _ in needed(paths, scenarios, True, steps, test_only)[0]}
 
 
-def test_only_at(sha: str, show) -> "callable":
-    """`test_only` for the tree of commit `sha`, reading each module file
-    once with `show(sha, path)`."""
+def test_only_at(sha: str, show, includes=None) -> "callable":
+    """`needed`'s test_only for the tree of commit `sha`: whether a file
+    under crates/ is built into no server (a test-only module, or the crate
+    readme no build reads). Each file is read once with `show(sha, path)`,
+    and the include lines once with `includes(sha)`, only when a readme is
+    asked about. Without `includes` every readme counts as server source."""
     texts: dict = {}
+    found: list = []
 
     def read(path):
         if path not in texts:
             texts[path] = show(sha, path)
         return texts[path]
 
-    return lambda path: test_only(path, read)
+    def lines():
+        if not found:
+            found.append(includes(sha) if includes is not None else None)
+        return found[0]
+
+    return lambda path: test_only(path, read) or crate_readme(path, read, lines)
 
 
 def carried(names, tip: str, commits, read, delta, scenarios, steps=_scenario_steps, test_only=None) -> dict:
@@ -2298,7 +2382,7 @@ def check(
             say(f"docs scenarios: refused: cannot read the commits pushed to {ref.remote_ref}: {e}")
             refused = True
             continue
-        at_tip = test_only_at(tip, git.show)
+        at_tip = test_only_at(tip, git.show, git.includes)
         todo, skipped = needed(changed, scenarios, bool(env.get("GH_TOKEN")), steps, at_tip)
         for name, why in skipped:
             say(f"docs scenarios: skipped {name}: {why}")
@@ -2479,6 +2563,14 @@ def push(
         shutil.rmtree(builds, ignore_errors=True)
 
 
+def stdin_lines() -> list[str]:
+    """The lines of standard input, read as bytes and decoded as Python
+    names a file: UTF-8, each byte that is not kept as a surrogate escape.
+    git prints a path's bytes as they are when core.quotePath is false, and
+    a ref name may hold any byte; neither is a crash."""
+    return sys.stdin.buffer.read().decode("utf-8", errors="surrogateescape").splitlines()
+
+
 def main(argv: list[str]) -> int:
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)
@@ -2501,16 +2593,16 @@ def main(argv: list[str]) -> int:
                 changed_since(base, sha),
                 commits=range_commits(base, sha),
                 delta=lambda other: Git().diff(other, sha),
-                test_only=test_only_at(sha, Git().show),
+                test_only=test_only_at(sha, Git().show, Git().includes),
             )
-        return push(rest, sys.stdin.read().splitlines(), test_only=test_only_at(rest[0], Git().show))
+        return push(rest, stdin_lines(), test_only=test_only_at(rest[0], Git().show, Git().includes))
     if command == "check":
         usage = "docs-test: check reads the pushed refs, as pre-push gets them, on stdin: docs_test.py check [--remote <name>]"
         if rest and not (len(rest) == 2 and rest[0] == "--remote"):
             print(usage, file=sys.stderr)
             return 2
         try:
-            refs = parse_refs(sys.stdin.read().splitlines())
+            refs = parse_refs(stdin_lines())
         except PageError as e:
             print(f"docs-test: {e}", file=sys.stderr)
             return 2
@@ -2555,4 +2647,7 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    # A path or ref with a byte that is not UTF-8 prints as \udcXX.
+    sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     sys.exit(main(sys.argv[1:]))
