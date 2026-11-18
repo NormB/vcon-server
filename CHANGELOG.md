@@ -8,6 +8,16 @@ All notable changes to this project are recorded here. The format follows
 
 ### Fixed
 
+- **A server whose log reader stops reading goes on answering requests.**
+  - Was: Once the stderr pipe was full, the server answered no request and
+    a refused command did not exit.
+  - Effect: Log lines wait on a 1 MiB queue; a line that finds it full is
+    dropped and counted.
+  - Limit: The reader gets one `log lines dropped` line in place of the
+    lines it lost.
+  - Docs: [When the log's reader goes
+    away](https://vcon-server.com/docs/operations/#when-the-log-s-reader-goes-away)
+
 - **The Parquet storage page waits for each pack run to end.**
   - Was: Its check could list the files mid-run and miss the merged file.
   - Effect: The check waits for the run's `pack run` log line before it

@@ -435,6 +435,12 @@ enum AuditCommand {
 }
 
 fn main() -> ExitCode {
+    let code = run();
+    vcon_server::stderr::drain(vcon_server::stderr::EXIT_DRAIN);
+    code
+}
+
+fn run() -> ExitCode {
     // Parsing touches no secret, and `--help` must work anywhere.
     let cli = Cli::parse();
     // Then, before any key, token or body is read: no core dumps, and all
@@ -618,9 +624,10 @@ fn serve(config: &Path) -> ExitCode {
 
 /// `vcon-server serve` until it stops, or the exit for why it stopped.
 fn run_serve(config: &Path) -> Result<(), ExitCode> {
-    // A log line that cannot be written is dropped (crate::stderr says
-    // why); the builder's fallback for a failed write, `eprintln!`, would
-    // panic in the request that logged it.
+    // A log line goes on stderr's queue and is never written by the
+    // request that logged it; a line that cannot be written is dropped
+    // (crate::stderr says why). The builder's fallback for a failed write,
+    // `eprintln!`, would panic in the request that logged it.
     tracing_subscriber::fmt()
         .with_writer(vcon_server::stderr::stderr)
         .log_internal_errors(false)

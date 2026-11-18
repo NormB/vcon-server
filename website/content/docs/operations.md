@@ -188,10 +188,25 @@ it was gone. A command refused with its standard error closed still exits
 with status 1. Releases 0.4.0 to 0.4.8 answered no request once standard
 error was closed.
 
-A reader that stays open but stops reading is not the same: each line waits
-for room in the pipe, and once the pipe is full the server stops answering
-until the reader reads again. Run the server under systemd's journal or a
-collector that keeps reading.
+A reader that stays open but stops reading (a paused pager, a collector
+that hangs) does not stop the server either. No request writes to standard
+error itself: each line goes on a queue of at most 1 MiB, and one thread of
+the server writes the queue out. While the pipe is full the queue fills, and
+a line that finds the queue full is dropped. When the reader reads again,
+it gets the lines that waited, then one line in place of those dropped:
+
+```text
+vcon-server: 1830 log lines dropped: standard error was full
+```
+
+At exit, the server and the commands wait at most 2 seconds for their last
+lines to be written, so a reader that does not read cannot hold the exit.
+Releases 0.4.0 to 0.4.9 answered no request once the pipe was full, and a
+command refused with a full pipe did not exit.
+
+Only the log depends on standard error. The audit records are written with
+the change they record, in the catalogs, and a dropped log line takes none
+of them with it.
 
 ## Health checks
 

@@ -781,6 +781,408 @@ async fn a_server_whose_reader_closes_mid_run_goes_on_answering() {
     drop(running);
 }
 
+// ---- A server or a command whose stderr is open but never read. ----
+//
+// A log reader can stop reading and keep its end open (a stopped `less`, a
+// collector that hangs). The pipe then fills, about 64 KiB on Linux, and a
+// write to it waits until the reader reads. The server must go on answering
+// and stop when asked; a command must still exit with its own status. The
+// lines that find the pipe full are dropped and counted, and the count is
+// written once the reader reads again.
+
+/// How long each request may take with the log unread: a stalled server
+/// answers none in this time.
+const STALL: Duration = Duration::from_secs(10);
+
+/// Enough health requests to fill the server's queue (1 MiB) and the pipe
+/// (64 KiB on Linux) with their lines of about 140 bytes, so some are
+/// dropped.
+const OVERFLOW: usize = 10_000;
+
+/// A server whose stderr is held open by the test and read only when the
+/// test asks.
+struct Held {
+    running: Running,
+    addr: SocketAddr,
+    reader: std::io::BufReader<std::process::ChildStderr>,
+}
+
+/// Starts `command` with its stderr piped, reads it up to the `serving`
+/// line, and then reads no more: the pipe fills with the lines that come
+/// after.
+fn start_then_hold_stderr(mut command: Command) -> Held {
+    use std::io::BufRead;
+    let mut running = Running(
+        command
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("starts"),
+    );
+    let mut reader = std::io::BufReader::new(running.0.stderr.take().expect("piped"));
+    let mut line = String::new();
+    let addr = loop {
+        line.clear();
+        let read = reader.read_line(&mut line).expect("reads stderr");
+        assert_ne!(read, 0, "serve ended before its serving line");
+        if let Some(addr) = bound(&line) {
+            break addr;
+        }
+    };
+    Held {
+        running,
+        addr,
+        reader,
+    }
+}
+
+impl Held {
+    /// A client for this server that gives up on a request after [`STALL`].
+    fn client(&self, s: &Setup) -> reqwest::Client {
+        reqwest::Client::builder()
+            .tls_certs_only([reqwest::Certificate::from_pem(s.pem.as_bytes()).expect("pem")])
+            .resolve("localhost", self.addr)
+            .no_proxy()
+            .timeout(STALL)
+            .build()
+            .expect("a client")
+    }
+
+    /// The URL of `path` on this server.
+    fn url(&self, path: &str) -> String {
+        url_at(self.addr, path)
+    }
+
+    /// Sends `count` health requests one after another, numbered from
+    /// `first`, and asserts each answers 200 within [`STALL`].
+    async fn health(&self, s: &Setup, first: usize, count: usize) {
+        let client = self.client(s);
+        let url = self.url("/health");
+        for round in first..first + count {
+            let answer = client
+                .get(&url)
+                .bearer_auth(&s.token)
+                .send()
+                .await
+                .unwrap_or_else(|e| {
+                    panic!("request {round}: no answer with the log unread: {e:?}")
+                });
+            assert_eq!(answer.status(), 200, "request {round}");
+        }
+    }
+
+    /// Reads the held stderr again, on a thread of its own: the lines it
+    /// reads, as they come.
+    fn read_again(self) -> (Running, SocketAddr, Receiver<String>) {
+        let Held {
+            running,
+            addr,
+            reader,
+        } = self;
+        let (line_tx, lines) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in reader.lines().map_while(Result::ok) {
+                if line_tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        (running, addr, lines)
+    }
+}
+
+/// The count a `log lines dropped` line names, if `line` is one.
+fn dropped_count(line: &str) -> Option<u64> {
+    let (_, rest) = line.split_once("vcon-server: ")?;
+    let (count, rest) = rest.split_once(' ')?;
+    (rest.starts_with("log line dropped") || rest.starts_with("log lines dropped"))
+        .then(|| count.parse().ok())
+        .flatten()
+}
+
+/// The lines `lines` gives until none comes for `quiet`, at most `within`.
+fn lines_until_quiet(lines: &Receiver<String>, quiet: Duration, within: Duration) -> Vec<String> {
+    let deadline = Instant::now() + within;
+    let mut out = Vec::new();
+    while let Ok(line) =
+        lines.recv_timeout(quiet.min(deadline.saturating_duration_since(Instant::now())))
+    {
+        out.push(line);
+        if Instant::now() >= deadline {
+            break;
+        }
+    }
+    out
+}
+
+/// The writing end of a pipe that is full, and its reading end, held open
+/// and never read: a write to it waits.
+fn full_pipe() -> (std::io::PipeReader, std::io::PipeWriter) {
+    use std::io::Write;
+    use std::os::fd::AsRawFd;
+    let (reader, mut writer) = std::io::pipe().expect("a pipe");
+    let fd = writer.as_raw_fd();
+    // SAFETY: fd is the writing end this function holds open.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    assert!(flags >= 0, "the pipe's flags are read");
+    // SAFETY: as above; only this pipe's own flags change.
+    let set = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+    assert_eq!(set, 0, "the pipe is made non-blocking to fill it");
+    let chunk = [b'x'; 4096];
+    let mut filled = 0usize;
+    loop {
+        match writer.write(&chunk) {
+            Ok(n) => filled += n,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(e) => panic!("the pipe is filled: {e}"),
+        }
+        assert!(filled < 64 << 20, "a pipe fills before 64 MiB");
+    }
+    // SAFETY: as above; the child gets a blocking pipe, as a shell gives.
+    let reset = unsafe { libc::fcntl(fd, libc::F_SETFL, flags) };
+    assert_eq!(reset, 0, "the pipe is made blocking again");
+    assert!(filled > 0, "the pipe took bytes before it was full");
+    (reader, writer)
+}
+
+/// How long the binary waits at exit for its last stderr lines.
+const DRAIN: Duration = vcon_server::stderr::EXIT_DRAIN;
+
+/// Runs `command` with a stderr pipe that is full and never read: its exit
+/// status, or a panic after 20 s. A process whose last line waits for the
+/// pipe waits [`DRAIN`] for it, so the run takes at least that; the child
+/// cannot be watched waiting (it is not dumpable, so /proc hides its
+/// threads' state), and this lower bound is what shows the wait.
+fn status_with_stderr_full(mut command: Command) -> std::process::ExitStatus {
+    let (reader, writer) = full_pipe();
+    let began = Instant::now();
+    let mut child = command
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(writer))
+        .spawn()
+        .expect("starts");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("wait") {
+            break status;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the command did not end with its stderr full");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    drop(reader);
+    assert!(
+        began.elapsed() >= DRAIN,
+        "the command waited for its last line before it exited: {:?}",
+        began.elapsed()
+    );
+    status
+}
+
+// Success.
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_whose_stderr_is_never_read_answers_2000_requests() {
+    // Each request logs a line, so the pipe is full long before the last.
+    let s = setup();
+    let held = start_then_hold_stderr(serve(&s));
+    held.health(&s, 0, 2000).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_whose_stderr_is_never_read_answers_requests_at_once() {
+    let s = setup();
+    let held = Arc::new(start_then_hold_stderr(serve(&s)));
+    let s = Arc::new(s);
+    let mut tasks = Vec::new();
+    for task in 0..8 {
+        let (held, s) = (held.clone(), s.clone());
+        tasks.push(tokio::spawn(async move {
+            held.health(&s, task * 250, 250).await;
+        }));
+    }
+    for task in tasks {
+        task.await.expect("each task's requests are answered");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_whose_stderr_is_never_read_stores_and_reads_a_vcon() {
+    let s = setup();
+    let held = start_then_hold_stderr(serve(&s));
+    held.health(&s, 0, 1000).await;
+    let client = held.client(&s);
+    let body = std::fs::read(format!(
+        "{}/../vcon/tests/fixtures/ietf/ab_call_ext_rec.vcon",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .expect("A.4");
+    let stored = client
+        .post(held.url("/vcons"))
+        .bearer_auth(&s.token)
+        .header("content-type", "application/vcon")
+        .body(body.clone())
+        .send()
+        .await
+        .expect("an answer to the store with the log unread");
+    assert_eq!(stored.status(), 201, "stored");
+    let read = client
+        .get(held.url(&format!("/vcons/{UUID}")))
+        .bearer_auth(&s.token)
+        .send()
+        .await
+        .expect("an answer to the read with the log unread");
+    assert_eq!(read.status(), 200, "read");
+    assert_eq!(
+        read.bytes().await.expect("a body").as_ref(),
+        body.as_slice(),
+        "the bytes stored"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reader_that_reads_again_is_told_how_many_lines_were_dropped() {
+    let s = setup();
+    let held = start_then_hold_stderr(serve(&s));
+    held.health(&s, 0, OVERFLOW).await;
+    let (_running, _addr, lines) = held.read_again();
+    let read = lines_until_quiet(&lines, Duration::from_secs(2), Duration::from_secs(20));
+    let dropped: Vec<u64> = read.iter().filter_map(|l| dropped_count(l)).collect();
+    assert!(
+        !dropped.is_empty(),
+        "a line counts the lines dropped: {:?}",
+        read.last()
+    );
+    assert!(
+        dropped.iter().all(|&n| n > 0),
+        "each count is of at least one line: {dropped:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_lines_read_and_the_lines_counted_add_up_to_every_request() {
+    // Each health request logs one line: each is read or counted.
+    let s = setup();
+    let held = start_then_hold_stderr(serve(&s));
+    held.health(&s, 0, OVERFLOW).await;
+    let (_running, _addr, lines) = held.read_again();
+    let read = lines_until_quiet(&lines, Duration::from_secs(2), Duration::from_secs(20));
+    let requests = read.iter().filter(|l| l.contains("route=/health")).count();
+    let dropped: u64 = read.iter().filter_map(|l| dropped_count(l)).sum();
+    assert!(dropped > 0, "the queue overflowed: {requests} read");
+    assert!(requests < OVERFLOW, "no request line twice: {requests}");
+    assert!(
+        requests as u64 + dropped >= OVERFLOW as u64,
+        "every request's line is read or counted: {requests} read, {dropped} dropped"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn lines_written_after_the_reader_reads_again_reach_it() {
+    let s = setup();
+    let held = start_then_hold_stderr(serve(&s));
+    held.health(&s, 0, OVERFLOW).await;
+    let (_running, addr, lines) = held.read_again();
+    let _ = lines_until_quiet(&lines, Duration::from_secs(2), Duration::from_secs(20));
+    let client = client_at(&s, addr);
+    let answer = client
+        .get(url_at(addr, "/health"))
+        .bearer_auth(&s.token)
+        .send()
+        .await
+        .expect("an answer");
+    assert_eq!(answer.status(), 200, "healthy");
+    let next = lines_until_quiet(&lines, Duration::from_secs(5), Duration::from_secs(20));
+    assert!(
+        next.iter().any(|l| l.contains("route=/health")),
+        "the new request's line is read: {next:?}"
+    );
+}
+
+// Failure.
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_whose_stderr_is_never_read_refuses_a_wrong_key_with_401() {
+    let s = setup();
+    let held = start_then_hold_stderr(serve(&s));
+    held.health(&s, 0, 1000).await;
+    let answer = held
+        .client(&s)
+        .get(held.url("/health"))
+        .bearer_auth("not-a-key")
+        .send()
+        .await
+        .expect("an answer with the log unread");
+    assert_eq!(answer.status(), 401, "refused");
+}
+
+#[test]
+fn a_command_refused_with_its_stderr_full_exits_1() {
+    let s = setup();
+    std::fs::remove_file(&s.master_key).expect("the master key taken away");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_vcon-server"));
+    command.arg("check").arg("--config").arg(&s.config);
+    let status = status_with_stderr_full(command);
+    assert_eq!(status.code(), Some(1), "refused with exit 1: {status:?}");
+}
+
+#[test]
+fn serve_refused_with_its_stderr_full_exits_1() {
+    let s = setup();
+    std::fs::remove_file(&s.master_key).expect("the master key taken away");
+    let status = status_with_stderr_full(serve(&s));
+    assert_eq!(status.code(), Some(1), "refused with exit 1: {status:?}");
+}
+
+// Edge.
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_whose_stderr_is_never_read_stops_on_sigterm() {
+    let s = setup();
+    let mut held = start_then_hold_stderr(serve(&s));
+    held.health(&s, 0, 1000).await;
+    let status = terminate(&mut held.running);
+    assert_eq!(status.code(), Some(0), "an orderly stop: {status:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_stopped_after_its_reader_reads_again_logs_stopped() {
+    let s = setup();
+    let held = start_then_hold_stderr(serve(&s));
+    held.health(&s, 0, 1000).await;
+    let (mut running, _addr, lines) = held.read_again();
+    let _ = lines_until_quiet(&lines, Duration::from_secs(2), Duration::from_secs(20));
+    let status = terminate(&mut running);
+    assert_eq!(status.code(), Some(0), "an orderly stop: {status:?}");
+    let rest = lines_until_quiet(&lines, Duration::from_secs(2), Duration::from_secs(20));
+    assert!(
+        rest.iter().any(|l| l.ends_with("stopped")),
+        "the stopped line reaches the reader: {rest:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_whose_stderr_was_never_full_drops_nothing() {
+    let s = setup();
+    let held = start_then_hold_stderr(serve(&s));
+    held.health(&s, 0, 20).await;
+    let (_running, _addr, lines) = held.read_again();
+    let read = lines_until_quiet(&lines, Duration::from_secs(2), Duration::from_secs(20));
+    assert_eq!(
+        read.iter().filter(|l| l.contains("route=/health")).count(),
+        20,
+        "every request's line: {read:?}"
+    );
+    assert!(
+        read.iter().all(|l| dropped_count(l).is_none()),
+        "nothing dropped: {read:?}"
+    );
+}
+
 /// Starts a server and sends it `signal` as soon as its serving line is
 /// read, `rounds` times over; each must stop as it does on a signal that
 /// comes later: cleanly, with exit status 0.
