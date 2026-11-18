@@ -14,8 +14,8 @@ the one rule. A commit passes when:
   can set, so the signature is what proves the commit came from the bot;
 - or its author AND its committer are the repository owner's GitHub login,
   and GitHub verified its signature. The owner holds the rights already, so
-  these commits need no statement; ~/Development/bin/cla-owner-exempt applies
-  the same test to `license/cla`. No address of the owner is read or named;
+  these commits need no statement (MAINTAINERS.md, "The contributor
+  agreement"). No address of the owner is read or named;
 - or its message has a line `Signed-off-by: Name <email>`, at the start of
   the line, with a name that is not empty and the commit's author email,
   compared without case, AND that email is a GitHub noreply address
@@ -40,13 +40,17 @@ commit, or the owner login is missing; nothing was checked. The output
 names an address only when it is a noreply address, since CI's log of a
 pull request is public.
 
-Usage: check_dco.py --warn-local MSGFILE AUTHOR
+Usage: check_dco.py --local MSGFILE AUTHOR
 
 What .githooks/commit-msg runs. AUTHOR is an email or the output of
-`git var GIT_AUTHOR_IDENT`. Prints `commit-msg: warning: ...` on standard
-error when the message has no sign-off the `DCO` job would accept, and
-nothing otherwise; always exits 0, since CI's `DCO` job decides. The hook
-skips it when `git config dco.exempt` is true (MAINTAINERS.md).
+`git var GIT_AUTHOR_IDENT`. The `main` ruleset requires the `DCO` check, so
+a message without a sign-off the job would accept is refused before it is
+committed: `commit-msg: refused: ...` on standard error and exit 1. A
+message that cannot be read, or no AUTHOR, is refused the same way, since
+nothing was checked. Exit 0, silent, otherwise. The owner exemption needs
+GitHub's signature verdict, which a local hook does not have, so the hook
+skips this step when `git config dco.exempt` is true, which the owner sets
+in the owner's clone (MAINTAINERS.md).
 
 Run with: python3 -I scripts/check_dco.py ...
 """
@@ -181,8 +185,8 @@ def read_pages(text):
         out.extend(page)
 
 
-def local_warning(message, author_email):
-    """The commit-msg hook's warning for `message`, or None when the `DCO`
+def local_refusal(message, author_email):
+    """Why the commit-msg hook refuses `message`, or None when the `DCO`
     job would accept its sign-off."""
     if not is_noreply(author_email):
         return (
@@ -194,7 +198,7 @@ def local_warning(message, author_email):
         return None
     return (
         f"no Signed-off-by line names your author email <{author_email}>; "
-        "the pull request's DCO check will fail. Commit with `git commit -s`."
+        "the pull request's required DCO check would fail. Commit with `git commit -s`."
     )
 
 
@@ -205,26 +209,28 @@ def ident_email(ident):
     return m.group(1) if m else ident.strip()
 
 
-def warn_local(argv):
-    """`--warn-local MSGFILE AUTHOR`: the warning on standard error; 0."""
+def local(argv):
+    """`--local MSGFILE AUTHOR`: 0 when the message is signed off; else the
+    refusal on standard error and 1."""
     try:
         message = pathlib.Path(argv[0]).read_text(encoding="utf-8")
         author = argv[1]
     except (OSError, IndexError, UnicodeDecodeError) as error:
-        print(f"commit-msg: DCO sign-off not checked: {error}", file=sys.stderr)
-        return 0
-    warning = local_warning(message, ident_email(author))
-    if warning:
-        print(f"commit-msg: warning: {warning}", file=sys.stderr)
+        print(f"commit-msg: refused: the DCO sign-off cannot be checked: {error}", file=sys.stderr)
+        return 1
+    refusal = local_refusal(message, ident_email(author))
+    if refusal:
+        print(f"commit-msg: refused: {refusal}", file=sys.stderr)
+        return 1
     return 0
 
 
 def main(argv):
-    if argv[:1] == ["--warn-local"]:
-        return warn_local(argv[1:])
+    if argv[:1] == ["--local"]:
+        return local(argv[1:])
     if len(argv) != 3 or argv[0] != "--owner" or not argv[1]:
         print("usage: check_dco.py --owner LOGIN FILE", file=sys.stderr)
-        print("       check_dco.py --warn-local MSGFILE AUTHOR", file=sys.stderr)
+        print("       check_dco.py --local MSGFILE AUTHOR", file=sys.stderr)
         return 2
     owner, path = argv[1], argv[2]
     try:

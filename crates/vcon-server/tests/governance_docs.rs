@@ -16,6 +16,9 @@
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
+#[path = "governance_docs/agreement.rs"]
+mod agreement;
+
 /// The repository root, two levels above this crate.
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")

@@ -85,12 +85,11 @@ after it passes.
 5. Make the change, run the test until it passes, and commit. The commit
    hook runs the same checks as CI.
 6. Push the branch to your fork and open a pull request against `main` that
-   names the issue. Sign the
-   [Contributor License Agreement](#contributor-license-agreement) when the
-   bot asks.
+   names the issue. Each commit carries a DCO sign-off
+   ([Signing off commits](#signing-off-commits)).
 
 **Verify:** `git log -1 --show-signature` reports a good signature; on the
-pull request, `CI success` and `license/cla` are green.
+pull request, `CI success` and `DCO` are green.
 
 **Troubleshoot:**
 
@@ -161,11 +160,12 @@ request with the advisory's id.
 **Purpose:** each commit carries a Developer Certificate of Origin
 sign-off, a `Signed-off-by:` line that states you have the right to submit
 it under the project's licenses (<https://developercertificate.org/>). The
-`DCO` check reads every commit of a pull request. While the project
-switches from the Contributor License Agreement, both apply: sign the
-[agreement](#contributor-license-agreement) once and sign off each commit.
-`DCO` is advisory today: the `main` branch does not require it, but a red
-`DCO` still holds up a merge.
+`DCO` check reads every commit of a pull request, and `DCO` is required:
+the `main` branch takes no pull request until it is green. The commit hook
+refuses a commit without the line, so a missing sign-off shows before the
+push. The sign-off replaced the
+[retired Contributor License Agreement](#the-retired-contributor-license-agreement)
+on 2026-11-18.
 
 **Prerequisites:**
 
@@ -202,11 +202,12 @@ switches from the Contributor License Agreement, both apply: sign the
 4. Push the branch to your fork.
 
 **Verify:** `git log -1 --format=%B` ends with the `Signed-off-by:` line;
-the commit hook printed no `commit-msg: warning:` line; on the pull
+the commit hook printed no `commit-msg: refused:` line; on the pull
 request, `DCO` is green.
 
-**Troubleshoot:** `DCO` prints one line per commit, and the commit hook the
-same rule as a warning.
+**Troubleshoot:** `DCO` prints one line per commit, and the commit hook
+applies the same rule before each commit and refuses it with
+`commit-msg: refused: <reason>`.
 
 | Message | Fix |
 |---|---|
@@ -216,35 +217,17 @@ same rule as a warning.
 | `<commit message>: email address:` from the commit hook | The sign-off names a real address; use the noreply address (step 1). |
 | `DCO: cannot read ...; nothing was checked` | GitHub's API did not answer; run the job again. |
 
-## Contributor License Agreement
+## The retired Contributor License Agreement
 
-Sign the vcon-server [Contributor License Agreement](CLA.md) before your first
-pull request merges.
+Until 2026-11-18 each contributor signed the vcon-server
+[Contributor License Agreement](CLA.md) once, before a first pull request
+merged. The project retired it on 2026-11-18, and no one signs it now: the
+DCO sign-off of [Signing off commits](#signing-off-commits) is the
+requirement. Contributions made before 2026-11-18 were made under it.
 
-- It is a one-time step covering all of your contributions.
-- You keep full ownership of your work.
-
-The text exists in three copies:
-
-- `CLA.md` holds the text.
-- <https://vcon-server.com/cla/> republishes it; `scripts/check-site.sh` fails
-  if the two differ by a single character.
-- [CLA Assistant](https://cla-assistant.io/NormB/vcon-server) shows the same
-  words to signers, from a gist that matches `CLA.md`.
-
-Open your pull request as normal. If anyone who committed to it has not signed,
-the `CLAassistant` bot comments within a minute or so. You have two ways to
-answer it:
-
-- follow its link and authorize CLA Assistant with your GitHub account,
-- or post this exact sentence as a pull request comment.
-
-> I have read the CLA Document and I hereby sign the CLA
-
-Post it verbatim: the bot matches the whole sentence, so a reworded version
-reads as an ordinary comment and signs nothing. The bot then reports a
-`license/cla` status on the pull request, and turns it green once everyone who
-committed to the branch has signed.
+`CLA.md` and <https://vcon-server.com/cla/> keep its text, unchanged, under
+a notice that it is retired; a test of the repository holds the two copies
+equal, byte for byte.
 
 ## Reporting a security problem
 

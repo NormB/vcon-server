@@ -1,10 +1,16 @@
 +++
-title = "Contributor License Agreement"
-description = "The agreement each contributor signs once, before a first pull request merges. The same words as CLA.md in the repository."
+title = "Contributor License Agreement (retired)"
+description = "The agreement contributors signed until it retired on 2026-11-18. Contributions made before that day were made under it. The same words as CLA.md in the repository."
 template = "page.html"
 +++
 
 # vcon-server Individual Contributor License Agreement
+
+> **Retired on 2026-11-18.** Contributors no longer sign this agreement.
+> Contributions made before 2026-11-18 were made under it. Each commit
+> now carries a Developer Certificate of Origin sign-off instead, as
+> [Signing off commits](https://github.com/NormB/vcon-server/blob/main/CONTRIBUTING.md#signing-off-commits)
+> describes. The text of the agreement below is unchanged.
 
 Thank you for your interest in contributing to open source software projects
 ("Projects") made available by the maintainer of vcon-server, the GitHub

@@ -343,8 +343,8 @@ git config core.hooksPath .githooks
 - **commit-msg** refuses the same in the message, every line of it,
   including lines that start with `#`, which `git commit -m` keeps. The
   one address it lets through is a GitHub noreply address on a
-  `Signed-off-by:` line. It then warns, and never refuses, when the
-  message has no DCO sign-off that the advisory `DCO` check would accept
+  `Signed-off-by:` line. It then refuses a message that has no DCO
+  sign-off that the required `DCO` check would accept
   (`scripts/check_dco.py`; see
   [Signing off commits](https://github.com/NormB/vcon-server/blob/main/CONTRIBUTING.md#signing-off-commits)).
 - **pre-push** refuses any outgoing commit that is not signed by an allowed
@@ -1259,8 +1259,10 @@ local path that does not exist or leaves the repository.
   expected and what happened, and the log lines with every token removed.
 - **A change:** send a pull request against `main`. Read
   [CONTRIBUTING.md](https://github.com/NormB/vcon-server/blob/main/CONTRIBUTING.md)
-  first, and sign the [Contributor License Agreement](@/cla.md) before
-  your first pull request merges. Its
+  first, and sign off each commit with a DCO sign-off
+  ([Signing off commits](https://github.com/NormB/vcon-server/blob/main/CONTRIBUTING.md#signing-off-commits)).
+  The [Contributor License Agreement](@/cla.md) retired on 2026-11-18;
+  contributions made before that day were made under it. CONTRIBUTING.md's
   [Your first change](https://github.com/NormB/vcon-server/blob/main/CONTRIBUTING.md#your-first-change)
   takes a first pull request from a starter task to a merge.
 - **Who decides:**

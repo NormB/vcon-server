@@ -12,14 +12,16 @@
    2026-10-28 "git hooks" was red on a merged PR, and on 2026-11-06 the
    CodeQL and OSV jobs ran on every PR without being required.
 
-Contexts that no workflow reports (the CLA assistant's "license/cla") are
-named in EXTERNAL.
+EXTERNAL names the contexts that an outside service reports and no
+workflow does. It is empty: the CLA assistant's "license/cla" left it on
+2026-11-18, when the ruleset stopped requiring it, so a ruleset that
+requires "license/cla" again is refused.
 
 ADVISORY names the checks that run on every pull request on purpose
-without being required: `DCO` (.github/workflows/dco.yml) until the
-repository owner requires it in place of `license/cla`. A name there is
-refused when the ruleset requires it, when a required job needs it (it is
-then not advisory), and when no job that runs on every pull request
+without being required. It is empty: `DCO` (.github/workflows/dco.yml)
+left it on 2026-11-18, when the ruleset began to require it. A name there
+is refused when the ruleset requires it, when a required job needs it (it
+is then not advisory), and when no job that runs on every pull request
 reports it, so the list holds no stale name and the change that requires
 a check also takes it off the list. "CodeQL" is code scanning's own check-run (app
 github-advanced-security), not a job: it reports on a pull request once a
@@ -41,8 +43,8 @@ import pathlib
 import re
 import sys
 
-EXTERNAL = {"license/cla"}
-ADVISORY = frozenset({"DCO"})
+EXTERNAL = frozenset()
+ADVISORY = frozenset()
 CODE_SCANNING = "CodeQL"
 ANALYZE = "github/codeql-action/analyze@"
 NO_UPLOAD = {"never", "false"}

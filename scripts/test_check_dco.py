@@ -1,5 +1,5 @@
 """Tests scripts/check_dco.py: the DCO sign-off rule for a pull request's
-commits, and the commit-msg hook's warning.
+commits, and the commit-msg hook's refusal of a message without one.
 
 Run with: python3 -I scripts/test_check_dco.py
 """
@@ -78,15 +78,20 @@ def run_main(argv, text=None):
     return rc, out.getvalue(), err.getvalue()
 
 
-def run_warn(message, ident):
-    """warn_local's exit status, standard output and standard error."""
+def run_local(message, *rest, flag="--local"):
+    """`main([flag, MSGFILE, *rest])`'s exit status, standard output and
+    standard error, with `message` in MSGFILE."""
     out, err = io.StringIO(), io.StringIO()
     with tempfile.TemporaryDirectory() as tmp:
         path = pathlib.Path(tmp, "COMMIT_EDITMSG")
         path.write_text(message, encoding="utf-8")
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            rc = dco.main(["--warn-local", str(path), ident])
+            rc = dco.main([flag, str(path), *rest])
     return rc, out.getvalue(), err.getvalue()
+
+
+IDENT = f"A Contributor <{MAIL}> 1700000000 +0000"
+REFUSED = "commit-msg: refused: "
 
 
 class Passes(unittest.TestCase):
@@ -151,11 +156,21 @@ class Passes(unittest.TestCase):
     def test_a_bot_noreply_address_is_noreply(self):
         self.assertTrue(dco.is_noreply(BOT_MAIL))
 
-    def test_no_warning_for_a_noreply_sign_off(self):
-        self.assertIsNone(dco.local_warning(signed(), MAIL))
+    def test_no_refusal_for_a_noreply_sign_off(self):
+        self.assertIsNone(dco.local_refusal(signed(), MAIL))
 
-    def test_warn_local_is_silent_and_exits_0_when_signed_off(self):
-        self.assertEqual(run_warn(signed(), f"A Contributor <{MAIL}> 1700000000 +0000"), (0, "", ""))
+    def test_local_is_silent_and_exits_0_when_signed_off(self):
+        self.assertEqual(run_local(signed(), IDENT), (0, "", ""))
+
+    def test_local_takes_a_crlf_sign_off(self):
+        self.assertEqual(run_local(signed().replace("\n", "\r\n"), IDENT), (0, "", ""))
+
+    def test_local_compares_the_email_without_case(self):
+        self.assertEqual(run_local(signed(MAIL.upper()), IDENT), (0, "", ""))
+
+    def test_local_takes_one_matching_sign_off_of_several(self):
+        message = f"Change it\n\nSigned-off-by: B <{OTHER}>\nSigned-off-by: A Contributor <{MAIL}>\n"
+        self.assertEqual(run_local(message, IDENT), (0, "", ""))
 
     def test_the_author_email_is_read_from_the_ident(self):
         self.assertEqual(dco.ident_email(f"A Contributor <{MAIL}> 1700000000 +0000"), MAIL)
@@ -223,20 +238,39 @@ class Fails(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("FAIL bbbbbbbbb: no Signed-off-by line", out)
 
-    def test_the_warning_names_the_author_email(self):
-        found = dco.local_warning("Change it", MAIL)
+    def test_the_refusal_names_the_author_email(self):
+        found = dco.local_refusal("Change it", MAIL)
         self.assertIsNotNone(found)
         self.assertIn(f"<{MAIL}>", found)
 
-    def test_the_warning_asks_for_a_noreply_author_email(self):
-        found = dco.local_warning(signed(REAL), REAL)
+    def test_the_refusal_asks_for_a_noreply_author_email(self):
+        found = dco.local_refusal(signed(REAL), REAL)
         self.assertIsNotNone(found)
         self.assertIn("noreply", found)
 
-    def test_warn_local_warns_on_standard_error_and_exits_0(self):
-        rc, out, err = run_warn("Change it", f"A <{MAIL}> 1700000000 +0000")
-        self.assertEqual((rc, out), (0, ""))
-        self.assertTrue(err.startswith("commit-msg: warning: "), err)
+    def test_local_refuses_on_standard_error_and_exits_1(self):
+        rc, out, err = run_local("Change it", IDENT)
+        self.assertEqual((rc, out), (1, ""))
+        self.assertTrue(err.startswith(REFUSED + "no Signed-off-by line"), err)
+
+    def test_local_refuses_a_sign_off_of_another_address(self):
+        rc, _, err = run_local(signed(OTHER), IDENT)
+        self.assertEqual(rc, 1)
+        self.assertTrue(err.startswith(REFUSED), err)
+
+    def test_local_refuses_an_author_email_that_is_not_noreply(self):
+        rc, _, err = run_local(signed(REAL), f"A Contributor <{REAL}> 1700000000 +0000")
+        self.assertEqual(rc, 1)
+        self.assertIn("not a GitHub noreply address", err)
+
+    def test_local_refuses_a_sign_off_inside_a_line(self):
+        rc, _, err = run_local(f"Change it\n\nsee Signed-off-by: A Contributor <{MAIL}>\n", IDENT)
+        self.assertEqual(rc, 1)
+        self.assertTrue(err.startswith(REFUSED), err)
+
+    def test_the_refusal_names_the_fix(self):
+        _, _, err = run_local("Change it", IDENT)
+        self.assertIn("git commit -s", err)
 
     def test_a_real_address_is_not_noreply(self):
         self.assertFalse(dco.is_noreply("someone@gm" "ail.com"))
@@ -317,12 +351,40 @@ class Edges(unittest.TestCase):
     def test_an_id_without_its_plus_is_no_address(self):
         self.assertFalse(dco.is_noreply(addr("12345", NOREPLY + "+x")))
 
-    def test_an_unreadable_message_is_not_checked_and_exits_0(self):
+    def test_an_unreadable_message_is_refused(self):
+        # The sign-off is required, so a message that cannot be read is
+        # refused, not let through unchecked.
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            rc = dco.main(["--warn-local", "/nonexistent/COMMIT_EDITMSG", f"A <{MAIL}>"])
-        self.assertEqual(rc, 0)
-        self.assertIn("not checked", err.getvalue())
+            rc = dco.main(["--local", "/nonexistent/COMMIT_EDITMSG", f"A <{MAIL}>"])
+        self.assertEqual(rc, 1)
+        self.assertTrue(err.getvalue().startswith(REFUSED + "the DCO sign-off cannot be checked: "), err.getvalue())
+
+    def test_a_missing_author_is_refused(self):
+        rc, _, err = run_local(signed())
+        self.assertEqual(rc, 1)
+        self.assertIn("cannot be checked", err)
+
+    def test_a_message_that_is_not_utf8_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp, "COMMIT_EDITMSG")
+            path.write_bytes(b"Change \xff it\n")
+            err = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                rc = dco.main(["--local", str(path), IDENT])
+        self.assertEqual(rc, 1)
+        self.assertIn("cannot be checked", err.getvalue())
+
+    def test_the_old_warn_local_mode_is_gone(self):
+        rc, out, err = run_local(signed(), IDENT, flag="--warn-local")
+        self.assertEqual((rc, out), (2, ""))
+        self.assertIn("--local MSGFILE AUTHOR", err)
+
+    def test_an_owner_ident_without_a_sign_off_is_still_refused_locally(self):
+        # The owner exemption needs GitHub's signature verdict, which a
+        # local hook does not have; the owner's clone sets dco.exempt.
+        rc, _, _ = run_local("Change it", f"Owner <owner{AT}example.com> 1700000000 +0000")
+        self.assertEqual(rc, 1)
 
     def test_an_ident_without_brackets_is_the_email(self):
         self.assertEqual(dco.ident_email(f"  {MAIL} "), MAIL)
@@ -335,8 +397,9 @@ class Edges(unittest.TestCase):
         raw["parents"].append({"sha": "d" * 40})
         self.assertEqual(dco.from_api(raw).parents, 2)
 
-    def test_a_nameless_sign_off_warns_locally(self):
-        self.assertIsNotNone(dco.local_warning(f"x\n\nSigned-off-by: <{MAIL}>\n", MAIL))
+    def test_a_nameless_sign_off_is_refused_locally(self):
+        self.assertIsNotNone(dco.local_refusal(f"x\n\nSigned-off-by: <{MAIL}>\n", MAIL))
+        self.assertEqual(run_local(f"x\n\nSigned-off-by: <{MAIL}>\n", IDENT)[0], 1)
 
     def test_the_output_names_each_commit_by_nine_characters(self):
         _, lines = dco.check([commit(signed(), sha="0123456789abcdef" + "0" * 24)], OWNER)

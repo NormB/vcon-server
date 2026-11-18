@@ -7,11 +7,10 @@ name: DCO
 # committed by the repository owner; or a verified commit by a GitHub Bot
 # account.
 #
-# Advisory for now: the main ruleset does not require `DCO`, and
-# `license/cla` stays required. scripts/check_required_checks.py lists the
-# job in ADVISORY, so a job that runs on every pull request without being
-# required is allowed for it. The repository owner decides when `DCO`
-# replaces `license/cla`; that change removes it from ADVISORY.
+# Required: since 2026-11-18 the `main` ruleset requires `DCO` in place of
+# the retired Contributor License Agreement (MAINTAINERS.md, "The
+# contributor agreement"). .githooks/commit-msg applies the same rule
+# before a commit is made.
 #
 # A workflow of its own, not a job of ci.yml: "CI success" needs every job
 # of ci.yml (scripts/ci_success.py), so a job there would be required at once.

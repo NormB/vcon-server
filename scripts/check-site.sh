@@ -64,14 +64,14 @@ for svg in "$site"/*.svg "$root"/assets/brand/*.svg; do
   fi
 done
 
-# The contributor agreement on the site is CLA.md, word for word, after the
-# page's front matter.
-[ -s "$root/CLA.md" ] || fail "no CLA.md"
-cla_page="$root/website/content/cla.md"
-[ -s "$cla_page" ] || fail "no website/content/cla.md"
-awk 'n >= 2 { print } /^\+\+\+$/ { n++ }' "$cla_page" | tail -n +2 | cmp -s - "$root/CLA.md" \
-  || fail "website/content/cla.md does not reproduce CLA.md"
-[ -s "$site/cla/index.html" ] || fail "the build has no CLA page"
+# The retired contributor agreement stays published (decision iv), marked
+# retired. That website/content/cla.md reproduces CLA.md byte for byte, with
+# its notice, is held by crates/vcon-server/tests/governance_docs/agreement.rs,
+# which the commit hook runs; here the built page must exist and show it.
+cla_built="$site/cla/index.html"
+[ -s "$cla_built" ] || fail "the build has no CLA page"
+grep -qF '<strong>Retired on ' "$cla_built" || fail "the built CLA page does not show that the agreement is retired"
+grep -qF '>Retired contributor agreement</a>' "$home" || fail "the home page's footer does not link the retired agreement"
 
 # Search works only if the page loads js/search.js and names the two files
 # that script fetches when the search box is first used, and loads neither

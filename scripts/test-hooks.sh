@@ -33,6 +33,10 @@ git config user.name "Test User"
 git config user.email "test@example.com"
 git config commit.gpgsign false
 git config core.hooksPath .githooks
+# The commit-msg hook refuses a message without a DCO sign-off; these cases
+# test the scans, so the fixture skips that step as the owner's clone does.
+# scripts/test-scan-commit-messages.sh tests the sign-off step itself.
+git config dco.exempt true
 # .config holds nextest's deadline, .cargo the linker config and .github the
 # workflows, which the tests of the hook's scripts read. CHANGELOG.md is
 # what scripts/test_release_notes.py makes each release's text from.

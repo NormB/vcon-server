@@ -7,8 +7,8 @@
 # address at github.com does not. A Signed-off-by line naming a GitHub
 # noreply address passes, and the same address elsewhere in a message does
 # not. Then .githooks/commit-msg itself: it refuses what the scan refuses,
-# and warns, without refusing, on a message with no DCO sign-off the `DCO`
-# job would accept, unless `dco.exempt` is set.
+# and refuses a message with no DCO sign-off the required `DCO` job would
+# accept, unless `dco.exempt` is set.
 # Forbidden samples are assembled at run time, so this file holds none.
 set -euo pipefail
 src="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -89,9 +89,9 @@ loose="$(commit "Ask $noreply about it")"
 expect 0 "a sign-off naming a GitHub noreply address" "" "$signed"
 expect 1 "a sign-off naming a real address" "<commit message>: email address:" "$signed_real"
 expect 1 "a noreply address outside a sign-off line" "<commit message>: email address:" "$loose"
-# The commit-msg hook: the same scan, then a warning, never a refusal, for
-# a message without a sign-off the DCO job would accept. It runs against
-# the scripts of the repository it is in, so they are copied in.
+# The commit-msg hook: the same scan, then a refusal of a message without a
+# sign-off the required DCO job would accept. It runs against the scripts
+# of the repository it is in, so they are copied in.
 mkdir -p scripts
 cp "$src/scan_forbidden.py" "$src/check_dco.py" scripts/
 # hook <0|1> <description> <text the output must hold, or "" for none> <message>
@@ -108,11 +108,11 @@ hook() {
   fi
 }
 git config user.email "$noreply"
-hook 0 "the hook warns on a message without a sign-off" "commit-msg: warning: no Signed-off-by line" "Change it"
+hook 1 "the hook refuses a message without a sign-off" "commit-msg: refused: no Signed-off-by line" "Change it"
 hook 0 "the hook is silent on a noreply sign-off of the author" "" "Change it
 
 Signed-off-by: A Contributor <$noreply>"
-hook 0 "the hook warns on a sign-off of another noreply address" "commit-msg: warning: no Signed-off-by line" "Change it
+hook 1 "the hook refuses a sign-off of another noreply address" "commit-msg: refused: no Signed-off-by line" "Change it
 
 Signed-off-by: B <9+other@$nr>"
 hook 1 "the hook refuses a sign-off naming a real address" "commit-msg: refused" "Change it
@@ -120,9 +120,12 @@ hook 1 "the hook refuses a sign-off naming a real address" "commit-msg: refused"
 Signed-off-by: A Contributor <$gmail>"
 git config dco.exempt true
 hook 0 "the hook is silent for a maintainer with dco.exempt" "" "Change it"
+hook 1 "dco.exempt does not skip the personal-data scan" "<commit message>: email address:" "Ask $gmail"
+git config dco.exempt false
+hook 1 "dco.exempt set to false refuses an unsigned message" "commit-msg: refused: no Signed-off-by line" "Change it"
 git config --unset dco.exempt
 git config user.email "test@example.com"
-hook 0 "the hook asks for a noreply author email" "not a GitHub noreply address" "Change it
+hook 1 "the hook refuses an author email that is not noreply" "not a GitHub noreply address" "Change it
 
 Signed-off-by: Test User <test@example.com>"
 echo "test-scan-commit-messages: $pass of $((pass + fail)) passed"

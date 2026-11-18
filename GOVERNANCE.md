@@ -6,7 +6,7 @@
 |---|---|---|
 | Maintainer | The people listed in [MAINTAINERS.md](MAINTAINERS.md): today the repository owner, NormB on GitHub | Reviews and merges pull requests, publishes releases, sets the [roadmap](https://vcon-server.com/docs/roadmap/), handles security reports as [SECURITY.md](SECURITY.md) describes, and enforces the [Code of Conduct](CODE_OF_CONDUCT.md) |
 | Committer | No one besides the maintainer today | Merges reviewed pull requests to `main` |
-| Contributor | Anyone whose pull request merges | Follows [CONTRIBUTING.md](CONTRIBUTING.md): the test written first, the hooks turned on, reserved test data only; signs the [Contributor License Agreement](CLA.md) before a first pull request merges; follows the [Code of Conduct](CODE_OF_CONDUCT.md) |
+| Contributor | Anyone whose pull request merges | Follows [CONTRIBUTING.md](CONTRIBUTING.md): the test written first, the hooks turned on, reserved test data only; signs off each commit with a DCO sign-off ([Signing off commits](CONTRIBUTING.md#signing-off-commits)); follows the [Code of Conduct](CODE_OF_CONDUCT.md) |
 
 Anyone may open an issue, a pull request or a
 [Discussion](https://github.com/NormB/vcon-server/discussions).

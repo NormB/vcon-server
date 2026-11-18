@@ -49,7 +49,14 @@ def workflows(**changes):
     return out
 
 
-REQUIRED = ["fmt, clippy, tests", "CI success", "license/cla", "Analyze (actions)", "Analyze (rust)", "OSV (all lockfiles)", "CodeQL"]
+REQUIRED = ["fmt, clippy, tests", "CI success", "Analyze (actions)", "Analyze (rust)", "OSV (all lockfiles)", "CodeQL"]
+# Ruleset 25842923 ("main") from 2026-11-18, when it began to require `DCO`
+# and stopped requiring the CLA assistant's `license/cla`.
+LIVE = ["fmt, clippy, tests", "coverage", "no AI attribution or personal data", "website",
+        "logo files match their source", "DCO", "console in a browser",
+        "client examples against a live server", "git hooks", "CI success", "Analyze (actions)",
+        "Analyze (javascript-typescript)", "Analyze (rust)", "OSV (all lockfiles)", "CodeQL"]
+NO_CLA = "the ruleset requires 'license/cla', which no workflow job reports"
 UNSCANNED = "the ruleset requires 'CodeQL', which code scanning reports only on a pull request whose CodeQL analysis is uploaded, and no workflow that runs on every pull request uploads one"
 
 
@@ -170,9 +177,9 @@ class Contexts(unittest.TestCase):
     def test_the_contexts_come_from_the_branch_rules(self):
         rules = [
             {"type": "deletion"},
-            {"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "CI success", "integration_id": 15368}, {"context": "license/cla"}]}},
+            {"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "CI success", "integration_id": 15368}, {"context": "DCO"}]}},
         ]
-        self.assertEqual(check.required_contexts(rules), ["CI success", "license/cla"])
+        self.assertEqual(check.required_contexts(rules), ["CI success", "DCO"])
 
     def test_a_ruleset_object_is_read_too(self):
         ruleset = {"id": 25842923, "rules": [{"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "git hooks"}]}}]}
@@ -195,7 +202,8 @@ DCO_UNNEEDED = "dco.yml: 'DCO' runs on every pull request, but no required check
 
 class Advisory(unittest.TestCase):
     """A job named in ADVISORY reports on every pull request without being
-    required: the `DCO` check until the owner requires it."""
+    required. The tests pass their own list; main passes ADVISORY, empty
+    since `DCO` became required on 2026-11-18."""
 
     def test_an_advisory_job_may_run_on_every_pr_unrequired(self):
         self.assertEqual(check.problems(workflows(**dco()), REQUIRED, {"DCO"}), [])
@@ -242,28 +250,86 @@ class Advisory(unittest.TestCase):
         self.assertEqual(check.problems(wfs, REQUIRED, {"DCO (a)"}),
                          ["dco.yml: 'DCO (b)' runs on every pull request, but no required check needs it"])
 
-    def test_the_list_is_the_dco_check(self):
-        # Decision (ix), recorded by recommendation: the advisory jobs are
-        # named here, and a name leaves when the ruleset requires it.
-        self.assertEqual(check.ADVISORY, frozenset({"DCO"}))
+    def test_the_list_is_empty_and_kept(self):
+        # Decision (ix): the advisory jobs are named here, and a name leaves
+        # when the ruleset requires it. `DCO` left on 2026-11-18; the list
+        # stays, empty, for the next advisory job.
+        self.assertEqual(check.ADVISORY, frozenset())
+        self.assertIsInstance(check.ADVISORY, frozenset)
 
-    def test_this_repository_s_dco_job_runs_on_every_pr_and_is_advisory(self):
+    def test_an_empty_list_allows_no_unrequired_job(self):
+        self.assertEqual(check.problems(workflows(**dco()), REQUIRED, check.ADVISORY), [DCO_UNNEEDED])
+
+    def test_an_empty_list_reports_no_stale_name(self):
+        self.assertEqual(check.problems(workflows(), REQUIRED, check.ADVISORY), [])
+
+    def test_the_required_dco_job_passes_with_the_list(self):
+        self.assertEqual(check.problems(workflows(**dco()), REQUIRED + ["DCO"], check.ADVISORY), [])
+
+
+def run_main(contexts):
+    """main's exit status and standard error for a ruleset that requires
+    `contexts`, against this repository's workflows."""
+    rules = [{"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": c} for c in contexts]}}]
+    with tempfile.TemporaryDirectory() as tmp:
+        path = pathlib.Path(tmp, "rules.json")
+        path.write_text(json.dumps(rules), encoding="utf-8")
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = check.main(["check_required_checks.py", str(path)])
+    return rc, err.getvalue()
+
+
+class Retired(unittest.TestCase):
+    """The CLA retired on 2026-11-18: the ruleset requires `DCO` and no
+    longer requires the CLA assistant's `license/cla`."""
+
+    def test_no_context_is_external(self):
+        self.assertEqual(check.EXTERNAL, frozenset())
+        self.assertIsInstance(check.EXTERNAL, frozenset)
+
+    def test_a_ruleset_that_still_requires_license_cla_is_refused(self):
+        self.assertEqual(check.problems(workflows(), REQUIRED + ["license/cla"], check.ADVISORY), [NO_CLA])
+
+    def test_license_cla_is_refused_beside_a_required_dco(self):
+        found = check.problems(workflows(**dco()), REQUIRED + ["DCO", "license/cla"], check.ADVISORY)
+        self.assertEqual(found, [NO_CLA])
+
+    def test_the_live_ruleset_passes_against_this_repository(self):
+        self.assertEqual(check.problems(check.read_workflows(HERE.parent), LIVE, check.ADVISORY), [])
+
+    def test_the_live_ruleset_requires_dco_and_not_license_cla(self):
+        self.assertIn("DCO", LIVE)
+        self.assertNotIn("license/cla", LIVE)
+        self.assertEqual(len(LIVE), len(set(LIVE)), "a context twice")
+
+    def test_this_repository_s_dco_job_runs_on_every_pr(self):
         real = check.read_workflows(HERE.parent)
         names = {n for file, _, ns in check.every_pr_jobs(real) if file == "dco.yml" for n in (ns or [])}
         self.assertEqual(names, {"DCO"})
-        self.assertEqual([f for f in check.problems(real, [], check.ADVISORY) if "'DCO'" in f], [])
 
-    def test_main_applies_the_list(self):
-        real = check.read_workflows(HERE.parent)
-        required = sorted({n for _, _, ns in check.every_pr_jobs(real) for n in (ns or [])} - check.ADVISORY)
-        rules = [{"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": c} for c in required + ["license/cla", "CodeQL"]]}}]
-        with tempfile.TemporaryDirectory() as tmp:
-            path = pathlib.Path(tmp, "rules.json")
-            path.write_text(json.dumps(rules), encoding="utf-8")
-            out, err = io.StringIO(), io.StringIO()
-            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-                rc = check.main(["check_required_checks.py", str(path)])
-        self.assertEqual(rc, 0, err.getvalue())
+    def test_this_repository_s_dco_job_unrequired_is_refused(self):
+        found = check.problems(check.read_workflows(HERE.parent), [c for c in LIVE if c != "DCO"], check.ADVISORY)
+        self.assertEqual(found, [DCO_UNNEEDED])
+
+    def test_main_passes_the_live_ruleset(self):
+        rc, err = run_main(LIVE)
+        self.assertEqual(rc, 0, err)
+
+    def test_main_refuses_the_ruleset_from_before_the_switch(self):
+        before = [c for c in LIVE if c != "DCO"] + ["license/cla"]
+        rc, err = run_main(before)
+        self.assertEqual(rc, 1)
+        self.assertIn(f"check_required_checks: {NO_CLA}", err)
+        self.assertIn(f"check_required_checks: {DCO_UNNEEDED}", err)
+
+    def test_main_refuses_license_cla_named_again_after_the_switch(self):
+        rc, err = run_main(LIVE + ["license/cla"])
+        self.assertEqual((rc, err), (1, f"check_required_checks: {NO_CLA}\n"))
+
+    def test_the_cla_context_compares_exactly(self):
+        found = check.problems(workflows(), REQUIRED + ["License/CLA"], check.ADVISORY)
+        self.assertEqual(found, ["the ruleset requires 'License/CLA', which no workflow job reports"])
 
 
 class Repository(unittest.TestCase):

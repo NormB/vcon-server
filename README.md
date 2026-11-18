@@ -160,9 +160,10 @@ before using it.
 
 ## Contributing
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) first. Every contributor signs the
-[Contributor License Agreement](CLA.md) once, before a first pull request
-merges. [GOVERNANCE.md](GOVERNANCE.md) says who decides and how, and
+Read [CONTRIBUTING.md](CONTRIBUTING.md) first. Every commit carries a DCO
+sign-off ([Signing off commits](CONTRIBUTING.md#signing-off-commits)); the
+[Contributor License Agreement](CLA.md) retired on 2026-11-18, and
+contributions made before that day were made under it. [GOVERNANCE.md](GOVERNANCE.md) says who decides and how, and
 [MAINTAINERS.md](MAINTAINERS.md) lists the maintainers.
 
 Enable the repository's git hooks once per clone:
@@ -201,7 +202,7 @@ and the doc tests with
 `scripts/cc-lld.sh` with the toolchain's lld), the same for the fuzz package, the
 tests of the scripts, and `scripts/check_package.py`, which checks what each
 crate would publish. `.githooks/commit-msg` runs the same scan over the commit
-message, and warns, without refusing, when it has no DCO sign-off
+message, and refuses it when it has no DCO sign-off
 (`scripts/check_dco.py`, see
 [Signing off commits](CONTRIBUTING.md#signing-off-commits)). Before each push, `.githooks/pre-push` refuses any outgoing commit
 that has no good signature from an allowed signer, whose author or committer

@@ -5,12 +5,13 @@
 # "whitespace"), so they can reach the stored message. A comment line of
 # git's own template is scanned as well, which can only refuse more.
 #
-# Then warns, and never refuses, when the message has no DCO sign-off that
-# CI's advisory `DCO` job (.github/workflows/dco.yml) would accept: a
-# `Signed-off-by:` line naming the author's GitHub noreply address
-# (scripts/check_dco.py, CONTRIBUTING.md "Signing off commits"). A
-# maintainer whose commits the job exempts sets `git config dco.exempt
-# true` in the clone, and the step prints nothing (MAINTAINERS.md).
+# Then refuses a message without a DCO sign-off that CI's `DCO` job
+# (.github/workflows/dco.yml), which the `main` ruleset requires, would
+# accept: a `Signed-off-by:` line naming the author's GitHub noreply
+# address (scripts/check_dco.py, CONTRIBUTING.md "Signing off commits").
+# The job exempts the owner's verified commits, which a local hook cannot
+# tell apart, so the owner sets `git config dco.exempt true` in the owner's
+# clone and this step is skipped (MAINTAINERS.md).
 set -euo pipefail
 root="$(git rev-parse --show-toplevel)"
 if ! sed 's/^/<commit message>\t/' "$1" | python3 -I "$root/scripts/scan_forbidden.py"; then
@@ -18,5 +19,5 @@ if ! sed 's/^/<commit message>\t/' "$1" | python3 -I "$root/scripts/scan_forbidd
   exit 1
 fi
 if [ "$(git config --type=bool --default=false dco.exempt)" != true ]; then
-  python3 -I "$root/scripts/check_dco.py" --warn-local "$1" "$(git var GIT_AUTHOR_IDENT)" || true
+  python3 -I "$root/scripts/check_dco.py" --local "$1" "$(git var GIT_AUTHOR_IDENT)"
 fi
