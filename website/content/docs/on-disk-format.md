@@ -113,6 +113,51 @@ release:
 The test also holds this page to the list of formats in the code
 ([formats.rs](https://github.com/NormB/vcon-server/blob/main/crates/vcon-server/src/formats.rs)).
 
+## The data in PostgreSQL and Parquet storage
+
+Each release from 0.4.6, the first built with the `postgres` feature, also
+has a deployment with its catalogs in PostgreSQL and its objects in an S3
+bucket with Parquet storage on, under
+[crates/vcon-server/tests/data/formats-postgres](https://github.com/NormB/vcon-server/tree/main/crates/vcon-server/tests/data/formats-postgres).
+The release's own binary wrote it against PostgreSQL 16.15 and RustFS
+1.0.4, the images of CI's `backends-postgres` job. Each directory holds:
+
+- `dump.sql`: `pg_dump --inserts` of the database, made by PostgreSQL
+  16, the oldest major CI runs, so that it loads into 16 and 18 alike;
+- `bucket/`: every object the bucket held, by its key: the Parquet files
+  of the pack run at start, the versions stored after it as objects, the
+  storage manifests and the claim;
+- `data/`: the lock files; `master.key`, made as above;
+- `manifest.json`: every version kept, with the SHA-256 of its body and
+  where it is (a Parquet file or an object); every uuid purged; the schema
+  version the release wrote; and what made the directory.
+
+The workload is the one above, then a restart with Parquet storage on,
+whose pack run packs every object, then two more vCons in each tenant,
+stored as objects. The sizes measured on 2026-11-17: 159,490 to 159,500
+bytes for each of 0.4.6 to 0.4.9.
+
+On every change, the same test checks each release's files without a
+database: the dump has no psql meta-command, every object starts with the
+`envelope` version, every Parquet file starts and ends with Parquet's
+magic bytes, and each
+storage manifest states the `parquet-storage` format this page states.
+In CI's `backends-postgres` job, on PostgreSQL 16 and 18, it loads each
+dump into a database of its own and the objects into a bucket of its own,
+and:
+
+- `check` passes; every kept version, packed or an object, reads back
+  byte-equal, in the order the release kept them, and each purged uuid
+  stays gone;
+- `migrate` finds the schema current and changes nothing; a schema set to
+  one version past this build is refused by name; the wrong master key
+  opens nothing;
+- the restored deployment stores and reads a new vCon, a missing object is
+  named damaged by `check`, and `serve` without the `[storage.parquet]`
+  table is refused;
+- held versions outlive the start-up sweep under a `0d` period, and the
+  pack run at start packs the late objects, each still read back.
+
 ## Add the data of a new release
 
 After each release, add its data, so every later build opens it.
@@ -135,13 +180,26 @@ Steps:
    python3 -I scripts/make-format-fixtures.py --cache ~/.cache/vcon-format-fixtures --release 0.4.9
    ```
 
-3. Add a row for the release to the table above, and a line
-   `release!(release_0_4_9, "0.4.9");` to `tests/formats.rs` (with `older`
-   when it wrote an older `catalog` version than the build).
-4. Commit the new directory with the page and the test.
+3. Write its PostgreSQL deployment. The script starts the servers of
+   `scripts/pg-test-server.sh` and a RustFS container, and removes them
+   after:
 
-Verify: `cargo test -p vcon-server --test formats` passes. The script
-prints the size of each release's data; state it in the pull request.
+   ```sh
+   python3 -I scripts/make-format-fixtures.py --cache ~/.cache/vcon-format-fixtures --postgres --release 0.4.9
+   ```
+
+4. Add a row for the release to the table above, and the lines
+   `release!(release_0_4_9, "0.4.9");` and
+   `pg_release!(pg_release_0_4_9, "0.4.9");` to `tests/formats.rs` (with
+   `older` when it wrote an older `catalog` version than the build).
+5. Commit the new directories with the page and the test.
+
+Verify: `cargo test -p vcon-server --test formats` passes; with the
+servers of `scripts/pg-test-server.sh` and an S3 store named in the
+`VCON_TEST_S3_*` variables, so does
+`cargo test -p vcon-server --features postgres,backend-tests --test formats postgres::`.
+The script prints the size of each release's data; state it in the pull
+request.
 
 When it does not work:
 
@@ -151,3 +209,7 @@ When it does not work:
   directory. The message ends with the server's last log lines.
 - A test names the release and a version: the page's row states another
   version than the release wrote. Correct the row; never edit the data.
+- `the pack run left N objects`: Parquet storage did not pack every object
+  in the time a start is given. The server's log lines say why.
+- `--postgres takes only ...`: the release is older than 0.4.6, which has
+  no `postgres` feature.

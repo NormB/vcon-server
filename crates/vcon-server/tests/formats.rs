@@ -319,8 +319,13 @@ fn the_newest_release_row_states_this_builds_versions() {
 
 /// The releases with a fixture, oldest first.
 fn fixture_releases() -> Vec<String> {
-    let mut out: Vec<String> = std::fs::read_dir(formats_dir())
-        .expect("tests/data/formats is there")
+    releases_in(&formats_dir())
+}
+
+/// The release directories under `dir`, oldest first.
+fn releases_in(dir: &Path) -> Vec<String> {
+    let mut out: Vec<String> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("{} is there: {e}", dir.display()))
         .map(|e| {
             e.expect("an entry")
                 .file_name()
@@ -347,16 +352,24 @@ struct Row {
     order: usize,
     state: String,
     sha256: String,
+    /// In a PostgreSQL fixture: "packed" into a Parquet file, or "object".
+    place: Option<String>,
 }
 
 struct Manifest {
     archive_sha256: String,
     rows: Vec<Row>,
     purged: Vec<(String, uuid::Uuid)>,
+    /// A PostgreSQL fixture's own section.
+    postgres: Option<serde_json::Value>,
 }
 
 fn manifest(release: &str) -> Manifest {
-    let path = formats_dir().join(release).join("manifest.json");
+    manifest_in(&formats_dir(), release)
+}
+
+fn manifest_in(dir: &Path, release: &str) -> Manifest {
+    let path = dir.join(release).join("manifest.json");
     let doc: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&path).expect("the manifest")).expect("JSON");
     let text = |v: &serde_json::Value, k: &str| v[k].as_str().expect(k).to_owned();
@@ -371,6 +384,7 @@ fn manifest(release: &str) -> Manifest {
             order: usize::try_from(v["order"].as_u64().expect("order")).expect("small"),
             state: text(v, "state"),
             sha256: text(v, "sha256"),
+            place: v["place"].as_str().map(str::to_owned),
         })
         .collect();
     let purged = doc["purged"]
@@ -388,6 +402,7 @@ fn manifest(release: &str) -> Manifest {
         archive_sha256: text(&doc, "archive_sha256"),
         rows,
         purged,
+        postgres: doc.get("postgres").cloned(),
     }
 }
 
@@ -879,8 +894,12 @@ fn a_deleted_vcon_is_gone_to_an_ordinary_read(release: &str) {
 }
 
 fn the_fixture_was_written_by_the_pinned_release(release: &str) {
+    written_by_the_pinned_release(&manifest(release), release);
+}
+
+fn written_by_the_pinned_release(manifest: &Manifest, release: &str) {
     let pins = std::fs::read_to_string(root().join("scripts/docs-test-pins.txt")).expect("pins");
-    let sha = &manifest(release).archive_sha256;
+    let sha = &manifest.archive_sha256;
     let line = pins
         .lines()
         .find(|l| l.starts_with(sha.as_str()))
@@ -1016,3 +1035,1942 @@ fn the_older_tests_cover_exactly_the_releases_that_wrote_an_older_version() {
         "the releases whose fixtures get the failed-migration test"
     );
 }
+
+/// The releases named by the lines `<name>!(<module>, "<release>"...)` of
+/// `source`, in the file's order: the test modules a macro makes.
+fn macro_releases(source: &str, name: &str) -> Vec<String> {
+    let call = format!("{name}!(");
+    source
+        .lines()
+        .filter_map(|line| line.strip_prefix(&call))
+        .filter_map(|rest| rest.split('"').nth(1))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// This file's own text, to read its macro lines.
+const SOURCE: &str = include_str!("formats.rs");
+
+#[test]
+fn every_fixture_has_its_test_module_and_every_module_a_fixture() {
+    let mut fixtures = fixture_releases();
+    fixtures.sort_by_key(|r| release_order(r));
+    assert_eq!(
+        macro_releases(SOURCE, "release"),
+        fixtures,
+        "one release! line per directory under tests/data/formats, oldest first"
+    );
+    let mut pg = releases_in(&pg_formats_dir());
+    pg.sort_by_key(|r| release_order(r));
+    assert_eq!(
+        macro_releases(SOURCE, "pg_release"),
+        pg,
+        "one pg_release! line per directory under tests/data/formats-postgres, oldest first"
+    );
+}
+
+#[test]
+fn a_macro_line_names_its_release() {
+    let source =
+        "release!(release_0_4_0, \"0.4.0\");\nrelease!(release_0_4_1, \"0.4.1\", older);\n";
+    assert_eq!(
+        macro_releases(source, "release"),
+        ["0.4.0", "0.4.1"],
+        "with and without `older`"
+    );
+}
+
+#[test]
+fn a_macro_line_of_another_macro_is_not_read() {
+    let source = "pg_release!(pg_release_0_4_6, \"0.4.6\");\nrelease!(release_0_4_0, \"0.4.0\");\n";
+    assert_eq!(macro_releases(source, "release"), ["0.4.0"], "release!");
+    assert_eq!(
+        macro_releases(source, "pg_release"),
+        ["0.4.6"],
+        "pg_release!"
+    );
+}
+
+#[test]
+fn the_macro_definition_and_indented_text_are_not_lines() {
+    let source = "macro_rules! release {\n    release!(release_x, \"9.9.9\");\n// release!(release_0_1_0, \"0.1.0\");\n";
+    assert!(
+        macro_releases(source, "release").is_empty(),
+        "only a line that starts with the call"
+    );
+}
+
+#[test]
+fn a_macro_line_without_a_quoted_release_is_skipped() {
+    assert!(
+        macro_releases("release!(release_0_4_0);\n", "release").is_empty(),
+        "no release text"
+    );
+}
+
+// ---- The PostgreSQL deployments. ----
+//
+// Each directory under tests/data/formats-postgres/<release>/ was written
+// by that release's binary with its catalogs in PostgreSQL 16 and its
+// objects in a RustFS bucket (scripts/make-format-fixtures.py --postgres):
+// `dump.sql` (pg_dump of the database), `bucket/` (every object the bucket
+// held, by its key: the versions packed into Parquet files by a pack run,
+// the versions stored after it as objects, the manifests and the claim),
+// `data/` (the lock files), the release's test master key and
+// manifest.json. The tests below without a database run in every build;
+// the ones in each `postgres` module load the dump into a database of
+// their own and the objects into a bucket of their own, on the servers of
+// CI's backends-postgres job.
+
+fn pg_formats_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/formats-postgres")
+}
+
+/// The releases the page's release table says wrote a PostgreSQL schema:
+/// each row whose `postgres` cell is not `none`, oldest first.
+fn releases_with_postgres(text: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for (release, wrote) in page_releases(text)? {
+        match wrote.get("postgres").map(String::as_str) {
+            None => return Err(format!("the row of {release} has no postgres cell")),
+            Some("none") => {}
+            Some(_) => out.push(release),
+        }
+    }
+    out.sort_by_key(|r| release_order(r));
+    Ok(out)
+}
+
+/// The numbers of the lines of `dump` that start a psql meta-command or end
+/// COPY data: a server given the dump as one query refuses them.
+fn meta_lines(dump: &str) -> Vec<usize> {
+    dump.lines()
+        .enumerate()
+        .filter(|(_, l)| l.trim_start().starts_with('\\'))
+        .map(|(i, _)| i + 1)
+        .collect()
+}
+
+/// What a key of the bucket names: the third part of
+/// `tenants/<tenant>/<kind>/...`, or None for a key outside a tenant.
+fn key_kind(key: &str) -> Option<&str> {
+    let mut parts = key.split('/');
+    (parts.next() == Some("tenants")).then_some(())?;
+    parts.next().filter(|t| !t.is_empty())?;
+    let kind = parts.next()?;
+    parts.next().filter(|rest| !rest.is_empty())?;
+    Some(kind)
+}
+
+/// The `format` a Parquet storage manifest states.
+fn manifest_format(text: &str) -> Result<String, String> {
+    let doc: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("the manifest is not JSON: {e}"))?;
+    doc["format"]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| "the manifest states no format".to_owned())
+}
+
+/// Every file under `bucket`, as its key and its path, by key.
+fn bucket_files(bucket: &Path) -> Vec<(String, PathBuf)> {
+    fn walk(dir: &Path, base: &Path, out: &mut Vec<(String, PathBuf)>) {
+        for entry in std::fs::read_dir(dir).expect("read") {
+            let path = entry.expect("an entry").path();
+            if path.is_dir() {
+                walk(&path, base, out);
+            } else {
+                let key = path
+                    .strip_prefix(base)
+                    .expect("under")
+                    .to_str()
+                    .expect("a UTF-8 key")
+                    .to_owned();
+                out.push((key, path));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(bucket, bucket, &mut out);
+    out.sort();
+    out
+}
+
+fn pg_manifest(release: &str) -> Manifest {
+    manifest_in(&pg_formats_dir(), release)
+}
+
+/// The schema version a PostgreSQL fixture's manifest records, which the
+/// script read from the database.
+fn pg_schema(release: &str) -> i64 {
+    pg_manifest(release)
+        .postgres
+        .unwrap_or_else(|| panic!("{release}: the manifest has a postgres section"))["schema"]
+        .as_i64()
+        .unwrap_or_else(|| panic!("{release}: the postgres section states the schema"))
+}
+
+const PG_SAMPLE: &str = "\
+## What each release wrote
+
+| Release | `catalog` | `postgres` |
+|---|---|---|
+| 0.4.5 | 9 | none |
+| 0.4.10 | 9 | 14 |
+| 0.4.6 | 9 | 13 |
+";
+
+#[test]
+fn the_releases_with_a_schema_are_the_rows_not_none_oldest_first() {
+    assert_eq!(
+        releases_with_postgres(PG_SAMPLE).expect("the sample reads"),
+        ["0.4.6", "0.4.10"],
+        "0.4.5 wrote none; 0.4.10 sorts after 0.4.6 by number"
+    );
+}
+
+#[test]
+fn a_release_table_without_a_postgres_column_is_refused() {
+    let text = PG_SAMPLE
+        .replace(" `postgres` |", " `other` |")
+        .replace("| none |", "| x |");
+    let why = releases_with_postgres(&text).expect_err("no column");
+    assert!(why.contains("has no postgres cell"), "names it: {why}");
+}
+
+#[test]
+fn a_page_where_every_release_wrote_none_has_no_postgres_release() {
+    let text = PG_SAMPLE
+        .replace("| 14 |", "| none |")
+        .replace("| 13 |", "| none |");
+    assert_eq!(
+        releases_with_postgres(&text).expect("reads"),
+        Vec::<String>::new(),
+        "none"
+    );
+}
+
+#[test]
+fn a_meta_command_line_is_found_by_its_number() {
+    assert_eq!(
+        meta_lines("SET a = 1;\n\\restrict K\nSELECT 1;\n"),
+        [2],
+        "the second line"
+    );
+}
+
+#[test]
+fn copy_data_and_an_indented_meta_command_are_found() {
+    assert_eq!(
+        meta_lines("COPY t FROM stdin;\n1\n\\.\n  \\connect x\n"),
+        [3, 4],
+        "the end of COPY data, and a meta-command after spaces"
+    );
+}
+
+#[test]
+fn a_backslash_inside_a_line_is_not_a_meta_command() {
+    assert!(
+        meta_lines("INSERT INTO t VALUES ('\\x00ff');\n").is_empty(),
+        "a bytea literal is data"
+    );
+}
+
+#[test]
+fn the_kind_of_each_tenant_key_is_its_third_part() {
+    for (key, kind) in [
+        ("tenants/ab/objects/cd", "objects"),
+        (
+            "tenants/ab/parquet/date=2026-11-17/part-01.parquet",
+            "parquet",
+        ),
+        ("tenants/ab/manifest/00000000000000000001.json", "manifest"),
+    ] {
+        assert_eq!(key_kind(key), Some(kind), "{key}");
+    }
+}
+
+#[test]
+fn a_key_outside_a_tenant_has_no_kind() {
+    for key in [
+        "vcon-server.claim",
+        "other/ab/objects/cd",
+        "tenants//objects/cd",
+    ] {
+        assert_eq!(key_kind(key), None, "{key}");
+    }
+}
+
+#[test]
+fn a_tenant_key_with_nothing_after_its_kind_has_no_kind() {
+    for key in ["tenants/ab/objects", "tenants/ab/objects/", "tenants/ab"] {
+        assert_eq!(key_kind(key), None, "{key}");
+    }
+}
+
+#[test]
+fn the_format_of_a_manifest_is_read() {
+    assert_eq!(
+        manifest_format(r#"{"format":"vcon-server.parquet-storage/1","rows":1}"#),
+        Ok("vcon-server.parquet-storage/1".to_owned()),
+        "its format"
+    );
+}
+
+#[test]
+fn a_manifest_that_is_not_json_is_refused() {
+    let why = manifest_format("{").expect_err("not JSON");
+    assert!(why.contains("not JSON"), "says so: {why}");
+}
+
+#[test]
+fn a_manifest_with_no_format_or_a_number_for_one_is_refused() {
+    for text in [r#"{"rows":1}"#, r#"{"format":1}"#] {
+        let why = manifest_format(text).expect_err("no format");
+        assert!(why.contains("no format"), "{text}: {why}");
+    }
+}
+
+#[test]
+fn the_postgres_fixtures_are_the_releases_the_page_says_wrote_a_schema() {
+    assert_eq!(
+        releases_in(&pg_formats_dir()),
+        releases_with_postgres(&page()).expect("the release table"),
+        "one PostgreSQL fixture for each release whose postgres cell is not none"
+    );
+}
+
+#[test]
+fn no_postgres_fixture_wrote_an_older_schema_than_this_build() {
+    // No migration of a released PostgreSQL schema exists yet. When a
+    // release writes an older schema than a later build, this test names
+    // it: add a test that a `migrate` made to fail leaves its schema whole.
+    for release in releases_in(&pg_formats_dir()) {
+        assert_eq!(
+            pg_schema(&release),
+            i64::from(vcon_server::formats::POSTGRES_SCHEMA),
+            "{release} wrote this build's schema"
+        );
+    }
+}
+
+// ---- Where CI runs the `postgres` modules. ----
+
+/// Whether the `backends-postgres` job of the workflow `ci` runs the
+/// `postgres::` tests of the test target `target`: a nextest line of that
+/// job with the postgres and backend-tests features, `--test <target>`
+/// and the `"postgres::"` filter.
+fn ci_runs_postgres_modules_of(ci: &str, target: &str) -> bool {
+    let mut in_job = false;
+    for line in ci.lines() {
+        if line.starts_with("  ") && !line.starts_with("   ") && line.trim_end().ends_with(':') {
+            in_job = line.trim() == "backends-postgres:";
+            continue;
+        }
+        if !in_job || !line.contains("scripts/nextest.sh run") {
+            continue;
+        }
+        let words: Vec<&str> = line.split_whitespace().collect();
+        let names_target = words.windows(2).any(|w| w[0] == "--test" && w[1] == target);
+        let features = words.windows(2).any(|w| {
+            w[0] == "--features"
+                && w[1].split(',').any(|f| f == "postgres")
+                && w[1].split(',').any(|f| f == "backend-tests")
+        });
+        if names_target && features && words.contains(&"\"postgres::\"") {
+            return true;
+        }
+    }
+    false
+}
+
+#[test]
+fn ci_runs_the_postgres_modules_of_this_file() {
+    let ci = std::fs::read_to_string(root().join(".github/workflows/ci.yml")).expect("ci.yml");
+    assert!(
+        ci_runs_postgres_modules_of(&ci, "formats"),
+        "backends-postgres runs `--test formats` with the \"postgres::\" filter, on PostgreSQL 16 and 18"
+    );
+}
+
+const CI_SAMPLE: &str = "\
+jobs:
+  backends:
+    steps:
+      - run: scripts/nextest.sh run -p vcon-server --features postgres,backend-tests --test formats \"postgres::\"
+  backends-postgres:
+    steps:
+      - run: |
+          scripts/nextest.sh run -p vcon-server --locked --features postgres,backend-tests --no-fail-fast --test serve --test formats \"postgres::\"
+  docs:
+    steps: []
+";
+
+#[test]
+fn a_nextest_line_of_the_job_names_the_target() {
+    assert!(ci_runs_postgres_modules_of(CI_SAMPLE, "formats"), "formats");
+    assert!(ci_runs_postgres_modules_of(CI_SAMPLE, "serve"), "serve");
+}
+
+#[test]
+fn a_target_the_job_does_not_run_is_not_found() {
+    assert!(
+        !ci_runs_postgres_modules_of(CI_SAMPLE, "rotation"),
+        "rotation is not on the line"
+    );
+}
+
+#[test]
+fn a_line_in_another_job_does_not_count() {
+    let ci = CI_SAMPLE.replace("--test serve --test formats", "--test serve");
+    assert!(
+        !ci_runs_postgres_modules_of(&ci, "formats"),
+        "only backends-postgres has the servers"
+    );
+}
+
+#[test]
+fn a_line_without_the_filter_or_the_features_does_not_count() {
+    let ci = CI_SAMPLE.replace(
+        "--test formats \"postgres::\"\n  docs",
+        "--test formats\n  docs",
+    );
+    assert!(!ci_runs_postgres_modules_of(&ci, "formats"), "no filter");
+    let ci = CI_SAMPLE.replace(
+        "--locked --features postgres,backend-tests",
+        "--locked --features postgres",
+    );
+    assert!(
+        !ci_runs_postgres_modules_of(&ci, "formats"),
+        "the live module needs backend-tests"
+    );
+}
+
+#[test]
+fn a_target_whose_name_starts_another_does_not_count() {
+    let ci = CI_SAMPLE.replace(
+        "--test formats \"postgres::\"\n  docs",
+        "--test formats_x \"postgres::\"\n  docs",
+    );
+    assert!(!ci_runs_postgres_modules_of(&ci, "formats"), "formats_x");
+}
+
+#[test]
+fn a_workflow_without_the_job_runs_nothing() {
+    assert!(
+        !ci_runs_postgres_modules_of("jobs:\n  rust:\n    steps: []\n", "formats"),
+        "no job"
+    );
+}
+
+// ---- How git reads the fixtures. ----
+//
+// The fixtures are bytes: git must not diff, merge or convert them, and the
+// commit hook's scan of staged lines must not read them as UTF-8. Git's own
+// test for binary looks for a NUL byte, which a key, a lock file or a SQL
+// dump lacks, so .gitattributes says it. A release directory's own
+// manifest.json is the exception: JSON written for reviewers, kept as text.
+// A manifest object in a bucket is a stored object and stays bytes.
+
+/// Whether git must read the fixture file `rel`, a path under a formats
+/// directory (`<release>/...`), as text.
+fn git_reads_as_text(rel: &str) -> bool {
+    let mut parts = rel.split('/');
+    let release = parts.next().unwrap_or("");
+    !release.is_empty() && parts.next() == Some("manifest.json") && parts.next().is_none()
+}
+
+/// What is wrong in the output of `git check-attr text -- <paths>`, where
+/// each path is a fixture under `tests/data/formats/` or
+/// `tests/data/formats-postgres/`.
+fn text_attribute_problems(check_attr: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in check_attr.lines() {
+        let Some((path, value)) = line.rsplit_once(": text: ") else {
+            out.push(format!("`{line}`: not a check-attr line"));
+            continue;
+        };
+        let rel = [
+            "crates/vcon-server/tests/data/formats/",
+            "crates/vcon-server/tests/data/formats-postgres/",
+        ]
+        .iter()
+        .find_map(|base| path.strip_prefix(base));
+        let Some(rel) = rel else {
+            out.push(format!("{path}: not under a formats directory"));
+            continue;
+        };
+        if git_reads_as_text(rel) {
+            if value != "set" {
+                out.push(format!("{path}: git must read it as text (text: {value})"));
+            }
+        } else if value != "unset" {
+            out.push(format!(
+                "{path}: git must treat it as bytes (text: {value})"
+            ));
+        }
+    }
+    out
+}
+
+/// Every `.gitattributes` git reads for `paths` (each relative to `root`):
+/// the one in each directory from `root` down to the path's own, as
+/// (path relative to `root`, content), each once, in the order the paths
+/// reach them.
+fn attribute_files(root: &Path, paths: &[String]) -> Vec<(String, String)> {
+    let mut dirs: Vec<String> = Vec::new();
+    for path in paths {
+        let mut dir = String::new();
+        if !dirs.contains(&dir) {
+            dirs.push(dir.clone());
+        }
+        let parts: Vec<&str> = path.split('/').collect();
+        for part in &parts[..parts.len().saturating_sub(1)] {
+            dir = if dir.is_empty() {
+                (*part).to_owned()
+            } else {
+                format!("{dir}/{part}")
+            };
+            if !dirs.contains(&dir) {
+                dirs.push(dir.clone());
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for dir in dirs {
+        let rel = if dir.is_empty() {
+            ".gitattributes".to_owned()
+        } else {
+            format!("{dir}/.gitattributes")
+        };
+        if let Ok(text) = std::fs::read_to_string(root.join(&rel)) {
+            out.push((rel, text));
+        }
+    }
+    out
+}
+
+/// `git check-attr text -- <paths>` in a new repository that holds only
+/// `files` (each a `.gitattributes`, as [`attribute_files`] gives them),
+/// run with `env` as its environment but every `GIT_*` variable of it.
+/// The commit hook runs the tests in a copy of the staged tree that is no
+/// repository, and git exports GIT_DIR to a hook only in a linked worktree
+/// (VCON-HANDOFF-37), so a `git -C <root>` answers in one checkout and fails
+/// in another.
+fn check_attr_text(
+    files: &[(String, String)],
+    paths: &[String],
+    env: &[(std::ffi::OsString, std::ffi::OsString)],
+) -> String {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    for (rel, text) in files {
+        let path = dir.path().join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("the attribute file's directory");
+        }
+        std::fs::write(&path, text).expect("the attribute file");
+    }
+    let git = |args: &[&str], paths: &[String]| {
+        let mut command = Command::new("git");
+        command.env_clear();
+        for (name, value) in env {
+            if !name.to_string_lossy().starts_with("GIT_") {
+                command.env(name, value);
+            }
+        }
+        let out = command
+            .arg("-C")
+            .arg(dir.path())
+            .args(args)
+            .args(paths)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .expect("git runs");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).expect("UTF-8")
+    };
+    git(&["init", "-q"], &[]);
+    git(&["check-attr", "text", "--"], paths)
+}
+
+/// The environment of this test process.
+fn this_env() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    std::env::vars_os().collect()
+}
+
+fn owned(paths: &[&str]) -> Vec<String> {
+    paths.iter().map(|p| (*p).to_owned()).collect()
+}
+
+#[test]
+fn check_attr_text_answers_outside_any_repository() {
+    let files = vec![(".gitattributes".to_owned(), "*.bin binary\n".to_owned())];
+    let out = check_attr_text(&files, &owned(&["a.bin", "a.txt"]), &this_env());
+    assert_eq!(
+        out, "a.bin: text: unset\na.txt: text: unspecified\n",
+        "the answer of the given file, from a repository of its own"
+    );
+}
+
+#[test]
+fn check_attr_text_ignores_the_callers_git_variables() {
+    let missing = tempfile::tempdir().expect("a temporary directory");
+    let mut env = this_env();
+    env.push(("GIT_DIR".into(), missing.path().join("no-repo").into()));
+    env.push((
+        "GIT_INDEX_FILE".into(),
+        missing.path().join("no-index").into(),
+    ));
+    env.push((
+        "GIT_WORK_TREE".into(),
+        missing.path().join("no-tree").into(),
+    ));
+    let files = vec![(".gitattributes".to_owned(), "*.bin binary\n".to_owned())];
+    let out = check_attr_text(&files, &owned(&["a.bin"]), &env);
+    assert_eq!(
+        out, "a.bin: text: unset\n",
+        "a hook's GIT_DIR, GIT_INDEX_FILE and GIT_WORK_TREE do not reach the check"
+    );
+}
+
+#[test]
+fn check_attr_text_reads_a_nested_file_over_the_root_one() {
+    let files = vec![
+        (".gitattributes".to_owned(), "*.bin binary\n".to_owned()),
+        ("a/.gitattributes".to_owned(), "*.bin text\n".to_owned()),
+    ];
+    let out = check_attr_text(&files, &owned(&["a/x.bin", "x.bin"]), &this_env());
+    assert_eq!(
+        out, "a/x.bin: text: set\nx.bin: text: unset\n",
+        "the deeper file wins for its own directory only"
+    );
+}
+
+#[test]
+fn check_attr_text_without_any_file_leaves_every_path_unspecified() {
+    let out = check_attr_text(&[], &owned(&["a.bin"]), &this_env());
+    assert_eq!(out, "a.bin: text: unspecified\n", "no attributes given");
+}
+
+#[test]
+fn the_fixtures_without_the_root_attributes_are_refused() {
+    let paths = owned(&[
+        "crates/vcon-server/tests/data/formats-postgres/0.4.6/dump.sql",
+        "crates/vcon-server/tests/data/formats-postgres/0.4.6/manifest.json",
+    ]);
+    let out = check_attr_text(&[], &paths, &this_env());
+    assert_eq!(
+        text_attribute_problems(&out).len(),
+        2,
+        "with no .gitattributes the dump is not bytes and the manifest not text: {out}"
+    );
+}
+
+#[test]
+fn attribute_files_collects_each_directory_on_the_way_down() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    std::fs::create_dir_all(dir.path().join("a/b")).expect("a/b");
+    std::fs::write(dir.path().join(".gitattributes"), "root\n").expect("root file");
+    std::fs::write(dir.path().join("a/b/.gitattributes"), "deep\n").expect("deep file");
+    let found = attribute_files(dir.path(), &owned(&["a/b/c.bin", "a/b/d.bin", "e.bin"]));
+    assert_eq!(
+        found,
+        vec![
+            (".gitattributes".to_owned(), "root\n".to_owned()),
+            ("a/b/.gitattributes".to_owned(), "deep\n".to_owned()),
+        ],
+        "each file once, shallowest first, a/ has none"
+    );
+}
+
+#[test]
+fn attribute_files_finds_none_where_there_is_none() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    assert_eq!(
+        attribute_files(dir.path(), &owned(&["a/b.bin"])),
+        Vec::<(String, String)>::new(),
+        "no .gitattributes anywhere"
+    );
+}
+
+#[test]
+fn attribute_files_of_the_fixtures_hold_the_root_file() {
+    let found = attribute_files(
+        &root(),
+        &owned(&["crates/vcon-server/tests/data/formats-postgres/0.4.6/dump.sql"]),
+    );
+    assert!(
+        found.iter().any(|(path, text)| path == ".gitattributes"
+            && text.contains("crates/vcon-server/tests/data/formats-postgres/** binary")),
+        "the repository's own .gitattributes is read: {found:?}"
+    );
+}
+
+#[test]
+fn git_reads_every_fixture_as_bytes_but_the_release_manifests() {
+    let mut paths = Vec::new();
+    for (dir, name) in [
+        (formats_dir(), "formats"),
+        (pg_formats_dir(), "formats-postgres"),
+    ] {
+        for (key, _) in bucket_files(&dir) {
+            paths.push(format!("crates/vcon-server/tests/data/{name}/{key}"));
+        }
+    }
+    assert!(
+        paths.len() > 100,
+        "the fixtures were found: {}",
+        paths.len()
+    );
+    let text = check_attr_text(&attribute_files(&root(), &paths), &paths, &this_env());
+    assert_eq!(
+        text.lines().count(),
+        paths.len(),
+        "one answer per fixture file"
+    );
+    assert_eq!(
+        text_attribute_problems(&text),
+        Vec::<String>::new(),
+        ".gitattributes"
+    );
+}
+
+#[test]
+fn a_release_manifest_is_text() {
+    assert!(
+        git_reads_as_text("0.4.6/manifest.json"),
+        "the release's own"
+    );
+    assert!(
+        git_reads_as_text("0.4.10/manifest.json"),
+        "a two-digit part"
+    );
+}
+
+#[test]
+fn keys_dumps_locks_and_bucket_objects_are_bytes() {
+    for rel in [
+        "0.4.6/master.key",
+        "0.4.6/dump.sql",
+        "0.4.6/data/lock",
+        "0.4.6/data/lock.commands",
+        "0.4.6/bucket/vcon-server.claim",
+        "0.4.6/bucket/tenants/t/objects/a",
+        "0.4.6/bucket/tenants/t/parquet/date=2026-11-17/part-a.parquet",
+    ] {
+        assert!(!git_reads_as_text(rel), "{rel}");
+    }
+}
+
+#[test]
+fn set_and_unset_where_each_belongs_has_no_problem() {
+    let out = "crates/vcon-server/tests/data/formats/0.4.8/manifest.json: text: set\n\
+               crates/vcon-server/tests/data/formats/0.4.8/master.key: text: unset\n\
+               crates/vcon-server/tests/data/formats-postgres/0.4.6/dump.sql: text: unset\n";
+    assert_eq!(
+        text_attribute_problems(out),
+        Vec::<String>::new(),
+        "as .gitattributes says"
+    );
+}
+
+#[test]
+fn an_empty_answer_has_no_problem() {
+    assert!(text_attribute_problems("").is_empty(), "no paths asked");
+}
+
+#[test]
+fn a_dump_git_would_read_as_text_is_refused() {
+    let out = "crates/vcon-server/tests/data/formats-postgres/0.4.6/dump.sql: text: unspecified\n";
+    assert_eq!(
+        text_attribute_problems(out),
+        [
+            "crates/vcon-server/tests/data/formats-postgres/0.4.6/dump.sql: git must treat it as bytes \
+             (text: unspecified)"
+        ],
+        "the case F1b's .gitattributes line fixes"
+    );
+}
+
+#[test]
+fn a_release_manifest_marked_binary_is_refused() {
+    let out = "crates/vcon-server/tests/data/formats/0.4.8/manifest.json: text: unset\n";
+    assert_eq!(
+        text_attribute_problems(out),
+        [
+            "crates/vcon-server/tests/data/formats/0.4.8/manifest.json: git must read it as text (text: unset)"
+        ],
+        "reviewers read it"
+    );
+}
+
+#[test]
+fn a_release_manifest_left_unspecified_is_refused() {
+    let out =
+        "crates/vcon-server/tests/data/formats-postgres/0.4.6/manifest.json: text: unspecified\n";
+    assert_eq!(text_attribute_problems(out).len(), 1, "it must be set");
+}
+
+#[test]
+fn a_line_check_attr_would_not_write_is_refused() {
+    let out = "crates/vcon-server/tests/data/formats/0.4.8/master.key\n";
+    assert_eq!(
+        text_attribute_problems(out),
+        ["`crates/vcon-server/tests/data/formats/0.4.8/master.key`: not a check-attr line"],
+        "named, not skipped"
+    );
+}
+
+#[test]
+fn a_path_outside_the_fixtures_is_refused() {
+    let out = "README.md: text: unspecified\n";
+    assert_eq!(
+        text_attribute_problems(out),
+        ["README.md: not under a formats directory"],
+        "only fixtures are asked"
+    );
+}
+
+#[test]
+fn a_bucket_manifest_object_is_bytes() {
+    assert!(
+        !git_reads_as_text("0.4.6/bucket/tenants/t/manifest/00000000000000000004.json"),
+        "a stored object, though it is named .json"
+    );
+}
+
+#[test]
+fn a_manifest_below_a_release_directory_is_bytes() {
+    assert!(
+        !git_reads_as_text("0.4.6/data/manifest.json"),
+        "one level down"
+    );
+    assert!(!git_reads_as_text("manifest.json"), "no release directory");
+    // `*/manifest.json` in .gitattributes names that path only, not the
+    // files of a directory so named.
+    assert!(
+        !git_reads_as_text("0.4.6/manifest.json/x"),
+        "a file under a directory named manifest.json"
+    );
+}
+
+#[test]
+fn a_path_with_colons_is_split_at_the_attribute() {
+    let out = "crates/vcon-server/tests/data/formats-postgres/0.4.6/bucket/a:b: text: unset\n";
+    assert_eq!(
+        text_attribute_problems(out),
+        Vec::<String>::new(),
+        "the path keeps its colon"
+    );
+}
+
+// Each release, without a database.
+
+fn pg_the_fixture_was_written_by_the_pinned_release(release: &str) {
+    written_by_the_pinned_release(&pg_manifest(release), release);
+}
+
+fn the_page_states_the_postgres_schema_the_release_wrote(release: &str) {
+    let releases = page_releases(&page()).expect("the release table");
+    assert_eq!(
+        releases[release]["postgres"],
+        pg_schema(release).to_string(),
+        "{PAGE}: the postgres schema {release} wrote"
+    );
+}
+
+fn every_object_in_the_bucket_starts_with_the_envelope_version(release: &str) {
+    let releases = page_releases(&page()).expect("the release table");
+    let stated: u8 = releases[release]["envelope"].parse().expect("a number");
+    let objects: Vec<(String, PathBuf)> =
+        bucket_files(&pg_formats_dir().join(release).join("bucket"))
+            .into_iter()
+            .filter(|(key, _)| key_kind(key) == Some("objects"))
+            .collect();
+    assert!(!objects.is_empty(), "{release}: the bucket holds objects");
+    for (key, path) in objects {
+        let bytes = std::fs::read(&path).expect("read");
+        assert_eq!(
+            bytes.first(),
+            Some(&stated),
+            "{release}: {key} opens with the envelope's version"
+        );
+    }
+}
+
+fn every_parquet_manifest_states_the_format_the_page_states(release: &str) {
+    let releases = page_releases(&page()).expect("the release table");
+    let stated = &releases[release]["parquet-storage"];
+    let manifests: Vec<(String, PathBuf)> =
+        bucket_files(&pg_formats_dir().join(release).join("bucket"))
+            .into_iter()
+            .filter(|(key, _)| key_kind(key) == Some("manifest"))
+            .collect();
+    assert_eq!(manifests.len(), 2, "{release}: one manifest per tenant");
+    for (key, path) in manifests {
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert_eq!(
+            manifest_format(&text).as_ref(),
+            Ok(stated),
+            "{release}: {key} states the format the page does"
+        );
+    }
+}
+
+fn every_parquet_file_is_a_parquet_file(release: &str) {
+    let files: Vec<(String, PathBuf)> =
+        bucket_files(&pg_formats_dir().join(release).join("bucket"))
+            .into_iter()
+            .filter(|(key, _)| key_kind(key) == Some("parquet"))
+            .collect();
+    assert_eq!(files.len(), 2, "{release}: one pack file per tenant");
+    for (key, path) in files {
+        let bytes = std::fs::read(&path).expect("read");
+        assert!(
+            bytes.len() > 8 && bytes.starts_with(b"PAR1") && bytes.ends_with(b"PAR1"),
+            "{release}: {key} starts and ends with Parquet's magic"
+        );
+    }
+}
+
+fn the_dump_loads_as_one_query(release: &str) {
+    let dump =
+        std::fs::read_to_string(pg_formats_dir().join(release).join("dump.sql")).expect("the dump");
+    assert_eq!(
+        meta_lines(&dump),
+        Vec::<usize>::new(),
+        "{release}: no line a server would refuse"
+    );
+    assert!(
+        dump.contains("CREATE TABLE vcon.schema_version"),
+        "{release}: the dump holds the vCon schema"
+    );
+}
+
+fn the_manifest_names_packed_versions_and_one_object_per_object_version(release: &str) {
+    let manifest = pg_manifest(release);
+    let count = |place: &str| {
+        manifest
+            .rows
+            .iter()
+            .filter(|r| r.place.as_deref() == Some(place))
+            .count()
+    };
+    assert_eq!(
+        count("packed") + count("object"),
+        manifest.rows.len(),
+        "{release}: every version has a place"
+    );
+    assert!(count("packed") > 0, "{release}: packed versions");
+    let objects = bucket_files(&pg_formats_dir().join(release).join("bucket"))
+        .into_iter()
+        .filter(|(key, _)| key_kind(key) == Some("objects"))
+        .count();
+    assert_eq!(
+        objects,
+        count("object"),
+        "{release}: one object in the bucket for each version kept as one"
+    );
+}
+
+/// With the catalogs in PostgreSQL: against the servers
+/// `scripts/pg-test-server.sh` starts (`VCON_TEST_PG_*`) and the
+/// S3-compatible service of `VCON_TEST_S3_*`.
+#[cfg(all(feature = "backend-tests", feature = "postgres"))]
+mod pg;
+
+#[cfg(all(feature = "backend-tests", feature = "postgres"))]
+mod live {
+    use super::*;
+    use std::ffi::OsStr;
+    use std::process::{Child, Stdio};
+    use std::time::{Duration, Instant};
+
+    /// How long a server may take to say where it listens, or to stop.
+    const DEADLINE: Duration = Duration::from_secs(30);
+
+    /// curl, signing its request for S3 with the test service's keys, with
+    /// `extra` before the URL.
+    fn s3(method: &str, path: &str, extra: &[&OsStr]) -> Output {
+        Command::new("curl")
+            .args(["-sS", "--fail-with-body", "-X", method])
+            .args(["--aws-sigv4", "aws:amz:us-east-1:s3", "--user"])
+            .arg(format!(
+                "{}:{}",
+                pg::var("VCON_TEST_S3_ACCESS_KEY"),
+                pg::var("VCON_TEST_S3_SECRET_KEY")
+            ))
+            .args(extra)
+            .arg(format!("{}/{path}", pg::var("VCON_TEST_S3_ENDPOINT")))
+            .output()
+            .expect("runs curl")
+    }
+
+    fn s3_ok(method: &str, path: &str, extra: &[&OsStr]) -> String {
+        let out = s3(method, path, extra);
+        assert!(out.status.success(), "{method} {path}: {out:?}");
+        String::from_utf8(out.stdout).expect("UTF-8")
+    }
+
+    /// A release's deployment restored: its dump in a database of the
+    /// test's own, its bucket's objects in a bucket of the test's own, its
+    /// data directory and master key in a temporary directory, with a
+    /// configuration naming them.
+    struct Restored {
+        release: String,
+        dir: tempfile::TempDir,
+        db: pg::Db,
+        bucket: String,
+        manifest: Manifest,
+    }
+
+    impl Restored {
+        fn new(release: &str) -> Restored {
+            let from = pg_formats_dir().join(release);
+            let db = pg::Db::fresh();
+            let dump = std::fs::read_to_string(from.join("dump.sql")).expect("the dump");
+            db.as_owner(&dump);
+            let bucket = format!("vcon-fmt-{}", &TenantId::generate().to_string()[..12]);
+            s3_ok("PUT", &bucket, &[]);
+            for (key, path) in bucket_files(&from.join("bucket")) {
+                s3_ok(
+                    "PUT",
+                    &format!("{bucket}/{key}"),
+                    &[OsStr::new("-T"), path.as_os_str()],
+                );
+            }
+            let dir = tempfile::tempdir().expect("a temporary directory");
+            copy_tree(&from.join("data"), &dir.path().join("data"));
+            let key = dir.path().join("master.key");
+            std::fs::copy(from.join("master.key"), &key).expect("the master key");
+            chmod(&key, 0o600);
+            let password = dir.path().join("pg.password");
+            std::fs::copy(pg::dir().join("password"), &password).expect("the password");
+            chmod(&password, 0o600);
+            let made = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()])
+                .expect("a certificate");
+            std::fs::write(dir.path().join("cert.pem"), made.cert.pem()).expect("write");
+            let tls = dir.path().join("key.pem");
+            std::fs::write(&tls, made.signing_key.serialize_pem()).expect("write");
+            chmod(&tls, 0o600);
+            let restored = Restored {
+                release: release.to_owned(),
+                dir,
+                db,
+                bucket,
+                manifest: pg_manifest(release),
+            };
+            restored.configure(true);
+            restored
+        }
+
+        fn path(&self, name: &str) -> PathBuf {
+            self.dir.path().join(name)
+        }
+
+        /// Writes the server's configuration, with the [storage.parquet]
+        /// table when `parquet`, and `migrate`'s.
+        fn configure(&self, parquet: bool) {
+            let text = |user: &str| {
+                let mut text = format!(
+                    "listen = \"127.0.0.1:0\"\ndata_dir = {:?}\nmaster_key = {:?}\n\n[tls]\ncert = \
+                     {:?}\nkey = {:?}\n\n[storage]\nobjects = \"s3\"\n\n[storage.s3]\nendpoint = \
+                     \"{}\"\nregion = \"us-east-1\"\nbucket = \"{}\"\npath_style = true\nallow_http = \
+                     true\n",
+                    self.path("data"),
+                    self.path("master.key"),
+                    self.path("cert.pem"),
+                    self.path("key.pem"),
+                    pg::var("VCON_TEST_S3_ENDPOINT"),
+                    self.bucket
+                );
+                if parquet {
+                    text.push_str("\n[storage.parquet]\npack_interval = 3600\n");
+                }
+                text.push_str(&format!(
+                    "\n[catalog]\nbackend = \"postgres\"\n\n[catalog.postgres]\nhosts = \
+                     [\"localhost\"]\nport = {}\ndbname = \"{}\"\nuser = \"{user}\"\nca_file = \
+                     {:?}\npassword_file = {:?}\n",
+                    pg::var("VCON_TEST_PG_PORT"),
+                    self.db.name,
+                    pg::dir().join("ca.pem"),
+                    self.path("pg.password")
+                ));
+                text
+            };
+            std::fs::write(self.path("vcon-server.toml"), text("vcon_app")).expect("write");
+            std::fs::write(self.path("vcon-migrate.toml"), text("vcon_migrate")).expect("write");
+        }
+
+        /// The binary with `args` on the server's configuration (or
+        /// `config`), with the bucket's keys in the environment only.
+        fn command(&self, args: &[&str], config: &str) -> Command {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_vcon-server"));
+            command.args(args).arg("--config").arg(self.path(config));
+            for name in ["AWS_PROFILE", "AWS_SESSION_TOKEN", "AWS_CONFIG_FILE"] {
+                command.env_remove(name);
+            }
+            command
+                .env("AWS_ACCESS_KEY_ID", pg::var("VCON_TEST_S3_ACCESS_KEY"))
+                .env("AWS_SECRET_ACCESS_KEY", pg::var("VCON_TEST_S3_SECRET_KEY"))
+                .env("AWS_SHARED_CREDENTIALS_FILE", "/nonexistent")
+                .env("AWS_EC2_METADATA_DISABLED", "true");
+            command
+        }
+
+        fn run(&self, args: &[&str]) -> Output {
+            self.command(args, "vcon-server.toml")
+                .output()
+                .expect("the binary runs")
+        }
+
+        /// The JSON lines a command that must succeed prints. What it
+        /// printed is not shown when it fails: `key create` prints a token.
+        fn ok(&self, args: &[&str]) -> Vec<serde_json::Value> {
+            let out = self.run(args);
+            assert!(
+                out.status.success(),
+                "{}: {args:?}: {}",
+                self.release,
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8(out.stdout)
+                .expect("UTF-8")
+                .lines()
+                .map(|l| serde_json::from_str(l).expect("a JSON line"))
+                .collect()
+        }
+
+        fn checked(&self) -> Vec<serde_json::Value> {
+            self.ok(&["check"])
+        }
+
+        /// What a command that is refused says on stderr.
+        fn refusal(&self, args: &[&str]) -> String {
+            let out = self.run(args);
+            assert!(
+                !out.status.success(),
+                "{}: {args:?} is refused",
+                self.release
+            );
+            String::from_utf8_lossy(&out.stderr).into_owned()
+        }
+
+        fn tenant_id(&self, name: &str) -> String {
+            self.ok(&["tenant", "list"])
+                .into_iter()
+                .find(|t| t["name"] == name)
+                .unwrap_or_else(|| panic!("{}: tenant {name} is there", self.release))["id"]
+                .as_str()
+                .expect("an id")
+                .to_owned()
+        }
+
+        /// A new key of tenant `name` with `scopes`, its token in a header
+        /// file, so that no command line holds it; the file's path.
+        fn key(&self, name: &str, scopes: &[&str]) -> PathBuf {
+            let id = self.tenant_id(name);
+            let mut args = vec!["key", "create", "--tenant", &id, "--label", "formats-test"];
+            for scope in scopes {
+                args.extend(["--scope", scope]);
+            }
+            let token = self.ok(&args)[0]["token"]
+                .as_str()
+                .expect("a token")
+                .to_owned();
+            let path = self.path(&format!("{name}.header"));
+            std::fs::write(&path, format!("Authorization: Bearer {token}\n")).expect("write");
+            chmod(&path, 0o600);
+            path
+        }
+
+        /// Starts `serve` and waits for its `serving` line.
+        fn serve(&self) -> Server {
+            let mut child = self
+                .command(&["serve"], "vcon-server.toml")
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("serve starts");
+            let stderr = child.stderr.take().expect("piped");
+            let (tx, lines) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                use std::io::BufRead;
+                for line in std::io::BufReader::new(stderr)
+                    .lines()
+                    .map_while(Result::ok)
+                {
+                    if tx.send(line).is_err() {
+                        break;
+                    }
+                }
+            });
+            let deadline = Instant::now() + DEADLINE;
+            let mut early = Vec::new();
+            let port = loop {
+                match lines.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                    Ok(line) => {
+                        let bound = line
+                            .split_whitespace()
+                            .skip_while(|f| *f != "serving")
+                            .find_map(|f| f.strip_prefix("listen="))
+                            .and_then(|a| a.parse::<std::net::SocketAddr>().ok());
+                        early.push(line);
+                        if let Some(addr) = bound {
+                            break addr.port();
+                        }
+                    }
+                    Err(_) => panic!(
+                        "{}: serve never said where it listens: {early:?}",
+                        self.release
+                    ),
+                }
+            };
+            Server {
+                child,
+                port,
+                cert: self.path("cert.pem"),
+                out: self.path("read.body"),
+                lines,
+                log: std::cell::RefCell::new(early),
+            }
+        }
+
+        /// What `serve` says when it refuses to start.
+        fn serve_refusal(&self) -> String {
+            let mut child = self
+                .command(&["serve"], "vcon-server.toml")
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("serve starts");
+            let deadline = Instant::now() + DEADLINE;
+            let status = loop {
+                if let Some(status) = child.try_wait().expect("wait") {
+                    break status;
+                }
+                if Instant::now() > deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("{}: serve did not refuse to start", self.release);
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            };
+            let mut said = String::new();
+            use std::io::Read;
+            child
+                .stderr
+                .take()
+                .expect("piped")
+                .read_to_string(&mut said)
+                .expect("read");
+            assert!(!status.success(), "{}: serve refused: {said}", self.release);
+            said
+        }
+
+        /// What can change: each table's rows (read as the superuser, past
+        /// row-level security), the bucket's listing and the data
+        /// directory's files.
+        fn state(&self) -> (Vec<String>, Vec<String>, BTreeMap<PathBuf, Vec<u8>>) {
+            let tables = pg::superuser(
+                &self.db.name,
+                "SELECT tablename FROM pg_tables WHERE schemaname = 'vcon' ORDER BY tablename",
+            )
+            .expect("the tables");
+            assert!(tables.len() > 10, "{}: the schema's tables", self.release);
+            let rows = tables
+                .iter()
+                .map(|t| {
+                    let sum = pg::superuser(
+                        &self.db.name,
+                        &format!(
+                            "SELECT md5(coalesce(string_agg(r::text, E'\\n' ORDER BY r::text), \
+                             '')) FROM vcon.{t} r"
+                        ),
+                    )
+                    .expect("the rows");
+                    format!("{t} {}", sum.concat())
+                })
+                .collect();
+            let listing =
+                listing_entries(&s3_ok("GET", &format!("{}?list-type=2", self.bucket), &[]));
+            let mut files = BTreeMap::new();
+            for entry in std::fs::read_dir(self.path("data")).expect("read") {
+                let path = entry.expect("an entry").path();
+                let bytes = std::fs::read(&path).expect("read");
+                files.insert(path, digest(&SHA256, &bytes).as_ref().to_vec());
+            }
+            (rows, listing, files)
+        }
+
+        /// The keys of the bucket that hold one version each.
+        fn objects(&self) -> Vec<String> {
+            listing_entries(&s3_ok("GET", &format!("{}?list-type=2", self.bucket), &[]))
+                .iter()
+                .map(|e| entry_key(e).expect("an entry names its key").to_owned())
+                .filter(|k| key_kind(k) == Some("objects"))
+                .collect()
+        }
+
+        fn rows(&self, tenant: &str) -> Vec<&Row> {
+            self.manifest
+                .rows
+                .iter()
+                .filter(|r| r.tenant == tenant)
+                .collect()
+        }
+    }
+
+    /// A running server, killed when dropped, so a failed assertion leaves
+    /// no server behind.
+    struct Server {
+        child: Child,
+        port: u16,
+        cert: PathBuf,
+        out: PathBuf,
+        lines: std::sync::mpsc::Receiver<String>,
+        /// Every line the server wrote to stderr so far.
+        log: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl Drop for Server {
+        fn drop(&mut self) {
+            if matches!(self.child.try_wait(), Ok(None)) {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+            }
+        }
+    }
+
+    impl Server {
+        /// The server's stderr so far, for a failure's message.
+        fn log(&self) -> String {
+            let mut log = self.log.borrow_mut();
+            log.extend(self.lines.try_iter());
+            log.join("\n")
+        }
+
+        /// GET `path` with the key in the header file `key`: the status and
+        /// the body.
+        fn get(&self, path: &str, key: &Path) -> (u16, Vec<u8>) {
+            let _ = std::fs::remove_file(&self.out);
+            let out = Command::new("curl")
+                .args(["-sS", "--max-time", "20", "--cacert"])
+                .arg(&self.cert)
+                .arg("--resolve")
+                .arg(format!("localhost:{}:127.0.0.1", self.port))
+                .arg("-H")
+                .arg(format!("@{}", key.display()))
+                .arg("-o")
+                .arg(&self.out)
+                .args(["-w", "%{http_code}"])
+                .arg(format!("https://localhost:{}{path}", self.port))
+                .output()
+                .expect("runs curl");
+            assert!(out.status.success(), "GET {path}: {out:?}\n{}", self.log());
+            let status = String::from_utf8_lossy(&out.stdout)
+                .parse()
+                .expect("a status");
+            (status, std::fs::read(&self.out).unwrap_or_default())
+        }
+
+        /// POST `body` as a vCon to /vcons: the status.
+        fn post(&self, body: &[u8], key: &Path) -> u16 {
+            std::fs::write(&self.out, body).expect("write");
+            let out = Command::new("curl")
+                .args(["-sS", "--max-time", "20", "-o", "/dev/null", "--cacert"])
+                .arg(&self.cert)
+                .arg("--resolve")
+                .arg(format!("localhost:{}:127.0.0.1", self.port))
+                .arg("-H")
+                .arg(format!("@{}", key.display()))
+                .args(["-H", "Content-Type: application/vcon", "--data-binary"])
+                .arg(format!("@{}", self.out.display()))
+                .args(["-w", "%{http_code}"])
+                .arg(format!("https://localhost:{}/vcons", self.port))
+                .output()
+                .expect("runs curl");
+            assert!(out.status.success(), "POST /vcons: {out:?}\n{}", self.log());
+            String::from_utf8_lossy(&out.stdout)
+                .parse()
+                .expect("a status")
+        }
+
+        /// Sends SIGTERM and waits for the server to end; its exit status.
+        fn stop(mut self) -> std::process::ExitStatus {
+            let pid = libc::pid_t::try_from(self.child.id()).expect("a pid");
+            // SAFETY: the pid is our running child's.
+            let sent = unsafe { libc::kill(pid, libc::SIGTERM) };
+            assert_eq!(sent, 0, "SIGTERM is sent to the server");
+            let deadline = Instant::now() + DEADLINE;
+            loop {
+                if let Some(status) = self.child.try_wait().expect("wait") {
+                    return status;
+                }
+                assert!(Instant::now() < deadline, "serve did not stop on SIGTERM");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+
+    // Success.
+
+    pub(super) fn check_passes_and_counts_every_kept_version(release: &str) {
+        let r = Restored::new(release);
+        let lines = r.checked();
+        for tenant in ["tenant-a", "tenant-b"] {
+            let line = lines
+                .iter()
+                .find(|l| l["name"] == tenant)
+                .unwrap_or_else(|| panic!("{release}: check reports {tenant}: {lines:?}"));
+            let rows = r.rows(tenant);
+            let packed = rows
+                .iter()
+                .filter(|row| row.place.as_deref() == Some("packed"))
+                .count();
+            assert_eq!(
+                line["versions"].as_u64(),
+                Some(u64::try_from(rows.len()).expect("small")),
+                "{release}: check counts {tenant}'s kept versions"
+            );
+            assert_eq!(
+                line["packed"].as_u64(),
+                Some(u64::try_from(packed).expect("small")),
+                "{release}: check counts {tenant}'s packed versions"
+            );
+            assert_eq!(
+                line["damaged"],
+                serde_json::json!([]),
+                "{release}: nothing damaged"
+            );
+            assert_eq!(
+                line["problems"],
+                serde_json::json!([]),
+                "{release}: no problem"
+            );
+        }
+    }
+
+    pub(super) fn every_kept_version_reads_back_byte_equal(release: &str) {
+        let r = Restored::new(release);
+        let keys = [
+            ("tenant-a", r.key("tenant-a", &["legal"])),
+            ("tenant-b", r.key("tenant-b", &["legal"])),
+        ];
+        let server = r.serve();
+        for (tenant, key) in &keys {
+            for row in r.rows(tenant) {
+                let (status, body) = server.get(
+                    &format!("/legal/vcons/{}/versions/{}", row.uuid, row.version),
+                    key,
+                );
+                assert_eq!(
+                    status, 200,
+                    "{release}: {tenant} version {} reads",
+                    row.version
+                );
+                assert_eq!(
+                    sha_hex(&body),
+                    row.sha256,
+                    "{release}: {tenant} version {} ({:?}) is the body the release stored",
+                    row.version,
+                    row.place
+                );
+            }
+        }
+        assert!(server.stop().success(), "{release}: serve stops cleanly");
+    }
+
+    pub(super) fn every_uuid_lists_its_kept_versions_in_order(release: &str) {
+        let r = Restored::new(release);
+        let keys = [
+            ("tenant-a", r.key("tenant-a", &["legal"])),
+            ("tenant-b", r.key("tenant-b", &["legal"])),
+        ];
+        let server = r.serve();
+        for (tenant, key) in &keys {
+            let mut by_uuid: BTreeMap<uuid::Uuid, Vec<&Row>> = BTreeMap::new();
+            for row in r.rows(tenant) {
+                by_uuid.entry(row.uuid).or_default().push(row);
+            }
+            // A vCon is named by its place in the uuid order, not its uuid.
+            for (n, (uuid, rows)) in by_uuid.iter_mut().enumerate() {
+                rows.sort_by_key(|row| row.order);
+                let (status, body) = server.get(&format!("/legal/vcons/{uuid}/versions"), key);
+                assert_eq!(
+                    status, 200,
+                    "{release}: {tenant} vCon {n} lists its versions"
+                );
+                let listed: Vec<serde_json::Value> =
+                    serde_json::from_slice(&body).expect("a JSON array");
+                let ids: Vec<String> = listed
+                    .iter()
+                    .map(|v| v["version"].as_str().expect("a version").to_owned())
+                    .collect();
+                let want: Vec<String> = rows.iter().map(|row| row.version.to_string()).collect();
+                assert_eq!(
+                    ids, want,
+                    "{release}: {tenant} vCon {n}: these versions, oldest first"
+                );
+                let current: Vec<bool> = listed
+                    .iter()
+                    .map(|v| v["current"].as_bool().expect("current"))
+                    .collect();
+                let want: Vec<bool> = rows
+                    .iter()
+                    .map(|row| row.state.starts_with("current"))
+                    .collect();
+                assert_eq!(
+                    current, want,
+                    "{release}: {tenant} vCon {n}: the release's current version"
+                );
+            }
+        }
+        assert!(server.stop().success(), "{release}: serve stops cleanly");
+    }
+
+    pub(super) fn migrate_finds_the_schema_current_and_changes_nothing(release: &str) {
+        let r = Restored::new(release);
+        let before = r.state();
+        let out = r
+            .command(&["migrate"], "vcon-migrate.toml")
+            .output()
+            .expect("migrate runs");
+        assert!(
+            out.status.success(),
+            "{release}: migrate passes: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let said: serde_json::Value = serde_json::from_slice(&out.stdout).expect("a JSON line");
+        let schema = i64::from(vcon_server::formats::POSTGRES_SCHEMA);
+        assert_eq!(
+            (said["from"].as_i64(), said["to"].as_i64()),
+            (Some(schema), Some(schema)),
+            "{release}: from and to this build's schema: {said}"
+        );
+        assert_eq!(r.state(), before, "{release}: migrate wrote nothing");
+    }
+
+    pub(super) fn a_second_check_changes_nothing(release: &str) {
+        let r = Restored::new(release);
+        r.checked();
+        let first = r.state();
+        r.checked();
+        assert_eq!(r.state(), first, "{release}: a second check writes nothing");
+    }
+
+    pub(super) fn the_restored_deployment_stores_and_reads_a_new_vcon(release: &str) {
+        let r = Restored::new(release);
+        let key = r.key("tenant-a", &["write", "read"]);
+        let server = r.serve();
+        let uuid = "6f1c1e0a-6d4b-4c3e-9a51-0d2b6a7c8e11";
+        let body = serde_json::to_vec(&serde_json::json!({
+            "vcon": "0.4.0",
+            "uuid": uuid,
+            "created_at": "2026-11-17T12:00:00Z",
+            "subject": "stored after the restore",
+            "parties": [{"tel": "+15555550123", "name": "Caller Example"}],
+            "dialog": [],
+            "attachments": [],
+            "analysis": []
+        }))
+        .expect("JSON");
+        assert_eq!(
+            server.post(&body, &key),
+            201,
+            "{release}: the new vCon is stored"
+        );
+        let (status, read) = server.get(&format!("/vcons/{uuid}"), &key);
+        assert_eq!(
+            (status, read),
+            (200, body),
+            "{release}: and reads back byte-equal"
+        );
+        assert!(server.stop().success(), "{release}: serve stops cleanly");
+    }
+
+    // Failure.
+
+    pub(super) fn a_schema_one_version_past_this_build_is_refused_by_name(release: &str) {
+        let r = Restored::new(release);
+        let next = vcon_server::formats::POSTGRES_SCHEMA + 1;
+        r.db.as_owner(&format!(
+            "INSERT INTO vcon.schema_version (version) VALUES ({next})"
+        ));
+        let before = r.state();
+        let named = format!(
+            "the database schema is newer than this binary (version {next}, this binary {})",
+            vcon_server::formats::POSTGRES_SCHEMA
+        );
+        let said = r.refusal(&["check"]);
+        assert!(
+            said.contains(&named),
+            "{release}: check names the version: {said}"
+        );
+        let said = r.serve_refusal();
+        assert!(
+            said.contains(&named),
+            "{release}: serve names the version: {said}"
+        );
+        assert_eq!(
+            r.state(),
+            before,
+            "{release}: the refused deployment is left as it was"
+        );
+    }
+
+    pub(super) fn a_wrong_master_key_opens_nothing_and_changes_nothing(release: &str) {
+        let r = Restored::new(release);
+        std::fs::write(r.path("master.key"), [0x33u8; 32]).expect("another key");
+        let before = r.state();
+        let said = r.refusal(&["check"]);
+        assert!(
+            said.contains("master key"),
+            "{release}: the refusal names the key: {said}"
+        );
+        let said = r.serve_refusal();
+        assert!(
+            said.contains("master key"),
+            "{release}: serve names the key: {said}"
+        );
+        assert_eq!(
+            r.state(),
+            before,
+            "{release}: nothing is written under the wrong key"
+        );
+    }
+
+    pub(super) fn a_purged_uuid_is_gone(release: &str) {
+        let r = Restored::new(release);
+        assert!(
+            !r.manifest.purged.is_empty(),
+            "{release}: the workload purged a uuid"
+        );
+        let key = r.key("tenant-b", &["legal"]);
+        let server = r.serve();
+        for (n, (tenant, uuid)) in r.manifest.purged.iter().enumerate() {
+            assert_eq!(tenant, "tenant-b", "{release}: only the 0d tenant purges");
+            let (status, _) = server.get(&format!("/legal/vcons/{uuid}/versions"), &key);
+            assert_eq!(
+                status, 410,
+                "{release}: purged uuid {n} of the manifest stays gone"
+            );
+        }
+        assert!(server.stop().success(), "{release}: serve stops cleanly");
+    }
+
+    pub(super) fn a_deleted_vcon_is_gone_to_an_ordinary_read(release: &str) {
+        let r = Restored::new(release);
+        let key = r.key("tenant-a", &["read"]);
+        let server = r.serve();
+        let deleted: Vec<&Row> = r
+            .rows("tenant-a")
+            .into_iter()
+            .filter(|row| row.state.starts_with("deleted"))
+            .collect();
+        assert!(deleted.len() >= 2, "{release}: deleted vCons were kept");
+        for (n, row) in deleted.into_iter().enumerate() {
+            let (status, _) = server.get(&format!("/vcons/{}", row.uuid), &key);
+            assert_eq!(
+                status, 410,
+                "{release}: an ordinary read of deleted vCon {n} answers gone"
+            );
+        }
+        assert!(server.stop().success(), "{release}: serve stops cleanly");
+    }
+
+    pub(super) fn a_missing_object_is_named_damaged_by_check(release: &str) {
+        let r = Restored::new(release);
+        let objects = r.objects();
+        let gone = objects.first().expect("an object");
+        s3_ok("DELETE", &format!("{}/{gone}", r.bucket), &[]);
+        let out = r.run(&["check"]);
+        assert!(
+            !out.status.success(),
+            "{release}: check fails on a missing object"
+        );
+        let lines: Vec<serde_json::Value> = String::from_utf8(out.stdout)
+            .expect("UTF-8")
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("a JSON line"))
+            .collect();
+        let damaged: Vec<String> = lines
+            .iter()
+            .filter_map(|l| l["damaged"].as_array())
+            .flatten()
+            .map(|v| v.as_str().expect("a version").to_owned())
+            .collect();
+        assert_eq!(
+            damaged.len(),
+            1,
+            "{release}: one version damaged: {lines:?}"
+        );
+        assert!(
+            r.manifest
+                .rows
+                .iter()
+                .any(|row| row.version.to_string() == damaged[0]
+                    && row.place.as_deref() == Some("object")),
+            "{release}: the damaged version is one kept as an object: {damaged:?}"
+        );
+    }
+
+    pub(super) fn serve_without_the_parquet_table_is_refused(release: &str) {
+        let r = Restored::new(release);
+        r.configure(false);
+        let before = r.state();
+        let said = r.serve_refusal();
+        assert!(
+            said.contains(
+                "versions packed into Parquet files, and the configuration has no [storage.parquet]"
+            ),
+            "{release}: serve names what is missing: {said}"
+        );
+        assert_eq!(
+            r.state(),
+            before,
+            "{release}: the refused start wrote nothing"
+        );
+    }
+
+    // Edge.
+
+    pub(super) fn held_versions_outlive_the_start_up_sweep_under_a_0d_period(release: &str) {
+        let r = Restored::new(release);
+        assert!(
+            r.rows("tenant-b")
+                .iter()
+                .any(|row| row.state.starts_with("hidden+held")),
+            "{release}: a hidden held version is there to purge"
+        );
+        let key = r.key("tenant-b", &["legal"]);
+        let server = r.serve();
+        for row in r.rows("tenant-b") {
+            let (status, _) = server.get(
+                &format!("/legal/vcons/{}/versions/{}", row.uuid, row.version),
+                &key,
+            );
+            assert_eq!(
+                status, 200,
+                "{release}: tenant-b version {} survives the sweep",
+                row.version
+            );
+        }
+        assert!(server.stop().success(), "{release}: serve stops cleanly");
+    }
+
+    pub(super) fn the_start_pack_run_packs_the_late_objects_and_each_reads_back(release: &str) {
+        let r = Restored::new(release);
+        assert!(
+            !r.objects().is_empty(),
+            "{release}: versions kept as objects"
+        );
+        let keys = [
+            ("tenant-a", r.key("tenant-a", &["legal"])),
+            ("tenant-b", r.key("tenant-b", &["legal"])),
+        ];
+        let server = r.serve();
+        let deadline = Instant::now() + DEADLINE;
+        while !r.objects().is_empty() {
+            assert!(
+                Instant::now() < deadline,
+                "{release}: the start pack run packs every object"
+            );
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        for (tenant, key) in &keys {
+            for row in r
+                .rows(tenant)
+                .into_iter()
+                .filter(|row| row.place.as_deref() == Some("object"))
+            {
+                let (status, body) = server.get(
+                    &format!("/legal/vcons/{}/versions/{}", row.uuid, row.version),
+                    key,
+                );
+                assert_eq!(
+                    (status, sha_hex(&body)),
+                    (200, row.sha256.clone()),
+                    "{release}: {tenant} version {} reads back from its row",
+                    row.version
+                );
+            }
+        }
+        assert!(server.stop().success(), "{release}: serve stops cleanly");
+        for line in r.checked().iter().filter(|l| l["name"].is_string()) {
+            assert_eq!(
+                line["packed"], line["versions"],
+                "{release}: every version packed: {line}"
+            );
+        }
+    }
+
+    pub(super) fn the_restored_schema_is_the_one_the_release_wrote(release: &str) {
+        let r = Restored::new(release);
+        let read = pg::superuser(&r.db.name, "SELECT max(version) FROM vcon.schema_version")
+            .expect("the version");
+        assert_eq!(
+            read,
+            [pg_schema(release).to_string()],
+            "{release}: the dump restores the schema version the manifest records"
+        );
+    }
+}
+
+/// Each `<Contents>` entry of a bucket listing as its text: the key, the
+/// ETag, the size and the time, which change when an object does.
+fn listing_entries(xml: &str) -> Vec<String> {
+    xml.split("<Contents>")
+        .skip(1)
+        .filter_map(|rest| rest.split_once("</Contents>").map(|(e, _)| e.to_owned()))
+        .collect()
+}
+
+/// The key of a listing entry, or None when it names none.
+fn entry_key(entry: &str) -> Option<&str> {
+    entry
+        .split_once("<Key>")
+        .and_then(|(_, rest)| rest.split_once("</Key>"))
+        .map(|(key, _)| key)
+}
+
+#[test]
+fn a_listing_entry_names_its_key() {
+    let xml = "<ListBucketResult><Contents><Key>a/b</Key><ETag>\"x\"</ETag></Contents>\
+               <Contents><Key>c</Key></Contents></ListBucketResult>";
+    let entries = listing_entries(xml);
+    assert_eq!(entries.len(), 2, "two entries");
+    assert_eq!(
+        (entry_key(&entries[0]), entry_key(&entries[1])),
+        (Some("a/b"), Some("c")),
+        "their keys"
+    );
+}
+
+#[test]
+fn an_empty_listing_has_no_entry() {
+    assert!(
+        listing_entries("<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>")
+            .is_empty(),
+        "none"
+    );
+}
+
+#[test]
+fn an_entry_without_a_key_names_none() {
+    assert_eq!(entry_key("<ETag>\"x\"</ETag>"), None, "no key");
+    assert_eq!(entry_key("<Key>unclosed"), None, "an unclosed key");
+}
+
+/// The tests of one release's PostgreSQL fixture: the ones that read the
+/// files, and in `postgres` the ones that restore it.
+macro_rules! pg_release {
+    ($name:ident, $release:literal) => {
+        mod $name {
+            #[test]
+            fn the_fixture_was_written_by_the_pinned_release() {
+                super::pg_the_fixture_was_written_by_the_pinned_release($release);
+            }
+            #[test]
+            fn the_page_states_the_postgres_schema_the_release_wrote() {
+                super::the_page_states_the_postgres_schema_the_release_wrote($release);
+            }
+            #[test]
+            fn every_object_in_the_bucket_starts_with_the_envelope_version() {
+                super::every_object_in_the_bucket_starts_with_the_envelope_version($release);
+            }
+            #[test]
+            fn every_parquet_manifest_states_the_format_the_page_states() {
+                super::every_parquet_manifest_states_the_format_the_page_states($release);
+            }
+            #[test]
+            fn every_parquet_file_is_a_parquet_file() {
+                super::every_parquet_file_is_a_parquet_file($release);
+            }
+            #[test]
+            fn the_dump_loads_as_one_query() {
+                super::the_dump_loads_as_one_query($release);
+            }
+            #[test]
+            fn the_manifest_names_packed_versions_and_one_object_per_object_version() {
+                super::the_manifest_names_packed_versions_and_one_object_per_object_version(
+                    $release,
+                );
+            }
+            #[cfg(all(feature = "backend-tests", feature = "postgres"))]
+            mod postgres {
+                use super::super::live;
+                #[test]
+                fn check_passes_and_counts_every_kept_version() {
+                    live::check_passes_and_counts_every_kept_version($release);
+                }
+                #[test]
+                fn every_kept_version_reads_back_byte_equal() {
+                    live::every_kept_version_reads_back_byte_equal($release);
+                }
+                #[test]
+                fn every_uuid_lists_its_kept_versions_in_order() {
+                    live::every_uuid_lists_its_kept_versions_in_order($release);
+                }
+                #[test]
+                fn migrate_finds_the_schema_current_and_changes_nothing() {
+                    live::migrate_finds_the_schema_current_and_changes_nothing($release);
+                }
+                #[test]
+                fn a_second_check_changes_nothing() {
+                    live::a_second_check_changes_nothing($release);
+                }
+                #[test]
+                fn the_restored_deployment_stores_and_reads_a_new_vcon() {
+                    live::the_restored_deployment_stores_and_reads_a_new_vcon($release);
+                }
+                #[test]
+                fn a_schema_one_version_past_this_build_is_refused_by_name() {
+                    live::a_schema_one_version_past_this_build_is_refused_by_name($release);
+                }
+                #[test]
+                fn a_wrong_master_key_opens_nothing_and_changes_nothing() {
+                    live::a_wrong_master_key_opens_nothing_and_changes_nothing($release);
+                }
+                #[test]
+                fn a_purged_uuid_is_gone() {
+                    live::a_purged_uuid_is_gone($release);
+                }
+                #[test]
+                fn a_deleted_vcon_is_gone_to_an_ordinary_read() {
+                    live::a_deleted_vcon_is_gone_to_an_ordinary_read($release);
+                }
+                #[test]
+                fn a_missing_object_is_named_damaged_by_check() {
+                    live::a_missing_object_is_named_damaged_by_check($release);
+                }
+                #[test]
+                fn serve_without_the_parquet_table_is_refused() {
+                    live::serve_without_the_parquet_table_is_refused($release);
+                }
+                #[test]
+                fn held_versions_outlive_the_start_up_sweep_under_a_0d_period() {
+                    live::held_versions_outlive_the_start_up_sweep_under_a_0d_period($release);
+                }
+                #[test]
+                fn the_start_pack_run_packs_the_late_objects_and_each_reads_back() {
+                    live::the_start_pack_run_packs_the_late_objects_and_each_reads_back($release);
+                }
+                #[test]
+                fn the_restored_schema_is_the_one_the_release_wrote() {
+                    live::the_restored_schema_is_the_one_the_release_wrote($release);
+                }
+            }
+        }
+    };
+}
+
+pg_release!(pg_release_0_4_6, "0.4.6");
+pg_release!(pg_release_0_4_7, "0.4.7");
+pg_release!(pg_release_0_4_8, "0.4.8");
+pg_release!(pg_release_0_4_9, "0.4.9");
