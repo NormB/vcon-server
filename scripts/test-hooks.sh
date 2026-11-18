@@ -96,6 +96,11 @@ fi
 printf '# hook-fixture\n\nSee [the site](https://vcon-server.com/).\n' > crates/vcon-server/README.md
 cp "$src/LICENSE-MIT" "$src/LICENSE-APACHE" .
 cp "$src/LICENSE-MIT" "$src/LICENSE-APACHE" crates/vcon-server/
+# The HTTP API's OpenAPI document and the problem pages, which
+# scripts/test_contract_diff.py reads.
+cp "$src/crates/vcon-server/openapi.json" crates/vcon-server/
+mkdir -p website/content/problems
+cp -R "$src/website/content/problems/." website/content/problems/
 cat > crates/vcon-server/src/lib.rs <<'RS'
 /// Adds one.
 pub fn add_one(x: u32) -> u32 {
