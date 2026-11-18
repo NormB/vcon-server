@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Classify the changes between two versions of vcon-server's HTTP contract.
+"""Classify the changes between two versions of vcon-server's contract.
 
 website/content/docs/stability.md states what vcon-server keeps compatible.
 This script compares an OLD and a NEW version of one surface and says which
@@ -7,12 +7,13 @@ changes break a client written against OLD:
 
     contract_diff.py --kind openapi  OLD.json NEW.json  # OpenAPI documents
     contract_diff.py --kind problems OLD_DIR  NEW_DIR   # problem-type pages
+    contract_diff.py --kind cli      OLD.json NEW.json  # contract/cli.json
     contract_diff.py --against REF                      # this tree against REF
 
 `--against` reads each surface at REF (`git show`, `git ls-tree`) and in
-the work tree: crates/vcon-server/openapi.json and the pages of
-website/content/problems/. A surface REF does not hold is reported as "no
-baseline" and passes.
+the work tree: crates/vcon-server/openapi.json, the pages of
+website/content/problems/ and contract/cli.json. A surface REF does not
+hold is reported as "no baseline" and passes.
 
 THE RULE. A schema is read from the side of the program that handles the
 value:
@@ -39,6 +40,17 @@ value:
   compared.
 - problem types: a removed page of website/content/problems/ is breaking;
   a new one is additive.
+- the command line (contract/cli.json, written by tests/cli_contract.rs
+  from each command's `--help`), read as a script that runs the binary:
+  breaking when a command, a flag, a short name or an argument disappears;
+  when a flag or an argument becomes required, or a required one appears;
+  when a flag starts or stops taking a value, or its value may no longer be
+  left out; when a default changes or is removed; when a possible value is
+  removed or a list of them is set; when a flag may no longer be repeated;
+  when an exit code disappears, appears or changes its meaning. A new
+  command, a new optional flag or argument, a new possible value and a
+  stated default are additive. An argument is its place; the names of
+  arguments and values are --help text and are not compared.
 
 A `oneOf`, `anyOf`, `allOf` or `not` that changes is reported as breaking,
 because this script does not compare them, and a part it cannot compare is
@@ -72,6 +84,7 @@ LOWER = ("minimum", "exclusiveMinimum", "minLength", "minItems", "minProperties"
 UPPER = ("maximum", "exclusiveMaximum", "maxLength", "maxItems", "maxProperties")
 OPENAPI_PATH = "crates/vcon-server/openapi.json"
 PROBLEMS_PATH = "website/content/problems"
+CLI_PATH = "contract/cli.json"
 UNSET = object()
 
 
@@ -424,6 +437,136 @@ def problem_changes(old: set, new: set) -> list[Change]:
     return out
 
 
+def _cli_snapshot(d) -> None:
+    """Refuses `d` unless it has the shape tests/cli_contract.rs writes."""
+    if not isinstance(d, dict) or not isinstance(d.get("commands"), dict):
+        raise ContractError("a command line snapshot has no `commands` object")
+    if not isinstance(d.get("exit_codes"), dict):
+        raise ContractError("a command line snapshot has no `exit_codes` object")
+    for name, command in d["commands"].items():
+        if not (isinstance(command, dict) and isinstance(command.get("flags"), dict)
+                and isinstance(command.get("arguments"), list)):
+            raise ContractError(f"command {name!r} of a command line snapshot has no `flags` object "
+                                "or no `arguments` list")
+
+
+def _value_changes(o: dict, n: dict, where: str, out: list) -> None:
+    """What a flag's or an argument's value accepts: its default and its
+    list of possible values, by the writer rule."""
+    if o.get("default") is not None:
+        if n.get("default") is None:
+            out.append(Change("breaking", where, f"default {o['default']!r} removed"))
+        elif n["default"] != o["default"]:
+            out.append(Change("breaking", where, f"default changed from {o['default']!r} to {n['default']!r}"))
+    elif n.get("default") is not None:
+        out.append(Change("additive", where, f"default stated: {n['default']!r}"))
+    o_vals, n_vals = o.get("values"), n.get("values")
+    if o_vals is None and n_vals is not None:
+        out.append(Change("breaking", where, f"now accepts only {n_vals!r}"))
+    elif o_vals is not None and n_vals is None:
+        out.append(Change("additive", where, "accepts any value"))
+    elif o_vals is not None:
+        lost = [v for v in o_vals if v not in n_vals]
+        grown = [v for v in n_vals if v not in o_vals]
+        if lost:
+            out.append(Change("breaking", where, f"no longer accepts {lost!r}"))
+        if grown:
+            out.append(Change("additive", where, f"accepts more values: {grown!r}"))
+    if o.get("repeated") and not n.get("repeated"):
+        out.append(Change("breaking", where, "may no longer be repeated"))
+    elif n.get("repeated") and not o.get("repeated"):
+        out.append(Change("additive", where, "may now be repeated"))
+
+
+def _flag_changes(o: dict, n: dict, where: str, out: list) -> None:
+    if n.get("required") and not o.get("required"):
+        out.append(Change("breaking", where, "became required"))
+    elif o.get("required") and not n.get("required"):
+        out.append(Change("additive", where, "no longer required"))
+    o_short, n_short = o.get("short"), n.get("short")
+    if o_short is not None and n_short is None:
+        out.append(Change("breaking", where, f"short name {o_short} removed"))
+    elif o_short is not None and n_short != o_short:
+        out.append(Change("breaking", where, f"short name {o_short} changed to {n_short}"))
+    elif o_short is None and n_short is not None:
+        out.append(Change("additive", where, f"short name {n_short} added"))
+    o_val, n_val = o.get("value"), n.get("value")
+    if o_val is not None and n_val is None:
+        out.append(Change("breaking", where, "no longer takes a value"))
+    elif o_val is None and n_val is not None:
+        out.append(Change("breaking", where, "now takes a value"))
+    elif o_val is not None:
+        # `[<X>]` is a value that may be left out; the name inside is
+        # --help text.
+        o_opt, n_opt = o_val.startswith("["), n_val.startswith("[")
+        if o_opt and not n_opt:
+            out.append(Change("breaking", where, "its value may no longer be left out"))
+        elif n_opt and not o_opt:
+            out.append(Change("additive", where, "its value may now be left out"))
+    _value_changes(o, n, where, out)
+
+
+def _meaning(text) -> str:
+    return " ".join(str(text).split()).lower()
+
+
+def cli_changes(old: dict, new: dict) -> list[Change]:
+    """Every change from `old` to `new`, two snapshots of the command line
+    (contract/cli.json), read as a script that runs vcon-server."""
+    for d in (old, new):
+        _cli_snapshot(d)
+    out: list[Change] = []
+    o_cmds, n_cmds = old["commands"], new["commands"]
+    for name in sorted(set(o_cmds) | set(n_cmds)):
+        if name not in n_cmds:
+            out.append(Change("breaking", name, "command removed"))
+            continue
+        if name not in o_cmds:
+            out.append(Change("additive", name, "command added"))
+            continue
+        o_flags, n_flags = o_cmds[name]["flags"], n_cmds[name]["flags"]
+        for f in sorted(set(o_flags) | set(n_flags)):
+            where = f"{name} {f}"
+            if f not in n_flags:
+                out.append(Change("breaking", where, "flag removed"))
+            elif f not in o_flags:
+                if n_flags[f].get("required"):
+                    out.append(Change("breaking", where, "required flag added"))
+                else:
+                    out.append(Change("additive", where, "optional flag added"))
+            else:
+                _flag_changes(o_flags[f], n_flags[f], where, out)
+        # An argument is its place on the command line; its name is --help text.
+        o_args, n_args = o_cmds[name]["arguments"], n_cmds[name]["arguments"]
+        for i in range(max(len(o_args), len(n_args))):
+            where = f"{name} <{i + 1}>"
+            if i >= len(n_args):
+                out.append(Change("breaking", where, "argument removed"))
+            elif i >= len(o_args):
+                if n_args[i].get("required"):
+                    out.append(Change("breaking", where, "required argument added"))
+                else:
+                    out.append(Change("additive", where, "optional argument added"))
+            else:
+                if n_args[i].get("required") and not o_args[i].get("required"):
+                    out.append(Change("breaking", where, "became required"))
+                elif o_args[i].get("required") and not n_args[i].get("required"):
+                    out.append(Change("additive", where, "no longer required"))
+                _value_changes(o_args[i], n_args[i], where, out)
+    o_codes, n_codes = old["exit_codes"], new["exit_codes"]
+    for code in sorted(set(o_codes) | set(n_codes), key=lambda c: (len(c), c)):
+        where = f"exit {code}"
+        if code not in n_codes:
+            out.append(Change("breaking", where, "exit code removed"))
+        elif code not in o_codes:
+            # A script that tells the codes apart knows only the older ones.
+            out.append(Change("breaking", where, "exit code added, which a script written for the older release "
+                                                 "does not know"))
+        elif _meaning(o_codes[code]) != _meaning(n_codes[code]):
+            out.append(Change("breaking", where, f"meaning changed from {o_codes[code]!r} to {n_codes[code]!r}"))
+    return out
+
+
 def git_runner(root, env=None):
     """A function that runs `git <args>` in `root`: (exit code, stdout)."""
     def run(args):
@@ -465,6 +608,12 @@ def against(ref: str, root, git) -> int:
         else:
             new_names = os.listdir(root / PROBLEMS_PATH)
             broken += _report("problems", problem_changes(problem_slugs(old_names), problem_slugs(new_names)))
+        rc, text = git(["show", f"{ref}:{CLI_PATH}"])
+        if rc != 0:
+            print(f"cli: no baseline at {ref}")
+        else:
+            new = json.loads((root / CLI_PATH).read_text(encoding="utf-8"))
+            broken += _report("cli", cli_changes(json.loads(text), new))
     except (OSError, ValueError, ContractError) as e:
         print(f"contract_diff: {e}; nothing was decided", file=sys.stderr)
         return 2
@@ -473,10 +622,11 @@ def against(ref: str, root, git) -> int:
 
 USAGE = ("usage: contract_diff.py --kind openapi OLD.json NEW.json\n"
          "       contract_diff.py --kind problems OLD_DIR NEW_DIR\n"
+         "       contract_diff.py --kind cli OLD.json NEW.json\n"
          "       contract_diff.py --against REF")
 
 
-KINDS = ("openapi", "problems")
+KINDS = ("openapi", "problems", "cli")
 
 
 def parse(argv: list[str]):
@@ -497,12 +647,12 @@ def main(argv: list[str]) -> int:
         root = pathlib.Path(__file__).resolve().parent.parent
         return against(args[1], root, git_runner(root))
     try:
-        if args[0] == "openapi":
+        if args[0] in ("openapi", "cli"):
             docs = []
             for path in argv[2:]:
                 with open(path, encoding="utf-8") as f:
                     docs.append(json.load(f))
-            changes = openapi_changes(*docs)
+            changes = (openapi_changes if args[0] == "openapi" else cli_changes)(*docs)
         else:
             changes = problem_changes(problem_slugs(os.listdir(argv[2])), problem_slugs(os.listdir(argv[3])))
     except (OSError, ValueError, ContractError) as e:

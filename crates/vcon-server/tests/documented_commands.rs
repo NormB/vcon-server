@@ -9,7 +9,11 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+
+#[path = "support/cli_help.rs"]
+mod cli_help;
+
+use cli_help::{Help, flags, help, leaves};
 
 /// The pages read, from the repository root: the site's docs and the
 /// READMEs.
@@ -184,71 +188,6 @@ fn code_spans(line: &str) -> Vec<&str> {
         }
     }
     spans
-}
-
-/// What `vcon-server <path> --help` shows: its subcommands and its flags.
-#[derive(Debug, Clone)]
-struct Help {
-    subcommands: Vec<String>,
-    flags: Vec<String>,
-}
-
-fn help(path: &[String], cache: &mut HashMap<Vec<String>, Help>) -> Result<Help, String> {
-    if let Some(h) = cache.get(path) {
-        return Ok(h.clone());
-    }
-    let out = Command::new(env!("CARGO_BIN_EXE_vcon-server"))
-        .args(path)
-        .arg("--help")
-        .output()
-        .expect("the binary runs");
-    if !out.status.success() {
-        return Err(format!(
-            "`vcon-server {} --help` exits {:?}: {}",
-            path.join(" "),
-            out.status.code(),
-            String::from_utf8_lossy(&out.stderr)
-        ));
-    }
-    let text = String::from_utf8(out.stdout).expect("text");
-    let mut h = Help {
-        subcommands: Vec::new(),
-        flags: Vec::new(),
-    };
-    let mut in_commands = false;
-    for line in text.lines() {
-        if !line.starts_with(' ') {
-            in_commands = line == "Commands:";
-            continue;
-        }
-        let first = line.split_whitespace().next().unwrap_or("");
-        if in_commands {
-            h.subcommands.push(first.to_owned());
-        }
-        h.flags.extend(flags(line));
-    }
-    cache.insert(path.to_vec(), h.clone());
-    Ok(h)
-}
-
-/// Every `--name` in `text`, such as in `[--force [--override-holds]]` or
-/// `--tenant=<id>`.
-fn flags(text: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut rest = text;
-    while let Some(i) = rest.find("--") {
-        let after = &rest[i + 2..];
-        let end = after
-            .find(|c: char| !(c.is_ascii_lowercase() || c == '-'))
-            .unwrap_or(after.len());
-        let name = &after[..end];
-        let starts_word = i == 0 || !rest[..i].ends_with(|c: char| c.is_alphanumeric());
-        if starts_word && !name.is_empty() && !name.starts_with('-') {
-            out.push(format!("--{}", name.trim_end_matches('-')));
-        }
-        rest = &after[end..];
-    }
-    out
 }
 
 /// What is wrong with one documented command, if anything.
@@ -516,24 +455,6 @@ fn the_upgrade_scenario_starts_from_the_release_before_this_one() {
         "scripts/docs_test.py's PREVIOUS is the release before {}",
         env!("CARGO_PKG_VERSION")
     );
-}
-
-/// Every command of the binary that has no subcommands of its own, as its
-/// words after `vcon-server`, found by walking `--help`.
-fn leaves(path: Vec<String>, cache: &mut HashMap<Vec<String>, Help>) -> Vec<Vec<String>> {
-    let h = help(&path, cache).unwrap_or_else(|e| panic!("{e}"));
-    let subcommands: Vec<&String> = h.subcommands.iter().filter(|s| *s != "help").collect();
-    if subcommands.is_empty() {
-        return vec![path];
-    }
-    subcommands
-        .into_iter()
-        .flat_map(|sub| {
-            let mut next = path.clone();
-            next.push(sub.clone());
-            leaves(next, cache)
-        })
-        .collect()
 }
 
 /// The command a documented command runs, as its words after

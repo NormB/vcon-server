@@ -1,0 +1,1022 @@
+{
+  "commands": {
+    "vcon-server": {
+      "arguments": [],
+      "flags": {
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        },
+        "--version": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-V",
+          "value": null,
+          "values": null
+        }
+      }
+    },
+    "vcon-server audit": {
+      "arguments": [],
+      "flags": {
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        }
+      }
+    },
+    "vcon-server audit export": {
+      "arguments": [],
+      "flags": {
+        "--admin": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": null,
+          "value": null,
+          "values": null
+        },
+        "--config": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<CONFIG>",
+          "values": null
+        },
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        },
+        "--since": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": null,
+          "value": "<SINCE>",
+          "values": null
+        },
+        "--tenant": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": null,
+          "value": "<TENANT>",
+          "values": null
+        }
+      }
+    },
+    "vcon-server backup": {
+      "arguments": [
+        {
+          "default": null,
+          "name": "DIR",
+          "repeated": false,
+          "required": true,
+          "values": null
+        }
+      ],
+      "flags": {
+        "--config": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<CONFIG>",
+          "values": null
+        },
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        }
+      }
+    },
+    "vcon-server check": {
+      "arguments": [],
+      "flags": {
+        "--config": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<CONFIG>",
+          "values": null
+        },
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        }
+      }
+    },
+    "vcon-server export": {
+      "arguments": [],
+      "flags": {
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        }
+      }
+    },
+    "vcon-server export parquet": {
+      "arguments": [],
+      "flags": {
+        "--config": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<CONFIG>",
+          "values": null
+        },
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        },
+        "--since": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": null,
+          "value": "<SINCE>",
+          "values": null
+        },
+        "--tenant": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<TENANT>",
+          "values": null
+        },
+        "--to": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<TO>",
+          "values": null
+        },
+        "--until": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": null,
+          "value": "<UNTIL>",
+          "values": null
+        }
+      }
+    },
+    "vcon-server key": {
+      "arguments": [],
+      "flags": {
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        }
+      }
+    },
+    "vcon-server key create": {
+      "arguments": [],
+      "flags": {
+        "--config": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<CONFIG>",
+          "values": null
+        },
+        "--expires-days": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": null,
+          "value": "<DAYS>",
+          "values": null
+        },
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        },
+        "--label": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<LABEL>",
+          "values": null
+        },
+        "--no-expiry": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": null,
+          "value": null,
+          "values": null
+        },
+        "--operator": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": null,
+          "value": null,
+          "values": null
+        },
+        "--scope": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": null,
+          "value": "<SCOPES>",
+          "values": null
+        },
+        "--tenant": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": null,
+          "value": "<TENANT>",
+          "values": null
+        }
+      }
+    },
+    "vcon-server key list": {
+      "arguments": [],
+      "flags": {
+        "--config": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<CONFIG>",
+          "values": null
+        },
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        },
+        "--tenant": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": null,
+          "value": "<TENANT>",
+          "values": null
+        }
+      }
+    },
+    "vcon-server key revoke": {
+      "arguments": [
+        {
+          "default": null,
+          "name": "ID",
+          "repeated": false,
+          "required": true,
+          "values": null
+        }
+      ],
+      "flags": {
+        "--config": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<CONFIG>",
+          "values": null
+        },
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        }
+      }
+    },
+    "vcon-server mcp": {
+      "arguments": [],
+      "flags": {
+        "--config": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<CONFIG>",
+          "values": null
+        },
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        }
+      }
+    },
+    "vcon-server membership": {
+      "arguments": [],
+      "flags": {
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        }
+      }
+    },
+    "vcon-server membership grant": {
+      "arguments": [
+        {
+          "default": null,
+          "name": "USER",
+          "repeated": false,
+          "required": true,
+          "values": null
+        }
+      ],
+      "flags": {
+        "--config": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<CONFIG>",
+          "values": null
+        },
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        },
+        "--operator": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": null,
+          "value": null,
+          "values": null
+        },
+        "--role": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": null,
+          "value": "<ROLES>",
+          "values": null
+        },
+        "--tenant": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": null,
+          "value": "<TENANT>",
+          "values": null
+        }
+      }
+    },
+    "vcon-server membership revoke": {
+      "arguments": [
+        {
+          "default": null,
+          "name": "USER",
+          "repeated": false,
+          "required": true,
+          "values": null
+        }
+      ],
+      "flags": {
+        "--config": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<CONFIG>",
+          "values": null
+        },
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        },
+        "--operator": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": null,
+          "value": null,
+          "values": null
+        },
+        "--role": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": null,
+          "value": "<ROLES>",
+          "values": null
+        },
+        "--tenant": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": null,
+          "value": "<TENANT>",
+          "values": null
+        }
+      }
+    },
+    "vcon-server migrate": {
+      "arguments": [],
+      "flags": {
+        "--config": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<CONFIG>",
+          "values": null
+        },
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        }
+      }
+    },
+    "vcon-server rekey": {
+      "arguments": [],
+      "flags": {
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        }
+      }
+    },
+    "vcon-server rekey master": {
+      "arguments": [],
+      "flags": {
+        "--config": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<CONFIG>",
+          "values": null
+        },
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        },
+        "--new-master": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<NEW_MASTER>",
+          "values": null
+        }
+      }
+    },
+    "vcon-server rekey tenant": {
+      "arguments": [
+        {
+          "default": null,
+          "name": "ID",
+          "repeated": false,
+          "required": true,
+          "values": null
+        }
+      ],
+      "flags": {
+        "--config": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<CONFIG>",
+          "values": null
+        },
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        }
+      }
+    },
+    "vcon-server serve": {
+      "arguments": [],
+      "flags": {
+        "--config": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<CONFIG>",
+          "values": null
+        },
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        }
+      }
+    },
+    "vcon-server storage": {
+      "arguments": [],
+      "flags": {
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        }
+      }
+    },
+    "vcon-server storage move-objects": {
+      "arguments": [],
+      "flags": {
+        "--config": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<CONFIG>",
+          "values": null
+        },
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        }
+      }
+    },
+    "vcon-server tenant": {
+      "arguments": [],
+      "flags": {
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        }
+      }
+    },
+    "vcon-server tenant create": {
+      "arguments": [
+        {
+          "default": null,
+          "name": "NAME",
+          "repeated": false,
+          "required": true,
+          "values": null
+        }
+      ],
+      "flags": {
+        "--config": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<CONFIG>",
+          "values": null
+        },
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        },
+        "--retention": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": null,
+          "value": "<RETENTION>",
+          "values": null
+        }
+      }
+    },
+    "vcon-server tenant list": {
+      "arguments": [],
+      "flags": {
+        "--config": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<CONFIG>",
+          "values": null
+        },
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        }
+      }
+    },
+    "vcon-server tenant remove": {
+      "arguments": [
+        {
+          "default": null,
+          "name": "ID",
+          "repeated": false,
+          "required": true,
+          "values": null
+        }
+      ],
+      "flags": {
+        "--config": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<CONFIG>",
+          "values": null
+        },
+        "--force": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": null,
+          "value": null,
+          "values": null
+        },
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        },
+        "--override-holds": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": null,
+          "value": null,
+          "values": null
+        }
+      }
+    },
+    "vcon-server tenant role-cap": {
+      "arguments": [
+        {
+          "default": null,
+          "name": "ID",
+          "repeated": false,
+          "required": true,
+          "values": null
+        }
+      ],
+      "flags": {
+        "--config": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<CONFIG>",
+          "values": null
+        },
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        }
+      }
+    },
+    "vcon-server tenant set-metadata": {
+      "arguments": [
+        {
+          "default": null,
+          "name": "ID",
+          "repeated": false,
+          "required": true,
+          "values": null
+        },
+        {
+          "default": null,
+          "name": "METADATA",
+          "repeated": false,
+          "required": true,
+          "values": null
+        }
+      ],
+      "flags": {
+        "--config": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<CONFIG>",
+          "values": null
+        },
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        }
+      }
+    },
+    "vcon-server tenant set-retention": {
+      "arguments": [
+        {
+          "default": null,
+          "name": "ID",
+          "repeated": false,
+          "required": true,
+          "values": null
+        },
+        {
+          "default": null,
+          "name": "RETENTION",
+          "repeated": false,
+          "required": true,
+          "values": null
+        }
+      ],
+      "flags": {
+        "--config": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<CONFIG>",
+          "values": null
+        },
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        }
+      }
+    },
+    "vcon-server tenant set-role-cap": {
+      "arguments": [
+        {
+          "default": null,
+          "name": "ID",
+          "repeated": false,
+          "required": true,
+          "values": null
+        }
+      ],
+      "flags": {
+        "--all": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": null,
+          "value": null,
+          "values": null
+        },
+        "--config": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<CONFIG>",
+          "values": null
+        },
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        },
+        "--role": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": null,
+          "value": "<ROLES>",
+          "values": null
+        }
+      }
+    },
+    "vcon-server tui": {
+      "arguments": [],
+      "flags": {
+        "--config": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<CONFIG>",
+          "values": null
+        },
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        }
+      }
+    },
+    "vcon-server user": {
+      "arguments": [],
+      "flags": {
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        }
+      }
+    },
+    "vcon-server user add": {
+      "arguments": [
+        {
+          "default": null,
+          "name": "LABEL",
+          "repeated": false,
+          "required": true,
+          "values": null
+        }
+      ],
+      "flags": {
+        "--config": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<CONFIG>",
+          "values": null
+        },
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        },
+        "--issuer": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": null,
+          "value": "<ISSUER>",
+          "values": null
+        },
+        "--subject": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": null,
+          "value": "<SUBJECT>",
+          "values": null
+        }
+      }
+    },
+    "vcon-server user deactivate": {
+      "arguments": [
+        {
+          "default": null,
+          "name": "ID",
+          "repeated": false,
+          "required": true,
+          "values": null
+        }
+      ],
+      "flags": {
+        "--config": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<CONFIG>",
+          "values": null
+        },
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        }
+      }
+    },
+    "vcon-server user list": {
+      "arguments": [],
+      "flags": {
+        "--config": {
+          "default": null,
+          "repeated": false,
+          "required": true,
+          "short": null,
+          "value": "<CONFIG>",
+          "values": null
+        },
+        "--help": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": "-h",
+          "value": null,
+          "values": null
+        }
+      }
+    }
+  },
+  "exit_codes": {
+    "0": "done",
+    "1": "refused or failed",
+    "2": "the command line does not parse"
+  }
+}

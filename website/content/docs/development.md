@@ -179,6 +179,17 @@ plain `cc` for aarch64, so the binaries released are linked as before.
   removal during a request.
 - **Time controlled.** Retention and the sweep run on a clock the tests set.
 - **Fuzzed.** Every parser of outside input has a fuzz target; see below.
+- **The command line held to a snapshot.** contract/cli.json holds every
+  command, flag and argument of the binary and the exit codes, read from
+  `--help` and the [command line page](@/docs/command-line.md#output-and-exit-codes)
+  by tests/cli_contract.rs, which fails when the file differs. After a
+  change to the command line, write the file again with one command, and
+  commit it with the change; [Stability](@/docs/stability.md#check-the-command-line-between-two-releases)
+  says which of its changes break a script:
+
+  ```sh
+  VCON_SERVER_WRITE_CONTRACT=1 cargo test -p vcon-server --test cli_contract
+  ```
 
 ## Fuzzing
 

@@ -1,6 +1,6 @@
 +++
 title = "Stability"
-description = "What a release keeps compatible with the release before it: the surfaces of the contract, which changes break a client and which do not, and how to compare the HTTP API of two releases."
+description = "What a release keeps compatible with the release before it: the surfaces of the contract, which changes break a client and which do not, and how to compare the HTTP API and the command line of two releases."
 weight = 59
 
 [extra]
@@ -23,8 +23,10 @@ breaks a surface of the contract is a new major version.
 |---|---|---|
 | HTTP API | every path, operation, parameter, request body, response status, media type, response header and body schema in [openapi.json](https://github.com/NormB/vcon-server/blob/main/crates/vcon-server/openapi.json) | `contract_diff.py --kind openapi` |
 | Problem types | the type of each [problem document](@/docs/http-api.md), one page each under `/problems/` | `contract_diff.py --kind problems` |
+| Command line | every command, and each flag and argument it takes: whether it is required, whether it takes a value, its default and its possible values, in [contract/cli.json](https://github.com/NormB/vcon-server/blob/main/contract/cli.json) | `contract_diff.py --kind cli` |
+| Exit codes | 0, 1 and 2, with the meaning [the command line page](@/docs/command-line.md#output-and-exit-codes) gives each, also in contract/cli.json | `contract_diff.py --kind cli` |
 
-The command line, the configuration file, the MCP tools, the environment
+The configuration file, the MCP tools, the environment
 variables the server reads, the on-disk formats and the audit records have
 no check of this kind yet. [On-disk formats](@/docs/on-disk-format.md)
 states the rule each new build keeps for the data of an older one, and CI
@@ -100,11 +102,36 @@ The mark counts when both releases carry it. Releases up to 0.4.10 do not,
 so a comparison with one of them reports each new problem type as a
 breaking change to every response that can carry a problem document.
 
+### The command line
+
+A script runs the binary, so a change is breaking when a command line the
+older release took fails or acts otherwise on the newer one:
+
+- a command, a flag, a flag's short name or an argument is removed;
+- a flag or an argument becomes required, or a new required one appears;
+- a flag that took a value stops taking one, or the other way round, or
+  its value may no longer be left out;
+- a default changes or is removed;
+- a possible value is removed, or a list of possible values is set where
+  there was none;
+- a flag that could be given more than once no longer can;
+- an exit code is removed, changes its meaning, or a new one appears: a
+  script that tells the codes apart knows only the older release's.
+
+A new command, a new optional flag or argument, a new possible value and a
+default stated where there was none are additive. An argument is its place
+on the command line: the first, the second.
+
 ### What the script does not compare
 
 `info` (whose `version` changes with each release), descriptions, summaries
 and examples. A `oneOf`, `anyOf`, `allOf` or `not` that changes is reported
 as breaking, since the script does not compare inside them.
+
+On the command line, the text of `--help` and the names it gives arguments
+and values. contract/cli.json is read from `--help`, so a flag counts as one
+that may be given more than once only when `--help` shows `...` after its
+value.
 
 ## Before you compare two releases
 
@@ -131,9 +158,11 @@ changes of each, then its count:
 ```text
 openapi: 0 change(s), 0 breaking
 problems: 0 change(s), 0 breaking
+cli: no baseline at v0.4.10
 ```
 
 A surface the tag does not hold prints `no baseline at <tag>` and passes.
+contract/cli.json is first in the release after 0.4.10.
 
 ## Compare two releases
 
@@ -159,12 +188,44 @@ contract_diff: 5 change(s), 0 breaking
 For two directories of problem pages, `--kind problems OLD_DIR NEW_DIR`
 compares the page names.
 
+## Check the command line between two releases
+
+Each release from the one after 0.4.10 holds contract/cli.json. Set `OLD`
+and `NEW` to two such release tags, write each one's file, then compare
+the files:
+
+```sh
+git show "$OLD:contract/cli.json" > old-cli.json
+git show "$NEW:contract/cli.json" > new-cli.json
+python3 -I scripts/contract_diff.py --kind cli old-cli.json new-cli.json
+```
+
+Each line names the command, then the flag, `<N>` for the command's Nth
+argument, or `exit N` for an exit code:
+
+```text
+additive vcon-server key create --dry-run: optional flag added
+breaking vcon-server tenant remove --force: flag removed
+contract_diff: 2 change(s), 1 breaking
+```
+
+contract/cli.json is written from the binary, never by hand. After a
+change to a command, its flags or the exit codes on the
+[command line page](@/docs/command-line.md#output-and-exit-codes), write
+it again from the top of the clone and commit it with the change:
+
+```sh
+VCON_SERVER_WRITE_CONTRACT=1 cargo test -p vcon-server --test cli_contract
+git diff contract/cli.json
+```
+
 ## Read the result
 
 Each line is one change: `breaking` or `additive`, where it is (the
 method and path, then the parameter, the status and media type, and a
-`$` path into the schema), and what changed. The script exits 0 when no
-change is breaking, 1 when one is, and 2 when it could not decide.
+`$` path into the schema; or the command and its flag, argument or exit
+code), and what changed. The script exits 0 when no change is breaking,
+1 when one is, and 2 when it could not decide.
 
 ## When the check fails
 
@@ -181,5 +242,12 @@ change is breaking, 1 when one is, and 2 when it could not decide.
 - **``an OpenAPI document has no `paths` object; nothing was decided``.**
   One of the files is not an OpenAPI document: check the path given to
   `git show`.
-- **`usage:`.** The arguments are not one of the three forms the usage
+- **``a command line snapshot has no `commands` object; nothing was decided``.**
+  One of the files is not a contract/cli.json: check the tag given to
+  `git show`. A release up to 0.4.10 has no such file.
+- **`contract/cli.json is not what the binary's --help shows`.** The test
+  `cli_contract` (run by the commit hook and CI) found a command line that
+  differs from the snapshot, and names the first line that differs. Write
+  the snapshot again with the command above, read the diff, and commit it.
+- **`usage:`.** The arguments are not one of the four forms the usage
   line shows.

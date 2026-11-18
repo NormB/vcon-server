@@ -48,6 +48,9 @@ key, the data directory, the certificate or the storage cannot be used.
 - **2:** the command line does not parse, such as a missing `--config` or
   `--override-holds` without `--force`.
 
+The exit codes, the commands and their flags are surfaces of the
+[stability contract](@/docs/stability.md#the-command-line).
+
 ## Tenants
 
 | Command | Prints | Runs beside `serve` |

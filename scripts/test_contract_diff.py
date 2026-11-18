@@ -172,9 +172,14 @@ class FakeGit:
         raise AssertionError(f"unexpected git call {args}")
 
 
-def tree(tmp, openapi=None, problems=None):
-    """A work tree under `tmp` with the two HTTP surfaces."""
+def tree(tmp, openapi=None, problems=None, cli=None):
+    """A work tree under `tmp` with the two HTTP surfaces and, when given,
+    the command line's snapshot."""
     root = pathlib.Path(tmp)
+    if cli is not None:
+        p = root / "contract/cli.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(cli), encoding="utf-8")
     if openapi is not None:
         p = root / "crates/vcon-server/openapi.json"
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -354,7 +359,7 @@ class Passes(unittest.TestCase):
 
     def test_every_command_on_the_stability_page_parses(self):
         lines = [l for l in STABILITY.read_text(encoding="utf-8").splitlines() if l.startswith("python3 -I scripts/contract_diff.py")]
-        self.assertEqual(len(lines), 2, "the page shows the --against and the --kind openapi forms")
+        self.assertEqual(len(lines), 3, "the page shows the --against, --kind openapi and --kind cli forms")
         for line in lines:
             self.assertIsNotNone(cd.parse(line.split()[3:]), f"the page's command {line!r} is a usage main takes")
 
@@ -578,7 +583,7 @@ class Fails(unittest.TestCase):
         self.assertIn("problems: breaking problems/b: problem type removed", out.getvalue(), out.getvalue())
 
     def test_parse_refuses_a_kind_the_script_does_not_take(self):
-        self.assertIsNone(cd.parse(["--kind", "cli", "a", "b"]), "cli has no classifier yet")
+        self.assertIsNone(cd.parse(["--kind", "nonesuch", "a", "b"]), "nonesuch is not a surface")
 
     def test_parse_refuses_against_without_exactly_one_ref(self):
         self.assertEqual((cd.parse(["--against"]), cd.parse(["--against", "v1", "v2"])), (None, None),
@@ -810,6 +815,375 @@ class Edges(unittest.TestCase):
     def test_main_with_too_few_arguments_is_a_usage_error(self):
         rc, _, err = run_main(["--kind", "openapi", "a"])
         self.assertEqual((rc, "usage:" in err), (2, True), err)
+
+
+# The command line: contract/cli.json, as tests/cli_contract.rs writes it.
+CLI_SNAPSHOT = ROOT / "contract/cli.json"
+
+
+def flag(short=None, value=None, required=False, repeated=False, default=None, values=None):
+    return {"short": short, "value": value, "required": required, "repeated": repeated,
+            "default": default, "values": values}
+
+
+def arg(name, required=True, repeated=False, default=None, values=None):
+    return {"name": name, "required": required, "repeated": repeated, "default": default, "values": values}
+
+
+CLI_BASE = {
+    "commands": {
+        "vcon-server": {"arguments": [], "flags": {"--help": flag("-h"), "--version": flag("-V")}},
+        "vcon-server key create": {"arguments": [], "flags": {
+            "--config": flag(value="<CONFIG>", required=True),
+            "--label": flag(value="<LABEL>", required=True),
+            "--scope": flag(value="<SCOPES>", repeated=True, values=["read", "write"]),
+            "--expires-days": flag(value="<DAYS>", default="90"),
+            "--tenant": flag("-t", value="<TENANT>"),
+            "--no-expiry": flag(),
+            "--help": flag("-h"),
+        }},
+        "vcon-server tenant remove": {"arguments": [arg("ID")], "flags": {
+            "--config": flag(value="<CONFIG>", required=True),
+            "--force": flag(),
+            "--help": flag("-h"),
+        }},
+    },
+    "exit_codes": {"0": "done", "1": "refused or failed", "2": "the command line does not parse"},
+}
+KEY = "vcon-server key create"
+REMOVE = "vcon-server tenant remove"
+
+
+def cli_changed(edit):
+    """A deep copy of CLI_BASE after `edit(copy)`."""
+    d = copy.deepcopy(CLI_BASE)
+    edit(d)
+    return d
+
+
+def key_flag(name, **values):
+    """An edit that sets members of one flag of `key create`."""
+    return lambda d: d["commands"][KEY]["flags"][name].update(values)
+
+
+class CliPasses(unittest.TestCase):
+    def test_identical_snapshots_have_no_change(self):
+        self.assertEqual(cd.cli_changes(CLI_BASE, copy.deepcopy(CLI_BASE)), [], "a snapshot equals itself")
+
+    def test_the_snapshot_in_the_tree_is_unchanged_against_itself(self):
+        d = json.loads(CLI_SNAPSHOT.read_text(encoding="utf-8"))
+        self.assertEqual(cd.cli_changes(d, copy.deepcopy(d)), [], "contract/cli.json compared with itself")
+
+    def test_the_snapshot_in_the_tree_holds_the_three_exit_codes(self):
+        d = json.loads(CLI_SNAPSHOT.read_text(encoding="utf-8"))
+        self.assertEqual(sorted(d["exit_codes"]), ["0", "1", "2"], "command-line.md lists 0, 1 and 2")
+
+    def test_the_snapshot_in_the_tree_reads_every_command(self):
+        d = json.loads(CLI_SNAPSHOT.read_text(encoding="utf-8"))
+        found = cd.cli_changes(d, {"commands": {}, "exit_codes": d["exit_codes"]})
+        self.assertEqual(len(found), len(d["commands"]), "each command's removal is one change")
+        self.assertTrue(all(c.message == "command removed" for c in found), found)
+
+    def test_an_optional_flag_added_is_additive(self):
+        d = cli_changed(lambda d: d["commands"][KEY]["flags"].update({"--dry-run": flag()}))
+        self.assertEqual(kinds(cd.cli_changes(CLI_BASE, d)),
+                         [("additive", f"{KEY} --dry-run", "optional flag added")], "an old command line still parses")
+
+    def test_a_command_added_is_additive(self):
+        d = cli_changed(lambda d: d["commands"].update({"vcon-server key rotate": {"arguments": [], "flags": {}}}))
+        self.assertEqual(kinds(cd.cli_changes(CLI_BASE, d)),
+                         [("additive", "vcon-server key rotate", "command added")], "a new command breaks no script")
+
+    def test_a_flag_no_longer_required_is_additive(self):
+        found = cd.cli_changes(CLI_BASE, cli_changed(key_flag("--label", required=False)))
+        self.assertEqual(kinds(found), [("additive", f"{KEY} --label", "no longer required")], found)
+
+    def test_an_optional_argument_added_is_additive(self):
+        d = cli_changed(lambda d: d["commands"][REMOVE]["arguments"].append(arg("REASON", required=False)))
+        self.assertEqual(kinds(cd.cli_changes(CLI_BASE, d)),
+                         [("additive", f"{REMOVE} <2>", "optional argument added")], "an old command line still parses")
+
+    def test_an_argument_no_longer_required_is_additive(self):
+        d = cli_changed(lambda d: d["commands"][REMOVE]["arguments"][0].update(required=False))
+        self.assertEqual(kinds(cd.cli_changes(CLI_BASE, d)), [("additive", f"{REMOVE} <1>", "no longer required")],
+                         "a command line that gives it still parses")
+
+    def test_a_default_stated_where_there_was_none_is_additive(self):
+        found = cd.cli_changes(CLI_BASE, cli_changed(key_flag("--tenant", default="t1")))
+        self.assertEqual(kinds(found), [("additive", f"{KEY} --tenant", "default stated: 't1'")], found)
+
+    def test_a_possible_value_added_is_additive(self):
+        found = cd.cli_changes(CLI_BASE, cli_changed(key_flag("--scope", values=["read", "write", "audit"])))
+        self.assertEqual(kinds(found), [("additive", f"{KEY} --scope", "accepts more values: ['audit']")], found)
+
+    def test_a_list_of_possible_values_removed_is_additive(self):
+        found = cd.cli_changes(CLI_BASE, cli_changed(key_flag("--scope", values=None)))
+        self.assertEqual(kinds(found), [("additive", f"{KEY} --scope", "accepts any value")], found)
+
+    def test_a_flag_that_may_now_be_repeated_is_additive(self):
+        found = cd.cli_changes(CLI_BASE, cli_changed(key_flag("--label", repeated=True)))
+        self.assertEqual(kinds(found), [("additive", f"{KEY} --label", "may now be repeated")], found)
+
+    def test_a_short_name_added_is_additive(self):
+        found = cd.cli_changes(CLI_BASE, cli_changed(key_flag("--label", short="-l")))
+        self.assertEqual(kinds(found), [("additive", f"{KEY} --label", "short name -l added")], found)
+
+    def test_a_value_that_may_now_be_left_out_is_additive(self):
+        found = cd.cli_changes(CLI_BASE, cli_changed(key_flag("--expires-days", value="[<DAYS>]")))
+        self.assertEqual(kinds(found), [("additive", f"{KEY} --expires-days", "its value may now be left out")], found)
+
+    def test_a_renamed_value_is_no_change(self):
+        found = cd.cli_changes(CLI_BASE, cli_changed(key_flag("--scope", value="<SCOPE>")))
+        self.assertEqual(found, [], "the value's name is --help text, not part of what a script types")
+
+    def test_main_compares_two_cli_files(self):
+        d = cli_changed(lambda d: d["commands"][KEY]["flags"].update({"--dry-run": flag()}))
+        rc, out, err = run_main(["--kind", "cli", "OLD", "NEW"], {"OLD": CLI_BASE, "NEW": d})
+        self.assertEqual(rc, 0, err)
+        self.assertIn(f"additive {KEY} --dry-run: optional flag added", out, out)
+        self.assertIn("contract_diff: 1 change(s), 0 breaking", out, out)
+
+    def test_against_compares_the_cli_snapshot_at_the_ref(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = tree(tmp, BASE, ["a.md"], CLI_BASE)
+            fake = FakeGit({("v1", cd.OPENAPI_PATH): json.dumps(BASE), ("v1", cd.PROBLEMS_PATH): ["a.md"],
+                            ("v1", cd.CLI_PATH): json.dumps(CLI_BASE)})
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = cd.against("v1", root, fake)
+        self.assertEqual(rc, 0, out.getvalue())
+        self.assertIn("cli: 0 change(s), 0 breaking", out.getvalue(), "the cli surface reports its count")
+
+    def test_against_a_ref_without_a_cli_snapshot_is_no_baseline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = tree(tmp, BASE, ["a.md"], CLI_BASE)
+            fake = FakeGit({("v1", cd.OPENAPI_PATH): json.dumps(BASE), ("v1", cd.PROBLEMS_PATH): ["a.md"]})
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = cd.against("v1", root, fake)
+        self.assertEqual(rc, 0, out.getvalue())
+        self.assertIn("cli: no baseline at v1", out.getvalue(), "a release before contract/cli.json passes")
+
+    def test_parse_takes_the_cli_kind(self):
+        self.assertEqual(cd.parse(["--kind", "cli", "a", "b"]), ("cli", "a", "b"), "cli is a surface")
+
+
+class CliFails(unittest.TestCase):
+    def one(self, edit, where, message):
+        found = cd.cli_changes(CLI_BASE, cli_changed(edit))
+        self.assertEqual(kinds(found), [("breaking", where, message)], found)
+
+    def test_a_command_removed_is_breaking(self):
+        self.one(lambda d: d["commands"].pop(REMOVE), REMOVE, "command removed")
+
+    def test_a_flag_removed_is_breaking(self):
+        self.one(lambda d: d["commands"][REMOVE]["flags"].pop("--force"), f"{REMOVE} --force", "flag removed")
+
+    def test_a_required_flag_added_is_breaking(self):
+        self.one(lambda d: d["commands"][REMOVE]["flags"].update({"--reason": flag(value="<R>", required=True)}),
+                 f"{REMOVE} --reason", "required flag added")
+
+    def test_a_flag_that_became_required_is_breaking(self):
+        self.one(key_flag("--tenant", required=True), f"{KEY} --tenant", "became required")
+
+    def test_a_flag_that_stops_taking_a_value_is_breaking(self):
+        self.one(key_flag("--tenant", value=None), f"{KEY} --tenant", "no longer takes a value")
+
+    def test_a_flag_that_starts_taking_a_value_is_breaking(self):
+        self.one(key_flag("--no-expiry", value="<WHEN>"), f"{KEY} --no-expiry", "now takes a value")
+
+    def test_a_value_that_may_no_longer_be_left_out_is_breaking(self):
+        d = cli_changed(key_flag("--expires-days", value="[<DAYS>]"))
+        found = cd.cli_changes(d, CLI_BASE)
+        self.assertEqual(kinds(found), [("breaking", f"{KEY} --expires-days", "its value may no longer be left out")],
+                         found)
+
+    def test_a_changed_default_is_breaking(self):
+        self.one(key_flag("--expires-days", default="30"), f"{KEY} --expires-days",
+                 "default changed from '90' to '30'")
+
+    def test_a_removed_default_is_breaking(self):
+        self.one(key_flag("--expires-days", default=None), f"{KEY} --expires-days", "default '90' removed")
+
+    def test_a_possible_value_removed_is_breaking(self):
+        self.one(key_flag("--scope", values=["read"]), f"{KEY} --scope", "no longer accepts ['write']")
+
+    def test_a_list_of_possible_values_set_where_there_was_none_is_breaking(self):
+        self.one(key_flag("--tenant", values=["a", "b"]), f"{KEY} --tenant", "now accepts only ['a', 'b']")
+
+    def test_a_flag_that_may_no_longer_be_repeated_is_breaking(self):
+        self.one(key_flag("--scope", repeated=False), f"{KEY} --scope", "may no longer be repeated")
+
+    def test_a_short_name_removed_is_breaking(self):
+        self.one(key_flag("--tenant", short=None), f"{KEY} --tenant", "short name -t removed")
+
+    def test_a_short_name_changed_is_breaking(self):
+        self.one(key_flag("--tenant", short="-T"), f"{KEY} --tenant", "short name -t changed to -T")
+
+    def test_an_argument_removed_is_breaking(self):
+        self.one(lambda d: d["commands"][REMOVE]["arguments"].clear(), f"{REMOVE} <1>", "argument removed")
+
+    def test_a_required_argument_added_is_breaking(self):
+        self.one(lambda d: d["commands"][REMOVE]["arguments"].append(arg("REASON")), f"{REMOVE} <2>",
+                 "required argument added")
+
+    def test_an_argument_that_became_required_is_breaking(self):
+        d = cli_changed(lambda d: d["commands"][REMOVE]["arguments"][0].update(required=False))
+        found = cd.cli_changes(d, CLI_BASE)
+        self.assertEqual(kinds(found), [("breaking", f"{REMOVE} <1>", "became required")], found)
+
+    def test_an_argument_whose_default_changed_is_breaking(self):
+        old = cli_changed(lambda d: d["commands"][REMOVE]["arguments"][0].update(default="a"))
+        new = cli_changed(lambda d: d["commands"][REMOVE]["arguments"][0].update(default="b"))
+        self.assertEqual(kinds(cd.cli_changes(old, new)),
+                         [("breaking", f"{REMOVE} <1>", "default changed from 'a' to 'b'")], "an argument's default")
+
+    def test_an_argument_that_lost_a_possible_value_is_breaking(self):
+        old = cli_changed(lambda d: d["commands"][REMOVE]["arguments"][0].update(values=["none", "full"]))
+        new = cli_changed(lambda d: d["commands"][REMOVE]["arguments"][0].update(values=["none"]))
+        self.assertEqual(kinds(cd.cli_changes(old, new)),
+                         [("breaking", f"{REMOVE} <1>", "no longer accepts ['full']")], "an argument's values")
+
+    def test_an_exit_code_removed_is_breaking(self):
+        self.one(lambda d: d["exit_codes"].pop("2"), "exit 2", "exit code removed")
+
+    def test_an_exit_code_whose_meaning_changed_is_breaking(self):
+        self.one(lambda d: d["exit_codes"].update({"1": "refused"}), "exit 1",
+                 "meaning changed from 'refused or failed' to 'refused'")
+
+    def test_an_exit_code_added_is_breaking(self):
+        self.one(lambda d: d["exit_codes"].update({"3": "busy"}), "exit 3",
+                 "exit code added, which a script written for the older release does not know")
+
+    def test_main_exits_1_on_a_breaking_cli_change(self):
+        d = cli_changed(lambda d: d["commands"].pop(REMOVE))
+        rc, out, err = run_main(["--kind", "cli", "OLD", "NEW"], {"OLD": CLI_BASE, "NEW": d})
+        self.assertEqual(rc, 1, err)
+        self.assertIn(f"breaking {REMOVE}: command removed", out, out)
+
+    def test_against_exits_1_on_a_breaking_cli_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = tree(tmp, BASE, ["a.md"], cli_changed(lambda d: d["commands"].pop(REMOVE)))
+            fake = FakeGit({("v1", cd.OPENAPI_PATH): json.dumps(BASE), ("v1", cd.PROBLEMS_PATH): ["a.md"],
+                            ("v1", cd.CLI_PATH): json.dumps(CLI_BASE)})
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = cd.against("v1", root, fake)
+        self.assertEqual(rc, 1, out.getvalue())
+        self.assertIn(f"cli: breaking {REMOVE}: command removed", out.getvalue(), out.getvalue())
+
+    def test_against_without_the_snapshot_in_the_work_tree_is_an_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = tree(tmp, BASE, ["a.md"])
+            fake = FakeGit({("v1", cd.OPENAPI_PATH): json.dumps(BASE), ("v1", cd.PROBLEMS_PATH): ["a.md"],
+                            ("v1", cd.CLI_PATH): json.dumps(CLI_BASE)})
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = cd.against("v1", root, fake)
+        self.assertEqual(rc, 2, err.getvalue())
+        self.assertIn("nothing was decided", err.getvalue(), err.getvalue())
+
+    def test_the_page_names_each_cli_error_the_script_prints(self):
+        text = " ".join(STABILITY.read_text(encoding="utf-8").split())
+        self.assertIn("a command line snapshot has no `commands` object; nothing was decided", text,
+                      "stability.md says what to do when a cli file is not a snapshot")
+
+
+class CliEdges(unittest.TestCase):
+    def test_a_group_removed_names_each_command_under_it(self):
+        d = cli_changed(lambda d: [d["commands"].pop(k) for k in list(d["commands"]) if k.startswith("vcon-server ")])
+        found = cd.cli_changes(CLI_BASE, d)
+        self.assertEqual([c.path for c in breaking(found)], [KEY, REMOVE], "each command is named once, in order")
+
+    def test_a_snapshot_without_commands_is_an_error(self):
+        for bad in ({"exit_codes": {}}, {"commands": [], "exit_codes": {}}, [], "x"):
+            with self.assertRaises(cd.ContractError, msg=repr(bad)):
+                cd.cli_changes(CLI_BASE, bad)
+
+    def test_a_snapshot_without_exit_codes_is_an_error(self):
+        for bad in ({"commands": {}}, {"commands": {}, "exit_codes": []}):
+            with self.assertRaises(cd.ContractError, msg=repr(bad)):
+                cd.cli_changes(bad, CLI_BASE)
+
+    def test_a_command_without_flags_or_arguments_is_an_error(self):
+        for bad in ({}, {"flags": {}}, {"arguments": []}, {"flags": [], "arguments": []}):
+            d = cli_changed(lambda d, bad=bad: d["commands"].update({REMOVE: bad}))
+            with self.assertRaises(cd.ContractError, msg=repr(bad)):
+                cd.cli_changes(CLI_BASE, d)
+
+    def test_main_on_a_file_that_is_not_a_snapshot_is_an_error(self):
+        rc, _, err = run_main(["--kind", "cli", "OLD", "NEW"], {"OLD": CLI_BASE, "NEW": {"exit_codes": {}}})
+        self.assertEqual(rc, 2, err)
+        self.assertIn("a command line snapshot has no `commands` object; nothing was decided", err, err)
+
+    def test_main_on_a_file_that_is_not_json_is_an_error(self):
+        rc, _, err = run_main(["--kind", "cli", "OLD", "NEW"], {"OLD": "{", "NEW": CLI_BASE})
+        self.assertEqual(rc, 2, err)
+
+    def test_against_with_a_baseline_that_is_not_json_is_an_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = tree(tmp, BASE, ["a.md"], CLI_BASE)
+            fake = FakeGit({("v1", cd.OPENAPI_PATH): json.dumps(BASE), ("v1", cd.PROBLEMS_PATH): ["a.md"],
+                            ("v1", cd.CLI_PATH): "{"})
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = cd.against("v1", root, fake)
+        self.assertEqual(rc, 2, err.getvalue())
+
+    def test_a_meaning_that_differs_only_in_spacing_and_case_is_no_change(self):
+        found = cd.cli_changes(CLI_BASE, cli_changed(lambda d: d["exit_codes"].update({"1": "Refused  or\nfailed"})))
+        self.assertEqual(found, [], "a meaning rewrapped on the page is the same meaning")
+
+    def test_possible_values_in_another_order_are_no_change(self):
+        found = cd.cli_changes(CLI_BASE, cli_changed(key_flag("--scope", values=["write", "read"])))
+        self.assertEqual(found, [], "the order --help lists the values in is not compared")
+
+    def test_flags_in_another_order_are_no_change(self):
+        d = cli_changed(lambda d: d["commands"][KEY].update(
+            flags=dict(reversed(list(d["commands"][KEY]["flags"].items())))))
+        self.assertEqual(cd.cli_changes(CLI_BASE, d), [], "flags are compared by name")
+
+    def test_a_renamed_argument_is_no_change(self):
+        d = cli_changed(lambda d: d["commands"][REMOVE]["arguments"][0].update(name="TENANT"))
+        self.assertEqual(cd.cli_changes(CLI_BASE, d), [], "an argument is its place; its name is --help text")
+
+    def test_a_second_argument_removed_is_named_by_its_place(self):
+        two = cli_changed(lambda d: d["commands"][REMOVE]["arguments"].append(arg("REASON", required=False)))
+        found = cd.cli_changes(two, CLI_BASE)
+        self.assertEqual(kinds(found), [("breaking", f"{REMOVE} <2>", "argument removed")], found)
+
+    def test_a_short_only_flag_is_compared_by_its_key(self):
+        old = cli_changed(lambda d: d["commands"][REMOVE]["flags"].update({"-q": flag("-q")}))
+        found = cd.cli_changes(old, CLI_BASE)
+        self.assertEqual(kinds(found), [("breaking", f"{REMOVE} -q", "flag removed")], found)
+
+    def test_an_empty_default_is_a_default(self):
+        old = cli_changed(key_flag("--tenant", default=""))
+        found = cd.cli_changes(old, CLI_BASE)
+        self.assertEqual(kinds(found), [("breaking", f"{KEY} --tenant", "default '' removed")], found)
+
+    def test_the_root_help_flag_is_part_of_the_contract(self):
+        found = cd.cli_changes(CLI_BASE, cli_changed(lambda d: d["commands"]["vcon-server"]["flags"].pop("--help")))
+        self.assertEqual(kinds(found), [("breaking", "vcon-server --help", "flag removed")], found)
+
+    def test_a_command_that_becomes_a_group_reports_both_sides(self):
+        new = cli_changed(lambda d: d["commands"].update({
+            REMOVE: {"arguments": [], "flags": {"--help": flag("-h")}},
+            f"{REMOVE} now": {"arguments": [arg("ID")], "flags": {"--config": flag(value="<CONFIG>", required=True)}},
+        }))
+        found = kinds(cd.cli_changes(CLI_BASE, new))
+        self.assertIn(("breaking", f"{REMOVE} <1>", "argument removed"), found, found)
+        self.assertIn(("breaking", f"{REMOVE} --config", "flag removed"), found, found)
+        self.assertIn(("additive", f"{REMOVE} now", "command added"), found, found)
+
+    def test_several_changes_to_one_flag_are_each_named(self):
+        found = cd.cli_changes(CLI_BASE, cli_changed(key_flag("--tenant", required=True, short=None)))
+        self.assertEqual(sorted(c.message for c in found), ["became required", "short name -t removed"], found)
+
+    def test_changes_come_in_the_order_of_the_commands_then_exit_codes(self):
+        d = cli_changed(lambda d: (d["exit_codes"].pop("0"), d["commands"].pop(KEY)))
+        found = cd.cli_changes(CLI_BASE, d)
+        self.assertEqual([c.path for c in found], [KEY, "exit 0"], "commands first, then exit codes")
 
 
 if __name__ == "__main__":
