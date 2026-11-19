@@ -1234,6 +1234,7 @@ release!(release_0_4_7, "0.4.7");
 release!(release_0_4_8, "0.4.8");
 release!(release_0_4_9, "0.4.9");
 release!(release_0_4_10, "0.4.10");
+release!(release_0_4_11, "0.4.11");
 
 #[test]
 fn the_older_tests_cover_exactly_the_releases_that_wrote_an_older_version() {
@@ -3195,3 +3196,4 @@ pg_release!(pg_release_0_4_7, "0.4.7");
 pg_release!(pg_release_0_4_8, "0.4.8");
 pg_release!(pg_release_0_4_9, "0.4.9");
 pg_release!(pg_release_0_4_10, "0.4.10");
+pg_release!(pg_release_0_4_11, "0.4.11");

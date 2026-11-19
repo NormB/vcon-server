@@ -68,7 +68,7 @@ OUT = ROOT / "crates" / "vcon-server" / "tests" / "data" / "formats"
 # Every release whose data directory this build must open. 0.3.0 and
 # earlier are not here: 0.4.0 is the first release the rule covers.
 RELEASES = ("0.4.0", "0.4.1", "0.4.2", "0.4.3", "0.4.4", "0.4.5", "0.4.6", "0.4.7", "0.4.8", "0.4.9",
-            "0.4.10")
+            "0.4.10", "0.4.11")
 
 # debian:trixie-slim, as pulled 2026-11-04.
 IMAGE = "debian@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2"
