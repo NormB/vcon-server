@@ -1,0 +1,12 @@
+# Words that say a feature is built but not released yet, one phrase a
+# line, in lower case. crates/vcon-server/tests/site_status.rs refuses each
+# on every page once the changelog's [Unreleased] section has no entry, and
+# scripts/test_contract_job.py refuses each in the Contract job's note,
+# which the stability page quotes.
+in no release
+on `main` only
+on `main`,
+from `main`
+for the next release
+until the next release
+before the next release

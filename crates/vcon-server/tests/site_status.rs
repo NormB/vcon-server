@@ -30,18 +30,37 @@ fn the_home_page_status_note_names_this_release() {
     assert!(note.starts_with(&says), "the note is: {note}");
 }
 
-/// Words that say a feature is built but not released yet. They are true
-/// only while the changelog's `[Unreleased]` section has entries; the
-/// release that ships those entries must turn each into released wording.
-const UNRELEASED_PHRASES: [&str; 7] = [
-    "in no release",
-    "on `main` only",
-    "on `main`,",
-    "from `main`",
-    "for the next release",
-    "until the next release",
-    "before the next release",
-];
+/// Words that say a feature is built but not released yet, one phrase a
+/// line; `#` starts a comment line. They are true only while the
+/// changelog's `[Unreleased]` section has entries; the release that ships
+/// those entries must turn each into released wording.
+/// scripts/test_contract_job.py reads the same file.
+const UNRELEASED_PHRASES: &str = include_str!("../../../.config/unreleased-phrases.txt");
+
+/// The phrases of `UNRELEASED_PHRASES`, in the file's order.
+fn phrase_list() -> Vec<&'static str> {
+    UNRELEASED_PHRASES
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect()
+}
+
+#[test]
+fn the_phrase_file_holds_the_seven_phrases() {
+    assert_eq!(
+        phrase_list(),
+        [
+            "in no release",
+            "on `main` only",
+            "on `main`,",
+            "from `main`",
+            "for the next release",
+            "until the next release",
+            "before the next release",
+        ],
+        "the phrases of .config/unreleased-phrases.txt, comments left out"
+    );
+}
 
 /// The phrases of `UNRELEASED_PHRASES` that `text` holds, in any case and
 /// with lines joined, since a phrase may break across lines of a paragraph.
@@ -51,9 +70,8 @@ fn unreleased_phrases(text: &str) -> Vec<&'static str> {
         .collect::<Vec<_>>()
         .join(" ")
         .to_lowercase();
-    UNRELEASED_PHRASES
-        .iter()
-        .copied()
+    phrase_list()
+        .into_iter()
         .filter(|phrase| joined.contains(phrase))
         .collect()
 }

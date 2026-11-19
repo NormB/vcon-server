@@ -361,14 +361,12 @@ class Docs(unittest.TestCase):
 
     def test_the_note_holds_no_phrase_a_release_refuses_on_a_page(self):
         # The stability page quotes the note, and site_status.rs refuses each
-        # of its UNRELEASED_PHRASES on any page once the changelog's
-        # [Unreleased] section is empty, as it is in every release commit.
-        # On 2026-11-19 the note said "until the next release", so the
-        # 0.4.11 release commit could not pass both tests.
-        source = (ROOT / "crates/vcon-server/tests/site_status.rs").read_text(encoding="utf-8")
-        block = re.search(r"const UNRELEASED_PHRASES: \[&str; \d+\] = \[(.*?)\];", source, re.S)
-        self.assertIsNotNone(block, "site_status.rs holds UNRELEASED_PHRASES")
-        phrases = re.findall(r'"([^"]+)"', block.group(1))
+        # phrase of .config/unreleased-phrases.txt on any page once the
+        # changelog's [Unreleased] section is empty, as it is in every
+        # release commit. On 2026-11-19 the note said "until the next
+        # release", so the 0.4.11 release commit could not pass both tests.
+        lines = (ROOT / ".config/unreleased-phrases.txt").read_text(encoding="utf-8").splitlines()
+        phrases = [line for line in lines if line and not line.startswith("#")]
         self.assertGreaterEqual(len(phrases), 7, phrases)
         note = " ".join(job.open_enum_note("v0.4.10", UNMARKED).split()).lower()
         self.assertEqual([p for p in phrases if p in note], [], note)
