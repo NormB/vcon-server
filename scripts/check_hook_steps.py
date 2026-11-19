@@ -57,6 +57,7 @@ CI_ONLY = {
     "scripts/test-console.sh": "needs Node and the Playwright browser, and starts the server it builds",
     "scripts/icons.py": "needs the Python packages of scripts/icons-requirements.txt",
     "scripts/check_required_checks.py": "reads the main branch's ruleset from the GitHub API",
+    "scripts/contract_job.py": "compares with the newest release tag through git, and the commit hook runs in a copy of the index without .git or tags; scripts/test_contract_job.py, which the hook runs, tests it",
     "scripts/codeql_pr_gate.py check": "reads code scanning's processing status and alerts for the SARIF an Analyze job uploaded, from the GitHub API",
     "scripts/test-check-package.sh": "packages the crates in two more copies of the tree; the hook runs scripts/check_package.py once",
     "scripts/run-clients.sh": "runs each client example against a live server; needs go and node besides the build",

@@ -1,0 +1,46 @@
+name: Contract
+
+# Compares the contract of each pull request with the newest release tag
+# (website/content/docs/stability.md): scripts/contract_job.py picks the
+# tag and runs scripts/contract_diff.py --against it over every surface,
+# printing each change as breaking or additive. A breaking change makes
+# the job red.
+#
+# Advisory until 1.0: no ruleset rule requires `Contract`, and ADVISORY in
+# scripts/check_required_checks.py lists it so that gate accepts a job that
+# runs on every pull request unrequired. The change that requires it also
+# takes it off that list.
+#
+# A workflow of its own, not a job of ci.yml: "CI success" needs every job
+# of ci.yml (scripts/ci_success.py), so a job there would be required at once.
+#
+# No GitHub API call: the checkout fetches the tags with the history, and
+# the script reads the files at the tag with git. The snapshots under
+# contract/ are held to the code by the tests CI already runs.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: contract-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    name: Contract
+    runs-on: ubuntu-24.04
+    # A clone and a Python run; this bounds a hang.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          # The whole history with its tags, so the newest release tag and
+          # its files are in the clone.
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: The contract against the newest release
+        run: python3 -I scripts/contract_job.py

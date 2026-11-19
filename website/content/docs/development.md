@@ -912,6 +912,37 @@ job that runs in a container, and in a composite action or a shell script,
 within the file. `scripts/test_apt_mirror_setup.py` tests the script
 against a server on the same machine.
 
+### The contract job
+
+- **Purpose.** `.github/workflows/contract.yml` runs the job `Contract` on
+  every pull request: `scripts/contract_job.py` picks the newest release
+  tag and runs `scripts/contract_diff.py --against` it, so each change to
+  the contract shows as breaking or additive
+  ([Stability](@/docs/stability.md)). It is advisory until 1.0: the ruleset
+  does not require it, and `ADVISORY` in `scripts/check_required_checks.py`
+  lists it, so that gate accepts a job on every pull request that no
+  required check needs. The change that requires it takes it off that list.
+- **Prerequisites.** A clone with its tags (`git fetch --tags`) and Python
+  3. The job calls no GitHub API: its checkout fetches the history and the
+  tags, and the script reads the files at the tag with git.
+- **Steps.** From the top of the clone:
+
+  ```sh
+  python3 -I scripts/contract_job.py
+  ```
+
+- **Verify.** The first line names the tag, then each surface prints its
+  changes and a count, or `no baseline at <tag>`. Exit 0: no breaking
+  change.
+- **Troubleshoot.** Exit 1: a `breaking` line names the change; make it
+  additive, as [when the check fails](@/docs/stability.md#when-the-check-fails)
+  says. `contract: note:` says the tag's openapi.json lacks the open-enum
+  mark of the problem `type`: until a release carries it, each problem type
+  added since then reads as breaking. `no release tag`: the clone has no
+  `vMAJOR.MINOR.PATCH` tag; the job compares nothing and passes.
+  `scripts/test_contract_job.py`, run by the commit hook and CI, tests the
+  script and the workflow without the GitHub API.
+
 ### Runner images
 
 Every job names a fixed runner image: `ubuntu-24.04`, or

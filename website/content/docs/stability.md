@@ -1,6 +1,6 @@
 +++
 title = "Stability"
-description = "What a release keeps compatible with the release before it: the surfaces of the contract, which changes break a client and which do not, and how to compare the HTTP API, the command line, the configuration file, the MCP tools, the environment variables, the on-disk formats and the audit records of two releases."
+description = "What a release keeps compatible with the release before it: the surfaces of the contract, which changes break a client and which do not, and how to compare the HTTP API, the command line, the configuration file, the MCP tools, the environment variables, the on-disk formats and the audit records of two releases, and the check CI runs on each pull request."
 weight = 59
 
 [extra]
@@ -274,6 +274,21 @@ audit: no baseline at v0.4.10
 
 A surface the tag does not hold prints `no baseline at <tag>` and passes.
 The six files under contract/ are first in the release after 0.4.10.
+
+CI runs the same comparison on every pull request, as the job
+`Contract`. It is advisory until 1.0: a pull request can merge while it is
+red. Its script picks the newest release tag (`vMAJOR.MINOR.PATCH`; a tag
+such as `v0.5.0-rc1` is not a release) and names it first:
+
+```sh
+python3 -I scripts/contract_job.py
+```
+
+While that tag's openapi.json lacks the open-enum mark, as releases up to
+0.4.10 do, the job prints a note before the changes: `contract: note:`,
+then "Each problem type added since then is reported as breaking for
+every response that can carry a problem document, until the next release
+carries the mark."
 
 ## Compare two releases
 

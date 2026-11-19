@@ -10,8 +10,8 @@ All notable changes to this project are recorded here. The format follows
 
 - **A page says what each release keeps compatible.**
   - Effect: It lists the changes that break a client, script,
-    configuration, environment, stored data or audit log reader; a
-    script compares two releases.
+    configuration, environment, stored data or log reader; CI compares
+    each pull request with the last release.
   - Docs: [Stability](https://vcon-server.com/docs/stability/)
 
 ## [0.4.10] - 2026-11-18

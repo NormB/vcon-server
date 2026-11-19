@@ -639,6 +639,10 @@ jobs:
           python3 -I scripts/test_check_required_checks.py
           scripts/retry.sh gh api "repos/$GITHUB_REPOSITORY/rules/branches/main" > "$RUNNER_TEMP/rules.json"
           python3 -I scripts/check_required_checks.py "$RUNNER_TEMP/rules.json"
+      # The advisory Contract job (contract.yml): its tag choice, its note on
+      # the open-enum mark, its workflow, and its place in ADVISORY above.
+      - name: The advisory Contract job
+        run: python3 -I scripts/test_contract_job.py
       - name: CI success needs every job of this workflow
         run: |
           set -euo pipefail

@@ -18,8 +18,10 @@ workflow does. It is empty: the CLA assistant's "license/cla" left it on
 requires "license/cla" again is refused.
 
 ADVISORY names the checks that run on every pull request on purpose
-without being required. It is empty: `DCO` (.github/workflows/dco.yml)
-left it on 2026-11-18, when the ruleset began to require it. A name there
+without being required. It holds `Contract` (.github/workflows/contract.yml),
+the comparison of the contract with the newest release, advisory until
+1.0. `DCO` (.github/workflows/dco.yml) left it on 2026-11-18, when the
+ruleset began to require it. A name there
 is refused when the ruleset requires it, when a required job needs it (it
 is then not advisory), and when no job that runs on every pull request
 reports it, so the list holds no stale name and the change that requires
@@ -44,7 +46,7 @@ import re
 import sys
 
 EXTERNAL = frozenset()
-ADVISORY = frozenset()
+ADVISORY = frozenset({"Contract"})
 CODE_SCANNING = "CodeQL"
 ANALYZE = "github/codeql-action/analyze@"
 NO_UPLOAD = {"never", "false"}

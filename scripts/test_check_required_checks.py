@@ -195,6 +195,11 @@ def dco(**more):
     return {"dco.yml": {True: {"pull_request": None}, "jobs": {"dco": job("DCO", **more)}}}
 
 
+def contract(**more):
+    """contract.yml as it is shaped: one job, on every pull request."""
+    return {"contract.yml": {True: {"pull_request": None}, "jobs": {"contract": job("Contract", **more)}}}
+
+
 ADVISORY_REQUIRED = "the ruleset requires 'DCO', which ADVISORY in scripts/check_required_checks.py still lists: remove it from ADVISORY"
 ADVISORY_STALE = "ADVISORY lists 'DCO', which no job that runs on every pull request reports"
 DCO_UNNEEDED = "dco.yml: 'DCO' runs on every pull request, but no required check needs it"
@@ -202,8 +207,8 @@ DCO_UNNEEDED = "dco.yml: 'DCO' runs on every pull request, but no required check
 
 class Advisory(unittest.TestCase):
     """A job named in ADVISORY reports on every pull request without being
-    required. The tests pass their own list; main passes ADVISORY, empty
-    since `DCO` became required on 2026-11-18."""
+    required. The tests pass their own list; main passes ADVISORY, which
+    holds `Contract` (contract.yml); `DCO` left it on 2026-11-18."""
 
     def test_an_advisory_job_may_run_on_every_pr_unrequired(self):
         self.assertEqual(check.problems(workflows(**dco()), REQUIRED, {"DCO"}), [])
@@ -250,21 +255,38 @@ class Advisory(unittest.TestCase):
         self.assertEqual(check.problems(wfs, REQUIRED, {"DCO (a)"}),
                          ["dco.yml: 'DCO (b)' runs on every pull request, but no required check needs it"])
 
-    def test_the_list_is_empty_and_kept(self):
+    def test_the_list_holds_contract_and_is_kept(self):
         # Decision (ix): the advisory jobs are named here, and a name leaves
-        # when the ruleset requires it. `DCO` left on 2026-11-18; the list
-        # stays, empty, for the next advisory job.
-        self.assertEqual(check.ADVISORY, frozenset())
+        # when the ruleset requires it. `DCO` left on 2026-11-18; `Contract`
+        # (contract.yml) is advisory until 1.0.
+        self.assertEqual(check.ADVISORY, frozenset({"Contract"}))
         self.assertIsInstance(check.ADVISORY, frozenset)
 
-    def test_an_empty_list_allows_no_unrequired_job(self):
-        self.assertEqual(check.problems(workflows(**dco()), REQUIRED, check.ADVISORY), [DCO_UNNEEDED])
+    def test_the_list_allows_no_unrequired_job_but_contract(self):
+        found = check.problems(workflows(**dco(), **contract()), REQUIRED, check.ADVISORY)
+        self.assertEqual(found, [DCO_UNNEEDED])
 
-    def test_an_empty_list_reports_no_stale_name(self):
-        self.assertEqual(check.problems(workflows(), REQUIRED, check.ADVISORY), [])
+    def test_the_list_reports_no_stale_name_beside_the_contract_job(self):
+        self.assertEqual(check.problems(workflows(**contract()), REQUIRED, check.ADVISORY), [])
+
+    def test_the_list_without_a_contract_job_names_it_stale(self):
+        found = check.problems(workflows(), REQUIRED, check.ADVISORY)
+        self.assertEqual(found, ["ADVISORY lists 'Contract', which no job that runs on every pull request reports"])
+
+    def test_a_required_contract_while_listed_is_refused(self):
+        found = check.problems(workflows(**contract()), REQUIRED + ["Contract"], check.ADVISORY)
+        self.assertEqual(found, ["the ruleset requires 'Contract', which ADVISORY in scripts/check_required_checks.py "
+                                 "still lists: remove it from ADVISORY"])
+
+    def test_a_path_filtered_contract_job_is_stale(self):
+        wfs = workflows(**contract())
+        wfs["contract.yml"][True]["pull_request"] = {"paths": ["contract/**"]}
+        found = check.problems(wfs, REQUIRED, check.ADVISORY)
+        self.assertEqual(found, ["ADVISORY lists 'Contract', which no job that runs on every pull request reports"])
 
     def test_the_required_dco_job_passes_with_the_list(self):
-        self.assertEqual(check.problems(workflows(**dco()), REQUIRED + ["DCO"], check.ADVISORY), [])
+        found = check.problems(workflows(**dco(), **contract()), REQUIRED + ["DCO"], check.ADVISORY)
+        self.assertEqual(found, [])
 
 
 def run_main(contexts):
@@ -289,10 +311,11 @@ class Retired(unittest.TestCase):
         self.assertIsInstance(check.EXTERNAL, frozenset)
 
     def test_a_ruleset_that_still_requires_license_cla_is_refused(self):
-        self.assertEqual(check.problems(workflows(), REQUIRED + ["license/cla"], check.ADVISORY), [NO_CLA])
+        found = check.problems(workflows(**contract()), REQUIRED + ["license/cla"], check.ADVISORY)
+        self.assertEqual(found, [NO_CLA])
 
     def test_license_cla_is_refused_beside_a_required_dco(self):
-        found = check.problems(workflows(**dco()), REQUIRED + ["DCO", "license/cla"], check.ADVISORY)
+        found = check.problems(workflows(**dco(), **contract()), REQUIRED + ["DCO", "license/cla"], check.ADVISORY)
         self.assertEqual(found, [NO_CLA])
 
     def test_the_live_ruleset_passes_against_this_repository(self):
@@ -328,7 +351,7 @@ class Retired(unittest.TestCase):
         self.assertEqual((rc, err), (1, f"check_required_checks: {NO_CLA}\n"))
 
     def test_the_cla_context_compares_exactly(self):
-        found = check.problems(workflows(), REQUIRED + ["License/CLA"], check.ADVISORY)
+        found = check.problems(workflows(**contract()), REQUIRED + ["License/CLA"], check.ADVISORY)
         self.assertEqual(found, ["the ruleset requires 'License/CLA', which no workflow job reports"])
 
 
