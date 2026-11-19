@@ -1,6 +1,6 @@
 +++
 title = "Stability"
-description = "What a release keeps compatible with the release before it: the surfaces of the contract, which changes break a client and which do not, and how to compare the HTTP API, the command line, the configuration file and the MCP tools of two releases."
+description = "What a release keeps compatible with the release before it: the surfaces of the contract, which changes break a client and which do not, and how to compare the HTTP API, the command line, the configuration file, the MCP tools, the environment variables, the on-disk formats and the audit records of two releases."
 weight = 59
 
 [extra]
@@ -27,11 +27,32 @@ breaks a surface of the contract is a new major version.
 | Exit codes | 0, 1 and 2, with the meaning [the command line page](@/docs/command-line.md#output-and-exit-codes) gives each, also in contract/cli.json | `contract_diff.py --kind cli` |
 | Configuration file | every key of the [configuration file](@/docs/configuration.md), its type, whether a file must set it and its default, in [contract/config.json](https://github.com/NormB/vcon-server/blob/main/contract/config.json) | `contract_diff.py --kind config` |
 | MCP tools | every tool of the [MCP server](@/docs/mcp.md), its argument schema, its hints and the scope a key needs to call it, in [contract/mcp.json](https://github.com/NormB/vcon-server/blob/main/contract/mcp.json) | `contract_diff.py --kind mcp` |
+| Environment variables | each variable the [table below](#environment-variables) lists, who reads it and what its value means, in [contract/env.json](https://github.com/NormB/vcon-server/blob/main/contract/env.json) | `contract_diff.py --kind env` |
+| On-disk formats | each [on-disk format](@/docs/on-disk-format.md), its version, whether the server reads it back, and the versions each release since 0.4.0 wrote, in [contract/formats.json](https://github.com/NormB/vcon-server/blob/main/contract/formats.json) | `contract_diff.py --kind formats` |
+| Audit records | the members of an [audit record](@/docs/audit-log-records.md) and every action a record can name, in [contract/audit.json](https://github.com/NormB/vcon-server/blob/main/contract/audit.json) | `contract_diff.py --kind audit` |
 
-The environment variables the server reads, the on-disk formats and the
-audit records have no check of this kind yet. [On-disk formats](@/docs/on-disk-format.md)
-states the rule each new build keeps for the data of an older one, and CI
-opens the data of each release since 0.4.0 with every change.
+[On-disk formats](@/docs/on-disk-format.md) also states the rule each new
+build keeps for the data of an older one, and CI opens the data of each
+release since 0.4.0 with every change.
+
+## Environment variables
+
+The code of vcon-server reads only the variables this table lists as read
+by a command, and the AWS SDK it links reads the others. A test reads the
+source of every crate and refuses a variable the code reads outside its
+tests that the table does not list.
+
+| Variable | Read by | Meaning |
+|---|---|---|
+| `NO_COLOR` | `vcon-server tui` | Set to anything but the empty string, it turns color off. |
+| `TERM` | `vcon-server tui` | `dumb`, or not set, turns color off. |
+| `AWS_ACCESS_KEY_ID` | the AWS SDK | The access key id of the S3 backend, when the configuration sets no `storage.s3.access_key_id`. |
+| `AWS_SECRET_ACCESS_KEY` | the AWS SDK | The secret access key that goes with `AWS_ACCESS_KEY_ID`. |
+
+The rows read by the AWS SDK are those of its default credential chain
+that the [configuration page](@/docs/configuration.md) names. The chain
+reads other variables too, such as those of a profile or a web identity:
+the SDK documents them, and they are not part of this contract.
 
 ## What the contract leaves out
 
@@ -163,6 +184,44 @@ the client trusted no longer holds:
 A new tool, a hint that becomes safer and an argument change the writer
 rule allows are additive. Each tool's `$ref`s are read in its own schema.
 
+### The environment variables
+
+A deployment sets variables for the server, so a change is breaking when
+a variable it sets no longer acts as it did:
+
+- a variable is no longer read;
+- the meaning of its value changes;
+- another program or command reads it in place of the one that did.
+
+A new variable is additive. Space and letter case in the text of a meaning
+are not compared.
+
+### The on-disk formats
+
+A new build opens the data an older release wrote, and programs such as
+DuckDB read the files `export parquet` writes, so a change is breaking
+when:
+
+- a format is removed, or the server no longer reads it back;
+- a version falls, or its name changes (`vcon-server.parquet-storage/1` to
+  another name);
+- the version of a format the server never reads, an export format, rises:
+  a program that reads the older version may not read the newer one;
+- the tests no longer open the data a release wrote, or the versions a
+  release wrote are stated otherwise.
+
+A new format, a new release with its data, and a higher version of a
+format the server reads back are additive: the build migrates the older
+data on its first open, and the tests open each release's data to hold
+that.
+
+### The audit records
+
+A program reads the audit logs, so a change is breaking when a member of a
+record or an action is removed. A new member and a new action are additive:
+a program that reads the logs must pass over a member or an action it does
+not know.
+
 ### What the script does not compare
 
 `info` (whose `version` changes with each release), descriptions, summaries
@@ -208,11 +267,13 @@ problems: 0 change(s), 0 breaking
 cli: no baseline at v0.4.10
 config: no baseline at v0.4.10
 mcp: no baseline at v0.4.10
+env: no baseline at v0.4.10
+formats: no baseline at v0.4.10
+audit: no baseline at v0.4.10
 ```
 
 A surface the tag does not hold prints `no baseline at <tag>` and passes.
-contract/cli.json, contract/config.json and contract/mcp.json are first in
-the release after 0.4.10.
+The six files under contract/ are first in the release after 0.4.10.
 
 ## Compare two releases
 
@@ -337,13 +398,119 @@ VCON_SERVER_WRITE_CONTRACT=1 cargo test -p vcon-server --lib mcp::tests::contrac
 git diff contract/mcp.json
 ```
 
+## Check the environment between two releases
+
+Each release from the one after 0.4.10 holds contract/env.json. Set `OLD`
+to the release a deployment was set up for and `NEW` to the release to
+upgrade to, write each one's file, then compare the files:
+
+```sh
+git show "$OLD:contract/env.json" > old-env.json
+git show "$NEW:contract/env.json" > new-env.json
+python3 -I scripts/contract_diff.py --kind env old-env.json new-env.json
+```
+
+Each line names a variable:
+
+```text
+breaking TERM: variable no longer read, so a setting of it no longer acts
+additive COLUMNS: variable added
+contract_diff: 2 change(s), 1 breaking
+```
+
+A `breaking` line names a variable a deployment may set: look for it in
+the service's unit file or container settings, and set it as the new
+release's [table](#environment-variables) says.
+
+contract/env.json is written from the table above, which a test holds to
+the source, never by hand. After a change to a variable the code reads or
+to the table, write it again from the top of the clone and commit it with
+the change:
+
+```sh
+VCON_SERVER_WRITE_CONTRACT=1 cargo test -p vcon-server --test env_contract
+git diff contract/env.json
+```
+
+## Check the on-disk formats between two releases
+
+Each release from the one after 0.4.10 holds contract/formats.json. Set
+`OLD` to the release that wrote the data and `NEW` to the release to
+upgrade to, write each one's file, then compare the files:
+
+```sh
+git show "$OLD:contract/formats.json" > old-formats.json
+git show "$NEW:contract/formats.json" > new-formats.json
+python3 -I scripts/contract_diff.py --kind formats old-formats.json new-formats.json
+```
+
+Each line names a format, or a release and the versions it wrote:
+
+```text
+additive catalog: version raised from '9' to '10'; the build opens the older version's data
+additive release 0.4.11: release added: the tests open its data
+contract_diff: 2 change(s), 0 breaking
+```
+
+A higher version of a format the server reads back means the first open
+of the older data migrates it, and an older binary cannot open it after
+that: take a copy first, as [on-disk formats](@/docs/on-disk-format.md)
+says. A `breaking` line on an export format names files a program such as
+DuckDB reads: check that program against the new version.
+
+contract/formats.json is written from the build's format list and
+on-disk-format.md, never by hand. After a change to a format's version or
+to the page's tables, write it again from the top of the clone and commit
+it with the change:
+
+```sh
+VCON_SERVER_WRITE_CONTRACT=1 cargo test -p vcon-server --test formats contract_snapshot
+git diff contract/formats.json
+```
+
+## Check the audit records between two releases
+
+Each release from the one after 0.4.10 holds contract/audit.json. Set
+`OLD` to the release a log reader was written for and `NEW` to the release
+to upgrade to, write each one's file, then compare the files:
+
+```sh
+git show "$OLD:contract/audit.json" > old-audit.json
+git show "$NEW:contract/audit.json" > new-audit.json
+python3 -I scripts/contract_diff.py --kind audit old-audit.json new-audit.json
+```
+
+Each line names a member or an action:
+
+```text
+additive action role_cap_set: action added
+breaking member count: member removed
+contract_diff: 2 change(s), 1 breaking
+```
+
+A `breaking` line names a member or an action a log reader may look for:
+check the reader against [audit log records](@/docs/audit-log-records.md)
+of the new release.
+
+contract/audit.json is written from a record the audit log writes and the
+actions audit-log-records.md lists, never by hand. After a change to a
+record's members or to an action, write it again from the top of the
+clone and commit it with the change:
+
+```sh
+VCON_SERVER_WRITE_CONTRACT=1 cargo test -p vcon-server --test audit_contract
+git diff contract/audit.json
+```
+
 ## Read the result
 
 Each line is one change: `breaking` or `additive`, where it is (the
 method and path, then the parameter, the status and media type, and a
 `$` path into the schema; the command and its flag, argument or exit
-code; the dotted key of the configuration file; or the MCP tool and a `$`
-path into its arguments), and what changed. The script exits 0 when no change is breaking,
+code; the dotted key of the configuration file; the MCP tool and a `$`
+path into its arguments; the environment variable; the format or the
+release; or the member or the action of an audit record), and what
+changed. The script exits 0 when no change is breaking,
 1 when one is, and 2 when it could not decide.
 
 ## When the check fails
@@ -384,5 +551,31 @@ path into its arguments), and what changed. The script exits 0 when no change is
   argument schema, a hint or a scope that differs from the snapshot, and
   names the first line that differs. Write the snapshot again with the
   command above, read the diff, and commit it.
-- **`usage:`.** The arguments are not one of the six forms the usage
+- **``an environment snapshot has no `variables` object; nothing was decided``.**
+  One of the files is not a contract/env.json: check the tag given to
+  `git show`. A release up to 0.4.10 has no such file.
+- **`contract/env.json is not what the source and this page give`.** The
+  test `env_contract` (run by the commit hook and CI) found a row of the
+  table above that differs from the snapshot, and names the first line
+  that differs. Write the snapshot again with the command above, read the
+  diff, and commit it. The same test names each variable the code reads
+  that the table does not list, and each read whose name it cannot see: a
+  name that is not a literal, or `std::env::vars`.
+- **``a formats snapshot has no `formats` or `releases` object; nothing was decided``.**
+  One of the files is not a contract/formats.json: check the tag given to
+  `git show`. A release up to 0.4.10 has no such file.
+- **`contract/formats.json is not what this build and on-disk-format.md give`.**
+  The test `formats` (run by the commit hook and CI) found a format, a
+  version or a release that differs from the snapshot, and names the first
+  line that differs. Write the snapshot again with the command above, read
+  the diff, and commit it.
+- **``an audit snapshot has no `members` or `actions` list; nothing was decided``.**
+  One of the files is not a contract/audit.json: check the tag given to
+  `git show`. A release up to 0.4.10 has no such file.
+- **`contract/audit.json is not what the audit log writes and audit-log-records.md lists`.**
+  The test `audit_contract` (run by the commit hook and CI) found a member
+  or an action that differs from the snapshot, and names the first line
+  that differs. Write the snapshot again with the command above, read the
+  diff, and commit it.
+- **`usage:`.** The arguments are not one of the nine forms the usage
   line shows.

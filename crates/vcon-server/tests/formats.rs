@@ -51,34 +51,10 @@ fn page() -> String {
 
 // ---- The page's tables. ----
 
-/// The rows of the first table after `heading` in `text`: each row's cells,
-/// trimmed, the header row first and the separator row left out. None when
-/// the heading or its table is not there.
-fn table(text: &str, heading: &str) -> Option<Vec<Vec<String>>> {
-    let mut lines = text.lines().skip_while(|l| l.trim() != heading).skip(1);
-    let mut rows = Vec::new();
-    let mut started = false;
-    for line in lines.by_ref() {
-        let line = line.trim();
-        if line.starts_with('|') {
-            started = true;
-            let cells: Vec<String> = line
-                .trim_matches('|')
-                .split('|')
-                .map(|c| c.trim().to_owned())
-                .collect();
-            if !cells
-                .iter()
-                .all(|c| !c.is_empty() && c.chars().all(|x| x == '-' || x == ':'))
-            {
-                rows.push(cells);
-            }
-        } else if started || line.starts_with("## ") {
-            break;
-        }
-    }
-    (!rows.is_empty()).then_some(rows)
-}
+#[path = "support/page_table.rs"]
+mod page_table;
+
+use page_table::table;
 
 /// The text of a cell without the backticks around it.
 fn bare(cell: &str) -> &str {
@@ -316,6 +292,238 @@ fn the_newest_release_row_states_this_builds_versions() {
             format.id
         );
     }
+}
+
+// ---- The contract snapshot, contract/formats.json. ----
+//
+// The on-disk formats' part of the contract (website/content/docs/stability.md):
+// each format of this build with its version and whether the server reads
+// it back, and the versions each release with a fixture wrote, from the
+// page above. `scripts/contract_diff.py --kind formats` compares two of
+// these files. The snapshot is written, never edited by hand.
+
+mod contract_snapshot {
+    include!("support/contract_snapshot.rs");
+}
+
+/// The variable that makes the snapshot test write the snapshot.
+const WRITE: &str = "VCON_SERVER_WRITE_CONTRACT";
+
+/// The one command that writes contract/formats.json again.
+const REGENERATE: &str =
+    "VCON_SERVER_WRITE_CONTRACT=1 cargo test -p vcon-server --test formats contract_snapshot";
+
+/// The snapshot, from the repository root.
+const SNAPSHOT: &str = "contract/formats.json";
+
+/// The words the page may use for how many formats the server reads back.
+const COUNTS: [&str; 7] = ["none", "one", "two", "three", "four", "five", "six"];
+
+/// How many of the formats table's first rows the server reads back, as
+/// the page's sentence "The server reads back the first <n>." states it.
+fn read_back_count(text: &str) -> Result<usize, String> {
+    let rest = text
+        .split("The server reads back the first ")
+        .nth(1)
+        .ok_or("the page does not say which formats the server reads back")?;
+    let word = rest
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .next()
+        .unwrap_or_default();
+    COUNTS
+        .iter()
+        .position(|n| *n == word)
+        .ok_or(format!("{word:?} is not a count this test reads"))
+}
+
+/// The format ids of the page's formats table, in its order.
+fn page_order(text: &str) -> Result<Vec<String>, String> {
+    let rows = table(text, "## The formats").ok_or("no table under \"## The formats\"")?;
+    let id = rows[0]
+        .iter()
+        .position(|h| h == "Format")
+        .ok_or("the formats table has no column Format")?;
+    Ok(rows[1..].iter().map(|r| bare(&r[id]).to_owned()).collect())
+}
+
+/// The snapshot of the formats `versions` (id to the version this build
+/// writes) and the page `text`, as contract_diff.py reads it.
+fn formats_snapshot(versions: &BTreeMap<String, String>, text: &str) -> Result<String, String> {
+    let order = page_order(text)?;
+    let read_back = read_back_count(text)?;
+    if read_back > order.len() {
+        return Err(format!(
+            "the page says the server reads back {read_back} of {} formats",
+            order.len()
+        ));
+    }
+    let mut formats = BTreeMap::new();
+    for (i, id) in order.iter().enumerate() {
+        let version = versions
+            .get(id)
+            .ok_or(format!("{id} is on the page but not in this build"))?;
+        formats.insert(
+            id.clone(),
+            serde_json::json!({ "read_back": i < read_back, "version": version }),
+        );
+    }
+    let releases = page_releases(text)?;
+    let snapshot = serde_json::json!({ "formats": formats, "releases": releases });
+    let mut out = serde_json::to_string_pretty(&snapshot).expect("JSON");
+    out.push('\n');
+    Ok(out)
+}
+
+fn build_versions() -> BTreeMap<String, String> {
+    FORMATS
+        .iter()
+        .map(|f| (f.id.to_owned(), f.version.to_owned()))
+        .collect()
+}
+
+fn formats_stale(file: &str, now: &str) -> String {
+    contract_snapshot::stale(
+        SNAPSHOT,
+        "this build and on-disk-format.md give",
+        REGENERATE,
+        file,
+        now,
+    )
+}
+
+#[test]
+fn contract_snapshot_is_what_this_build_and_the_page_give() {
+    let now =
+        formats_snapshot(&build_versions(), &page()).unwrap_or_else(|e| panic!("{PAGE}: {e}"));
+    let path = root().join(SNAPSHOT);
+    if std::env::var_os(WRITE).is_some() {
+        std::fs::write(&path, &now).expect("the snapshot is written");
+        return;
+    }
+    let file = std::fs::read_to_string(&path).unwrap_or_default();
+    assert!(file == now, "{}", formats_stale(&file, &now));
+}
+
+#[test]
+fn contract_snapshot_holds_every_format_of_this_build_and_every_fixture_release() {
+    let text = formats_snapshot(&build_versions(), &page()).expect("the snapshot of this tree");
+    let value: serde_json::Value = serde_json::from_str(&text).expect("JSON");
+    let ids: Vec<&str> = value["formats"]
+        .as_object()
+        .expect("formats")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    let mut built: Vec<&str> = FORMATS.iter().map(|f| f.id).collect();
+    built.sort_unstable();
+    assert_eq!(ids, built, "each format of formats::FORMATS");
+    let releases: Vec<String> = value["releases"]
+        .as_object()
+        .expect("releases")
+        .keys()
+        .cloned()
+        .collect();
+    let mut fixtures = fixture_releases();
+    fixtures.sort();
+    assert_eq!(releases, fixtures, "each release with a fixture");
+}
+
+#[test]
+fn the_page_says_how_many_formats_the_server_reads_back() {
+    let n = read_back_count(&page()).expect("the sentence on on-disk-format.md");
+    assert!(
+        (1..=FORMATS.len()).contains(&n),
+        "the server reads back {n} of {} formats",
+        FORMATS.len()
+    );
+}
+
+#[test]
+fn the_read_back_count_is_read_from_its_word() {
+    assert_eq!(
+        read_back_count("x. The server reads back the first four. The two"),
+        Ok(4),
+        "four"
+    );
+    assert_eq!(
+        read_back_count("The server reads back the first one,"),
+        Ok(1),
+        "one"
+    );
+}
+
+#[test]
+fn a_page_without_the_read_back_sentence_is_refused() {
+    assert!(
+        read_back_count(SAMPLE).is_err(),
+        "the sample has no such sentence"
+    );
+}
+
+#[test]
+fn a_read_back_count_in_another_word_is_refused() {
+    assert_eq!(
+        read_back_count("The server reads back the first seven."),
+        Err("\"seven\" is not a count this test reads".to_owned()),
+        "a word past the list"
+    );
+    assert!(
+        read_back_count("The server reads back the first 4.").is_err(),
+        "a digit"
+    );
+}
+
+#[test]
+fn the_first_formats_of_the_page_are_read_back_in_its_order() {
+    let page = format!("{SAMPLE}\nThe server reads back the first one.\n");
+    let versions = BTreeMap::from([
+        ("catalog".to_owned(), "9".to_owned()),
+        ("envelope".to_owned(), "1".to_owned()),
+    ]);
+    let value: serde_json::Value =
+        serde_json::from_str(&formats_snapshot(&versions, &page).expect("snapshot")).expect("JSON");
+    assert_eq!(
+        value["formats"]["catalog"]["read_back"], true,
+        "the first row"
+    );
+    assert_eq!(
+        value["formats"]["envelope"]["read_back"], false,
+        "the second row"
+    );
+    assert_eq!(
+        value["releases"]["0.4.0"]["catalog"], "4",
+        "the release table"
+    );
+}
+
+#[test]
+fn a_read_back_count_past_the_table_or_a_format_not_built_is_refused() {
+    let versions = BTreeMap::from([
+        ("catalog".to_owned(), "9".to_owned()),
+        ("envelope".to_owned(), "1".to_owned()),
+    ]);
+    let too_many = format!("{SAMPLE}\nThe server reads back the first three.\n");
+    assert!(
+        formats_snapshot(&versions, &too_many).is_err(),
+        "three of two"
+    );
+    let one = format!("{SAMPLE}\nThe server reads back the first one.\n");
+    let fewer = BTreeMap::from([("catalog".to_owned(), "9".to_owned())]);
+    assert_eq!(
+        formats_snapshot(&fewer, &one).err().as_deref(),
+        Some("envelope is on the page but not in this build"),
+        "a page row the build lacks"
+    );
+}
+
+#[test]
+fn a_stale_formats_snapshot_names_the_command_that_writes_it() {
+    let message = formats_stale("", "{\n");
+    assert!(message.contains(REGENERATE), "{message}");
+    assert!(
+        message.contains("contract/formats.json is not what this build and on-disk-format.md give"),
+        "{message}"
+    );
 }
 
 // ---- The fixtures. ----

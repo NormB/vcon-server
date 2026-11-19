@@ -51,7 +51,7 @@ below open each page's source in the repository.
 - [Audit logs](../website/content/docs/audit-logs.md): What vcon-server records about each request, where, and what it never records.
 - [Audit log records](../website/content/docs/audit-log-records.md): The members of an audit record, and every action a record can name, with what it records and which log holds it.
 - [On-disk formats](../website/content/docs/on-disk-format.md): Every format vcon-server writes to disk or to a bucket, with its version; what each release since 0.4.0 wrote; the rule a new build keeps for the data of an older one; and how a release's data is kept in the repository and tested.
-- [Stability](../website/content/docs/stability.md): What a release keeps compatible with the release before it: the surfaces of the contract, which changes break a client and which do not, and how to compare the HTTP API, the command line, the configuration file and the MCP tools of two releases.
+- [Stability](../website/content/docs/stability.md): What a release keeps compatible with the release before it: the surfaces of the contract, which changes break a client and which do not, and how to compare the HTTP API, the command line, the configuration file, the MCP tools, the environment variables, the on-disk formats and the audit records of two releases.
 - [Read the audit logs](../website/content/docs/read-audit-logs.md): Read a tenant's audit log and the admin log, with a command on the host and over HTTPS a page at a time, and list who revealed which part of a vCon. Every command and what it prints is shown.
 
 ## Security

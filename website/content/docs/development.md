@@ -216,6 +216,45 @@ plain `cc` for aarch64, so the binaries released are linked as before.
   VCON_SERVER_WRITE_CONTRACT=1 cargo test -p vcon-server --lib mcp::tests::contract
   ```
 
+- **The environment variables held to a snapshot.** contract/env.json holds
+  each variable on the [stability page's table](@/docs/stability.md#environment-variables),
+  who reads it and what it means, written by tests/env_contract.rs. The
+  same test walks each crate's module tree, leaves out what only a test
+  build compiles, and fails on a `std::env::var` or `std::env::var_os` the
+  table does not list, or one whose name is not a literal. After a change,
+  write the file again with one command, and commit it with the change;
+  [Stability](@/docs/stability.md#check-the-environment-between-two-releases)
+  says which of its changes break a deployment:
+
+  ```sh
+  VCON_SERVER_WRITE_CONTRACT=1 cargo test -p vcon-server --test env_contract
+  ```
+
+- **The on-disk formats held to a snapshot.** contract/formats.json holds
+  each format of `formats::FORMATS` with its version, whether the server
+  reads it back, and the versions each release wrote, from
+  [on-disk formats](@/docs/on-disk-format.md), written by tests/formats.rs.
+  After a change to a format, write the file again with one command, and
+  commit it with the change;
+  [Stability](@/docs/stability.md#check-the-on-disk-formats-between-two-releases)
+  says which of its changes break the data of a release:
+
+  ```sh
+  VCON_SERVER_WRITE_CONTRACT=1 cargo test -p vcon-server --test formats contract_snapshot
+  ```
+
+- **The audit records held to a snapshot.** contract/audit.json holds the
+  members of a record, read from one the audit log writes, and every
+  action [audit log records](@/docs/audit-log-records.md) lists, written by
+  tests/audit_contract.rs. After a change to a record or an action, write
+  the file again with one command, and commit it with the change;
+  [Stability](@/docs/stability.md#check-the-audit-records-between-two-releases)
+  says which of its changes break a log reader:
+
+  ```sh
+  VCON_SERVER_WRITE_CONTRACT=1 cargo test -p vcon-server --test audit_contract
+  ```
+
 ## Fuzzing
 
 Each target in `fuzz/fuzz_targets/` feeds random input, grown from its seeds,

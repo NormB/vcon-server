@@ -100,12 +100,14 @@ fi
 printf '# hook-fixture\n\nSee [the site](https://vcon-server.com/).\n' > crates/vcon-server/README.md
 cp "$src/LICENSE-MIT" "$src/LICENSE-APACHE" .
 cp "$src/LICENSE-MIT" "$src/LICENSE-APACHE" crates/vcon-server/
-# The HTTP API's OpenAPI document, the problem pages and the command
-# line's, the configuration's and the MCP tools' snapshots, which
+# The HTTP API's OpenAPI document, the problem pages and the snapshots of
+# the command line, the configuration, the MCP tools, the environment
+# variables, the on-disk formats and the audit records, which
 # scripts/test_contract_diff.py reads.
 cp "$src/crates/vcon-server/openapi.json" crates/vcon-server/
 mkdir -p contract
-cp "$src/contract/cli.json" "$src/contract/config.json" "$src/contract/mcp.json" contract/
+cp "$src/contract/cli.json" "$src/contract/config.json" "$src/contract/mcp.json" \
+  "$src/contract/env.json" "$src/contract/formats.json" "$src/contract/audit.json" contract/
 mkdir -p website/content/problems
 cp -R "$src/website/content/problems/." website/content/problems/
 cat > crates/vcon-server/src/lib.rs <<'RS'

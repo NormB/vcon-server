@@ -10,13 +10,16 @@ changes break a client written against OLD:
     contract_diff.py --kind cli      OLD.json NEW.json  # contract/cli.json
     contract_diff.py --kind config   OLD.json NEW.json  # contract/config.json
     contract_diff.py --kind mcp      OLD.json NEW.json  # contract/mcp.json
+    contract_diff.py --kind env      OLD.json NEW.json  # contract/env.json
+    contract_diff.py --kind formats  OLD.json NEW.json  # contract/formats.json
+    contract_diff.py --kind audit    OLD.json NEW.json  # contract/audit.json
     contract_diff.py --against REF                      # this tree against REF
 
 `--against` reads each surface at REF (`git show`, `git ls-tree`) and in
 the work tree: crates/vcon-server/openapi.json, the pages of
-website/content/problems/, contract/cli.json, contract/config.json and
-contract/mcp.json. A surface REF does not hold is reported as "no
-baseline" and passes.
+website/content/problems/, and contract/cli.json, config.json, mcp.json,
+env.json, formats.json and audit.json. A surface REF does not hold is
+reported as "no baseline" and passes.
 
 THE RULE. A schema is read from the side of the program that handles the
 value:
@@ -70,6 +73,25 @@ value:
   idempotent, now reaching outside the server); and by the writer rule on
   its argument schema. A new tool, a safer hint and an argument change the
   writer rule allows are additive.
+- the environment variables (contract/env.json, written by
+  tests/env_contract.rs from a scan of the source and the table of
+  stability.md), read as a deployment that sets them: breaking when a
+  variable is no longer read, or its meaning or its reader changes (space
+  and case of the text aside). A new variable is additive.
+- the on-disk formats (contract/formats.json, written by tests/formats.rs
+  from `FORMATS` and on-disk-format.md), read as the data an older release
+  wrote and as a program that reads the files the server writes for it:
+  breaking when a format is removed or no longer read back; when a version
+  falls or changes its name; when the version of a format the server never
+  reads (an export) rises; when the tests stop opening a release's data or
+  the versions a release wrote are restated. A new format, a new release
+  and a version step of a format the server reads back (it migrates the
+  older data) are additive.
+- the audit records (contract/audit.json, written by
+  tests/audit_contract.rs from a record the log writes and
+  audit-log-records.md), read as a program that reads the logs: breaking
+  when a member or an action is removed; a new member or action is
+  additive, so a reader must pass over an action it does not know.
 
 A `oneOf`, `anyOf`, `allOf` or `not` that changes is reported as breaking,
 because this script does not compare them, and a part it cannot compare is
@@ -106,6 +128,9 @@ PROBLEMS_PATH = "website/content/problems"
 CLI_PATH = "contract/cli.json"
 CONFIG_PATH = "contract/config.json"
 MCP_PATH = "contract/mcp.json"
+ENV_PATH = "contract/env.json"
+FORMATS_PATH = "contract/formats.json"
+AUDIT_PATH = "contract/audit.json"
 UNSET = object()
 
 
@@ -720,10 +745,143 @@ def mcp_changes(old: dict, new: dict) -> list[Change]:
     return out
 
 
+def _env_snapshot(d) -> None:
+    """Refuses `d` unless it has the shape tests/env_contract.rs writes."""
+    if not isinstance(d, dict) or not isinstance(d.get("variables"), dict):
+        raise ContractError("an environment snapshot has no `variables` object")
+    for name, entry in d["variables"].items():
+        if not (isinstance(entry, dict) and isinstance(entry.get("meaning"), str)
+                and isinstance(entry.get("read_by"), str)):
+            raise ContractError(f"variable {name!r} of an environment snapshot has no text `meaning` or `read_by`")
+
+
+def env_changes(old: dict, new: dict) -> list[Change]:
+    """Every change from `old` to `new`, two snapshots of the environment
+    variables the server reads (contract/env.json), read as a deployment
+    written for `old` that sets them."""
+    for d in (old, new):
+        _env_snapshot(d)
+    out: list[Change] = []
+    o_vars, n_vars = old["variables"], new["variables"]
+    for name in sorted(set(o_vars) | set(n_vars)):
+        if name not in n_vars:
+            out.append(Change("breaking", name, "variable no longer read, so a setting of it no longer acts"))
+            continue
+        if name not in o_vars:
+            out.append(Change("additive", name, "variable added"))
+            continue
+        o, n = o_vars[name], n_vars[name]
+        if _meaning(o["meaning"]) != _meaning(n["meaning"]):
+            out.append(Change("breaking", name, f"meaning changed from {o['meaning']!r} to {n['meaning']!r}"))
+        if _meaning(o["read_by"]) != _meaning(n["read_by"]):
+            out.append(Change("breaking", name, f"now read by {n['read_by']!r} where it was read by {o['read_by']!r}"))
+    return out
+
+
+def _formats_snapshot(d) -> None:
+    """Refuses `d` unless it has the shape tests/formats.rs's contract test
+    writes."""
+    if not (isinstance(d, dict) and isinstance(d.get("formats"), dict) and isinstance(d.get("releases"), dict)):
+        raise ContractError("a formats snapshot has no `formats` or `releases` object")
+    for name, entry in d["formats"].items():
+        if not (isinstance(entry, dict) and isinstance(entry.get("version"), str)
+                and isinstance(entry.get("read_back"), bool)):
+            raise ContractError(f"format {name!r} of a formats snapshot has no text `version` or boolean `read_back`")
+    for release, wrote in d["releases"].items():
+        if not (isinstance(wrote, dict) and all(isinstance(v, str) for v in wrote.values())):
+            raise ContractError(f"release {release!r} of a formats snapshot is not a map of format to version")
+
+
+def _step(version: str):
+    """A version as (its name, its number): `vcon-server.parquet-storage/1`
+    is ("vcon-server.parquet-storage/", 1), `9` is ("", 9). None without a
+    number at the end."""
+    m = re.fullmatch(r"(.*?)(\d+)", version)
+    return (m.group(1), int(m.group(2))) if m else None
+
+
+def formats_changes(old: dict, new: dict) -> list[Change]:
+    """Every change from `old` to `new`, two snapshots of the on-disk formats
+    (contract/formats.json), read as the data an older release wrote and a
+    program that reads the files the server writes for it."""
+    for d in (old, new):
+        _formats_snapshot(d)
+    out: list[Change] = []
+    o_fmt, n_fmt = old["formats"], new["formats"]
+    for name in sorted(set(o_fmt) | set(n_fmt)):
+        if name not in n_fmt:
+            out.append(Change("breaking", name, "format removed"))
+            continue
+        if name not in o_fmt:
+            out.append(Change("additive", name, "format added"))
+            continue
+        o, n = o_fmt[name], n_fmt[name]
+        if o["read_back"] and not n["read_back"]:
+            out.append(Change("breaking", name, "no longer read back by the server"))
+        elif n["read_back"] and not o["read_back"]:
+            out.append(Change("additive", name, "now read back by the server"))
+        if o["version"] == n["version"]:
+            continue
+        was, now = _step(o["version"]), _step(n["version"])
+        if was is None or now is None or was[0] != now[0]:
+            out.append(Change("breaking", name, f"version changed from {o['version']!r} to {n['version']!r}, "
+                                                "which is not a step up"))
+        elif now[1] < was[1]:
+            out.append(Change("breaking", name, f"version lowered from {o['version']!r} to {n['version']!r}"))
+        elif n["read_back"]:
+            # The build migrates the older version on open; F1 opens each
+            # release's data to hold that.
+            out.append(Change("additive", name, f"version raised from {o['version']!r} to {n['version']!r}; "
+                                                "the build opens the older version's data"))
+        else:
+            out.append(Change("breaking", name, f"version raised from {o['version']!r} to {n['version']!r}; "
+                                                f"a program that reads {o['version']!r} may not read it"))
+    o_rel, n_rel = old["releases"], new["releases"]
+    for release in sorted(set(o_rel) | set(n_rel), key=lambda r: [int(p) if p.isdigit() else p
+                                                                   for p in r.split(".")]):
+        where = f"release {release}"
+        if release not in n_rel:
+            out.append(Change("breaking", where, "the tests no longer open the data this release wrote"))
+            continue
+        if release not in o_rel:
+            out.append(Change("additive", where, "release added: the tests open its data"))
+            continue
+        for name in sorted(o_rel[release]):
+            was, now = o_rel[release][name], n_rel[release].get(name)
+            if now != was:
+                out.append(Change("breaking", where, f"the {name} version it wrote changed from {was!r} to {now!r}"))
+    return out
+
+
+def _audit_snapshot(d) -> None:
+    """Refuses `d` unless it has the shape tests/audit_contract.rs writes."""
+    if not (isinstance(d, dict) and all(isinstance(d.get(k), list) and all(isinstance(v, str) for v in d[k])
+                                        for k in ("members", "actions"))):
+        raise ContractError("an audit snapshot has no `members` or `actions` list")
+
+
+def audit_changes(old: dict, new: dict) -> list[Change]:
+    """Every change from `old` to `new`, two snapshots of the audit records
+    (contract/audit.json), read as a program that reads the logs of `old`:
+    the members of a record, then the actions, each by name."""
+    for d in (old, new):
+        _audit_snapshot(d)
+    out: list[Change] = []
+    for part, label in (("members", "member"), ("actions", "action")):
+        o, n = set(old[part]), set(new[part])
+        for name in sorted(o | n):
+            if name not in n:
+                out.append(Change("breaking", f"{label} {name}", f"{label} removed"))
+            elif name not in o:
+                out.append(Change("additive", f"{label} {name}", f"{label} added"))
+    return out
+
+
 # The snapshots under contract/ that `--against` compares, each with its
 # classifier, in the order it reports them.
 SNAPSHOTS = (("cli", CLI_PATH, cli_changes), ("config", CONFIG_PATH, config_changes),
-             ("mcp", MCP_PATH, mcp_changes))
+             ("mcp", MCP_PATH, mcp_changes), ("env", ENV_PATH, env_changes),
+             ("formats", FORMATS_PATH, formats_changes), ("audit", AUDIT_PATH, audit_changes))
 
 
 def _report(label: str, changes: list[Change]) -> int:
@@ -777,12 +935,16 @@ USAGE = ("usage: contract_diff.py --kind openapi OLD.json NEW.json\n"
          "       contract_diff.py --kind cli OLD.json NEW.json\n"
          "       contract_diff.py --kind config OLD.json NEW.json\n"
          "       contract_diff.py --kind mcp OLD.json NEW.json\n"
+         "       contract_diff.py --kind env OLD.json NEW.json\n"
+         "       contract_diff.py --kind formats OLD.json NEW.json\n"
+         "       contract_diff.py --kind audit OLD.json NEW.json\n"
          "       contract_diff.py --against REF")
 
 
-KINDS = ("openapi", "problems", "cli", "config", "mcp")
+KINDS = ("openapi", "problems", "cli", "config", "mcp", "env", "formats", "audit")
 # The JSON kinds main reads from two files, each with its classifier.
-JSON_KINDS = {"openapi": openapi_changes, "cli": cli_changes, "config": config_changes, "mcp": mcp_changes}
+JSON_KINDS = {"openapi": openapi_changes, "cli": cli_changes, "config": config_changes, "mcp": mcp_changes,
+              "env": env_changes, "formats": formats_changes, "audit": audit_changes}
 
 
 def parse(argv: list[str]):

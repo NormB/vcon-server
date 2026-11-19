@@ -172,11 +172,12 @@ class FakeGit:
         raise AssertionError(f"unexpected git call {args}")
 
 
-def tree(tmp, openapi=None, problems=None, cli=None, config=None, mcp=None):
+def tree(tmp, openapi=None, problems=None, cli=None, config=None, mcp=None, **more):
     """A work tree under `tmp` with the two HTTP surfaces and, when given,
-    the snapshots of the command line, the configuration and the MCP tools."""
+    the snapshots of the command line, the configuration, the MCP tools and
+    (`more`, by name: env, formats, audit) the other surfaces."""
     root = pathlib.Path(tmp)
-    for name, snapshot in (("cli", cli), ("config", config), ("mcp", mcp)):
+    for name, snapshot in (("cli", cli), ("config", config), ("mcp", mcp), *sorted(more.items())):
         if snapshot is not None:
             p = root / f"contract/{name}.json"
             p.parent.mkdir(parents=True, exist_ok=True)
@@ -360,8 +361,9 @@ class Passes(unittest.TestCase):
 
     def test_every_command_on_the_stability_page_parses(self):
         lines = [l for l in STABILITY.read_text(encoding="utf-8").splitlines() if l.startswith("python3 -I scripts/contract_diff.py")]
-        self.assertEqual(len(lines), 5,
-                         "the page shows the --against, --kind openapi, --kind cli, --kind config and --kind mcp forms")
+        self.assertEqual(len(lines), 8,
+                         "the page shows the --against form and the --kind openapi, cli, config, mcp, env, formats "
+                         "and audit forms")
         for line in lines:
             self.assertIsNotNone(cd.parse(line.split()[3:]), f"the page's command {line!r} is a usage main takes")
 
@@ -1718,6 +1720,384 @@ class McpEdges(unittest.TestCase):
         found = kinds(cd.mcp_changes(old, new))
         self.assertEqual(found, [("breaking", f"{GET} $.max_bytes", "default changed from 100 to 200")],
                          "decision (vii) applies to MCP argument defaults")
+
+
+ENV_SNAPSHOT = ROOT / "contract/env.json"
+FORMATS_SNAPSHOT = ROOT / "contract/formats.json"
+AUDIT_SNAPSHOT = ROOT / "contract/audit.json"
+NO_COLOR_MEANS = "Set to anything but the empty string, it turns color off."
+ENV_BASE = {"variables": {
+    "NO_COLOR": {"meaning": NO_COLOR_MEANS, "read_by": "`vcon-server tui`"},
+    "AWS_ACCESS_KEY_ID": {"meaning": "The access key id, when `storage.s3.access_key_id` is not set.",
+                          "read_by": "the AWS SDK"},
+}}
+PARQUET = "vcon-server.parquet-storage/1"
+FORMATS_BASE = {
+    "formats": {"catalog": {"read_back": True, "version": "9"},
+                "parquet-storage": {"read_back": True, "version": PARQUET},
+                "export-columns": {"read_back": False, "version": "1"}},
+    "releases": {"0.4.0": {"catalog": "4", "parquet-storage": PARQUET, "export-columns": "1"},
+                 "0.4.10": {"catalog": "9", "parquet-storage": PARQUET, "export-columns": "1"}},
+}
+AUDIT_BASE = {"actions": ["create", "purge", "read"], "members": ["action", "actor", "at", "seq"]}
+
+
+def snapshot_changed(base, edit):
+    """A deep copy of `base` after `edit(copy)`."""
+    d = copy.deepcopy(base)
+    edit(d)
+    return d
+
+
+def against_one(label, path, old, new):
+    """`against` on a tree whose only snapshot is `new` at `path`, with `old`
+    at that path in v1: the exit status and the output."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = tree(tmp, BASE, ["a.md"], **{label: new})
+        fake = FakeGit({("v1", cd.OPENAPI_PATH): json.dumps(BASE), ("v1", cd.PROBLEMS_PATH): ["a.md"],
+                        **({("v1", path): json.dumps(old)} if old is not None else {})})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = cd.against("v1", root, fake)
+    return rc, out.getvalue()
+
+
+def set_format(name, **fields):
+    return lambda d: d["formats"][name].update(fields)
+
+
+class EnvPasses(unittest.TestCase):
+    def test_identical_snapshots_have_no_change(self):
+        self.assertEqual(cd.env_changes(ENV_BASE, copy.deepcopy(ENV_BASE)), [], "a snapshot equals itself")
+
+    def test_the_snapshot_in_the_tree_is_unchanged_against_itself(self):
+        d = json.loads(ENV_SNAPSHOT.read_text(encoding="utf-8"))
+        self.assertEqual(cd.env_changes(d, copy.deepcopy(d)), [], "contract/env.json compared with itself")
+
+    def test_the_snapshot_in_the_tree_holds_the_tuis_and_the_sdks_variables(self):
+        d = json.loads(ENV_SNAPSHOT.read_text(encoding="utf-8"))
+        for name in ("NO_COLOR", "TERM", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"):
+            self.assertIn(name, d["variables"], f"stability.md lists {name}")
+
+    def test_a_variable_added_is_additive(self):
+        d = snapshot_changed(ENV_BASE, lambda d: d["variables"].update(
+            {"COLUMNS": {"meaning": "The width.", "read_by": "`vcon-server tui`"}}))
+        self.assertEqual(kinds(cd.env_changes(ENV_BASE, d)), [("additive", "COLUMNS", "variable added")], d)
+
+    def test_a_meaning_rewrapped_is_no_change(self):
+        d = snapshot_changed(ENV_BASE, lambda d: d["variables"]["NO_COLOR"].update(
+            meaning="Set to anything  but the\nempty string, it turns color off."))
+        self.assertEqual(cd.env_changes(ENV_BASE, d), [], "space and line breaks are not meaning")
+
+    def test_main_with_kind_env_exits_0_on_an_additive_change(self):
+        d = snapshot_changed(ENV_BASE, lambda d: d["variables"].update({"X": {"meaning": "m", "read_by": "r"}}))
+        rc, out, err = run_main(["--kind", "env", "OLD", "NEW"], {"OLD": ENV_BASE, "NEW": d})
+        self.assertEqual(rc, 0, err)
+        self.assertIn("additive X: variable added", out, out)
+
+    def test_against_a_ref_without_env_json_reports_no_baseline(self):
+        rc, out = against_one("env", cd.ENV_PATH, None, ENV_BASE)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("env: no baseline at v1", out, out)
+
+
+class EnvFails(unittest.TestCase):
+    def test_a_variable_removed_is_breaking(self):
+        d = snapshot_changed(ENV_BASE, lambda d: d["variables"].pop("NO_COLOR"))
+        self.assertEqual(kinds(cd.env_changes(ENV_BASE, d)),
+                         [("breaking", "NO_COLOR", "variable no longer read, so a setting of it no longer acts")], d)
+
+    def test_a_changed_meaning_is_breaking(self):
+        d = snapshot_changed(ENV_BASE, lambda d: d["variables"]["NO_COLOR"].update(meaning="Set to 1, it turns color off."))
+        self.assertEqual(kinds(cd.env_changes(ENV_BASE, d)),
+                         [("breaking", "NO_COLOR",
+                           f"meaning changed from {NO_COLOR_MEANS!r} to 'Set to 1, it turns color off.'")], d)
+
+    def test_a_changed_reader_is_breaking(self):
+        d = snapshot_changed(ENV_BASE, lambda d: d["variables"]["NO_COLOR"].update(read_by="`vcon-server serve`"))
+        self.assertEqual(kinds(cd.env_changes(ENV_BASE, d)),
+                         [("breaking", "NO_COLOR",
+                           "now read by '`vcon-server serve`' where it was read by '`vcon-server tui`'")], d)
+
+    def test_main_with_kind_env_exits_1_on_a_removed_variable(self):
+        d = snapshot_changed(ENV_BASE, lambda d: d["variables"].pop("AWS_ACCESS_KEY_ID"))
+        rc, out, err = run_main(["--kind", "env", "OLD", "NEW"], {"OLD": ENV_BASE, "NEW": d})
+        self.assertEqual(rc, 1, err)
+        self.assertIn("1 change(s), 1 breaking", out, out)
+
+    def test_against_reports_a_removed_variable(self):
+        rc, out = against_one("env", cd.ENV_PATH, ENV_BASE,
+                              snapshot_changed(ENV_BASE, lambda d: d["variables"].pop("NO_COLOR")))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("env: breaking NO_COLOR: variable no longer read", out, out)
+
+    def test_the_page_names_each_env_error_the_script_prints(self):
+        text = " ".join(STABILITY.read_text(encoding="utf-8").split())
+        self.assertIn("an environment snapshot has no `variables` object; nothing was decided", text,
+                      "stability.md says what to do when an env file is not a snapshot")
+        self.assertIn("contract/env.json is not what the source and this page give", text,
+                      "stability.md names the env_contract test's message")
+
+
+class EnvEdges(unittest.TestCase):
+    def test_a_snapshot_without_variables_is_an_error(self):
+        for bad in ({}, {"variables": []}, [], "x"):
+            with self.assertRaises(cd.ContractError, msg=repr(bad)):
+                cd.env_changes(ENV_BASE, bad)
+
+    def test_a_variable_without_text_meaning_or_reader_is_an_error(self):
+        for bad in ({}, {"meaning": "m"}, {"read_by": "r"}, {"meaning": 1, "read_by": "r"},
+                    {"meaning": "m", "read_by": None}, "x"):
+            d = snapshot_changed(ENV_BASE, lambda d, bad=bad: d["variables"].update({"NO_COLOR": bad}))
+            with self.assertRaises(cd.ContractError, msg=repr(bad)):
+                cd.env_changes(ENV_BASE, d)
+
+    def test_main_on_a_file_that_is_not_a_snapshot_is_an_error(self):
+        rc, _, err = run_main(["--kind", "env", "OLD", "NEW"], {"OLD": ENV_BASE, "NEW": {"tools": {}}})
+        self.assertEqual(rc, 2, err)
+        self.assertIn("an environment snapshot has no `variables` object; nothing was decided", err, err)
+
+    def test_a_meaning_and_a_reader_change_are_each_named(self):
+        d = snapshot_changed(ENV_BASE, lambda d: d["variables"]["NO_COLOR"].update(meaning="m", read_by="r"))
+        self.assertEqual([c.message.split(" ")[0] for c in cd.env_changes(ENV_BASE, d)], ["meaning", "now"], d)
+
+    def test_changes_come_in_name_order(self):
+        d = {"variables": {}}
+        self.assertEqual([c.path for c in cd.env_changes(ENV_BASE, d)], ["AWS_ACCESS_KEY_ID", "NO_COLOR"],
+                         "name order")
+
+    def test_a_name_differs_by_case(self):
+        d = snapshot_changed(ENV_BASE, lambda d: d["variables"].update(
+            {"no_color": d["variables"].pop("NO_COLOR")}))
+        self.assertEqual(sorted(c.kind for c in cd.env_changes(ENV_BASE, d)), ["additive", "breaking"],
+                         "an environment variable's name has case")
+
+
+class FormatsPasses(unittest.TestCase):
+    def test_identical_snapshots_have_no_change(self):
+        self.assertEqual(cd.formats_changes(FORMATS_BASE, copy.deepcopy(FORMATS_BASE)), [], "equal")
+
+    def test_the_snapshot_in_the_tree_is_unchanged_against_itself(self):
+        d = json.loads(FORMATS_SNAPSHOT.read_text(encoding="utf-8"))
+        self.assertEqual(cd.formats_changes(d, copy.deepcopy(d)), [], "contract/formats.json with itself")
+
+    def test_the_snapshot_in_the_tree_holds_six_formats_and_the_releases_since_0_4_0(self):
+        d = json.loads(FORMATS_SNAPSHOT.read_text(encoding="utf-8"))
+        self.assertEqual(len(d["formats"]), 6, "on-disk-format.md lists six formats")
+        self.assertIn("0.4.0", d["releases"], "the first release with a fixture")
+        self.assertEqual([f for f, v in d["formats"].items() if not v["read_back"]],
+                         ["export-columns", "export-manifest"], "the server reads back all but the export formats")
+
+    def test_a_read_back_version_raised_is_additive(self):
+        d = snapshot_changed(FORMATS_BASE, set_format("catalog", version="10"))
+        self.assertEqual(kinds(cd.formats_changes(FORMATS_BASE, d)),
+                         [("additive", "catalog", "version raised from '9' to '10'; the build opens the older "
+                                                  "version's data")], d)
+
+    def test_a_versioned_name_raised_is_additive(self):
+        d = snapshot_changed(FORMATS_BASE, set_format("parquet-storage", version="vcon-server.parquet-storage/2"))
+        self.assertEqual([c.kind for c in cd.formats_changes(FORMATS_BASE, d)], ["additive"], d)
+
+    def test_a_format_and_a_release_added_are_additive(self):
+        def edit(d):
+            d["formats"]["envelope"] = {"read_back": True, "version": "1"}
+            d["releases"]["0.4.11"] = dict(d["releases"]["0.4.10"])
+        found = kinds(cd.formats_changes(FORMATS_BASE, snapshot_changed(FORMATS_BASE, edit)))
+        self.assertEqual(found, [("additive", "envelope", "format added"),
+                                 ("additive", "release 0.4.11", "release added: the tests open its data")], found)
+
+    def test_a_format_now_read_back_is_additive(self):
+        d = snapshot_changed(FORMATS_BASE, set_format("export-columns", read_back=True))
+        self.assertEqual(kinds(cd.formats_changes(FORMATS_BASE, d)),
+                         [("additive", "export-columns", "now read back by the server")], d)
+
+    def test_against_a_ref_without_formats_json_reports_no_baseline(self):
+        rc, out = against_one("formats", cd.FORMATS_PATH, None, FORMATS_BASE)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("formats: no baseline at v1", out, out)
+
+
+class FormatsFails(unittest.TestCase):
+    def test_a_format_removed_is_breaking(self):
+        d = snapshot_changed(FORMATS_BASE, lambda d: d["formats"].pop("catalog"))
+        self.assertEqual(kinds(cd.formats_changes(FORMATS_BASE, d)), [("breaking", "catalog", "format removed")], d)
+
+    def test_a_version_lowered_is_breaking(self):
+        d = snapshot_changed(FORMATS_BASE, set_format("catalog", version="8"))
+        self.assertEqual(kinds(cd.formats_changes(FORMATS_BASE, d)),
+                         [("breaking", "catalog", "version lowered from '9' to '8'")], d)
+
+    def test_an_export_version_raised_is_breaking(self):
+        d = snapshot_changed(FORMATS_BASE, set_format("export-columns", version="2"))
+        self.assertEqual(kinds(cd.formats_changes(FORMATS_BASE, d)),
+                         [("breaking", "export-columns", "version raised from '1' to '2'; a program that reads "
+                                                         "'1' may not read it")], d)
+
+    def test_a_format_no_longer_read_back_is_breaking(self):
+        d = snapshot_changed(FORMATS_BASE, set_format("catalog", read_back=False))
+        self.assertEqual(kinds(cd.formats_changes(FORMATS_BASE, d)),
+                         [("breaking", "catalog", "no longer read back by the server")], d)
+
+    def test_a_release_removed_is_breaking(self):
+        d = snapshot_changed(FORMATS_BASE, lambda d: d["releases"].pop("0.4.0"))
+        self.assertEqual(kinds(cd.formats_changes(FORMATS_BASE, d)),
+                         [("breaking", "release 0.4.0", "the tests no longer open the data this release wrote")], d)
+
+    def test_a_release_row_rewritten_is_breaking(self):
+        d = snapshot_changed(FORMATS_BASE, lambda d: d["releases"]["0.4.0"].update(catalog="5"))
+        self.assertEqual(kinds(cd.formats_changes(FORMATS_BASE, d)),
+                         [("breaking", "release 0.4.0", "the catalog version it wrote changed from '4' to '5'")], d)
+
+    def test_against_reports_a_removed_format(self):
+        rc, out = against_one("formats", cd.FORMATS_PATH, FORMATS_BASE,
+                              snapshot_changed(FORMATS_BASE, lambda d: d["formats"].pop("catalog")))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("formats: breaking catalog: format removed", out, out)
+
+    def test_the_page_names_each_formats_error_the_script_prints(self):
+        text = " ".join(STABILITY.read_text(encoding="utf-8").split())
+        self.assertIn("a formats snapshot has no `formats` or `releases` object; nothing was decided", text,
+                      "stability.md says what to do when a formats file is not a snapshot")
+        self.assertIn("contract/formats.json is not what this build and on-disk-format.md give", text,
+                      "stability.md names the formats test's message")
+
+
+class FormatsEdges(unittest.TestCase):
+    def test_a_snapshot_without_formats_or_releases_is_an_error(self):
+        for bad in ({}, {"formats": {}}, {"formats": [], "releases": {}}, {"formats": {}, "releases": []}, "x"):
+            with self.assertRaises(cd.ContractError, msg=repr(bad)):
+                cd.formats_changes(FORMATS_BASE, bad)
+
+    def test_a_format_without_a_text_version_or_a_boolean_read_back_is_an_error(self):
+        for bad in ({}, {"version": "1"}, {"read_back": True}, {"version": 1, "read_back": True},
+                    {"version": "1", "read_back": "yes"}, "x"):
+            d = snapshot_changed(FORMATS_BASE, lambda d, bad=bad: d["formats"].update({"catalog": bad}))
+            with self.assertRaises(cd.ContractError, msg=repr(bad)):
+                cd.formats_changes(FORMATS_BASE, d)
+
+    def test_a_release_that_is_not_a_map_of_text_is_an_error(self):
+        for bad in ([], {"catalog": 4}, "x"):
+            d = snapshot_changed(FORMATS_BASE, lambda d, bad=bad: d["releases"].update({"0.4.0": bad}))
+            with self.assertRaises(cd.ContractError, msg=repr(bad)):
+                cd.formats_changes(FORMATS_BASE, d)
+
+    def test_a_version_whose_name_changes_is_breaking(self):
+        d = snapshot_changed(FORMATS_BASE, set_format("parquet-storage", version="vcon.parquet/2"))
+        self.assertEqual(kinds(cd.formats_changes(FORMATS_BASE, d)),
+                         [("breaking", "parquet-storage", f"version changed from {PARQUET!r} to 'vcon.parquet/2', "
+                                                          "which is not a step up")], d)
+
+    def test_a_version_without_a_number_is_breaking_when_it_changes(self):
+        old = snapshot_changed(FORMATS_BASE, set_format("catalog", version="a"))
+        new = snapshot_changed(FORMATS_BASE, set_format("catalog", version="b"))
+        self.assertEqual([c.kind for c in cd.formats_changes(old, new)], ["breaking"], "no number to compare")
+
+    def test_versions_compare_as_numbers(self):
+        old = snapshot_changed(FORMATS_BASE, set_format("catalog", version="9"))
+        new = snapshot_changed(FORMATS_BASE, set_format("catalog", version="12"))
+        self.assertEqual([c.kind for c in cd.formats_changes(old, new)], ["additive"], "12 is past 9")
+
+    def test_a_release_column_added_for_a_new_format_is_no_rewrite(self):
+        d = snapshot_changed(FORMATS_BASE, lambda d: [r.update(envelope="1") for r in d["releases"].values()])
+        self.assertEqual(cd.formats_changes(FORMATS_BASE, d), [], "a release states a format the old file lacked")
+
+    def test_main_on_a_file_that_is_not_a_snapshot_is_an_error(self):
+        rc, _, err = run_main(["--kind", "formats", "OLD", "NEW"], {"OLD": FORMATS_BASE, "NEW": {"keys": {}}})
+        self.assertEqual(rc, 2, err)
+        self.assertIn("a formats snapshot has no `formats` or `releases` object; nothing was decided", err, err)
+
+
+class AuditPasses(unittest.TestCase):
+    def test_identical_snapshots_have_no_change(self):
+        self.assertEqual(cd.audit_changes(AUDIT_BASE, copy.deepcopy(AUDIT_BASE)), [], "equal")
+
+    def test_the_snapshot_in_the_tree_is_unchanged_against_itself(self):
+        d = json.loads(AUDIT_SNAPSHOT.read_text(encoding="utf-8"))
+        self.assertEqual(cd.audit_changes(d, copy.deepcopy(d)), [], "contract/audit.json with itself")
+
+    def test_the_snapshot_in_the_tree_holds_the_eight_members(self):
+        d = json.loads(AUDIT_SNAPSHOT.read_text(encoding="utf-8"))
+        self.assertEqual(d["members"], ["action", "actor", "at", "count", "seq", "status", "target", "version"],
+                         "audit-log-records.md's A record table")
+        self.assertIn("read", d["actions"], "the actions are there")
+
+    def test_a_member_and_an_action_added_are_additive(self):
+        d = snapshot_changed(AUDIT_BASE, lambda d: (d["members"].append("why"), d["actions"].append("seal")))
+        self.assertEqual(kinds(cd.audit_changes(AUDIT_BASE, d)),
+                         [("additive", "member why", "member added"), ("additive", "action seal", "action added")], d)
+
+    def test_main_with_kind_audit_exits_0_on_an_additive_change(self):
+        d = snapshot_changed(AUDIT_BASE, lambda d: d["actions"].append("seal"))
+        rc, out, err = run_main(["--kind", "audit", "OLD", "NEW"], {"OLD": AUDIT_BASE, "NEW": d})
+        self.assertEqual(rc, 0, err)
+        self.assertIn("additive action seal: action added", out, out)
+
+    def test_against_a_ref_without_audit_json_reports_no_baseline(self):
+        rc, out = against_one("audit", cd.AUDIT_PATH, None, AUDIT_BASE)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("audit: no baseline at v1", out, out)
+
+
+class AuditFails(unittest.TestCase):
+    def test_a_member_removed_is_breaking(self):
+        d = snapshot_changed(AUDIT_BASE, lambda d: d["members"].remove("at"))
+        self.assertEqual(kinds(cd.audit_changes(AUDIT_BASE, d)), [("breaking", "member at", "member removed")], d)
+
+    def test_an_action_removed_is_breaking(self):
+        d = snapshot_changed(AUDIT_BASE, lambda d: d["actions"].remove("purge"))
+        self.assertEqual(kinds(cd.audit_changes(AUDIT_BASE, d)), [("breaking", "action purge", "action removed")], d)
+
+    def test_a_renamed_action_is_one_removed_and_one_added(self):
+        d = snapshot_changed(AUDIT_BASE, lambda d: d["actions"].__setitem__(0, "store"))
+        self.assertEqual(kinds(cd.audit_changes(AUDIT_BASE, d)),
+                         [("breaking", "action create", "action removed"), ("additive", "action store", "action added")],
+                         d)
+
+    def test_main_with_kind_audit_exits_1_on_a_removed_member(self):
+        d = snapshot_changed(AUDIT_BASE, lambda d: d["members"].remove("seq"))
+        rc, out, err = run_main(["--kind", "audit", "OLD", "NEW"], {"OLD": AUDIT_BASE, "NEW": d})
+        self.assertEqual(rc, 1, err)
+        self.assertIn("breaking member seq: member removed", out, out)
+
+    def test_against_reports_a_removed_action(self):
+        rc, out = against_one("audit", cd.AUDIT_PATH, AUDIT_BASE,
+                              snapshot_changed(AUDIT_BASE, lambda d: d["actions"].remove("read")))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("audit: breaking action read: action removed", out, out)
+
+    def test_the_page_names_each_audit_error_the_script_prints(self):
+        text = " ".join(STABILITY.read_text(encoding="utf-8").split())
+        self.assertIn("an audit snapshot has no `members` or `actions` list; nothing was decided", text,
+                      "stability.md says what to do when an audit file is not a snapshot")
+        self.assertIn("contract/audit.json is not what the audit log writes and audit-log-records.md lists", text,
+                      "stability.md names the audit test's message")
+
+
+class AuditEdges(unittest.TestCase):
+    def test_a_snapshot_without_members_or_actions_is_an_error(self):
+        for bad in ({}, {"members": []}, {"actions": []}, {"members": {}, "actions": []},
+                    {"members": [1], "actions": []}, {"members": [], "actions": [None]}, "x"):
+            with self.assertRaises(cd.ContractError, msg=repr(bad)):
+                cd.audit_changes(AUDIT_BASE, bad)
+
+    def test_names_in_another_order_are_no_change(self):
+        d = {"actions": list(reversed(AUDIT_BASE["actions"])), "members": list(reversed(AUDIT_BASE["members"]))}
+        self.assertEqual(cd.audit_changes(AUDIT_BASE, d), [], "members and actions are sets of names")
+
+    def test_members_come_before_actions_each_in_name_order(self):
+        found = cd.audit_changes(AUDIT_BASE, {"actions": [], "members": []})
+        self.assertEqual([c.path for c in found], ["member action", "member actor", "member at", "member seq",
+                                                   "action create", "action purge", "action read"], found)
+
+    def test_a_member_and_an_action_of_one_name_are_apart(self):
+        old = {"actions": ["status"], "members": ["status"]}
+        found = kinds(cd.audit_changes(old, {"actions": [], "members": ["status"]}))
+        self.assertEqual(found, [("breaking", "action status", "action removed")], "the action, not the member")
+
+    def test_main_on_a_file_that_is_not_a_snapshot_is_an_error(self):
+        rc, _, err = run_main(["--kind", "audit", "OLD", "NEW"], {"OLD": AUDIT_BASE, "NEW": {"tools": {}}})
+        self.assertEqual(rc, 2, err)
+        self.assertIn("an audit snapshot has no `members` or `actions` list; nothing was decided", err, err)
 
 
 if __name__ == "__main__":

@@ -267,15 +267,14 @@ fn actions_in_code(source: &str) -> BTreeSet<String> {
         .collect()
 }
 
+#[path = "support/audit_page.rs"]
+mod audit_page;
+
 /// The actions the page's table names: the first cell of each row of the
-/// "Every action" section, in backticks.
+/// "Every action" section, in backticks (support/audit_page.rs, which
+/// tests/audit_contract.rs reads the page with too).
 fn actions_on_page(page: &str) -> BTreeSet<String> {
-    section(page, "Every action")
-        .lines()
-        .filter_map(|line| line.strip_prefix("| `"))
-        .filter_map(|rest| rest.split_once('`'))
-        .map(|(name, _)| name.to_owned())
-        .collect()
+    audit_page::actions(page)
 }
 
 #[test]

@@ -1,0 +1,118 @@
+{
+  "formats": {
+    "catalog": {
+      "read_back": true,
+      "version": "9"
+    },
+    "envelope": {
+      "read_back": true,
+      "version": "1"
+    },
+    "export-columns": {
+      "read_back": false,
+      "version": "1"
+    },
+    "export-manifest": {
+      "read_back": false,
+      "version": "1"
+    },
+    "parquet-storage": {
+      "read_back": true,
+      "version": "vcon-server.parquet-storage/1"
+    },
+    "postgres": {
+      "read_back": true,
+      "version": "13"
+    }
+  },
+  "releases": {
+    "0.4.0": {
+      "catalog": "4",
+      "envelope": "1",
+      "export-columns": "1",
+      "export-manifest": "1",
+      "parquet-storage": "vcon-server.parquet-storage/1",
+      "postgres": "none"
+    },
+    "0.4.1": {
+      "catalog": "4",
+      "envelope": "1",
+      "export-columns": "1",
+      "export-manifest": "1",
+      "parquet-storage": "vcon-server.parquet-storage/1",
+      "postgres": "none"
+    },
+    "0.4.10": {
+      "catalog": "9",
+      "envelope": "1",
+      "export-columns": "1",
+      "export-manifest": "1",
+      "parquet-storage": "vcon-server.parquet-storage/1",
+      "postgres": "13"
+    },
+    "0.4.2": {
+      "catalog": "4",
+      "envelope": "1",
+      "export-columns": "1",
+      "export-manifest": "1",
+      "parquet-storage": "vcon-server.parquet-storage/1",
+      "postgres": "none"
+    },
+    "0.4.3": {
+      "catalog": "4",
+      "envelope": "1",
+      "export-columns": "1",
+      "export-manifest": "1",
+      "parquet-storage": "vcon-server.parquet-storage/1",
+      "postgres": "none"
+    },
+    "0.4.4": {
+      "catalog": "9",
+      "envelope": "1",
+      "export-columns": "1",
+      "export-manifest": "1",
+      "parquet-storage": "vcon-server.parquet-storage/1",
+      "postgres": "none"
+    },
+    "0.4.5": {
+      "catalog": "9",
+      "envelope": "1",
+      "export-columns": "1",
+      "export-manifest": "1",
+      "parquet-storage": "vcon-server.parquet-storage/1",
+      "postgres": "none"
+    },
+    "0.4.6": {
+      "catalog": "9",
+      "envelope": "1",
+      "export-columns": "1",
+      "export-manifest": "1",
+      "parquet-storage": "vcon-server.parquet-storage/1",
+      "postgres": "13"
+    },
+    "0.4.7": {
+      "catalog": "9",
+      "envelope": "1",
+      "export-columns": "1",
+      "export-manifest": "1",
+      "parquet-storage": "vcon-server.parquet-storage/1",
+      "postgres": "13"
+    },
+    "0.4.8": {
+      "catalog": "9",
+      "envelope": "1",
+      "export-columns": "1",
+      "export-manifest": "1",
+      "parquet-storage": "vcon-server.parquet-storage/1",
+      "postgres": "13"
+    },
+    "0.4.9": {
+      "catalog": "9",
+      "envelope": "1",
+      "export-columns": "1",
+      "export-manifest": "1",
+      "parquet-storage": "vcon-server.parquet-storage/1",
+      "postgres": "13"
+    }
+  }
+}
