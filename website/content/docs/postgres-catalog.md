@@ -481,7 +481,7 @@ binary's.
 ### After an upgrade from 0.4.5
 
 Release 0.4.5 and the releases before it leave the schema at version 6.
-Release 0.4.10 makes version 13, as 0.4.6 to 0.4.9 do, so a database that 0.4.5
+Release 0.4.11 makes version 13, as 0.4.6 to 0.4.10 do, so a database that 0.4.5
 migrated needs the command once more, with the new binary and before any
 server starts:
 

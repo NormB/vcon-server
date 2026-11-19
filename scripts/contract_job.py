@@ -63,7 +63,7 @@ def open_enum_note(tag: str, openapi_text: str | None) -> str | None:
     return (f"contract: note: {tag}'s openapi.json does not mark the problem `type` as an open list "
             f"({cd.OPEN_ENUM}), as releases up to 0.4.10 do not. Each problem type added since then "
             "is reported as breaking for every response that can carry a problem document, until the "
-            "next release carries the mark.")
+            "newest release tag carries the mark.")
 
 
 def run(root, git) -> int:

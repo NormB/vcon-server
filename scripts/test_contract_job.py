@@ -157,7 +157,7 @@ class TagFails(unittest.TestCase):
     def test_an_unmarked_baseline_has_the_note(self):
         note = job.open_enum_note("v0.4.10", UNMARKED)
         self.assertIn("v0.4.10's openapi.json does not mark the problem `type` as an open list", note, note)
-        self.assertIn("until the next release carries the mark", note, note)
+        self.assertIn("until the newest release tag carries the mark", note, note)
 
 
 class TagEdges(unittest.TestCase):
@@ -346,7 +346,7 @@ class Docs(unittest.TestCase):
         text = " ".join(STABILITY.read_text(encoding="utf-8").split())
         self.assertIn("`Contract`", text, "the job")
         self.assertIn("python3 -I scripts/contract_job.py", text, "how to run it")
-        self.assertIn("until the next release carries the mark", text, "the note")
+        self.assertIn("until the newest release tag carries the mark", text, "the note")
 
     def test_the_development_page_lists_the_job_under_the_gates(self):
         text = DEVELOPMENT.read_text(encoding="utf-8")
@@ -358,6 +358,20 @@ class Docs(unittest.TestCase):
         note = job.open_enum_note("v0.4.10", UNMARKED)
         tail = note.split("Each problem type", 1)[1]
         self.assertIn("Each problem type" + tail, page, "the page quotes the script")
+
+    def test_the_note_holds_no_phrase_a_release_refuses_on_a_page(self):
+        # The stability page quotes the note, and site_status.rs refuses each
+        # of its UNRELEASED_PHRASES on any page once the changelog's
+        # [Unreleased] section is empty, as it is in every release commit.
+        # On 2026-11-19 the note said "until the next release", so the
+        # 0.4.11 release commit could not pass both tests.
+        source = (ROOT / "crates/vcon-server/tests/site_status.rs").read_text(encoding="utf-8")
+        block = re.search(r"const UNRELEASED_PHRASES: \[&str; \d+\] = \[(.*?)\];", source, re.S)
+        self.assertIsNotNone(block, "site_status.rs holds UNRELEASED_PHRASES")
+        phrases = re.findall(r'"([^"]+)"', block.group(1))
+        self.assertGreaterEqual(len(phrases), 7, phrases)
+        note = " ".join(job.open_enum_note("v0.4.10", UNMARKED).split()).lower()
+        self.assertEqual([p for p in phrases if p in note], [], note)
 
 
 if __name__ == "__main__":

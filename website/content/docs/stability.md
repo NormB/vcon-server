@@ -287,8 +287,9 @@ python3 -I scripts/contract_job.py
 While that tag's openapi.json lacks the open-enum mark, as releases up to
 0.4.10 do, the job prints a note before the changes: `contract: note:`,
 then "Each problem type added since then is reported as breaking for
-every response that can carry a problem document, until the next release
-carries the mark."
+every response that can carry a problem document, until the newest
+release tag carries the mark." Release 0.4.11 carries the mark, so
+compared with v0.4.11 the job prints no note.
 
 ## Compare two releases
 

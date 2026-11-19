@@ -18,6 +18,23 @@ CI runs every command on this page on each change. It installs the previous
 release, sets it up as [getting started](@/docs/getting-started.md) does,
 upgrades it to the server built from the change, and goes back again.
 
+## From 0.4.10 to 0.4.11
+
+The upgrade is the binary alone. No stored data, configuration or schema
+changes: the catalogs in the data directory keep schema version 9, and a
+PostgreSQL catalog keeps version 13. A downgrade is possible: 0.4.10 opens
+a data directory that 0.4.11 has served. Copy the data directory before
+the upgrade all the same, as in
+[copy the data directory](#copy-the-data-directory). One thing is
+different in 0.4.11:
+
+- **The problem `type` is a list that may grow.** In openapi.json, the
+  `type` member of a problem document carries
+  `"x-vcon-server-open-enum": true`; release 0.4.10 does not mark it. A
+  client handles a problem type it does not know by the response's status
+  code. See
+  [problem types and open lists](@/docs/stability.md#problem-types-and-open-lists).
+
 ## From 0.4.9 to 0.4.10
 
 The upgrade is the binary alone. No stored data, configuration or schema
@@ -428,7 +445,7 @@ but do not install it yet. The commands use their own variable names, so
 they do not change the ones from install:
 
 ```sh
-NEW_VERSION=0.4.10
+NEW_VERSION=0.4.11
 NEW_ARCHIVE=vcon-server-$NEW_VERSION-$(uname -m)-unknown-linux-gnu.tar.gz
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/$NEW_ARCHIVE
 curl -fsSL -o SHA256SUMS-$NEW_VERSION.txt https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/SHA256SUMS.txt
