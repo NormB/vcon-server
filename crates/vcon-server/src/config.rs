@@ -3029,7 +3029,7 @@ key = "/etc/vcon-server/key.pem"
         }
 
         /// Every key in a TOML table, dotted.
-        fn keys(table: &toml::Table, prefix: &str, out: &mut Vec<String>) {
+        pub(super) fn keys(table: &toml::Table, prefix: &str, out: &mut Vec<String>) {
             for (key, value) in table {
                 let name = format!("{prefix}{key}");
                 match value {
@@ -3051,102 +3051,12 @@ key = "/etc/vcon-server/key.pem"
         #[test]
         fn every_key_is_listed_with_its_default() {
             let text = page("configuration.md");
-            let defaults = parse(LEAST).expect("least");
             let mut all = Vec::new();
             keys(&FULL.parse::<toml::Table>().expect("toml"), "", &mut all);
             assert_eq!(all.len(), 64, "{all:?}");
-            let pg = catalog::postgres_least();
             for key in all {
-                let default = match key.as_str() {
-                    "listen" | "data_dir" | "master_key" | "tls.cert" | "tls.key" => {
-                        "required".to_owned()
-                    }
-                    "operator.listen" => "none: `listen` serves both".to_owned(),
-                    "operator.tls.cert" => "`tls.cert`".to_owned(),
-                    "operator.tls.key" => "`tls.key`".to_owned(),
-                    "public_origin" | "operator.public_origin" => {
-                        assert_eq!(defaults.public_origin, None, "the page says none");
-                        "none: the listener serves no session".to_owned()
-                    }
-                    "retention_default" => format!("`{}`", defaults.retention_default),
-                    "purge_interval" => format!("`{}`", defaults.purge_interval.as_secs()),
-                    "rotation_warn" => format!("`{}`", defaults.rotation_warn.as_secs()),
-                    "limits.body" => format!("`{}`", defaults.body_limit),
-                    "limits.inflated" => format!("`{}`", defaults.inflated_limit),
-                    "limits.connections" => format!("`{}`", defaults.connection.max),
-                    "limits.csp_reports" => format!("`{}`", defaults.reports.per_minute),
-                    "limits.csp_reports_per_address" => {
-                        format!("`{}`", defaults.reports.per_address)
-                    }
-                    "limits.timeouts.read" => format!("`{}`", defaults.read_timeout.as_secs()),
-                    "limits.timeouts.handshake" => {
-                        format!("`{}`", defaults.connection.handshake.as_secs())
-                    }
-                    "limits.timeouts.first_head" => {
-                        format!("`{}`", defaults.connection.first_head.as_secs())
-                    }
-                    "limits.timeouts.head" => format!("`{}`", defaults.connection.head.as_secs()),
-                    "limits.timeouts.idle" => format!("`{}`", defaults.connection.idle.as_secs()),
-                    "keys.no_expiry" => format!("`{}`", defaults.keys_no_expiry),
-                    "mcp.calls_per_second" => format!("`{}`", defaults.mcp.calls_per_second),
-                    "mcp.concurrent" => format!("`{}`", defaults.mcp.concurrent),
-                    "mcp.response_bytes" => format!("`{}`", defaults.mcp.response_bytes),
-                    "storage.objects" => "`local`".to_owned(),
-                    "storage.s3.region" | "storage.s3.bucket" => "required with `s3`".to_owned(),
-                    "storage.s3.endpoint"
-                    | "storage.s3.access_key_id"
-                    | "storage.s3.secret_access_key_file"
-                    | "storage.s3.ca_file" => "none".to_owned(),
-                    "storage.s3.prefix" => "empty".to_owned(),
-                    "storage.s3.path_style" => format!("`{}`", s3_least().path_style),
-                    "storage.s3.allow_http" => format!("`{}`", s3_least().allow_http),
-                    "storage.s3.allow_versioning" => {
-                        format!("`{}`", s3_least().allow_versioning)
-                    }
-                    "storage.s3.timeout" => format!("`{}`", s3_least().timeout.as_secs()),
-                    "storage.parquet.pack_interval" => {
-                        format!("`{}`", parquet_least().pack_interval.as_secs())
-                    }
-                    "storage.parquet.pack_limit" => format!("`{}`", parquet_least().pack_limit),
-                    "storage.parquet.reader_grace" => {
-                        format!("`{}`", parquet_least().reader_grace.as_secs())
-                    }
-                    "export.s3.region" => "required with `export.s3`".to_owned(),
-                    "export.s3.endpoint"
-                    | "export.s3.access_key_id"
-                    | "export.s3.secret_access_key_file"
-                    | "export.s3.ca_file" => "none".to_owned(),
-                    "export.s3.path_style" => format!("`{}`", s3_least().path_style),
-                    "export.s3.allow_http" => format!("`{}`", s3_least().allow_http),
-                    "export.s3.timeout" => format!("`{}`", S3_TIMEOUT.as_secs()),
-                    "catalog.backend" => "`local`".to_owned(),
-                    "catalog.postgres.hosts"
-                    | "catalog.postgres.dbname"
-                    | "catalog.postgres.user" => "required with `postgres`".to_owned(),
-                    "catalog.postgres.ca_file"
-                    | "catalog.postgres.password_file"
-                    | "catalog.postgres.client_cert_file"
-                    | "catalog.postgres.client_key_file" => "none".to_owned(),
-                    "catalog.postgres.port" => format!("`{}`", pg.port),
-                    "catalog.postgres.pool" => format!("`{}`", pg.pool),
-                    "catalog.postgres.connect_timeout" => {
-                        format!("`{}`", pg.connect_timeout.as_secs())
-                    }
-                    "catalog.postgres.statement_timeout" => {
-                        format!("`{}`", pg.statement_timeout.as_secs())
-                    }
-                    "catalog.postgres.lock_timeout" => {
-                        format!("`{}`", pg.lock_timeout.as_secs())
-                    }
-                    "supported_critical" => {
-                        assert!(
-                            defaults.supported_critical.is_empty(),
-                            "the page says none, which holds only while the default is empty"
-                        );
-                        "none".to_owned()
-                    }
-                    other => panic!("a key this test does not know: {other}"),
-                };
+                let default = default_text(&key)
+                    .unwrap_or_else(|| panic!("a key this test does not know: {key}"));
                 let row = row(&text, &key);
                 let last = row
                     .trim_end_matches('|')
@@ -3159,6 +3069,105 @@ key = "/etc/vcon-server/key.pem"
                     "{key}: `{last}` is not {default}"
                 );
             }
+        }
+
+        /// The default of `key` as configuration.md states it, from the code
+        /// (LEAST and each table's least settings), or `None` for a key this
+        /// rule does not know. The page test and contract/config.json both
+        /// read it.
+        pub(super) fn default_text(key: &str) -> Option<String> {
+            let defaults = parse(LEAST).expect("least");
+            let pg = catalog::postgres_least();
+            Some(match key {
+                "listen" | "data_dir" | "master_key" | "tls.cert" | "tls.key" => {
+                    "required".to_owned()
+                }
+                "operator.listen" => "none: `listen` serves both".to_owned(),
+                "operator.tls.cert" => "`tls.cert`".to_owned(),
+                "operator.tls.key" => "`tls.key`".to_owned(),
+                "public_origin" | "operator.public_origin" => {
+                    assert_eq!(defaults.public_origin, None, "the page says none");
+                    "none: the listener serves no session".to_owned()
+                }
+                "retention_default" => format!("`{}`", defaults.retention_default),
+                "purge_interval" => format!("`{}`", defaults.purge_interval.as_secs()),
+                "rotation_warn" => format!("`{}`", defaults.rotation_warn.as_secs()),
+                "limits.body" => format!("`{}`", defaults.body_limit),
+                "limits.inflated" => format!("`{}`", defaults.inflated_limit),
+                "limits.connections" => format!("`{}`", defaults.connection.max),
+                "limits.csp_reports" => format!("`{}`", defaults.reports.per_minute),
+                "limits.csp_reports_per_address" => {
+                    format!("`{}`", defaults.reports.per_address)
+                }
+                "limits.timeouts.read" => format!("`{}`", defaults.read_timeout.as_secs()),
+                "limits.timeouts.handshake" => {
+                    format!("`{}`", defaults.connection.handshake.as_secs())
+                }
+                "limits.timeouts.first_head" => {
+                    format!("`{}`", defaults.connection.first_head.as_secs())
+                }
+                "limits.timeouts.head" => format!("`{}`", defaults.connection.head.as_secs()),
+                "limits.timeouts.idle" => format!("`{}`", defaults.connection.idle.as_secs()),
+                "keys.no_expiry" => format!("`{}`", defaults.keys_no_expiry),
+                "mcp.calls_per_second" => format!("`{}`", defaults.mcp.calls_per_second),
+                "mcp.concurrent" => format!("`{}`", defaults.mcp.concurrent),
+                "mcp.response_bytes" => format!("`{}`", defaults.mcp.response_bytes),
+                "storage.objects" => "`local`".to_owned(),
+                "storage.s3.region" | "storage.s3.bucket" => "required with `s3`".to_owned(),
+                "storage.s3.endpoint"
+                | "storage.s3.access_key_id"
+                | "storage.s3.secret_access_key_file"
+                | "storage.s3.ca_file" => "none".to_owned(),
+                "storage.s3.prefix" => "empty".to_owned(),
+                "storage.s3.path_style" => format!("`{}`", s3_least().path_style),
+                "storage.s3.allow_http" => format!("`{}`", s3_least().allow_http),
+                "storage.s3.allow_versioning" => {
+                    format!("`{}`", s3_least().allow_versioning)
+                }
+                "storage.s3.timeout" => format!("`{}`", s3_least().timeout.as_secs()),
+                "storage.parquet.pack_interval" => {
+                    format!("`{}`", parquet_least().pack_interval.as_secs())
+                }
+                "storage.parquet.pack_limit" => format!("`{}`", parquet_least().pack_limit),
+                "storage.parquet.reader_grace" => {
+                    format!("`{}`", parquet_least().reader_grace.as_secs())
+                }
+                "export.s3.region" => "required with `export.s3`".to_owned(),
+                "export.s3.endpoint"
+                | "export.s3.access_key_id"
+                | "export.s3.secret_access_key_file"
+                | "export.s3.ca_file" => "none".to_owned(),
+                "export.s3.path_style" => format!("`{}`", s3_least().path_style),
+                "export.s3.allow_http" => format!("`{}`", s3_least().allow_http),
+                "export.s3.timeout" => format!("`{}`", S3_TIMEOUT.as_secs()),
+                "catalog.backend" => "`local`".to_owned(),
+                "catalog.postgres.hosts" | "catalog.postgres.dbname" | "catalog.postgres.user" => {
+                    "required with `postgres`".to_owned()
+                }
+                "catalog.postgres.ca_file"
+                | "catalog.postgres.password_file"
+                | "catalog.postgres.client_cert_file"
+                | "catalog.postgres.client_key_file" => "none".to_owned(),
+                "catalog.postgres.port" => format!("`{}`", pg.port),
+                "catalog.postgres.pool" => format!("`{}`", pg.pool),
+                "catalog.postgres.connect_timeout" => {
+                    format!("`{}`", pg.connect_timeout.as_secs())
+                }
+                "catalog.postgres.statement_timeout" => {
+                    format!("`{}`", pg.statement_timeout.as_secs())
+                }
+                "catalog.postgres.lock_timeout" => {
+                    format!("`{}`", pg.lock_timeout.as_secs())
+                }
+                "supported_critical" => {
+                    assert!(
+                        defaults.supported_critical.is_empty(),
+                        "the page says none, which holds only while the default is empty"
+                    );
+                    "none".to_owned()
+                }
+                _ => return None,
+            })
         }
 
         /// The limits no key sets are stated as the code fixes them.
@@ -3777,5 +3786,618 @@ key = "/etc/vcon-server/key.pem"
     fn a_missing_file_is_named() {
         let error = load(Path::new("/nonexistent/vcon-server.toml")).expect_err("missing");
         assert!(error.0.contains("/nonexistent/vcon-server.toml"), "{error}");
+    }
+
+    /// The configuration file's part of the contract
+    /// (website/content/docs/stability.md): contract/config.json holds every
+    /// key FULL sets, its type, whether a file must set it and its default
+    /// as configuration.md states it. `scripts/contract_diff.py --kind
+    /// config` compares two of these files.
+    ///
+    /// The snapshot is written, never edited by hand: when a key changes,
+    /// [`REGENERATE`] writes it again, and the change is reviewed in the
+    /// diff.
+    mod contract {
+        use super::*;
+        use std::collections::BTreeMap;
+
+        /// The variable that makes [`the_snapshot_is_what_the_code_reads`]
+        /// write the snapshot, the one tests/cli_contract.rs reads.
+        const WRITE: &str = "VCON_SERVER_WRITE_CONTRACT";
+
+        /// The one command that writes contract/config.json again.
+        const REGENERATE: &str =
+            "VCON_SERVER_WRITE_CONTRACT=1 cargo test -p vcon-server --lib config::tests::contract";
+
+        /// The snapshot, from the repository root.
+        const SNAPSHOT: &str = "contract/config.json";
+
+        /// A key every file sets.
+        const ALWAYS: &str = "always";
+        /// A key a file sets when it has the key's table.
+        const WITH_TABLE: &str = "with its table";
+        /// A key a file may leave out.
+        const NO: &str = "no";
+
+        fn root() -> std::path::PathBuf {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+        }
+
+        /// The type of a TOML value as the snapshot names it: `string`,
+        /// `integer`, `float`, `boolean`, `datetime`, `table`, and `array of
+        /// <type>` for an array whose items share one type (else `array`).
+        fn type_name(value: &toml::Value) -> String {
+            match value {
+                toml::Value::String(_) => "string".to_owned(),
+                toml::Value::Integer(_) => "integer".to_owned(),
+                toml::Value::Float(_) => "float".to_owned(),
+                toml::Value::Boolean(_) => "boolean".to_owned(),
+                toml::Value::Datetime(_) => "datetime".to_owned(),
+                toml::Value::Table(_) => "table".to_owned(),
+                toml::Value::Array(items) => {
+                    let mut kinds = items.iter().map(type_name);
+                    match kinds.next() {
+                        Some(first) if kinds.all(|k| k == first) => format!("array of {first}"),
+                        _ => "array".to_owned(),
+                    }
+                }
+            }
+        }
+
+        /// `table` without the dotted `key`; a table left empty stays.
+        fn without(table: &toml::Table, key: &str) -> toml::Table {
+            let mut out = table.clone();
+            let (head, rest) = key
+                .split_once('.')
+                .map_or((key, None), |(h, r)| (h, Some(r)));
+            match rest {
+                None => {
+                    out.remove(head);
+                }
+                Some(rest) => {
+                    if let Some(toml::Value::Table(inner)) = out.get_mut(head) {
+                        *inner = without(inner, rest);
+                    }
+                }
+            }
+            out
+        }
+
+        /// Whether `table` sets the dotted `key`.
+        fn has(table: &toml::Table, key: &str) -> bool {
+            lookup(table, key).is_some()
+        }
+
+        /// [`ALWAYS`] when `least` sets `key`; [`WITH_TABLE`] when `full`
+        /// without it does not `load` because that field is missing; else
+        /// [`NO`]. A key whose removal breaks a rule between keys (a
+        /// backend and its table, the two halves of a credential) is not
+        /// required: a file that sets neither loads.
+        fn required(
+            key: &str,
+            full: &toml::Table,
+            least: &toml::Table,
+            load: impl Fn(&str) -> Result<(), String>,
+        ) -> &'static str {
+            if has(least, key) {
+                return ALWAYS;
+            }
+            let text = toml::to_string(&without(full, key)).expect("a table writes as TOML");
+            let leaf = key.rsplit('.').next().unwrap_or(key);
+            match load(&text) {
+                Err(e) if e.contains(&format!("missing field `{leaf}`")) => WITH_TABLE,
+                _ => NO,
+            }
+        }
+
+        /// One key as the snapshot holds it.
+        struct Entry {
+            key: String,
+            kind: String,
+            required: &'static str,
+            default: Option<String>,
+        }
+
+        /// contract/config.json's text for `entries`: every object's
+        /// members in name order, so one build has one text. A required key
+        /// has no default.
+        fn render(entries: &[Entry]) -> String {
+            let keys: BTreeMap<&str, serde_json::Value> = entries
+                .iter()
+                .map(|e| {
+                    let default = if e.required == NO {
+                        e.default.clone()
+                    } else {
+                        None
+                    };
+                    let entry: BTreeMap<&str, serde_json::Value> = [
+                        ("default", serde_json::json!(default)),
+                        ("required", serde_json::json!(e.required)),
+                        ("type", serde_json::json!(e.kind)),
+                    ]
+                    .into_iter()
+                    .collect();
+                    (e.key.as_str(), serde_json::json!(entry))
+                })
+                .collect();
+            let mut text =
+                serde_json::to_string_pretty(&serde_json::json!({ "keys": keys })).expect("JSON");
+            text.push('\n');
+            text
+        }
+
+        /// The message of a snapshot that is not what the code reads: the
+        /// first line that differs, and the command that writes it again.
+        fn stale(file: &str, now: &str) -> String {
+            snapshot::stale(
+                SNAPSHOT,
+                "the configuration code reads",
+                REGENERATE,
+                file,
+                now,
+            )
+        }
+
+        /// The stale-snapshot message tests/cli_contract.rs gives too.
+        mod snapshot {
+            include!("../tests/support/contract_snapshot.rs");
+        }
+
+        /// Every key of `table`, dotted, in name order.
+        fn dotted(table: &toml::Table) -> Vec<String> {
+            let mut all = Vec::new();
+            super::site_page::keys(table, "", &mut all);
+            all.sort();
+            all
+        }
+
+        fn loads(text: &str) -> Result<(), String> {
+            parse(text).map(|_| ()).map_err(|e| e.0)
+        }
+
+        /// The entries of this build, from FULL, LEAST and the page's
+        /// default rule.
+        fn entries_now() -> Vec<Entry> {
+            let full: toml::Table = FULL.parse().expect("FULL is TOML");
+            let least: toml::Table = LEAST.parse().expect("LEAST is TOML");
+            dotted(&full)
+                .into_iter()
+                .map(|key| {
+                    let value = lookup(&full, &key).expect("a key of FULL");
+                    let required = required(&key, &full, &least, loads);
+                    let default = super::site_page::default_text(&key)
+                        .unwrap_or_else(|| panic!("no default rule for {key}"));
+                    Entry {
+                        kind: type_name(value),
+                        required,
+                        default: Some(default),
+                        key,
+                    }
+                })
+                .collect()
+        }
+
+        /// The value of the dotted `key` in `table`.
+        fn lookup<'a>(table: &'a toml::Table, key: &str) -> Option<&'a toml::Value> {
+            let (head, rest) = key
+                .split_once('.')
+                .map_or((key, None), |(h, r)| (h, Some(r)));
+            match (table.get(head)?, rest) {
+                (value, None) => Some(value),
+                (toml::Value::Table(inner), Some(rest)) => lookup(inner, rest),
+                _ => None,
+            }
+        }
+
+        fn snapshot_now() -> String {
+            render(&entries_now())
+        }
+
+        fn snapshot_json() -> serde_json::Value {
+            serde_json::from_str(&snapshot_now()).expect("the rendered snapshot is JSON")
+        }
+
+        fn table(text: &str) -> toml::Table {
+            text.parse().expect("TOML")
+        }
+
+        // Success.
+
+        #[test]
+        fn the_snapshot_is_what_the_code_reads() {
+            let now = snapshot_now();
+            let path = root().join(SNAPSHOT);
+            if std::env::var_os(WRITE).is_some() {
+                std::fs::create_dir_all(path.parent().expect("a parent")).expect("contract/");
+                std::fs::write(&path, &now).expect("the snapshot is written");
+                return;
+            }
+            let file = std::fs::read_to_string(&path).unwrap_or_default();
+            assert!(file == now, "{}", stale(&file, &now));
+        }
+
+        #[test]
+        fn every_key_of_the_full_file_is_in_the_snapshot() {
+            let d = snapshot_json();
+            let keys = d["keys"].as_object().expect("a keys object");
+            assert_eq!(keys.len(), 64, "FULL sets 64 keys: {keys:?}");
+            assert!(
+                keys.contains_key("catalog.postgres.lock_timeout"),
+                "a nested key is dotted"
+            );
+        }
+
+        #[test]
+        fn the_keys_of_the_least_file_are_always_required() {
+            let d = snapshot_json();
+            for key in ["listen", "data_dir", "master_key", "tls.cert", "tls.key"] {
+                assert_eq!(d["keys"][key]["required"], ALWAYS, "{key} is in LEAST");
+            }
+        }
+
+        #[test]
+        fn exactly_these_keys_are_required() {
+            let d = snapshot_json();
+            let found: BTreeMap<String, String> = d["keys"]
+                .as_object()
+                .expect("a keys object")
+                .iter()
+                .filter(|(_, v)| v["required"] != NO)
+                .map(|(k, v)| (k.clone(), v["required"].as_str().expect("text").to_owned()))
+                .collect();
+            let expected: BTreeMap<String, String> = [
+                ("catalog.postgres.dbname", WITH_TABLE),
+                ("catalog.postgres.hosts", WITH_TABLE),
+                ("catalog.postgres.user", WITH_TABLE),
+                ("data_dir", ALWAYS),
+                ("export.s3.region", WITH_TABLE),
+                ("listen", ALWAYS),
+                ("master_key", ALWAYS),
+                ("operator.listen", WITH_TABLE),
+                ("operator.tls.cert", WITH_TABLE),
+                ("operator.tls.key", WITH_TABLE),
+                ("storage.s3.bucket", WITH_TABLE),
+                ("storage.s3.region", WITH_TABLE),
+                ("tls.cert", ALWAYS),
+                ("tls.key", ALWAYS),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .collect();
+            assert_eq!(
+                found, expected,
+                "the keys a file must set, read by loading FULL without each"
+            );
+        }
+
+        #[test]
+        fn a_default_is_the_one_the_page_states() {
+            let d = snapshot_json();
+            assert_eq!(
+                d["keys"]["purge_interval"]["default"], "`3600`",
+                "hourly by default"
+            );
+            assert_eq!(
+                d["keys"]["storage.objects"]["default"], "`local`",
+                "local objects by default"
+            );
+            assert_eq!(
+                d["keys"]["storage.s3.prefix"]["default"], "empty",
+                "no prefix by default"
+            );
+        }
+
+        #[test]
+        fn types_are_read_from_the_full_file() {
+            let d = snapshot_json();
+            for (key, kind) in [
+                ("listen", "string"),
+                ("purge_interval", "integer"),
+                ("keys.no_expiry", "boolean"),
+                ("supported_critical", "array of string"),
+                ("catalog.postgres.hosts", "array of string"),
+            ] {
+                assert_eq!(d["keys"][key]["type"], kind, "{key}");
+            }
+        }
+
+        #[test]
+        fn rendering_twice_gives_the_same_text() {
+            assert_eq!(snapshot_now(), snapshot_now(), "one build has one snapshot");
+        }
+
+        #[test]
+        fn the_rendered_snapshot_is_the_shape_contract_diff_reads() {
+            let d = snapshot_json();
+            let keys = d["keys"].as_object().expect("a keys object");
+            for (key, entry) in keys {
+                let members: Vec<&String> = entry.as_object().expect("an object").keys().collect();
+                assert_eq!(
+                    members,
+                    ["default", "required", "type"],
+                    "{key}: members in name order"
+                );
+                assert!(entry["type"].is_string(), "{key}: a type");
+                assert!(
+                    [ALWAYS, WITH_TABLE, NO].contains(&entry["required"].as_str().unwrap_or("")),
+                    "{key}: one of the three required states"
+                );
+                assert!(
+                    entry["default"].is_string() || entry["default"].is_null(),
+                    "{key}: a default is text or null"
+                );
+            }
+            assert!(
+                snapshot_now().ends_with("}\n"),
+                "the file ends with a newline"
+            );
+        }
+
+        #[test]
+        fn a_value_type_names_each_toml_kind() {
+            let t =
+                table("s = \"x\"\ni = 1\nf = 1.5\nb = true\nd = 1979-05-27\nt = {}\na = [1, 2]\n");
+            for (key, kind) in [
+                ("s", "string"),
+                ("i", "integer"),
+                ("f", "float"),
+                ("b", "boolean"),
+                ("d", "datetime"),
+                ("t", "table"),
+                ("a", "array of integer"),
+            ] {
+                assert_eq!(type_name(&t[key]), kind, "{key}");
+            }
+        }
+
+        #[test]
+        fn a_key_is_removed_from_its_nested_table() {
+            let t = table("[a.b]\nc = 1\nd = 2\n");
+            let left = without(&t, "a.b.c");
+            assert!(!has(&left, "a.b.c"), "the key is gone");
+            assert!(has(&left, "a.b.d"), "its neighbor stays");
+        }
+
+        // Failure.
+
+        #[test]
+        fn a_stale_snapshot_names_the_command_that_writes_it() {
+            let message = stale("{\n  \"keys\": {}\n}\n", "{\n  \"keys\": {\"a\": 1}\n}\n");
+            assert!(message.contains(REGENERATE), "names the command: {message}");
+            assert!(message.contains("line 2"), "names the line: {message}");
+            assert!(message.contains(SNAPSHOT), "names the file: {message}");
+        }
+
+        #[test]
+        fn a_missing_snapshot_names_the_command_that_writes_it() {
+            let message = stale("", "{\n}\n");
+            assert!(
+                message.contains("line 1"),
+                "the first line differs: {message}"
+            );
+            assert!(
+                message.contains("(none)"),
+                "the file has no line: {message}"
+            );
+            assert!(message.contains(REGENERATE), "names the command: {message}");
+        }
+
+        #[test]
+        fn a_snapshot_with_a_line_too_many_is_stale_at_that_line() {
+            let message = stale("{\n}\nx\n", "{\n}\n");
+            assert!(
+                message.contains("line 3"),
+                "the third line is extra: {message}"
+            );
+            assert!(
+                message.contains("`x` in the file"),
+                "quotes the extra line: {message}"
+            );
+        }
+
+        #[test]
+        fn the_stability_page_names_the_command_and_the_message() {
+            let page = std::fs::read_to_string(root().join("website/content/docs/stability.md"))
+                .expect("stability.md");
+            assert!(page.contains(REGENERATE), "the page shows `{REGENERATE}`");
+            let message = stale("", "x");
+            let head = message.split(';').next().expect("a first part");
+            assert!(page.contains(head), "the page names the message `{head}`");
+        }
+
+        #[test]
+        fn a_key_no_default_rule_knows_has_none() {
+            assert_eq!(
+                super::site_page::default_text("no_such_key"),
+                None,
+                "a new key needs its row in the rule, and the snapshot test says so"
+            );
+        }
+
+        #[test]
+        fn a_key_whose_removal_is_a_missing_field_is_required_with_its_table() {
+            let full = table("[t]\nneeded = 1\nfree = 2\n");
+            let least = table("");
+            let load = |text: &str| {
+                if text.contains("needed") {
+                    Ok(())
+                } else {
+                    Err("missing field `needed`".to_owned())
+                }
+            };
+            assert_eq!(
+                required("t.needed", &full, &least, load),
+                WITH_TABLE,
+                "removing it fails"
+            );
+            assert_eq!(
+                required("t.free", &full, &least, load),
+                NO,
+                "removing it loads"
+            );
+        }
+
+        #[test]
+        fn a_key_whose_removal_breaks_another_rule_is_not_required() {
+            let full = table("[t]\npair_a = 1\npair_b = 2\n");
+            let refused = |_: &str| Err("`t.pair_a` needs `t.pair_b`".to_owned());
+            assert_eq!(
+                required("t.pair_b", &full, &table(""), refused),
+                NO,
+                "a rule between keys"
+            );
+            let other = |_: &str| Err("missing field `pair_c`".to_owned());
+            assert_eq!(
+                required("t.pair_b", &full, &table(""), other),
+                NO,
+                "another key is missing"
+            );
+        }
+
+        #[test]
+        fn removing_a_credential_or_the_backend_from_the_full_file_is_not_required() {
+            let d = snapshot_json();
+            for key in [
+                "catalog.backend",
+                "storage.objects",
+                "storage.s3.access_key_id",
+                "catalog.postgres.client_key_file",
+            ] {
+                assert_eq!(
+                    d["keys"][key]["required"], NO,
+                    "{key}: a rule between keys, not a missing field"
+                );
+            }
+        }
+
+        #[test]
+        fn a_key_of_the_least_file_is_required_always_even_if_it_loads_without() {
+            let full = table("a = 1\nb = 2\n");
+            let least = table("a = 1\n");
+            assert_eq!(
+                required("a", &full, &least, |_| Ok(())),
+                ALWAYS,
+                "LEAST decides"
+            );
+            let missing = |_: &str| Err("missing field `b`".to_owned());
+            assert_eq!(
+                required("b", &full, &least, missing),
+                WITH_TABLE,
+                "FULL decides"
+            );
+        }
+
+        #[test]
+        fn a_required_key_has_no_default_in_the_snapshot() {
+            let text = render(&[Entry {
+                key: "listen".to_owned(),
+                kind: "string".to_owned(),
+                required: ALWAYS,
+                default: Some("required".to_owned()),
+            }]);
+            let d: serde_json::Value = serde_json::from_str(&text).expect("JSON");
+            assert!(d["keys"]["listen"]["default"].is_null(), "required: {text}");
+        }
+
+        #[test]
+        fn a_missing_key_is_not_had() {
+            let t = table("[a]\nb = 1\n");
+            assert!(!has(&t, "a.c"), "no such key");
+            assert!(!has(&t, "b"), "no such top-level key");
+            assert!(!has(&t, "a.b.c"), "a value is not a table");
+        }
+
+        // Edge.
+
+        #[test]
+        fn operator_listen_is_required_with_its_table_though_the_page_says_none() {
+            let d = snapshot_json();
+            assert_eq!(
+                d["keys"]["operator.listen"]["required"], WITH_TABLE,
+                "RawOperator needs it"
+            );
+            assert!(
+                d["keys"]["operator.listen"]["default"].is_null(),
+                "so it has no default"
+            );
+        }
+
+        #[test]
+        fn keys_are_in_name_order() {
+            let text = snapshot_now();
+            let d: serde_json::Value = serde_json::from_str(&text).expect("JSON");
+            let keys: Vec<&String> = d["keys"].as_object().expect("keys").keys().collect();
+            let mut sorted = keys.clone();
+            sorted.sort();
+            assert_eq!(keys, sorted, "name order");
+            let at = |k: &str| text.find(&format!("\"{k}\"")).expect("in the text");
+            assert!(
+                at("catalog.backend") < at("listen"),
+                "the text is in name order too"
+            );
+        }
+
+        #[test]
+        fn removing_the_only_key_of_a_table_leaves_the_table() {
+            let t = table("[a]\nb = 1\n");
+            let left = without(&t, "a.b");
+            assert!(
+                matches!(left.get("a"), Some(toml::Value::Table(inner)) if inner.is_empty()),
+                "{left:?}"
+            );
+        }
+
+        #[test]
+        fn removing_a_key_that_is_not_there_changes_nothing() {
+            let t = table("a = 1\n");
+            assert_eq!(without(&t, "b.c"), t, "nothing to remove");
+            assert_eq!(without(&t, "a.b"), t, "a value has no keys");
+        }
+
+        #[test]
+        fn an_array_of_mixed_or_no_items_is_an_array() {
+            let t = table("m = [1, \"x\"]\ne = []\nn = [[1], [2]]\n");
+            assert_eq!(type_name(&t["m"]), "array", "mixed items");
+            assert_eq!(type_name(&t["e"]), "array", "no items");
+            assert_eq!(
+                type_name(&t["n"]),
+                "array of array of integer",
+                "nested arrays"
+            );
+        }
+
+        #[test]
+        fn a_key_with_a_default_of_none_keeps_that_text() {
+            let d = snapshot_json();
+            assert_eq!(
+                d["keys"]["storage.s3.endpoint"]["default"], "none",
+                "no endpoint: the AWS one"
+            );
+            assert_eq!(
+                d["keys"]["operator.tls.cert"]["required"], WITH_TABLE,
+                "with [operator.tls]"
+            );
+        }
+
+        #[test]
+        fn a_default_from_a_constant_is_in_backticks() {
+            let d = snapshot_json();
+            assert_eq!(d["keys"]["export.s3.timeout"]["required"], NO, "optional");
+            assert!(
+                d["keys"]["export.s3.timeout"]["default"]
+                    .as_str()
+                    .is_some_and(|s| s.starts_with('`')),
+                "a value in backticks: {}",
+                d["keys"]["export.s3.timeout"]["default"]
+            );
+        }
+
+        #[test]
+        fn the_full_file_without_an_optional_key_still_loads() {
+            let full = table(FULL);
+            let text = toml::to_string(&without(&full, "limits.timeouts.idle")).expect("TOML");
+            assert_eq!(loads(&text), Ok(()), "an optional key may be left out");
+            assert!(!text.contains("idle"), "the key is gone: {text}");
+        }
     }
 }

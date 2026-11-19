@@ -1,6 +1,6 @@
 +++
 title = "Stability"
-description = "What a release keeps compatible with the release before it: the surfaces of the contract, which changes break a client and which do not, and how to compare the HTTP API and the command line of two releases."
+description = "What a release keeps compatible with the release before it: the surfaces of the contract, which changes break a client and which do not, and how to compare the HTTP API, the command line and the configuration file of two releases."
 weight = 59
 
 [extra]
@@ -25,10 +25,10 @@ breaks a surface of the contract is a new major version.
 | Problem types | the type of each [problem document](@/docs/http-api.md), one page each under `/problems/` | `contract_diff.py --kind problems` |
 | Command line | every command, and each flag and argument it takes: whether it is required, whether it takes a value, its default and its possible values, in [contract/cli.json](https://github.com/NormB/vcon-server/blob/main/contract/cli.json) | `contract_diff.py --kind cli` |
 | Exit codes | 0, 1 and 2, with the meaning [the command line page](@/docs/command-line.md#output-and-exit-codes) gives each, also in contract/cli.json | `contract_diff.py --kind cli` |
+| Configuration file | every key of the [configuration file](@/docs/configuration.md), its type, whether a file must set it and its default, in [contract/config.json](https://github.com/NormB/vcon-server/blob/main/contract/config.json) | `contract_diff.py --kind config` |
 
-The configuration file, the MCP tools, the environment
-variables the server reads, the on-disk formats and the audit records have
-no check of this kind yet. [On-disk formats](@/docs/on-disk-format.md)
+The MCP tools, the environment variables the server reads, the on-disk
+formats and the audit records have no check of this kind yet. [On-disk formats](@/docs/on-disk-format.md)
 states the rule each new build keeps for the data of an older one, and CI
 opens the data of each release since 0.4.0 with every change.
 
@@ -122,6 +122,28 @@ A new command, a new optional flag or argument, a new possible value and a
 default stated where there was none are additive. An argument is its place
 on the command line: the first, the second.
 
+### The configuration file
+
+Every table of the file refuses a key it does not know, so a file written
+for the older release holds only that release's keys. A change is breaking
+when such a file stops loading or acts otherwise:
+
+- a key is removed;
+- the type of a key changes, as `integer` to `string`;
+- a key becomes required, or a new required key appears at the top of the
+  file or in a table an older file may have;
+- a key a file had to set only with its table, such as `storage.s3.region`
+  under `[storage.s3]`, must now be set in every file;
+- the default of a key a file may leave out changes or is removed.
+
+A new optional key, a required key in a new table, a key that is no longer
+required and a default stated where there was none are additive.
+
+A key is required when the server refuses the file without it: always, as
+`listen`, or with its table, as `storage.s3.region`. A key whose removal
+breaks a rule between keys, such as one half of a credential pair, is not
+required, since a file that sets neither half loads.
+
 ### What the script does not compare
 
 `info` (whose `version` changes with each release), descriptions, summaries
@@ -132,6 +154,12 @@ On the command line, the text of `--help` and the names it gives arguments
 and values. contract/cli.json is read from `--help`, so a flag counts as one
 that may be given more than once only when `--help` shows `...` after its
 value.
+
+In the configuration file, the range of a value, the values a text key
+takes (such as `local` and `s3` for `storage.objects`) and the rules
+between keys: contract/config.json holds each key's TOML type only. The
+[configuration page](@/docs/configuration.md) states those, and the server
+names the key it refuses.
 
 ## Before you compare two releases
 
@@ -159,10 +187,12 @@ changes of each, then its count:
 openapi: 0 change(s), 0 breaking
 problems: 0 change(s), 0 breaking
 cli: no baseline at v0.4.10
+config: no baseline at v0.4.10
 ```
 
 A surface the tag does not hold prints `no baseline at <tag>` and passes.
-contract/cli.json is first in the release after 0.4.10.
+contract/cli.json and contract/config.json are first in the release after
+0.4.10.
 
 ## Compare two releases
 
@@ -219,12 +249,47 @@ VCON_SERVER_WRITE_CONTRACT=1 cargo test -p vcon-server --test cli_contract
 git diff contract/cli.json
 ```
 
+## Check a configuration file against a new release
+
+Each release from the one after 0.4.10 holds contract/config.json. Set
+`OLD` to the release a file was written for and `NEW` to the release to
+upgrade to, write each one's file, then compare the files:
+
+```sh
+git show "$OLD:contract/config.json" > old-config.json
+git show "$NEW:contract/config.json" > new-config.json
+python3 -I scripts/contract_diff.py --kind config old-config.json new-config.json
+```
+
+Each line names a key, dotted with its table:
+
+```text
+breaking limits.body: default changed from '`16777216`' to '`8388608`'
+additive storage.s3.sse: optional key added
+contract_diff: 2 change(s), 1 breaking
+```
+
+A `breaking` line touches a file only through the key it names: a removed
+or retyped key breaks a file that sets it, and a changed default changes a
+file that leaves the key out. Look for each named key in the file, then
+set it, remove it or change its value as the
+[configuration page](@/docs/configuration.md) of the new release says.
+
+contract/config.json is written from the configuration code's tests, never
+by hand. After a change to a key, its type or its default, write it again
+from the top of the clone and commit it with the change:
+
+```sh
+VCON_SERVER_WRITE_CONTRACT=1 cargo test -p vcon-server --lib config::tests::contract
+git diff contract/config.json
+```
+
 ## Read the result
 
 Each line is one change: `breaking` or `additive`, where it is (the
 method and path, then the parameter, the status and media type, and a
-`$` path into the schema; or the command and its flag, argument or exit
-code), and what changed. The script exits 0 when no change is breaking,
+`$` path into the schema; the command and its flag, argument or exit
+code; or the dotted key of the configuration file), and what changed. The script exits 0 when no change is breaking,
 1 when one is, and 2 when it could not decide.
 
 ## When the check fails
@@ -249,5 +314,13 @@ code), and what changed. The script exits 0 when no change is breaking,
   `cli_contract` (run by the commit hook and CI) found a command line that
   differs from the snapshot, and names the first line that differs. Write
   the snapshot again with the command above, read the diff, and commit it.
-- **`usage:`.** The arguments are not one of the four forms the usage
+- **``a configuration snapshot has no `keys` object; nothing was decided``.**
+  One of the files is not a contract/config.json: check the tag given to
+  `git show`. A release up to 0.4.10 has no such file.
+- **`contract/config.json is not what the configuration code reads`.** The
+  lib test `config::tests::contract` (run by the commit hook and CI) found
+  a key, a type or a default that differs from the snapshot, and names the
+  first line that differs. Write the snapshot again with the command
+  above, read the diff, and commit it.
+- **`usage:`.** The arguments are not one of the five forms the usage
   line shows.

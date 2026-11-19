@@ -1,0 +1,324 @@
+{
+  "keys": {
+    "catalog.backend": {
+      "default": "`local`",
+      "required": "no",
+      "type": "string"
+    },
+    "catalog.postgres.ca_file": {
+      "default": "none",
+      "required": "no",
+      "type": "string"
+    },
+    "catalog.postgres.client_cert_file": {
+      "default": "none",
+      "required": "no",
+      "type": "string"
+    },
+    "catalog.postgres.client_key_file": {
+      "default": "none",
+      "required": "no",
+      "type": "string"
+    },
+    "catalog.postgres.connect_timeout": {
+      "default": "`5`",
+      "required": "no",
+      "type": "integer"
+    },
+    "catalog.postgres.dbname": {
+      "default": null,
+      "required": "with its table",
+      "type": "string"
+    },
+    "catalog.postgres.hosts": {
+      "default": null,
+      "required": "with its table",
+      "type": "array of string"
+    },
+    "catalog.postgres.lock_timeout": {
+      "default": "`10`",
+      "required": "no",
+      "type": "integer"
+    },
+    "catalog.postgres.password_file": {
+      "default": "none",
+      "required": "no",
+      "type": "string"
+    },
+    "catalog.postgres.pool": {
+      "default": "`16`",
+      "required": "no",
+      "type": "integer"
+    },
+    "catalog.postgres.port": {
+      "default": "`5432`",
+      "required": "no",
+      "type": "integer"
+    },
+    "catalog.postgres.statement_timeout": {
+      "default": "`30`",
+      "required": "no",
+      "type": "integer"
+    },
+    "catalog.postgres.user": {
+      "default": null,
+      "required": "with its table",
+      "type": "string"
+    },
+    "data_dir": {
+      "default": null,
+      "required": "always",
+      "type": "string"
+    },
+    "export.s3.access_key_id": {
+      "default": "none",
+      "required": "no",
+      "type": "string"
+    },
+    "export.s3.allow_http": {
+      "default": "`false`",
+      "required": "no",
+      "type": "boolean"
+    },
+    "export.s3.ca_file": {
+      "default": "none",
+      "required": "no",
+      "type": "string"
+    },
+    "export.s3.endpoint": {
+      "default": "none",
+      "required": "no",
+      "type": "string"
+    },
+    "export.s3.path_style": {
+      "default": "`false`",
+      "required": "no",
+      "type": "boolean"
+    },
+    "export.s3.region": {
+      "default": null,
+      "required": "with its table",
+      "type": "string"
+    },
+    "export.s3.secret_access_key_file": {
+      "default": "none",
+      "required": "no",
+      "type": "string"
+    },
+    "export.s3.timeout": {
+      "default": "`30`",
+      "required": "no",
+      "type": "integer"
+    },
+    "keys.no_expiry": {
+      "default": "`true`",
+      "required": "no",
+      "type": "boolean"
+    },
+    "limits.body": {
+      "default": "`16777216`",
+      "required": "no",
+      "type": "integer"
+    },
+    "limits.connections": {
+      "default": "`512`",
+      "required": "no",
+      "type": "integer"
+    },
+    "limits.csp_reports": {
+      "default": "`120`",
+      "required": "no",
+      "type": "integer"
+    },
+    "limits.csp_reports_per_address": {
+      "default": "`20`",
+      "required": "no",
+      "type": "integer"
+    },
+    "limits.inflated": {
+      "default": "`67108864`",
+      "required": "no",
+      "type": "integer"
+    },
+    "limits.timeouts.first_head": {
+      "default": "`30`",
+      "required": "no",
+      "type": "integer"
+    },
+    "limits.timeouts.handshake": {
+      "default": "`10`",
+      "required": "no",
+      "type": "integer"
+    },
+    "limits.timeouts.head": {
+      "default": "`30`",
+      "required": "no",
+      "type": "integer"
+    },
+    "limits.timeouts.idle": {
+      "default": "`120`",
+      "required": "no",
+      "type": "integer"
+    },
+    "limits.timeouts.read": {
+      "default": "`60`",
+      "required": "no",
+      "type": "integer"
+    },
+    "listen": {
+      "default": null,
+      "required": "always",
+      "type": "string"
+    },
+    "master_key": {
+      "default": null,
+      "required": "always",
+      "type": "string"
+    },
+    "mcp.calls_per_second": {
+      "default": "`100`",
+      "required": "no",
+      "type": "integer"
+    },
+    "mcp.concurrent": {
+      "default": "`100`",
+      "required": "no",
+      "type": "integer"
+    },
+    "mcp.response_bytes": {
+      "default": "`1048576`",
+      "required": "no",
+      "type": "integer"
+    },
+    "operator.listen": {
+      "default": null,
+      "required": "with its table",
+      "type": "string"
+    },
+    "operator.public_origin": {
+      "default": "none: the listener serves no session",
+      "required": "no",
+      "type": "string"
+    },
+    "operator.tls.cert": {
+      "default": null,
+      "required": "with its table",
+      "type": "string"
+    },
+    "operator.tls.key": {
+      "default": null,
+      "required": "with its table",
+      "type": "string"
+    },
+    "public_origin": {
+      "default": "none: the listener serves no session",
+      "required": "no",
+      "type": "string"
+    },
+    "purge_interval": {
+      "default": "`3600`",
+      "required": "no",
+      "type": "integer"
+    },
+    "retention_default": {
+      "default": "`7y`",
+      "required": "no",
+      "type": "string"
+    },
+    "rotation_warn": {
+      "default": "`2592000`",
+      "required": "no",
+      "type": "integer"
+    },
+    "storage.objects": {
+      "default": "`local`",
+      "required": "no",
+      "type": "string"
+    },
+    "storage.parquet.pack_interval": {
+      "default": "`300`",
+      "required": "no",
+      "type": "integer"
+    },
+    "storage.parquet.pack_limit": {
+      "default": "`16777216`",
+      "required": "no",
+      "type": "integer"
+    },
+    "storage.parquet.reader_grace": {
+      "default": "`900`",
+      "required": "no",
+      "type": "integer"
+    },
+    "storage.s3.access_key_id": {
+      "default": "none",
+      "required": "no",
+      "type": "string"
+    },
+    "storage.s3.allow_http": {
+      "default": "`false`",
+      "required": "no",
+      "type": "boolean"
+    },
+    "storage.s3.allow_versioning": {
+      "default": "`false`",
+      "required": "no",
+      "type": "boolean"
+    },
+    "storage.s3.bucket": {
+      "default": null,
+      "required": "with its table",
+      "type": "string"
+    },
+    "storage.s3.ca_file": {
+      "default": "none",
+      "required": "no",
+      "type": "string"
+    },
+    "storage.s3.endpoint": {
+      "default": "none",
+      "required": "no",
+      "type": "string"
+    },
+    "storage.s3.path_style": {
+      "default": "`false`",
+      "required": "no",
+      "type": "boolean"
+    },
+    "storage.s3.prefix": {
+      "default": "empty",
+      "required": "no",
+      "type": "string"
+    },
+    "storage.s3.region": {
+      "default": null,
+      "required": "with its table",
+      "type": "string"
+    },
+    "storage.s3.secret_access_key_file": {
+      "default": "none",
+      "required": "no",
+      "type": "string"
+    },
+    "storage.s3.timeout": {
+      "default": "`30`",
+      "required": "no",
+      "type": "integer"
+    },
+    "supported_critical": {
+      "default": "none",
+      "required": "no",
+      "type": "array of string"
+    },
+    "tls.cert": {
+      "default": null,
+      "required": "always",
+      "type": "string"
+    },
+    "tls.key": {
+      "default": null,
+      "required": "always",
+      "type": "string"
+    }
+  }
+}

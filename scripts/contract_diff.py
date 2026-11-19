@@ -8,12 +8,13 @@ changes break a client written against OLD:
     contract_diff.py --kind openapi  OLD.json NEW.json  # OpenAPI documents
     contract_diff.py --kind problems OLD_DIR  NEW_DIR   # problem-type pages
     contract_diff.py --kind cli      OLD.json NEW.json  # contract/cli.json
+    contract_diff.py --kind config   OLD.json NEW.json  # contract/config.json
     contract_diff.py --against REF                      # this tree against REF
 
 `--against` reads each surface at REF (`git show`, `git ls-tree`) and in
 the work tree: crates/vcon-server/openapi.json, the pages of
-website/content/problems/ and contract/cli.json. A surface REF does not
-hold is reported as "no baseline" and passes.
+website/content/problems/, contract/cli.json and contract/config.json. A
+surface REF does not hold is reported as "no baseline" and passes.
 
 THE RULE. A schema is read from the side of the program that handles the
 value:
@@ -51,6 +52,15 @@ value:
   command, a new optional flag or argument, a new possible value and a
   stated default are additive. An argument is its place; the names of
   arguments and values are --help text and are not compared.
+- the configuration file (contract/config.json, written by the lib test
+  config::tests::contract from config.rs's FULL and LEAST files), read as
+  a file written for the older release; every table refuses a key it does
+  not know: breaking when a key disappears; when its type changes; when it
+  becomes required, or a required key appears in a table an older file may
+  have (the top level included); when a key required with its table
+  becomes required in every file; when the default of an optional key
+  changes or is removed. A new optional key, a required key in a new
+  table, a key no longer required and a stated default are additive.
 
 A `oneOf`, `anyOf`, `allOf` or `not` that changes is reported as breaking,
 because this script does not compare them, and a part it cannot compare is
@@ -85,6 +95,7 @@ UPPER = ("maximum", "exclusiveMaximum", "maxLength", "maxItems", "maxProperties"
 OPENAPI_PATH = "crates/vcon-server/openapi.json"
 PROBLEMS_PATH = "website/content/problems"
 CLI_PATH = "contract/cli.json"
+CONFIG_PATH = "contract/config.json"
 UNSET = object()
 
 
@@ -567,12 +578,88 @@ def cli_changes(old: dict, new: dict) -> list[Change]:
     return out
 
 
+REQUIRED_STATES = ("always", "with its table", "no")
+
+
+def _config_snapshot(d) -> None:
+    """Refuses `d` unless it has the shape config.rs's contract test writes."""
+    if not isinstance(d, dict) or not isinstance(d.get("keys"), dict):
+        raise ContractError("a configuration snapshot has no `keys` object")
+    for name, entry in d["keys"].items():
+        if not (isinstance(entry, dict) and isinstance(entry.get("type"), str)
+                and entry.get("required") in REQUIRED_STATES
+                and (entry.get("default") is None or isinstance(entry.get("default"), str))):
+            raise ContractError(f"key {name!r} of a configuration snapshot has no `type`, a `required` other "
+                                f"than {', '.join(REQUIRED_STATES)}, or a `default` that is not text or null")
+
+
+def _table(key: str) -> str:
+    """The dotted table of `key`: "" for a key at the top of the file."""
+    return key.rsplit(".", 1)[0] if "." in key else ""
+
+
+def config_changes(old: dict, new: dict) -> list[Change]:
+    """Every change from `old` to `new`, two snapshots of the configuration
+    file (contract/config.json), read as a file written for `old`. Every
+    table refuses a key it does not know, so a file written for `old` holds
+    only `old`'s keys."""
+    for d in (old, new):
+        _config_snapshot(d)
+    out: list[Change] = []
+    o_keys, n_keys = old["keys"], new["keys"]
+    for name in sorted(set(o_keys) | set(n_keys)):
+        if name not in n_keys:
+            out.append(Change("breaking", name, "key removed: a file that sets it no longer loads"))
+            continue
+        n = n_keys[name]
+        if name not in o_keys:
+            table = _table(name)
+            if n["required"] == "always":
+                out.append(Change("breaking", name, "required key added"))
+            elif n["required"] == "no":
+                out.append(Change("additive", name, "optional key added"))
+            elif table == "" or any(k.startswith(table + ".") for k in o_keys):
+                out.append(Change("breaking", name, "required key added to a table an older file may have"))
+            else:
+                out.append(Change("additive", name, "key added in a new table"))
+            continue
+        o = o_keys[name]
+        if o["type"] != n["type"]:
+            out.append(Change("breaking", name, f"type changed from {o['type']!r} to {n['type']!r}"))
+        rank = {state: i for i, state in enumerate(REQUIRED_STATES)}
+        if rank[n["required"]] < rank[o["required"]]:
+            if o["required"] == "no":
+                out.append(Change("breaking", name, "became required"))
+            else:
+                out.append(Change("breaking", name, "now required in a file without its table"))
+            continue
+        if rank[n["required"]] > rank[o["required"]]:
+            out.append(Change("additive", name, "no longer required"))
+            continue
+        if n["required"] != "no":
+            continue
+        # Decision (vii): a file that leaves the key out gets other behavior.
+        o_def, n_def = o["default"], n["default"]
+        if o_def is not None and n_def is None:
+            out.append(Change("breaking", name, f"default {o_def!r} removed"))
+        elif o_def is not None and n_def != o_def:
+            out.append(Change("breaking", name, f"default changed from {o_def!r} to {n_def!r}"))
+        elif o_def is None and n_def is not None:
+            out.append(Change("additive", name, f"default stated: {n_def!r}"))
+    return out
+
+
 def git_runner(root, env=None):
     """A function that runs `git <args>` in `root`: (exit code, stdout)."""
     def run(args):
         r = subprocess.run(["git", *args], cwd=root, env=env, capture_output=True, text=True, timeout=120)
         return r.returncode, r.stdout
     return run
+
+
+# The snapshots under contract/ that `--against` compares, each with its
+# classifier, in the order it reports them.
+SNAPSHOTS = (("cli", CLI_PATH, cli_changes), ("config", CONFIG_PATH, config_changes))
 
 
 def _report(label: str, changes: list[Change]) -> int:
@@ -608,12 +695,13 @@ def against(ref: str, root, git) -> int:
         else:
             new_names = os.listdir(root / PROBLEMS_PATH)
             broken += _report("problems", problem_changes(problem_slugs(old_names), problem_slugs(new_names)))
-        rc, text = git(["show", f"{ref}:{CLI_PATH}"])
-        if rc != 0:
-            print(f"cli: no baseline at {ref}")
-        else:
-            new = json.loads((root / CLI_PATH).read_text(encoding="utf-8"))
-            broken += _report("cli", cli_changes(json.loads(text), new))
+        for label, path, changes in SNAPSHOTS:
+            rc, text = git(["show", f"{ref}:{path}"])
+            if rc != 0:
+                print(f"{label}: no baseline at {ref}")
+            else:
+                new = json.loads((root / path).read_text(encoding="utf-8"))
+                broken += _report(label, changes(json.loads(text), new))
     except (OSError, ValueError, ContractError) as e:
         print(f"contract_diff: {e}; nothing was decided", file=sys.stderr)
         return 2
@@ -623,10 +711,13 @@ def against(ref: str, root, git) -> int:
 USAGE = ("usage: contract_diff.py --kind openapi OLD.json NEW.json\n"
          "       contract_diff.py --kind problems OLD_DIR NEW_DIR\n"
          "       contract_diff.py --kind cli OLD.json NEW.json\n"
+         "       contract_diff.py --kind config OLD.json NEW.json\n"
          "       contract_diff.py --against REF")
 
 
-KINDS = ("openapi", "problems", "cli")
+KINDS = ("openapi", "problems", "cli", "config")
+# The JSON kinds main reads from two files, each with its classifier.
+JSON_KINDS = {"openapi": openapi_changes, "cli": cli_changes, "config": config_changes}
 
 
 def parse(argv: list[str]):
@@ -647,12 +738,12 @@ def main(argv: list[str]) -> int:
         root = pathlib.Path(__file__).resolve().parent.parent
         return against(args[1], root, git_runner(root))
     try:
-        if args[0] in ("openapi", "cli"):
+        if args[0] in JSON_KINDS:
             docs = []
             for path in argv[2:]:
                 with open(path, encoding="utf-8") as f:
                     docs.append(json.load(f))
-            changes = (openapi_changes if args[0] == "openapi" else cli_changes)(*docs)
+            changes = JSON_KINDS[args[0]](*docs)
         else:
             changes = problem_changes(problem_slugs(os.listdir(argv[2])), problem_slugs(os.listdir(argv[3])))
     except (OSError, ValueError, ContractError) as e:

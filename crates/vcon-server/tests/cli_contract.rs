@@ -19,6 +19,10 @@ use std::process::Command;
 #[path = "support/cli_help.rs"]
 mod cli_help;
 
+mod contract_snapshot {
+    include!("support/contract_snapshot.rs");
+}
+
 use cli_help::{Help, Opt, Positional, commands, help, leaves, parse_help};
 
 /// The variable that makes [`the_snapshot_is_what_help_shows`] write the
@@ -134,21 +138,7 @@ fn render(commands: &[(Vec<String>, Help)], codes: &BTreeMap<String, String>) ->
 /// The message of a snapshot that is not what the binary shows: the first
 /// line that differs, and the command that writes it again.
 fn stale(file: &str, now: &str) -> String {
-    let (mut old, mut new) = (file.lines(), now.lines());
-    let mut n = 1;
-    loop {
-        match (old.next(), new.next()) {
-            (Some(a), Some(b)) if a == b => n += 1,
-            (a, b) => {
-                return format!(
-                    "{SNAPSHOT} is not what the binary's --help shows; line {n} is `{}` in the file \
-                     and `{}` now. Write it again with `{REGENERATE}`, check the diff, and commit it",
-                    a.unwrap_or("(none)"),
-                    b.unwrap_or("(none)")
-                );
-            }
-        }
-    }
+    contract_snapshot::stale(SNAPSHOT, "the binary's --help shows", REGENERATE, file, now)
 }
 
 /// Each code the page lists that [`RUNS`] does not run, and each code it

@@ -191,6 +191,19 @@ plain `cc` for aarch64, so the binaries released are linked as before.
   VCON_SERVER_WRITE_CONTRACT=1 cargo test -p vcon-server --test cli_contract
   ```
 
+- **The configuration file held to a snapshot.** contract/config.json holds
+  every key of the configuration file, its type, whether a file must set it
+  and its default, read from the full and least example files in
+  config.rs's tests by the lib test `config::tests::contract`, which fails
+  when the file differs. After a change to a key, write the file again with
+  one command, and commit it with the change;
+  [Stability](@/docs/stability.md#check-a-configuration-file-against-a-new-release)
+  says which of its changes break a file:
+
+  ```sh
+  VCON_SERVER_WRITE_CONTRACT=1 cargo test -p vcon-server --lib config::tests::contract
+  ```
+
 ## Fuzzing
 
 Each target in `fuzz/fuzz_targets/` feeds random input, grown from its seeds,

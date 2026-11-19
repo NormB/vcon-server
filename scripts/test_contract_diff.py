@@ -172,14 +172,15 @@ class FakeGit:
         raise AssertionError(f"unexpected git call {args}")
 
 
-def tree(tmp, openapi=None, problems=None, cli=None):
+def tree(tmp, openapi=None, problems=None, cli=None, config=None):
     """A work tree under `tmp` with the two HTTP surfaces and, when given,
-    the command line's snapshot."""
+    the command line's and the configuration's snapshots."""
     root = pathlib.Path(tmp)
-    if cli is not None:
-        p = root / "contract/cli.json"
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(cli), encoding="utf-8")
+    for name, snapshot in (("cli", cli), ("config", config)):
+        if snapshot is not None:
+            p = root / f"contract/{name}.json"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps(snapshot), encoding="utf-8")
     if openapi is not None:
         p = root / "crates/vcon-server/openapi.json"
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -359,7 +360,7 @@ class Passes(unittest.TestCase):
 
     def test_every_command_on_the_stability_page_parses(self):
         lines = [l for l in STABILITY.read_text(encoding="utf-8").splitlines() if l.startswith("python3 -I scripts/contract_diff.py")]
-        self.assertEqual(len(lines), 3, "the page shows the --against, --kind openapi and --kind cli forms")
+        self.assertEqual(len(lines), 4, "the page shows the --against, --kind openapi, --kind cli and --kind config forms")
         for line in lines:
             self.assertIsNotNone(cd.parse(line.split()[3:]), f"the page's command {line!r} is a usage main takes")
 
@@ -1184,6 +1185,282 @@ class CliEdges(unittest.TestCase):
         d = cli_changed(lambda d: (d["exit_codes"].pop("0"), d["commands"].pop(KEY)))
         found = cd.cli_changes(CLI_BASE, d)
         self.assertEqual([c.path for c in found], [KEY, "exit 0"], "commands first, then exit codes")
+
+
+CONFIG_SNAPSHOT = ROOT / "contract/config.json"
+
+
+def key(type_="integer", required="no", default="`5`"):
+    """One key as contract/config.json holds it: a required key has no default."""
+    return {"default": default if required == "no" else None, "required": required, "type": type_}
+
+
+CONFIG_BASE = {"keys": {
+    "listen": key("string", "always"),
+    "purge_interval": key(default="`3600`"),
+    "storage.objects": key("string", default="`local`"),
+    "storage.s3.region": key("string", "with its table"),
+    "storage.s3.timeout": key(default="`30`"),
+    "supported_critical": key("array of string", default="none"),
+}}
+
+
+def config_changed(edit):
+    """A deep copy of CONFIG_BASE after `edit(copy)`."""
+    d = copy.deepcopy(CONFIG_BASE)
+    edit(d)
+    return d
+
+
+def set_key(name, **fields):
+    """An edit that sets `fields` on the key `name`."""
+    return lambda d: d["keys"][name].update(fields)
+
+
+def add_key(name, entry):
+    return lambda d: d["keys"].update({name: entry})
+
+
+class ConfigPasses(unittest.TestCase):
+    def test_identical_snapshots_have_no_change(self):
+        self.assertEqual(cd.config_changes(CONFIG_BASE, copy.deepcopy(CONFIG_BASE)), [], "a snapshot equals itself")
+
+    def test_the_snapshot_in_the_tree_is_unchanged_against_itself(self):
+        d = json.loads(CONFIG_SNAPSHOT.read_text(encoding="utf-8"))
+        self.assertEqual(cd.config_changes(d, copy.deepcopy(d)), [], "contract/config.json compared with itself")
+
+    def test_the_snapshot_in_the_tree_holds_the_64_keys_of_the_full_file(self):
+        d = json.loads(CONFIG_SNAPSHOT.read_text(encoding="utf-8"))
+        self.assertEqual(len(d["keys"]), 64, "config.rs FULL sets 64 keys")
+
+    def test_the_snapshot_in_the_tree_reads_every_key(self):
+        d = json.loads(CONFIG_SNAPSHOT.read_text(encoding="utf-8"))
+        found = cd.config_changes(d, {"keys": {}})
+        self.assertEqual(len(found), 64, "each key's removal is one change")
+        self.assertTrue(all(c.kind == "breaking" for c in found), found)
+
+    def test_an_optional_key_added_is_additive(self):
+        found = cd.config_changes(CONFIG_BASE, config_changed(add_key("limits.body", key(default="`16`"))))
+        self.assertEqual(kinds(found), [("additive", "limits.body", "optional key added")], "an old file still loads")
+
+    def test_a_required_key_in_a_new_table_is_additive(self):
+        found = cd.config_changes(CONFIG_BASE, config_changed(add_key("export.s3.region", key("string", "with its table"))))
+        self.assertEqual(kinds(found), [("additive", "export.s3.region", "key added in a new table")],
+                         "no old file has the table: deny_unknown_fields refused it")
+
+    def test_a_key_no_longer_required_is_additive(self):
+        found = cd.config_changes(CONFIG_BASE, config_changed(set_key("listen", required="no", default="`0.0.0.0:443`")))
+        self.assertEqual(kinds(found), [("additive", "listen", "no longer required")], found)
+
+    def test_a_key_required_only_with_its_table_from_always_is_additive(self):
+        new = config_changed(set_key("listen", required="with its table"))
+        self.assertEqual(kinds(cd.config_changes(CONFIG_BASE, new)), [("additive", "listen", "no longer required")],
+                         "a file without the table may now leave it out")
+
+    def test_a_default_stated_where_there_was_none_is_additive(self):
+        old = config_changed(set_key("purge_interval", default=None))
+        found = cd.config_changes(old, CONFIG_BASE)
+        self.assertEqual(kinds(found), [("additive", "purge_interval", "default stated: '`3600`'")], found)
+
+    def test_main_with_kind_config_exits_0_on_additive_changes(self):
+        new = config_changed(add_key("limits.body", key()))
+        rc, out, err = run_main(["--kind", "config", "OLD", "NEW"], {"OLD": CONFIG_BASE, "NEW": new})
+        self.assertEqual(rc, 0, err)
+        self.assertIn("additive limits.body: optional key added", out, out)
+        self.assertIn("contract_diff: 1 change(s), 0 breaking", out, out)
+
+    def test_against_a_ref_without_config_json_reports_no_baseline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = tree(tmp, BASE, ["a.md"], CLI_BASE, CONFIG_BASE)
+            fake = FakeGit({("v1", cd.OPENAPI_PATH): json.dumps(BASE), ("v1", cd.PROBLEMS_PATH): ["a.md"],
+                            ("v1", cd.CLI_PATH): json.dumps(CLI_BASE)})
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = cd.against("v1", root, fake)
+        self.assertEqual(rc, 0, out.getvalue())
+        self.assertIn("config: no baseline at v1", out.getvalue(), out.getvalue())
+
+    def test_against_a_ref_with_the_same_config_json_counts_no_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = tree(tmp, BASE, ["a.md"], CLI_BASE, CONFIG_BASE)
+            fake = FakeGit({("v1", cd.OPENAPI_PATH): json.dumps(BASE), ("v1", cd.PROBLEMS_PATH): ["a.md"],
+                            ("v1", cd.CLI_PATH): json.dumps(CLI_BASE), ("v1", cd.CONFIG_PATH): json.dumps(CONFIG_BASE)})
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = cd.against("v1", root, fake)
+        self.assertEqual(rc, 0, out.getvalue())
+        self.assertIn("config: 0 change(s), 0 breaking", out.getvalue(), out.getvalue())
+
+    def test_the_pages_example_output_is_what_the_script_prints(self):
+        old = config_changed(add_key("limits.body", key(default="`16777216`")))
+        new = config_changed(lambda d: d["keys"].update({"limits.body": key(default="`8388608`"),
+                                                          "storage.s3.sse": key("string", default="none")}))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cd._report("", cd.config_changes(old, new))
+        text = STABILITY.read_text(encoding="utf-8")
+        self.assertIn(out.getvalue(), text, "stability.md shows the script's own lines for that change")
+
+    def test_the_page_names_the_command_that_writes_the_snapshot(self):
+        text = STABILITY.read_text(encoding="utf-8")
+        self.assertIn("VCON_SERVER_WRITE_CONTRACT=1 cargo test -p vcon-server --lib config::tests::contract", text,
+                      "stability.md names the one command the test's message names")
+
+
+class ConfigFails(unittest.TestCase):
+    def one(self, edit, where, message, old=None):
+        found = cd.config_changes(old or CONFIG_BASE, config_changed(edit))
+        self.assertEqual(kinds(found), [("breaking", where, message)], found)
+
+    def test_a_key_removed_is_breaking(self):
+        self.one(lambda d: d["keys"].pop("purge_interval"), "purge_interval",
+                 "key removed: a file that sets it no longer loads")
+
+    def test_a_required_key_added_is_breaking(self):
+        self.one(add_key("data_dir", key("string", "always")), "data_dir", "required key added")
+
+    def test_a_required_key_added_to_a_table_that_exists_is_breaking(self):
+        self.one(add_key("storage.s3.bucket", key("string", "with its table")), "storage.s3.bucket",
+                 "required key added to a table an older file may have")
+
+    def test_a_key_that_became_required_is_breaking(self):
+        self.one(set_key("purge_interval", required="always", default=None), "purge_interval", "became required")
+
+    def test_a_key_that_became_required_with_its_table_is_breaking(self):
+        self.one(set_key("storage.s3.timeout", required="with its table", default=None), "storage.s3.timeout",
+                 "became required")
+
+    def test_a_key_required_even_without_its_table_is_breaking(self):
+        self.one(set_key("storage.s3.region", required="always"), "storage.s3.region",
+                 "now required in a file without its table")
+
+    def test_a_changed_type_is_breaking(self):
+        self.one(set_key("purge_interval", type="string"), "purge_interval",
+                 "type changed from 'integer' to 'string'")
+
+    def test_a_changed_default_is_breaking(self):
+        self.one(set_key("purge_interval", default="`1800`"), "purge_interval",
+                 "default changed from '`3600`' to '`1800`'")
+
+    def test_a_removed_default_is_breaking(self):
+        self.one(set_key("storage.objects", default=None), "storage.objects", "default '`local`' removed")
+
+    def test_main_with_kind_config_exits_1_on_a_breaking_change(self):
+        d = config_changed(lambda d: d["keys"].pop("listen"))
+        rc, out, err = run_main(["--kind", "config", "OLD", "NEW"], {"OLD": CONFIG_BASE, "NEW": d})
+        self.assertEqual(rc, 1, err)
+        self.assertIn("breaking listen: key removed: a file that sets it no longer loads", out, out)
+
+    def test_against_exits_1_on_a_breaking_config_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = tree(tmp, BASE, ["a.md"], CLI_BASE, config_changed(set_key("purge_interval", type="string")))
+            fake = FakeGit({("v1", cd.OPENAPI_PATH): json.dumps(BASE), ("v1", cd.PROBLEMS_PATH): ["a.md"],
+                            ("v1", cd.CLI_PATH): json.dumps(CLI_BASE), ("v1", cd.CONFIG_PATH): json.dumps(CONFIG_BASE)})
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = cd.against("v1", root, fake)
+        self.assertEqual(rc, 1, out.getvalue())
+        self.assertIn("config: breaking purge_interval: type changed", out.getvalue(), out.getvalue())
+
+    def test_against_without_config_json_in_the_work_tree_is_an_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = tree(tmp, BASE, ["a.md"], CLI_BASE)
+            fake = FakeGit({("v1", cd.OPENAPI_PATH): json.dumps(BASE), ("v1", cd.PROBLEMS_PATH): ["a.md"],
+                            ("v1", cd.CLI_PATH): json.dumps(CLI_BASE), ("v1", cd.CONFIG_PATH): json.dumps(CONFIG_BASE)})
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = cd.against("v1", root, fake)
+        self.assertEqual(rc, 2, err.getvalue())
+        self.assertIn("nothing was decided", err.getvalue(), err.getvalue())
+
+    def test_the_page_names_each_config_error_the_script_prints(self):
+        text = " ".join(STABILITY.read_text(encoding="utf-8").split())
+        self.assertIn("a configuration snapshot has no `keys` object; nothing was decided", text,
+                      "stability.md says what to do when a config file is not a snapshot")
+        self.assertIn("contract/config.json is not what the configuration code reads", text,
+                      "stability.md names the lib test's message")
+
+    def test_a_required_key_moved_to_another_table_is_breaking_at_both_names(self):
+        new = config_changed(lambda d: (d["keys"].pop("storage.s3.region"),
+                                        d["keys"].update({"storage.s3.endpoint.region": key("string", "always")})))
+        found = kinds(cd.config_changes(CONFIG_BASE, new))
+        self.assertEqual(found, [("breaking", "storage.s3.endpoint.region", "required key added"),
+                                 ("breaking", "storage.s3.region", "key removed: a file that sets it no longer loads")],
+                         "a move is a removal and an addition")
+
+
+class ConfigEdges(unittest.TestCase):
+    def test_a_snapshot_without_keys_is_an_error(self):
+        for bad in ({}, {"keys": []}, [], "x"):
+            with self.assertRaises(cd.ContractError, msg=repr(bad)):
+                cd.config_changes(CONFIG_BASE, bad)
+
+    def test_a_key_without_a_type_or_with_an_unknown_required_state_is_an_error(self):
+        for bad in ({}, {"type": "string", "required": "maybe", "default": None},
+                    {"type": 1, "required": "no", "default": None}, {"type": "string", "required": "no", "default": 5},
+                    "x"):
+            d = config_changed(add_key("listen", bad))
+            with self.assertRaises(cd.ContractError, msg=repr(bad)):
+                cd.config_changes(CONFIG_BASE, d)
+
+    def test_main_on_a_file_that_is_not_a_snapshot_is_an_error(self):
+        rc, _, err = run_main(["--kind", "config", "OLD", "NEW"], {"OLD": CONFIG_BASE, "NEW": {"commands": {}}})
+        self.assertEqual(rc, 2, err)
+        self.assertIn("a configuration snapshot has no `keys` object; nothing was decided", err, err)
+
+    def test_main_on_a_file_that_is_not_json_is_an_error(self):
+        rc, _, err = run_main(["--kind", "config", "OLD", "NEW"], {"OLD": CONFIG_BASE, "NEW": "{"})
+        self.assertEqual(rc, 2, err)
+
+    def test_a_required_key_added_at_the_top_with_its_table_is_breaking(self):
+        found = cd.config_changes(CONFIG_BASE, config_changed(add_key("data_dir", key("string", "with its table"))))
+        self.assertEqual(kinds(found), [("breaking", "data_dir", "required key added to a table an older file may have")],
+                         "the top level is a table every file has")
+
+    def test_a_required_key_in_a_new_table_under_one_that_exists_is_additive(self):
+        found = cd.config_changes(CONFIG_BASE, config_changed(add_key("storage.s3.sse.key", key("string", "with its table"))))
+        self.assertEqual(kinds(found), [("additive", "storage.s3.sse.key", "key added in a new table")],
+                         "[storage.s3.sse] is new though [storage.s3] is not")
+
+    def test_a_table_named_like_a_prefix_of_another_is_its_own_table(self):
+        found = cd.config_changes(CONFIG_BASE, config_changed(add_key("storage.s.x", key("string", "with its table"))))
+        self.assertEqual(kinds(found), [("additive", "storage.s.x", "key added in a new table")],
+                         "storage.s is not storage.s3")
+
+    def test_a_required_key_added_to_the_table_of_a_removed_key_is_breaking(self):
+        old = CONFIG_BASE
+        new = config_changed(lambda d: (d["keys"].pop("storage.s3.timeout"), d["keys"].pop("storage.s3.region"),
+                                        d["keys"].update({"storage.s3.zone": key("string", "with its table")})))
+        found = kinds(cd.config_changes(old, new))
+        self.assertIn(("breaking", "storage.s3.zone", "required key added to a table an older file may have"), found,
+                      found)
+
+    def test_a_required_key_that_changes_its_default_text_is_no_change(self):
+        new = config_changed(set_key("listen", default="required"))
+        self.assertEqual(cd.config_changes(CONFIG_BASE, new), [], "a required key's default is not compared")
+
+    def test_a_key_that_became_required_reports_no_default_change(self):
+        found = cd.config_changes(CONFIG_BASE, config_changed(set_key("purge_interval", required="always", default=None)))
+        self.assertEqual([c.message for c in found], ["became required"], "the default goes with the requirement")
+
+    def test_a_type_and_a_default_change_are_each_named(self):
+        found = cd.config_changes(CONFIG_BASE, config_changed(set_key("purge_interval", type="string", default="`1h`")))
+        self.assertEqual(sorted(c.message for c in found),
+                         ["default changed from '`3600`' to '`1h`'", "type changed from 'integer' to 'string'"], found)
+
+    def test_keys_in_another_order_are_no_change(self):
+        new = {"keys": dict(reversed(list(CONFIG_BASE["keys"].items())))}
+        self.assertEqual(cd.config_changes(CONFIG_BASE, new), [], "keys are compared by name")
+
+    def test_changes_come_in_key_name_order(self):
+        new = config_changed(lambda d: (d["keys"].pop("supported_critical"), d["keys"].pop("listen")))
+        self.assertEqual([c.path for c in cd.config_changes(CONFIG_BASE, new)], ["listen", "supported_critical"],
+                         "name order")
+
+    def test_an_empty_default_text_is_a_default(self):
+        old = config_changed(set_key("purge_interval", default=""))
+        found = cd.config_changes(old, config_changed(set_key("purge_interval", default=None)))
+        self.assertEqual(kinds(found), [("breaking", "purge_interval", "default '' removed")], found)
 
 
 if __name__ == "__main__":
