@@ -3002,3 +3002,405 @@ mod planes {
         }
     }
 }
+
+/// The MCP tools' part of the contract (website/content/docs/stability.md):
+/// contract/mcp.json holds every tool `tools()` registers, its argument
+/// schema as `tools/list` shows it, its hints and the scope a key needs to
+/// call it. `scripts/contract_diff.py --kind mcp` compares two of these
+/// files. The descriptions are text for people and are not in it.
+///
+/// The snapshot is written, never edited by hand: when a tool changes,
+/// [`contract::REGENERATE`] writes it again, and the change is reviewed in
+/// the diff.
+mod contract {
+    use std::collections::BTreeMap;
+
+    use serde_json::{Value, json};
+
+    use crate::access::Scopes;
+    use crate::mcp::{Spec, gate, tools};
+
+    /// The variable that makes [`the_snapshot_is_what_tools_list_shows`]
+    /// write the snapshot, the one tests/cli_contract.rs reads.
+    const WRITE: &str = "VCON_SERVER_WRITE_CONTRACT";
+
+    /// The one command that writes contract/mcp.json again.
+    pub(super) const REGENERATE: &str =
+        "VCON_SERVER_WRITE_CONTRACT=1 cargo test -p vcon-server --lib mcp::tests::contract";
+
+    /// The snapshot, from the repository root.
+    const SNAPSHOT: &str = "contract/mcp.json";
+
+    /// The stale-snapshot message tests/cli_contract.rs gives too.
+    mod snapshot {
+        include!("../../tests/support/contract_snapshot.rs");
+    }
+
+    fn root() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
+    /// One tool as the snapshot holds it, or why it cannot be held: a tool
+    /// without its four hints or without a scope is refused by the gate,
+    /// and the snapshot does not hide that.
+    fn entry(spec: &Spec) -> Result<(String, Value), String> {
+        let name = spec.tool.name.to_string();
+        let a = spec
+            .tool
+            .annotations
+            .as_ref()
+            .ok_or_else(|| format!("{name} states no hints"))?;
+        let hint = |value: Option<bool>, which: &str| {
+            value.ok_or_else(|| format!("{name} states no {which} hint"))
+        };
+        let hints = json!({
+            "destructive": hint(a.destructive_hint, "destructive")?,
+            "idempotent": hint(a.idempotent_hint, "idempotent")?,
+            "open_world": hint(a.open_world_hint, "open_world")?,
+            "read_only": hint(a.read_only_hint, "read_only")?,
+        });
+        let scope = gate::scope(&name, Some(a))
+            .ok_or_else(|| format!("{name} has no scope: the gate refuses every call to it"))?;
+        let tool = json!({
+            "arguments": Value::Object((*spec.tool.input_schema).clone()),
+            "hints": hints,
+            "scope": Scopes::of(&[scope]).to_string(),
+        });
+        Ok((name, tool))
+    }
+
+    /// contract/mcp.json's text for `entries`, each tool by name.
+    fn render(entries: &[(String, Value)]) -> String {
+        let tools: BTreeMap<&str, &Value> = entries.iter().map(|(n, v)| (n.as_str(), v)).collect();
+        let mut text = serde_json::to_string_pretty(&json!({ "tools": tools })).expect("JSON");
+        text.push('\n');
+        text
+    }
+
+    fn stale(file: &str, now: &str) -> String {
+        snapshot::stale(SNAPSHOT, "tools/list shows", REGENERATE, file, now)
+    }
+
+    fn snapshot_now() -> String {
+        let entries: Vec<(String, Value)> = tools()
+            .iter()
+            .map(|spec| entry(spec).unwrap_or_else(|e| panic!("{e}")))
+            .collect();
+        render(&entries)
+    }
+
+    fn snapshot_json() -> Value {
+        serde_json::from_str(&snapshot_now()).expect("the rendered snapshot is JSON")
+    }
+
+    /// The first registered tool, with its hints set to `hints`.
+    fn with_hints(hints: Option<rmcp::model::ToolAnnotations>) -> Spec {
+        let mut spec = tools().into_iter().next().expect("a tool");
+        spec.tool.annotations = hints;
+        spec
+    }
+
+    // Success.
+
+    #[test]
+    fn the_snapshot_is_what_tools_list_shows() {
+        let now = snapshot_now();
+        let path = root().join(SNAPSHOT);
+        if std::env::var_os(WRITE).is_some() {
+            std::fs::create_dir_all(path.parent().expect("a parent")).expect("contract/");
+            std::fs::write(&path, &now).expect("the snapshot is written");
+            return;
+        }
+        let file = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(file == now, "{}", stale(&file, &now));
+    }
+
+    #[test]
+    fn every_registered_tool_is_in_the_snapshot() {
+        let d = snapshot_json();
+        let held: Vec<&String> = d["tools"]
+            .as_object()
+            .expect("a tools object")
+            .keys()
+            .collect();
+        let mut registered: Vec<String> = tools().iter().map(|s| s.tool.name.to_string()).collect();
+        registered.sort();
+        assert_eq!(
+            held,
+            registered.iter().collect::<Vec<_>>(),
+            "each tool once, in name order"
+        );
+        assert_eq!(held.len(), 19, "mcp.md lists 19 tools");
+    }
+
+    #[test]
+    fn the_arguments_are_the_input_schema_tools_list_shows() {
+        let d = snapshot_json();
+        for spec in tools() {
+            let name = spec.tool.name.to_string();
+            let shown = Value::Object((*spec.tool.input_schema).clone());
+            assert_eq!(d["tools"][&name]["arguments"], shown, "{name}");
+        }
+    }
+
+    #[test]
+    fn the_hints_are_the_tools_annotations() {
+        let d = snapshot_json();
+        for spec in tools() {
+            let name = spec.tool.name.to_string();
+            let a = spec.tool.annotations.as_ref().expect("annotations");
+            let hints = &d["tools"][&name]["hints"];
+            assert_eq!(hints["read_only"], json!(a.read_only_hint), "{name}");
+            assert_eq!(hints["destructive"], json!(a.destructive_hint), "{name}");
+            assert_eq!(hints["idempotent"], json!(a.idempotent_hint), "{name}");
+            assert_eq!(hints["open_world"], json!(a.open_world_hint), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_scope_is_the_one_the_gate_asks_for() {
+        let d = snapshot_json();
+        for spec in tools() {
+            let name = spec.tool.name.to_string();
+            let scope = gate::scope(&name, spec.tool.annotations.as_ref()).expect("a scope");
+            assert_eq!(
+                d["tools"][&name]["scope"],
+                Scopes::of(&[scope]).to_string(),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_read_tool_needs_read_and_an_admin_tool_needs_admin() {
+        let d = snapshot_json();
+        let scopes: BTreeMap<String, String> = d["tools"]
+            .as_object()
+            .expect("tools")
+            .iter()
+            .map(|(k, v)| (k.clone(), v["scope"].as_str().expect("text").to_owned()))
+            .collect();
+        assert!(
+            scopes
+                .iter()
+                .any(|(k, v)| k.starts_with("admin_") && v == "admin"),
+            "{scopes:?}"
+        );
+        assert!(
+            scopes
+                .iter()
+                .any(|(k, v)| k.starts_with("vcon_") && v == "read"),
+            "{scopes:?}"
+        );
+        assert!(
+            scopes.values().all(|v| v != "tenant_admin"),
+            "no tool asks for tenant_admin"
+        );
+    }
+
+    #[test]
+    fn rendering_twice_gives_the_same_text() {
+        assert_eq!(snapshot_now(), snapshot_now(), "one build has one snapshot");
+    }
+
+    #[test]
+    fn the_rendered_snapshot_is_the_shape_contract_diff_reads() {
+        let d = snapshot_json();
+        for (name, tool) in d["tools"].as_object().expect("a tools object") {
+            let members: Vec<&String> = tool.as_object().expect("an object").keys().collect();
+            assert_eq!(
+                members,
+                ["arguments", "hints", "scope"],
+                "{name}: members in name order"
+            );
+            assert!(tool["arguments"].is_object(), "{name}: a schema object");
+            let hints: Vec<&String> = tool["hints"].as_object().expect("hints").keys().collect();
+            assert_eq!(
+                hints,
+                ["destructive", "idempotent", "open_world", "read_only"],
+                "{name}"
+            );
+            assert!(
+                tool["hints"]
+                    .as_object()
+                    .expect("hints")
+                    .values()
+                    .all(Value::is_boolean),
+                "{name}"
+            );
+        }
+        assert!(
+            snapshot_now().ends_with("}\n"),
+            "the file ends with a newline"
+        );
+    }
+
+    #[test]
+    fn the_stability_page_names_the_command_and_the_message() {
+        let page = std::fs::read_to_string(root().join("website/content/docs/stability.md"))
+            .expect("stability.md");
+        assert!(page.contains(REGENERATE), "the page shows `{REGENERATE}`");
+        let message = stale("", "x");
+        let head = message.split(';').next().expect("a first part");
+        assert!(page.contains(head), "the page names the message `{head}`");
+    }
+
+    #[test]
+    fn the_mcp_page_points_to_the_stability_page() {
+        let page =
+            std::fs::read_to_string(root().join("website/content/docs/mcp.md")).expect("mcp.md");
+        assert!(
+            page.contains("(@/docs/stability.md"),
+            "mcp.md links the compatibility rules"
+        );
+    }
+
+    // Failure.
+
+    #[test]
+    fn a_stale_snapshot_names_the_command_that_writes_it() {
+        let message = stale("{\n  \"tools\": {}\n}\n", "{\n  \"tools\": {\"a\": 1}\n}\n");
+        assert!(message.contains(REGENERATE), "names the command: {message}");
+        assert!(message.contains("line 2"), "names the line: {message}");
+        assert!(message.contains(SNAPSHOT), "names the file: {message}");
+    }
+
+    #[test]
+    fn a_missing_snapshot_is_stale_at_its_first_line() {
+        let message = stale("", "{\n}\n");
+        assert!(
+            message.contains("line 1"),
+            "the first line differs: {message}"
+        );
+        assert!(
+            message.contains("(none)"),
+            "the file has no line: {message}"
+        );
+    }
+
+    #[test]
+    fn a_tool_without_hints_is_refused_by_name() {
+        let error = entry(&with_hints(None)).expect_err("no hints");
+        assert!(error.contains("hints"), "says why: {error}");
+        assert!(
+            error.contains(with_hints(None).tool.name.as_ref()),
+            "names the tool: {error}"
+        );
+    }
+
+    #[test]
+    fn a_tool_missing_one_hint_is_refused() {
+        let hints = rmcp::model::ToolAnnotations::new()
+            .read_only(true)
+            .destructive(false);
+        let error = entry(&with_hints(Some(hints))).expect_err("no idempotent hint");
+        assert!(error.contains("idempotent"), "names the hint: {error}");
+    }
+
+    #[test]
+    fn a_tool_the_gate_gives_no_scope_is_refused() {
+        let hints = rmcp::model::ToolAnnotations::new()
+            .read_only(true)
+            .destructive(true)
+            .idempotent(true)
+            .open_world(false);
+        let error = entry(&with_hints(Some(hints))).expect_err("both hints true");
+        assert!(error.contains("scope"), "says why: {error}");
+    }
+
+    #[test]
+    fn a_tool_of_no_known_area_is_refused() {
+        let mut spec = with_hints(tools()[0].tool.annotations.clone());
+        spec.tool.name = "other_thing".into();
+        let error = entry(&spec).expect_err("no area");
+        assert!(error.contains("other_thing"), "names the tool: {error}");
+    }
+
+    #[test]
+    fn a_snapshot_with_a_line_too_many_is_stale_at_that_line() {
+        let message = stale("{\n}\nx\n", "{\n}\n");
+        assert!(
+            message.contains("line 3"),
+            "the third line is extra: {message}"
+        );
+    }
+
+    // Edge.
+
+    /// The snapshot's text is in name order at every depth because
+    /// serde_json's map sorts its members in this build. With serde_json's
+    /// `preserve_order` feature on (a dependency can turn it on), a map
+    /// keeps the generator's order instead, and this test says so.
+    #[test]
+    fn a_json_map_holds_its_members_in_name_order() {
+        let mut map = serde_json::Map::new();
+        map.insert("b".to_owned(), json!(1));
+        map.insert("a".to_owned(), json!(2));
+        let keys: Vec<&String> = map.keys().collect();
+        assert_eq!(
+            keys,
+            ["a", "b"],
+            "serde_json's preserve_order is on: sort each object before writing contract/mcp.json"
+        );
+    }
+
+    #[test]
+    fn a_tool_that_reaches_outside_the_server_says_so() {
+        let hints = rmcp::model::ToolAnnotations::new()
+            .read_only(true)
+            .destructive(false)
+            .idempotent(false)
+            .open_world(true);
+        let (_, tool) = entry(&with_hints(Some(hints))).expect("both hints stated, one area");
+        assert_eq!(
+            tool["hints"]["open_world"], true,
+            "read from the tool, not assumed"
+        );
+        assert_eq!(
+            tool["hints"]["idempotent"], false,
+            "read from the tool, not assumed"
+        );
+    }
+
+    #[test]
+    fn no_tool_reaches_outside_the_server() {
+        let d = snapshot_json();
+        for (name, tool) in d["tools"].as_object().expect("tools") {
+            assert_eq!(tool["hints"]["open_world"], false, "{name}");
+        }
+    }
+
+    #[test]
+    fn no_tool_is_read_only_and_destructive() {
+        let d = snapshot_json();
+        for (name, tool) in d["tools"].as_object().expect("tools") {
+            let h = &tool["hints"];
+            assert!(
+                !(h["read_only"] == true && h["destructive"] == true),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_registry_renders_an_empty_tools_object() {
+        assert_eq!(
+            render(&[]),
+            "{\n  \"tools\": {}\n}\n",
+            "no tool, an empty object"
+        );
+    }
+
+    #[test]
+    fn the_descriptions_are_not_in_the_snapshot() {
+        let text = snapshot_now();
+        for spec in tools() {
+            let description = spec.tool.description.as_deref().unwrap_or_default();
+            assert!(
+                !text.contains(description),
+                "{}: prose stays out",
+                spec.tool.name
+            );
+        }
+    }
+}

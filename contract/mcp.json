@@ -1,0 +1,681 @@
+{
+  "tools": {
+    "admin_audit_read": {
+      "arguments": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "description": "Records after this sequence number; 0 when left out.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "limit": {
+            "description": "How many records at most: 1 to 10000, 1000 when left out.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_bytes": {
+            "description": "The most bytes the result may hold; the server's ceiling applies.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "title": "AuditArgs",
+        "type": "object"
+      },
+      "hints": {
+        "destructive": false,
+        "idempotent": false,
+        "open_world": false,
+        "read_only": true
+      },
+      "scope": "admin"
+    },
+    "admin_key_create": {
+      "arguments": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expires_in_days": {
+            "default": null,
+            "description": "The days until the key expires, from 1 to 365; 90 when absent.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "label": {
+            "description": "Who holds the key.",
+            "type": "string"
+          },
+          "no_expiry": {
+            "default": null,
+            "description": "True for a key that never expires, where the configuration allows\none.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "scopes": {
+            "description": "The scopes it holds: write, read, delete, legal, audit, tenant_admin.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tenant": {
+            "description": "The tenant the key belongs to.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant",
+          "scopes",
+          "label"
+        ],
+        "title": "KeyCreateArgs",
+        "type": "object"
+      },
+      "hints": {
+        "destructive": false,
+        "idempotent": false,
+        "open_world": false,
+        "read_only": false
+      },
+      "scope": "admin"
+    },
+    "admin_key_list": {
+      "arguments": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "The next_cursor a previous page gave.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "max_bytes": {
+            "description": "The most bytes the result may hold; the server's ceiling applies.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tenant": {
+            "description": "The tenant whose keys to list.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant"
+        ],
+        "title": "KeyListArgs",
+        "type": "object"
+      },
+      "hints": {
+        "destructive": false,
+        "idempotent": true,
+        "open_world": false,
+        "read_only": true
+      },
+      "scope": "admin"
+    },
+    "admin_key_revoke": {
+      "arguments": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "The key's id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "KeyRevokeArgs",
+        "type": "object"
+      },
+      "hints": {
+        "destructive": true,
+        "idempotent": true,
+        "open_world": false,
+        "read_only": false
+      },
+      "scope": "admin"
+    },
+    "admin_tenant_create": {
+      "arguments": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "description": "The tenant's name: 1 to 128 characters, no control character, no white\nspace at either end.",
+            "type": "string"
+          },
+          "retention": {
+            "description": "Its own retention period, such as 7y, 18m or 90d; the server default\nwhen left out or null.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "TenantCreateArgs",
+        "type": "object"
+      },
+      "hints": {
+        "destructive": false,
+        "idempotent": false,
+        "open_world": false,
+        "read_only": false
+      },
+      "scope": "admin"
+    },
+    "admin_tenant_list": {
+      "arguments": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "The next_cursor a previous page gave.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "max_bytes": {
+            "description": "The most bytes the result may hold; the server's ceiling applies.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "title": "PageArgs",
+        "type": "object"
+      },
+      "hints": {
+        "destructive": false,
+        "idempotent": true,
+        "open_world": false,
+        "read_only": true
+      },
+      "scope": "admin"
+    },
+    "admin_tenant_remove": {
+      "arguments": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "force": {
+            "description": "Remove it even while it keeps vCons; a legal hold still refuses.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "The tenant's id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "TenantRemoveArgs",
+        "type": "object"
+      },
+      "hints": {
+        "destructive": true,
+        "idempotent": false,
+        "open_world": false,
+        "read_only": false
+      },
+      "scope": "admin"
+    },
+    "admin_tenant_retention": {
+      "arguments": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "The tenant's id.",
+            "type": "string"
+          },
+          "retention": {
+            "description": "The period, such as 7y, 18m or 90d, or null for the server default;\nit must be given."
+          }
+        },
+        "required": [
+          "id",
+          "retention"
+        ],
+        "title": "TenantRetentionArgs",
+        "type": "object"
+      },
+      "hints": {
+        "destructive": false,
+        "idempotent": true,
+        "open_world": false,
+        "read_only": false
+      },
+      "scope": "admin"
+    },
+    "audit_read": {
+      "arguments": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "The arguments of `audit_read`.",
+        "properties": {
+          "after": {
+            "description": "Records after this sequence number; 0 when left out.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "limit": {
+            "description": "How many records at most: 1 to 10000, 1000 when left out.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_bytes": {
+            "description": "The most bytes the result may hold; the server's ceiling applies.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "title": "ReadArgs",
+        "type": "object"
+      },
+      "hints": {
+        "destructive": false,
+        "idempotent": false,
+        "open_world": false,
+        "read_only": true
+      },
+      "scope": "audit"
+    },
+    "legal_get": {
+      "arguments": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "The arguments of `legal_get`.",
+        "properties": {
+          "cursor": {
+            "description": "The next_cursor a previous page of this version gave.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "max_bytes": {
+            "description": "The most bytes the result may hold; the server's ceiling applies.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "uuid": {
+            "description": "The vCon's uuid, in RFC 9562 text form.",
+            "type": "string"
+          },
+          "version": {
+            "description": "A kept version's id, from legal_versions.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "uuid"
+        ],
+        "title": "GetArgs",
+        "type": "object"
+      },
+      "hints": {
+        "destructive": false,
+        "idempotent": true,
+        "open_world": false,
+        "read_only": true
+      },
+      "scope": "legal"
+    },
+    "legal_hold": {
+      "arguments": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "The arguments of a tool that takes only a uuid.",
+        "properties": {
+          "uuid": {
+            "description": "The vCon's uuid, in RFC 9562 text form.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "uuid"
+        ],
+        "title": "UuidArgs",
+        "type": "object"
+      },
+      "hints": {
+        "destructive": false,
+        "idempotent": true,
+        "open_world": false,
+        "read_only": false
+      },
+      "scope": "legal"
+    },
+    "legal_release": {
+      "arguments": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "The arguments of a tool that takes only a uuid.",
+        "properties": {
+          "uuid": {
+            "description": "The vCon's uuid, in RFC 9562 text form.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "uuid"
+        ],
+        "title": "UuidArgs",
+        "type": "object"
+      },
+      "hints": {
+        "destructive": false,
+        "idempotent": true,
+        "open_world": false,
+        "read_only": false
+      },
+      "scope": "legal"
+    },
+    "legal_restore": {
+      "arguments": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "The arguments of a tool that takes only a uuid.",
+        "properties": {
+          "uuid": {
+            "description": "The vCon's uuid, in RFC 9562 text form.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "uuid"
+        ],
+        "title": "UuidArgs",
+        "type": "object"
+      },
+      "hints": {
+        "destructive": false,
+        "idempotent": false,
+        "open_world": false,
+        "read_only": false
+      },
+      "scope": "legal"
+    },
+    "legal_versions": {
+      "arguments": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "The arguments of `legal_versions`.",
+        "properties": {
+          "cursor": {
+            "description": "The next_cursor a previous page gave.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "max_bytes": {
+            "description": "The most bytes the result may hold; the server's ceiling applies.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "uuid": {
+            "description": "The vCon's uuid, in RFC 9562 text form.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "uuid"
+        ],
+        "title": "VersionsArgs",
+        "type": "object"
+      },
+      "hints": {
+        "destructive": false,
+        "idempotent": true,
+        "open_world": false,
+        "read_only": true
+      },
+      "scope": "legal"
+    },
+    "vcon_delete": {
+      "arguments": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "The arguments of a tool that takes only a uuid.",
+        "properties": {
+          "uuid": {
+            "description": "The vCon's uuid, in RFC 9562 text form.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "uuid"
+        ],
+        "title": "UuidArgs",
+        "type": "object"
+      },
+      "hints": {
+        "destructive": true,
+        "idempotent": true,
+        "open_world": false,
+        "read_only": false
+      },
+      "scope": "delete"
+    },
+    "vcon_get": {
+      "arguments": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "The arguments of `vcon_get`.",
+        "properties": {
+          "cursor": {
+            "description": "The next_cursor a previous page of this vCon gave.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "max_bytes": {
+            "description": "The most bytes the result may hold; the server's ceiling applies.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "uuid": {
+            "description": "The vCon's uuid, in RFC 9562 text form.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "uuid"
+        ],
+        "title": "GetArgs",
+        "type": "object"
+      },
+      "hints": {
+        "destructive": false,
+        "idempotent": true,
+        "open_world": false,
+        "read_only": true
+      },
+      "scope": "read"
+    },
+    "vcon_list": {
+      "arguments": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "The arguments of `vcon_list`.",
+        "properties": {
+          "cursor": {
+            "description": "The next_cursor a previous page gave.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "description": "How many vCons at most: 1 to 1000, 100 when left out.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_bytes": {
+            "description": "The most bytes the result may hold; the server's ceiling applies.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "since": {
+            "description": "Only vCons first stored at or after this time (RFC 3339).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "until": {
+            "description": "Only vCons first stored before this time (RFC 3339).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "ListArgs",
+        "type": "object"
+      },
+      "hints": {
+        "destructive": false,
+        "idempotent": true,
+        "open_world": false,
+        "read_only": true
+      },
+      "scope": "read"
+    },
+    "vcon_replace": {
+      "arguments": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "The arguments of `vcon_replace`.",
+        "properties": {
+          "uuid": {
+            "description": "The vCon's uuid, in RFC 9562 text form; the new text must hold it.",
+            "type": "string"
+          },
+          "vcon": {
+            "description": "The new version's JSON text, stored byte for byte as given.",
+            "type": "string"
+          },
+          "version": {
+            "description": "The current version's id, as vcon_get or vcon_store gave it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "uuid",
+          "version",
+          "vcon"
+        ],
+        "title": "ReplaceArgs",
+        "type": "object"
+      },
+      "hints": {
+        "destructive": false,
+        "idempotent": false,
+        "open_world": false,
+        "read_only": false
+      },
+      "scope": "write"
+    },
+    "vcon_store": {
+      "arguments": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "The arguments of `vcon_store`.",
+        "properties": {
+          "vcon": {
+            "description": "The vCon's JSON text, stored byte for byte as given.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "vcon"
+        ],
+        "title": "StoreArgs",
+        "type": "object"
+      },
+      "hints": {
+        "destructive": false,
+        "idempotent": true,
+        "open_world": false,
+        "read_only": false
+      },
+      "scope": "write"
+    }
+  }
+}

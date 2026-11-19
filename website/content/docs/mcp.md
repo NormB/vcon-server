@@ -103,6 +103,9 @@ The limits are set in the [configuration](@/docs/configuration.md).
   brackets, bidirectional controls and U+2028 and U+2029 are written as JSON
   escapes such as `\u202e`, which leaves every JSON value of a vCon as it
   was stored. The exact stored bytes are read over HTTP.
+- **Compatibility.** Each tool's name, arguments, hints and scope are part
+  of the contract: [Stability](@/docs/stability.md#the-mcp-tools) says which
+  of their changes break a client.
 
 ## Tools
 

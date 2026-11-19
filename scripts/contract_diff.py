@@ -9,12 +9,14 @@ changes break a client written against OLD:
     contract_diff.py --kind problems OLD_DIR  NEW_DIR   # problem-type pages
     contract_diff.py --kind cli      OLD.json NEW.json  # contract/cli.json
     contract_diff.py --kind config   OLD.json NEW.json  # contract/config.json
+    contract_diff.py --kind mcp      OLD.json NEW.json  # contract/mcp.json
     contract_diff.py --against REF                      # this tree against REF
 
 `--against` reads each surface at REF (`git show`, `git ls-tree`) and in
 the work tree: crates/vcon-server/openapi.json, the pages of
-website/content/problems/, contract/cli.json and contract/config.json. A
-surface REF does not hold is reported as "no baseline" and passes.
+website/content/problems/, contract/cli.json, contract/config.json and
+contract/mcp.json. A surface REF does not hold is reported as "no
+baseline" and passes.
 
 THE RULE. A schema is read from the side of the program that handles the
 value:
@@ -61,6 +63,13 @@ value:
   becomes required in every file; when the default of an optional key
   changes or is removed. A new optional key, a required key in a new
   table, a key no longer required and a stated default are additive.
+- the MCP tools (contract/mcp.json, written by the lib test
+  mcp::tests::contract from `tools()`), read as a client that calls them:
+  breaking when a tool disappears; when the scope it needs changes; when a
+  hint becomes less safe (no longer read-only, now destructive, no longer
+  idempotent, now reaching outside the server); and by the writer rule on
+  its argument schema. A new tool, a safer hint and an argument change the
+  writer rule allows are additive.
 
 A `oneOf`, `anyOf`, `allOf` or `not` that changes is reported as breaking,
 because this script does not compare them, and a part it cannot compare is
@@ -96,6 +105,7 @@ OPENAPI_PATH = "crates/vcon-server/openapi.json"
 PROBLEMS_PATH = "website/content/problems"
 CLI_PATH = "contract/cli.json"
 CONFIG_PATH = "contract/config.json"
+MCP_PATH = "contract/mcp.json"
 UNSET = object()
 
 
@@ -657,9 +667,63 @@ def git_runner(root, env=None):
     return run
 
 
+HINTS = ("destructive", "idempotent", "open_world", "read_only")
+# Each hint's safe value, and what a change away from it and back says.
+SAFE_HINTS = {
+    "read_only": (True, "no longer read-only", "now read-only"),
+    "destructive": (False, "now destructive", "no longer destructive"),
+    "idempotent": (True, "no longer idempotent", "now idempotent"),
+    "open_world": (False, "now reaches outside the server", "no longer reaches outside the server"),
+}
+
+
+def _mcp_snapshot(d) -> None:
+    """Refuses `d` unless it has the shape mcp/tests.rs's contract test writes."""
+    if not isinstance(d, dict) or not isinstance(d.get("tools"), dict):
+        raise ContractError("an MCP snapshot has no `tools` object")
+    for name, tool in d["tools"].items():
+        if not (isinstance(tool, dict) and isinstance(tool.get("arguments"), dict)
+                and isinstance(tool.get("hints"), dict)
+                and all(isinstance(tool["hints"].get(h), bool) for h in HINTS)
+                and isinstance(tool.get("scope"), str)):
+            raise ContractError(f"tool {name!r} of an MCP snapshot has no `arguments` object, four boolean "
+                                "`hints` or a `scope`")
+
+
+def mcp_changes(old: dict, new: dict) -> list[Change]:
+    """Every change from `old` to `new`, two snapshots of the MCP tools
+    (contract/mcp.json), read as a client written for `old` that calls
+    them: its arguments by the writer rule, each tool's `$ref`s resolved in
+    its own schema."""
+    for d in (old, new):
+        _mcp_snapshot(d)
+    out: list[Change] = []
+    o_tools, n_tools = old["tools"], new["tools"]
+    for name in sorted(set(o_tools) | set(n_tools)):
+        if name not in n_tools:
+            out.append(Change("breaking", name, "tool removed"))
+            continue
+        if name not in o_tools:
+            out.append(Change("additive", name, "tool added"))
+            continue
+        o, n = o_tools[name], n_tools[name]
+        if o["scope"] != n["scope"]:
+            out.append(Change("breaking", name, f"needs the scope {n['scope']!r} where it needed {o['scope']!r}"))
+        for hint, (safe, worse, better) in SAFE_HINTS.items():
+            was, now = o["hints"][hint], n["hints"][hint]
+            if was == safe and now != safe:
+                out.append(Change("breaking", name, worse))
+            elif was != safe and now == safe:
+                out.append(Change("additive", name, better))
+        out.extend(schema_changes(o["arguments"], n["arguments"], o["arguments"], n["arguments"],
+                                  f"{name} $", "writer"))
+    return out
+
+
 # The snapshots under contract/ that `--against` compares, each with its
 # classifier, in the order it reports them.
-SNAPSHOTS = (("cli", CLI_PATH, cli_changes), ("config", CONFIG_PATH, config_changes))
+SNAPSHOTS = (("cli", CLI_PATH, cli_changes), ("config", CONFIG_PATH, config_changes),
+             ("mcp", MCP_PATH, mcp_changes))
 
 
 def _report(label: str, changes: list[Change]) -> int:
@@ -712,12 +776,13 @@ USAGE = ("usage: contract_diff.py --kind openapi OLD.json NEW.json\n"
          "       contract_diff.py --kind problems OLD_DIR NEW_DIR\n"
          "       contract_diff.py --kind cli OLD.json NEW.json\n"
          "       contract_diff.py --kind config OLD.json NEW.json\n"
+         "       contract_diff.py --kind mcp OLD.json NEW.json\n"
          "       contract_diff.py --against REF")
 
 
-KINDS = ("openapi", "problems", "cli", "config")
+KINDS = ("openapi", "problems", "cli", "config", "mcp")
 # The JSON kinds main reads from two files, each with its classifier.
-JSON_KINDS = {"openapi": openapi_changes, "cli": cli_changes, "config": config_changes}
+JSON_KINDS = {"openapi": openapi_changes, "cli": cli_changes, "config": config_changes, "mcp": mcp_changes}
 
 
 def parse(argv: list[str]):

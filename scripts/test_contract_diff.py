@@ -172,11 +172,11 @@ class FakeGit:
         raise AssertionError(f"unexpected git call {args}")
 
 
-def tree(tmp, openapi=None, problems=None, cli=None, config=None):
+def tree(tmp, openapi=None, problems=None, cli=None, config=None, mcp=None):
     """A work tree under `tmp` with the two HTTP surfaces and, when given,
-    the command line's and the configuration's snapshots."""
+    the snapshots of the command line, the configuration and the MCP tools."""
     root = pathlib.Path(tmp)
-    for name, snapshot in (("cli", cli), ("config", config)):
+    for name, snapshot in (("cli", cli), ("config", config), ("mcp", mcp)):
         if snapshot is not None:
             p = root / f"contract/{name}.json"
             p.parent.mkdir(parents=True, exist_ok=True)
@@ -360,7 +360,8 @@ class Passes(unittest.TestCase):
 
     def test_every_command_on_the_stability_page_parses(self):
         lines = [l for l in STABILITY.read_text(encoding="utf-8").splitlines() if l.startswith("python3 -I scripts/contract_diff.py")]
-        self.assertEqual(len(lines), 4, "the page shows the --against, --kind openapi, --kind cli and --kind config forms")
+        self.assertEqual(len(lines), 5,
+                         "the page shows the --against, --kind openapi, --kind cli, --kind config and --kind mcp forms")
         for line in lines:
             self.assertIsNotNone(cd.parse(line.split()[3:]), f"the page's command {line!r} is a usage main takes")
 
@@ -1461,6 +1462,262 @@ class ConfigEdges(unittest.TestCase):
         old = config_changed(set_key("purge_interval", default=""))
         found = cd.config_changes(old, config_changed(set_key("purge_interval", default=None)))
         self.assertEqual(kinds(found), [("breaking", "purge_interval", "default '' removed")], found)
+
+
+MCP_SNAPSHOT = ROOT / "contract/mcp.json"
+
+
+def hints(read_only=True, destructive=False, idempotent=True, open_world=False):
+    return {"destructive": destructive, "idempotent": idempotent, "open_world": open_world, "read_only": read_only}
+
+
+def args(props, required=(), **more):
+    return {"type": "object", "additionalProperties": False, "properties": props, "required": list(required), **more}
+
+
+MCP_BASE = {"tools": {
+    "vcon_get": {"arguments": args({"uuid": {"type": "string"},
+                                    "max_bytes": {"type": ["integer", "null"], "minimum": 0}}, ["uuid"]),
+                 "hints": hints(), "scope": "read"},
+    "admin_tenant_create": {"arguments": args({"name": {"type": "string"},
+                                               "retention": {"$ref": "#/$defs/Retention"}}, ["name"],
+                                              **{"$defs": {"Retention": {"type": "string", "enum": ["7y", "18m"]}}}),
+                            "hints": hints(read_only=False, idempotent=False), "scope": "admin"},
+}}
+GET, CREATE = "vcon_get", "admin_tenant_create"
+
+
+def mcp_changed(edit):
+    """A deep copy of MCP_BASE after `edit(copy)`."""
+    d = copy.deepcopy(MCP_BASE)
+    edit(d)
+    return d
+
+
+def set_hint(tool, **values):
+    return lambda d: d["tools"][tool]["hints"].update(values)
+
+
+class McpPasses(unittest.TestCase):
+    def test_identical_snapshots_have_no_change(self):
+        self.assertEqual(cd.mcp_changes(MCP_BASE, copy.deepcopy(MCP_BASE)), [], "a snapshot equals itself")
+
+    def test_the_snapshot_in_the_tree_is_unchanged_against_itself(self):
+        d = json.loads(MCP_SNAPSHOT.read_text(encoding="utf-8"))
+        self.assertEqual(cd.mcp_changes(d, copy.deepcopy(d)), [], "contract/mcp.json compared with itself")
+
+    def test_the_snapshot_in_the_tree_holds_the_19_tools(self):
+        d = json.loads(MCP_SNAPSHOT.read_text(encoding="utf-8"))
+        self.assertEqual(len(d["tools"]), 19, "mcp.md lists 19 tools")
+
+    def test_the_snapshot_in_the_tree_reads_every_tool(self):
+        d = json.loads(MCP_SNAPSHOT.read_text(encoding="utf-8"))
+        found = cd.mcp_changes(d, {"tools": {}})
+        self.assertEqual([c.message for c in found], ["tool removed"] * 19, found)
+
+    def test_a_tool_added_is_additive(self):
+        d = mcp_changed(lambda d: d["tools"].update({"vcon_count": {"arguments": args({}), "hints": hints(),
+                                                                     "scope": "read"}}))
+        self.assertEqual(kinds(cd.mcp_changes(MCP_BASE, d)), [("additive", "vcon_count", "tool added")], d)
+
+    def test_an_optional_argument_added_is_additive(self):
+        d = mcp_changed(lambda d: d["tools"][GET]["arguments"]["properties"].update({"view": {"type": "string"}}))
+        self.assertEqual(kinds(cd.mcp_changes(MCP_BASE, d)),
+                         [("additive", f"{GET} $.view", "optional property added")], "an old call still fits")
+
+    def test_a_tool_that_becomes_read_only_is_additive(self):
+        found = cd.mcp_changes(MCP_BASE, mcp_changed(set_hint(CREATE, read_only=True)))
+        self.assertEqual(kinds(found), [("additive", CREATE, "now read-only")], found)
+
+    def test_a_tool_no_longer_destructive_is_additive(self):
+        old = mcp_changed(set_hint(CREATE, destructive=True))
+        self.assertEqual(kinds(cd.mcp_changes(old, MCP_BASE)), [("additive", CREATE, "no longer destructive")], old)
+
+    def test_a_tool_that_becomes_idempotent_is_additive(self):
+        found = cd.mcp_changes(MCP_BASE, mcp_changed(set_hint(CREATE, idempotent=True)))
+        self.assertEqual(kinds(found), [("additive", CREATE, "now idempotent")], found)
+
+    def test_an_enum_value_added_to_an_argument_is_additive(self):
+        d = mcp_changed(lambda d: d["tools"][CREATE]["arguments"]["$defs"]["Retention"]["enum"].append("1y"))
+        self.assertEqual(kinds(cd.mcp_changes(MCP_BASE, d)),
+                         [("additive", f"{CREATE} $.retention", "accepts more values: ['1y']")], d)
+
+    def test_main_with_kind_mcp_exits_0_on_additive_changes(self):
+        d = mcp_changed(set_hint(CREATE, idempotent=True))
+        rc, out, err = run_main(["--kind", "mcp", "OLD", "NEW"], {"OLD": MCP_BASE, "NEW": d})
+        self.assertEqual(rc, 0, err)
+        self.assertIn(f"additive {CREATE}: now idempotent", out, out)
+
+    def test_against_a_ref_without_mcp_json_reports_no_baseline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = tree(tmp, BASE, ["a.md"], CLI_BASE, CONFIG_BASE, MCP_BASE)
+            fake = FakeGit({("v1", cd.OPENAPI_PATH): json.dumps(BASE), ("v1", cd.PROBLEMS_PATH): ["a.md"]})
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = cd.against("v1", root, fake)
+        self.assertEqual(rc, 0, out.getvalue())
+        self.assertIn("mcp: no baseline at v1", out.getvalue(), out.getvalue())
+
+    def test_against_a_ref_with_the_same_mcp_json_counts_no_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = tree(tmp, BASE, ["a.md"], mcp=MCP_BASE)
+            fake = FakeGit({("v1", cd.OPENAPI_PATH): json.dumps(BASE), ("v1", cd.PROBLEMS_PATH): ["a.md"],
+                            ("v1", cd.MCP_PATH): json.dumps(MCP_BASE)})
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = cd.against("v1", root, fake)
+        self.assertEqual(rc, 0, out.getvalue())
+        self.assertIn("mcp: 0 change(s), 0 breaking", out.getvalue(), out.getvalue())
+
+    def test_the_pages_example_output_is_what_the_script_prints(self):
+        new = mcp_changed(lambda d: (d["tools"][GET]["arguments"]["properties"].update({"view": {"type": "string"}}),
+                                     d["tools"][CREATE].update(scope="tenant_admin")))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cd._report("", cd.mcp_changes(MCP_BASE, new))
+        self.assertIn(out.getvalue(), STABILITY.read_text(encoding="utf-8"),
+                      "stability.md shows the script's own lines for that change")
+
+
+class McpFails(unittest.TestCase):
+    def one(self, edit, where, message):
+        found = cd.mcp_changes(MCP_BASE, mcp_changed(edit))
+        self.assertEqual(kinds(found), [("breaking", where, message)], found)
+
+    def test_a_tool_removed_is_breaking(self):
+        self.one(lambda d: d["tools"].pop(GET), GET, "tool removed")
+
+    def test_a_changed_scope_is_breaking(self):
+        self.one(lambda d: d["tools"][GET].update(scope="legal"), GET,
+                 "needs the scope 'legal' where it needed 'read'")
+
+    def test_a_tool_no_longer_read_only_is_breaking(self):
+        self.one(set_hint(GET, read_only=False), GET, "no longer read-only")
+
+    def test_a_tool_that_becomes_destructive_is_breaking(self):
+        self.one(set_hint(CREATE, destructive=True), CREATE, "now destructive")
+
+    def test_a_tool_no_longer_idempotent_is_breaking(self):
+        self.one(set_hint(GET, idempotent=False), GET, "no longer idempotent")
+
+    def test_a_tool_that_reaches_outside_the_server_is_breaking(self):
+        self.one(set_hint(GET, open_world=True), GET, "now reaches outside the server")
+
+    def test_a_required_argument_added_is_breaking(self):
+        def edit(d):
+            a = d["tools"][GET]["arguments"]
+            a["properties"]["tenant"] = {"type": "string"}
+            a["required"].append("tenant")
+        self.one(edit, f"{GET} $.tenant", "required property added")
+
+    def test_an_argument_removed_is_breaking(self):
+        self.one(lambda d: d["tools"][GET]["arguments"]["properties"].pop("max_bytes"), f"{GET} $.max_bytes",
+                 "property removed")
+
+    def test_an_argument_that_became_required_is_breaking(self):
+        self.one(lambda d: d["tools"][CREATE]["arguments"]["required"].append("retention"), f"{CREATE} $.retention",
+                 "became required")
+
+    def test_an_argument_no_longer_null_is_breaking(self):
+        self.one(lambda d: d["tools"][GET]["arguments"]["properties"]["max_bytes"].update(type="integer"),
+                 f"{GET} $.max_bytes", "no longer accepts null")
+
+    def test_an_enum_value_removed_through_a_ref_is_breaking(self):
+        self.one(lambda d: d["tools"][CREATE]["arguments"]["$defs"]["Retention"]["enum"].remove("18m"),
+                 f"{CREATE} $.retention", "no longer accepts ['18m']")
+
+    def test_a_raised_minimum_is_breaking(self):
+        self.one(lambda d: d["tools"][GET]["arguments"]["properties"]["max_bytes"].update(minimum=1),
+                 f"{GET} $.max_bytes", "minimum raised from 0 to 1")
+
+    def test_main_with_kind_mcp_exits_1_on_a_breaking_change(self):
+        rc, out, err = run_main(["--kind", "mcp", "OLD", "NEW"],
+                                {"OLD": MCP_BASE, "NEW": mcp_changed(lambda d: d["tools"].pop(CREATE))})
+        self.assertEqual(rc, 1, err)
+        self.assertIn(f"breaking {CREATE}: tool removed", out, out)
+
+    def test_against_exits_1_on_a_breaking_mcp_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = tree(tmp, BASE, ["a.md"], mcp=mcp_changed(set_hint(GET, read_only=False)))
+            fake = FakeGit({("v1", cd.OPENAPI_PATH): json.dumps(BASE), ("v1", cd.PROBLEMS_PATH): ["a.md"],
+                            ("v1", cd.MCP_PATH): json.dumps(MCP_BASE)})
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = cd.against("v1", root, fake)
+        self.assertEqual(rc, 1, out.getvalue())
+        self.assertIn(f"mcp: breaking {GET}: no longer read-only", out.getvalue(), out.getvalue())
+
+    def test_the_page_names_each_mcp_error_the_script_prints(self):
+        text = " ".join(STABILITY.read_text(encoding="utf-8").split())
+        self.assertIn("an MCP snapshot has no `tools` object; nothing was decided", text,
+                      "stability.md says what to do when an mcp file is not a snapshot")
+        self.assertIn("contract/mcp.json is not what tools/list shows", text, "stability.md names the lib test's message")
+
+
+class McpEdges(unittest.TestCase):
+    def test_a_snapshot_without_tools_is_an_error(self):
+        for bad in ({}, {"tools": []}, [], "x"):
+            with self.assertRaises(cd.ContractError, msg=repr(bad)):
+                cd.mcp_changes(MCP_BASE, bad)
+
+    def test_a_tool_without_arguments_hints_or_scope_is_an_error(self):
+        good = MCP_BASE["tools"][GET]
+        for bad in ({}, {**good, "arguments": []}, {**good, "hints": {}}, {**good, "scope": None},
+                    {**good, "hints": {**good["hints"], "read_only": "yes"}}, "x"):
+            d = mcp_changed(lambda d, bad=bad: d["tools"].update({GET: bad}))
+            with self.assertRaises(cd.ContractError, msg=repr(bad)):
+                cd.mcp_changes(MCP_BASE, d)
+
+    def test_main_on_a_file_that_is_not_a_snapshot_is_an_error(self):
+        rc, _, err = run_main(["--kind", "mcp", "OLD", "NEW"], {"OLD": MCP_BASE, "NEW": {"keys": {}}})
+        self.assertEqual(rc, 2, err)
+        self.assertIn("an MCP snapshot has no `tools` object; nothing was decided", err, err)
+
+    def test_an_argument_ref_that_does_not_resolve_is_an_error(self):
+        d = mcp_changed(lambda d: d["tools"][CREATE]["arguments"].pop("$defs"))
+        rc, _, err = run_main(["--kind", "mcp", "OLD", "NEW"], {"OLD": MCP_BASE, "NEW": d})
+        self.assertEqual(rc, 2, err)
+        self.assertIn("does not resolve", err, err)
+
+    def test_a_description_change_is_no_change(self):
+        d = mcp_changed(lambda d: d["tools"][GET]["arguments"].update(description="The arguments of `vcon_get`."))
+        self.assertEqual(cd.mcp_changes(MCP_BASE, d), [], "a schema's description is text for people")
+
+    def test_tools_in_another_order_are_no_change(self):
+        d = {"tools": dict(reversed(list(MCP_BASE["tools"].items())))}
+        self.assertEqual(cd.mcp_changes(MCP_BASE, d), [], "tools are compared by name")
+
+    def test_each_tools_refs_resolve_in_its_own_schema(self):
+        d = mcp_changed(lambda d: d["tools"][GET]["arguments"].update({"$defs": {"Retention": {"type": "integer"}}}))
+        self.assertEqual(cd.mcp_changes(MCP_BASE, d), [], "a $defs entry no property names changes nothing")
+
+    def test_several_hint_changes_are_each_named(self):
+        found = cd.mcp_changes(MCP_BASE, mcp_changed(set_hint(GET, read_only=False, idempotent=False)))
+        self.assertEqual(sorted(c.message for c in found), ["no longer idempotent", "no longer read-only"], found)
+
+    def test_a_scope_change_and_an_argument_change_are_each_named(self):
+        def edit(d):
+            d["tools"][GET]["scope"] = "legal"
+            d["tools"][GET]["arguments"]["properties"].pop("max_bytes")
+        found = kinds(cd.mcp_changes(MCP_BASE, mcp_changed(edit)))
+        self.assertEqual(found, [("breaking", GET, "needs the scope 'legal' where it needed 'read'"),
+                                 ("breaking", f"{GET} $.max_bytes", "property removed")], "the tool, then its arguments")
+
+    def test_changes_come_in_tool_name_order(self):
+        d = mcp_changed(lambda d: (d["tools"].pop(GET), d["tools"].pop(CREATE)))
+        self.assertEqual([c.path for c in cd.mcp_changes(MCP_BASE, d)], [CREATE, GET], "name order")
+
+    def test_arguments_that_now_refuse_unknown_members_are_breaking(self):
+        old = mcp_changed(lambda d: d["tools"][GET]["arguments"].pop("additionalProperties"))
+        found = kinds(cd.mcp_changes(old, MCP_BASE))
+        self.assertEqual(found, [("breaking", f"{GET} $", "unknown members are now refused")], found)
+
+    def test_a_changed_argument_default_is_breaking(self):
+        old = mcp_changed(lambda d: d["tools"][GET]["arguments"]["properties"]["max_bytes"].update(default=100))
+        new = mcp_changed(lambda d: d["tools"][GET]["arguments"]["properties"]["max_bytes"].update(default=200))
+        found = kinds(cd.mcp_changes(old, new))
+        self.assertEqual(found, [("breaking", f"{GET} $.max_bytes", "default changed from 100 to 200")],
+                         "decision (vii) applies to MCP argument defaults")
 
 
 if __name__ == "__main__":

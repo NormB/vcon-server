@@ -204,6 +204,18 @@ plain `cc` for aarch64, so the binaries released are linked as before.
   VCON_SERVER_WRITE_CONTRACT=1 cargo test -p vcon-server --lib config::tests::contract
   ```
 
+- **The MCP tools held to a snapshot.** contract/mcp.json holds every MCP
+  tool, its argument schema, its hints and the scope a key needs to call
+  it, read from the server's tool list by the lib test
+  `mcp::tests::contract`, which fails when the file differs. After a change
+  to a tool, write the file again with one command, and commit it with the
+  change; [Stability](@/docs/stability.md#check-the-mcp-tools-between-two-releases)
+  says which of its changes break a client:
+
+  ```sh
+  VCON_SERVER_WRITE_CONTRACT=1 cargo test -p vcon-server --lib mcp::tests::contract
+  ```
+
 ## Fuzzing
 
 Each target in `fuzz/fuzz_targets/` feeds random input, grown from its seeds,

@@ -1,6 +1,6 @@
 +++
 title = "Stability"
-description = "What a release keeps compatible with the release before it: the surfaces of the contract, which changes break a client and which do not, and how to compare the HTTP API, the command line and the configuration file of two releases."
+description = "What a release keeps compatible with the release before it: the surfaces of the contract, which changes break a client and which do not, and how to compare the HTTP API, the command line, the configuration file and the MCP tools of two releases."
 weight = 59
 
 [extra]
@@ -26,9 +26,10 @@ breaks a surface of the contract is a new major version.
 | Command line | every command, and each flag and argument it takes: whether it is required, whether it takes a value, its default and its possible values, in [contract/cli.json](https://github.com/NormB/vcon-server/blob/main/contract/cli.json) | `contract_diff.py --kind cli` |
 | Exit codes | 0, 1 and 2, with the meaning [the command line page](@/docs/command-line.md#output-and-exit-codes) gives each, also in contract/cli.json | `contract_diff.py --kind cli` |
 | Configuration file | every key of the [configuration file](@/docs/configuration.md), its type, whether a file must set it and its default, in [contract/config.json](https://github.com/NormB/vcon-server/blob/main/contract/config.json) | `contract_diff.py --kind config` |
+| MCP tools | every tool of the [MCP server](@/docs/mcp.md), its argument schema, its hints and the scope a key needs to call it, in [contract/mcp.json](https://github.com/NormB/vcon-server/blob/main/contract/mcp.json) | `contract_diff.py --kind mcp` |
 
-The MCP tools, the environment variables the server reads, the on-disk
-formats and the audit records have no check of this kind yet. [On-disk formats](@/docs/on-disk-format.md)
+The environment variables the server reads, the on-disk formats and the
+audit records have no check of this kind yet. [On-disk formats](@/docs/on-disk-format.md)
 states the rule each new build keeps for the data of an older one, and CI
 opens the data of each release since 0.4.0 with every change.
 
@@ -144,6 +145,24 @@ A key is required when the server refuses the file without it: always, as
 breaks a rule between keys, such as one half of a credential pair, is not
 required, since a file that sets neither half loads.
 
+### The MCP tools
+
+An MCP client calls a tool with arguments and acts on its hints, so a
+change is breaking when a call the older release took fails, or a hint
+the client trusted no longer holds:
+
+- a tool is removed;
+- the scope a key needs to call it changes, so a key that could call it may
+  be refused;
+- a tool is no longer read-only, becomes destructive, is no longer
+  idempotent, or reaches outside the server;
+- its arguments change in a way the writer rule above refuses, such as a
+  new required argument, a removed one, a value of a list removed or a
+  changed default.
+
+A new tool, a hint that becomes safer and an argument change the writer
+rule allows are additive. Each tool's `$ref`s are read in its own schema.
+
 ### What the script does not compare
 
 `info` (whose `version` changes with each release), descriptions, summaries
@@ -188,11 +207,12 @@ openapi: 0 change(s), 0 breaking
 problems: 0 change(s), 0 breaking
 cli: no baseline at v0.4.10
 config: no baseline at v0.4.10
+mcp: no baseline at v0.4.10
 ```
 
 A surface the tag does not hold prints `no baseline at <tag>` and passes.
-contract/cli.json and contract/config.json are first in the release after
-0.4.10.
+contract/cli.json, contract/config.json and contract/mcp.json are first in
+the release after 0.4.10.
 
 ## Compare two releases
 
@@ -284,12 +304,46 @@ VCON_SERVER_WRITE_CONTRACT=1 cargo test -p vcon-server --lib config::tests::cont
 git diff contract/config.json
 ```
 
+## Check the MCP tools between two releases
+
+Each release from the one after 0.4.10 holds contract/mcp.json. Set `OLD`
+to the release an MCP client was written for and `NEW` to the release to
+upgrade to, write each one's file, then compare the files:
+
+```sh
+git show "$OLD:contract/mcp.json" > old-mcp.json
+git show "$NEW:contract/mcp.json" > new-mcp.json
+python3 -I scripts/contract_diff.py --kind mcp old-mcp.json new-mcp.json
+```
+
+Each line names the tool, then a `$` path into its arguments:
+
+```text
+breaking admin_tenant_create: needs the scope 'tenant_admin' where it needed 'admin'
+additive vcon_get $.view: optional property added
+contract_diff: 2 change(s), 1 breaking
+```
+
+A `breaking` line names a tool a client of the older release may call:
+check the client's calls of that tool, and the scopes of the key it uses,
+against the [MCP page](@/docs/mcp.md) of the new release.
+
+contract/mcp.json is written from the server's tool list, never by hand.
+After a change to a tool, its arguments or its hints, write it again from
+the top of the clone and commit it with the change:
+
+```sh
+VCON_SERVER_WRITE_CONTRACT=1 cargo test -p vcon-server --lib mcp::tests::contract
+git diff contract/mcp.json
+```
+
 ## Read the result
 
 Each line is one change: `breaking` or `additive`, where it is (the
 method and path, then the parameter, the status and media type, and a
 `$` path into the schema; the command and its flag, argument or exit
-code; or the dotted key of the configuration file), and what changed. The script exits 0 when no change is breaking,
+code; the dotted key of the configuration file; or the MCP tool and a `$`
+path into its arguments), and what changed. The script exits 0 when no change is breaking,
 1 when one is, and 2 when it could not decide.
 
 ## When the check fails
@@ -322,5 +376,13 @@ code; or the dotted key of the configuration file), and what changed. The script
   a key, a type or a default that differs from the snapshot, and names the
   first line that differs. Write the snapshot again with the command
   above, read the diff, and commit it.
-- **`usage:`.** The arguments are not one of the five forms the usage
+- **``an MCP snapshot has no `tools` object; nothing was decided``.** One
+  of the files is not a contract/mcp.json: check the tag given to
+  `git show`. A release up to 0.4.10 has no such file.
+- **`contract/mcp.json is not what tools/list shows`.** The lib test
+  `mcp::tests::contract` (run by the commit hook and CI) found a tool, an
+  argument schema, a hint or a scope that differs from the snapshot, and
+  names the first line that differs. Write the snapshot again with the
+  command above, read the diff, and commit it.
+- **`usage:`.** The arguments are not one of the six forms the usage
   line shows.
