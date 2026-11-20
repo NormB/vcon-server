@@ -94,7 +94,7 @@ and holds a key that can only read.
 | A terminal of 80 columns by 24 lines | the terminal's machine | Smaller works, down to 40 by 8, with fewer columns shown. |
 | One shell for the steps | both | Later steps use variables that earlier steps set. |
 
-The screens on this page are those of releases 0.4.7 to 0.4.11. Releases 0.4.5 and
+The screens on this page are those of releases 0.4.7 to 0.4.12. Releases 0.4.5 and
 0.4.6 have no masked view and no reveal keys: they show an opened vCon's
 metadata only. Releases 0.4.2 to 0.4.4 also show another last line on some of them: the list's keys
 (`j down  k up  Enter open  r refresh  n more`) on the connecting screen,

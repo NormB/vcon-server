@@ -18,6 +18,21 @@ CI runs every command on this page on each change. It installs the previous
 release, sets it up as [getting started](@/docs/getting-started.md) does,
 upgrades it to the server built from the change, and goes back again.
 
+## From 0.4.11 to 0.4.12
+
+The upgrade is the binary alone. No stored data, configuration or schema
+changes: the catalogs in the data directory keep schema version 9, and a
+PostgreSQL catalog keeps version 13. A downgrade is possible: 0.4.11 opens
+a data directory that 0.4.12 has served. Copy the data directory before
+the upgrade all the same, as in
+[copy the data directory](#copy-the-data-directory). One thing is
+different in 0.4.12:
+
+- **A secret file another account owns is refused without that account's
+  uid.** The error says "the file is owned by another user" where 0.4.11
+  named the owner's uid; it still names the uid the server runs as and the
+  `chown` to run. See [secret files](@/docs/configuration.md#secret-files).
+
 ## From 0.4.10 to 0.4.11
 
 The upgrade is the binary alone. No stored data, configuration or schema
@@ -445,7 +460,7 @@ but do not install it yet. The commands use their own variable names, so
 they do not change the ones from install:
 
 ```sh
-NEW_VERSION=0.4.11
+NEW_VERSION=0.4.12
 NEW_ARCHIVE=vcon-server-$NEW_VERSION-$(uname -m)-unknown-linux-gnu.tar.gz
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/$NEW_ARCHIVE
 curl -fsSL -o SHA256SUMS-$NEW_VERSION.txt https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/SHA256SUMS.txt

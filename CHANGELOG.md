@@ -6,8 +6,15 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.12] - 2026-11-20
+
 ### Changed
 
+- **The upgrade from 0.4.11 is the binary alone.**
+  - Effect: No stored data, configuration or schema changes; 0.4.11 opens a
+    data directory that 0.4.12 has served.
+  - Docs: [From 0.4.11 to
+    0.4.12](https://vcon-server.com/docs/upgrading/#from-0-4-11-to-0-4-12)
 - **A secret file another account owns is refused without that account's uid.**
   - Effect: The error says "owned by another user" in place of the owner's
     uid, and still names the server's uid and the `chown` to run.
@@ -1125,7 +1132,8 @@ All notable changes to this project are recorded here. The format follows
   - Limit: `vcon::MAX_SIGNED_LAYERS`, `vcon::MAX_JSON_DEPTH` and
     `vcon::Rejection::TooDeep` name the limits.
 
-[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.11...HEAD
+[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.12...HEAD
+[0.4.12]: https://github.com/NormB/vcon-server/releases/tag/v0.4.12
 [0.4.11]: https://github.com/NormB/vcon-server/releases/tag/v0.4.11
 [0.4.10]: https://github.com/NormB/vcon-server/releases/tag/v0.4.10
 [0.4.9]: https://github.com/NormB/vcon-server/releases/tag/v0.4.9
