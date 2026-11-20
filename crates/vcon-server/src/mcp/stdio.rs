@@ -19,6 +19,7 @@ use rmcp::transport::streamable_http_client::{
 };
 use rmcp::{ErrorData, ServerHandler, ServiceExt};
 use serde::Deserialize;
+use zeroize::Zeroizing;
 
 use crate::config::ConfigError;
 
@@ -112,8 +113,10 @@ impl fmt::Display for StdioError {
 }
 
 /// The one token a key file holds, with white space at either end removed.
-/// The file is held to the one secret-file rule (`crate::secret_file`).
-pub(crate) fn token(key_file: &Path) -> Result<String, StdioError> {
+/// The file is held to the one secret-file rule (`crate::secret_file`). The
+/// token is held in [`Zeroizing`], like every secret read from a file, so
+/// its Debug is the redaction text and it is zeroed when dropped.
+pub(crate) fn token(key_file: &Path) -> Result<Zeroizing<String>, StdioError> {
     let refused =
         |why: &str| StdioError::KeyFile(format!("key_file {}: {why}", key_file.display()));
     let bytes = crate::secret_file::read(key_file, "key_file").map_err(StdioError::KeyFile)?;
@@ -122,7 +125,7 @@ pub(crate) fn token(key_file: &Path) -> Result<String, StdioError> {
     if token.is_empty() || token.contains(char::is_whitespace) {
         return Err(refused("holds no single token"));
     }
-    Ok(token.to_owned())
+    Ok(Zeroizing::new(token.to_owned()))
 }
 
 /// An HTTPS client trusting `ca`, or the system's roots without it. It
@@ -182,7 +185,8 @@ pub async fn stdio(config: &ClientConfig) -> Result<(), StdioError> {
     let client = https_client(config.ca.as_deref())?;
     let transport = StreamableHttpClientTransport::with_client(
         client,
-        StreamableHttpClientTransportConfig::with_uri(config.url.as_str()).auth_header(token),
+        StreamableHttpClientTransportConfig::with_uri(config.url.as_str())
+            .auth_header(token.as_str()),
     );
     let upstream: RunningService<RoleClient, rmcp::model::ClientConfig> =
         rmcp::model::ClientConfig::default()
@@ -348,12 +352,63 @@ mod tests {
     }
 
     #[test]
+    fn debug_of_a_token_read_from_a_key_file_is_the_redaction_text() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = dir.path().join("agent.token");
+        std::fs::write(&file, "vcs_0011223344556677_secret\n").expect("write");
+        key_mode(&file, 0o600);
+        let read = token(&file).expect("read");
+        // No assertion prints what it formatted (secret_file.rs's tests).
+        assert!(
+            format!("{read:?}") == crate::secret_file::REDACTED,
+            "Debug never shows the token"
+        );
+    }
+
+    #[test]
+    fn an_expect_err_on_a_token_that_was_read_does_not_log_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = dir.path().join("agent.token");
+        std::fs::write(&file, "vcs_0011223344556677_secret\n").expect("write");
+        key_mode(&file, 0o600);
+        let panic = std::panic::catch_unwind(|| token(&file).expect_err("refused"))
+            .expect_err("expect_err panics on a token that was read");
+        let message = panic
+            .downcast_ref::<String>()
+            .cloned()
+            .expect("the panic message is a String");
+        assert!(
+            message.starts_with("refused: ") && !message.contains("vcs_0011"),
+            "the panic showed the token"
+        );
+    }
+
+    #[test]
+    fn alternate_debug_of_a_padded_token_holds_none_of_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = dir.path().join("agent.token");
+        std::fs::write(&file, "\t vcs_0011223344556677_secret \r\n").expect("write");
+        key_mode(&file, 0o600);
+        let read = token(&file).expect("read");
+        assert!(&*read == "vcs_0011223344556677_secret", "trimmed");
+        let shown = format!("{read:#?}");
+        assert!(
+            shown.starts_with("Zeroizing {") && !shown.contains("vcs_0011"),
+            "{{:#?}} redacts too"
+        );
+    }
+
+    #[test]
     fn a_key_file_holds_exactly_one_token() {
         let dir = tempfile::tempdir().expect("temp dir");
         let file = dir.path().join("agent.token");
         std::fs::write(&file, "  vcs_0011223344556677_secret \n").expect("write");
         key_mode(&file, 0o600);
-        assert_eq!(token(&file).expect("read"), "vcs_0011223344556677_secret");
+        assert_eq!(
+            token(&file).expect("read").as_str(),
+            "vcs_0011223344556677_secret",
+            "the token, trimmed"
+        );
         for text in ["", " \n", "vcs_a b"] {
             std::fs::write(&file, text).expect("write");
             assert!(
@@ -500,9 +555,8 @@ mod tests {
     fn a_key_file_its_group_may_read_is_used() {
         let dir = tempfile::tempdir().expect("temp dir");
         let file = key_file_of_mode(&dir, 0o640);
-        assert_eq!(
-            token(&file).expect("read"),
-            "vcs_0011223344556677_secret",
+        assert!(
+            token(&file).expect("read").as_str() == "vcs_0011223344556677_secret",
             "a group may read a 0640 key file"
         );
     }

@@ -1163,6 +1163,28 @@ mod tests {
     }
 
     #[test]
+    fn debug_of_a_read_s3_secret_is_the_redaction_text() {
+        let (_dir, path) = secret_in(b"k3y-0123456789\n");
+        let secret = read_secret(&path, "storage.s3").expect("reads");
+        // No assertion prints what it formatted (secret_file.rs's tests).
+        assert!(
+            format!("{secret:?}") == crate::secret_file::REDACTED,
+            "Debug never shows the secret"
+        );
+        assert!(secret.as_str() == "k3y-0123456789", "and it still holds it");
+    }
+
+    #[test]
+    fn alternate_debug_of_a_secret_line_is_redacted_too() {
+        let line = secret_line("k3y-0123456789\r\n").expect("one line");
+        let shown = format!("{line:#?}");
+        assert!(
+            shown.starts_with("Zeroizing {") && !shown.contains("k3y"),
+            "{{:#?}} redacts too"
+        );
+    }
+
+    #[test]
     fn a_secret_file_that_is_empty_or_has_two_lines_is_refused_without_its_text() {
         for text in [&b""[..], b"\n", b"id-and\nk3y-in-one-file\n"] {
             let (_dir, path) = secret_in(text);

@@ -962,6 +962,18 @@ mod tests {
         assert_eq!(literal.capacity(), literal.len(), "built at its final size");
     }
 
+    #[test]
+    fn debug_of_the_sqlcipher_literal_is_the_redaction_text() {
+        let mut bytes = [0u8; KEY_LEN];
+        bytes[0] = 0x0a;
+        let literal = key_of(bytes).sqlcipher_raw();
+        // No assertion prints what it formatted (secret_file.rs's tests).
+        assert!(
+            format!("{literal:?}") == crate::secret_file::REDACTED,
+            "Debug never shows the key"
+        );
+    }
+
     /// Debug is how a key reaches a log line or a panic message, so it must
     /// name the key without any rendering of its bytes.
     #[test]

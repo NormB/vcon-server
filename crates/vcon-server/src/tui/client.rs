@@ -324,7 +324,7 @@ impl HttpApi {
             .map_err(|e| format!("the runtime: {e}"))?;
         Ok(Self {
             base: base(&config.url),
-            token: Zeroizing::new(token),
+            token,
             client,
             runtime,
             timeout: TIMEOUT,

@@ -1178,7 +1178,7 @@ name it.
 |---|---|---|
 | `key_file <path>: No such file or directory (os error 2)` | `key_file` names a file that does not exist. A `~` or a relative path counts from the directory you are in. | Give `key_file` the full path. |
 | `key_file <path>: other users may read or change the file (mode <mode>)` | The file's mode lets other users read or write it. | Run the `chmod 600` that the message gives. |
-| `key_file <path>: the file is owned by uid <uid>, not by the user this runs as` | Another account owns the file. | Run the `chown` that the message gives, or make the file as your own account. |
+| `key_file <path>: the file is owned by another user, not by the user this runs as` | Another account owns the file. | Run the `chown` that the message gives, or make the file as your own account. |
 | `key_file <path>: not a regular file` | `key_file` names something that is not a file, such as a directory. | Name the file itself. |
 | `key_file <path>: holds no single token` | The file is empty, or holds more than the token: a second word, or the whole answer of `key create`. | Leave the token as the file's only line. |
 | `key_file <path>: the file is not UTF-8` | The file is not text. | Write the token again. |

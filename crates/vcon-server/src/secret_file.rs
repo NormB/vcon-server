@@ -28,6 +28,14 @@ use std::path::Path;
 
 use zeroize::Zeroizing;
 
+/// What Debug writes for a secret held in [`Zeroizing`], in place of its
+/// bytes. Every secret read from a file the configuration names is held in
+/// `Zeroizing` (`read`, the S3 secret, the PostgreSQL password, the MCP
+/// stdio key), so a `{:?}` of one, or a panic of `expect_err` on one, logs
+/// this and nothing of the secret.
+#[cfg(test)]
+pub(crate) const REDACTED: &str = "Zeroizing { .. }";
+
 /// The mode bits a secret file may not have: write for its group, and any
 /// access for other users.
 pub(crate) const REFUSED_BITS: u32 = 0o027;
@@ -37,11 +45,10 @@ pub(crate) const REFUSED_BITS: u32 = 0o027;
 pub(crate) enum Refusal {
     /// Not a regular file.
     NotAFile,
-    /// Owned by another user, not root.
+    /// Owned by another user, not root. The refusal holds the uid the
+    /// process runs as, the one its `chown` names, and not the owner's uid.
     Owner {
-        /// The file's owner.
-        uid: u32,
-        /// The user the process runs as.
+        /// The uid of the user the process runs as.
         process: u32,
     },
     /// A bit of [`REFUSED_BITS`] is set.
@@ -52,17 +59,20 @@ pub(crate) enum Refusal {
 }
 
 /// Whether a file of this kind, mode and owner may hold a secret for a
-/// process running as `process_uid`. A pure function, so every case can be
-/// tested without root.
-pub(crate) fn judge(is_file: bool, mode: u32, file_uid: u32, process_uid: u32) -> Option<Refusal> {
+/// process running as the user `process`. A pure function, so every case
+/// can be tested without root.
+///
+/// The owner's uid decides, and goes no further: CodeQL's
+/// `rust/cleartext-logging` takes a uid for a user's account data, and from
+/// CodeQL 2.27.5 on it followed the owner's uid from the refusal's text into
+/// every test that printed one (alerts 79-85 and 87-89, 2026-11-20). The
+/// text names the uid the process runs as, which is what `chown` needs.
+pub(crate) fn judge(is_file: bool, mode: u32, owner: u32, process: u32) -> Option<Refusal> {
     if !is_file {
         return Some(Refusal::NotAFile);
     }
-    if file_uid != process_uid && file_uid != 0 && process_uid != 0 {
-        return Some(Refusal::Owner {
-            uid: file_uid,
-            process: process_uid,
-        });
+    if owner != process && owner != 0 && process != 0 {
+        return Some(Refusal::Owner { process });
     }
     let mode = mode & 0o7777;
     if mode & REFUSED_BITS != 0 {
@@ -102,9 +112,10 @@ pub(crate) fn check_open(path: &Path) -> Result<File, Problem> {
     }
 }
 
-/// [`judge`] of a file's metadata, for a process running as `process_uid`.
-pub(crate) fn judge_metadata(meta: &std::fs::Metadata, process_uid: u32) -> Option<Refusal> {
-    judge(meta.is_file(), meta.mode(), meta.uid(), process_uid)
+/// [`judge`] of a file's metadata, for a process running as the user
+/// `process`.
+pub(crate) fn judge_metadata(meta: &std::fs::Metadata, process: u32) -> Option<Refusal> {
+    judge(meta.is_file(), meta.mode(), meta.uid(), process)
 }
 
 /// The error for `refusal` of the file `path` that `key` names.
@@ -112,9 +123,9 @@ pub(crate) fn describe(key: &str, path: &Path, refusal: Refusal) -> String {
     let file = path.display();
     match refusal {
         Refusal::NotAFile => format!("{key} {file}: not a regular file"),
-        Refusal::Owner { uid, process } => format!(
-            "{key} {file}: the file is owned by uid {uid}, not by the user this runs as (uid \
-             {process}) or root; run `chown {process} {file}` (or `chown root`)"
+        Refusal::Owner { process } => format!(
+            "{key} {file}: the file is owned by another user, not by the user this runs as \
+             (uid {process}) or root; run `chown {process} {file}` (or `chown root`)"
         ),
         Refusal::Mode { mode } => format!(
             "{key} {file}: other users may read or change the file (mode {mode:04o}); run \
@@ -267,10 +278,7 @@ mod tests {
     fn a_file_another_user_owns_is_refused() {
         assert_eq!(
             judge(true, 0o600, OTHER, ME),
-            Some(Refusal::Owner {
-                uid: OTHER,
-                process: ME
-            }),
+            Some(Refusal::Owner { process: ME }),
             "another user could replace the file"
         );
     }
@@ -336,10 +344,7 @@ mod tests {
     fn the_owner_is_reported_before_the_mode() {
         assert_eq!(
             judge(true, 0o644, OTHER, ME),
-            Some(Refusal::Owner {
-                uid: OTHER,
-                process: ME
-            }),
+            Some(Refusal::Owner { process: ME }),
             "the owner is checked before the mode"
         );
     }
@@ -363,20 +368,17 @@ mod tests {
     }
 
     #[test]
-    fn an_owner_refusal_names_both_users_and_the_chown_to_run() {
+    fn an_owner_refusal_names_the_process_user_and_the_chown_to_run() {
         let text = describe(
             "tls.key",
             Path::new("/k.pem"),
-            Refusal::Owner {
-                uid: OTHER,
-                process: ME,
-            },
+            Refusal::Owner { process: ME },
         );
         assert_eq!(
             text,
-            "tls.key /k.pem: the file is owned by uid 1234, not by the user this runs as (uid \
-             1000) or root; run `chown 1000 /k.pem` (or `chown root`)",
-            "the text names both uids and the chown"
+            "tls.key /k.pem: the file is owned by another user, not by the user this runs as \
+             (uid 1000) or root; run `chown 1000 /k.pem` (or `chown root`)",
+            "the text names the process's uid and the chown, not the owner's uid"
         );
     }
 
@@ -419,11 +421,13 @@ mod tests {
         let process = owner + 1;
         assert_eq!(
             judge_metadata(&meta, process),
-            Some(Refusal::Owner {
-                uid: owner,
-                process
-            }),
+            Some(Refusal::Owner { process }),
             "the file's own uid is read, not the process's"
+        );
+        assert_eq!(
+            judge_metadata(&meta, owner),
+            None,
+            "the same file passes for its owner"
         );
     }
 
@@ -561,5 +565,112 @@ mod tests {
             let err = read(&path, "k").expect_err("refused");
             assert!(err.contains("Permission denied"), "{err}");
         }
+    }
+
+    // Formatting: no output formatted from a value read from a secret file
+    // holds a byte of the file. The bytes are held in `Zeroizing`, whose
+    // Debug is the redaction text alone (zeroize 1.9.1); these tests hold a
+    // zeroize update, or a change of the type `read` gives, to that.
+
+    /// The secret every formatting test writes, and the two ways its bytes
+    /// could show: as text, and as a `Vec<u8>` Debug's list of decimal bytes.
+    const SECRET: &[u8] = b"s3cr3t-0123456789";
+
+    fn shows_secret(text: &str) -> bool {
+        let decimal = SECRET
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        text.contains("s3cr3t") || text.contains(&decimal[..12])
+    }
+
+    // No assertion here prints what it formatted: were the redaction to
+    // break, the message would carry the secret into the test's log.
+
+    #[test]
+    fn the_redaction_text_is_pinned() {
+        assert_eq!(
+            REDACTED, "Zeroizing { .. }",
+            "zeroize's Debug of a held secret"
+        );
+        let dir = tempfile::tempdir().expect("dir");
+        let path = file(&dir, "s", SECRET, 0o600);
+        let bytes = read(&path, "k").expect("read");
+        assert!(
+            format!("{bytes:?}") == REDACTED,
+            "Debug of a secret file's bytes is the redaction text alone"
+        );
+    }
+
+    #[test]
+    fn debug_of_a_read_secret_holds_no_byte_of_it() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = file(&dir, "s", SECRET, 0o600);
+        let bytes = read(&path, "k").expect("read");
+        assert!(
+            !shows_secret(&format!("{bytes:?}")),
+            "Debug showed the secret"
+        );
+        assert!(&bytes[..] == SECRET, "the bytes are still read whole");
+    }
+
+    #[test]
+    fn an_expect_err_on_a_read_that_passed_does_not_log_the_secret() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = file(&dir, "s", SECRET, 0o600);
+        let panic = std::panic::catch_unwind(|| read(&path, "k").expect_err("refused"))
+            .expect_err("expect_err panics on a read that passed");
+        let message = panic
+            .downcast_ref::<String>()
+            .cloned()
+            .expect("the panic message is a String");
+        assert!(
+            message.starts_with("refused: "),
+            "the panic is expect_err's"
+        );
+        assert!(!shows_secret(&message), "the panic showed the secret");
+    }
+
+    #[test]
+    fn alternate_debug_of_a_read_secret_is_redacted_too() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = file(&dir, "s", SECRET, 0o600);
+        let bytes = read(&path, "k").expect("read");
+        let shown = format!("{bytes:#?}");
+        assert!(
+            shown.starts_with("Zeroizing {") && !shows_secret(&shown),
+            "{{:#?}} redacts too"
+        );
+    }
+
+    #[test]
+    fn debug_of_an_empty_secret_file_does_not_say_it_is_empty() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = file(&dir, "s", b"", 0o600);
+        let bytes = read(&path, "k").expect("read");
+        assert!(
+            format!("{bytes:?}") == REDACTED,
+            "an empty secret reads as any other: no length, no `[]`"
+        );
+    }
+
+    #[test]
+    fn an_owner_refusal_of_a_real_secret_file_holds_no_byte_of_it() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = file(&dir, "s", SECRET, 0o600);
+        let meta = std::fs::metadata(&path).expect("metadata");
+        let owner = std::os::unix::fs::MetadataExt::uid(&meta);
+        let refusal = judge_metadata(&meta, owner + 1).expect("another user's file is refused");
+        let text = describe("k", &path, refusal);
+        assert!(
+            !text.contains(&format!("uid {owner},")) && !text.contains(&format!("uid {owner} ")),
+            "the owner's uid is not in the text"
+        );
+        assert!(
+            text.contains(&format!("(uid {}) or root", owner + 1)),
+            "names the process's uid"
+        );
+        assert!(!shows_secret(&text), "the refusal showed the secret");
     }
 }

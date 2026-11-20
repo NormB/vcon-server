@@ -6,6 +6,14 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **A secret file another account owns is refused without that account's uid.**
+  - Effect: The error says "owned by another user" in place of the owner's
+    uid, and still names the server's uid and the `chown` to run.
+  - Docs: [Secret
+    files](https://vcon-server.com/docs/configuration/#secret-files)
+
 ## [0.4.11] - 2026-11-19
 
 ### Changed

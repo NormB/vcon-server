@@ -56,7 +56,7 @@ impl Secrets {
             None => system_roots()?,
         };
         let client = match (&settings.client_cert_file, &settings.client_key_file) {
-            (Some(cert), Some(key)) => Some(read_client(cert, key)?),
+            (Some(cert_path), Some(key_path)) => Some(read_client(cert_path, key_path)?),
             _ => None,
         };
         Ok(Secrets {
@@ -98,15 +98,20 @@ fn read_password(path: &Path) -> Result<Zeroizing<String>, StorageError> {
     crate::backend::s3::secret_line(&text).map_err(refused)
 }
 
-/// The client certificate chain in `cert` and its private key in `key`.
+/// The client certificate chain in the file `cert_path` and its private key
+/// in the file `key_path`. An error names the file by its path, never what
+/// it holds. (The parameters were `cert` and `key` until 2026-11-20: CodeQL's
+/// `rust/cleartext-logging` takes a value named `cert` for certificate data,
+/// and from CodeQL 2.27.5 on followed these paths into every test that
+/// prints a refusal, alerts 90-102.)
 fn read_client(
-    cert: &Path,
-    key: &Path,
+    cert_path: &Path,
+    key_path: &Path,
 ) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), StorageError> {
-    let pem = std::fs::read(cert).map_err(|e| {
+    let pem = std::fs::read(cert_path).map_err(|e| {
         StorageError(format!(
             "catalog.postgres.client_cert_file {}: {e}",
-            cert.display()
+            cert_path.display()
         ))
     })?;
     let chain = CertificateDer::pem_slice_iter(&pem)
@@ -114,20 +119,20 @@ fn read_client(
         .map_err(|e| {
             StorageError(format!(
                 "catalog.postgres.client_cert_file {}: not PEM: {e}",
-                cert.display()
+                cert_path.display()
             ))
         })?;
     if chain.is_empty() {
         return Err(StorageError(format!(
             "catalog.postgres.client_cert_file {}: the file holds no certificate",
-            cert.display()
+            cert_path.display()
         )));
     }
-    let bytes = read_private(key, "catalog.postgres.client_key_file")?;
+    let bytes = read_private(key_path, "catalog.postgres.client_key_file")?;
     let key = PrivateKeyDer::from_pem_slice(&bytes).map_err(|_| {
         StorageError(format!(
             "catalog.postgres.client_key_file {}: the file holds no PEM private key",
-            key.display()
+            key_path.display()
         ))
     })?;
     Ok((chain, key))

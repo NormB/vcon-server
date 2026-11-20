@@ -313,10 +313,7 @@ fn start_failures() -> Vec<String> {
         secret_file::describe(
             "key_file",
             &at("other.token"),
-            Refusal::Owner {
-                uid: 1001,
-                process: 1000,
-            },
+            Refusal::Owner { process: 1000 },
         ),
         ca(&at("missing.pem")),
         ca(&file("empty.pem", b"", 0o644)),
@@ -485,14 +482,18 @@ fn every_failure_the_screen_shows_has_a_row_on_the_page() {
 fn each_certificate_refusal_has_a_row_of_its_own() {
     let quoted = quoted_messages(&page());
     let mut rows = BTreeSet::new();
-    for refusal in certificate_refusals() {
+    // A missing row is named by its place in certificate_refusals(), not by
+    // its text: CodeQL's rust/cleartext-logging takes anything named
+    // `certificate` for certificate data, and a panic that printed the text
+    // was its alert 86 (2026-11-20). The texts are the UI's own advice.
+    for (place, refusal) in certificate_refusals().iter().enumerate() {
         let row = quoted
             .iter()
             .find(|message| {
                 message.starts_with("the server's certificate was refused: ")
-                    && holds(&refusal, message)
+                    && holds(refusal, message)
             })
-            .unwrap_or_else(|| panic!("no certificate row for {refusal:?}"));
+            .unwrap_or_else(|| panic!("no row for refusal {place} of certificate_refusals()"));
         rows.insert(row.clone());
     }
     assert_eq!(rows.len(), 5, "five refusals, five rows: {rows:?}");

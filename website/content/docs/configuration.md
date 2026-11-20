@@ -36,7 +36,7 @@ fixes it:
 
 ```text
 vcon-server: the master key cannot be read: master_key /etc/vcon-server/master.key: other users may read or change the file (mode 0644); run `chmod 600 /etc/vcon-server/master.key`, or `chmod 640 /etc/vcon-server/master.key` for a group that only reads it
-vcon-server: the TLS certificate or key cannot be used: tls.key /etc/vcon-server/key.pem: the file is owned by uid 1001, not by the user this runs as (uid 998) or root; run `chown 998 /etc/vcon-server/key.pem` (or `chown root`)
+vcon-server: the TLS certificate or key cannot be used: tls.key /etc/vcon-server/key.pem: the file is owned by another user, not by the user this runs as (uid 998) or root; run `chown 998 /etc/vcon-server/key.pem` (or `chown root`)
 ```
 
 Releases up to 0.4.0 checked only the two `catalog.postgres` files, and

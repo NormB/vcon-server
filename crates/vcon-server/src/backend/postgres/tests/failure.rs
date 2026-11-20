@@ -5,8 +5,12 @@ use super::super::secrets::Secrets;
 use super::{closed_port, connect, file, no_tls_server, pki, settings, why};
 
 /// Settings with a CA and a password file in `dir`, the password `text`
-/// written with `mode`.
-fn with_password(dir: &std::path::Path, text: &[u8], mode: u32) -> crate::config::PostgresSettings {
+/// written with `mode`. The settings hold the file's path, not the password.
+fn settings_with_password_file(
+    dir: &std::path::Path,
+    text: &[u8],
+    mode: u32,
+) -> crate::config::PostgresSettings {
     let ca = file(dir, "ca.pem", pki().ca.as_bytes(), 0o644);
     let password = file(dir, "pg.password", text, mode);
     settings("db1.example.com", 5432, "vcon_app", &ca, Some(&password))
@@ -20,7 +24,7 @@ fn unread(s: &crate::config::PostgresSettings) -> String {
 #[test]
 fn a_missing_password_file_is_named() {
     let dir = tempfile::tempdir().expect("dir");
-    let mut s = with_password(dir.path(), b"p\n", 0o600);
+    let mut s = settings_with_password_file(dir.path(), b"p\n", 0o600);
     s.password_file = Some(dir.path().join("absent.password"));
     let message = unread(&s);
     assert!(
@@ -33,7 +37,7 @@ fn a_missing_password_file_is_named() {
 fn a_password_file_other_users_can_read_is_refused_without_its_text() {
     let dir = tempfile::tempdir().expect("dir");
     for mode in [0o644, 0o604, 0o601, 0o602] {
-        let s = with_password(dir.path(), b"s3cret-example\n", mode);
+        let s = settings_with_password_file(dir.path(), b"s3cret-example\n", mode);
         let message = unread(&s);
         assert!(
             message.contains("catalog.postgres.password_file")
@@ -49,7 +53,7 @@ fn a_password_file_other_users_can_read_is_refused_without_its_text() {
 fn a_client_key_other_users_can_read_is_refused() {
     let dir = tempfile::tempdir().expect("dir");
     let made = pki();
-    let mut s = with_password(dir.path(), b"p\n", 0o600);
+    let mut s = settings_with_password_file(dir.path(), b"p\n", 0o600);
     s.client_cert_file = Some(file(dir.path(), "c.pem", made.cert.as_bytes(), 0o644));
     s.client_key_file = Some(file(dir.path(), "c.key", made.key.as_bytes(), 0o644));
     let message = unread(&s);
@@ -62,7 +66,7 @@ fn a_client_key_other_users_can_read_is_refused() {
 #[test]
 fn a_password_file_its_group_may_write_is_refused() {
     let dir = tempfile::tempdir().expect("dir");
-    let s = with_password(dir.path(), b"s3cret-example\n", 0o660);
+    let s = settings_with_password_file(dir.path(), b"s3cret-example\n", 0o660);
     let message = unread(&s);
     assert!(
         message.contains("catalog.postgres.password_file") && message.contains("(mode 0660)"),
@@ -74,7 +78,7 @@ fn a_password_file_its_group_may_write_is_refused() {
 fn a_client_key_its_group_may_write_is_refused() {
     let dir = tempfile::tempdir().expect("dir");
     let made = pki();
-    let mut s = with_password(dir.path(), b"p\n", 0o600);
+    let mut s = settings_with_password_file(dir.path(), b"p\n", 0o600);
     s.client_cert_file = Some(file(dir.path(), "c.pem", made.cert.as_bytes(), 0o644));
     s.client_key_file = Some(file(dir.path(), "c.key", made.key.as_bytes(), 0o620));
     let message = unread(&s);
@@ -87,7 +91,7 @@ fn a_client_key_its_group_may_write_is_refused() {
 #[test]
 fn a_secret_that_is_a_directory_is_refused() {
     let dir = tempfile::tempdir().expect("dir");
-    let mut s = with_password(dir.path(), b"p\n", 0o600);
+    let mut s = settings_with_password_file(dir.path(), b"p\n", 0o600);
     let sub = dir.path().join("secrets");
     std::fs::create_dir(&sub).expect("dir");
     std::fs::set_permissions(&sub, std::os::unix::fs::PermissionsExt::from_mode(0o700))
@@ -105,7 +109,7 @@ fn an_empty_or_two_line_password_file_is_refused() {
         (b"\n", "the file is empty"),
         (b"one\ntwo\n", "more than one line"),
     ] {
-        let message = unread(&with_password(dir.path(), text, 0o600));
+        let message = unread(&settings_with_password_file(dir.path(), text, 0o600));
         assert!(
             message.contains("catalog.postgres.password_file") && message.contains(why),
             "{text:?}: {message}"
@@ -116,7 +120,7 @@ fn an_empty_or_two_line_password_file_is_refused() {
 #[test]
 fn a_ca_file_without_a_certificate_is_refused() {
     let dir = tempfile::tempdir().expect("dir");
-    let mut s = with_password(dir.path(), b"p\n", 0o600);
+    let mut s = settings_with_password_file(dir.path(), b"p\n", 0o600);
     s.ca_file = Some(file(dir.path(), "empty.pem", b"", 0o644));
     let message = unread(&s);
     assert!(
@@ -129,7 +133,7 @@ fn a_ca_file_without_a_certificate_is_refused() {
 fn a_client_key_that_does_not_belong_to_its_certificate_is_refused() {
     let dir = tempfile::tempdir().expect("dir");
     let (one, other) = (pki(), pki());
-    let mut s = with_password(dir.path(), b"p\n", 0o600);
+    let mut s = settings_with_password_file(dir.path(), b"p\n", 0o600);
     s.client_cert_file = Some(file(dir.path(), "c.pem", one.cert.as_bytes(), 0o644));
     s.client_key_file = Some(file(dir.path(), "c.key", other.key.as_bytes(), 0o600));
     let secrets = Secrets::read(&s).expect("both files read");
@@ -145,7 +149,7 @@ fn a_client_key_that_does_not_belong_to_its_certificate_is_refused() {
 fn a_client_certificate_file_without_a_certificate_is_refused() {
     let dir = tempfile::tempdir().expect("dir");
     let made = pki();
-    let mut s = with_password(dir.path(), b"p\n", 0o600);
+    let mut s = settings_with_password_file(dir.path(), b"p\n", 0o600);
     s.client_cert_file = Some(file(dir.path(), "c.pem", made.key.as_bytes(), 0o644));
     s.client_key_file = Some(file(dir.path(), "c.key", made.key.as_bytes(), 0o600));
     let message = unread(&s);
@@ -155,11 +159,75 @@ fn a_client_certificate_file_without_a_certificate_is_refused() {
     );
 }
 
+/// The base64 lines of the PEM `text`: what an error must never show of a
+/// key.
+fn pem_body(text: &str) -> Vec<&str> {
+    text.lines()
+        .filter(|line| !line.starts_with("-----") && line.len() > 16)
+        .collect()
+}
+
+#[test]
+fn a_missing_client_certificate_file_is_named_by_its_path() {
+    let dir = tempfile::tempdir().expect("dir");
+    let made = pki();
+    let mut s = settings_with_password_file(dir.path(), b"p\n", 0o600);
+    s.client_cert_file = Some(dir.path().join("absent-client.pem"));
+    s.client_key_file = Some(file(dir.path(), "c.key", made.key.as_bytes(), 0o600));
+    let message = unread(&s);
+    assert!(
+        message.starts_with("catalog.postgres.client_cert_file ")
+            && message.contains("absent-client.pem"),
+        "names the key and the file: {message}"
+    );
+    for line in pem_body(&made.key) {
+        assert!(!message.contains(line), "never the key: {message}");
+    }
+}
+
+#[test]
+fn a_private_key_given_as_the_client_certificate_is_refused_without_its_text() {
+    let dir = tempfile::tempdir().expect("dir");
+    let made = pki();
+    let mut s = settings_with_password_file(dir.path(), b"p\n", 0o600);
+    s.client_cert_file = Some(file(dir.path(), "swapped.pem", made.key.as_bytes(), 0o600));
+    s.client_key_file = Some(file(dir.path(), "c.key", made.key.as_bytes(), 0o600));
+    let message = unread(&s);
+    assert!(
+        message.starts_with("catalog.postgres.client_cert_file "),
+        "names the certificate's key: {message}"
+    );
+    assert!(
+        !pem_body(&made.key).is_empty(),
+        "the key has a body to look for"
+    );
+    for line in pem_body(&made.key) {
+        assert!(!message.contains(line), "never the key: {message}");
+    }
+}
+
+#[test]
+fn a_client_certificate_file_of_broken_pem_is_refused_without_its_text() {
+    let dir = tempfile::tempdir().expect("dir");
+    let made = pki();
+    let body = "c2VjcmV0LWJvZHktbm90LWEtY2VydGlmaWNhdGU!!!";
+    let broken = format!("-----BEGIN CERTIFICATE-----\n{body}\n-----END CERTIFICATE-----\n");
+    let mut s = settings_with_password_file(dir.path(), b"p\n", 0o600);
+    s.client_cert_file = Some(file(dir.path(), "broken.pem", broken.as_bytes(), 0o600));
+    s.client_key_file = Some(file(dir.path(), "c.key", made.key.as_bytes(), 0o600));
+    let message = unread(&s);
+    assert!(
+        message.starts_with("catalog.postgres.client_cert_file "),
+        "names the certificate's key: {message}"
+    );
+    assert!(!message.contains(body), "never the file's text: {message}");
+}
+
 #[tokio::test]
 async fn a_refused_connection_names_its_host_and_port() {
     let dir = tempfile::tempdir().expect("dir");
     let port = closed_port("127.0.0.1").await;
-    let mut s = with_password(dir.path(), b"p\n", 0o600);
+    let mut s = settings_with_password_file(dir.path(), b"p\n", 0o600);
     s.hosts = vec!["127.0.0.1".to_owned()];
     s.port = port;
     let refused = connect(&s).await.expect_err("refused");
@@ -174,7 +242,7 @@ async fn a_refused_connection_names_its_host_and_port() {
 async fn a_server_that_does_not_offer_tls_is_refused() {
     let dir = tempfile::tempdir().expect("dir");
     let addr = no_tls_server().await;
-    let mut s = with_password(dir.path(), b"p\n", 0o600);
+    let mut s = settings_with_password_file(dir.path(), b"p\n", 0o600);
     s.hosts = vec!["127.0.0.1".to_owned()];
     s.port = addr.port();
     let message = why(connect(&s).await.expect_err("refused"));
