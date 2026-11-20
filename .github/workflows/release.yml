@@ -344,9 +344,9 @@ jobs:
         run: |
           set -euo pipefail
           for archive in dist/*.tar.gz; do
-            gh attestation verify "$archive" --repo "$GITHUB_REPOSITORY" \
+            scripts/retry.sh gh attestation verify "$archive" --repo "$GITHUB_REPOSITORY" \
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml"
-            gh attestation verify "$archive" --repo "$GITHUB_REPOSITORY" \
+            scripts/retry.sh gh attestation verify "$archive" --repo "$GITHUB_REPOSITORY" \
               --predicate-type https://cyclonedx.org/bom
           done
           changed="$RUNNER_TEMP/changed.tar.gz"
@@ -394,7 +394,7 @@ jobs:
             --certificate-identity "$SIGNER" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             dist/SHA256SUMS.txt
-          gh attestation verify dist/SHA256SUMS.txt \
+          scripts/retry.sh gh attestation verify dist/SHA256SUMS.txt \
             --bundle "dist/vcon-server-${VERSION}.intoto.jsonl" \
             --repo "$GITHUB_REPOSITORY" \
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml"
@@ -553,7 +553,7 @@ jobs:
           gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main -f expect="$VERSION"
           run=""
           for _ in $(seq 1 30); do
-            run="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow pages.yml \
+            run="$(scripts/retry.sh gh run list --repo "$GITHUB_REPOSITORY" --workflow pages.yml \
               --event workflow_dispatch --created ">=$since" --limit 1 \
               --json databaseId --jq '.[0].databaseId // empty')"
             [ -n "$run" ] && break

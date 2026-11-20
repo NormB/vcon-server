@@ -6,7 +6,10 @@ Run with: python3 -I scripts/test_advertised_release.py
 """
 
 import importlib.util
+import io
+import json
 import pathlib
+import subprocess
 import sys
 import unittest
 
@@ -313,6 +316,45 @@ class TreeVersion(unittest.TestCase):
         # hook test's fixture (scripts/test-hooks.sh), which is shaped like it.
         text = (HERE.parent / "Cargo.toml").read_text(encoding="utf-8")
         self.assertIsNotNone(ar.version_key(ar.tree_version(text)))
+
+
+class Releases(unittest.TestCase):
+    """The release listing waits out a spent API budget (gh_rate_limit.py)."""
+
+    LIMITED = "gh: API rate limit exceeded for installation."
+
+    def fake(self, first_rc, first_err, reset):
+        calls = []
+
+        def run(cmd, **kw):
+            calls.append(cmd)
+            if cmd == ["gh", "api", "rate_limit"]:
+                body = json.dumps({"resources": {"core": {"limit": 1000, "remaining": 0, "reset": reset}}})
+                return subprocess.CompletedProcess(cmd, 0, body, "")
+            if len(calls) == 1:
+                return subprocess.CompletedProcess(cmd, first_rc, "", first_err)
+            return subprocess.CompletedProcess(cmd, 0, json.dumps([[release("0.4.11")]]), "")
+
+        return run, calls
+
+    def test_a_spent_budget_is_waited_for_and_the_listing_read(self):
+        run, _ = self.fake(1, self.LIMITED, 1_000_060)
+        slept = []
+        got = ar._releases("o/r", run=run, clock=lambda: 1_000_000, sleep=slept.append, err=io.StringIO())
+        self.assertEqual([r["tag_name"] for r in got], ["v0.4.11"], "the listing after the reset")
+        self.assertEqual(slept, [65], "to the reset plus 5 s")
+
+    def test_another_failure_is_refused_at_once(self):
+        run, calls = self.fake(1, "gh: Not Found (HTTP 404)", 1_000_060)
+        with self.assertRaises(ar.Refused, msg="a 404 is not waited for"):
+            ar._releases("o/r", run=run, clock=lambda: 1_000_000, sleep=lambda s: None, err=io.StringIO())
+        self.assertEqual(len(calls), 1, "no budget read, no second call")
+
+    def test_a_reset_past_the_wait_is_refused_with_gh_message(self):
+        run, _ = self.fake(1, self.LIMITED, 1_009_000)
+        with self.assertRaises(ar.Refused) as caught:
+            ar._releases("o/r", run=run, clock=lambda: 1_000_000, sleep=lambda s: None, err=io.StringIO())
+        self.assertIn("rate limit exceeded", str(caught.exception), "gh's message is kept")
 
 
 if __name__ == "__main__":

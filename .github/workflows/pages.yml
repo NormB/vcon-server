@@ -43,7 +43,9 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
-    timeout-minutes: 5
+    # Up to 15 min of it may be a wait for a spent API budget
+    # (scripts/gh_rate_limit.py).
+    timeout-minutes: 20
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -55,6 +57,13 @@ jobs:
       sha: ${{ steps.ci.outputs.sha }}
       id: ${{ steps.ci.outputs.id }}
     steps:
+      # Only scripts/, for retry.sh and the rate-limit rule the next step
+      # runs before the commit to deploy is known.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: .ci-scripts
+          sparse-checkout: scripts
+          persist-credentials: false
       - name: Find CI's run of the commit to deploy
         id: ci
         env:
@@ -67,7 +76,7 @@ jobs:
           if [ "$EVENT" = workflow_run ]; then
             id=$RUN_ID sha=$RUN_SHA
           else
-            read -r id sha < <(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main \
+            read -r id sha < <(.ci-scripts/scripts/retry.sh gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main \
               --event push --status success --limit 1 --json databaseId,headSha \
               --jq '.[0] | "\(.databaseId) \(.headSha)"')
           fi

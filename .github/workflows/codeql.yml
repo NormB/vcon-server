@@ -22,8 +22,9 @@ jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
     # The analysis (the Rust one took 11 min on 2026-11-16) and up to
-    # 15 min of waiting for code scanning to process its results.
-    timeout-minutes: 45
+    # 15 min of waiting for code scanning to process its results, and up
+    # to 15 min more for a spent API budget (scripts/gh_rate_limit.py).
+    timeout-minutes: 60
     runs-on: ubuntu-24.04
     permissions:
       # Upload the findings to code scanning, and read its alerts back.

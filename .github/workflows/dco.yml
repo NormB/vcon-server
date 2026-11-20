@@ -32,8 +32,9 @@ jobs:
   dco:
     name: DCO
     runs-on: ubuntu-24.04
-    # A few API calls per commit; this bounds a hang.
-    timeout-minutes: 10
+    # A few API calls per commit, and up to 15 min of waiting for a spent
+    # API budget (scripts/gh_rate_limit.py); this bounds a hang.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

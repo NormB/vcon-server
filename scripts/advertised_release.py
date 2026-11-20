@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import calendar
+import importlib.util
 import json
 import pathlib
 import re
@@ -52,6 +53,10 @@ import sys
 import time
 import urllib.error
 import urllib.request
+
+_spec = importlib.util.spec_from_file_location("gh_rate_limit", pathlib.Path(__file__).resolve().parent / "gh_rate_limit.py")
+gh_rate_limit = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(gh_rate_limit)
 
 # The files of a release, with the version written as <v>
 # (release.yml: the two archives, the SBOM, the checksums and their
@@ -219,9 +224,11 @@ def tree_version(manifest: str) -> str:
 # The edges: gh, git and the network. Everything above is judged on values.
 
 
-def _releases(repo):
-    out = subprocess.run(
+def _releases(repo, run=subprocess.run, clock=time.time, sleep=time.sleep, err=sys.stderr):
+    # A spent API budget is waited for, at most 15 min (gh_rate_limit.py).
+    out = gh_rate_limit.run_gh(
         ["gh", "api", f"repos/{repo}/releases", "--paginate", "--slurp"],
+        run=run, clock=clock, sleep=sleep, max_wait=gh_rate_limit.DEFAULT_MAX, err=err,
         check=False, capture_output=True, text=True, timeout=120,
     )
     if out.returncode != 0:

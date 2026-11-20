@@ -912,6 +912,51 @@ job that runs in a container, and in a composite action or a shell script,
 within the file. `scripts/test_apt_mirror_setup.py` tests the script
 against a server on the same machine.
 
+### The GitHub API budget
+
+Purpose: a job that calls the GitHub API with the workflow's token draws
+on one hourly budget that every job of every run of the repository shares.
+On 2026-11-19 a ClusterFuzzLite build spent it, and CodeQL, OSV-Scanner,
+Scorecard and CI's required-checks step on `main` failed on "API rate limit
+exceeded for installation" for a cause outside the change. Two rules keep
+that from turning `main` red again.
+
+- The ClusterFuzzLite build step gets no token and keeps every target
+  (`keep-unaffected-fuzz-targets: true`). To drop a target it looks for a
+  coverage report by reading the list of every artifact of the repository,
+  and that loop can run until the budget is gone. No run here makes a
+  coverage report, so the build kept every target before this rule too.
+- A call that meets a spent budget waits for the reset instead of failing:
+  `scripts/gh_rate_limit.py` reads the budget (`gh api rate_limit`, which
+  costs none of it) and waits for its reset plus 5 seconds, when that is at
+  most 15 minutes away, then the call runs once more. `scripts/retry.sh`
+  applies it to every `gh` command it runs, and `codeql_pr_gate.py`,
+  `advertised_release.py` and `docs_test.py` call it directly.
+
+Prerequisites: none beyond the workflow's token; the budget read needs no
+other permission.
+
+Steps, when you add a workflow step that reads the GitHub API:
+
+1. Run the `gh` command through `scripts/retry.sh` (a step before any
+   checkout first checks out `scripts/` alone, as `pages.yml`'s `decide`
+   job does).
+2. Give the job `timeout-minutes` of 20 or more, so the 15-minute wait fits.
+3. Run `python3 -I scripts/test_gh_rate_limit.py`.
+
+Verify: the test passes; it refuses a `gh api`, `gh run list`, `gh run
+view`, `gh attestation verify`, `gh release view` or `gh release download`
+outside `scripts/retry.sh` in any workflow, and a job with such a step and
+a shorter deadline. Its one exemption is `release.yml`'s check that a
+changed archive does not verify, where a retry would ask again for the
+refusal the step expects.
+
+Troubleshoot: a job log line `gh-rate-limit: 0 of <limit> requests left; the
+budget resets at <time>, <n> s from now, more than the 900 s this call may
+wait` means the budget was gone for longer than the wait; re-run the job
+after that time. `cannot read the rate limit` means `gh` could not answer at
+all; the call then fails, or retries, the way it would without the rule.
+
 ### The contract job
 
 - **Purpose.** `.github/workflows/contract.yml` runs the job `Contract` on

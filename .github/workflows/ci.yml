@@ -517,7 +517,9 @@ jobs:
 
   scan:
     name: no AI attribution or personal data
-    timeout-minutes: 10
+    # Up to 15 min of it may be a wait for a spent API budget
+    # (scripts/gh_rate_limit.py).
+    timeout-minutes: 25
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -563,6 +565,10 @@ jobs:
       # scanning did not process its results or a pull request adds an alert.
       - name: The CodeQL gate of pull requests
         run: python3 -I scripts/test_codeql_pr_gate.py
+      # A GitHub API call that met a spent budget waits for its reset, and
+      # every gh read in a workflow goes through that rule.
+      - name: A spent API budget is waited for
+        run: python3 -I scripts/test_gh_rate_limit.py
       # A toolchain or tool download retries, so a runner's dropped
       # connection does not fail a job, and a release asset goes through
       # scripts/fetch-pinned.sh (scripts/check_workflow_downloads.py).

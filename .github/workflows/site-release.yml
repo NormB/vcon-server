@@ -31,7 +31,9 @@ concurrency:
 jobs:
   site-release:
     name: the live site names the newest release
-    timeout-minutes: 10
+    # Up to 15 min of it may be a wait for a spent API budget
+    # (scripts/gh_rate_limit.py).
+    timeout-minutes: 25
     runs-on: ubuntu-24.04
     permissions:
       contents: read

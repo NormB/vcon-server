@@ -108,6 +108,11 @@ import tempfile
 import threading
 import time
 import tomllib
+import importlib.util
+
+_spec = importlib.util.spec_from_file_location("gh_rate_limit", os.path.join(os.path.dirname(os.path.abspath(__file__)), "gh_rate_limit.py"))
+gh_rate_limit = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(gh_rate_limit)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOCS = os.path.join(ROOT, "website", "content", "docs")
@@ -1613,12 +1618,8 @@ GITHUB_API = "https://api.github.com/"
 REPO = "NormB/vcon-server"
 
 
-def github_api(path: str, token: str | None, run=subprocess.run) -> tuple[int, str]:
-    """One GitHub API request: its HTTP status and body. With a token (CI's
-    GH_TOKEN), the request carries it, so it is not held to the hosted
-    runners' shared limit for unauthenticated requests. curl reads the header
-    from standard input, so the token is never in a process's arguments."""
-    cmd = ["curl", "-sS", "--retry", "3", "-w", "\n%{http_code}", GITHUB_API + path]
+def _github_api_once(path: str, token: str | None, run) -> tuple[int, str, int | None, int | None]:
+    cmd = ["curl", "-sS", "--retry", "3", "-w", "\n%header{x-ratelimit-remaining} %header{x-ratelimit-reset} %{http_code}", GITHUB_API + path]
     stdin = None
     if token:
         cmd[1:1] = ["-H", "@-"]
@@ -1626,8 +1627,29 @@ def github_api(path: str, token: str | None, run=subprocess.run) -> tuple[int, s
     out = run(cmd, input=stdin, capture_output=True, text=True, timeout=60)
     if out.returncode != 0:
         raise PageError(f"GitHub API {path}: {out.stderr.strip() or f'curl exited {out.returncode}'}")
-    body, _, code = out.stdout.rpartition("\n")
-    return int(code), body
+    body, _, last = out.stdout.rpartition("\n")
+    fields = last.split()
+    remaining, reset = (int(fields[0]), int(fields[1])) if len(fields) == 3 else (None, None)
+    return int(fields[-1]), body, remaining, reset
+
+
+def github_api(path: str, token: str | None, run=subprocess.run, clock=time.time, sleep=time.sleep, err=sys.stderr) -> tuple[int, str]:
+    """One GitHub API request: its HTTP status and body. With a token (CI's
+    GH_TOKEN), the request carries it, so it is not held to the hosted
+    runners' shared limit for unauthenticated requests. curl reads the header
+    from standard input, so the token is never in a process's arguments.
+    A 403 or 429 with no request left is asked once more after the budget's
+    reset, when that is at most 900 s away (scripts/gh_rate_limit.py's rule)."""
+    code, body, remaining, reset = _github_api_once(path, token, run)
+    if code not in (403, 429) or remaining != 0 or reset is None:
+        return code, body
+    budget = gh_rate_limit.Budget(0, 0, reset)
+    verdict, seconds = gh_rate_limit.plan(budget, clock(), gh_rate_limit.DEFAULT_MAX, gh_rate_limit.DEFAULT_MARGIN)
+    if verdict != "wait":
+        return code, body
+    print(f"docs-test: GitHub API {path}: no request left; waiting {seconds} s for the reset", file=err)
+    sleep(seconds)
+    return _github_api_once(path, token, run)[:2]
 
 
 def _refused(path: str, code: int, body: str) -> PageError:
@@ -2272,11 +2294,15 @@ def ci_job_name(scenario: str) -> str:
     return f"how-to {scenario} against a live server"
 
 
-def gh_api(path: str, run=subprocess.run) -> list:
+def gh_api(path: str, run=subprocess.run, clock=time.time, sleep=time.sleep, err=sys.stderr) -> list:
     """Every page of a GitHub API listing, read with gh (its own login, or
-    GH_TOKEN), as a list of the pages' bodies."""
+    GH_TOKEN), as a list of the pages' bodies. A spent API budget is waited
+    for, at most 900 s (scripts/gh_rate_limit.py)."""
     try:
-        done = run(["gh", "api", "--paginate", "--slurp", path], capture_output=True, text=True, timeout=60)
+        done = gh_rate_limit.run_gh(
+            ["gh", "api", "--paginate", "--slurp", path], run=run, clock=clock, sleep=sleep, err=err,
+            capture_output=True, text=True, timeout=60,
+        )
     except (OSError, subprocess.TimeoutExpired) as e:
         raise PageError(f"gh api {path}: {e}") from None
     if done.returncode != 0:

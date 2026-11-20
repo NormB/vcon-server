@@ -388,6 +388,41 @@ class GhApi(unittest.TestCase):
         gate.gh_api("repos/x/y", run=fake)
         self.assertEqual(seen.get("timeout"), 60)
 
+    LIMITED = "gh: API rate limit exceeded for installation. If you reach out to GitHub Support for help\n"
+
+    def budget(self, remaining, reset):
+        return json.dumps({"resources": {"core": {"limit": 5000, "remaining": remaining, "reset": reset}}})
+
+    def test_a_spent_budget_is_waited_for_and_the_call_made_again(self):
+        calls, slept = [], []
+
+        def fake(cmd, **kw):
+            calls.append(cmd)
+            if cmd == ["gh", "api", "rate_limit"]:
+                return subprocess.CompletedProcess(cmd, 0, self.budget(0, 1_000_100), "")
+            if len(calls) == 1:
+                return subprocess.CompletedProcess(cmd, 1, "", self.LIMITED)
+            return subprocess.CompletedProcess(cmd, 0, json.dumps({"a": 2}), "")
+
+        answer = gate.gh_api("repos/x/y", run=fake, clock=lambda: 1_000_000, sleep=slept.append, err=io.StringIO())
+        self.assertEqual(answer, {"a": 2}, "the answer after the reset")
+        self.assertEqual(slept, [105], "waits to the reset plus 5 s")
+
+    def test_a_reset_further_off_than_the_gate_waits_is_a_gate_error(self):
+        def fake(cmd, **kw):
+            if cmd == ["gh", "api", "rate_limit"]:
+                return subprocess.CompletedProcess(cmd, 0, self.budget(0, 1_003_000), "")
+            return subprocess.CompletedProcess(cmd, 1, "", self.LIMITED)
+
+        slept = []
+        with self.assertRaises(gate.GateError) as caught:
+            gate.gh_api("repos/x/y", run=fake, clock=lambda: 1_000_000, sleep=slept.append, err=io.StringIO())
+        self.assertIn("rate limit exceeded", str(caught.exception), "the gh message is kept")
+        self.assertEqual(slept, [], "no wait past the most the gate waits")
+
+    def test_the_gate_waits_at_most_the_rate_limit_wait(self):
+        self.assertEqual(gate.RATE_LIMIT_WAIT, 900, "15 min, inside the job's deadline")
+
 
 class Workflow(unittest.TestCase):
     TEXT = (HERE.parent / ".github" / "workflows" / "codeql.yml").read_text(encoding="utf-8")
@@ -413,7 +448,7 @@ class Workflow(unittest.TestCase):
         self.assertIn("security-events: write", self.TEXT)
 
     def test_the_job_deadline_holds_the_analysis_and_the_wait(self):
-        self.assertRegex(self.TEXT, r"timeout-minutes: 45\n", "45 min: the analysis and 15 min of waiting")
+        self.assertRegex(self.TEXT, r"timeout-minutes: 60\n", "60 min: the analysis, 15 min of waiting and 15 min for a spent API budget")
         self.assertRegex(self.TEXT, r"--wait 900(?![0-9])", "15 min")
 
 

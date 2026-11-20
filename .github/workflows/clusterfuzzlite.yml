@@ -36,12 +36,22 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     steps:
+      # No token and every target kept: the build looks up no artifact. To
+      # drop unaffected targets it looks for a coverage report, which no
+      # run here makes (no coverage mode), by reading the list of every
+      # artifact of the repository, page by page (2,130 artifacts, 22 pages,
+      # on 2026-11-20). Its loop ends only when it has read as many as the
+      # first page's total_count; on 2026-11-19 (#245) it never got there
+      # and asked for pages 1 to 4,948 in 19 minutes, which
+      # spent the repository's hourly API budget, and main's next CodeQL,
+      # OSV-Scanner, Scorecard and CI runs failed on it. With no report
+      # found it kept every target anyway, so keeping them changes nothing.
       - name: Build the fuzz targets
         uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
         with:
           language: rust
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           sanitizer: address
+          keep-unaffected-fuzz-targets: true
       # A pull request is fuzzed against its change for five minutes; a push
       # to main for ten minutes and the weekly run for an hour, in batch,
       # all targets sharing the time.

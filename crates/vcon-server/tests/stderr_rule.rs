@@ -266,3 +266,245 @@ fn two_findings_on_two_lines_are_both_named() {
         "each"
     );
 }
+
+// The one `eprintln!` that `.log_internal_errors(false)` does not reach:
+// tracing-subscriber 0.3.23's fmt layer prints "Unable to format the
+// following event" with `eprintln!` when a NEW SPAN's fields fail to
+// format (fmt_layer.rs `on_new_span`), and that panics on a closed stderr.
+// A field fails only through a `Debug` or `Display` impl that returns
+// `fmt::Error` itself (the buffer is a `String`). So: no source here opens a
+// span or names `fmt::Error` outside an `impl ... Write for` block, the
+// server's log keeps tracing-subscriber's default level (INFO), and the
+// crates of Cargo.lock that use `tracing` are the ones whose spans at INFO
+// or above were read (2026-11-20): only rmcp 3.9.0 opens any, one with no
+// fields (`#[instrument(skip_all)]`) and one whose one field is a `&str`.
+
+/// Each span the Rust source `text` of `name` opens, and each `fmt::Error`
+/// it names outside an `impl ... Write for` block: one finding per line.
+fn span_findings(name: &str, text: &str) -> Vec<String> {
+    const OPENERS: [&str; 11] = [
+        "span!(",
+        "trace_span!(",
+        "debug_span!(",
+        "info_span!(",
+        "warn_span!(",
+        "error_span!(",
+        "#[instrument",
+        "#[tracing::instrument",
+        "Span::new(",
+        "Span::new_root(",
+        "Span::child_of(",
+    ];
+    let mut out = Vec::new();
+    // The brace depth at which an `impl ... Write for` body is open.
+    let mut sink: Option<usize> = None;
+    let mut depth = 0usize;
+    for (i, line) in text.lines().enumerate() {
+        let code = line.split("//").next().unwrap_or_default();
+        // A string is not code: drop each "..." part.
+        let code: String = code.split('"').step_by(2).collect();
+        if OPENERS.iter().any(|o| {
+            code.match_indices(o).any(|(at, _)| {
+                // `span!(` inside `info_span!(` is that one opener.
+                let before = code[..at].chars().next_back();
+                !before.is_some_and(|c| c.is_alphanumeric() || c == '_')
+            })
+        }) {
+            out.push(format!("{name}:{}: a span is opened", i + 1));
+        }
+        if sink.is_none() && code.contains("impl") && code.contains("Write for") {
+            sink = Some(depth);
+        }
+        if code.contains("fmt::Error") && sink.is_none() {
+            out.push(format!(
+                "{name}:{}: fmt::Error outside an impl ... Write for block",
+                i + 1
+            ));
+        }
+        for c in code.chars() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth = depth.saturating_sub(1);
+                    if sink == Some(depth) {
+                        sink = None;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// The packages of the Cargo.lock `text` that depend on `tracing`, sorted.
+fn tracing_users(text: &str) -> Vec<String> {
+    let mut users = Vec::new();
+    for package in text.split("[[package]]") {
+        let name = package
+            .lines()
+            .find_map(|l| l.strip_prefix("name = \""))
+            .and_then(|l| l.strip_suffix('"'));
+        let uses = package.lines().any(|l| {
+            let dep = l.trim().trim_end_matches(',').trim_matches('"');
+            dep == "tracing" || dep.starts_with("tracing ")
+        });
+        if let (Some(name), true) = (name, uses) {
+            users.push(name.to_owned());
+        }
+    }
+    users.sort();
+    users.dedup();
+    users
+}
+
+/// The packages whose spans were read, each with what was found.
+const READ_TRACING_USERS: [(&str, &str); 18] = [
+    ("aws-config", "no span at INFO or above"),
+    ("aws-runtime", "no span at INFO or above"),
+    ("aws-sdk-s3", "no span at INFO or above"),
+    ("aws-sdk-sts", "no span at INFO or above"),
+    ("aws-sigv4", "no span at INFO or above"),
+    ("aws-smithy-checksums", "no span at INFO or above"),
+    ("aws-smithy-http", "no span at INFO or above"),
+    ("aws-smithy-http-client", "no span at INFO or above"),
+    ("aws-smithy-runtime", "no span at INFO or above"),
+    ("aws-smithy-runtime-api", "no span at INFO or above"),
+    ("aws-types", "no span at INFO or above"),
+    ("h2", "no span at INFO or above"),
+    (
+        "hyper-util",
+        "INFO spans only in its tests and doc examples",
+    ),
+    ("quinn", "INFO and ERROR spans only in its tests"),
+    ("quinn-proto", "INFO spans only in its tests"),
+    ("quinn-udp", "no span at INFO or above"),
+    ("rmcp", "two INFO spans: no fields, and one `&str` field"),
+    ("vcon-server", "no span (span_findings)"),
+];
+
+fn workspace_file(rel: &str) -> String {
+    std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(rel),
+    )
+    .unwrap_or_else(|e| panic!("{rel}: {e}"))
+}
+
+// Success.
+
+#[test]
+fn no_source_file_opens_a_span_or_names_fmt_error() {
+    let found: Vec<String> = sources()
+        .iter()
+        .flat_map(|p| {
+            span_findings(
+                &p.display().to_string(),
+                &std::fs::read_to_string(p).expect("read"),
+            )
+        })
+        .collect();
+    assert!(found.is_empty(), "spans or fmt::Error: {found:#?}");
+}
+
+#[test]
+fn the_crates_that_use_tracing_are_the_ones_read() {
+    let read: Vec<String> = READ_TRACING_USERS
+        .iter()
+        .map(|(n, _)| (*n).to_owned())
+        .collect();
+    assert_eq!(
+        tracing_users(&workspace_file("Cargo.lock")),
+        read,
+        "a crate that now uses tracing: read its spans at INFO or above, then list it"
+    );
+}
+
+#[test]
+fn the_server_log_keeps_the_default_level() {
+    let main = workspace_file("crates/vcon-server/src/main.rs");
+    for setter in ["with_max_level", "with_env_filter", "with_filter"] {
+        assert!(
+            !main.contains(setter),
+            "{setter}: a lower level lets DEBUG and TRACE spans of every crate reach the eprintln!"
+        );
+    }
+}
+
+#[test]
+fn a_write_sink_may_name_fmt_error() {
+    let text = "impl fmt::Write for Sink {\n    fn write_str(&mut self, s: &str) -> fmt::Result {\n        Err(fmt::Error)\n    }\n}\n";
+    assert!(span_findings("a.rs", text).is_empty(), "a sink's own error");
+}
+
+// Failure.
+
+#[test]
+fn each_way_to_open_a_span_is_found() {
+    for text in [
+        "let s = info_span!(\"x\");\n",
+        "let s = tracing::debug_span!(\"x\");\n",
+        "let s = span!(Level::INFO, \"x\");\n",
+        "let s = trace_span!(\"x\");\n",
+        "let s = warn_span!(\"x\");\n",
+        "let s = error_span!(\"x\");\n",
+        "#[instrument]\nfn f() {}\n",
+        "#[tracing::instrument(skip(a))]\nfn f() {}\n",
+        "let s = Span::new(meta, &values);\n",
+        "let s = Span::new_root(meta, &values);\n",
+        "let s = Span::child_of(p, meta, &values);\n",
+    ] {
+        assert_eq!(span_findings("a.rs", text).len(), 1, "{text:?}");
+    }
+}
+
+#[test]
+fn fmt_error_in_a_display_impl_is_found_with_its_line() {
+    let text = "impl fmt::Display for X {\n    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {\n        Err(fmt::Error)\n    }\n}\n";
+    assert_eq!(
+        span_findings("a.rs", text),
+        ["a.rs:3: fmt::Error outside an impl ... Write for block"],
+        "a field of that type would fail to format"
+    );
+}
+
+#[test]
+fn a_new_crate_that_uses_tracing_is_listed() {
+    let lock = "[[package]]\nname = \"a\"\nversion = \"1.0.0\"\ndependencies = [\n \"b\",\n \"tracing\",\n]\n\n[[package]]\nname = \"c\"\nversion = \"1.0.0\"\ndependencies = [\n \"tracing 0.1.44\",\n]\n\n[[package]]\nname = \"d\"\nversion = \"1.0.0\"\n";
+    assert_eq!(tracing_users(lock), ["a", "c"], "with or without a version");
+}
+
+// Edge.
+
+#[test]
+fn a_span_in_a_comment_or_a_method_named_span_is_not_found() {
+    let text = "// info_span!(x) would open one\nlet s = req.span();\nlet t = x.in_current_span();\nlet n = \"debug_span!(x)\";\nlet m = time_span!(x);\n";
+    assert!(span_findings("a.rs", text).is_empty(), "no span is opened");
+}
+
+#[test]
+fn fmt_error_after_a_write_sink_closes_is_found() {
+    let text = "impl fmt::Write for Sink {\n    fn write_str(&mut self, _: &str) -> fmt::Result { Ok(()) }\n}\nfn f() -> fmt::Result { Err(fmt::Error) }\n";
+    assert_eq!(
+        span_findings("a.rs", text).len(),
+        1,
+        "the sink ended at line 3"
+    );
+}
+
+#[test]
+fn tracing_subscriber_and_tracing_core_are_not_users() {
+    let lock = "[[package]]\nname = \"a\"\nversion = \"1.0.0\"\ndependencies = [\n \"tracing-core\",\n \"tracing-subscriber\",\n]\n";
+    assert!(
+        tracing_users(lock).is_empty(),
+        "only the crate `tracing` itself"
+    );
+}
+
+#[test]
+fn every_read_crate_has_a_reason() {
+    for (name, why) in READ_TRACING_USERS {
+        assert!(!why.trim().is_empty(), "{name} has no reason");
+    }
+}

@@ -31,27 +31,38 @@ names the repository; GH_TOKEN is read by gh.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
+import pathlib
 import subprocess
 import sys
 import time
 import urllib.parse
 
+_spec = importlib.util.spec_from_file_location("gh_rate_limit", pathlib.Path(__file__).resolve().parent / "gh_rate_limit.py")
+gh_rate_limit = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(gh_rate_limit)
+
 PAGE = 100
 FIRST_WAIT, LONGEST_WAIT = 5, 60
 DEFAULT_WAIT = 900
 GH_DEADLINE = 60
+RATE_LIMIT_WAIT = 900
 
 
 class GateError(Exception):
     """Code scanning cannot be read; the message says why."""
 
 
-def gh_api(path: str, run=subprocess.run):
-    """The JSON answer of `gh api <path>`."""
+def gh_api(path: str, run=subprocess.run, clock=time.time, sleep=time.sleep, err=sys.stderr):
+    """The JSON answer of `gh api <path>`. A spent API budget is waited for
+    (at most RATE_LIMIT_WAIT seconds) by scripts/gh_rate_limit.py's rule."""
     try:
-        done = run(["gh", "api", path], capture_output=True, text=True, timeout=GH_DEADLINE)
+        done = gh_rate_limit.run_gh(
+            ["gh", "api", path], run=run, clock=clock, sleep=sleep, max_wait=RATE_LIMIT_WAIT, err=err,
+            capture_output=True, text=True, timeout=GH_DEADLINE,
+        )
     except subprocess.TimeoutExpired as error:
         raise GateError(f"gh api {path} did not answer in {GH_DEADLINE} s") from error
     if done.returncode != 0:

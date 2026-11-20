@@ -550,6 +550,45 @@ class GitHubApi(unittest.TestCase):
         with self.assertRaisesRegex(dt.PageError, "Could not resolve host"):
             dt.released("0.2.0", None, run)
 
+    # A spent budget: curl prints the answer's x-ratelimit-remaining and
+    # x-ratelimit-reset before the status (scripts/gh_rate_limit.py's rule).
+    SPENT = '{"message":"API rate limit exceeded for installation."}\n0 1000060 403'
+
+    def answers(self, *stdouts):
+        calls = []
+
+        def run(cmd, **kw):
+            calls.append(cmd)
+            out = stdouts[min(len(calls), len(stdouts)) - 1]
+            return subprocess.CompletedProcess(cmd, 0, out, "")
+
+        return run, calls
+
+    def test_curl_is_asked_for_the_rate_limit_headers(self):
+        run, calls = self.answers("{}\n4999 1000060 200")
+        self.assertEqual(dt.github_api("repos/o/r/releases/latest", None, run), (200, "{}"), "three fields on the last line")
+        self.assertIn("%header{x-ratelimit-remaining}", " ".join(calls[0]), "curl prints the budget left")
+
+    def test_a_spent_budget_is_waited_for_and_asked_again(self):
+        run, calls = self.answers(self.SPENT, '{"tag_name":"v0.4.11"}\n4999 1003600 200')
+        slept = []
+        got = dt.github_api("repos/o/r/releases/latest", "t", run, clock=lambda: 1_000_000, sleep=slept.append, err=io.StringIO())
+        self.assertEqual(got, (200, '{"tag_name":"v0.4.11"}'), "the answer after the reset")
+        self.assertEqual(slept, [65], "to the reset plus 5 s")
+        self.assertEqual(len(calls), 2, "asked twice")
+
+    def test_a_refusal_with_budget_left_is_not_waited_for(self):
+        run, calls = self.answers('{"message":"Resource not accessible"}\n12 1000060 403')
+        slept = []
+        self.assertEqual(dt.github_api("repos/o/r/x", "t", run, clock=lambda: 1_000_000, sleep=slept.append, err=io.StringIO())[0], 403, "returned")
+        self.assertEqual((slept, len(calls)), ([], 1), "no wait, one request")
+
+    def test_a_reset_too_far_off_is_not_waited_for(self):
+        run, calls = self.answers('{"message":"API rate limit exceeded"}\n0 1009000 403')
+        slept = []
+        self.assertEqual(dt.github_api("repos/o/r/x", "t", run, clock=lambda: 1_000_000, sleep=slept.append, err=io.StringIO())[0], 403, "returned")
+        self.assertEqual((slept, len(calls)), ([], 1), "no wait past 900 s")
+
 
 class Lint(unittest.TestCase):
     def test_a_request_needs_its_answer_on_the_page(self):
@@ -3458,6 +3497,21 @@ class CiResults(unittest.TestCase):
     def test_an_answer_that_is_not_json_is_an_error(self):
         with self.assertRaises(dt.PageError):
             dt.gh_api("repos/x", run=FakeRun({"gh api": (0, "<html>")}))
+
+    def test_a_spent_budget_is_waited_for_and_the_listing_read_again(self):
+        calls = []
+
+        def run(cmd, **kw):
+            calls.append(cmd)
+            if cmd == ["gh", "api", "rate_limit"]:
+                return subprocess.CompletedProcess(cmd, 0, '{"resources":{"core":{"limit":5000,"remaining":0,"reset":1000010}}}', "")
+            if len(calls) == 1:
+                return subprocess.CompletedProcess(cmd, 1, "", "gh: API rate limit exceeded for user ID 1.")
+            return subprocess.CompletedProcess(cmd, 0, "[[]]", "")
+
+        slept = []
+        self.assertEqual(dt.gh_api("repos/x", run=run, clock=lambda: 1_000_000, sleep=slept.append, err=io.StringIO()), [[]], "read after the reset")
+        self.assertEqual(slept, [15], "to the reset plus 5 s")
 
 
 class CheckRange(unittest.TestCase):
