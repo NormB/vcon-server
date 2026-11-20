@@ -141,11 +141,19 @@ its objects in Parquet storage, which CI restores and opens the same way on
 PostgreSQL 16 and 18. CI also upgrades the previous release to this one and
 back. [Stability](@/docs/stability.md) states what 1.0 keeps unchanged
 and which changes break a client, and `scripts/contract_diff.py` tells a
-breaking change to the HTTP API or its problem types from an additive one,
-against any release tag.
+breaking change from an additive one, against any release tag, for the
+HTTP API and its problem types, the command line and its exit codes, the
+configuration keys, types and defaults, the MCP tools and their
+arguments, the environment variables, the on-disk formats and the audit
+records. The command line, the configuration, the MCP tools, the
+environment variables, the on-disk formats and the audit records each
+have a snapshot under `contract/`, which a test writes from its source and
+holds equal to it. The `Contract` job
+runs the comparison against the newest release tag on every pull request
+and prints each change; it does not block a merge yet.
 
-Left: the same comparison for the configuration, against a frozen copy of
-it; and a CI job that runs the comparisons on every change.
+Left: the `Contract` job made a required check, so that a breaking change
+cannot merge, which is the 1.0 step itself.
 
 Evidence:
 
@@ -154,6 +162,12 @@ Evidence:
   [contract_diff.py](https://github.com/NormB/vcon-server/blob/main/scripts/contract_diff.py)
 - its tests, in
   [test_contract_diff.py](https://github.com/NormB/vcon-server/blob/main/scripts/test_contract_diff.py)
+- CI job `contract` in
+  [contract.yml](https://github.com/NormB/vcon-server/blob/main/.github/workflows/contract.yml)
+- the configuration snapshot, in
+  [config.json](https://github.com/NormB/vcon-server/blob/main/contract/config.json)
+- the command-line snapshot, in
+  [cli.json](https://github.com/NormB/vcon-server/blob/main/contract/cli.json)
 
 - the OpenAPI description, in
   [openapi.json](https://github.com/NormB/vcon-server/blob/main/crates/vcon-server/openapi.json)
