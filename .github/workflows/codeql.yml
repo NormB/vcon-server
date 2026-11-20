@@ -18,6 +18,22 @@ on:
 permissions:
   contents: read
 
+# The CodeQL version is pinned here and nowhere else. Until 2026-11-20 the
+# action chose it at run time (GitHub's feature flags), whatever its own pin:
+# main's run on 27e541e moved from CLI 2.27.4 to 2.27.5 with no change here,
+# and 24 rust/cleartext-logging alerts opened on main. A new version is now a
+# pull request that changes CODEQL_VERSION and the three bundle_sha256
+# values below; the scheduled run fails while a newer bundle is released
+# (scripts/codeql_pin.py, which also holds this file to the pin's shape).
+#
+# Diff-informed analysis is off, so a pull request's analysis reports the
+# whole tree, and scripts/codeql_pr_gate.py refuses an alert a change opens
+# anywhere: #251's analysis reported changed lines only, so it saw none of
+# the 24 that 2.27.5 found in lines it did not change.
+env:
+  CODEQL_VERSION: 2.27.5
+  CODEQL_ACTION_DIFF_INFORMED_QUERIES: "false"
+
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
@@ -34,16 +50,39 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [actions, javascript-typescript, rust]
+        # Each language's bundle and its sha256, the digest GitHub gives
+        # for the asset of release codeql-bundle-v${CODEQL_VERSION}.
+        include:
+          - language: actions
+            bundle: actions
+            bundle_sha256: fd7915e9f242d823de40fafed58f49816dba8e5a8f443191924eaf9c792f6655
+          - language: javascript-typescript
+            bundle: javascript
+            bundle_sha256: b10957140a7969819022eac23a6a37d0c6a65de12a84704ca71c416b980edb5c
+          - language: rust
+            bundle: rust
+            bundle_sha256: fac16882d1c56f3cdfe502b1021e44407976e3260cc4660b4f898082c315fac9
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      # The bundle through the one rule for release assets: cached by
+      # version and sha256, the sha256 checked on every run.
+      - name: The pinned CodeQL bundle
+        id: bundle
+        uses: ./.github/actions/pinned-download
+        with:
+          name: codeql-bundle-${{ matrix.bundle }}
+          version: ${{ env.CODEQL_VERSION }}
+          sha256: ${{ matrix.bundle_sha256 }}
+          url: https://github.com/github/codeql-action/releases/download/codeql-bundle-v${{ env.CODEQL_VERSION }}/codeql-bundle-${{ matrix.bundle }}-linux64.tar.zst
+          file: codeql-bundle-${{ matrix.bundle }}-linux64.tar.zst
       - name: Initialize CodeQL
         uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           languages: ${{ matrix.language }}
           build-mode: none
+          tools: ${{ steps.bundle.outputs.path }}
       - name: Analyze
         id: analyze
         uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
@@ -66,3 +105,11 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           BASE: ${{ github.base_ref }}
         run: python3 -I scripts/codeql_pr_gate.py check --sarif-id "$SARIF_ID" --category "$CATEGORY" --pr "$PR" --base "${BASE:-main}" --wait 900
+      # The scheduled run, after its analysis with the pinned bundle, fails
+      # while a newer bundle is released and prints the values to pin. One
+      # job of the matrix asks; the answer is the same for each.
+      - name: The pinned CodeQL is the newest released
+        if: github.event_name == 'schedule' && matrix.language == 'rust'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I scripts/codeql_pin.py behind

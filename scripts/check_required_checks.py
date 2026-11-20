@@ -83,6 +83,22 @@ def names(job_id, job):
     if not keys:
         return [name]
     matrix = (job.get("strategy") or {}).get("matrix") or {}
+    include = matrix.get("include") if isinstance(matrix, dict) else None
+    if include is not None:
+        # A matrix of `include` entries alone names one job per entry. One
+        # that also has lists can add or extend their combinations, which
+        # this reading does not follow, so it counts as built at run time.
+        if any(k != "include" for k in matrix) or not isinstance(include, list):
+            return None
+        out = []
+        for entry in include:
+            if not isinstance(entry, dict) or any(k not in entry for k in keys):
+                return None
+            n = name
+            for key in keys:
+                n = re.sub(r"\$\{\{\s*matrix\." + re.escape(key) + r"\s*\}\}", str(entry[key]), n)
+            out.append(n)
+        return out
     values = []
     for key in keys:
         v = matrix.get(key)

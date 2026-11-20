@@ -565,6 +565,10 @@ jobs:
       # scanning did not process its results or a pull request adds an alert.
       - name: The CodeQL gate of pull requests
         run: python3 -I scripts/test_codeql_pr_gate.py
+      # The CodeQL workflow analyzes with the one pinned bundle, on the
+      # whole tree (scripts/codeql_pin.py check).
+      - name: The pinned CodeQL version
+        run: python3 -I scripts/test_codeql_pin.py
       # A GitHub API call that met a spent budget waits for its reset, and
       # every gh read in a workflow goes through that rule.
       - name: A spent API budget is waited for

@@ -74,6 +74,7 @@ python3 -I scripts/test_check_changelog.py
 python3 -I scripts/test_advertised_release.py
 python3 -I scripts/test_hook_tests.py
 python3 -I scripts/test_codeql_pr_gate.py
+python3 -I scripts/test_codeql_pin.py
 python3 -I scripts/test_gh_rate_limit.py
 # The how-to runner's own tests read the how-to pages: on 2026-11-13 a page
 # lost a line of a step's expected output, and CI's how-to job, the first to

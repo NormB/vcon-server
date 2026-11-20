@@ -72,6 +72,29 @@ class Required(unittest.TestCase):
         found = check.problems(workflows(), [r for r in REQUIRED if r != "Analyze (rust)"])
         self.assertEqual(found, ["codeql.yml: 'Analyze (rust)' runs on every pull request, but no required check needs it"])
 
+    def test_each_matrix_include_entry_is_a_check_of_its_own(self):
+        codeql = workflows()["codeql.yml"]
+        codeql["jobs"]["analyze"]["strategy"] = {"matrix": {"include": [
+            {"language": "actions", "bundle": "actions"}, {"language": "rust", "bundle": "rust"}]}}
+        self.assertEqual(check.problems(workflows(**{"codeql.yml": codeql}), REQUIRED), [],
+                         "Analyze (actions) and Analyze (rust) come from the include entries")
+
+    def test_a_matrix_include_entry_without_the_name_s_key_is_built_at_run_time(self):
+        codeql = workflows()["codeql.yml"]
+        codeql["jobs"]["analyze"]["strategy"] = {"matrix": {"include": [{"language": "rust"}, {"bundle": "actions"}]}}
+        found = check.problems(workflows(**{"codeql.yml": codeql}), REQUIRED)
+        self.assertIn("the ruleset requires 'Analyze (rust)', which no workflow job reports", found,
+                      "an entry that leaves the key out cannot be named, so no name is assumed")
+
+    def test_a_matrix_of_lists_and_include_is_built_at_run_time(self):
+        codeql = workflows()["codeql.yml"]
+        codeql["jobs"]["analyze"]["strategy"] = {"matrix": {"language": ["actions", "rust"], "include": [{"language": "go"}]}}
+        found = check.problems(workflows(**{"codeql.yml": codeql}), REQUIRED)
+        self.assertIn("the ruleset requires 'Analyze (rust)', which no workflow job reports", found,
+                      "include on top of lists can add or extend combinations; not read here")
+        self.assertIsNone(check.names("analyze", codeql["jobs"]["analyze"]),
+                          "no name is read from either part, not the include entry's alone")
+
     def test_a_job_a_required_job_needs_is_gated(self):
         # fuzz and fuzz-targets are not required by name; CI success needs them.
         self.assertEqual(check.problems(workflows(), REQUIRED), [])

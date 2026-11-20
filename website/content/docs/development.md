@@ -957,6 +957,58 @@ wait` means the budget was gone for longer than the wait; re-run the job
 after that time. `cannot read the rate limit` means `gh` could not answer at
 all; the call then fails, or retries, the way it would without the rule.
 
+### The CodeQL version
+
+Purpose: `.github/workflows/codeql.yml` analyzes with one CodeQL version,
+named in its `env.CODEQL_VERSION`, and a new version reaches `main` only
+through a pull request. Before 2026-11-20 the codeql-action chose its CLI at
+run time from GitHub's settings, whatever the action's own pin: main's run
+on `27e541e` used CLI 2.27.5 where the run the day before used 2.27.4, and 24
+`rust/cleartext-logging` alerts opened on `main` in code no commit had
+changed. The pull request before it had passed, because its analysis was
+diff-informed and reported changed lines only.
+
+- Each Analyze job fetches its language's bundle
+  (`codeql-bundle-<language>-linux64.tar.zst` of release
+  `codeql-bundle-v<version>` of `github/codeql-action`) through
+  `.github/actions/pinned-download`, with the sha256 its matrix entry
+  names, and gives it to the init step as `tools`.
+- `CODEQL_ACTION_DIFF_INFORMED_QUERIES` is `"false"`, so the analysis of
+  every pull request reports the whole tree, and `scripts/codeql_pr_gate.py`
+  refuses an alert that the pull request opens anywhere, also one that a
+  new CodeQL version finds in code the pull request did not change.
+- `scripts/codeql_pin.py check` holds the workflow to that shape (the
+  commit hook and CI run it through `scripts/test_codeql_pin.py`).
+- The scheduled run, after its analysis, runs `scripts/codeql_pin.py
+  behind`: it fails while `github/codeql-action` has released a newer
+  `codeql-bundle-vX.Y.Z` and prints the values to pin.
+
+Prerequisites: `gh`, signed in, to read the release's digests.
+
+Steps, when the scheduled run fails on "CodeQL X.Y.Z is released", or to
+move to a new version:
+
+1. Read the version and the three sha256 values from the failed step's
+   log, or from the release with `gh release view codeql-bundle-vX.Y.Z -R
+   github/codeql-action --json assets`, each asset's `digest`.
+2. In `codeql.yml`, set `CODEQL_VERSION` and each matrix entry's
+   `bundle_sha256` (the digest without `sha256:`).
+3. Run `python3 -I scripts/test_codeql_pin.py`.
+4. Open the pull request. Its Analyze jobs run the new version on the whole
+   tree; fix, in that pull request or one before it, each alert that the
+   gate names.
+
+Verify: the test passes; each Analyze job's "Initialize CodeQL" log says
+`Using CodeQL CLI from local path`, and the job's SARIF names the new
+version; the scheduled run's last step says `CodeQL X.Y.Z is the newest
+bundle released`.
+
+Troubleshoot: `pinned-download` exit `3` means the bytes do not match the
+sha256: the value was copied wrong, or it is another language's. `behind`
+exit `2` with `cannot be read` means `gh` could not read the release list;
+re-run the job. An alert the gate names on a version change is a finding
+of the new version: fix the code, as for any other alert.
+
 ### The contract job
 
 - **Purpose.** `.github/workflows/contract.yml` runs the job `Contract` on
