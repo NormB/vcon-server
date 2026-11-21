@@ -13,6 +13,15 @@ All notable changes to this project are recorded here. The format follows
     CI stores 100,000 vCons on each change and fails on any error.
   - Docs: [Scale numbers](https://vcon-server.com/docs/scale/)
 
+### Fixed
+
+- **Answers no longer wait 40 ms for the client's acknowledgement.**
+  - Was: About one read in twenty took 40 ms more, since the server left
+    Nagle's algorithm on its connections.
+  - Effect: The server sets TCP_NODELAY on each connection; in the 10,000
+    vCon pilot, read p95 went from 43.5 ms to 4.2 ms.
+  - Docs: [Scale numbers](https://vcon-server.com/docs/scale/)
+
 ## [0.4.12] - 2026-11-20
 
 ### Changed

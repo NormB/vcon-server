@@ -224,6 +224,13 @@ pub async fn serve_observed(
 /// the connection.
 async fn connection(tcp: TcpStream, acceptor: TlsAcceptor, app: Router, limits: ConnectionLimits) {
     let peer = tcp.peer_addr().ok().map(|peer| peer.ip());
+    // Handshake records and answers are written in more than one part.
+    // With Nagle's algorithm on, a later part waits for the client to
+    // acknowledge the first, which a client delays by up to 40 ms (Linux):
+    // in the scale pilot, reads were p50 3.0 ms and p95 43.5 ms without
+    // the option and p95 4.2 ms with it. The option fails only on a socket
+    // already gone, which the handshake then finds.
+    let _ = tcp.set_nodelay(true);
     let Ok(Ok(stream)) = tokio::time::timeout(limits.handshake, acceptor.accept(tcp)).await else {
         return;
     };
@@ -391,6 +398,12 @@ mod tests {
         failures: Mutex<VecDeque<io::Error>>,
         /// How many connections it has handed over.
         taken: Arc<AtomicUsize>,
+        /// A second descriptor of each socket it handed over, so a test
+        /// can read the options the server set on its side; kept only
+        /// when `keep`, since a copy holds the socket open after the
+        /// server closes its own.
+        kept: Arc<Mutex<Vec<std::net::TcpStream>>>,
+        keep: bool,
     }
 
     impl Accept for Failing {
@@ -400,6 +413,13 @@ mod tests {
                 Some(failure) => Err(failure),
                 None => {
                     let tcp = Accept::accept(&self.socket).await?;
+                    if self.keep {
+                        let copy = std::os::fd::AsFd::as_fd(&tcp).try_clone_to_owned()?;
+                        self.kept
+                            .lock()
+                            .expect("the kept sockets")
+                            .push(copy.into());
+                    }
                     self.taken.fetch_add(1, Ordering::SeqCst);
                     Ok(tcp)
                 }
@@ -433,11 +453,25 @@ mod tests {
         taken: Arc<AtomicUsize>,
         /// How many times the listener found every place held.
         full: Arc<AtomicUsize>,
+        /// The server's side of each connection taken, by a second
+        /// descriptor.
+        kept: Arc<Mutex<Vec<std::net::TcpStream>>>,
     }
 
     impl Running {
         fn taken(&self) -> usize {
             self.taken.load(Ordering::SeqCst)
+        }
+
+        /// TCP_NODELAY on the server's side of each connection taken so
+        /// far, in the order they were taken.
+        fn no_delay(&self) -> Vec<bool> {
+            self.kept
+                .lock()
+                .expect("the kept sockets")
+                .iter()
+                .map(|tcp| tcp.nodelay().expect("the option reads"))
+                .collect()
         }
 
         fn full(&self) -> usize {
@@ -524,6 +558,16 @@ mod tests {
     /// A server answering `GET /ping` within `limits`, whose listener
     /// fails with `failures` first.
     async fn running(limits: ConnectionLimits, failures: Vec<io::Error>) -> Running {
+        running_kept(limits, failures, false).await
+    }
+
+    /// [`running`], and when `keep`, a second descriptor of each
+    /// connection's socket is kept for [`Running::no_delay`].
+    async fn running_kept(
+        limits: ConnectionLimits,
+        failures: Vec<io::Error>,
+        keep: bool,
+    ) -> Running {
         let made = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()])
             .expect("a certificate");
         let dir = tempfile::tempdir().expect("temp dir");
@@ -541,10 +585,13 @@ mod tests {
         let addr = socket.local_addr().expect("addr");
         let taken = Arc::new(AtomicUsize::new(0));
         let full = Arc::new(AtomicUsize::new(0));
+        let kept = Arc::new(Mutex::new(Vec::new()));
         let listener = Failing {
             socket,
             failures: Mutex::new(failures.into()),
             taken: taken.clone(),
+            kept: kept.clone(),
+            keep,
         };
         let app = Router::new()
             .route("/ping", get(|| async { "pong" }))
@@ -576,6 +623,7 @@ mod tests {
             server,
             taken,
             full,
+            kept,
         }
     }
 
@@ -622,6 +670,59 @@ mod tests {
             s.ping().await,
             (200, "pong".to_owned()),
             "served after the failure"
+        );
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    /// Without TCP_NODELAY, an answer written in two parts waits for the
+    /// client's delayed acknowledgement, about 40 ms on Linux: the scale
+    /// pilot's reads were p50 3.0 ms and p95 43.5 ms for that reason.
+    #[tokio::test]
+    async fn an_answered_connection_sends_without_delay() {
+        let s = running_kept(NEVER, vec![], true).await;
+        let answer = tokio::time::timeout(PATIENCE, s.client_http1().get(s.url("/ping")).send())
+            .await
+            .expect("an answer in time")
+            .expect("an answer");
+        assert_eq!(answer.status().as_u16(), 200, "the ping is answered");
+        assert_eq!(
+            s.no_delay(),
+            vec![true],
+            "the one connection has TCP_NODELAY"
+        );
+        drop(answer);
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    /// The option is set before the TLS handshake, whose records are
+    /// written in parts too, and so before any request comes.
+    #[tokio::test]
+    async fn a_connection_sends_without_delay_from_its_handshake() {
+        let s = running_kept(NEVER, vec![], true).await;
+        let tls = tokio::time::timeout(PATIENCE, s.tls(b""))
+            .await
+            .expect("a handshake in time");
+        assert_eq!(
+            s.no_delay(),
+            vec![true],
+            "TCP_NODELAY is set once the handshake is done, before a request"
+        );
+        drop(tls);
+        s.stopped().await.expect("serving ended without an error");
+    }
+
+    #[tokio::test]
+    async fn a_connection_after_a_failed_accept_sends_without_delay() {
+        let limits = ConnectionLimits {
+            accept_pause: SHORT,
+            ..NEVER
+        };
+        let s = running_kept(limits, vec![out_of_descriptors()], true).await;
+        assert_eq!(s.ping().await.0, 200, "served after the failure");
+        assert_eq!(
+            s.no_delay(),
+            vec![true],
+            "the connection taken after the failure has TCP_NODELAY"
         );
         s.stopped().await.expect("serving ended without an error");
     }
