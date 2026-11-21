@@ -291,7 +291,7 @@ once, for every entry here:
 ## On `main` only
 
 The site is built from the `main` branch, so a page can describe what no
-release holds yet. Release 0.4.11 does not have these:
+release holds yet. Release 0.4.12 does not have these:
 
 - **The scale harness and its numbers.** [Scale numbers](@/docs/scale.md)
   shows each measured run of `vcon-scale`, a crate of the repository that
