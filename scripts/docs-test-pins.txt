@@ -85,17 +85,23 @@ bb5b93b1e45b41ea67443ed434410f3f6dbea4d2b0198cf5ef843f484a7f0f4e  https://github
 d5f8fb94010f8e953279ccdee447f894f4dbdfc691c4331bdf3a38fb02084884  https://github.com/NormB/vcon-server/releases/download/v0.4.10/vcon-server-0.4.10-x86_64-unknown-linux-gnu.tar.gz
 aa975eba0d1d40c3ec2a9cf0d3380021e4a8913ff14466383b21d8f6dbe849d0  https://github.com/NormB/vcon-server/releases/download/v0.4.10/vcon-server-0.4.10-aarch64-unknown-linux-gnu.tar.gz
 
-# vcon-server 0.4.11: PREVIOUS in scripts/docs_test.py, the upgrade's start.
+# vcon-server 0.4.11: no scenario starts from it now.
 b57953e5e42a2677bd916abfcf6cc11dc7d32cc1e28f71c1b7a3b4c7c4a90e20  https://github.com/NormB/vcon-server/releases/download/v0.4.11/SHA256SUMS.txt
 9fd39ec145b77c391c6af3da6927eeb74f3d7ed1654e1c87a4d7d3ad2ed22e7d  https://github.com/NormB/vcon-server/releases/download/v0.4.11/SHA256SUMS.txt.sigstore.json
 fb5c75a4369d6860fa2b3f165b9fdfadd12b29a0d4ad397027ea469f3abbfd26  https://github.com/NormB/vcon-server/releases/download/v0.4.11/vcon-server-0.4.11-x86_64-unknown-linux-gnu.tar.gz
 a82105d6299ef9d16c3e55cb12a89c912d9d9e253cd62c8d7c6d5c5c8bb949f4  https://github.com/NormB/vcon-server/releases/download/v0.4.11/vcon-server-0.4.11-aarch64-unknown-linux-gnu.tar.gz
 
-# vcon-server 0.4.12: VERSION in install.md and container.md, NEW_VERSION in upgrading.md.
+# vcon-server 0.4.12: PREVIOUS in scripts/docs_test.py, the upgrade's start.
 94607c62fdcc2f63a1d6cf64829cbd01b379d00a77dc47fa6244954d90104991  https://github.com/NormB/vcon-server/releases/download/v0.4.12/SHA256SUMS.txt
 745efc52c30801143f97818329e67fbbcb60c673e097c2c00610ebf47a6a9ab5  https://github.com/NormB/vcon-server/releases/download/v0.4.12/SHA256SUMS.txt.sigstore.json
 b4316b7309dd06b224c9ccc3a93c94356ccaf51288bb0555baaae7e257ca5890  https://github.com/NormB/vcon-server/releases/download/v0.4.12/vcon-server-0.4.12-x86_64-unknown-linux-gnu.tar.gz
 1dd9b635a22116ffe36c1ac022366a6e5d2b0400d209770b3a74eaa18f238757  https://github.com/NormB/vcon-server/releases/download/v0.4.12/vcon-server-0.4.12-aarch64-unknown-linux-gnu.tar.gz
+
+# vcon-server 0.4.13: VERSION in install.md and container.md, NEW_VERSION in upgrading.md.
+5e32ff74fd0099cfa511459a01df73e86ef59ba5a950be0d1da74430113f81a1  https://github.com/NormB/vcon-server/releases/download/v0.4.13/SHA256SUMS.txt
+ce07c947f2015c0ad2b3b4a8be6cd2d84496cd6a31acf862900ec2aa43755edf  https://github.com/NormB/vcon-server/releases/download/v0.4.13/SHA256SUMS.txt.sigstore.json
+943e0e786a1f62821686581657b62b02aa132851bd58feaddc7c77edfa2877c6  https://github.com/NormB/vcon-server/releases/download/v0.4.13/vcon-server-0.4.13-x86_64-unknown-linux-gnu.tar.gz
+25cbd5c8c30181868a3ac887b2491acf218faaeb7becec9fb276880b4b988e60  https://github.com/NormB/vcon-server/releases/download/v0.4.13/vcon-server-0.4.13-aarch64-unknown-linux-gnu.tar.gz
 
 # cosign 3.0.6 (install.md, Ubuntu and Fedora).
 e16e8eb815f8b1b3cee3e678874393c286f19dd59e9ac5da95e428f970ef00f3  https://github.com/sigstore/cosign/releases/download/v3.0.6/cosign_3.0.6_amd64.deb
