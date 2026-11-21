@@ -7,7 +7,7 @@ weight = 60
 group = "project"
 +++
 
-vcon-server 0.4.12 is released: the `vcon` and `vcon-server` crates are on
+vcon-server 0.4.13 is released: the `vcon` and `vcon-server` crates are on
 crates.io, and the server for Linux on x86_64 and aarch64 is on
 [GitHub](https://github.com/NormB/vcon-server/releases). It is not yet for
 production: [the 1.0 checklist](@/docs/production-checklist.md) says what
@@ -230,6 +230,11 @@ otherwise.
   `scripts/contract_diff.py` compares two releases. The openapi.json of
   0.4.11 marks the problem `type` as a list that may grow; that of release
   0.4.10 does not.
+- **The scale harness and its numbers**, from 0.4.13:
+  [Scale numbers](@/docs/scale.md) shows each measured run of `vcon-scale`,
+  a crate of the repository that no release ships, and CI runs it at
+  100,000 vCons. The server of 0.4.13 sets TCP_NODELAY on each connection;
+  that of 0.4.12 does not.
 
 ## The PostgreSQL catalog preview
 
@@ -287,15 +292,6 @@ once, for every entry here:
   key, moves the id in `registry_key` and records `rekey_master`; it
   changes no audit record. The command holds the database's locks, so it
   runs with every server stopped.
-
-## On `main` only
-
-The site is built from the `main` branch, so a page can describe what no
-release holds yet. Release 0.4.12 does not have these:
-
-- **The scale harness and its numbers.** [Scale numbers](@/docs/scale.md)
-  shows each measured run of `vcon-scale`, a crate of the repository that
-  no release ships, and CI runs it at 100,000 vCons.
 
 ## Being built
 
