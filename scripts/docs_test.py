@@ -531,7 +531,7 @@ def _quote(s: str) -> str:
 def _step(n: int, b: Block) -> str:
     out = f'"$DOCS_TEST_OUT/{n}.out"'
     rc = f'"$DOCS_TEST_OUT/{n}.rc"'
-    head = f"# {n}: {b.at}\n"
+    head = f"# {n}: {b.at}\n" + _mark(n)
     if b.kind == "file":
         writer = f"sudo tee {_quote(b.path)} > /dev/null" if b.path.startswith("/") else f"cat > {_quote(b.path)}"
         return head + (
@@ -697,21 +697,89 @@ def _page(b: Block) -> str:
     return b.at.rsplit(":", 1)[0]
 
 
-def script(steps: list[Block], prelude: str, sets: dict | None = None) -> str:
-    """The bash script that runs the steps and records each one's output."""
+# `systemctl <verb> [--now] <unit>`: a step that starts, stops or changes a
+# unit. Its unit is one the run records under systemd (systemd_units).
+SYSTEMCTL_UNIT = re.compile(
+    r"\bsystemctl\s+(?:start|stop|restart|try-restart|reload|reload-or-restart|enable|disable|kill)"
+    r"(?:\s+--now)?\s+([A-Za-z0-9@_.:-]+)"
+)
+
+
+def systemd_units(steps: list[Block]) -> tuple:
+    """The units the steps start, stop or restart, in the order a step first
+    names each, a service without its `.service`."""
+    found: list[str] = []
+    for b in steps:
+        for m in SYSTEMCTL_UNIT.finditer(b.code):
+            unit = m.group(1).removesuffix(".service")
+            if not unit.startswith("-") and unit not in found:
+                found.append(unit)
+    return tuple(found)
+
+
+def _units_record(units: tuple) -> str:
+    """A shell function that writes, for each unit, what systemd says of it
+    when the run ends: its status; its result, automatic restarts and start
+    limit; its last 200 journal lines; and every line systemd itself wrote
+    about it (each start, stop, exit and refused start, with its time)."""
+    lines = ["docs_test_units() {\n{\n"]
+    for u in units:
+        full = u if "." in u else u + ".service"
+        for command in (
+            f"systemctl status --no-pager -l {u}",
+            f"systemctl show -p Result -p NRestarts -p StartLimitBurst -p StartLimitIntervalUSec {u}",
+            f"journalctl -u {u} --no-pager -n 200 -o short-precise",
+            f"journalctl _PID=1 UNIT={full} --no-pager -o short-precise",
+        ):
+            lines.append(f"echo {_quote('== ' + command)}\n{command}\n")
+    lines.append('} > "$DOCS_TEST_OUT/systemd.txt" 2>&1 < /dev/null\n}\n')
+    return "".join(lines)
+
+
+def start_limit_reset(units: tuple) -> str:
+    """The lines, run where a page begins under systemd, that reset each
+    unit's start counter. systemd refuses a unit's sixth start within 10 s
+    (DefaultStartLimitBurst=5, DefaultStartLimitIntervalSec=10s), counting
+    every start whatever started it. An operator runs each how-to on its
+    own occasion; this run puts the pages one after the other in one
+    container, so without the reset the starts of earlier pages count
+    against a later one's: on CI the sixth start of the systemd scenario
+    (operator-listener.md, its second restart) came within 10 s of the
+    first, and was refused (SYSTEMD-HOWTO-START-LIMIT). Within a page the
+    limit holds as it does for an operator. A unit systemd does not know
+    yet is not an error."""
+    return "# Each page meets systemd's start limit on its own, as an operator does.\n" + "".join(
+        f"systemctl reset-failed {u} < /dev/null 2>/dev/null || true\n" for u in units
+    )
+
+
+def _mark(n: int) -> str:
+    """The line that records when step `n` starts."""
+    return f'date +%s.%N > "$DOCS_TEST_OUT/{n}.start"\n'
+
+
+def script(steps: list[Block], prelude: str, sets: dict | None = None, units: tuple = ()) -> str:
+    """The bash script that runs the steps and records each one's output and
+    start time, and the time the main steps and the last-by-rule steps end.
+    With `units` (a systemd scenario), it records those units as systemd
+    sees them when the run ends (systemd.txt)."""
     if sets is None:
         sets = {}
     steps = _apply_sets(steps, sets) if sets else steps
     main = [s for s in steps if not s.always]
     last = [s for s in steps if s.always]
+    record = "; docs_test_units" if units else ""
     parts = [
         "#!/usr/bin/env bash\n",
         "# Written by scripts/docs_test.py from the pages; each step is one block.\n",
         "set -u\n",
         ': "${DOCS_TEST_OUT:?}" "${DOCS_TEST_WORK:?}"\n',
-        "trap 'rc=$?; set +e; docs_test_always; echo $rc > \"$DOCS_TEST_OUT/exit\"' EXIT\n",
-        "docs_test_always() {\n:\n",
+        "trap 'rc=$?; set +e; date +%s.%N > \"$DOCS_TEST_OUT/end\"; docs_test_always; "
+        f"date +%s.%N > \"$DOCS_TEST_OUT/finished\"{record}; echo $rc > \"$DOCS_TEST_OUT/exit\"' EXIT\n",
     ]
+    if units:
+        parts.append(_units_record(units))
+    parts.append("docs_test_always() {\n:\n")
     index = {id(s): n for n, s in enumerate(steps)}
     for s in last:
         parts.append(_step(index[id(s)], s).replace("set -eo pipefail\n", "set +e\n"))
@@ -724,6 +792,8 @@ def script(steps: list[Block], prelude: str, sets: dict | None = None) -> str:
         if _page(s) != page:
             page = _page(s)
             parts.append(f"# {page} starts in a fresh directory.\n" + NEW_PAGE_DIR)
+            if units:
+                parts.append(start_limit_reset(units))
         parts.append(_step(index[id(s)], s))
     return "".join(parts)
 
@@ -1747,11 +1817,44 @@ def plan(steps: list[Block], scenario_sets: dict, released, latest) -> tuple[lis
     return steps, sets, notes
 
 
+def _read_time(path: str) -> float | None:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return float(f.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def step_times(count: int, outdir: str) -> list[str]:
+    """For each of `count` steps, " (at S s, for L s)": its start from the
+    first recorded start, and its length, to the next time the run recorded
+    (a later step's start, the end of the main steps, or the end of the
+    last-by-rule ones). "" for a step with no readable start."""
+    starts = [_read_time(os.path.join(outdir, f"{n}.start")) for n in range(count)]
+    marks = sorted(t for t in starts + [_read_time(os.path.join(outdir, e)) for e in ("end", "finished")] if t is not None)
+    known = [t for t in starts if t is not None]
+    if not known:
+        return [""] * count
+    first = min(known)
+    out = []
+    for t in starts:
+        if t is None:
+            out.append("")
+            continue
+        later = [m for m in marks if m > t]
+        length = f", for {later[0] - t:.2f} s" if later else ""
+        out.append(f" (at {t - first:.2f} s{length})")
+    return out
+
+
 def report(steps: list[Block], outdir: str) -> int:
-    """Compare each step with its page; print one line per step. Returns
-    how many steps ran as their page says."""
+    """Compare each step with its page; print one line per step, with its
+    time (step_times). Returns how many steps ran as their page says. When
+    a step did not, prints the units' record of a systemd run
+    (systemd.txt), if the run wrote one."""
     passed = 0
     stopped = False
+    times = step_times(len(steps), outdir)
     for n, b in enumerate(steps):
         out_path = os.path.join(outdir, f"{n}.out")
         rc_path = os.path.join(outdir, f"{n}.rc")
@@ -1776,10 +1879,10 @@ def report(steps: list[Block], outdir: str) -> int:
         elif b.expect is not None:
             why = mismatch(b.expect, got)
         if why is None:
-            print(f"ok       {b.at}")
+            print(f"ok       {b.at}{times[n]}")
             passed += 1
             continue
-        print(f"FAIL     {b.at}: {why}")
+        print(f"FAIL     {b.at}: {why}{times[n]}")
         print("  the block:")
         print("".join(f"    {l}\n" for l in b.code.rstrip().split("\n")), end="")
         if b.expect is not None:
@@ -1787,6 +1890,11 @@ def report(steps: list[Block], outdir: str) -> int:
             print("".join(f"    {l}\n" for l in _clean(b.expect)), end="")
         print("  it printed:")
         print("".join(f"    {l}\n" for l in _clean(got)[-60:]), end="")
+    record = os.path.join(outdir, "systemd.txt")
+    if passed < len(steps) and os.path.exists(record):
+        print("the units, as systemd saw them when the run ended:")
+        with open(record, encoding="utf-8", errors="replace") as f:
+            print("".join(f"    {l}\n" for l in f.read().rstrip("\n").split("\n")), end="")
     return passed
 
 
@@ -1837,7 +1945,7 @@ def run(scenario: Scenario, binary: str | None, keep: str | None) -> int:
             steps = [dataclasses.replace(b, code=rewrite_releases(b.code, base)) for b in steps]
         for image in base_images(steps):
             pull_with_retry(image)
-        text = script(steps, prelude, sets)
+        text = script(steps, prelude, sets, units=systemd_units(steps) if scenario.where == "systemd" else ())
         with open(os.path.join(work, "run.sh"), "w", encoding="utf-8") as f:
             f.write(text)
         outdir = os.path.join(work, "out")

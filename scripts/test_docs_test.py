@@ -2091,6 +2091,390 @@ class TerminalReport(unittest.TestCase):
         self.assertIn("it never printed 'READY'", printed)
 
 
+def run_script(text, env=None, timeout=60):
+    """Runs a script the runner wrote with bash in a fresh directory and
+    returns the files of its output directory, by name."""
+    work = tempfile.mkdtemp()
+    out = os.path.join(work, "out")
+    os.mkdir(out)
+    try:
+        with open(os.path.join(work, "run.sh"), "w", encoding="utf-8") as f:
+            f.write(text)
+        env = dict(os.environ, DOCS_TEST_OUT=out, DOCS_TEST_WORK=work, **(env or {}))
+        subprocess.run(["bash", os.path.join(work, "run.sh")], env=env, check=False, timeout=timeout)
+        files = {}
+        for name in os.listdir(out):
+            with open(os.path.join(out, name), encoding="utf-8", errors="replace") as f:
+                files[name] = f.read()
+        return files
+    finally:
+        shutil.rmtree(work)
+
+
+def report_of(steps, files):
+    """How many steps passed, and what the report printed, for an output
+    directory that holds `files` (name: text)."""
+    outdir = tempfile.mkdtemp()
+    try:
+        for name, text in files.items():
+            with open(os.path.join(outdir, name), "w", encoding="utf-8") as f:
+                f.write(text)
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            passed = dt.report(steps, outdir)
+        return passed, printed.getvalue()
+    finally:
+        shutil.rmtree(outdir)
+
+
+TWO_STEPS = "```sh\necho one\n```\n\n```sh\necho two\n```\n"
+
+
+class StepTimes(unittest.TestCase):
+    """Each step's start, from the first step's, and how long it ran: a
+    failure that depends on the pace of the run (systemd's start limit
+    counts the starts of the last 10 s) shows that pace in the report."""
+
+    # Success.
+
+    def test_each_step_records_when_it_started_and_the_run_when_it_ended(self):
+        files = run_script(dt.script(dt.parse(TWO_STEPS, "p.md"), ""))
+        for name in ("0.start", "1.start", "end", "finished"):
+            self.assertIn(name, files, f"the run writes {name}: {sorted(files)}")
+        first, second, end = (float(files[n]) for n in ("0.start", "1.start", "end"))
+        self.assertLessEqual(first, second, "the second step starts after the first")
+        self.assertLessEqual(second, end, "the run ends after its last step starts")
+
+    def test_the_report_gives_each_step_its_start_from_the_first_and_its_length(self):
+        steps = dt.parse(TWO_STEPS, "p.md")
+        files = {"0.rc": "0\n", "1.rc": "0\n", "0.start": "100.0\n", "1.start": "101.5\n", "end": "104.25\n"}
+        passed, printed = report_of(steps, files)
+        self.assertEqual(passed, 2, printed)
+        self.assertIn("ok       p.md:1 (at 0.00 s, for 1.50 s)\n", printed, "the first step's time")
+        self.assertIn("ok       p.md:5 (at 1.50 s, for 2.75 s)\n", printed, "the last step runs to the end")
+
+    def test_a_step_that_runs_last_by_rule_is_timed_to_the_end_of_those(self):
+        page = "```sh\necho one\n```\n\n<!-- docs-test: always -->\n```sh\necho last\n```\n"
+        steps = dt.parse(page, "p.md")
+        self.assertTrue(steps[1].always, "the second step runs last by its marker")
+        files = {"0.rc": "0\n", "1.rc": "0\n", "0.start": "10\n", "end": "11\n", "1.start": "11.5\n", "finished": "12\n"}
+        passed, printed = report_of(steps, files)
+        self.assertEqual(passed, 2, printed)
+        self.assertIn("ok       p.md:1 (at 0.00 s, for 1.00 s)\n", printed, "the main steps end at `end`")
+        self.assertIn("ok       p.md:6 (at 1.50 s, for 0.50 s)\n", printed, "the last-by-rule step ends at `finished`")
+
+    def test_a_step_that_runs_after_a_slow_one_shows_the_wait(self):
+        steps = dt.parse(TWO_STEPS, "p.md")
+        files = {"0.rc": "0\n", "1.rc": "0\n", "0.start": "5\n", "1.start": "17\n", "end": "17.25\n"}
+        _, printed = report_of(steps, files)
+        self.assertIn("ok       p.md:1 (at 0.00 s, for 12.00 s)\n", printed, "the slow step's length")
+        self.assertIn("ok       p.md:5 (at 12.00 s, for 0.25 s)\n", printed, "the next step's start")
+
+    # Failure.
+
+    def test_a_step_that_stopped_the_run_is_timed_to_the_end_of_the_run(self):
+        steps = dt.parse("```sh\necho one\n```\n\n```sh\nfalse\n```\n\n```sh\necho three\n```\n", "p.md")
+        files = {"0.rc": "0\n", "0.start": "1\n", "1.start": "2\n", "end": "4.5\n"}
+        passed, printed = report_of(steps, files)
+        self.assertEqual(passed, 1, printed)
+        self.assertIn(
+            "FAIL     p.md:5: it stopped the run: a command in it failed (at 1.00 s, for 2.50 s)\n",
+            printed,
+            "the failed step's time ends its verdict line",
+        )
+        self.assertIn("not run  p.md:9\n", printed, "a step that did not run has no time")
+
+    def test_a_step_that_failed_in_a_real_run_has_a_start_and_no_rc(self):
+        files = run_script(dt.script(dt.parse("```sh\necho one\n```\n\n```sh\nfalse\n```\n", "p.md"), ""))
+        self.assertIn("1.start", files, "the failed step recorded its start")
+        self.assertNotIn("1.rc", files, "and no exit record, which is how the report knows it stopped the run")
+        self.assertIn("end", files, "the end is written when the run stops")
+
+    def test_a_differing_output_keeps_its_time_after_the_reason(self):
+        steps = dt.parse("```sh\necho one\n```\n\n```text\ntwo\n```\n", "p.md")
+        files = {"0.rc": "0\n", "0.out": "one\n", "0.start": "3\n", "end": "3.5\n"}
+        passed, printed = report_of(steps, files)
+        self.assertEqual(passed, 0, printed)
+        self.assertRegex(printed, r"FAIL     p\.md:1: .* \(at 0\.00 s, for 0\.50 s\)\n", "the reason, then the time")
+
+    # Edge.
+
+    def test_an_output_directory_with_no_times_reports_as_before(self):
+        passed, printed = report_of(dt.parse(TWO_STEPS, "p.md"), {"0.rc": "0\n", "1.rc": "0\n"})
+        self.assertEqual(passed, 2, printed)
+        self.assertEqual(printed, "ok       p.md:1\nok       p.md:5\n", "no time, no brackets")
+
+    def test_a_start_with_no_later_time_has_a_start_and_no_length(self):
+        steps = dt.parse(TWO_STEPS, "p.md")
+        files = {"0.rc": "0\n", "1.rc": "0\n", "0.start": "1\n", "1.start": "2\n"}
+        _, printed = report_of(steps, files)
+        self.assertIn("ok       p.md:5 (at 1.00 s)\n", printed, "nothing after it says when it ended")
+
+    def test_an_unreadable_time_is_left_out(self):
+        steps = dt.parse(TWO_STEPS, "p.md")
+        files = {"0.rc": "0\n", "1.rc": "0\n", "0.start": "N\n", "1.start": "2\n", "end": "3\n"}
+        passed, printed = report_of(steps, files)
+        self.assertEqual(passed, 2, printed)
+        self.assertIn("ok       p.md:1\n", printed, "a start that is not a number gives no time")
+        self.assertIn("ok       p.md:5 (at 0.00 s, for 1.00 s)\n", printed, "the first readable start is 0")
+
+    def test_the_times_are_read_with_the_clock_bash_gives_every_step(self):
+        script = dt.script(dt.parse(TWO_STEPS, "p.md"), "")
+        self.assertIn('date +%s.%N > "$DOCS_TEST_OUT/0.start"', script, "the start of step 0")
+        self.assertLess(script.index('"$DOCS_TEST_OUT/0.start"'), script.index("echo one"), "before the block runs")
+
+    def test_a_file_step_and_a_background_step_are_timed_too(self):
+        page = (
+            "<!-- docs-test: file a.toml -->\n```toml\nx = 1\n```\n\n"
+            "<!-- docs-test: background up -->\n```sh\necho up; sleep 1\n```\n"
+        )
+        files = run_script(dt.script(dt.parse(page, "p.md"), ""))
+        self.assertIn("0.start", files, "the file step's start")
+        self.assertIn("1.start", files, "the background step's start")
+
+
+SYSTEMD_PAGE = (
+    "```sh\nsudo systemctl enable --now vcon-server\n```\n\n"
+    "```sh\nsudo systemctl restart vcon-server.service\nsystemctl start postgresql\n```\n"
+)
+
+
+def stub_bin(where, names):
+    """Commands that print their name and arguments, in `where`, for a run
+    that must not reach the host's systemd."""
+    for name in names:
+        path = os.path.join(where, name)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f'#!/bin/sh\necho "{name} $*"\n')
+        os.chmod(path, 0o755)
+
+
+class SystemdUnits(unittest.TestCase):
+    """Under systemd, the runner records each unit the steps start or stop,
+    as systemd saw it when the run ended, and prints that when a step
+    failed: a start refused, a crash, a restart loop."""
+
+    # Success.
+
+    def test_the_units_are_the_ones_the_steps_start_stop_or_restart(self):
+        steps = dt.parse(SYSTEMD_PAGE, "p.md")
+        self.assertEqual(dt.systemd_units(steps), ("vcon-server", "postgresql"), "in order, once each, no .service")
+
+    def test_a_timer_keeps_its_suffix(self):
+        steps = dt.parse("```sh\nsudo systemctl enable --now certbot-renew.timer\n```\n", "p.md")
+        self.assertEqual(dt.systemd_units(steps), ("certbot-renew.timer",), "a unit that is not a service")
+
+    def test_the_systemd_scenarios_units_are_read_from_its_pages(self):
+        (scenario,) = [s for s in dt.SCENARIOS if s.name == "systemd"]
+        steps = dt.select(sum((dt.page_blocks(p) for p in scenario.pages), []), scenario)
+        self.assertIn("vcon-server", dt.systemd_units(steps), "the server's unit")
+
+    def test_the_script_records_each_units_status_journal_and_starts(self):
+        script = dt.script(dt.parse(SYSTEMD_PAGE, "p.md"), "", units=("vcon-server", "certbot-renew.timer"))
+        for command in (
+            "systemctl status --no-pager -l vcon-server",
+            "systemctl show -p Result -p NRestarts -p StartLimitBurst -p StartLimitIntervalUSec vcon-server",
+            "journalctl -u vcon-server --no-pager -n 200 -o short-precise",
+            "journalctl _PID=1 UNIT=vcon-server.service --no-pager -o short-precise",
+            "journalctl _PID=1 UNIT=certbot-renew.timer --no-pager -o short-precise",
+        ):
+            self.assertIn(command, script, f"the script runs {command}")
+        self.assertIn('> "$DOCS_TEST_OUT/systemd.txt" 2>&1', script, "into one file of the output directory")
+
+    def test_a_run_that_fails_records_the_units_after_the_failure(self):
+        bin_dir = tempfile.mkdtemp()
+        try:
+            stub_bin(bin_dir, ("systemctl", "journalctl"))
+            page = "```sh\necho one\n```\n\n```sh\nfalse\n```\n"
+            files = run_script(
+                dt.script(dt.parse(page, "p.md"), "", units=("vcon-server",)),
+                env={"PATH": bin_dir + os.pathsep + os.environ["PATH"]},
+            )
+        finally:
+            shutil.rmtree(bin_dir)
+        self.assertIn("systemd.txt", files, sorted(files))
+        text = files["systemd.txt"]
+        self.assertIn("systemctl status --no-pager -l vcon-server", text, "the status command ran")
+        self.assertIn("journalctl -u vcon-server --no-pager -n 200 -o short-precise", text, "the journal command ran")
+        self.assertIn("journalctl _PID=1 UNIT=vcon-server.service", text, "systemd's own lines on the unit")
+
+    def test_the_report_prints_the_units_when_a_step_failed(self):
+        steps = dt.parse("```sh\nfalse\n```\n", "p.md")
+        record = "== vcon-server\nActive: failed (Result: start-limit-hit)\n"
+        passed, printed = report_of(steps, {"systemd.txt": record})
+        self.assertEqual(passed, 0, printed)
+        self.assertIn("the units, as systemd saw them when the run ended:\n", printed, "a heading")
+        self.assertIn("    Active: failed (Result: start-limit-hit)\n", printed, "the record, indented")
+        self.assertGreater(printed.index("Active:"), printed.index("FAIL "), "after the step lines")
+
+    # Failure.
+
+    def test_a_page_with_no_systemctl_has_no_units(self):
+        self.assertEqual(dt.systemd_units(dt.parse(TWO_STEPS, "p.md")), (), "nothing to record")
+
+    def test_a_systemctl_that_names_no_unit_is_not_a_unit(self):
+        page = "```sh\nsudo systemctl daemon-reload\nsystemctl is-system-running\nsystemctl --failed\n```\n"
+        self.assertEqual(dt.systemd_units(dt.parse(page, "p.md")), (), "daemon-reload and the rest name no unit")
+
+    def test_a_run_that_passes_does_not_print_the_units(self):
+        steps = dt.parse(TWO_STEPS, "p.md")
+        files = {"0.rc": "0\n", "1.rc": "0\n", "systemd.txt": "== vcon-server\nActive: active\n"}
+        passed, printed = report_of(steps, files)
+        self.assertEqual(passed, 2, printed)
+        self.assertNotIn("Active:", printed, "only a failed run prints them; --keep keeps the file")
+
+    # Edge.
+
+    def test_without_units_the_script_runs_no_systemctl(self):
+        script = dt.script(dt.parse(TWO_STEPS, "p.md"), "")
+        self.assertNotIn("systemctl", script, "a run with no systemd has nothing to ask")
+        self.assertNotIn("systemd.txt", script, "and writes no record")
+
+    def test_a_failed_run_without_a_record_prints_no_heading(self):
+        passed, printed = report_of(dt.parse("```sh\nfalse\n```\n", "p.md"), {})
+        self.assertEqual(passed, 0, printed)
+        self.assertNotIn("as systemd saw them", printed, "no record, no heading")
+
+    def test_the_record_is_written_even_when_the_run_passes(self):
+        bin_dir = tempfile.mkdtemp()
+        try:
+            stub_bin(bin_dir, ("systemctl", "journalctl"))
+            files = run_script(
+                dt.script(dt.parse(TWO_STEPS, "p.md"), "", units=("vcon-server",)),
+                env={"PATH": bin_dir + os.pathsep + os.environ["PATH"]},
+            )
+        finally:
+            shutil.rmtree(bin_dir)
+        self.assertIn("systemd.txt", files, "a kept run (--keep) holds it for reading")
+        self.assertEqual(files.get("exit", "").strip(), "0", "recording the units does not change the run's exit")
+
+    def test_the_run_function_passes_the_units_only_under_systemd(self):
+        source = pathlib.Path(dt.__file__).read_text(encoding="utf-8")
+        self.assertIn(
+            'units=systemd_units(steps) if scenario.where == "systemd" else ()',
+            source,
+            "run() hands script() the units of a systemd scenario and none elsewhere",
+        )
+
+
+PAGE_ONE = "```sh\nsudo systemctl enable --now vcon-server\n```\n\n```sh\necho one\n```\n"
+PAGE_TWO = "```sh\nsudo systemctl restart vcon-server\n```\n"
+PAGE_THREE = "```sh\nsudo systemctl restart vcon-server\n```\n"
+
+
+class StartLimitPerPage(unittest.TestCase):
+    """systemd refuses a unit's sixth start within 10 s (DefaultStartLimit
+    Burst=5, IntervalSec=10s). An operator runs each how-to on its own
+    occasion; the runner runs the pages one after the other in one
+    container, so the starts of earlier pages count against a later one's.
+    Under systemd the runner resets each unit's start counter
+    (`systemctl reset-failed`) where a page begins, so each page meets the
+    limit as an operator does: its own starts count, no other page's."""
+
+    def pages(self, *texts):
+        steps = []
+        for n, text in enumerate(texts):
+            steps += dt.parse(text, f"docs/p{n}.md")
+        return steps
+
+    def run_logged(self, steps, units, stub_exit=0):
+        """Runs the script with a systemctl that appends its arguments to a
+        log, and returns the log's lines and the step exit records."""
+        bin_dir = tempfile.mkdtemp()
+        log = os.path.join(bin_dir, "calls")
+        try:
+            path = os.path.join(bin_dir, "systemctl")
+            with open(path, "w", encoding="utf-8") as f:
+                # `stub_exit` is the exit of a reset only; every other call ends 0.
+                f.write(f'#!/bin/sh\necho "$*" >> "{log}"\n[ "$1" = reset-failed ] && exit {stub_exit}\nexit 0\n')
+            os.chmod(path, 0o755)
+            stub_bin(bin_dir, ("journalctl", "sudo"))
+            with open(os.path.join(bin_dir, "sudo"), "w", encoding="utf-8") as f:
+                f.write('#!/bin/sh\nexec "$@"\n')
+            files = run_script(dt.script(steps, "", units=units), env={"PATH": bin_dir + os.pathsep + os.environ["PATH"]})
+            with open(log, encoding="utf-8") as f:
+                calls = [l.strip() for l in f]
+        finally:
+            shutil.rmtree(bin_dir)
+        return calls, [files.get(f"{n}.rc", "").strip() or None for n in range(len(steps))]
+
+    # Success.
+
+    def test_each_page_after_the_first_starts_with_the_units_start_counter_reset(self):
+        script = dt.script(self.pages(PAGE_ONE, PAGE_TWO), "", units=("vcon-server",))
+        first, second, third = (script.index(f"# {n}: ") for n in range(3))
+        reset = dt.start_limit_reset(("vcon-server",))
+        self.assertNotIn(reset, script[:second], "the first page meets the limit as it stands")
+        self.assertIn(reset, script[second:third], "the second page starts with its own counter")
+        self.assertEqual(script.count(reset), 1, "once per page boundary")
+
+    def test_the_reset_runs_between_the_pages_in_a_real_run(self):
+        calls, rcs = self.run_logged(self.pages(PAGE_ONE, PAGE_TWO), ("vcon-server",))
+        self.assertEqual(rcs, ["0", "0", "0"], "every step ran")
+        self.assertEqual(
+            [c for c in calls if not c.startswith(("status", "show"))],
+            ["enable --now vcon-server", "reset-failed vcon-server", "restart vcon-server"],
+            "the reset falls after the first page's start and before the second page's",
+        )
+
+    def test_three_pages_get_two_resets(self):
+        script = dt.script(self.pages(PAGE_ONE, PAGE_TWO, PAGE_THREE), "", units=("vcon-server",))
+        self.assertEqual(script.count(dt.start_limit_reset(("vcon-server",))), 2, "one before each later page")
+
+    def test_every_unit_is_reset(self):
+        reset = dt.start_limit_reset(("vcon-server", "postgresql"))
+        self.assertIn("systemctl reset-failed vcon-server", reset, "the server")
+        self.assertIn("systemctl reset-failed postgresql", reset, "and each other unit the steps start")
+
+    def test_the_systemd_scenario_resets_before_each_of_its_later_pages(self):
+        (scenario,) = [s for s in dt.SCENARIOS if s.name == "systemd"]
+        steps = dt.select(sum((dt.page_blocks(p) for p in scenario.pages), []), scenario)
+        units = dt.systemd_units(steps)
+        script = dt.script(steps, "", units=units)
+        pages = len({dt._page(s) for s in steps if not s.always})
+        self.assertEqual(script.count(dt.start_limit_reset(units)), pages - 1, "every page after the first")
+
+    # Failure.
+
+    def test_without_units_nothing_is_reset(self):
+        script = dt.script(self.pages(PAGE_ONE, PAGE_TWO), "")
+        self.assertNotIn("reset-failed", script, "a run with no systemd has no start limit")
+
+    def test_one_pages_starts_are_not_reset(self):
+        # Five starts of one page in 10 s is what an operator would meet:
+        # the runner must not hide it.
+        page = "".join(f"```sh\nsudo systemctl restart vcon-server\n```\n\n" for _ in range(6))
+        script = dt.script(dt.parse(page, "docs/p.md"), "", units=("vcon-server",))
+        self.assertNotIn("reset-failed", script, "within a page the limit holds as it does for an operator")
+
+    def test_a_reset_that_fails_does_not_stop_the_run(self):
+        calls, rcs = self.run_logged(self.pages(PAGE_ONE, PAGE_TWO), ("vcon-server",), stub_exit=1)
+        self.assertIn("reset-failed vcon-server", calls, "the reset was asked for")
+        self.assertEqual(rcs[1], "0", "the first page's last step ran")
+        self.assertIsNotNone(rcs[2], "a unit systemd does not know yet does not end the run")
+
+    # Edge.
+
+    def test_a_page_that_comes_back_after_another_is_a_new_page(self):
+        steps = self.pages(PAGE_ONE, PAGE_TWO) + dt.parse(PAGE_THREE, "docs/p0.md")
+        script = dt.script(steps, "", units=("vcon-server",))
+        self.assertEqual(script.count("reset-failed vcon-server"), 2, "each change of page is a boundary")
+
+    def test_a_last_by_rule_step_of_a_later_page_gets_no_reset(self):
+        steps = self.pages(PAGE_ONE, "<!-- docs-test: always -->\n```sh\necho cleanup\n```\n")
+        self.assertTrue(steps[-1].always, "the second page's only step runs last by its marker")
+        script = dt.script(steps, "", units=("vcon-server",))
+        self.assertNotIn("reset-failed", script, "the always steps run in the exit handler, not as a page")
+
+    def test_the_reset_reads_no_input_and_writes_no_step_output(self):
+        reset = dt.start_limit_reset(("vcon-server",))
+        self.assertIn("< /dev/null", reset, "it cannot read a step's input")
+        self.assertIn("2>/dev/null", reset, "an unknown unit's message is not shown as a step's")
+
+    def test_the_reset_runs_as_the_run_does_without_sudo(self):
+        reset = dt.start_limit_reset(("vcon-server",))
+        self.assertNotIn("sudo", reset, "the runner's own commands run as root in the container")
+
 
 class TerminalRules(unittest.TestCase):
     """What the runner holds a page with a terminal step to, and what it
@@ -2376,7 +2760,7 @@ class PackageMirrors(unittest.TestCase):
     def test_a_run_gives_the_chosen_mirrors_to_the_containers_setup(self):
         preludes = []
 
-        def script(steps, prelude, sets=None):
+        def script(steps, prelude, sets=None, units=()):
             preludes.append(prelude)
             raise Stop
 

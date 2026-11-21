@@ -778,6 +778,15 @@ scenario whose pages need a cargo feature the default build lacks names it
 names. Until that release is published, they download the newest published
 release and say so.
 
+A scenario under systemd runs its pages one after the other in one
+container, and systemd refuses a unit's sixth start within 10 seconds
+(`DefaultStartLimitBurst=5`, `DefaultStartLimitIntervalSec=10s`). An
+operator runs each how-to on its own occasion, so where a page begins the
+runner resets the start counter of each unit the steps start, stop or
+restart (`systemctl reset-failed <unit>`). The starts of one page count
+against each other as they do for an operator; the starts of earlier pages
+do not. The unit file the pages install is not changed.
+
 The runner keeps an outage elsewhere from failing a page whose commands are
 right:
 
@@ -833,7 +842,14 @@ request to the server with no output shown after it, on a marker it does
 not know, on a directory that one page makes for root alone and a page
 writes under as the service account, and on an install step on the home
 page whose code is not a run of lines in a block of the install page. A run prints one line per block, and for a failure, the block, what the
-page says it prints, and what it printed.
+page says it prints, and what it printed. Each line ends with the time the
+block started, counted from the first block, and how long it ran, such as
+`(at 12.31 s, for 0.42 s)`. Under systemd, the run also records, when it
+ends, each unit's `systemctl status`, its result, automatic restarts and
+start limit (`systemctl show`), its last 200 journal lines, and every line
+systemd wrote about it, each start, stop and exit with its time; a run with a
+failure prints that record after the block lines, and `--keep <dir>` keeps
+it as `out/systemd.txt`.
 
 ## Continuous integration
 
