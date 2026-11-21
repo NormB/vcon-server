@@ -18,11 +18,22 @@ names what is left: 10 million and 100 million vCons.
 
 | Run | Machine | vCons | Clients | Stores a second | Read p50 | Read p99 | Read p99.9 | Errors | Bytes per vCon | Peak server memory | Commit |
 |---|---|---|---|---|---|---|---|---|---|---|---|
+| pilot-10k-jetson-agx-thor-tcp-nodelay | NVIDIA Jetson AGX Thor Developer Kit, aarch64, 14 CPUs, 123 GiB, CT4000T710SSD8 nvme | 10,000 | 8 | 1,026 | 2.9 ms | 4.9 ms | 7.9 ms | 0 | 20,280 | 106 MiB | `ee35aeb` |
 | pilot-10k-jetson-agx-thor | NVIDIA Jetson AGX Thor Developer Kit, aarch64, 14 CPUs, 123 GiB, CT4000T710SSD8 nvme | 10,000 | 8 | 383 | 4.0 ms | 50.4 ms | 53.2 ms | 0 | 20,281 | 131 MiB | `42faa9d` |
 
 The result files:
+[pilot-10k-jetson-agx-thor-tcp-nodelay.json](https://vcon-server.com/scale/pilot-10k-jetson-agx-thor-tcp-nodelay.json)
+(2026-11-21, 10,000 reads, 1-minute load 6.4 at the start) and
 [pilot-10k-jetson-agx-thor.json](https://vcon-server.com/scale/pilot-10k-jetson-agx-thor.json)
 (2026-11-20, 10,000 reads, 1-minute load 20.1 at the start).
+
+The server of the older row did not set TCP_NODELAY on its connections,
+so about one read in twenty waited about 40 ms for the client's delayed
+acknowledgement: its read p95 was 42.6 ms. The newer row's server sets
+it. The two rows ran at different loads, so they differ by more than
+that change. Back-to-back runs of the same build at a 1-minute load of
+about 10, with the option off and on, gave read p95 43.5 ms and 4.2 ms,
+and 463 and 947 stores a second.
 
 Each row is one run of one server, built in release mode from the commit
 in the last column, on the machine the row names:
@@ -41,7 +52,7 @@ The vCons follow a size mix of 70% at 2 KiB, 25% at 16 KiB and 5% at
 addresses and 555-01xx numbers. The data directory is on local disk, with
 the catalogs in SQLite. The harness and the server share the machine.
 
-The machine of the first row is a shared development host that runs
+The machine of both rows is a shared development host that runs
 other builds and tests at the same time, so its numbers vary from run to
 run. The harness refuses to start there while the 1-minute load is above
 28.
@@ -52,7 +63,7 @@ run. The harness refuses to start there while the 1-minute load is above
   toolchain of `rust-toolchain.toml`.
 - Free disk for the vCons: the count times the bytes per vCon of a row
   above, for the same mix. In the first row's run, 10,000 vCons at the
-  default mix took 202,802,376 bytes.
+  default mix took 202,798,208 bytes.
 - A memory lock limit large enough for the server, which locks all of its
   memory and refuses to start if it cannot (`ulimit -l`; see
   [getting started](@/docs/getting-started.md#allow-it-to-lock-its-memory)).
