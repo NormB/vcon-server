@@ -547,13 +547,22 @@ mod tests {
         }
     }
 
+    /// `N` bytes from the system generator, as `seal` draws its nonce.
+    fn drawn<const N: usize>() -> [u8; N] {
+        aws_lc_rs::rand::generate(&aws_lc_rs::rand::SystemRandom::new())
+            .expect("AWS-LC aborts instead of failing")
+            .expose()
+    }
+
     /// The blob layout and the associated data are written out here byte by
     /// byte, so a change to either, which would make stored bodies
-    /// unreadable, fails this test.
+    /// unreadable, fails this test. The expected blob is built from the
+    /// same key and nonce by GCM directly, so their values do not matter:
+    /// both are drawn at run time, and no fixed value is ever a nonce.
     #[test]
     fn a_blob_is_the_format_byte_nonce_ciphertext_and_tag() {
-        let key = [0x44; 32];
-        let nonce = [0x55; 12];
+        let key: [u8; KEY_LEN] = drawn();
+        let nonce: [u8; NONCE_LEN] = drawn();
         let mut ad = b"vcon-server/v1".to_vec();
         ad.extend([1, 2]);
         ad.extend([0x11; 16]);

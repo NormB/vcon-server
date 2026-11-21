@@ -40,6 +40,17 @@ for path in "y.local.md" "docs/x.local.md"; do
   fi
 done
 
+# Python's bytecode: running the repository's script tests writes a
+# __pycache__ directory beside each imported module (`python3 -I` does not
+# stop that), at any depth.
+for path in "scripts/__pycache__/docs_test.cpython-312.pyc" "scripts/__pycache__/" \
+  "crates/vcon-server/tests/support/__pycache__/x.cpython-313.pyc"; do
+  if ! ignored "$path"; then
+    echo "NOT IGNORED: $path" >&2
+    fail=1
+  fi
+done
+
 # The index, so a file added with --force is caught too.
 while IFS= read -r -d '' path; do
   echo "TRACKED PRIVATE FILE: $path" >&2
@@ -47,7 +58,8 @@ while IFS= read -r -d '' path; do
 done < <(git ls-files -z -- '*.local.md')
 
 for path in local.md docs/local-setup.md docs/x.md Cargo.toml README.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE \
-  crates/vcon/src/lib.rs crates/vcon-server/src/main.rs scripts/check-ignored-exports.sh; do
+  crates/vcon/src/lib.rs crates/vcon-server/src/main.rs scripts/check-ignored-exports.sh \
+  scripts/docs_test.py scripts/test_docs_test.py scripts/pycache.md; do
   if ignored "$path"; then
     echo "WRONGLY IGNORED: $path" >&2
     fail=1

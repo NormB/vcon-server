@@ -9,6 +9,10 @@ ARCHIVED — *
 # (scripts/check-ignored-exports.sh also refuses one staged with --force).
 *.local.md
 
+# Python's bytecode, written beside each imported module when the script
+# tests run (scripts/check-ignored-exports.sh holds this)
+__pycache__/
+
 # Zola build output
 /website/public/
 
