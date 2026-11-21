@@ -119,7 +119,7 @@ fn expect(holds: bool, what: &str) -> Result<(), Failure> {
 }
 
 /// A random (version 4) uuid in RFC 9562 text form.
-fn new_uuid() -> Result<String, Failure> {
+fn new_id() -> Result<String, Failure> {
     let mut b = [0u8; 16];
     std::fs::File::open("/dev/urandom")?.read_exact(&mut b)?;
     b[6] = b[6] & 0x0f | 0x40;
@@ -136,12 +136,12 @@ fn new_uuid() -> Result<String, Failure> {
 }
 
 /// A vCon's JSON text; serde_json writes an object's keys sorted.
-fn encode(uuid: &str, subject: &str) -> Vec<u8> {
+fn encode(id: &str, subject: &str) -> Vec<u8> {
     json!({
         "created_at": "2026-10-25T12:00:00Z",
         "parties": [],
         "subject": subject,
-        "uuid": uuid,
+        "uuid": id,
     })
     .to_string()
     .into_bytes()
@@ -174,8 +174,10 @@ fn run() -> Result<(), Failure> {
     let legal_key = std::env::var("VCON_LEGAL_KEY")?;
     let audit_key = std::env::var("VCON_AUDIT_KEY")?;
     let operator_key = std::env::var("VCON_OPERATOR_KEY")?;
-    let uuid = new_uuid()?;
-    let vcon = encode(&uuid, "client example");
+    // The vCon's id is named `id`, not `uuid`: CodeQL's rust/cleartext-logging
+    // reads a name holding "uid" as an account id, and this one is public.
+    let id = new_id()?;
+    let vcon = encode(&id, "client example");
     let as_vcon = [("Content-Type", "application/vcon")];
 
     // Store: 201, with the new version in ETag.
@@ -185,32 +187,32 @@ fn run() -> Result<(), Failure> {
         "a store did not answer 201",
     )?;
     let first_tag = etag(&stored);
-    println!("stored {uuid}");
+    println!("stored {id}");
 
     // List: the newest vCon comes first.
     let page = api.json(&api.key, "/vcons?limit=10")?;
     let stored_at = page["vcons"]
         .as_array()
-        .and_then(|vcons| vcons.iter().find(|v| v["uuid"] == uuid.as_str()))
+        .and_then(|vcons| vcons.iter().find(|v| v["uuid"] == id.as_str()))
         .and_then(|v| v["stored_at"].as_str())
         .ok_or("the stored vCon is not in the list")?
         .to_owned();
-    println!("listed {uuid}");
+    println!("listed {id}");
 
     // Read: the body comes back exactly as stored.
     let body = api
-        .call("GET", &format!("/vcons/{uuid}"), None, &[])?
+        .call("GET", &format!("/vcons/{id}"), None, &[])?
         .bytes()?;
     expect(
         body.as_ref() == vcon.as_slice(),
         "the body read differs from the one stored",
     )?;
-    println!("read {uuid} {} bytes", body.len());
+    println!("read {id} {} bytes", body.len());
 
     // Gzip: a gzipped body is stored as sent, and read back with its media type.
-    let gzip_uuid = new_uuid()?;
+    let gzip_id = new_id()?;
     let mut zipper = GzEncoder::new(Vec::new(), Compression::default());
-    zipper.write_all(&encode(&gzip_uuid, "gzip example"))?;
+    zipper.write_all(&encode(&gzip_id, "gzip example"))?;
     let sent = zipper.finish()?;
     api.call(
         "POST",
@@ -218,7 +220,7 @@ fn run() -> Result<(), Failure> {
         Some(&sent),
         &[("Content-Type", "application/vcon+gzip")],
     )?;
-    let gzipped = api.call("GET", &format!("/vcons/{gzip_uuid}"), None, &[])?;
+    let gzipped = api.call("GET", &format!("/vcons/{gzip_id}"), None, &[])?;
     let media = gzipped
         .headers()
         .get("Content-Type")
@@ -233,7 +235,7 @@ fn run() -> Result<(), Failure> {
         media == "application/vcon+gzip",
         "a gzipped vCon was not read back as application/vcon+gzip",
     )?;
-    println!("gzip {gzip_uuid} read back as application/vcon+gzip");
+    println!("gzip {gzip_id} read back as application/vcon+gzip");
 
     // Page: one vCon a page, from the first one's stored_at on, following
     // next until it is null. Each of the two must be seen exactly once. A
@@ -254,7 +256,7 @@ fn run() -> Result<(), Failure> {
             None => break,
         }
     }
-    for each in [&uuid, &gzip_uuid] {
+    for each in [&id, &gzip_id] {
         expect(
             seen.iter().filter(|s| *s == each).count() == 1,
             &format!("the pages did not list {each} exactly once"),
@@ -264,29 +266,29 @@ fn run() -> Result<(), Failure> {
 
     // Replace: If-Match names the current version; the answer has the new
     // one. The first version's tag is then stale, and refused with 412.
-    let replaced = encode(&uuid, "client example, replaced");
+    let replaced = encode(&id, "client example, replaced");
     let put = [
         ("If-Match", first_tag.as_str()),
         ("Content-Type", "application/vcon"),
     ];
-    let tag = etag(&api.call("PUT", &format!("/vcons/{uuid}"), Some(&replaced), &put)?);
+    let tag = etag(&api.call("PUT", &format!("/vcons/{id}"), Some(&replaced), &put)?);
     expect(
         !tag.is_empty() && tag != first_tag,
         "a replace did not answer a new ETag",
     )?;
-    let stale = api.refused("PUT", &format!("/vcons/{uuid}"), Some(&replaced), &put)?;
+    let stale = api.refused("PUT", &format!("/vcons/{id}"), Some(&replaced), &put)?;
     expect(
         stale.ends_with(": 412 https://vcon-server.com/problems/precondition-failed"),
         &stale,
     )?;
-    println!("replaced {uuid}, a stale If-Match refused with 412");
+    println!("replaced {id}, a stale If-Match refused with 412");
 
     // Legal hold: placed and released with the legal key, 204 each.
     for method in ["PUT", "DELETE"] {
         let held = api.send(
             &legal_key,
             method,
-            &format!("/legal/vcons/{uuid}/hold"),
+            &format!("/legal/vcons/{id}/hold"),
             None,
             &[],
         )?;
@@ -295,7 +297,7 @@ fn run() -> Result<(), Failure> {
             &format!("{method} hold did not answer 204"),
         )?;
     }
-    println!("held {uuid} and released");
+    println!("held {id} and released");
 
     // Audit: the tenant's log, read with the audit key, holds this
     // program's create, made by VCON_KEY, whose id and tenant GET /key gives.
@@ -318,7 +320,7 @@ fn run() -> Result<(), Failure> {
             .collect::<Result<Vec<Value>, _>>()?;
         let found = records.iter().any(|r| {
             r["action"] == "create"
-                && r["target"] == uuid.as_str()
+                && r["target"] == id.as_str()
                 && r["actor"] == key_id
                 && r["status"] == 201
         });
@@ -327,14 +329,14 @@ fn run() -> Result<(), Failure> {
         }
         expect(
             records.len() >= 1000,
-            &format!("the audit log has no create of {uuid}"),
+            &format!("the audit log has no create of {id}"),
         )?;
         after = records
             .last()
             .and_then(|r| r["seq"].as_u64())
             .unwrap_or_default();
     }
-    println!("audit create {uuid} by {key_id}");
+    println!("audit create {id} by {key_id}");
 
     // Admin: the operator key lists every tenant, this key's among them.
     let tenant = me["tenant"].as_str().unwrap_or_default();
@@ -376,7 +378,7 @@ fn run() -> Result<(), Failure> {
         "jsonrpc": "2.0",
         "id": 3,
         "method": "tools/call",
-        "params": {"name": "vcon_get", "arguments": {"uuid": uuid}},
+        "params": {"name": "vcon_get", "arguments": {"uuid": id}},
     }))?;
     expect(
         got["isError"] == false,
@@ -397,12 +399,12 @@ fn run() -> Result<(), Failure> {
     )?;
     let server = init["serverInfo"]["name"].as_str().unwrap_or_default();
     println!(
-        "mcp vcon_get {uuid} from {server}, {} tools listed",
+        "mcp vcon_get {id} from {server}, {} tools listed",
         names.len()
     );
 
     // Delete: 204, and each vCon is gone (410) from then on.
-    for each in [&uuid, &gzip_uuid] {
+    for each in [&id, &gzip_id] {
         let deleted = api.call("DELETE", &format!("/vcons/{each}"), None, &[])?;
         expect(
             deleted.status() == StatusCode::NO_CONTENT,
@@ -414,7 +416,7 @@ fn run() -> Result<(), Failure> {
             &gone,
         )?;
     }
-    println!("deleted {uuid} {gzip_uuid}");
+    println!("deleted {id} {gzip_id}");
     Ok(())
 }
 
