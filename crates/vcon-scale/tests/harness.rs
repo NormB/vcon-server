@@ -1095,6 +1095,14 @@ fn success_the_table_row_shows_the_numbers() {
     );
 }
 
+/// zola writes an aligned column (`---:`) as a style attribute, which the
+/// site check (scripts/check-site.sh) refuses on every page.
+#[test]
+fn edge_the_header_aligns_no_column() {
+    let rule = TABLE_HEADER.lines().nth(1).expect("the header's rule line");
+    assert!(!rule.contains(':'), "no column alignment: {rule}");
+}
+
 #[test]
 fn success_the_header_has_as_many_columns_as_a_row() {
     let row = report::table_row(&report::to_json(&run())).expect("a full result");

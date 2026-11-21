@@ -17,7 +17,7 @@ names what is left: 10 million and 100 million vCons.
 ## Results
 
 | Run | Machine | vCons | Clients | Stores a second | Read p50 | Read p99 | Read p99.9 | Errors | Bytes per vCon | Peak server memory | Commit |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+|---|---|---|---|---|---|---|---|---|---|---|---|
 | pilot-10k-jetson-agx-thor | NVIDIA Jetson AGX Thor Developer Kit, aarch64, 14 CPUs, 123 GiB, CT4000T710SSD8 nvme | 10,000 | 8 | 383 | 4.0 ms | 50.4 ms | 53.2 ms | 0 | 20,281 | 131 MiB | `42faa9d` |
 
 The result files:

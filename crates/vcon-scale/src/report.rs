@@ -10,7 +10,7 @@ pub const FORMAT: &str = "vcon-scale/1";
 
 /// The scale page's table header, two lines.
 pub const TABLE_HEADER: &str = "| Run | Machine | vCons | Clients | Stores a second | Read p50 | Read p99 | Read p99.9 | Errors | Bytes per vCon | Peak server memory | Commit |\n\
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|";
+|---|---|---|---|---|---|---|---|---|---|---|---|";
 
 /// One phase of a run: its requests, the errors among them, its wall time
 /// and its latencies.
