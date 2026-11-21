@@ -63,8 +63,10 @@ struct Window {
     taken: u32,
     by_address: HashMap<IpAddr, u32>,
     refused: u64,
+    /// Every task started to write refusals: after one takes the count,
+    /// the next refusal starts another, so there can be several a minute.
     #[cfg(test)]
-    flusher: Option<tokio::task::JoinHandle<()>>,
+    flushers: Vec<tokio::task::JoinHandle<()>>,
 }
 
 /// The start of the minute `now` is in, in UTC.
@@ -146,18 +148,18 @@ impl Gate {
         self.window.lock().expect("the window").by_address.len()
     }
 
-    /// Keeps the task that writes a minute's refusals at its end, so a
-    /// test can wait for it.
+    /// Keeps a task that writes a minute's refusals, beside any kept
+    /// before, so a test can wait for each of them.
     #[cfg(test)]
     pub(crate) fn set_flusher(&self, task: tokio::task::JoinHandle<()>) {
-        self.window.lock().expect("the window").flusher = Some(task);
+        self.window.lock().expect("the window").flushers.push(task);
     }
 
-    /// Waits for the task that writes the refusals, if one runs.
+    /// Waits for every task kept to write refusals, and panics if one did.
     #[cfg(test)]
     pub(crate) async fn settled(&self) {
-        let task = self.window.lock().expect("the window").flusher.take();
-        if let Some(task) = task {
+        let tasks = std::mem::take(&mut self.window.lock().expect("the window").flushers);
+        for task in tasks {
             task.await.expect("the task that writes the refusals");
         }
     }
@@ -178,6 +180,50 @@ mod tests {
             per_minute,
             per_address,
         })
+    }
+
+    /// A minute's refusals can be written by more than one task: once a
+    /// task takes the count, the next refusal starts another. `settled`
+    /// waits for each of them, the earlier ones too.
+    #[tokio::test]
+    async fn settled_waits_for_every_task_that_writes_refusals() {
+        let gate = std::sync::Arc::new(gate(1, 1));
+        let (release, released) = tokio::sync::oneshot::channel::<()>();
+        gate.set_flusher(tokio::spawn(async move {
+            released.await.expect("released");
+        }));
+        gate.set_flusher(tokio::spawn(async {}));
+        let waiting = std::sync::Arc::clone(&gate);
+        let settled = tokio::spawn(async move { waiting.settled().await });
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !settled.is_finished(),
+            "settled is still waiting for the earlier task"
+        );
+        release.send(()).expect("the earlier task waits");
+        tokio::time::timeout(std::time::Duration::from_secs(20), settled)
+            .await
+            .expect("settled once both tasks ended")
+            .expect("settled did not panic");
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "the task that writes the refusals")]
+    async fn settled_reports_an_earlier_task_that_failed() {
+        let gate = gate(1, 1);
+        gate.set_flusher(tokio::spawn(async { panic!("a write that failed") }));
+        gate.set_flusher(tokio::spawn(async {}));
+        gate.settled().await;
+    }
+
+    #[tokio::test]
+    async fn settled_with_no_task_returns_at_once() {
+        let gate = gate(1, 1);
+        tokio::time::timeout(std::time::Duration::from_secs(20), gate.settled())
+            .await
+            .expect("nothing to wait for");
     }
 
     /// An RFC 5737 address.

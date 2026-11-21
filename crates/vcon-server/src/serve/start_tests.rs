@@ -229,6 +229,23 @@ fn runtime(flavor: Flavor) -> tokio::runtime::Runtime {
     .expect("a runtime")
 }
 
+/// The tasks alive on `rt`, read once the runtime has let go of the tasks
+/// that have ended, or after `patience`. A JoinHandle is woken before the
+/// worker that ran its task removes it from the runtime's list (tokio
+/// 1.54.1, `Harness::complete`: `wake_join`, then `release`), so a count
+/// read as soon as `block_on` returns can still hold a task that has
+/// ended.
+fn settled(rt: &tokio::runtime::Runtime, patience: Duration) -> usize {
+    let deadline = Instant::now() + patience;
+    loop {
+        let alive = rt.metrics().num_alive_tasks();
+        if alive == 0 || Instant::now() >= deadline {
+            return alive;
+        }
+        std::thread::yield_now();
+    }
+}
+
 /// What a start did: the lines it logged, the tasks alive once the
 /// serving line was out and the start went on, the tasks alive after it
 /// ended, and how it ended.
@@ -286,7 +303,7 @@ fn run_with(
             .expect("the start stopped within 30 s")
         })
     };
-    let tasks_at_end = rt.metrics().num_alive_tasks();
+    let tasks_at_end = settled(&rt, Duration::from_secs(10));
     let seen = watch.seen.lock().expect("not poisoned").clone();
     let tasks_after_serving = *after.lock().expect("not poisoned");
     Ran {
@@ -317,7 +334,7 @@ fn refused(config: &Config, tenants: Tenants) -> Ran {
             .expect("the refusal came within 30 s")
         })
     };
-    let tasks_at_end = rt.metrics().num_alive_tasks();
+    let tasks_at_end = settled(&rt, Duration::from_secs(10));
     let seen = watch.seen.lock().expect("not poisoned").clone();
     Ran {
         seen,
@@ -583,6 +600,63 @@ mod refused {
             ran.ended.err()
         );
         nothing_started(&ran);
+    }
+}
+
+mod settling {
+    use super::*;
+
+    /// How many joined tasks the race is tried on.
+    const TRIES: usize = 20_000;
+
+    #[test]
+    fn a_joined_task_is_not_counted_once_settled() {
+        let rt = runtime(Flavor::MultiThread);
+        for i in 0..TRIES {
+            rt.block_on(async {
+                tokio::spawn(async {}).await.expect("the task ends");
+            });
+            assert_eq!(
+                settled(&rt, Duration::from_secs(10)),
+                0,
+                "try {i}: a joined task is not counted"
+            );
+        }
+    }
+
+    #[test]
+    fn a_task_that_never_ends_is_still_counted() {
+        let rt = runtime(Flavor::MultiThread);
+        rt.block_on(async {
+            let _left = tokio::spawn(std::future::pending::<()>());
+        });
+        let started = Instant::now();
+        assert_eq!(
+            settled(&rt, Duration::from_millis(100)),
+            1,
+            "a task still running is counted after the wait"
+        );
+        assert!(
+            started.elapsed() >= Duration::from_millis(100),
+            "the count was waited for: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_runtime_with_no_task_settles_at_once() {
+        let rt = runtime(Flavor::CurrentThread);
+        let started = Instant::now();
+        assert_eq!(
+            settled(&rt, Duration::from_secs(10)),
+            0,
+            "no task, none counted"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "no wait when nothing is alive: {:?}",
+            started.elapsed()
+        );
     }
 }
 
