@@ -1,0 +1,21 @@
+[package]
+name = "vcon-scale"
+description = "The scale harness: stores synthetic vCons in a live server over HTTPS and measures the ingest rate, read latency and disk use."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+reqwest = { version = "0.13.5", features = ["blocking"] }
+serde_json = "1.0.154"
+# Its stderr module: the one writer the stderr rule allows (a write that
+# fails is dropped, never a panic).
+vcon-server = { path = "../vcon-server", default-features = false }
+
+[dev-dependencies]
+vcon = { path = "../vcon" }
+
+[lints]
+workspace = true

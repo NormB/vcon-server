@@ -21,6 +21,13 @@ All notable changes to this project are recorded here. The format follows
   - Docs: [Secret
     files](https://vcon-server.com/docs/configuration/#secret-files)
 
+### Added
+
+- **A page publishes measured ingest rates and read latencies.**
+  - Effect: Each result names the machine, the commit and the vCon count;
+    CI stores 100,000 vCons on each change and fails on any error.
+  - Docs: [Scale numbers](https://vcon-server.com/docs/scale/)
+
 ## [0.4.11] - 2026-11-19
 
 ### Changed

@@ -60,6 +60,7 @@
 - [What is built](https://vcon-server.com/docs/status/): what works today and what is being built
 - [Roadmap](https://vcon-server.com/docs/roadmap/): the next milestones
 - [The 1.0 checklist](https://vcon-server.com/docs/production-checklist/): what release 1.0, the first for production, needs, with the evidence for each item
+- [Scale numbers](https://vcon-server.com/docs/scale/): measured ingest rates, read latencies and disk use, with the machine and commit of each run, and how to run the harness
 - [Development](https://vcon-server.com/docs/development/): the code's layout, tests and gates
 
 ## Optional

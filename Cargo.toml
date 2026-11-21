@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/vcon", "crates/vcon-server", "clients/rust"]
+members = ["crates/vcon", "crates/vcon-server", "crates/vcon-scale", "clients/rust"]
 
 [workspace.package]
 version = "0.4.12"

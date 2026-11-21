@@ -19,6 +19,12 @@ first for production, needs.
   release build names (see
   [what is built](@/docs/status.md#the-postgresql-catalog-preview) and
   [the limits of the preview](@/docs/postgres-catalog.md#the-limits-of-the-preview)).
+- **Scale numbers at 10 million and 100 million vCons:** runs of the scale
+  harness on stated hardware, and with S3, Parquet and PostgreSQL storage.
+  CI runs it at 100,000 vCons today; the
+  [scale numbers](@/docs/scale.md#results) page shows each measured run,
+  and the [1.0 checklist](@/docs/production-checklist.md#published-scale-numbers)
+  tracks the rest.
 - **The draft's recommended algorithms** for `vcon::write` (RS256,
   RSA-OAEP and A256CBC-HS512), as an option of the `vcon` crate.
 

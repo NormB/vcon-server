@@ -1,0 +1,74 @@
+{
+  "commit": "42faa9d9cb2a339407f2b0d8b96badc30eadeec8",
+  "concurrency": 8,
+  "count": 10000,
+  "disk": {
+    "bytes_per_vcon": 20281,
+    "data_bytes": 202802376
+  },
+  "format": "vcon-scale/1",
+  "hardware": {
+    "arch": "aarch64",
+    "cpus": 14,
+    "disk": "CT4000T710SSD8 nvme",
+    "kernel": "6.8.12-rt-tegra",
+    "machine": "NVIDIA Jetson AGX Thor Developer Kit",
+    "max_mhz": 2601,
+    "memory_kib": 128790920
+  },
+  "label": "pilot-10k-jetson-agx-thor",
+  "mix": "70:2048,25:16384,5:262144",
+  "phases": {
+    "ingest": {
+      "errors": 0,
+      "latency_us": {
+        "count": 10000,
+        "max": 128090,
+        "min": 2135,
+        "p50": 11730,
+        "p95": 53128,
+        "p99": 60809,
+        "p999": 112260
+      },
+      "micros": 26093329,
+      "per_second": 383.23971617419915,
+      "requests": 10000
+    },
+    "lists": {
+      "errors": 0,
+      "latency_us": {
+        "count": 10,
+        "max": 55980,
+        "min": 47013,
+        "p50": 51985,
+        "p95": 55980,
+        "p99": 55980,
+        "p999": 55980
+      },
+      "micros": 523512,
+      "per_second": 19.10175888995859,
+      "requests": 10
+    },
+    "reads": {
+      "errors": 0,
+      "latency_us": {
+        "count": 10000,
+        "max": 56939,
+        "min": 562,
+        "p50": 4041,
+        "p95": 42567,
+        "p99": 50354,
+        "p999": 53200
+      },
+      "micros": 8371541,
+      "per_second": 1194.5232066593235,
+      "requests": 10000
+    }
+  },
+  "seed": 1,
+  "server": {
+    "cpu_ns": 15140000000,
+    "peak_rss_kib": 133816
+  },
+  "start_load": 20.1
+}

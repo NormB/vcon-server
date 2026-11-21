@@ -3915,6 +3915,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "vcon-scale"
+version = "0.0.0"
+dependencies = [
+ "reqwest",
+ "serde_json",
+ "vcon",
+ "vcon-server",
+]
+
+[[package]]
 name = "vcon-server"
 version = "0.4.12"
 dependencies = [

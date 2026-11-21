@@ -288,6 +288,15 @@ once, for every entry here:
   changes no audit record. The command holds the database's locks, so it
   runs with every server stopped.
 
+## On `main` only
+
+The site is built from the `main` branch, so a page can describe what no
+release holds yet. Release 0.4.11 does not have these:
+
+- **The scale harness and its numbers.** [Scale numbers](@/docs/scale.md)
+  shows each measured run of `vcon-scale`, a crate of the repository that
+  no release ships, and CI runs it at 100,000 vCons.
+
 ## Being built
 
 - **A PostgreSQL catalog**, a preview behind the `postgres` cargo feature:

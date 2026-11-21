@@ -108,18 +108,29 @@ Evidence:
 
 ## Published scale numbers
 
-**State:** Not started.
+**State:** Partly done.
 
-No ingest rate, read latency or largest number of stored vCons has been
-measured. The one performance figure CI tests is the number of round trips
-each call of the store makes to PostgreSQL.
+The scale harness, `vcon-scale`, measures the ingest rate, the read
+latency percentiles, the bytes on disk per vCon and the server's peak
+memory against a running server over HTTPS. CI runs it at 100,000 vCons on
+each change and fails on any request answered with an error. The
+[scale numbers](@/docs/scale.md) page shows each committed result with its
+machine and commit; a test holds the page to the result files. CI also
+tests the number of round trips each call of the store makes to
+PostgreSQL.
 
-Left: a harness that measures the ingest rate and the p99 read latency, at
-100,000 vCons in CI and at 10 million and 100 million vCons on stated
-hardware, and a page of its results that names the hardware and the
-commit.
+Left: runs at 10 million and 100 million vCons on stated hardware, and
+runs with S3, Parquet and PostgreSQL storage.
 
 Evidence:
+
+- [the scale numbers](@/docs/scale.md#results)
+- CI job `scale` in
+  [ci.yml](https://github.com/NormB/vcon-server/blob/main/.github/workflows/ci.yml)
+- test `the_page_table_is_the_committed_results` in
+  [page.rs](https://github.com/NormB/vcon-server/blob/main/crates/vcon-scale/tests/page.rs)
+- the driver script,
+  [scale-run.sh](https://github.com/NormB/vcon-server/blob/main/scripts/scale-run.sh)
 
 - test `a_store_call_costs_a_fixed_number_of_round_trips` in
   [catalog_tests.rs](https://github.com/NormB/vcon-server/blob/main/crates/vcon-server/src/backend/postgres/tests/catalog_tests.rs)

@@ -515,6 +515,45 @@ jobs:
           sudo prlimit --pid $$ --memlock=unlimited:unlimited
           scripts/run-clients.sh target/debug/vcon-server target/debug/vcon-client
 
+  scale:
+    # Tier T0 of the scale harness (website/content/docs/scale.md): 100,000
+    # vCons on this runner. Report only: it fails on a request answered with
+    # an error, never on a time. The result file is kept as an artifact and
+    # shown in the job's summary.
+    name: scale harness, 100,000 vCons
+    timeout-minutes: 45
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: scripts/retry.sh rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build the server and the harness
+        run: cargo build --locked --release -p vcon-server -p vcon-scale
+      - name: Store 100,000 vCons, read 10,000 and follow 10 list pages
+        # The server locks all of its memory; the runner's default lock limit
+        # is too small.
+        run: |
+          set -euo pipefail
+          sudo prlimit --pid $$ --memlock=unlimited:unlimited
+          SCALE_LABEL=t0-github-ubuntu-24.04 scripts/scale-run.sh target/release/vcon-server \
+            target/release/vcon-scale 100000 scale-t0.json -- --reads 10000
+      - name: Show the result
+        if: always()
+        run: |
+          if [ -f scale-t0.json ]; then
+            { echo '```json'; cat scale-t0.json; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: scale-t0
+          path: scale-t0.json
+          retention-days: 90
+          if-no-files-found: ignore
+
   scan:
     name: no AI attribution or personal data
     # Up to 15 min of it may be a wait for a spent API budget
@@ -1063,7 +1102,7 @@ jobs:
   ci-success:
     name: CI success
     if: always()
-    needs: [rust, backends, backends-minio, backends-postgres, coverage, fuzz-targets, fuzz, clients, scan, hooks, messages, deny, site, brand, console, docs-binary, docs]
+    needs: [rust, backends, backends-minio, backends-postgres, coverage, fuzz-targets, fuzz, clients, scale, scan, hooks, messages, deny, site, brand, console, docs-binary, docs]
     timeout-minutes: 5
     runs-on: ubuntu-24.04
     steps:
