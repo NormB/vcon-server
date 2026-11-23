@@ -15,6 +15,15 @@ All notable changes to this project are recorded here. The format follows
     through reqwest, rmcp, tower-http and the AWS SDK.
   - Limit: No source file of vcon-server calls `origin()`; rmcp calls it
     only in a client the MCP bridge does not use.
+- **parquet goes from 60.1.0 to 60.2.0 (RUSTSEC-2026-0595).**
+  - Was: parquet wrote Bloom filters in plaintext inside a file with
+    Parquet modular encryption.
+  - Effect: The affected version leaves the build; `export parquet` and
+    Parquet storage write their files with it.
+  - Do: Code that uses the library builds with parquet 60.2.0, which the
+    crate now requires.
+  - Limit: vcon-server writes no Bloom filter and no modular encryption,
+    so no file it wrote is affected.
 
 ## [0.4.13] - 2026-11-21
 
