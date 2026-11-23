@@ -25,6 +25,18 @@ All notable changes to this project are recorded here. The format follows
   - Limit: vcon-server writes no Bloom filter and no modular encryption,
     so no file it wrote is affected.
 
+### Fixed
+
+- **A read during a pack run no longer reports an intact vCon as damaged.**
+  - Was: Since 0.4.0, a read that met its version's first pack into a
+    Parquet file failed with `A stored version is damaged`.
+  - Effect: That read now reads the version again from its pack file,
+    returns the whole body, and the audit log records it as answered.
+  - Limit: Only servers with Parquet storage on were affected; the stored
+    data was never changed.
+  - Docs: [Parquet
+    storage](https://vcon-server.com/docs/parquet-storage/#check-that-the-server-packs-its-objects)
+
 ## [0.4.13] - 2026-11-21
 
 ### Changed
