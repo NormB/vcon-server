@@ -65,10 +65,14 @@ fail a page whose commands are right:
   (Acquire::Retries) and gives up one that stalls for 10 s
   (Acquire::http::Timeout).
 - A container with apt reads its packages from a list of mirrors, not from
-  one host. Before anything else the runner asks each mirror of each source
-  the image's apt reads (APT_MIRRORS) for its index, keeps those that answer
-  within 5 s, says in the log which they are, and points apt at them with
-  its `mirror+file:` method. The list gives each mirror its place as its
+  one host. Before anything else the runner runs scripts/apt-mirror-setup.sh
+  --dry-run on this host for the suites the image's apt reads (apt_suites):
+  the script asks each mirror of each source (APT_MIRRORS) for the release
+  file of each suite within 5 s, keeps those whose files are the origin's
+  own (or, when the origin does not answer, the newest copy the mirrors
+  agree on), and the runner says in the log which they are and points apt
+  at them with its `mirror+file:` method. The container's release smoke job
+  runs the same script, so both choose by one rule. The list gives each mirror its place as its
   priority, so apt asks the first one that answered and goes on to the next
   only when a download fails. Signatures are checked as before: only the
   host a file comes from changes. The page's own apt-get commands run as a
@@ -1166,51 +1170,88 @@ class MirrorError(PageError):
     """No package mirror answered: an outage outside the pages."""
 
 
+# The release name of each image whose apt the runner points at mirrors:
+# the suites its sources read are named after it. The systemd image is
+# built from debian:trixie-slim.
+APT_RELEASES = {"debian:trixie-slim": "trixie", "systemd": "trixie", "ubuntu:24.04": "noble"}
+
+
+def apt_suites(where: str, machine: str) -> dict:
+    """The suites the apt of a scenario's system reads from each origin, as
+    its image's sources name them: by its image, and for Ubuntu by the
+    CPU. Nothing for a system without apt, and for this host, whose sources
+    the runner does not touch."""
+    debian = where == "systemd" or where.startswith("debian:")
+    if not debian and not where.startswith("ubuntu:"):
+        return {}
+    name = APT_RELEASES.get(where)
+    if name is None:
+        raise PageError(f"{where}: no release name in APT_RELEASES, so the runner cannot name the suites its apt reads")
+    if debian:
+        return {"http://deb.debian.org/debian": (name, f"{name}-updates"), "http://deb.debian.org/debian-security": (f"{name}-security",)}
+    suites = (name, f"{name}-updates", f"{name}-backports")
+    if machine == "x86_64":
+        return {"http://archive.ubuntu.com/ubuntu/": suites, "http://security.ubuntu.com/ubuntu/": (f"{name}-security",)}
+    return {"http://ports.ubuntu.com/ubuntu-ports/": suites + (f"{name}-security",)}
+
+
 def apt_origins(where: str, machine: str) -> tuple:
-    """The origins the apt of a scenario's system reads: by its image, and
-    for Ubuntu by the CPU. None for a system without apt, and for this
-    host, whose sources the runner does not touch."""
-    if where == "systemd" or where.startswith("debian:"):
-        return ("http://deb.debian.org/debian", "http://deb.debian.org/debian-security")
-    if where.startswith("ubuntu:"):
-        if machine == "x86_64":
-            return ("http://archive.ubuntu.com/ubuntu/", "http://security.ubuntu.com/ubuntu/")
-        return ("http://ports.ubuntu.com/ubuntu-ports/",)
-    return ()
+    """The origins the apt of a scenario's system reads (see apt_suites)."""
+    return tuple(apt_suites(where, machine))
 
 
-def probe_mirror(url: str, timeout: float = 5) -> bool:
-    """Whether the mirror at `url` serves its index of suites, within
-    `timeout` seconds."""
-    import urllib.error
-    import urllib.request
+APT_MIRROR_SETUP = os.path.join(ROOT, "scripts/apt-mirror-setup.sh")
 
+
+def ask_mirrors(suites: dict, table: str | None = None, timeout: int = 5) -> tuple:
+    """scripts/apt-mirror-setup.sh's (exit code, stdout, stderr), run with
+    --dry-run on this host for a system whose sources read `suites`
+    ({origin: (suite, ...)}): it asks the mirrors and writes nothing. The
+    system is a directory of its own, removed after."""
+    with tempfile.TemporaryDirectory(prefix="docs-test-apt-") as root:
+        os.makedirs(os.path.join(root, "etc/apt/sources.list.d"))
+        with open(os.path.join(root, "etc/apt/sources.list"), "w", encoding="utf-8") as f:
+            f.write("".join(f"deb {origin} {suite} main\n" for origin, names in suites.items() for suite in names))
+        command = ["bash", APT_MIRROR_SETUP, "--dry-run", "--root", root, "--timeout", str(timeout)]
+        if table is not None:
+            command += ["--table", table]
+        # The script asks every host at once, each within `timeout`.
+        done = subprocess.run(command, capture_output=True, text=True, timeout=timeout * 4 + 60, stdin=subprocess.DEVNULL, check=False)
+        return done.returncode, done.stdout, done.stderr
+
+
+def choose_mirrors(suites: dict, ask=None) -> tuple:
+    """For each origin of `suites`, the mirrors scripts/apt-mirror-setup.sh
+    keeps, in its order, and the script's other lines as notes for the run's
+    log: (chosen, notes). The rule is the script's alone. An origin with no
+    mirror to read stops the run with a MirrorError: no step could install
+    a package, and a run that went on would hang in the first one and read
+    as that page's failure."""
+    if not suites:
+        return {}, []
+    ask = ask or ask_mirrors
+    prefix = "apt-mirror-setup: "
     try:
-        with urllib.request.urlopen(url.rstrip("/") + "/dists/", timeout=timeout) as answer:
-            return answer.status == 200
-    except (urllib.error.URLError, OSError, ValueError):
-        return False
-
-
-def choose_mirrors(origins: tuple, probe=probe_mirror) -> dict:
-    """For each origin, its mirrors that answer now, in their listed order.
-    An origin none of whose mirrors answers stops the run with a
-    MirrorError: no step could install a package, and a run that went on
-    would hang in the first one and read as that page's failure."""
-    from concurrent.futures import ThreadPoolExecutor
-
-    urls = sorted({m for origin in origins for m in APT_MIRRORS[origin]})
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        answers = dict(zip(urls, pool.map(probe, urls)))
-    chosen = {}
-    for origin in origins:
-        chosen[origin] = [m for m in APT_MIRRORS[origin] if answers[m]]
-        if not chosen[origin]:
-            raise MirrorError(
-                f"no package mirror answered for {origin} (tried {', '.join(APT_MIRRORS[origin])}): "
-                "the package mirrors are unreachable from this machine; this is not a failure of the pages"
-            )
-    return chosen
+        rc, out, err = ask(suites)
+    except subprocess.TimeoutExpired as e:
+        raise MirrorError(f"scripts/apt-mirror-setup.sh did not end within {e.timeout} s; this is not a failure of the pages") from None
+    said = [line.removeprefix(prefix) for line in err.splitlines() if line.strip()]
+    if rc == 3:
+        raise MirrorError("; ".join(said) + "; this is not a failure of the pages")
+    if rc != 0:
+        raise PageError(f"scripts/apt-mirror-setup.sh exited {rc}: {'; '.join(said)}")
+    chosen, notes = {}, []
+    for line in out.splitlines():
+        found = re.fullmatch(r"packages from (\S+) come from (.+)", line.removeprefix(prefix))
+        if found:
+            chosen[found[1]] = found[2].split(", then ")
+        elif line.strip():
+            notes.append("docs-test: " + line.removeprefix(prefix))
+    notes += ["docs-test: " + line for line in said]
+    for origin in suites:
+        if origin not in chosen:
+            raise PageError(f"scripts/apt-mirror-setup.sh named no mirror for {origin}: {out.strip()}")
+    return chosen, notes
 
 
 def mirror_notes(chosen: dict) -> list[str]:
@@ -1903,11 +1944,11 @@ def run(scenario: Scenario, binary: str | None, keep: str | None) -> int:
     # the run could only hang in its first step. A system without apt has no
     # origin (apt_origins), so nothing is asked for it.
     try:
-        mirrors = choose_mirrors(apt_origins(scenario.where, platform.machine()), probe_mirror)
+        mirrors, notes = choose_mirrors(apt_suites(scenario.where, platform.machine()))
     except MirrorError as e:
         print(f"docs-test: {scenario.name}: {e}", file=sys.stderr)
         return 3
-    for note in mirror_notes(mirrors):
+    for note in notes + mirror_notes(mirrors):
         print(note, flush=True)
     blocks: list[Block] = []
     for p in scenario.pages:

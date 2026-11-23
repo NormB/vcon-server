@@ -2654,9 +2654,69 @@ class PackageMirrors(unittest.TestCase):
     def test_the_mirror_githubs_runners_use_is_asked_first_for_the_ubuntu_archive(self):
         self.assertEqual(dt.APT_MIRRORS[UBUNTU][:2], ("http://azure.archive.ubuntu.com/ubuntu/", UBUNTU))
 
-    def test_the_mirrors_that_answer_are_kept_in_their_listed_order(self):
-        chosen = dt.choose_mirrors((UBUNTU,), lambda url: True)
-        self.assertEqual(chosen, {UBUNTU: list(dt.APT_MIRRORS[UBUNTU])})
+    def test_ubuntu_on_x86_64_reads_its_suites_from_the_archive_and_the_security_hosts(self):
+        self.assertEqual(
+            dt.apt_suites("ubuntu:24.04", "x86_64"),
+            {UBUNTU: ("noble", "noble-updates", "noble-backports"), UBUNTU_SECURITY: ("noble-security",)},
+        )
+
+    def test_ubuntu_on_arm_reads_every_suite_from_the_ports_host(self):
+        self.assertEqual(dt.apt_suites("ubuntu:24.04", "aarch64"), {UBUNTU_PORTS: ("noble", "noble-updates", "noble-backports", "noble-security")})
+
+    def test_debian_and_the_systemd_image_read_the_trixie_suites(self):
+        expected = {DEBIAN: ("trixie", "trixie-updates"), DEBIAN_SECURITY: ("trixie-security",)}
+        self.assertEqual(dt.apt_suites("debian:trixie-slim", "x86_64"), expected)
+        self.assertEqual(dt.apt_suites("systemd", "aarch64"), expected)
+
+    def test_the_origins_are_those_of_the_suites(self):
+        for where in ("ubuntu:24.04", "debian:trixie-slim", "systemd", "fedora:44", "host"):
+            for machine in ("x86_64", "aarch64"):
+                self.assertEqual(dt.apt_origins(where, machine), tuple(dt.apt_suites(where, machine)), (where, machine))
+
+    def said(self, chosen, notes=()):
+        """What scripts/apt-mirror-setup.sh prints for `chosen`, after the
+        lines `notes`."""
+        return "".join(f"apt-mirror-setup: {n}\n" for n in notes) + "".join(
+            f"apt-mirror-setup: packages from {o} come from {', then '.join(m)}\n" for o, m in chosen.items()
+        )
+
+    def test_the_mirrors_the_script_keeps_are_kept_in_its_order(self):
+        chosen = {UBUNTU: ["http://b.example.com/ubuntu/", UBUNTU], UBUNTU_SECURITY: [UBUNTU_SECURITY]}
+        got = dt.choose_mirrors({UBUNTU: ("noble",), UBUNTU_SECURITY: ("noble-security",)}, ask=lambda s: (0, self.said(chosen), ""))
+        self.assertEqual(got, (chosen, []))
+
+    def test_the_script_s_other_lines_are_the_run_s_notes(self):
+        chosen = {DEBIAN: [DEBIAN]}
+        out = self.said(chosen, ["left out http://b.example.com/debian: its InRelease for trixie is not the one http://deb.debian.org/debian serves (a mirror in the middle of a sync)"])
+        _, notes = dt.choose_mirrors({DEBIAN: ("trixie",)}, ask=lambda s: (0, out, ""))
+        self.assertEqual(notes, ["docs-test: left out http://b.example.com/debian: its InRelease for trixie is not the one http://deb.debian.org/debian serves (a mirror in the middle of a sync)"])
+
+    def test_the_script_is_asked_about_the_suites_of_the_run(self):
+        asked = []
+        suites = {DEBIAN: ("trixie", "trixie-updates")}
+        dt.choose_mirrors(suites, ask=lambda s: asked.append(s) or (0, self.said({DEBIAN: [DEBIAN]}), ""))
+        self.assertEqual(asked, [suites])
+
+    def test_the_question_is_a_dry_run_of_the_script_on_a_system_of_those_suites(self):
+        seen = {}
+
+        def run(command, **options):
+            root = command[command.index("--root") + 1]
+            with open(os.path.join(root, "etc/apt/sources.list"), encoding="utf-8") as f:
+                seen["sources"] = f.read()
+            seen["command"] = command
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with unittest.mock.patch.object(dt.subprocess, "run", run):
+            dt.ask_mirrors({DEBIAN: ("trixie", "trixie-updates"), DEBIAN_SECURITY: ("trixie-security",)}, timeout=7)
+        self.assertEqual(
+            seen["sources"],
+            f"deb {DEBIAN} trixie main\ndeb {DEBIAN} trixie-updates main\ndeb {DEBIAN_SECURITY} trixie-security main\n",
+        )
+        command = seen["command"]
+        self.assertEqual(command[:2], ["bash", os.path.join(dt.ROOT, "scripts/apt-mirror-setup.sh")])
+        self.assertIn("--dry-run", command)
+        self.assertEqual(command[command.index("--timeout") + 1], "7")
 
     def test_the_setup_writes_one_list_of_mirrors_for_each_origin(self):
         setup = dt.apt_mirror_setup({DEBIAN: ["http://a.example.com/debian"], DEBIAN_SECURITY: ["http://b.example.com/debian-security"]})
@@ -2725,31 +2785,36 @@ class PackageMirrors(unittest.TestCase):
 
     def test_a_run_names_the_mirrors_it_chose_before_it_reads_a_page(self):
         (scenario,) = [s for s in dt.SCENARIOS if s.name == "release-ubuntu"]
-        dead = {UBUNTU, UBUNTU_SECURITY}
+        azure, kernel, princeton = dt.APT_MIRRORS[UBUNTU_SECURITY][1:]
+        chosen = {UBUNTU: [azure, kernel], UBUNTU_SECURITY: [azure, kernel]}
+        note = f"left out {princeton}: its InRelease for noble-security is older than another mirror's"
+        asked = []
         said = io.StringIO()
-        with unittest.mock.patch.object(dt, "probe_mirror", lambda url, timeout=5: url not in dead), \
+        with unittest.mock.patch.object(dt, "ask_mirrors", lambda suites: asked.append(suites) or (0, self.said(chosen, [note]), "")), \
                 unittest.mock.patch.object(dt.platform, "machine", lambda: "x86_64"), \
                 unittest.mock.patch.object(dt, "page_blocks", side_effect=Stop), \
                 contextlib.redirect_stdout(said), self.assertRaises(Stop):
             dt.run(scenario, None, None)
-        azure, kernel, princeton = dt.APT_MIRRORS[UBUNTU_SECURITY][1:]
+        self.assertEqual(asked, [dt.apt_suites("ubuntu:24.04", "x86_64")], "the suites asked about")
         self.assertEqual(
             said.getvalue().splitlines(),
             [
-                f"docs-test: packages from {UBUNTU} come from {azure}, then {kernel}, then {princeton}",
-                f"docs-test: packages from {UBUNTU_SECURITY} come from {azure}, then {kernel}, then {princeton}",
+                f"docs-test: {note}",
+                f"docs-test: packages from {UBUNTU} come from {azure}, then {kernel}",
+                f"docs-test: packages from {UBUNTU_SECURITY} come from {azure}, then {kernel}",
             ],
-            "the two hosts that did not answer on 2026-11-10 are in neither list",
+            "the script's notes, then the mirrors of each origin",
         )
 
     def started(self, where, **patches):
         """What a run of an apt scenario with no steps says, up to the
-        point where a patched function raises Stop. Only the Debian origin
-        itself does not answer."""
+        point where a patched function raises Stop. The script keeps every
+        Debian mirror but the origin itself."""
         scenario = dt.Scenario("x", where, frozenset({"apt"}), (), binary=False)
+        chosen = {DEBIAN: list(dt.APT_MIRRORS[DEBIAN][1:]), DEBIAN_SECURITY: list(dt.APT_MIRRORS[DEBIAN_SECURITY])}
         said = io.StringIO()
         with contextlib.ExitStack() as stack:
-            stack.enter_context(unittest.mock.patch.object(dt, "probe_mirror", lambda url, timeout=5: url != DEBIAN))
+            stack.enter_context(unittest.mock.patch.object(dt, "ask_mirrors", lambda suites: (0, self.said(chosen), "")))
             for name, replacement in patches.items():
                 stack.enter_context(unittest.mock.patch.object(dt, name, replacement))
             stack.enter_context(contextlib.redirect_stdout(said))
@@ -2794,74 +2859,64 @@ class PackageMirrors(unittest.TestCase):
             "the mirrors are set before the image's first download",
         )
 
-    def serve(self, status):
-        """A local HTTP server that answers every request with `status`;
-        returns its base URL and the function that stops it."""
-        import http.server
-        import threading
+    # Failure. How the script tells mirrors apart is tested in
+    # scripts/test_apt_mirror_setup.py, against a server that stands for them.
 
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def log_message(self, *args):
-                pass
-
-            def do_GET(self):
-                self.send_response(status)
-                self.send_header("Content-Length", "0")
-                self.end_headers()
-
-        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=httpd.serve_forever, daemon=True).start()
-        self.addCleanup(httpd.server_close)
-        self.addCleanup(httpd.shutdown)
-        return f"http://127.0.0.1:{httpd.server_address[1]}/debian"
-
-    def test_a_mirror_that_serves_its_index_answers(self):
-        self.assertTrue(dt.probe_mirror(self.serve(200)))
-
-    # Failure.
-
-    def test_a_mirror_that_does_not_answer_is_left_out(self):
-        dead = dt.APT_MIRRORS[UBUNTU][0]
-        chosen = dt.choose_mirrors((UBUNTU,), lambda url: url != dead)
-        self.assertEqual(chosen[UBUNTU], list(dt.APT_MIRRORS[UBUNTU][1:]))
+    def unreachable(self, origin):
+        return (3, "", f"apt-mirror-setup: no package mirror answered for {origin} (tried {', '.join(dt.APT_MIRRORS[origin])}): "
+                "the package mirrors are unreachable from this machine\n")
 
     def test_no_mirror_for_an_origin_is_an_unreachable_mirror_not_a_page_failure(self):
         with self.assertRaises(dt.MirrorError) as raised:
-            dt.choose_mirrors((UBUNTU, UBUNTU_SECURITY), lambda url: False)
+            dt.choose_mirrors({UBUNTU: ("noble",), UBUNTU_SECURITY: ("noble-security",)}, ask=lambda s: self.unreachable(UBUNTU))
         said = str(raised.exception)
         self.assertIn("no package mirror answered for " + UBUNTU, said)
         self.assertIn("the package mirrors are unreachable from this machine", said)
         self.assertIn("not a failure of the pages", said)
+        self.assertNotIn("apt-mirror-setup:", said, "the runner's words, without the script's name")
         for mirror in dt.APT_MIRRORS[UBUNTU]:
             self.assertIn(mirror, said, "each mirror tried is named")
 
-    def test_one_origin_without_a_mirror_fails_even_when_another_has_one(self):
-        with self.assertRaisesRegex(dt.MirrorError, "no package mirror answered for " + UBUNTU_SECURITY):
-            dt.choose_mirrors((UBUNTU, UBUNTU_SECURITY), lambda url: url == UBUNTU)
+    def test_no_mirror_with_the_newest_copy_is_an_unreachable_mirror_too(self):
+        err = f"apt-mirror-setup: no mirror of {DEBIAN} holds the newest InRelease of every suite (tried {DEBIAN}): apt would read some of its files from an older copy\n"
+        with self.assertRaisesRegex(dt.MirrorError, "holds the newest InRelease of every suite .*; this is not a failure of the pages"):
+            dt.choose_mirrors({DEBIAN: ("trixie",)}, ask=lambda s: (3, "", err))
 
-    def test_a_mirror_that_answers_404_does_not_answer(self):
-        self.assertFalse(dt.probe_mirror(self.serve(404)))
+    def test_a_table_the_script_refuses_is_a_page_error_that_names_its_exit_code(self):
+        err = "apt-mirror-setup: scripts/apt-mirrors.txt:3: http://x is not among its own mirrors\n"
+        with self.assertRaises(dt.PageError) as raised:
+            dt.choose_mirrors({DEBIAN: ("trixie",)}, ask=lambda s: (2, "", err))
+        self.assertNotIsInstance(raised.exception, dt.MirrorError, "a wrong table is not an outage")
+        self.assertIn("scripts/apt-mirror-setup.sh exited 2", str(raised.exception))
+        self.assertIn("is not among its own mirrors", str(raised.exception))
 
-    def test_a_closed_port_does_not_answer(self):
-        import socket
-        with socket.socket() as s:
-            s.bind(("127.0.0.1", 0))
-            port = s.getsockname()[1]
-        self.assertFalse(dt.probe_mirror(f"http://127.0.0.1:{port}/debian"))
+    def test_a_system_the_table_does_not_know_is_a_page_error(self):
+        with self.assertRaisesRegex(dt.PageError, "exited 4"):
+            dt.choose_mirrors({DEBIAN: ("trixie",)}, ask=lambda s: (4, "", "apt-mirror-setup: no package source of this system is in the table\n"))
 
-    def test_a_mirror_that_accepts_and_sends_nothing_is_given_up(self):
-        import socket
-        with socket.socket() as s:
-            s.bind(("127.0.0.1", 0))
-            s.listen(1)
-            started = time.monotonic()
-            self.assertFalse(dt.probe_mirror(f"http://127.0.0.1:{s.getsockname()[1]}/debian", timeout=1))
-            self.assertLess(time.monotonic() - started, 5, "the wait is the timeout, not the scenario's 900 s")
+    def test_an_origin_the_script_names_no_mirror_for_is_a_page_error(self):
+        # Exit 0 with an origin missing from the log would leave that
+        # origin's source on one host.
+        with self.assertRaisesRegex(dt.PageError, f"named no mirror for {re.escape(UBUNTU_SECURITY)}"):
+            dt.choose_mirrors({UBUNTU: ("noble",), UBUNTU_SECURITY: ("noble-security",)}, ask=lambda s: (0, self.said({UBUNTU: [UBUNTU]}), ""))
+
+    def test_a_script_that_does_not_end_in_time_is_a_mirror_error(self):
+        def run(command, **options):
+            raise subprocess.TimeoutExpired(command, options.get("timeout"))
+
+        with unittest.mock.patch.object(dt.subprocess, "run", run), self.assertRaisesRegex(dt.MirrorError, "did not end within"):
+            dt.choose_mirrors({DEBIAN: ("trixie",)})
+
+    def test_an_image_without_a_known_release_name_is_a_page_error(self):
+        with self.assertRaisesRegex(dt.PageError, "ubuntu:20.04"):
+            dt.apt_suites("ubuntu:20.04", "x86_64")
+        with self.assertRaisesRegex(dt.PageError, "debian:12"):
+            dt.apt_suites("debian:12", "x86_64")
 
     def test_a_run_with_no_mirror_ends_at_once_and_says_the_mirrors_are_unreachable(self):
         (scenario,) = [s for s in dt.SCENARIOS if s.name == "release-ubuntu"]
         said = io.StringIO()
-        with unittest.mock.patch.object(dt, "probe_mirror", lambda url, timeout=5: False), \
+        with unittest.mock.patch.object(dt, "ask_mirrors", lambda suites: self.unreachable(UBUNTU)), \
                 unittest.mock.patch.object(dt, "_docker", side_effect=AssertionError("no container is started")), \
                 unittest.mock.patch.object(dt, "released", side_effect=AssertionError("nothing else is asked")), \
                 contextlib.redirect_stdout(said), contextlib.redirect_stderr(said):
@@ -2966,7 +3021,7 @@ class PackageMirrors(unittest.TestCase):
             scenario = dt.Scenario("x", where, frozenset(tags), (), binary=False)
             asked = []
             said = io.StringIO()
-            with unittest.mock.patch.object(dt, "probe_mirror", lambda url, timeout=5: asked.append(url)), \
+            with unittest.mock.patch.object(dt, "ask_mirrors", lambda suites: asked.append(suites)), \
                     unittest.mock.patch.object(dt, "script", side_effect=Stop), \
                     contextlib.redirect_stdout(said), self.assertRaises(Stop):
                 dt.run(scenario, None, None)
@@ -2975,29 +3030,23 @@ class PackageMirrors(unittest.TestCase):
     def test_a_dnf_scenario_gets_no_apt_setup(self):
         self.assertEqual(dt.runner_prelude(self.scenario("fedora:44", ("dnf",)), (), {}), "")
 
-    def test_the_probe_asks_for_the_mirrors_index_of_suites(self):
+    def test_a_system_without_apt_has_no_suite(self):
+        self.assertEqual(dt.apt_suites("fedora:44", "x86_64"), {})
+        self.assertEqual(dt.apt_suites("host", "aarch64"), {})
+
+    def test_no_suite_asks_the_script_nothing(self):
         asked = []
-        import http.server
-        import threading
+        self.assertEqual(dt.choose_mirrors({}, ask=lambda s: asked.append(s)), ({}, []))
+        self.assertEqual(asked, [], "a system without apt runs no script")
 
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def log_message(self, *args):
-                pass
+    def test_a_mirror_address_with_a_comma_in_its_path_is_read_whole(self):
+        odd = "http://a.example.com/x,y/debian"
+        chosen, _ = dt.choose_mirrors({DEBIAN: ("trixie",)}, ask=lambda s: (0, self.said({DEBIAN: [odd, DEBIAN]}), ""))
+        self.assertEqual(chosen, {DEBIAN: [odd, DEBIAN]})
 
-            def do_GET(self):
-                asked.append(self.path)
-                self.send_response(200)
-                self.send_header("Content-Length", "0")
-                self.end_headers()
-
-        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=httpd.serve_forever, daemon=True).start()
-        self.addCleanup(httpd.server_close)
-        self.addCleanup(httpd.shutdown)
-        base = f"http://127.0.0.1:{httpd.server_address[1]}"
-        dt.probe_mirror(base + "/debian")
-        dt.probe_mirror(base + "/ubuntu/")
-        self.assertEqual(asked, ["/debian/dists/", "/ubuntu/dists/"], "one slash, with or without the mirror's own")
+    def test_the_script_s_stderr_on_success_is_passed_on_as_notes(self):
+        _, notes = dt.choose_mirrors({DEBIAN: ("trixie",)}, ask=lambda s: (0, self.said({DEBIAN: [DEBIAN]}), "apt-mirror-setup: a warning\n"))
+        self.assertEqual(notes, ["docs-test: a warning"])
 
 
 # ---------------------------------------------------------------------------
