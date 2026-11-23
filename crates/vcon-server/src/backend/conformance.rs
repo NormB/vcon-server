@@ -92,8 +92,12 @@ type Check = (&'static str, fn(&dyn Harness));
 
 /// Every check, in order; each panics with its name on failure.
 pub(crate) fn run(harness: &dyn Harness) {
-    let checks: [Check; 17] = [
+    let checks: [Check; 18] = [
         ("create_then_get", create_then_get),
+        (
+            "reads_at_once_are_each_answered_and_recorded",
+            reads_at_once_are_each_answered_and_recorded,
+        ),
         ("create_same_conflict_gone", create_same_conflict_gone),
         ("forms_read_back", forms_read_back),
         ("replace_rules", replace_rules),
@@ -458,6 +462,66 @@ fn audit_records_and_pages(h: &dyn Harness) {
         String::from_utf8(page).expect("UTF-8").lines().count(),
         1,
         "audit_records_and_pages: String::from_utf8(page).expect(\"UTF-8\").lines().count()"
+    );
+}
+
+/// Reads at once from eight threads, of three vCons, one of them deleted
+/// first: each read is answered as it would be alone and recorded once.
+/// Reads that reach their record together share one commit, each in a
+/// part of its own (store/group.rs), so this runs that path on every
+/// backend.
+fn reads_at_once_are_each_answered_and_recorded(h: &dyn Harness) {
+    const THREADS: usize = 8;
+    const EACH: usize = 12;
+    let f = h.fresh(TestClock::at(START));
+    let who = caller();
+    let (_, a) = new_version(&f.store, &who, &uuid(1), "a");
+    let (_, b) = new_version(&f.store, &who, &uuid(2), "b");
+    new_version(&f.store, &who, &uuid(3), "c");
+    let ids: Vec<Uuid> = (1..=3)
+        .map(|n| Uuid::parse_str(&uuid(n)).expect("uuid"))
+        .collect();
+    f.store
+        .delete(&who, ids[2], Retention::Years(7))
+        .expect("deletes");
+    std::thread::scope(|scope| {
+        for t in 0..THREADS {
+            let (store, who, ids, a, b) = (&f.store, &who, &ids, &a, &b);
+            scope.spawn(move || {
+                for i in 0..EACH {
+                    let id = ids[(t + i) % 3];
+                    let got = store.get(who, id).map(|s| s.body);
+                    let want = match (t + i) % 3 {
+                        0 => Ok(a.clone()),
+                        1 => Ok(b.clone()),
+                        _ => Err(StoreError::Gone),
+                    };
+                    assert_eq!(got, want, "reads_at_once: thread {t} read {i}");
+                }
+            });
+        }
+    });
+    let mut out = Vec::new();
+    f.store.export(None, &mut out).expect("exports");
+    let mut reads = [0_usize; 2];
+    for line in String::from_utf8(out).expect("UTF-8").lines() {
+        let v: serde_json::Value = serde_json::from_str(line).expect("JSON");
+        if v["action"] == "read" {
+            match v["status"].as_u64() {
+                Some(200) => reads[0] += 1,
+                Some(410) => reads[1] += 1,
+                other => panic!("reads_at_once: a read recorded as {other:?}"),
+            }
+        }
+    }
+    let gone = (0..THREADS)
+        .flat_map(|t| (0..EACH).map(move |i| (t + i) % 3))
+        .filter(|&n| n == 2)
+        .count();
+    assert_eq!(
+        reads,
+        [THREADS * EACH - gone, gone],
+        "reads_at_once: one record for each read, by its outcome"
     );
 }
 

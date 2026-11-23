@@ -6,6 +6,13 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Reads that arrive together share one disk sync of their audit records.**
+  - Effect: Each read is still answered only after its own record is on
+    disk; with 8 clients, reads a second rose from 2,761 to 4,354.
+  - Docs: [Scale numbers](https://vcon-server.com/docs/scale/)
+
 ## [0.4.13] - 2026-11-21
 
 ### Changed

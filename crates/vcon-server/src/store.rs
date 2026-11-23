@@ -31,6 +31,9 @@ mod backup;
 mod compact;
 mod examine;
 mod export;
+mod group;
+#[cfg(test)]
+mod group_tests;
 mod legal;
 mod list;
 pub(crate) mod manifest;
@@ -156,6 +159,8 @@ pub struct Store {
     /// The filesystem a backup is written to.
     fs: Arc<dyn Fs>,
     clock: Arc<dyn Clock>,
+    /// The reads waiting to record themselves, committed together.
+    group: group::Group,
     /// The local objects directory, for tests that look at its files.
     #[cfg(test)]
     objects_dir: PathBuf,
@@ -262,6 +267,7 @@ impl Store {
             footers: packed::Footers::new(packed::FOOTERS),
             fs,
             clock,
+            group: group::Group::default(),
             #[cfg(test)]
             objects_dir: PathBuf::new(),
             #[cfg(test)]
@@ -495,27 +501,25 @@ impl Store {
                 })
             });
             self.pause();
-            let mut tx = self.catalog.immediate()?;
-            match state(&mut tx, uuid)? {
-                // A packed version's file may have been rewritten and
-                // deleted after its place was read: read again at the new
-                // place. The same place still failing is the answer.
-                State::Live(now)
-                    if now == version
-                        && opened.is_err()
-                        && place.is_some()
-                        && version_row(&mut tx, version).ok().map(|r| r.place) != Some(place) =>
-                {
-                    continue;
+            #[cfg(test)]
+            {
+                let hook = self.hooks.before_confirm.lock().expect("hook").clone();
+                if let Some(hook) = hook {
+                    hook();
                 }
-                State::Live(now) if now == version => {
-                    let status = if opened.is_ok() { 200 } else { 500 };
-                    self.record(&mut tx, &entry(status, Some(version)))?;
-                    commit(tx)?;
-                    return opened;
-                }
-                State::Live(_) => continue,
-                other => return refuse(tx, other),
+            }
+            let read = group::Confirm {
+                key: who.key,
+                action,
+                uuid,
+                version,
+                opened: opened.is_ok(),
+                place,
+            };
+            match self.group.confirm(self, read)? {
+                group::Confirmed::Answer => return opened,
+                group::Confirmed::Again => continue,
+                group::Confirmed::Refused(error) => return Err(error),
             }
         }
     }
@@ -1128,6 +1132,9 @@ pub(crate) mod tests {
         pub(super) before_read: Mutex<Option<Box<dyn FnOnce() + Send>>>,
         /// A pack run after every write that adds a version.
         pub(super) pack_always: Mutex<Option<super::packer::PackPlan>>,
+        /// Runs in every read, after its body is read and before it joins
+        /// the queue for its last step.
+        pub(super) before_confirm: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     }
 
     pub(crate) struct Fixture {
