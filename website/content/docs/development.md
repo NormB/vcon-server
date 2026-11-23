@@ -928,6 +928,18 @@ job that runs in a container, and in a composite action or a shell script,
 within the file. `scripts/test_apt_mirror_setup.py` tests the script
 against a server on the same machine.
 
+The script also sets apt's `Acquire::http::Timeout`, which bounds a read
+from one host. It does not bound a name lookup, the mirror method's walk
+through its hosts, or dpkg: on 2026-11-23 the ubuntu:22.04 smoke job's
+install step printed nothing for 20 minutes, twice, until the job's limit
+canceled it with no error text. So each `apt-get update` and `install`
+runs under `timeout` and without `-qq`, so that each `Get:` line names its
+host, and each workflow step that installs packages over the network
+(`apt-get`, `dnf`, `pip`, `npm`, Playwright) has a `timeout-minutes` of its
+own. `scripts/check_workflow_downloads.py` fails an `apt-get update` or
+`install` without `timeout` before it, and such a step without its own
+`timeout-minutes`.
+
 ### The GitHub API budget
 
 Purpose: a job that calls the GitHub API with the workflow's token draws
