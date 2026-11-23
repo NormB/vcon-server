@@ -15,6 +15,15 @@ All notable changes to this project are recorded here. The format follows
     starts; a server refuses a database at version 13.
   - Docs: [Schema
     versions](https://vcon-server.com/docs/postgres-catalog/#schema-versions)
+### Security
+
+- **url goes from 2.5.8 to 2.5.9 (RUSTSEC-2026-0592).**
+  - Was: Its `Url::origin()` overflowed the stack on a URL of nested
+    `blob:` prefixes.
+  - Effect: The affected version leaves the build; vcon-server takes url
+    through reqwest, rmcp, tower-http and the AWS SDK.
+  - Limit: No source file of vcon-server calls `origin()`; rmcp calls it
+    only in a client the MCP bridge does not use.
 
 ## [0.4.13] - 2026-11-21
 
