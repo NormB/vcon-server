@@ -269,6 +269,16 @@ pub trait CatalogTx {
     /// Wraps counted against a tenant key.
     fn wraps(&mut self, key: KeyId) -> Result<u64, StoreError>;
     fn add_wrap(&mut self, key: KeyId) -> Result<(), StoreError>;
+    /// Records that a write of `version` began at `at`, before its object
+    /// is written: until the row that names the object is added, this
+    /// pending row tells recovery the object is a write under way.
+    fn add_pending(&mut self, version: VersionId, at: i64) -> Result<(), StoreError>;
+    /// Deletes the pending row of `version`, and says whether there was
+    /// one.
+    fn drop_pending(&mut self, version: VersionId) -> Result<bool, StoreError>;
+    /// Every pending row: the version and when its write began, by
+    /// version id.
+    fn pending(&mut self) -> Result<Vec<(VersionId, i64)>, StoreError>;
     /// Every version still in its own object, by store time and then
     /// version id.
     fn unpacked(&mut self) -> Result<Vec<UnpackedRow>, StoreError>;

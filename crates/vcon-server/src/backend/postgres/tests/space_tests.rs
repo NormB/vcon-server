@@ -22,12 +22,13 @@ pub(super) mod on_a_server {
 
     /// The tables that hold a tenant's rows and are emptied of them when
     /// the tenant is removed.
-    const REMOVED: [&str; 9] = [
+    const REMOVED: [&str; 10] = [
         "version",
         "vcon",
         "tombstone",
         "key_use",
         "parquet_file",
+        "pending_write",
         "purge_pending",
         "manifest",
         "tenant_catalog",

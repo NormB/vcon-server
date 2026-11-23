@@ -379,7 +379,9 @@ pub(super) mod on_a_server {
     /// that adds one is seen here. A `get` is two transactions of four:
     /// two reads and the version's row, or two reads and the audit
     /// record, with the begin in the first one's round trip, then the end.
-    const CREATE_TRIPS: usize = 11;
+    /// A create is 13 from schema version 14: its first transaction adds
+    /// the pending row of its write and its last deletes it.
+    const CREATE_TRIPS: usize = 13;
     const GET_TRIPS: usize = 8;
     const LIST_TRIPS: usize = 3;
 

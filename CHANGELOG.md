@@ -6,6 +6,16 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **A PostgreSQL catalog moves to schema version 14.**
+  - Effect: Each store or replace records its write under way until its
+    version's row is added, a step toward several servers on one database.
+  - Do: Run `vcon-server migrate` with the new binary before any server
+    starts; a server refuses a database at version 13.
+  - Docs: [Schema
+    versions](https://vcon-server.com/docs/postgres-catalog/#schema-versions)
+
 ## [0.4.13] - 2026-11-21
 
 ### Changed

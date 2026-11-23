@@ -752,6 +752,7 @@ impl PgCatalog {
         for table in [
             "key_use",
             "parquet_file",
+            "pending_write",
             "purge_pending",
             "manifest",
             "tenant_catalog",
@@ -1920,6 +1921,43 @@ impl CatalogTx for PgTx<'_> {
             ],
         )
         .map(drop)
+    }
+
+    fn add_pending(&mut self, version: VersionId, at: i64) -> Result<(), StoreError> {
+        self.execute(
+            "INSERT INTO vcon.pending_write (tenant, version, started_at) VALUES ($1, $2, $3)",
+            &[
+                (&self.tenant.0.as_slice(), Type::BYTEA),
+                (&version.0.as_slice(), Type::BYTEA),
+                (&at, Type::INT8),
+            ],
+        )
+        .map(drop)
+    }
+
+    fn drop_pending(&mut self, version: VersionId) -> Result<bool, StoreError> {
+        self.execute(
+            "DELETE FROM vcon.pending_write WHERE tenant = $1 AND version = $2",
+            &[
+                (&self.tenant.0.as_slice(), Type::BYTEA),
+                (&version.0.as_slice(), Type::BYTEA),
+            ],
+        )
+        .map(|deleted| deleted > 0)
+    }
+
+    fn pending(&mut self) -> Result<Vec<(VersionId, i64)>, StoreError> {
+        let rows = self.query(
+            "SELECT version, started_at FROM vcon.pending_write WHERE tenant = $1
+             ORDER BY version",
+            &[(&self.tenant.0.as_slice(), Type::BYTEA)],
+        )?;
+        rows.iter()
+            .map(|row| {
+                let version = VersionId(id_of(&row.try_get::<_, Vec<u8>>(0).map_err(io)?)?);
+                Ok((version, row.try_get(1).map_err(io)?))
+            })
+            .collect()
     }
 
     fn unpacked(&mut self) -> Result<Vec<UnpackedRow>, StoreError> {
