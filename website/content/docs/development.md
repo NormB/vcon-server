@@ -351,8 +351,9 @@ git config core.hooksPath .githooks
 - **pre-commit** refuses personal data and AI-tool attribution in staged
   changes (`scripts/scan_forbidden.py`), and checks that git ignores every
   export of the private design documents and every private spec or plan
-  file (`*.local.md`), and that none is staged
-  (`scripts/check-ignored-exports.sh`). On a copy of exactly what is staged,
+  file (`*.local.md`), and that none is staged, that git ignores the
+  Python bytecode directories the script tests write, and that the project's
+  own files stay visible (`scripts/check-ignored-exports.sh`). On a copy of exactly what is staged,
   it checks that every action is pinned by commit
   (`scripts/check_action_pins.py`, see
   [adding a GitHub Action](#adding-a-github-action)) and that every
