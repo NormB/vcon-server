@@ -26,6 +26,7 @@ use crate::fs::Fs;
 use crate::ids::{KeyId, TenantId, VersionId};
 use crate::retention::Retention;
 use crate::reveal::Part;
+use pending::Writers;
 
 mod backup;
 mod compact;
@@ -36,6 +37,7 @@ mod list;
 pub(crate) mod manifest;
 pub(crate) mod packed;
 pub(crate) mod packer;
+pub(crate) mod pending;
 mod purge;
 mod rekey;
 mod rewrite;
@@ -174,7 +176,9 @@ impl Store {
         clock: Arc<dyn Clock>,
     ) -> Result<Store, OpenError> {
         let store = Store::open_beside(dir, tenant, tenant_key, fs, clock)?;
-        store.recover()?;
+        // Every process that runs recovery holds the catalog alone: a
+        // server or a command that runs alone (datadir.rs).
+        store.recover(Writers::None)?;
         Ok(store)
     }
 
@@ -237,7 +241,10 @@ impl Store {
     ) -> Result<Store, OpenError> {
         let store = Store::with_backends(tenant, tenant_key, catalog, objects, packs, fs, clock);
         if recover {
-            store.recover()?;
+            // A process that runs recovery holds the catalog alone: the
+            // data directory's lock, or the database's lock, which one
+            // serving server holds.
+            store.recover(Writers::None)?;
         }
         Ok(store)
     }
@@ -270,12 +277,31 @@ impl Store {
     }
 
     /// Start-up recovery: the catalog recovers itself, and temporary
-    /// objects and objects with no row are removed, and how many is
-    /// logged. A name that is not a version id, with or without `.tmp`, is
-    /// not ours and is left alone.
-    fn recover(&self) -> Result<(), StoreError> {
+    /// objects and objects with no row are removed, unless a write is
+    /// under way for them (store/pending.rs), and how many is logged. A
+    /// name that is not a version id, with or without `.tmp`, is not ours
+    /// and is left alone.
+    ///
+    /// The order is what keeps a write under way safe. A pending row no
+    /// write can still be under way for is deleted first, so that write's
+    /// last transaction refuses to add its row. The objects are listed
+    /// next, and the rows read after: a write adds its pending row before
+    /// it writes its object, so every object listed has its pending row or
+    /// its version's row in that read.
+    pub(crate) fn recover(&self, writers: Writers) -> Result<(), StoreError> {
         self.catalog.recover()?;
-        let (places, files) = {
+        let now = nanos(self.clock.now());
+        {
+            let mut tx = self.catalog.immediate()?;
+            for (version, started_at) in tx.pending()? {
+                if !pending::under_way(writers, started_at, now) {
+                    tx.drop_pending(version)?;
+                }
+            }
+            commit(tx)?;
+        }
+        let names = self.objects.list().map_err(io)?;
+        let (places, files, writing) = {
             let mut tx = self.catalog.snapshot()?;
             let places: std::collections::HashMap<VersionId, bool> = tx
                 .places()?
@@ -283,10 +309,16 @@ impl Store {
                 .map(|(version, place)| (version, names_its_object(&place)))
                 .collect();
             let files: std::collections::HashSet<_> = tx.pack_files()?.into_iter().collect();
-            (places, files)
+            let writing: std::collections::HashSet<VersionId> = tx
+                .pending()?
+                .into_iter()
+                .filter(|(_, started_at)| pending::under_way(writers, *started_at, now))
+                .map(|(version, _)| version)
+                .collect();
+            (places, files, writing)
         };
         let mut removed: u64 = 0;
-        for name in self.objects.list().map_err(io)? {
+        for name in names {
             let (id, temporary) = match name.strip_suffix(".tmp") {
                 Some(id) => (id, true),
                 None => (name.as_str(), false),
@@ -294,7 +326,8 @@ impl Store {
             let Some(version) = VersionId::parse(id) else {
                 continue;
             };
-            if temporary || !places.get(&version).copied().unwrap_or(false) {
+            let named = places.get(&version).copied().unwrap_or(false);
+            if pending::leftover(named, temporary, writing.contains(&version)) {
                 self.objects.remove_name(&name).map_err(io)?;
                 removed += 1;
             }
@@ -352,6 +385,7 @@ impl Store {
             status,
         };
         let key_id = self.tenant_key.id();
+        let version = VersionId::generate();
         {
             let mut tx = self.catalog.immediate()?;
             let refused = match state(&mut tx, uuid)? {
@@ -370,9 +404,12 @@ impl Store {
                     Some((503, None, StoreError::LimitReached))
                 }
                 // The wrap is counted before it is made, so every wrap is
-                // counted once whether this write wins or loses.
+                // counted once whether this write wins or loses. The
+                // pending row marks the object as a write under way until
+                // its row is added (store/pending.rs).
                 State::Absent => {
                     tx.add_wrap(key_id)?;
+                    tx.add_pending(version, nanos(self.clock.now()))?;
                     None
                 }
             };
@@ -384,12 +421,13 @@ impl Store {
             commit(tx)?;
         }
 
-        let (version, wrapped) = self.write_version(uuid, body)?;
+        let wrapped = self.write_version(uuid, version, body)?;
         self.pause();
 
         let unknown = std::cell::Cell::new(false);
         let committed = (|| {
             let mut tx = self.catalog.immediate()?;
+            let mine = tx.drop_pending(version)?;
             match state(&mut tx, uuid)? {
                 State::Absent => {}
                 lost => {
@@ -401,6 +439,13 @@ impl Store {
                     commit(tx)?;
                     return Err(error);
                 }
+            }
+            if !mine {
+                // Recovery took the write for a leftover and removed its
+                // object: a row now would name nothing.
+                self.record(&mut tx, &entry(500, None))?;
+                commit(tx)?;
+                return Err(StoreError::Io);
             }
             // The version's time, and the uuid's first: the list keeps
             // its place by it through replace, delete and restore.
@@ -497,14 +542,15 @@ impl Store {
             self.pause();
             let mut tx = self.catalog.immediate()?;
             match state(&mut tx, uuid)? {
-                // A packed version's file may have been rewritten and
-                // deleted after its place was read: read again at the new
-                // place. The same place still failing is the answer.
+                // The version may have moved after its place was read: a
+                // packed version's file rewritten and deleted, or an
+                // unpacked version packed and its object removed. Read
+                // again at the new place. The same place still failing, or
+                // a row that does not read, is the answer.
                 State::Live(now)
                     if now == version
                         && opened.is_err()
-                        && place.is_some()
-                        && version_row(&mut tx, version).ok().map(|r| r.place) != Some(place) =>
+                        && matches!(version_row(&mut tx, version), Ok(r) if r.place != place) =>
                 {
                     continue;
                 }
@@ -542,6 +588,7 @@ impl Store {
             status,
         };
         let key_id = self.tenant_key.id();
+        let version = VersionId::generate();
         // Why the state does not allow this replace, if it does not.
         let refusal = |tx: &mut Tx| -> Result<Option<(u16, StoreError)>, StoreError> {
             Ok(match state(tx, uuid)? {
@@ -570,19 +617,27 @@ impl Store {
                 return Err(error);
             }
             tx.add_wrap(key_id)?;
+            tx.add_pending(version, nanos(self.clock.now()))?;
             commit(tx)?;
         }
 
-        let (version, wrapped) = self.write_version(uuid, body)?;
+        let wrapped = self.write_version(uuid, version, body)?;
         self.pause();
 
         let unknown = std::cell::Cell::new(false);
         let committed = (|| {
             let mut tx = self.catalog.immediate()?;
+            let mine = tx.drop_pending(version)?;
             if let Some((status, error)) = refusal(&mut tx)? {
                 self.record(&mut tx, &entry(status, None))?;
                 commit(tx)?;
                 return Err(error);
+            }
+            if !mine {
+                // As in `create`: recovery removed the object.
+                self.record(&mut tx, &entry(500, None))?;
+                commit(tx)?;
+                return Err(StoreError::Io);
             }
             let now = nanos(self.clock.now());
             tx.insert_version(&NewVersion {
@@ -681,10 +736,14 @@ impl Store {
     }
 
     /// Seals `body` as a new version of `uuid` under a new data key, wraps
-    /// that key under the tenant key, and writes the object. Returns the
-    /// version id and the wrapped key.
-    fn write_version(&self, uuid: Uuid, body: &[u8]) -> Result<(VersionId, Vec<u8>), StoreError> {
-        let version = VersionId::generate();
+    /// that key under the tenant key, and writes the object as `version`.
+    /// Returns the wrapped key.
+    fn write_version(
+        &self,
+        uuid: Uuid,
+        version: VersionId,
+        body: &[u8],
+    ) -> Result<Vec<u8>, StoreError> {
         let ctx = Context::Version {
             tenant: self.tenant,
             uuid,
@@ -694,7 +753,7 @@ impl Store {
         let blob = envelope::seal(&data_key, &ctx, body);
         let wrapped = envelope::wrap(&self.tenant_key, &ctx, &data_key);
         self.objects.put(version, &blob).map_err(io)?;
-        Ok((version, wrapped))
+        Ok(wrapped)
     }
 
     /// Removes a new version's object when the write failed and its rows
@@ -863,6 +922,19 @@ impl Store {
         if let Some(plan) = plan {
             self.pack(&plan).expect("the forced pack run");
         }
+    }
+
+    /// Sets the hook a write runs once, between its object and its last
+    /// transaction.
+    #[cfg(test)]
+    pub(crate) fn on_between(&self, hook: Box<dyn FnOnce() + Send>) {
+        *self.hooks.between.lock().expect("hook") = Some(hook);
+    }
+
+    /// The catalog's pending rows, for tests.
+    #[cfg(test)]
+    pub(crate) fn pending_writes(&self) -> Result<Vec<(VersionId, i64)>, StoreError> {
+        self.catalog.snapshot()?.pending()
     }
 
     #[cfg(test)]
@@ -1166,7 +1238,7 @@ pub(crate) mod tests {
                 self.clock.clone(),
             )?;
             store.packs = self.packs.clone();
-            store.recover()?;
+            store.recover(super::pending::Writers::None)?;
             Ok(store)
         }
 
@@ -2109,7 +2181,11 @@ pub(crate) mod tests {
         let (found, body) = vcon(UUID, "first");
         f.store.create(&f.caller, &found, &body).expect("stored");
         let (_, newer) = vcon(UUID, "newer");
-        let (version, wrapped) = f.store.write_version(found.uuid, &newer).expect("written");
+        let version = VersionId::generate();
+        let wrapped = f
+            .store
+            .write_version(found.uuid, version, &newer)
+            .expect("written");
         let writer = f.clone();
         *f.store.hooks.between.lock().expect("hook") = Some(Box::new(move || {
             let conn = writer.store.conn();

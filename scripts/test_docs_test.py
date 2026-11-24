@@ -334,7 +334,7 @@ class Since(unittest.TestCase):
         self.assertEqual(
             notes,
             [
-                "the release a page names is not published yet; running with VERSION=0.2.0",
+                "the release a page names is not published with pins yet; running with VERSION=0.2.0",
                 "p.md:8 is for release 0.3.0 and later; this run's release is older, so it does not run",
             ],
             "the run says what it ran with and what it left out",
@@ -532,8 +532,6 @@ class GitHubApi(unittest.TestCase):
         run, _ = self.runner('{"message":"API rate limit exceeded for 192.0.2.1."}\n403')
         with self.assertRaisesRegex(dt.PageError, "403: API rate limit exceeded"):
             dt.released("0.2.0", None, run)
-        with self.assertRaisesRegex(dt.PageError, "403: API rate limit exceeded"):
-            dt.latest_release(None, run)
 
     def test_released_is_true_on_200_and_false_only_on_404(self):
         run, _ = self.runner("{}\n200")
@@ -541,9 +539,8 @@ class GitHubApi(unittest.TestCase):
         run, _ = self.runner('{"message":"Not Found"}\n404')
         self.assertFalse(dt.released("0.9.0", None, run))
 
-    def test_the_newest_release_is_read_from_its_tag(self):
-        run, _ = self.runner('{"tag_name":"v0.3.0"}\n200')
-        self.assertEqual(dt.latest_release(None, run), "0.3.0")
+    def test_no_code_asks_github_for_the_newest_release(self):
+        self.assertFalse(hasattr(dt, "latest_release"), "the stand-in is the newest pinned release")
 
     def test_a_curl_failure_says_so(self):
         run, _ = self.runner("", returncode=6, stderr="curl: (6) Could not resolve host: api.github.com")
@@ -1405,6 +1402,156 @@ class ReleasePins(unittest.TestCase):
 
     def test_a_binary_under_test_is_not_a_release(self):
         self.assertEqual(dt.release_pin_problems({"NEW": "/docs-test/vcon-server", "VERSION": "0.4.0"}, self.PINS), [])
+
+
+class PinnedReleases(unittest.TestCase):
+    """A release runs as a page names it only once it is published and its
+    assets are pinned; until then the newest pinned release stands in, so a
+    release published before its pins land fails no how-to job
+    (RELEASE-LEAVES-MAIN-RED-UNTIL-PINS)."""
+
+    @staticmethod
+    def pins(*versions, tarball_only=()):
+        out = {}
+        for v in versions:
+            out[f"{REL}/v{v}/SHA256SUMS.txt"] = SHA_A
+            out[f"{REL}/v{v}/vcon-server-{v}-x86_64-unknown-linux-gnu.tar.gz"] = SHA_B
+        for v in tarball_only:
+            out[f"{REL}/v{v}/vcon-server-{v}-x86_64-unknown-linux-gnu.tar.gz"] = SHA_B
+        return out
+
+    PAGE = "```sh\nNEW_VERSION=0.4.13\n```\n"
+
+    def steps(self):
+        return dt.parse(self.PAGE, "docs/upgrading.md")
+
+    # Success.
+    def test_the_newest_pinned_release_is_found(self):
+        self.assertEqual(dt.newest_pinned(self.pins("0.4.11", "0.4.12")), "0.4.12", "the higher of two")
+
+    def test_versions_compare_as_numbers(self):
+        self.assertEqual(dt.newest_pinned(self.pins("0.4.9", "0.4.10")), "0.4.10", "0.4.10 is after 0.4.9")
+
+    def test_a_pinned_release_is_pinned(self):
+        self.assertTrue(dt.release_pinned("0.4.12", self.pins("0.4.12")), "its SHA256SUMS.txt is pinned")
+
+    def test_a_published_pinned_release_runs_as_the_page_names_it(self):
+        _, sets, notes = dt.release_plan(self.steps(), {}, self.pins("0.4.12", "0.4.13"), lambda v: True)
+        self.assertEqual((sets, notes), ({}, []), "0.4.13 is published and pinned")
+
+    def test_a_published_release_without_pins_runs_as_the_newest_pinned_one(self):
+        _, sets, notes = dt.release_plan(self.steps(), {}, self.pins("0.4.11", "0.4.12"), lambda v: True)
+        self.assertEqual(sets, {"NEW_VERSION": "0.4.12"}, "0.4.12 stands in for the pinless 0.4.13")
+        self.assertEqual(
+            notes,
+            ["the release a page names is not published with pins yet; running with NEW_VERSION=0.4.12"],
+            "the run says what it ran with",
+        )
+
+    def test_an_unpublished_release_runs_as_the_newest_pinned_one(self):
+        _, sets, _ = dt.release_plan(self.steps(), {}, self.pins("0.4.12"), lambda v: v != "0.4.13")
+        self.assertEqual(sets, {"NEW_VERSION": "0.4.12"}, "as before a release is tagged")
+
+    def test_the_stand_in_passes_the_pin_check(self):
+        steps, sets, _ = dt.release_plan(self.steps(), {}, self.pins("0.4.12"), lambda v: True)
+        pins = self.pins("0.4.12")
+        self.assertEqual(dt.release_pin_problems(dt.release_versions(steps, sets), pins), [], "every release run is pinned")
+
+    def test_the_repository_pins_a_newest_release(self):
+        newest = dt.newest_pinned(dt.read_pins())
+        self.assertIsNotNone(newest, "scripts/docs-test-pins.txt pins a vcon-server release")
+        self.assertTrue(dt.release_pinned(newest, dt.read_pins()), newest)
+
+    def test_a_scenario_s_own_setting_is_left_alone(self):
+        _, sets, notes = dt.release_plan(self.steps(), {"NEW_VERSION": "0.4.11"}, self.pins("0.4.12"), lambda v: True)
+        self.assertEqual((sets, notes), ({"NEW_VERSION": "0.4.11"}, []), "the scenario chose it")
+
+    def test_the_note_is_read_back_as_a_substitution(self):
+        _, _, notes = dt.release_plan(self.steps(), {}, self.pins("0.4.12"), lambda v: True)
+        self.assertEqual(dt.substituted(f"docs-test: {notes[0]}\n"), ["NEW_VERSION=0.4.12"], "push names it")
+
+    def test_the_summary_words_say_why(self):
+        self.assertEqual(
+            dt.release_words("NEW_VERSION=0.4.12"),
+            "it ran NEW_VERSION=0.4.12 in place of the release its page names, not yet published with pins",
+            "one release",
+        )
+
+    def test_two_releases_are_both_named_in_the_summary(self):
+        self.assertEqual(
+            dt.release_words("VERSION=0.4.12,NEW_VERSION=0.4.12"),
+            "it ran VERSION=0.4.12 and NEW_VERSION=0.4.12 in place of the releases its page names, "
+            "not yet published with pins",
+            "two releases",
+        )
+
+    # Failure.
+    def test_an_unpinned_release_is_not_pinned(self):
+        self.assertFalse(dt.release_pinned("0.4.13", self.pins("0.4.12")), "no pin names 0.4.13")
+
+    def test_a_release_with_only_an_archive_pinned_is_not_pinned(self):
+        self.assertFalse(dt.release_pinned("0.4.13", self.pins(tarball_only=("0.4.13",))), "SHA256SUMS.txt is not pinned")
+
+    def test_an_unpinned_release_is_not_asked_of_github(self):
+        asked = []
+        dt.release_plan(self.steps(), {}, self.pins("0.4.12"), lambda v: asked.append(v) or True)
+        self.assertEqual(asked, ["0.4.12"], "GitHub is asked of the pinned stand-in alone, never of 0.4.13")
+
+    def test_a_pinned_release_github_has_not_published_does_not_run(self):
+        _, sets, _ = dt.release_plan(self.steps(), {}, self.pins("0.4.12", "0.4.13"), lambda v: v != "0.4.13")
+        self.assertEqual(sets, {"NEW_VERSION": "0.4.12"}, "GitHub's answer still counts")
+
+    def test_no_pinned_release_is_an_error(self):
+        with self.assertRaisesRegex(dt.PageError, "cannot learn the newest release"):
+            dt.release_plan(self.steps(), {}, {}, lambda v: True)
+
+    def test_a_github_error_is_not_a_guess(self):
+        def fails(v):
+            raise dt.PageError("GitHub API answered 500")
+
+        with self.assertRaisesRegex(dt.PageError, "answered 500"):
+            dt.release_plan(self.steps(), {}, self.pins("0.4.12", "0.4.13"), fails)
+
+    def test_no_pins_find_no_newest_release(self):
+        self.assertIsNone(dt.newest_pinned({}), "nothing is pinned")
+
+    def test_an_archive_alone_is_no_pinned_release(self):
+        self.assertIsNone(dt.newest_pinned(self.pins(tarball_only=("0.4.13",))), "SHA256SUMS.txt names a release")
+
+    # Edge.
+    def test_another_repository_s_release_is_not_a_vcon_server_release(self):
+        pins = {"https://github.com/example/other/releases/download/v9.9.9/SHA256SUMS.txt": SHA_A, **self.pins("0.4.12")}
+        self.assertEqual(dt.newest_pinned(pins), "0.4.12", "only this repository's releases")
+
+    def test_a_tag_that_is_not_a_release_number_is_left_out(self):
+        pins = {f"{REL}/v0.5.0-rc1/SHA256SUMS.txt": SHA_A, **self.pins("0.4.12")}
+        self.assertEqual(dt.newest_pinned(pins), "0.4.12", "a pre-release tag is not a release")
+
+    def test_a_tool_s_asset_is_not_a_release(self):
+        pins = {"https://github.com/example/tool/releases/download/v1.0.0/tool.tar.gz": SHA_A, **self.pins("0.4.12")}
+        self.assertEqual(dt.newest_pinned(pins), "0.4.12", "a tool download is not a vcon-server release")
+
+    def test_a_page_with_no_release_needs_no_pins(self):
+        steps = dt.parse("```sh\nls\n```\n", "p.md")
+        self.assertEqual(dt.release_plan(steps, {}, {}, lambda v: True)[1:], ({}, []), "nothing to substitute")
+
+    def test_a_binary_under_test_is_left_alone(self):
+        _, sets, _ = dt.release_plan(self.steps(), {"NEW_VERSION": "/docs-test/vcon-server"}, {}, lambda v: True)
+        self.assertEqual(sets, {"NEW_VERSION": "/docs-test/vcon-server"}, "a path is not a release")
+
+    def test_the_only_pinned_release_is_the_newest(self):
+        self.assertEqual(dt.newest_pinned(self.pins("0.3.0")), "0.3.0", "one release")
+
+    def test_a_pinned_release_newer_than_the_page_s_runs_the_page_s(self):
+        _, sets, _ = dt.release_plan(self.steps(), {}, self.pins("0.4.13", "0.4.14"), lambda v: True)
+        self.assertEqual(sets, {}, "the page's 0.4.13 is published and pinned")
+
+    def test_the_run_command_plans_through_the_pins(self):
+        import inspect
+
+        source = inspect.getsource(dt.run)
+        self.assertIn("release_plan(", source, "the run plans with the pins")
+        self.assertNotIn("lambda: latest_release(token)", source, "the stand-in is no longer the newest published release")
 
 
 class Upstream:
@@ -4738,9 +4885,9 @@ def run_output(note):
 
 class SubstitutedRelease(unittest.TestCase):
     """The summary line and the stamp name the release a scenario really
-    ran when the page's release is not published yet."""
+    ran when the page's release is not published with pins yet."""
 
-    NOTE = "the release a page names is not published yet; running with VERSION=0.4.6"
+    NOTE = "the release a page names is not published with pins yet; running with VERSION=0.4.6"
 
     # Success.
     def test_the_note_is_the_one_plan_prints(self):
@@ -4754,7 +4901,7 @@ class SubstitutedRelease(unittest.TestCase):
         code, out, _ = push_of([PAGE_C], run)
         self.assertEqual(code, 0, out)
         self.assertIn("docs scenario pages-only: ok in ", out, out)
-        self.assertIn("; it ran VERSION=0.4.6 in place of the unpublished release its page names", out, out)
+        self.assertIn("; it ran VERSION=0.4.6 in place of the release its page names, not yet published with pins", out, out)
 
     def test_the_stamp_names_the_release_run(self):
         stamped = []
@@ -4768,7 +4915,7 @@ class SubstitutedRelease(unittest.TestCase):
         self.assertEqual(stamped, [("abc123", {"pages-only": ""})], "nothing substituted")
 
     def test_two_substitutions_are_both_named(self):
-        text = run_output(self.NOTE) + "docs-test: the release a page names is not published yet; running with NEW_VERSION=0.4.6\n"
+        text = run_output(self.NOTE) + "docs-test: the release a page names is not published with pins yet; running with NEW_VERSION=0.4.6\n"
         self.assertEqual(dt.substituted(text), ["VERSION=0.4.6", "NEW_VERSION=0.4.6"], "both")
 
     def test_the_stamp_file_keeps_the_release(self):
@@ -4798,22 +4945,22 @@ class SubstitutedRelease(unittest.TestCase):
         self.assertEqual(dt.substituted(text), [], "a step left out names no release run")
 
     def test_a_note_in_a_steps_output_is_not_read(self):
-        text = "ok       docs/c.md:3\n    the release a page names is not published yet; running with VERSION=9\n"
+        text = "ok       docs/c.md:3\n    the release a page names is not published with pins yet; running with VERSION=9\n"
         self.assertEqual(dt.substituted(text), [], "only the runner's own docs-test: lines")
 
     def test_the_note_inside_another_line_is_not_read(self):
-        text = "FAIL     docs/c.md:3: line 1 differs: docs-test: the release a page names is not published yet; running with VERSION=9\n"
+        text = "FAIL     docs/c.md:3: line 1 differs: docs-test: the release a page names is not published with pins yet; running with VERSION=9\n"
         self.assertEqual(dt.substituted(text), [], "only a line of the runner's own")
 
     def test_a_note_without_a_value_is_not_read(self):
-        self.assertEqual(dt.substituted("docs-test: the release a page names is not published yet; running with VERSION=\n"), [], "no value")
+        self.assertEqual(dt.substituted("docs-test: the release a page names is not published with pins yet; running with VERSION=\n"), [], "no value")
 
     def test_an_unknown_variable_is_not_read(self):
-        text = "docs-test: the release a page names is not published yet; running with PATH=/x\n"
+        text = "docs-test: the release a page names is not published with pins yet; running with PATH=/x\n"
         self.assertEqual(dt.substituted(text), [], "only the release variables")
 
     def test_a_note_cut_short_is_not_read(self):
-        self.assertEqual(dt.substituted("docs-test: the release a page names is not published yet\n"), [], "partial")
+        self.assertEqual(dt.substituted("docs-test: the release a page names is not published with pins yet\n"), [], "partial")
 
     # Edge cases.
     def test_a_stamp_line_without_a_release_reads_as_none_given(self):
@@ -4846,15 +4993,15 @@ class SubstitutedRelease(unittest.TestCase):
 
     def test_the_note_format_has_one_place(self):
         self.assertEqual(dt.SUBSTITUTED_NOTE.format(name="VERSION", value="1.2.3"),
-                         "the release a page names is not published yet; running with VERSION=1.2.3", "the format")
+                         "the release a page names is not published with pins yet; running with VERSION=1.2.3", "the format")
 
     def test_the_summary_without_a_why_still_names_it(self):
-        self.assertEqual(dt.release_words("VERSION=0.4.6"), "it ran VERSION=0.4.6 in place of the unpublished release its page names", "the words")
+        self.assertEqual(dt.release_words("VERSION=0.4.6"), "it ran VERSION=0.4.6 in place of the release its page names, not yet published with pins", "the words")
         self.assertEqual(dt.release_words(""), "", "nothing to say")
 
     def test_two_releases_join_with_and(self):
         self.assertEqual(dt.release_words("VERSION=0.4.6,NEW_VERSION=0.4.6"),
-                         "it ran VERSION=0.4.6 and NEW_VERSION=0.4.6 in place of the unpublished releases its page names", "plural")
+                         "it ran VERSION=0.4.6 and NEW_VERSION=0.4.6 in place of the releases its page names, not yet published with pins", "plural")
 
 
 class PushCarries(unittest.TestCase):

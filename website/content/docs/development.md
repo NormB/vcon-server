@@ -498,9 +498,11 @@ it refuses a checkout that is not the commit or has uncommitted changes. It
 prints one line per scenario, `docs scenario <name>: ok in <n> s
 (<why>)`, `FAILED` with the end of its report, or `passed on <commit> ...
 not run again` for one a stamp already holds. When a scenario ran a
-page's release variable with the newest published release, because the
-release the page names is not published yet, the line ends `it ran
-VERSION=<release> in place of the unpublished release its page names`,
+page's release variable with the newest pinned release, because the
+release the page names is not published yet or its assets are not
+pinned yet, the line ends `it ran
+VERSION=<release> in place of the release its page names, not yet
+published with pins`,
 the stamp keeps that after the scenario's name
 (`container VERSION=0.4.6`), and the hook repeats it. The hook prints, for each
 scenario, the stamp or CI job it accepted or why CI's did not count, and
@@ -747,7 +749,7 @@ An HTML comment on the line before a block changes how it runs:
 
 A step that works only from some release on, such as checking a signature
 that older releases do not have, is marked `since`, not `skip`. Until that
-release is published, the runner uses the newest published one, so the step
+release is published and pinned, the runner uses the newest pinned one, so the step
 does not run and the runner says so; from then on it runs. `lint` refuses a
 `skip` whose reason names a release, and a `since` block whose text does
 not name its release, so a reader on an older release is told to skip it.
@@ -776,8 +778,8 @@ how-to scenarios get the server built from the commit under test; a
 scenario whose pages need a cargo feature the default build lacks names it
 (`features`), and CI gives it a server built with that feature
 (`docs_test.py artifact <scenario>` names the artifact). The release scenarios download the release that the install page
-names. Until that release is published, they download the newest published
-release and say so.
+names. Until that release is published and its assets are pinned, they
+download the newest pinned release and say so.
 
 A scenario under systemd runs its pages one after the other in one
 container, and systemd refuses a unit's sixth start within 10 seconds
@@ -1261,7 +1263,7 @@ publish job gives its output to `gh release create --notes-file`. Before
 a tag, see the text a release will have:
 
 ```sh
-python3 -I scripts/release_notes.py 0.4.13 --repo NormB/vcon-server
+python3 -I scripts/release_notes.py 0.4.14 --repo NormB/vcon-server
 ```
 
 `scripts/test_release_notes.py` tests the script, and that the workflow
@@ -1403,7 +1405,9 @@ To bump a tool in a workflow:
    asset.
 
 To add a vcon-server release the how-to pages download, once it is
-published (before then the scenarios use the newest published release), add
+published (before then, and until these pins land, the scenarios use the
+newest pinned release, so a release published before its pins fails no
+how-to job), add
 its four assets to `scripts/docs-test-pins.txt`: `SHA256SUMS.txt`,
 `SHA256SUMS.txt.sigstore.json` and the x86_64 and aarch64 archives. Read the
 hashes as in step 2, with `NormB/vcon-server` and the `v` tag, and check the

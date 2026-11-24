@@ -412,7 +412,7 @@ HOWTO = (
 # docs/upgrading.md installs the binary it names as NEW: the one under test.
 UNDER_TEST = {"NEW": "/docs-test/vcon-server"}
 # The release before this one, which the upgrade scenario upgrades from.
-PREVIOUS = "0.4.12"
+PREVIOUS = "0.4.13"
 
 SCENARIOS = [
     # The how-tos, on a Debian and a Fedora with no systemd: the server runs
@@ -1781,20 +1781,11 @@ def released(version: str, token: str | None, run=subprocess.run) -> bool:
     raise _refused(path, code, body)
 
 
-def latest_release(token: str | None, run=subprocess.run) -> str:
-    """The newest published release's version."""
-    path = f"repos/{REPO}/releases/latest"
-    code, body = github_api(path, token, run)
-    if code != 200:
-        raise _refused(path, code, body)
-    return json.loads(body)["tag_name"].removeprefix("v")
-
-
 RELEASE_VARIABLES = ("VERSION", "NEW_VERSION")
 # What `run` prints (as "docs-test: <note>") when it runs a page's release
-# variable with the newest published release; `push` reads it back with
+# variable with the newest pinned release (release_plan); `push` reads it back with
 # `substituted`, so the summary and the stamp name the release that ran.
-SUBSTITUTED_NOTE = "the release a page names is not published yet; running with {name}={value}"
+SUBSTITUTED_NOTE = "the release a page names is not published with pins yet; running with {name}={value}"
 _SUBSTITUTED = re.compile(
     "^docs-test: "
     + re.escape(SUBSTITUTED_NOTE)
@@ -1818,14 +1809,15 @@ def release_words(note: str) -> str:
     if not runs:
         return ""
     plural = "releases" if len(runs) > 1 else "release"
-    return f"it ran {' and '.join(runs)} in place of the unpublished {plural} its page names"
+    return f"it ran {' and '.join(runs)} in place of the {plural} its page names, not yet published with pins"
 
 
 def release_sets(steps: list[Block], sets: dict, released, latest) -> dict:
-    """The scenario's settings, plus a published release for each release
-    variable a page sets to a version not published yet. A version bump
-    lands before its tag, so until the release exists the steps run with the
-    newest published one, and the commands are still tested."""
+    """The scenario's settings, plus `latest()` for each release variable a
+    page sets to a version `released` says is not there yet. A version bump
+    lands before its tag, and the tag before the pins of its assets, so
+    until then the steps run with the stand-in, and the commands are still
+    tested."""
     out = dict(sets)
     newest = None
     for name in RELEASE_VARIABLES:
@@ -1842,6 +1834,39 @@ def release_sets(steps: list[Block], sets: dict, released, latest) -> dict:
                 out[name] = newest
             break
     return out
+
+
+_PINNED_RELEASE = re.compile(rf"^{re.escape(GITHUB)}/{re.escape(REPO)}/releases/download/v(\d+\.\d+\.\d+)/SHA256SUMS\.txt$")
+
+
+def release_pinned(version: str, pins: dict) -> bool:
+    """Whether vcon-server release `version` has its assets pinned: its
+    SHA256SUMS.txt, as release_pin_problems asks."""
+    return f"{GITHUB}/{REPO}/releases/download/v{version}/SHA256SUMS.txt" in pins
+
+
+def newest_pinned(pins: dict) -> str | None:
+    """The newest vcon-server release whose assets are pinned, or None."""
+    versions = [m.group(1) for m in map(_PINNED_RELEASE.match, pins) if m]
+    return max(versions, key=_release, default=None)
+
+
+def release_plan(steps: list[Block], scenario_sets: dict, pins: dict, released) -> tuple[list[Block], dict, list[str]]:
+    """`plan` for a run: a page's release runs as the page names it once it
+    is published and pinned, and otherwise the newest pinned release stands
+    in. A release is published before the follow-up that pins its assets
+    lands, and a run downloads only pinned assets, so between the two the
+    how-to still runs, on the newest release it can check. GitHub is asked
+    only of a pinned release, newest first."""
+
+    def available(v: str) -> bool:
+        return release_pinned(v, pins) and released(v)
+
+    def stand_in() -> str | None:
+        versions = sorted({m.group(1) for m in map(_PINNED_RELEASE.match, pins) if m}, key=_release, reverse=True)
+        return next((v for v in versions if released(v)), None)
+
+    return plan(steps, scenario_sets, available, stand_in)
 
 
 def plan(steps: list[Block], scenario_sets: dict, released, latest) -> tuple[list[Block], dict, list[str]]:
@@ -1955,12 +1980,10 @@ def run(scenario: Scenario, binary: str | None, keep: str | None) -> int:
         blocks += page_blocks(p)
     steps = select(blocks, scenario)
     token = os.environ.get("GH_TOKEN") or None
-    steps, sets, notes = plan(
-        steps, scenario.sets, lambda v: released(v, token), lambda: latest_release(token)
-    )
+    pins = read_pins()
+    steps, sets, notes = release_plan(steps, scenario.sets, pins, lambda v: released(v, token))
     for note in notes:
         print(f"docs-test: {note}")
-    pins = read_pins()
     missing = release_pin_problems(release_versions(steps, sets), pins)
     if missing:
         raise PageError("; ".join(missing))

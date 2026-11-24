@@ -15,6 +15,7 @@ mod v10;
 mod v11;
 mod v12;
 mod v13;
+mod v14;
 mod v2;
 mod v3;
 mod v4;
@@ -77,6 +78,7 @@ pub(super) mod live {
         "key_use",
         "manifest",
         "parquet_file",
+        "pending_write",
         "purge_pending",
         "tenant_catalog",
         "tenant_lock",
@@ -351,6 +353,9 @@ pub(super) mod live {
             "purge_pending" => {
                 format!("INSERT INTO vcon.purge_pending (tenant, file_id) VALUES ({t}, '\\x01')")
             }
+            "pending_write" => format!(
+                "INSERT INTO vcon.pending_write (tenant, version, started_at) VALUES ({t}, '\\x01', 1)"
+            ),
             "manifest" => {
                 format!("INSERT INTO vcon.manifest (tenant, published_at) VALUES ({t}, 1)")
             }

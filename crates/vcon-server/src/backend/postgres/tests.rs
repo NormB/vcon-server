@@ -17,6 +17,7 @@ mod lock_tests;
 mod place_tests;
 mod registry_tests;
 mod rekey_tests;
+mod removal_tests;
 mod reseal_tests;
 mod schema_tests;
 mod space_tests;

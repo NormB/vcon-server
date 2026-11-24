@@ -240,11 +240,14 @@ fn the_how_to_shows_the_upgrade_to_this_binary_s_version() {
         page.lines().any(|l| l == line),
         "the line migrate prints after an upgrade from 0.4.5: {line}"
     );
+    // Between a migration's change and the release that ships it, the
+    // package still has the last release's number, so the page says "this
+    // release"; the release commit puts the number in its place.
     assert!(
         page.contains(&format!(
             "Release {} makes version {SCHEMA_VERSION},",
             env!("CARGO_PKG_VERSION")
-        )),
+        )) || page.contains(&format!("this release makes version {SCHEMA_VERSION},")),
         "and the version in words"
     );
 }

@@ -136,25 +136,19 @@ fn the_how_to_says_what_version_13_changes() {
         ),
         "the paragraph on version 13"
     );
-    assert!(
-        page.contains("schema version 6 to schema version 13"),
-        "the line migrate prints on a database of the first preview"
-    );
+    // The line migrate prints names the binary's version, 14 from schema
+    // version 14 on (schema_tests::v14).
 }
 
 #[test]
 fn the_how_to_says_what_version_13_changes_under_schema_versions() {
     let page = flat("../../website/content/docs/postgres-catalog.md");
-    let (before, versions) = page
+    let (_, versions) = page
         .split_once(" ### Schema versions ")
         .expect("the how-to has the section Schema versions");
     assert!(
         versions.contains("Version 13 makes the table `storage_claim`, whose one row holds the"),
         "version 13, in the section of the schema's versions"
-    );
-    assert!(
-        before.contains("schema version 6 to schema version 13"),
-        "the upgrade step names this version"
     );
     // The changelog's entry tells an upgrader to run migrate and links the
     // how-to; it does not walk through the versions.
@@ -262,8 +256,8 @@ fn a_changelog_without_the_first_releases_section_is_not_passed() {
 fn the_status_page_names_version_13() {
     let page = flat("../../website/content/docs/status.md");
     assert!(
-        page.contains("**Schema version 13 of the PostgreSQL preview.**"),
-        "the entry of the PostgreSQL preview's schema version"
+        page.contains("Version 13 adds the table `storage_claim`"),
+        "in the entry of the PostgreSQL preview's schema version"
     );
 }
 

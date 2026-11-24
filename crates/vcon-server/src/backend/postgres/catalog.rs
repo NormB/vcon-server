@@ -286,7 +286,7 @@ pub(crate) fn begin_text(how: Begin, tenant: TenantId) -> String {
         Begin::Write => format!(
             "BEGIN ISOLATION LEVEL READ COMMITTED; {set}; \
              DO $$BEGIN \
-             PERFORM 1 FROM vcon.tenant_lock WHERE tenant = '\\x{tenant}' FOR UPDATE; \
+             PERFORM 1 FROM vcon.tenant_lock WHERE tenant = '\\x{tenant}' AND NOT removing FOR UPDATE; \
              IF NOT FOUND THEN RAISE EXCEPTION 'tenant {tenant} has no lock row'; END IF; \
              END$$"
         ),
@@ -702,6 +702,40 @@ impl PgCatalog {
         Ok(tx)
     }
 
+    /// Removes `tenant`. First, in one transaction, its lock row is
+    /// marked `removing`: that waits for every transaction holding the
+    /// row, and from its commit on every write or read step that takes
+    /// the row ([`begin_text`]) is refused as a removed tenant's, so no
+    /// read can find the vCon's row with its object gone and answer it
+    /// damaged. Then its objects go, with `objects`, then every row but
+    /// its audit records, at most `batch` rows of a table in one
+    /// transaction ([`PgCatalog::remove_in`]). A tenant with no lock row
+    /// (a removal cut off) is removed the same way.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::NoTenant`] for the registry's id; the error of
+    /// `objects`; and those of [`PgCatalog::remove_in`].
+    pub(crate) fn remove(
+        database: &Arc<Database>,
+        tenant: TenantId,
+        batch: i64,
+        objects: impl FnOnce() -> Result<(), CatalogError>,
+    ) -> Result<(), CatalogError> {
+        if tenant == REGISTRY {
+            return Err(CatalogError::NoTenant);
+        }
+        let tx = PgCatalog::begin_removal(database, tenant)?;
+        tx.execute(
+            "UPDATE vcon.tenant_lock SET removing = true WHERE tenant = $1",
+            &[(&tenant.0.as_slice(), Type::BYTEA)],
+        )
+        .map_err(|_| CatalogError::Io)?;
+        tx.finish().map_err(|_| CatalogError::Io)?;
+        objects()?;
+        PgCatalog::remove_in(database, tenant, batch)
+    }
+
     /// Removes every row of `tenant` but its audit records, at most
     /// `batch` rows of a table in one transaction.
     ///
@@ -752,6 +786,7 @@ impl PgCatalog {
         for table in [
             "key_use",
             "parquet_file",
+            "pending_write",
             "purge_pending",
             "manifest",
             "tenant_catalog",
@@ -1920,6 +1955,43 @@ impl CatalogTx for PgTx<'_> {
             ],
         )
         .map(drop)
+    }
+
+    fn add_pending(&mut self, version: VersionId, at: i64) -> Result<(), StoreError> {
+        self.execute(
+            "INSERT INTO vcon.pending_write (tenant, version, started_at) VALUES ($1, $2, $3)",
+            &[
+                (&self.tenant.0.as_slice(), Type::BYTEA),
+                (&version.0.as_slice(), Type::BYTEA),
+                (&at, Type::INT8),
+            ],
+        )
+        .map(drop)
+    }
+
+    fn drop_pending(&mut self, version: VersionId) -> Result<bool, StoreError> {
+        self.execute(
+            "DELETE FROM vcon.pending_write WHERE tenant = $1 AND version = $2",
+            &[
+                (&self.tenant.0.as_slice(), Type::BYTEA),
+                (&version.0.as_slice(), Type::BYTEA),
+            ],
+        )
+        .map(|deleted| deleted > 0)
+    }
+
+    fn pending(&mut self) -> Result<Vec<(VersionId, i64)>, StoreError> {
+        let rows = self.query(
+            "SELECT version, started_at FROM vcon.pending_write WHERE tenant = $1
+             ORDER BY version",
+            &[(&self.tenant.0.as_slice(), Type::BYTEA)],
+        )?;
+        rows.iter()
+            .map(|row| {
+                let version = VersionId(id_of(&row.try_get::<_, Vec<u8>>(0).map_err(io)?)?);
+                Ok((version, row.try_get(1).map_err(io)?))
+            })
+            .collect()
     }
 
     fn unpacked(&mut self) -> Result<Vec<UnpackedRow>, StoreError> {

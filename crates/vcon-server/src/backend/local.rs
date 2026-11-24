@@ -67,6 +67,19 @@ CREATE TABLE key_use (
 );
 ";
 
+/// The pending rows of the writes under way (store/pending.rs): a table of
+/// the connection's own, in memory (`temp_store = MEMORY`) and never in
+/// the file, so the catalog's schema and version stay as they are. A data
+/// directory is written by one process, which holds its lock, so every
+/// write under way is one of this process's, on this connection; a row
+/// goes with the process, as its write does.
+const PENDING_WRITES: &str = "
+CREATE TEMP TABLE pending_write (
+    version BLOB PRIMARY KEY NOT NULL,
+    started_at INTEGER NOT NULL
+);
+";
+
 /// How long a checkpoint waits before it tries again while a reader still
 /// holds the WAL.
 const CHECKPOINT_RETRY: std::time::Duration = std::time::Duration::from_millis(10);
@@ -86,6 +99,7 @@ impl LocalCatalog {
     pub fn open(path: &Path, catalog_key: Key) -> Result<LocalCatalog, catalog::CatalogError> {
         let schema = format!("{TABLES}{}{}", catalog::PACK_TABLES, audit::SCHEMA);
         let conn = catalog::open(path, &catalog_key, &schema)?;
+        conn.execute_batch(PENDING_WRITES)?;
         Ok(LocalCatalog {
             conn: Mutex::new(conn),
             catalog_key,
@@ -408,6 +422,34 @@ impl CatalogTx for LocalTx<'_> {
             )
             .map_err(io)?;
         Ok(())
+    }
+
+    fn add_pending(&mut self, version: VersionId, at: i64) -> Result<(), StoreError> {
+        self.conn
+            .execute(
+                "INSERT INTO pending_write (version, started_at) VALUES (?1, ?2)",
+                params![version.0, at],
+            )
+            .map(drop)
+            .map_err(io)
+    }
+
+    fn drop_pending(&mut self, version: VersionId) -> Result<bool, StoreError> {
+        self.conn
+            .execute("DELETE FROM pending_write WHERE version = ?1", [version.0])
+            .map(|deleted| deleted > 0)
+            .map_err(io)
+    }
+
+    fn pending(&mut self) -> Result<Vec<(VersionId, i64)>, StoreError> {
+        let mut rows = self
+            .conn
+            .prepare("SELECT version, started_at FROM pending_write ORDER BY version")
+            .map_err(io)?;
+        rows.query_map([], |r| Ok((VersionId(r.get(0)?), r.get(1)?)))
+            .map_err(io)?
+            .collect::<Result<_, _>>()
+            .map_err(io)
     }
 
     fn unpacked(&mut self) -> Result<Vec<UnpackedRow>, StoreError> {
@@ -2177,6 +2219,185 @@ mod tests {
 
     use super::*;
     use crate::fs::OsFs;
+
+    /// The catalog key under `parent`: the same key at each call.
+    fn under(parent: &Key) -> Key {
+        envelope::catalog_key(parent).expect("a catalog key")
+    }
+
+    /// A new tenant catalog in `dir`, and the key its catalog key is
+    /// derived from.
+    fn tenant_catalog(dir: &tempfile::TempDir) -> (std::path::PathBuf, Key, LocalCatalog) {
+        let path = dir.path().join("catalog.sqlite");
+        let key = Key::generate().expect("a key");
+        let catalog = LocalCatalog::open(&path, under(&key)).expect("the catalog opens");
+        (path, key, catalog)
+    }
+
+    /// Whether the catalog at `conn` has a table `name`.
+    fn has_table(conn: &Connection, name: &str) -> bool {
+        conn.query_row(
+            "SELECT count(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [name],
+            |r| r.get(0),
+        )
+        .expect("reads the schema")
+    }
+
+    #[test]
+    fn a_new_tenant_catalog_has_no_pending_write() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let (_, _, catalog) = tenant_catalog(&dir);
+        let mut tx = catalog.snapshot().expect("a snapshot");
+        assert_eq!(tx.pending().expect("reads"), vec![], "no write is pending");
+    }
+
+    #[test]
+    fn a_pending_write_reads_back_with_its_time_until_it_is_dropped() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let (_, _, catalog) = tenant_catalog(&dir);
+        let version = VersionId::generate();
+        let mut tx = catalog.immediate().expect("a write");
+        tx.add_pending(version, 42).expect("adds the row");
+        tx.commit().expect("commits");
+        let mut tx = catalog.immediate().expect("a write");
+        assert_eq!(
+            tx.pending().expect("reads"),
+            vec![(version, 42)],
+            "the pending row, with the time its write began"
+        );
+        assert!(
+            tx.drop_pending(version).expect("drops"),
+            "the row was there"
+        );
+        assert_eq!(tx.pending().expect("reads"), vec![], "no row is left");
+        assert!(
+            !tx.drop_pending(version).expect("drops"),
+            "a second drop finds no row"
+        );
+    }
+
+    #[test]
+    fn pending_writes_read_back_by_version_id() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let (_, _, catalog) = tenant_catalog(&dir);
+        let mut tx = catalog.immediate().expect("a write");
+        let high = VersionId([0xff; 16]);
+        let low = VersionId([0x01; 16]);
+        tx.add_pending(high, 1).expect("adds");
+        tx.add_pending(low, 2).expect("adds");
+        assert_eq!(
+            tx.pending().expect("reads"),
+            vec![(low, 2), (high, 1)],
+            "by version id"
+        );
+    }
+
+    #[test]
+    fn a_second_pending_row_for_one_version_is_refused() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let (_, _, catalog) = tenant_catalog(&dir);
+        let version = VersionId::generate();
+        let mut tx = catalog.immediate().expect("a write");
+        tx.add_pending(version, 1).expect("adds");
+        assert!(
+            matches!(tx.add_pending(version, 2), Err(StoreError::Io)),
+            "a version's write begins once"
+        );
+    }
+
+    #[test]
+    fn a_pending_row_of_a_rolled_back_write_is_not_kept() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let (_, _, catalog) = tenant_catalog(&dir);
+        let mut tx = catalog.immediate().expect("a write");
+        tx.add_pending(VersionId::generate(), 1).expect("adds");
+        drop(tx);
+        let mut tx = catalog.snapshot().expect("a snapshot");
+        assert_eq!(tx.pending().expect("reads"), vec![], "nothing committed");
+    }
+
+    #[test]
+    fn a_pending_row_keeps_a_time_at_either_end_of_the_range() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let (_, _, catalog) = tenant_catalog(&dir);
+        let mut tx = catalog.immediate().expect("a write");
+        let (a, b) = (VersionId([0x01; 16]), VersionId([0x02; 16]));
+        tx.add_pending(a, i64::MIN).expect("adds");
+        tx.add_pending(b, i64::MAX).expect("adds");
+        assert_eq!(
+            tx.pending().expect("reads"),
+            vec![(a, i64::MIN), (b, i64::MAX)],
+            "both ends of the range read back"
+        );
+    }
+
+    #[test]
+    fn the_pending_table_is_not_in_the_file_and_the_version_stays() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let (path, key, catalog) = tenant_catalog(&dir);
+        let mut tx = catalog.immediate().expect("a write");
+        tx.add_pending(VersionId::generate(), 1).expect("adds");
+        tx.commit().expect("commits");
+        let conn = catalog::open(&path, &under(&key), "").expect("a second connection");
+        assert!(
+            !has_table(&conn, "pending_write"),
+            "the file's schema has no pending table"
+        );
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .expect("the version");
+        assert_eq!(version, 9, "the catalog's schema version is unchanged");
+        assert_eq!(catalog::SCHEMA_VERSION, 9, "and this build's");
+    }
+
+    #[test]
+    fn a_pending_row_goes_with_the_catalog_that_added_it() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let (path, key, catalog) = tenant_catalog(&dir);
+        let mut tx = catalog.immediate().expect("a write");
+        tx.add_pending(VersionId::generate(), 1).expect("adds");
+        tx.add_wrap(KeyId([7; 8])).expect("a row of the file");
+        tx.commit().expect("commits");
+        drop(catalog);
+        let catalog = LocalCatalog::open(&path, under(&key)).expect("opens again");
+        let mut tx = catalog.snapshot().expect("a snapshot");
+        assert_eq!(
+            tx.pending().expect("reads"),
+            vec![],
+            "a new process has no write under way"
+        );
+        assert_eq!(tx.wraps(KeyId([7; 8])).expect("reads"), 1, "the file's row");
+    }
+
+    #[test]
+    fn a_registry_has_no_pending_table() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let key = Key::generate().expect("a key");
+        drop(LocalRegistry::open(dir.path(), under(&key)).expect("a registry"));
+        let path = dir.path().join("server.sqlite");
+        let conn = catalog::open(&path, &under(&key), "").expect("opens");
+        assert!(
+            !has_table(&conn, "pending_write"),
+            "a registry has no pending table"
+        );
+    }
+
+    #[test]
+    fn a_backup_of_a_catalog_holds_no_pending_row() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let (_, key, catalog) = tenant_catalog(&dir);
+        let mut tx = catalog.immediate().expect("a write");
+        tx.add_pending(VersionId::generate(), 1).expect("adds");
+        tx.commit().expect("commits");
+        let copy = dir.path().join("copy.sqlite");
+        catalog.backup_into(&copy).expect("backs up");
+        let conn = catalog::open(&copy, &under(&key), "").expect("opens the copy");
+        assert!(
+            !has_table(&conn, "pending_write"),
+            "the copy has no pending table"
+        );
+    }
 
     /// Only an absent file is a missing object; every other error the
     /// system gives is a failure of the storage, as S3's are.
