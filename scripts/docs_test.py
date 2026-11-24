@@ -65,10 +65,14 @@ fail a page whose commands are right:
   (Acquire::Retries) and gives up one that stalls for 10 s
   (Acquire::http::Timeout).
 - A container with apt reads its packages from a list of mirrors, not from
-  one host. Before anything else the runner asks each mirror of each source
-  the image's apt reads (APT_MIRRORS) for its index, keeps those that answer
-  within 5 s, says in the log which they are, and points apt at them with
-  its `mirror+file:` method. The list gives each mirror its place as its
+  one host. Before anything else the runner runs scripts/apt-mirror-setup.sh
+  --dry-run on this host for the suites the image's apt reads (apt_suites):
+  the script asks each mirror of each source (APT_MIRRORS) for the release
+  file of each suite within 5 s, keeps those whose files are the origin's
+  own (or, when the origin does not answer, the newest copy the mirrors
+  agree on), and the runner says in the log which they are and points apt
+  at them with its `mirror+file:` method. The container's release smoke job
+  runs the same script, so both choose by one rule. The list gives each mirror its place as its
   priority, so apt asks the first one that answered and goes on to the next
   only when a download fails. Signatures are checked as before: only the
   host a file comes from changes. The page's own apt-get commands run as a
@@ -408,7 +412,7 @@ HOWTO = (
 # docs/upgrading.md installs the binary it names as NEW: the one under test.
 UNDER_TEST = {"NEW": "/docs-test/vcon-server"}
 # The release before this one, which the upgrade scenario upgrades from.
-PREVIOUS = "0.4.12"
+PREVIOUS = "0.4.13"
 
 SCENARIOS = [
     # The how-tos, on a Debian and a Fedora with no systemd: the server runs
@@ -1166,51 +1170,88 @@ class MirrorError(PageError):
     """No package mirror answered: an outage outside the pages."""
 
 
+# The release name of each image whose apt the runner points at mirrors:
+# the suites its sources read are named after it. The systemd image is
+# built from debian:trixie-slim.
+APT_RELEASES = {"debian:trixie-slim": "trixie", "systemd": "trixie", "ubuntu:24.04": "noble"}
+
+
+def apt_suites(where: str, machine: str) -> dict:
+    """The suites the apt of a scenario's system reads from each origin, as
+    its image's sources name them: by its image, and for Ubuntu by the
+    CPU. Nothing for a system without apt, and for this host, whose sources
+    the runner does not touch."""
+    debian = where == "systemd" or where.startswith("debian:")
+    if not debian and not where.startswith("ubuntu:"):
+        return {}
+    name = APT_RELEASES.get(where)
+    if name is None:
+        raise PageError(f"{where}: no release name in APT_RELEASES, so the runner cannot name the suites its apt reads")
+    if debian:
+        return {"http://deb.debian.org/debian": (name, f"{name}-updates"), "http://deb.debian.org/debian-security": (f"{name}-security",)}
+    suites = (name, f"{name}-updates", f"{name}-backports")
+    if machine == "x86_64":
+        return {"http://archive.ubuntu.com/ubuntu/": suites, "http://security.ubuntu.com/ubuntu/": (f"{name}-security",)}
+    return {"http://ports.ubuntu.com/ubuntu-ports/": suites + (f"{name}-security",)}
+
+
 def apt_origins(where: str, machine: str) -> tuple:
-    """The origins the apt of a scenario's system reads: by its image, and
-    for Ubuntu by the CPU. None for a system without apt, and for this
-    host, whose sources the runner does not touch."""
-    if where == "systemd" or where.startswith("debian:"):
-        return ("http://deb.debian.org/debian", "http://deb.debian.org/debian-security")
-    if where.startswith("ubuntu:"):
-        if machine == "x86_64":
-            return ("http://archive.ubuntu.com/ubuntu/", "http://security.ubuntu.com/ubuntu/")
-        return ("http://ports.ubuntu.com/ubuntu-ports/",)
-    return ()
+    """The origins the apt of a scenario's system reads (see apt_suites)."""
+    return tuple(apt_suites(where, machine))
 
 
-def probe_mirror(url: str, timeout: float = 5) -> bool:
-    """Whether the mirror at `url` serves its index of suites, within
-    `timeout` seconds."""
-    import urllib.error
-    import urllib.request
+APT_MIRROR_SETUP = os.path.join(ROOT, "scripts/apt-mirror-setup.sh")
 
+
+def ask_mirrors(suites: dict, table: str | None = None, timeout: int = 5) -> tuple:
+    """scripts/apt-mirror-setup.sh's (exit code, stdout, stderr), run with
+    --dry-run on this host for a system whose sources read `suites`
+    ({origin: (suite, ...)}): it asks the mirrors and writes nothing. The
+    system is a directory of its own, removed after."""
+    with tempfile.TemporaryDirectory(prefix="docs-test-apt-") as root:
+        os.makedirs(os.path.join(root, "etc/apt/sources.list.d"))
+        with open(os.path.join(root, "etc/apt/sources.list"), "w", encoding="utf-8") as f:
+            f.write("".join(f"deb {origin} {suite} main\n" for origin, names in suites.items() for suite in names))
+        command = ["bash", APT_MIRROR_SETUP, "--dry-run", "--root", root, "--timeout", str(timeout)]
+        if table is not None:
+            command += ["--table", table]
+        # The script asks every host at once, each within `timeout`.
+        done = subprocess.run(command, capture_output=True, text=True, timeout=timeout * 4 + 60, stdin=subprocess.DEVNULL, check=False)
+        return done.returncode, done.stdout, done.stderr
+
+
+def choose_mirrors(suites: dict, ask=None) -> tuple:
+    """For each origin of `suites`, the mirrors scripts/apt-mirror-setup.sh
+    keeps, in its order, and the script's other lines as notes for the run's
+    log: (chosen, notes). The rule is the script's alone. An origin with no
+    mirror to read stops the run with a MirrorError: no step could install
+    a package, and a run that went on would hang in the first one and read
+    as that page's failure."""
+    if not suites:
+        return {}, []
+    ask = ask or ask_mirrors
+    prefix = "apt-mirror-setup: "
     try:
-        with urllib.request.urlopen(url.rstrip("/") + "/dists/", timeout=timeout) as answer:
-            return answer.status == 200
-    except (urllib.error.URLError, OSError, ValueError):
-        return False
-
-
-def choose_mirrors(origins: tuple, probe=probe_mirror) -> dict:
-    """For each origin, its mirrors that answer now, in their listed order.
-    An origin none of whose mirrors answers stops the run with a
-    MirrorError: no step could install a package, and a run that went on
-    would hang in the first one and read as that page's failure."""
-    from concurrent.futures import ThreadPoolExecutor
-
-    urls = sorted({m for origin in origins for m in APT_MIRRORS[origin]})
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        answers = dict(zip(urls, pool.map(probe, urls)))
-    chosen = {}
-    for origin in origins:
-        chosen[origin] = [m for m in APT_MIRRORS[origin] if answers[m]]
-        if not chosen[origin]:
-            raise MirrorError(
-                f"no package mirror answered for {origin} (tried {', '.join(APT_MIRRORS[origin])}): "
-                "the package mirrors are unreachable from this machine; this is not a failure of the pages"
-            )
-    return chosen
+        rc, out, err = ask(suites)
+    except subprocess.TimeoutExpired as e:
+        raise MirrorError(f"scripts/apt-mirror-setup.sh did not end within {e.timeout} s; this is not a failure of the pages") from None
+    said = [line.removeprefix(prefix) for line in err.splitlines() if line.strip()]
+    if rc == 3:
+        raise MirrorError("; ".join(said) + "; this is not a failure of the pages")
+    if rc != 0:
+        raise PageError(f"scripts/apt-mirror-setup.sh exited {rc}: {'; '.join(said)}")
+    chosen, notes = {}, []
+    for line in out.splitlines():
+        found = re.fullmatch(r"packages from (\S+) come from (.+)", line.removeprefix(prefix))
+        if found:
+            chosen[found[1]] = found[2].split(", then ")
+        elif line.strip():
+            notes.append("docs-test: " + line.removeprefix(prefix))
+    notes += ["docs-test: " + line for line in said]
+    for origin in suites:
+        if origin not in chosen:
+            raise PageError(f"scripts/apt-mirror-setup.sh named no mirror for {origin}: {out.strip()}")
+    return chosen, notes
 
 
 def mirror_notes(chosen: dict) -> list[str]:
@@ -1740,20 +1781,11 @@ def released(version: str, token: str | None, run=subprocess.run) -> bool:
     raise _refused(path, code, body)
 
 
-def latest_release(token: str | None, run=subprocess.run) -> str:
-    """The newest published release's version."""
-    path = f"repos/{REPO}/releases/latest"
-    code, body = github_api(path, token, run)
-    if code != 200:
-        raise _refused(path, code, body)
-    return json.loads(body)["tag_name"].removeprefix("v")
-
-
 RELEASE_VARIABLES = ("VERSION", "NEW_VERSION")
 # What `run` prints (as "docs-test: <note>") when it runs a page's release
-# variable with the newest published release; `push` reads it back with
+# variable with the newest pinned release (release_plan); `push` reads it back with
 # `substituted`, so the summary and the stamp name the release that ran.
-SUBSTITUTED_NOTE = "the release a page names is not published yet; running with {name}={value}"
+SUBSTITUTED_NOTE = "the release a page names is not published with pins yet; running with {name}={value}"
 _SUBSTITUTED = re.compile(
     "^docs-test: "
     + re.escape(SUBSTITUTED_NOTE)
@@ -1777,14 +1809,15 @@ def release_words(note: str) -> str:
     if not runs:
         return ""
     plural = "releases" if len(runs) > 1 else "release"
-    return f"it ran {' and '.join(runs)} in place of the unpublished {plural} its page names"
+    return f"it ran {' and '.join(runs)} in place of the {plural} its page names, not yet published with pins"
 
 
 def release_sets(steps: list[Block], sets: dict, released, latest) -> dict:
-    """The scenario's settings, plus a published release for each release
-    variable a page sets to a version not published yet. A version bump
-    lands before its tag, so until the release exists the steps run with the
-    newest published one, and the commands are still tested."""
+    """The scenario's settings, plus `latest()` for each release variable a
+    page sets to a version `released` says is not there yet. A version bump
+    lands before its tag, and the tag before the pins of its assets, so
+    until then the steps run with the stand-in, and the commands are still
+    tested."""
     out = dict(sets)
     newest = None
     for name in RELEASE_VARIABLES:
@@ -1801,6 +1834,39 @@ def release_sets(steps: list[Block], sets: dict, released, latest) -> dict:
                 out[name] = newest
             break
     return out
+
+
+_PINNED_RELEASE = re.compile(rf"^{re.escape(GITHUB)}/{re.escape(REPO)}/releases/download/v(\d+\.\d+\.\d+)/SHA256SUMS\.txt$")
+
+
+def release_pinned(version: str, pins: dict) -> bool:
+    """Whether vcon-server release `version` has its assets pinned: its
+    SHA256SUMS.txt, as release_pin_problems asks."""
+    return f"{GITHUB}/{REPO}/releases/download/v{version}/SHA256SUMS.txt" in pins
+
+
+def newest_pinned(pins: dict) -> str | None:
+    """The newest vcon-server release whose assets are pinned, or None."""
+    versions = [m.group(1) for m in map(_PINNED_RELEASE.match, pins) if m]
+    return max(versions, key=_release, default=None)
+
+
+def release_plan(steps: list[Block], scenario_sets: dict, pins: dict, released) -> tuple[list[Block], dict, list[str]]:
+    """`plan` for a run: a page's release runs as the page names it once it
+    is published and pinned, and otherwise the newest pinned release stands
+    in. A release is published before the follow-up that pins its assets
+    lands, and a run downloads only pinned assets, so between the two the
+    how-to still runs, on the newest release it can check. GitHub is asked
+    only of a pinned release, newest first."""
+
+    def available(v: str) -> bool:
+        return release_pinned(v, pins) and released(v)
+
+    def stand_in() -> str | None:
+        versions = sorted({m.group(1) for m in map(_PINNED_RELEASE.match, pins) if m}, key=_release, reverse=True)
+        return next((v for v in versions if released(v)), None)
+
+    return plan(steps, scenario_sets, available, stand_in)
 
 
 def plan(steps: list[Block], scenario_sets: dict, released, latest) -> tuple[list[Block], dict, list[str]]:
@@ -1903,23 +1969,21 @@ def run(scenario: Scenario, binary: str | None, keep: str | None) -> int:
     # the run could only hang in its first step. A system without apt has no
     # origin (apt_origins), so nothing is asked for it.
     try:
-        mirrors = choose_mirrors(apt_origins(scenario.where, platform.machine()), probe_mirror)
+        mirrors, notes = choose_mirrors(apt_suites(scenario.where, platform.machine()))
     except MirrorError as e:
         print(f"docs-test: {scenario.name}: {e}", file=sys.stderr)
         return 3
-    for note in mirror_notes(mirrors):
+    for note in notes + mirror_notes(mirrors):
         print(note, flush=True)
     blocks: list[Block] = []
     for p in scenario.pages:
         blocks += page_blocks(p)
     steps = select(blocks, scenario)
     token = os.environ.get("GH_TOKEN") or None
-    steps, sets, notes = plan(
-        steps, scenario.sets, lambda v: released(v, token), lambda: latest_release(token)
-    )
+    pins = read_pins()
+    steps, sets, notes = release_plan(steps, scenario.sets, pins, lambda v: released(v, token))
     for note in notes:
         print(f"docs-test: {note}")
-    pins = read_pins()
     missing = release_pin_problems(release_versions(steps, sets), pins)
     if missing:
         raise PageError("; ".join(missing))

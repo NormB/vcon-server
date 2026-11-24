@@ -86,7 +86,7 @@ The other pages link here for these and do not repeat them.
   [the pool is too small](#the-pool-is-too-small)).
 - **Run `migrate` first after an upgrade.** A new binary refuses a
   database of an older schema version. A database that release 0.4.5
-  migrated is at version 6, one that releases 0.4.6 to 0.4.13 migrated is
+  migrated is at version 6, one that releases 0.4.6 to 0.4.14 migrated is
   at version 13, and this release needs version 14 (see
   [after an upgrade from 0.4.5](#after-an-upgrade-from-0-4-5)).
 - **The data directory stays.** It holds the two lock files of
@@ -482,7 +482,7 @@ binary's.
 ### After an upgrade from 0.4.5
 
 Release 0.4.5 and the releases before it leave the schema at version 6.
-Releases 0.4.6 to 0.4.13 make version 13, and
+Releases 0.4.6 to 0.4.14 make version 13, and
 this release makes version 14, so a database that any of them migrated
 needs the command once more, with the new binary and before any server
 starts:

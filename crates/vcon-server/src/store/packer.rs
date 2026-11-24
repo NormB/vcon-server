@@ -689,4 +689,178 @@ pub(crate) mod tests {
         packs.remove(foreign).expect("removed");
         held_once(&f, &packs, &kept, "recovered");
     }
+
+    /// Runs a pack run in the gap between a read's first step and its read
+    /// of the version's object, and returns the read's answer and the run's
+    /// report.
+    fn read_racing_a_pack(
+        f: &Fixture,
+        uuid: uuid::Uuid,
+    ) -> (Result<Vec<u8>, StoreError>, PackReport) {
+        let store = &f.store;
+        std::thread::scope(|scope| {
+            let (go, wait) = std::sync::mpsc::channel::<()>();
+            let (done, finished) = std::sync::mpsc::channel::<()>();
+            *store.hooks.before_read.lock().expect("hook") = Some(Box::new(move || {
+                go.send(()).expect("the pack run is told");
+                finished
+                    .recv_timeout(std::time::Duration::from_secs(30))
+                    .expect("the pack run finishes");
+            }));
+            let run = scope.spawn(move || {
+                wait.recv_timeout(std::time::Duration::from_secs(30))
+                    .expect("the read is between its steps");
+                let report = store.pack(&PackPlan::with_limit(1 << 20)).expect("packs");
+                done.send(()).expect("the read is told");
+                report
+            });
+            let read = store.get(&f.caller, uuid).map(|s| s.body);
+            (read, run.join().expect("the pack run ends"))
+        })
+    }
+
+    /// The read records, as status codes, in the log's order.
+    fn read_statuses(f: &Fixture) -> Vec<serde_json::Value> {
+        f.store
+            .records()
+            .iter()
+            .filter(|r| r["action"] == "read")
+            .map(|r| r["status"].clone())
+            .collect()
+    }
+
+    /// A read that found its version unpacked, then saw a pack run move it
+    /// into a file and remove its object before it read the object, reads
+    /// again at the new place and returns the whole body.
+    #[test]
+    fn a_read_racing_the_first_pack_of_its_version_returns_the_whole_body() {
+        let mut f = fixture();
+        let kept = created(&f, 1, "packed under a read");
+        with_packs(&mut f);
+        let (read, report) = read_racing_a_pack(&f, kept.uuid);
+        assert_eq!(report.versions, 1, "the run packed the version");
+        assert!(
+            f.store.objects.list().expect("listed").is_empty(),
+            "and removed its object under the read"
+        );
+        assert_eq!(
+            read,
+            Ok(kept.body.clone()),
+            "the read returns the whole body"
+        );
+    }
+
+    /// That read is recorded once, as answered, and never as damage.
+    #[test]
+    fn a_read_racing_the_first_pack_is_recorded_once_as_answered() {
+        let mut f = fixture();
+        let kept = created(&f, 2, "recorded under a pack");
+        with_packs(&mut f);
+        let (read, _) = read_racing_a_pack(&f, kept.uuid);
+        assert!(read.is_ok(), "the read is answered: {read:?}");
+        assert_eq!(
+            read_statuses(&f),
+            [serde_json::Value::from(200)],
+            "one record, status 200"
+        );
+    }
+
+    /// How long a read of a damaged version may take before the test calls
+    /// it a retry without end.
+    const BOUND: std::time::Duration = std::time::Duration::from_secs(20);
+
+    /// `f.store.get` of `uuid` on a thread of its own; panics if it has no
+    /// answer within `BOUND`, so a read that tries again without end fails
+    /// the test instead of hanging it.
+    fn bounded_get(f: &Arc<Fixture>, uuid: uuid::Uuid) -> Result<Vec<u8>, StoreError> {
+        let (answer, answered) = std::sync::mpsc::channel();
+        let g = f.clone();
+        let reader = std::thread::spawn(move || {
+            let _ = answer.send(g.store.get(&g.caller, uuid).map(|s| s.body));
+        });
+        let got = answered.recv_timeout(BOUND).unwrap_or_else(|_| {
+            panic!("the read had no answer within {BOUND:?}: it tries again without end")
+        });
+        // The thread ends after it answers: it drops its clone of the store
+        // and OpenSSL frees its per-thread state. Wait for that, as
+        // manifest.rs's publish test does: a test process that exits while
+        // the thread is ending made LeakSanitizer report OpenSSL's
+        // per-thread allocations (CI, AddressSanitizer job 138173071466).
+        reader.join().expect("the reading thread ends");
+        got
+    }
+
+    /// An unpacked version whose object is lost, with no pack run between
+    /// the read's steps, is damage: its place did not change, so the read
+    /// is not tried again, and is recorded once as a failure.
+    #[test]
+    fn a_lost_object_of_an_unpacked_version_is_still_damage() {
+        let f = Arc::new(fixture());
+        let kept = created(&f, 3, "lost");
+        f.store.objects.remove(kept.version).expect("removed");
+        assert_eq!(
+            bounded_get(&f, kept.uuid),
+            Err(StoreError::Damaged),
+            "damage"
+        );
+        assert_eq!(
+            read_statuses(&f),
+            [serde_json::Value::from(500)],
+            "one record, status 500"
+        );
+    }
+
+    /// A packed version whose file is lost is damage too: the same place
+    /// still failing is the answer, after one try.
+    #[test]
+    fn a_packed_version_whose_file_is_lost_is_still_damage() {
+        let mut f = fixture();
+        let kept = created(&f, 4, "packed, then lost");
+        let packs = with_packs(&mut f);
+        f.store.pack(&PackPlan::with_limit(1 << 20)).expect("packs");
+        for name in packs.list().expect("listed") {
+            if pack::parse_name(&name).is_some() {
+                packs.remove(&name).expect("the file is lost");
+            }
+        }
+        let f = Arc::new(f);
+        assert_eq!(
+            bounded_get(&f, kept.uuid),
+            Err(StoreError::Damaged),
+            "damage"
+        );
+        assert_eq!(
+            read_statuses(&f),
+            [serde_json::Value::from(500)],
+            "one record, status 500"
+        );
+    }
+
+    /// A version whose row does not read (its place names a file the
+    /// catalog has no row for) is damage, and the read is not tried again
+    /// for it: a row that does not read is no new place.
+    #[test]
+    fn a_version_whose_row_does_not_read_is_damage_after_one_try() {
+        let f = Arc::new(fixture());
+        let kept = created(&f, 5, "a row that does not read");
+        let changed = f
+            .store
+            .conn_for_test()
+            .execute(
+                "UPDATE version SET place_file = ?1, place_group = 0, place_row = 0",
+                [vec![9u8; 16]],
+            )
+            .expect("the place names a file with no row");
+        assert_eq!(changed, 1, "one version");
+        assert_eq!(
+            bounded_get(&f, kept.uuid),
+            Err(StoreError::Damaged),
+            "damage"
+        );
+        assert_eq!(
+            read_statuses(&f),
+            [serde_json::Value::from(500)],
+            "one record, status 500"
+        );
+    }
 }

@@ -27,6 +27,15 @@ All notable changes to this project are recorded here. The format follows
     removed tenant's.
   - Docs: [Schema
     versions](https://vcon-server.com/docs/postgres-catalog/#schema-versions)
+## [0.4.14] - 2026-11-24
+
+### Changed
+
+- **The upgrade from 0.4.13 is the binary alone.**
+  - Effect: No stored data, configuration or schema changes; 0.4.13 opens a
+    data directory that 0.4.14 has served.
+  - Docs: [From 0.4.13 to
+    0.4.14](https://vcon-server.com/docs/upgrading/#from-0-4-13-to-0-4-14)
 
 ### Security
 
@@ -37,6 +46,27 @@ All notable changes to this project are recorded here. The format follows
     through reqwest, rmcp, tower-http and the AWS SDK.
   - Limit: No source file of vcon-server calls `origin()`; rmcp calls it
     only in a client the MCP bridge does not use.
+- **parquet goes from 60.1.0 to 60.2.0 (RUSTSEC-2026-0595).**
+  - Was: parquet wrote Bloom filters in plaintext inside a file with
+    Parquet modular encryption.
+  - Effect: The affected version leaves the build; `export parquet` and
+    Parquet storage write their files with it.
+  - Do: Code that uses the library builds with parquet 60.2.0, which the
+    crate now requires.
+  - Limit: vcon-server writes no Bloom filter and no modular encryption,
+    so no file it wrote is affected.
+
+### Fixed
+
+- **A read during a pack run no longer reports an intact vCon as damaged.**
+  - Was: Since 0.4.0, a read that met its version's first pack into a
+    Parquet file failed with `A stored version is damaged`.
+  - Effect: That read now reads the version again from its pack file,
+    returns the whole body, and the audit log records it as answered.
+  - Limit: Only servers with Parquet storage on were affected; the stored
+    data was never changed.
+  - Docs: [Parquet
+    storage](https://vcon-server.com/docs/parquet-storage/#check-that-the-server-packs-its-objects)
 
 ## [0.4.13] - 2026-11-21
 
@@ -1190,7 +1220,8 @@ All notable changes to this project are recorded here. The format follows
   - Limit: `vcon::MAX_SIGNED_LAYERS`, `vcon::MAX_JSON_DEPTH` and
     `vcon::Rejection::TooDeep` name the limits.
 
-[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.13...HEAD
+[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.14...HEAD
+[0.4.14]: https://github.com/NormB/vcon-server/releases/tag/v0.4.14
 [0.4.13]: https://github.com/NormB/vcon-server/releases/tag/v0.4.13
 [0.4.12]: https://github.com/NormB/vcon-server/releases/tag/v0.4.12
 [0.4.11]: https://github.com/NormB/vcon-server/releases/tag/v0.4.11

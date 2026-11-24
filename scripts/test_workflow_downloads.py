@@ -643,6 +643,239 @@ class ReleaseDownloadFloor(unittest.TestCase):
         self.assertIn(f"found 0 release downloads through the one rule; expected at least {check.MIN_RELEASE_DOWNLOADS}. A reading that lost the steps cannot pass", problems)
 
 
+class AptTimeBound(unittest.TestCase):
+    """Every apt-get update or install runs under timeout(1). apt's own
+    Acquire::http::Timeout (scripts/apt-mirror-setup.sh writes it) bounds a
+    read from one host, not a name lookup, the mirror method's walk through
+    its hosts or dpkg; on 2026-11-23 the release smoke job's apt step in
+    ubuntu:22.04 printed nothing for 20 minutes, twice, until the job's
+    limit ended it with no error text."""
+
+    SAID = "apt-get without timeout(1) before it: a stall ends only at the job's limit, with no error text"
+
+    def problems(self, text, path=".github/workflows/x.yml"):
+        return check.apt_without_time_bound(path, text)
+
+    # Success.
+
+    def test_an_update_under_timeout_passes(self):
+        self.assertEqual(self.problems("          timeout 240 apt-get -o Acquire::Retries=3 update\n"), [], "update")
+
+    def test_an_install_under_timeout_with_an_environment_assignment_passes(self):
+        text = "          DEBIAN_FRONTEND=noninteractive timeout 300 apt-get -o Acquire::Retries=3 install -y curl\n"
+        self.assertEqual(self.problems(text), [], "the assignment before timeout")
+
+    def test_env_between_timeout_and_apt_get_passes(self):
+        text = "          timeout 300 env DEBIAN_FRONTEND=noninteractive apt-get install -y curl\n"
+        self.assertEqual(self.problems(text), [], "env(1) runs apt-get under the bound")
+
+    def test_timeout_options_and_units_pass(self):
+        for bound in ("timeout 5m", "timeout -k 10 300", "timeout --kill-after=10s 4m", "timeout 90s"):
+            with self.subTest(bound=bound):
+                self.assertEqual(self.problems(f"          {bound} apt-get update\n"), [], bound)
+
+    def test_an_apt_command_that_fetches_nothing_passes(self):
+        self.assertEqual(self.problems("          apt-get clean\n          apt-cache policy\n"), [], "no update, no install")
+
+    def test_a_comment_naming_apt_get_passes(self):
+        self.assertEqual(self.problems("          # apt-get update can stall\n"), [], "a comment")
+
+    def test_a_shell_script_under_timeout_passes(self):
+        self.assertEqual(self.problems('timeout 240 apt-get update\n', "scripts/x.sh"), [], "a script")
+
+    def test_each_of_two_bounded_calls_on_one_line_passes(self):
+        self.assertEqual(self.problems("          timeout 240 apt-get update && timeout 300 apt-get install -y jq\n"), [], "both bounded")
+
+    # Failure.
+
+    def test_a_bare_update_is_found(self):
+        self.assertEqual(self.problems("          apt-get -o Acquire::Retries=3 update -qq\n"), [f".github/workflows/x.yml:1: {self.SAID}"], "update")
+
+    def test_a_bare_install_after_an_assignment_is_found(self):
+        text = "          DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 install -y curl\n"
+        self.assertEqual(self.problems(text), [f".github/workflows/x.yml:1: {self.SAID}"], "install")
+
+    def test_a_sudo_apt_get_is_found(self):
+        self.assertEqual(self.problems("          sudo apt-get install -y jq\n"), [f".github/workflows/x.yml:1: {self.SAID}"], "sudo")
+
+    def test_a_bare_assignment_after_timeout_is_found(self):
+        # timeout(1) runs a command, not a shell assignment: this line
+        # would try to run a program named DEBIAN_FRONTEND=noninteractive.
+        text = "          timeout 300 DEBIAN_FRONTEND=noninteractive apt-get install -y curl\n"
+        self.assertEqual(self.problems(text), [f".github/workflows/x.yml:1: {self.SAID}"], "assignment as the command")
+
+    def test_timeout_with_no_duration_is_found(self):
+        self.assertEqual(self.problems("          timeout apt-get update\n"), [f".github/workflows/x.yml:1: {self.SAID}"], "no duration")
+
+    def test_a_timeout_on_an_earlier_command_does_not_count(self):
+        text = "          timeout 10 true && apt-get update\n"
+        self.assertEqual(self.problems(text), [f".github/workflows/x.yml:1: {self.SAID}"], "the bound belongs to true")
+
+    def test_the_second_of_two_calls_on_one_line_is_found(self):
+        text = "          timeout 240 apt-get update && apt-get install -y jq\n"
+        self.assertEqual(self.problems(text), [f".github/workflows/x.yml:1: {self.SAID}"], "the install")
+
+    def test_a_continued_apt_get_is_reported_at_its_first_line(self):
+        text = "          true\n          apt-get install -y \\\n            curl jq\n"
+        self.assertEqual(self.problems(text), [f".github/workflows/x.yml:2: {self.SAID}"], "continued")
+
+    def test_a_shell_script_and_an_action_are_found(self):
+        self.assertEqual(self.problems("apt-get update\n", "scripts/x.sh"), [f"scripts/x.sh:1: {self.SAID}"], "script")
+        path = ".github/actions/a/action.yml"
+        self.assertEqual(self.problems("      run: apt-get update\n", path), [f"{path}:1: {self.SAID}"], "action")
+
+    # Edge.
+
+    def test_the_main_tree_before_this_rule_had_two_unbounded_calls(self):
+        text = (
+            "            bash scripts/apt-mirror-setup.sh\n"
+            "            apt-get -o Acquire::Retries=3 update -qq\n"
+            "            DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 install -y -qq --no-install-recommends curl jq openssl python3 ca-certificates >/dev/null\n"
+        )
+        self.assertEqual(len(self.problems(text, ".github/workflows/release.yml")), 2, "release.yml:265 and :266 on 4fcddae")
+
+    def test_the_real_tree_bounds_every_apt_get(self):
+        root = HERE.parent
+        for p in check.files(root):
+            rel = p.relative_to(root).as_posix()
+            with self.subTest(rel=rel):
+                self.assertEqual(check.apt_without_time_bound(rel, p.read_text(encoding="utf-8")), [], rel)
+
+    def test_the_whole_check_reports_an_unbounded_apt_get(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            (root / "scripts").mkdir()
+            (root / "scripts/x.sh").write_text("apt-get update\n", encoding="utf-8")
+            problems = check.check(root)
+        self.assertIn(f"scripts/x.sh:1: {self.SAID}", problems)
+
+
+class InstallStepTimeout(unittest.TestCase):
+    """A workflow step that installs packages over the network has a
+    timeout-minutes of its own, so a stalled mirror ends that step with a
+    named failure and leaves the job's own limit for the job's work."""
+
+    SAID = "a step that installs packages over the network has no timeout-minutes of its own"
+    JOB = "jobs:\n  smoke:\n    runs-on: ubuntu-24.04\n    timeout-minutes: 20\n    steps:\n"
+
+    def problems(self, text, path=".github/workflows/x.yml"):
+        return check.install_steps_without_timeout(path, text)
+
+    def step(self, *lines, minutes=None):
+        head = "      - name: install\n"
+        if minutes is not None:
+            head += f"        timeout-minutes: {minutes}\n"
+        return head + "        run: |\n" + "".join(f"          {line}\n" for line in lines)
+
+    # Success.
+
+    def test_an_apt_step_with_its_own_limit_passes(self):
+        self.assertEqual(self.problems(self.JOB + self.step("timeout 240 apt-get update", minutes=8)), [], "apt")
+
+    def test_each_installer_with_its_own_limit_passes(self):
+        for line in (
+            "python3 -I scripts/dnf_install.py jq",
+            "dnf install -y jq",
+            "python3 -m pip install -r requirements.txt",
+            "pip install ruff",
+            "npm ci",
+            "npm install",
+            "npx playwright install --with-deps chromium",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(self.problems(self.JOB + self.step(line, minutes=5)), [], line)
+
+    def test_a_limit_below_the_run_key_passes(self):
+        text = self.JOB + "      - name: install\n        run: timeout 240 apt-get update\n        timeout-minutes: 8\n"
+        self.assertEqual(self.problems(text), [], "key order does not matter")
+
+    def test_a_step_that_installs_nothing_needs_no_limit(self):
+        self.assertEqual(self.problems(self.JOB + self.step("cargo build --release", "pip --version")), [], "no install")
+
+    def test_a_uses_step_needs_no_limit(self):
+        self.assertEqual(self.problems(self.JOB + "      - uses: actions/setup-node@v6\n        with:\n          node-version: 24\n"), [], "an action")
+
+    def test_a_comment_naming_an_install_needs_no_limit(self):
+        self.assertEqual(self.problems(self.JOB + self.step("# npm ci runs in the next step", "true")), [], "a comment")
+
+    def test_a_composite_action_is_not_read(self):
+        # Composite action steps take no timeout-minutes; the job that uses
+        # the action carries its limit.
+        text = "runs:\n  using: composite\n  steps:\n    - run: npm ci\n      shell: bash\n"
+        self.assertEqual(self.problems(text, ".github/actions/a/action.yml"), [], "composite")
+
+    def test_a_shell_script_is_not_read(self):
+        self.assertEqual(self.problems("npm ci\n", "scripts/x.sh"), [], "a script")
+
+    # Failure.
+
+    def test_an_apt_step_without_a_limit_is_found(self):
+        self.assertEqual(self.problems(self.JOB + self.step("timeout 240 apt-get update")), [f".github/workflows/x.yml:6: {self.SAID}"], "apt")
+
+    def test_each_installer_without_a_limit_is_found(self):
+        for line in (
+            "python3 -I scripts/dnf_install.py jq",
+            "microdnf install -y jq",
+            "python3 -m pip install -r requirements.txt",
+            "pip3 install ruff",
+            "npm ci",
+            "npx playwright install chromium",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(self.problems(self.JOB + self.step(line)), [f".github/workflows/x.yml:6: {self.SAID}"], line)
+
+    def test_the_job_s_limit_does_not_count_for_the_step(self):
+        self.assertIn("timeout-minutes: 20", self.JOB, "the job has one")
+        self.assertEqual(len(self.problems(self.JOB + self.step("npm ci"))), 1, "the step still needs its own")
+
+    def test_a_limit_of_a_later_step_does_not_count(self):
+        text = self.JOB + self.step("npm ci") + self.step("true", minutes=5)
+        self.assertEqual(self.problems(text), [f".github/workflows/x.yml:6: {self.SAID}"], "the first step")
+
+    def test_a_limit_inside_with_does_not_count(self):
+        text = self.JOB + "      - name: install\n        run: npm ci\n        with:\n          timeout-minutes: 5\n"
+        self.assertEqual(self.problems(text), [f".github/workflows/x.yml:6: {self.SAID}"], "nested under with")
+
+    # Edge.
+
+    def test_the_release_smoke_step_on_main_had_no_limit(self):
+        text = self.JOB + self.step(
+            "set -eu",
+            "if command -v apt-get >/dev/null; then",
+            "  bash scripts/apt-mirror-setup.sh",
+            "  apt-get -o Acquire::Retries=3 update -qq",
+            "else",
+            "  python3 -I scripts/dnf_install.py jq openssl python3 >/dev/null",
+            "fi",
+        )
+        self.assertEqual(len(self.problems(text, ".github/workflows/release.yml")), 1, "one step, reported once")
+
+    def test_the_real_tree_gives_every_install_step_a_limit(self):
+        root = HERE.parent
+        for p in check.files(root):
+            rel = p.relative_to(root).as_posix()
+            with self.subTest(rel=rel):
+                self.assertEqual(check.install_steps_without_timeout(rel, p.read_text(encoding="utf-8")), [], rel)
+
+    def test_the_whole_check_reports_a_step_without_a_limit(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            (root / ".github/workflows").mkdir(parents=True)
+            (root / ".github/workflows/x.yml").write_text(self.JOB + self.step("../scripts/retry.sh npm ci"), encoding="utf-8")
+            problems = check.check(root)
+        self.assertIn(f".github/workflows/x.yml:6: {self.SAID}", problems)
+
+    def test_the_whole_check_fails_under_the_floor(self):
+        with tempfile.TemporaryDirectory() as d:
+            problems = check.check(d)
+        self.assertIn(f"found 0 workflow steps that install packages; expected at least {check.MIN_INSTALL_STEPS}. A reading that lost the steps cannot pass", problems)
+
+    def test_the_real_tree_has_install_steps_to_read(self):
+        root = HERE.parent
+        count = sum(check.install_steps(p.relative_to(root).as_posix(), p.read_text(encoding="utf-8")) for p in check.files(root))
+        self.assertGreaterEqual(count, check.MIN_INSTALL_STEPS, "a reading that lost the steps cannot pass")
+
+
 class TheRealTree(unittest.TestCase):
     def test_every_download_in_the_tree_retries(self):
         root = HERE.parent
