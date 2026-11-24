@@ -494,7 +494,10 @@ jobs:
         # Go: gofmt must have nothing to rewrite, then vet. TypeScript: npm ci
         # installs exactly the tree package-lock.json pins, and tsc
         # type-checks the client. Python: it compiles. The Rust client is a
-        # workspace member, so the clippy job holds it to -D warnings.
+        # workspace member, so the clippy job holds it to -D warnings. npm ci
+        # installs over the network: the step has its own limit (19 s at
+        # most on main's last 8 runs).
+        timeout-minutes: 5
         run: |
           set -euo pipefail
           unformatted="$(gofmt -l clients/go)"
@@ -899,7 +902,9 @@ jobs:
           echo "$RUNNER_TEMP/node/bin" >> "$GITHUB_PATH"
       - name: Install Playwright, axe-core and the browser
         # package-lock.json pins every package by version and integrity hash;
-        # the Playwright version fixes the browser build it installs.
+        # the Playwright version fixes the browser build it installs. Its own
+        # limit: 236 s at most on main's last 8 runs.
+        timeout-minutes: 15
         working-directory: site-tests
         run: |
           set -euo pipefail
@@ -968,7 +973,9 @@ jobs:
           echo "$RUNNER_TEMP/node/bin" >> "$GITHUB_PATH"
       - name: Install Playwright and its browser
         # package-lock.json pins every package by version and integrity hash;
-        # the Playwright version fixes the browser build it installs.
+        # the Playwright version fixes the browser build it installs. Its own
+        # limit: 261 s at most on main's last 8 runs.
+        timeout-minutes: 15
         working-directory: console-tests
         run: |
           set -euo pipefail

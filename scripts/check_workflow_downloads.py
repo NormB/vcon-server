@@ -49,6 +49,15 @@ in a job that runs in a container comes after a run of that script in the
 same job, and one in a composite action or a shell script after a run of it
 in the same file; fewer than MIN_APT_RULE_CALLS runs of it fails.
 
+apt's Acquire::http::Timeout, which that script writes, bounds a read from
+one host, not a name lookup, the mirror method's walk through its hosts or
+dpkg. On 2026-11-23 the release smoke job's apt step in ubuntu:22.04
+printed nothing for 20 minutes, twice, until the job's limit canceled it
+with no error text. So every apt-get update or install runs under
+timeout(1), and a workflow step that installs packages over the network
+(apt-get, dnf, pip, npm, Playwright) has a timeout-minutes of its own;
+fewer than MIN_INSTALL_STEPS such steps fails.
+
 Run with: python3 -I scripts/check_workflow_downloads.py
 (from anywhere in the repository). Exits 1 naming each step that does not
 retry.
@@ -172,6 +181,90 @@ def apt_outside_rule(path, text):
         numbered = [(first + n - 1, line) for first, body in found for n, line in logical_lines("\n".join(body))]
         problems += _apt_before_rule(path, numbered)
     return problems
+
+
+# timeout(1) with a duration, its options (-k and -s take a value), and
+# optionally env(1) with assignments, ending right where apt-get starts.
+TIME_BOUND = re.compile(
+    r"\btimeout\s+(?:-[ks]\s+\S+\s+|-\S+\s+)*\d+(?:\.\d+)?[smhd]?\s+"
+    r"(?:env\s+(?:-\S+\s+)*(?:[A-Za-z_]\w*=\S*\s+)*)?$"
+)
+
+
+def apt_without_time_bound(path, text):
+    """One line per apt-get update or install that does not run under
+    timeout(1). apt's Acquire::http::Timeout, which
+    scripts/apt-mirror-setup.sh writes, bounds a read from one host; it
+    does not bound a name lookup, the mirror method's walk through its
+    hosts, or dpkg. Without timeout(1) a stall there ends only at the
+    job's limit, and that cancel names no command."""
+    problems = []
+    for n, line in logical_lines(text):
+        if not _code(line):
+            continue
+        for m in APT.finditer(line):
+            if not TIME_BOUND.search(line[: m.start()]):
+                problems.append(f"{path}:{n}: apt-get without timeout(1) before it: a stall ends only at the job's limit, with no error text")
+    return problems
+
+
+# A package install over the network, as a command in a workflow step.
+INSTALL = (
+    APT,
+    DNF,
+    DNF_RULE,
+    re.compile(r"\bpip3?\s+(?:-\S+\s+)*install\b"),
+    re.compile(r"\bpython3?\s+(?:-\S+\s+)*-m\s+pip\s+(?:-\S+\s+)*install\b"),
+    NPM,
+    PLAYWRIGHT,
+)
+STEP_TIMEOUT = re.compile(r"^(?P<indent>\s*)(?P<dash>-\s+)?timeout-minutes\s*:\s*\S")
+# The workflows' install steps when this rule was written (release.yml's
+# smoke install; ci.yml's client check and its two Playwright installs); a
+# reading that finds fewer lost the steps.
+MIN_INSTALL_STEPS = 4
+
+
+def _installs(lines):
+    return any(_code(line) and any(rule.search(line) for rule in INSTALL) for _, line in logical_lines("\n".join(lines)))
+
+
+def _own_timeout(lines):
+    """Whether a step (its lines, the first holding its "-") has a
+    timeout-minutes key of its own: at the column of its other keys, not
+    nested under one of them."""
+    first = lines[0]
+    column = len(first) - len(first.lstrip(" ")) + 2
+    for line in lines:
+        m = STEP_TIMEOUT.match(line)
+        if not m:
+            continue
+        at = len(m.group("indent")) + (len(m.group("dash")) if m.group("dash") else 0)
+        if at == column:
+            return True
+    return False
+
+
+def install_steps(path, text):
+    """How many steps of the workflow `text` install packages over the
+    network. Composite actions (their steps take no timeout-minutes) and
+    shell scripts are not read."""
+    if "/workflows/" not in f"/{path}":
+        return 0
+    return sum(1 for _, lines in steps(text) if _installs(lines))
+
+
+def install_steps_without_timeout(path, text):
+    """One line per workflow step that installs packages over the network
+    and has no timeout-minutes of its own, so a stalled mirror would hold
+    the job to its own limit, which names no step."""
+    if "/workflows/" not in f"/{path}":
+        return []
+    return [
+        f"{path}:{first}: a step that installs packages over the network has no timeout-minutes of its own"
+        for first, lines in steps(text)
+        if _installs(lines) and not _own_timeout(lines)
+    ]
 
 
 RELEASE_ASSET = re.compile(r"/releases/download(?:/|\b)")
@@ -403,6 +496,8 @@ def check(root):
         rel, text = path.relative_to(root).as_posix(), path.read_text(encoding="utf-8")
         problems += unretried(rel, text)
         problems += apt_outside_rule(rel, text)
+        problems += apt_without_time_bound(rel, text)
+        problems += install_steps_without_timeout(rel, text)
         if path.suffix == ".sh":
             # A test script drives a script against file:// fixtures: it
             # names a release URL to check one, and fetches none.
@@ -426,6 +521,9 @@ def check(root):
     calls = sum(apt_rule_calls(p.read_text(encoding="utf-8")) for p in files(root))
     if calls < MIN_APT_RULE_CALLS:
         problems.append(f"found {calls} runs of scripts/apt-mirror-setup.sh; expected at least {MIN_APT_RULE_CALLS}. A reading that lost the steps cannot pass")
+    count = sum(install_steps(p.relative_to(root).as_posix(), p.read_text(encoding="utf-8")) for p in files(root))
+    if count < MIN_INSTALL_STEPS:
+        problems.append(f"found {count} workflow steps that install packages; expected at least {MIN_INSTALL_STEPS}. A reading that lost the steps cannot pass")
     return problems
 
 

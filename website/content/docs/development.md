@@ -918,17 +918,57 @@ Each image names one host for each package source, and apt's retries ask
 that host again. So the job runs `bash scripts/apt-mirror-setup.sh` before
 its first `apt-get`. The script needs bash and coreutils only, because the
 images have no curl and no python3 yet. It reads `scripts/apt-mirrors.txt`,
-the table the how-to runner reads, asks each mirror of each source the
-system's files name for `<mirror>/dists/` with a time limit of 5 seconds,
-and writes those that answer 200, in the table's order, to the list apt's
-`mirror+file:` method reads: the files the how-to runner writes. It ends
-with exit code 3 when no mirror of a source answers and with 4 when no
-source of the system is in the table, and changes nothing in either case.
+the table the how-to runner reads. For each source the system's files
+name, it asks the source's own host and each of its mirrors, all at once
+and each with a time limit of 5 seconds, for the release file
+(`<host>/dists/<suite>/InRelease`) of each suite the system reads from it.
+It keeps a mirror only when each of those files is byte for byte the one
+the source's own host serves, and names each mirror it leaves out in the
+log: on 2026-11-23 a mirror in the middle of a sync answered, and apt
+stopped at "File has unexpected size ... Mirror sync in progress?". For a
+source with a `-security` suite, the source's own host comes first. When
+the source's own host does not answer, the log says so, a mirror whose
+copy has an older `Date:` than another mirror's is left out, and of the
+others the largest group whose files agree is kept; when no two agree,
+only the first is kept, and the log says so. The script writes the kept
+mirrors, in the table's order, to the list apt's `mirror+file:` method
+reads: the files the how-to runner writes. The how-to runner runs the
+same script with `--dry-run` (it asks and writes nothing) to choose its
+mirrors, so both choose by one rule. The script ends with exit code 3
+when no mirror of a source answers or none holds the newest release file
+of every suite, and with 4 when no source of the system is in the table,
+and changes nothing in either case.
+
+The rule keeps no mirror that is one release behind the source's own
+host. From outside, such a mirror looks the same as one in the middle of
+a sync, and the 2026-11-23 failure was a file of the wrong size at a path
+the current release file names. Between two syncs of its mirrors, the
+Ubuntu archive is then often read from archive.ubuntu.com alone: in a dry
+run from this project's host at 16:08 EST on 2026-11-23, its
+`jammy-updates` release file was dated 20:26:43 UTC, the copies on
+azure.archive.ubuntu.com and mirror.math.princeton.edu 18:26:36 UTC, and
+the copy on mirrors.edge.kernel.org 12:50:35 UTC on 2026-11-22. The log
+then names each mirror left out as out of sync, and says that only the
+source's own host remains, so a failure of that host fails the install.
+Under the time limits above, that failure comes within minutes and names
+the host.
 `scripts/check_workflow_downloads.py` fails an `apt-get update` or
 `install` that comes before a run of the script: in a workflow, within a
 job that runs in a container, and in a composite action or a shell script,
 within the file. `scripts/test_apt_mirror_setup.py` tests the script
 against a server on the same machine.
+
+The script also sets apt's `Acquire::http::Timeout`, which bounds a read
+from one host. It does not bound a name lookup, the mirror method's walk
+through its hosts, or dpkg: on 2026-11-23 the ubuntu:22.04 smoke job's
+install step printed nothing for 20 minutes, twice, until the job's limit
+canceled it with no error text. So each `apt-get update` and `install`
+runs under `timeout` and without `-qq`, so that each `Get:` line names its
+host, and each workflow step that installs packages over the network
+(`apt-get`, `dnf`, `pip`, `npm`, Playwright) has a `timeout-minutes` of its
+own. `scripts/check_workflow_downloads.py` fails an `apt-get update` or
+`install` without `timeout` before it, and such a step without its own
+`timeout-minutes`.
 
 ### The GitHub API budget
 
