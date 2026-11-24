@@ -281,9 +281,19 @@ fn every_released_binary_since_0_4_0_has_a_fixture() {
 /// The text of CHANGELOG.md's `[Unreleased]` section, without its heading,
 /// up to the next release heading; None without that heading.
 fn unreleased(changelog: &str) -> Option<&str> {
-    let heading = "## [Unreleased]";
-    let start = changelog.find(heading)? + heading.len();
-    let rest = &changelog[start..];
+    section(changelog, "Unreleased")
+}
+
+/// The text of the section headed `## [<name>]` at the start of a line,
+/// without its heading line, up to the next release heading; None without
+/// that heading. `[0.4.15]` is not `[0.4.150]`: the bracket closes the name.
+fn section<'a>(changelog: &'a str, name: &str) -> Option<&'a str> {
+    let heading = format!("## [{name}]");
+    let at = changelog
+        .match_indices(&heading)
+        .map(|(at, _)| at)
+        .find(|&at| at == 0 || changelog[..at].ends_with('\n'))?;
+    let rest = &changelog[at + heading.len()..];
     Some(rest.find("\n## [").map_or(rest, |end| &rest[..end]))
 }
 
@@ -300,16 +310,34 @@ fn names_version(text: &str, v: &str) -> bool {
 }
 
 /// What the page's rule asks of a format this build writes at another
-/// version than `newest` (the newest release's row): the build's version
-/// is not below the release's, and the CHANGELOG's `[Unreleased]` section
-/// names it as `version <the build's>`. `build` is each format's id and
-/// this build's version; the result names each format that breaks it.
+/// version than `newest` (the row of the newest release in the table,
+/// `release`): the build's version is not below the release's, and a
+/// CHANGELOG entry names it as `version <the build's>`. The entry counts
+/// under `[Unreleased]`, or under the section of `own`, this build's crate
+/// version, when `own` is newer than `release`: a release commit moves the
+/// entries there, and the table gains that release's row only after it is
+/// published. No other section counts, so a stray or misnumbered heading
+/// does not. `build` is each format's id and this build's version; the
+/// result names each format that breaks it.
 fn format_changes(
     build: &[(&str, &str)],
+    release: &str,
+    own: &str,
     newest: &BTreeMap<String, String>,
     changelog: &str,
 ) -> Vec<String> {
-    let section = unreleased(changelog).unwrap_or("");
+    let pending = unreleased(changelog).unwrap_or("");
+    let own_newer = release_order(own) > release_order(release);
+    let own_section = if own_newer {
+        section(changelog, own).unwrap_or("")
+    } else {
+        ""
+    };
+    let places = if own_newer {
+        format!("[Unreleased] or [{own}]")
+    } else {
+        "[Unreleased]".to_owned()
+    };
     let mut out = Vec::new();
     for &(id, version) in build {
         let released = newest.get(id).map(String::as_str);
@@ -325,9 +353,9 @@ fn format_changes(
                 "{id}: this build's version {version} is below the release's {}",
                 released.unwrap_or_default()
             ));
-        } else if !names_version(section, version) {
+        } else if !names_version(pending, version) && !names_version(own_section, version) {
             out.push(format!(
-                "{id}: this build writes version {version}, the release {}; no [Unreleased] entry names `version {version}`",
+                "{id}: this build writes version {version}, the release {release} {}; no entry under {places} names `version {version}`",
                 released.unwrap_or("no version")
             ));
         }
@@ -353,6 +381,8 @@ const LOG_SILENT: &str =
 fn a_build_at_the_newest_releases_versions_needs_no_entry() {
     let got = format_changes(
         &[("catalog", "9"), ("postgres", "13")],
+        "0.4.13",
+        "0.4.14",
         &row(&[("catalog", "9"), ("postgres", "13")]),
         LOG_SILENT,
     );
@@ -363,6 +393,8 @@ fn a_build_at_the_newest_releases_versions_needs_no_entry() {
 fn a_raised_version_the_unreleased_section_names_passes() {
     let got = format_changes(
         &[("catalog", "9"), ("postgres", "14")],
+        "0.4.13",
+        "0.4.14",
         &row(&[("catalog", "9"), ("postgres", "13")]),
         LOG_NAMING_14,
     );
@@ -373,6 +405,8 @@ fn a_raised_version_the_unreleased_section_names_passes() {
 fn a_format_new_since_the_release_passes_when_named() {
     let got = format_changes(
         &[("postgres", "14")],
+        "0.4.13",
+        "0.4.14",
         &row(&[("postgres", "none")]),
         LOG_NAMING_14,
     );
@@ -396,6 +430,8 @@ fn the_unreleased_reader_takes_the_section_up_to_the_next_release() {
 fn a_raised_version_no_entry_names_is_refused() {
     let got = format_changes(
         &[("catalog", "9"), ("postgres", "14")],
+        "0.4.13",
+        "0.4.14",
         &row(&[("catalog", "9"), ("postgres", "13")]),
         LOG_SILENT,
     );
@@ -409,6 +445,8 @@ fn a_version_named_only_under_a_release_is_refused() {
     // LOG_SILENT names version 14 under 0.4.13, not under [Unreleased].
     let got = format_changes(
         &[("postgres", "14")],
+        "0.4.13",
+        "0.4.14",
         &row(&[("postgres", "13")]),
         LOG_SILENT,
     );
@@ -418,7 +456,13 @@ fn a_version_named_only_under_a_release_is_refused() {
 #[test]
 fn a_version_below_the_releases_is_refused_even_when_named() {
     let log = "## [Unreleased]\n\n- **Back.** schema version 12\n\n## [0.4.13]\n";
-    let got = format_changes(&[("postgres", "12")], &row(&[("postgres", "13")]), log);
+    let got = format_changes(
+        &[("postgres", "12")],
+        "0.4.13",
+        "0.4.14",
+        &row(&[("postgres", "13")]),
+        log,
+    );
     assert_eq!(got.len(), 1, "a build never goes below a release: {got:?}");
     assert!(got[0].contains("below"), "says why: {got:?}");
 }
@@ -427,7 +471,13 @@ fn a_version_below_the_releases_is_refused_even_when_named() {
 fn a_changelog_without_an_unreleased_section_refuses_a_change() {
     let log = "# Changelog\n\n## [0.4.13] - 2026-11-21\n\n- **A.** version 14\n";
     assert_eq!(unreleased(log), None, "no [Unreleased] heading");
-    let got = format_changes(&[("postgres", "14")], &row(&[("postgres", "13")]), log);
+    let got = format_changes(
+        &[("postgres", "14")],
+        "0.4.13",
+        "0.4.14",
+        &row(&[("postgres", "13")]),
+        log,
+    );
     assert_eq!(got.len(), 1, "no section names it: {got:?}");
 }
 
@@ -436,14 +486,26 @@ fn a_changelog_without_an_unreleased_section_refuses_a_change() {
 #[test]
 fn a_longer_number_does_not_name_the_version() {
     let log = "## [Unreleased]\n\n- **A.** schema version 140\n\n## [0.4.13]\n";
-    let got = format_changes(&[("postgres", "14")], &row(&[("postgres", "13")]), log);
+    let got = format_changes(
+        &[("postgres", "14")],
+        "0.4.13",
+        "0.4.14",
+        &row(&[("postgres", "13")]),
+        log,
+    );
     assert_eq!(got.len(), 1, "version 140 is not version 14: {got:?}");
 }
 
 #[test]
 fn a_version_at_the_end_of_the_section_is_named() {
     let log = "## [Unreleased]\n\n- **A.** schema version 14";
-    let got = format_changes(&[("postgres", "14")], &row(&[("postgres", "13")]), log);
+    let got = format_changes(
+        &[("postgres", "14")],
+        "0.4.13",
+        "0.4.14",
+        &row(&[("postgres", "13")]),
+        log,
+    );
     assert!(got.is_empty(), "the last word of the file: {got:?}");
 }
 
@@ -454,6 +516,8 @@ fn a_version_text_that_is_not_a_number_is_compared_as_text() {
     let build = [("parquet-storage", "vcon-server.parquet-storage/2")];
     let named = format_changes(
         &build,
+        "0.4.13",
+        "0.4.14",
         &row(&[("parquet-storage", "vcon-server.parquet-storage/1")]),
         log,
     );
@@ -463,6 +527,8 @@ fn a_version_text_that_is_not_a_number_is_compared_as_text() {
     );
     let silent = format_changes(
         &build,
+        "0.4.13",
+        "0.4.14",
         &row(&[("parquet-storage", "vcon-server.parquet-storage/1")]),
         LOG_SILENT,
     );
@@ -471,8 +537,159 @@ fn a_version_text_that_is_not_a_number_is_compared_as_text() {
 
 #[test]
 fn a_format_the_release_row_lacks_is_a_change() {
-    let got = format_changes(&[("postgres", "14")], &row(&[]), LOG_SILENT);
+    let got = format_changes(
+        &[("postgres", "14")],
+        "0.4.13",
+        "0.4.14",
+        &row(&[]),
+        LOG_SILENT,
+    );
     assert_eq!(got.len(), 1, "no cell is a change, not a pass: {got:?}");
+}
+
+// A release commit moves the [Unreleased] entries to the section of the
+// build's own version, while the table's newest row stays the previous
+// release's until that release's data is added. The entry then counts in
+// that one section, and only when the build's version is newer than the
+// row's release.
+
+/// A CHANGELOG after a release commit for 0.4.15: the schema entry under
+/// [0.4.15], none under [Unreleased] or [0.4.14].
+const LOG_RELEASED_15: &str = "# Changelog\n\n## [Unreleased]\n\n## [0.4.15] - 2026-11-24\n\n### Changed\n\n- **A PostgreSQL catalog moves to schema version 14.**\n\n## [0.4.14] - 2026-11-24\n\n- **Old.** schema version 13\n";
+
+/// The 0.4.14 row: PostgreSQL schema 13.
+fn row_14() -> BTreeMap<String, String> {
+    row(&[("catalog", "9"), ("postgres", "13")])
+}
+
+const BUILD_14: &[(&str, &str)] = &[("catalog", "9"), ("postgres", "14")];
+
+// Success.
+
+#[test]
+fn an_entry_in_the_builds_own_section_passes() {
+    let got = format_changes(BUILD_14, "0.4.14", "0.4.15", &row_14(), LOG_RELEASED_15);
+    assert!(
+        got.is_empty(),
+        "the entry is under [0.4.15], the build's own version: {got:?}"
+    );
+}
+
+#[test]
+fn an_entry_under_unreleased_passes_beside_an_empty_own_section() {
+    let log = "## [Unreleased]\n\n- **A.** schema version 14\n\n## [0.4.15] - 2026-11-24\n\n## [0.4.14]\n";
+    let got = format_changes(BUILD_14, "0.4.14", "0.4.15", &row_14(), log);
+    assert!(got.is_empty(), "[Unreleased] still counts: {got:?}");
+}
+
+#[test]
+fn after_the_pins_the_new_row_needs_no_entry() {
+    // The pins follow-up adds the 0.4.15 row at schema 14; the entry stays
+    // under [0.4.15].
+    let row_15 = row(&[("catalog", "9"), ("postgres", "14")]);
+    let got = format_changes(BUILD_14, "0.4.15", "0.4.15", &row_15, LOG_RELEASED_15);
+    assert!(
+        got.is_empty(),
+        "the build is at the new row's versions: {got:?}"
+    );
+}
+
+#[test]
+fn an_own_section_heading_with_no_date_counts() {
+    let log = "## [Unreleased]\n\n## [0.4.15]\n\n- **A.** schema version 14\n\n## [0.4.14]\n";
+    let got = format_changes(BUILD_14, "0.4.14", "0.4.15", &row_14(), log);
+    assert!(got.is_empty(), "a heading without a date: {got:?}");
+}
+
+#[test]
+fn an_own_section_at_the_end_of_the_file_counts() {
+    let log = "## [Unreleased]\n\n## [0.4.15]\n\n- **A.** schema version 14";
+    let got = format_changes(BUILD_14, "0.4.14", "0.4.15", &row_14(), log);
+    assert!(got.is_empty(), "the last section of the file: {got:?}");
+}
+
+// Failure.
+
+#[test]
+fn an_entry_in_a_later_versions_section_is_refused() {
+    let log = "## [Unreleased]\n\n## [0.4.16] - 2026-12-01\n\n- **A.** schema version 14\n\n## [0.4.14]\n";
+    let got = format_changes(BUILD_14, "0.4.14", "0.4.15", &row_14(), log);
+    assert_eq!(got.len(), 1, "[0.4.16] is not the build's 0.4.15: {got:?}");
+}
+
+#[test]
+fn an_entry_in_the_newest_rows_own_section_is_refused() {
+    let log = "## [Unreleased]\n\n## [0.4.15]\n\n## [0.4.14] - 2026-11-24\n\n- **A.** schema version 14\n";
+    let got = format_changes(BUILD_14, "0.4.14", "0.4.15", &row_14(), log);
+    assert_eq!(got.len(), 1, "0.4.14 is released at 13: {got:?}");
+}
+
+#[test]
+fn an_own_version_equal_to_the_newest_row_does_not_open_its_section() {
+    let log = "## [Unreleased]\n\n## [0.4.14] - 2026-11-24\n\n- **A.** schema version 14\n";
+    let got = format_changes(BUILD_14, "0.4.14", "0.4.14", &row_14(), log);
+    assert_eq!(
+        got.len(),
+        1,
+        "the build's version is the row's, not newer: {got:?}"
+    );
+}
+
+#[test]
+fn an_own_version_older_than_the_newest_row_does_not_open_its_section() {
+    let log = "## [Unreleased]\n\n## [0.4.14]\n\n## [0.4.13] - 2026-11-21\n\n- **A.** schema version 14\n";
+    let got = format_changes(BUILD_14, "0.4.14", "0.4.13", &row_14(), log);
+    assert_eq!(got.len(), 1, "0.4.13 is older than the row: {got:?}");
+}
+
+#[test]
+fn the_refusal_names_both_sections_it_read() {
+    let got = format_changes(BUILD_14, "0.4.14", "0.4.15", &row_14(), LOG_SILENT);
+    assert_eq!(got.len(), 1, "one format breaks the rule: {got:?}");
+    assert!(
+        got[0].contains("[Unreleased] or [0.4.15]"),
+        "names where an entry may be: {got:?}"
+    );
+}
+
+// Edge.
+
+#[test]
+fn a_longer_version_heading_is_not_the_own_section() {
+    let log = "## [Unreleased]\n\n## [0.4.150]\n\n- **A.** schema version 14\n\n## [0.4.14]\n";
+    let got = format_changes(BUILD_14, "0.4.14", "0.4.15", &row_14(), log);
+    assert_eq!(got.len(), 1, "[0.4.150] is not [0.4.15]: {got:?}");
+}
+
+#[test]
+fn a_heading_inside_a_line_opens_no_section() {
+    let log = "## [Unreleased]\n\n## [0.4.14]\n\n- **Old.** see ## [0.4.15] schema version 14\n";
+    let got = format_changes(BUILD_14, "0.4.14", "0.4.15", &row_14(), log);
+    assert_eq!(got.len(), 1, "a heading starts a line: {got:?}");
+}
+
+#[test]
+fn the_own_section_ends_at_the_next_heading() {
+    // The entry is under [0.4.14], after an empty [0.4.15].
+    let log = "## [0.4.15]\n\n### Changed\n\n## [0.4.14]\n\n- **A.** schema version 14\n";
+    let got = format_changes(BUILD_14, "0.4.14", "0.4.15", &row_14(), log);
+    assert_eq!(got.len(), 1, "the next release's text is not read: {got:?}");
+}
+
+#[test]
+fn the_own_section_counts_with_no_unreleased_heading() {
+    let log =
+        "# Changelog\n\n## [0.4.15] - 2026-11-24\n\n- **A.** schema version 14\n\n## [0.4.14]\n";
+    let got = format_changes(BUILD_14, "0.4.14", "0.4.15", &row_14(), log);
+    assert!(got.is_empty(), "[0.4.15] alone: {got:?}");
+}
+
+#[test]
+fn a_patch_number_compares_as_a_number_not_as_text() {
+    // 0.4.9 < 0.4.10 as numbers; as text "0.4.9" > "0.4.10".
+    let log = "## [Unreleased]\n\n## [0.4.10]\n\n- **A.** schema version 14\n\n## [0.4.9]\n";
+    let got = format_changes(BUILD_14, "0.4.9", "0.4.10", &row_14(), log);
+    assert!(got.is_empty(), "0.4.10 is newer than 0.4.9: {got:?}");
 }
 
 #[test]
@@ -485,7 +702,13 @@ fn this_build_keeps_the_rule_against_the_newest_release_row() {
     let changelog =
         std::fs::read_to_string(root().join("CHANGELOG.md")).expect("CHANGELOG.md is there");
     let build: Vec<(&str, &str)> = FORMATS.iter().map(|f| (f.id, f.version)).collect();
-    let problems = format_changes(&build, &releases[&newest], &changelog);
+    let problems = format_changes(
+        &build,
+        &newest,
+        env!("CARGO_PKG_VERSION"),
+        &releases[&newest],
+        &changelog,
+    );
     assert!(problems.is_empty(), "against {newest}: {problems:?}");
 }
 
