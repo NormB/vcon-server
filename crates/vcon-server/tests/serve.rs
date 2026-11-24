@@ -794,10 +794,29 @@ async fn a_server_whose_reader_closes_mid_run_goes_on_answering() {
 /// answers none in this time.
 const STALL: Duration = Duration::from_secs(10);
 
-/// Enough health requests to fill the server's queue (1 MiB) and the pipe
-/// (64 KiB on Linux) with their lines of about 140 bytes, so some are
-/// dropped.
-const OVERFLOW: usize = 10_000;
+/// The length of the extension method [`Held::long_lines`] sends. The
+/// request line logs the method, so each such request logs a line of a
+/// little more than this many bytes.
+const LONG_METHOD: usize = 8_000;
+
+/// Enough requests of [`LONG_METHOD`] to fill the server's queue (1 MiB)
+/// and the pipe (64 KiB on Linux) about three times over, so some lines
+/// are dropped. With health requests' lines of about 140 bytes the same
+/// took 10,000 requests, whose time grew with the host's load past the
+/// test's time limit.
+const OVERFLOW: usize = 400;
+
+/// An extension method of [`LONG_METHOD`] times `letter`.
+fn long_method(letter: char) -> reqwest::Method {
+    reqwest::Method::from_bytes(letter.to_string().repeat(LONG_METHOD).as_bytes())
+        .expect("a method")
+}
+
+/// The start of the line of each request of [`long_method`] of `letter`,
+/// and of no other.
+fn long_method_field(letter: char) -> String {
+    format!("method={}", letter.to_string().repeat(16))
+}
 
 /// A server whose stderr is held open by the test and read only when the
 /// test asks.
@@ -868,6 +887,26 @@ impl Held {
                     panic!("request {round}: no answer with the log unread: {e:?}")
                 });
             assert_eq!(answer.status(), 200, "request {round}");
+        }
+    }
+
+    /// Sends `count` requests one after another to `/health` with the
+    /// extension method of `X`s ([`long_method`]), which the route does
+    /// not take, and asserts each is refused with 405 within [`STALL`]:
+    /// each logs a line of about 8 KiB.
+    async fn long_lines(&self, s: &Setup, count: usize) {
+        let client = self.client(s);
+        let url = self.url("/health");
+        let method = long_method('X');
+        for round in 0..count {
+            let answer = client
+                .request(method.clone(), &url)
+                .send()
+                .await
+                .unwrap_or_else(|e| {
+                    panic!("request {round}: no answer with the log unread: {e:?}")
+                });
+            assert_eq!(answer.status(), 405, "request {round}");
         }
     }
 
@@ -1048,7 +1087,7 @@ async fn a_server_whose_stderr_is_never_read_stores_and_reads_a_vcon() {
 async fn a_reader_that_reads_again_is_told_how_many_lines_were_dropped() {
     let s = setup();
     let held = start_then_hold_stderr(serve(&s));
-    held.health(&s, 0, OVERFLOW).await;
+    held.long_lines(&s, OVERFLOW).await;
     let (_running, _addr, lines) = held.read_again();
     let read = lines_until_quiet(&lines, Duration::from_secs(2), Duration::from_secs(20));
     let dropped: Vec<u64> = read.iter().filter_map(|l| dropped_count(l)).collect();
@@ -1065,13 +1104,14 @@ async fn a_reader_that_reads_again_is_told_how_many_lines_were_dropped() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_lines_read_and_the_lines_counted_add_up_to_every_request() {
-    // Each health request logs one line: each is read or counted.
+    // Each request logs one line: each is read or counted.
     let s = setup();
     let held = start_then_hold_stderr(serve(&s));
-    held.health(&s, 0, OVERFLOW).await;
+    held.long_lines(&s, OVERFLOW).await;
     let (_running, _addr, lines) = held.read_again();
     let read = lines_until_quiet(&lines, Duration::from_secs(2), Duration::from_secs(20));
-    let requests = read.iter().filter(|l| l.contains("route=/health")).count();
+    let field = long_method_field('X');
+    let requests = read.iter().filter(|l| l.contains(&field)).count();
     let dropped: u64 = read.iter().filter_map(|l| dropped_count(l)).sum();
     assert!(dropped > 0, "the queue overflowed: {requests} read");
     assert!(requests < OVERFLOW, "no request line twice: {requests}");
@@ -1085,21 +1125,26 @@ async fn the_lines_read_and_the_lines_counted_add_up_to_every_request() {
 async fn lines_written_after_the_reader_reads_again_reach_it() {
     let s = setup();
     let held = start_then_hold_stderr(serve(&s));
-    held.health(&s, 0, OVERFLOW).await;
+    held.long_lines(&s, OVERFLOW).await;
     let (_running, addr, lines) = held.read_again();
     let _ = lines_until_quiet(&lines, Duration::from_secs(2), Duration::from_secs(20));
+    // A line of about 8 KiB, as long as each line that filled the queue:
+    // it fits only in the room the written lines gave back, not in what
+    // the full queue had left over.
     let client = client_at(&s, addr);
     let answer = client
-        .get(url_at(addr, "/health"))
-        .bearer_auth(&s.token)
+        .request(long_method('Y'), url_at(addr, "/health"))
         .send()
         .await
         .expect("an answer");
-    assert_eq!(answer.status(), 200, "healthy");
+    assert_eq!(answer.status(), 405, "refused, and logged");
     let next = lines_until_quiet(&lines, Duration::from_secs(5), Duration::from_secs(20));
+    let field = long_method_field('Y');
     assert!(
-        next.iter().any(|l| l.contains("route=/health")),
-        "the new request's line is read: {next:?}"
+        next.iter().any(|l| l.contains(&field)),
+        "the new request's line is read: {} lines, the last {:?}",
+        next.len(),
+        next.last().map(|l| &l[..l.len().min(200)])
     );
 }
 
