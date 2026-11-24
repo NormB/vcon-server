@@ -18,6 +18,55 @@ CI runs every command on this page on each change. It installs the previous
 release, sets it up as [getting started](@/docs/getting-started.md) does,
 upgrades it to the server built from the change, and goes back again.
 
+## From 0.4.14 to 0.4.15
+
+For a deployment with its catalogs in the data directory, the upgrade is
+the binary alone. No stored data, configuration or schema changes there:
+the catalogs keep schema version 9. A downgrade is possible: 0.4.14 opens
+a data directory that 0.4.15 has served. Copy the data directory before
+the upgrade all the same, as in
+[copy the data directory](#copy-the-data-directory).
+
+A deployment with `catalog.backend = "postgres"` moves its database from
+schema version 13 to 14, and 0.4.14 refuses a database at version 14.
+Version 14 adds the table `pending_write`, empty, and the column
+`removing` to `tenant_lock`, false for every row (see
+[schema versions](@/docs/postgres-catalog.md#schema-versions)). In this
+order:
+
+1. **Stop the server.** `migrate` is refused while a server or a command
+   holds the database's locks.
+2. **Back up the database**, with the bucket and the master key file, as
+   [back it up](@/docs/postgres-catalog.md#back-it-up) says. That backup
+   is the only way back.
+3. **Install 0.4.15**, then run `vcon-server migrate` with it, as
+   [after an upgrade from 0.4.5](@/docs/postgres-catalog.md#after-an-upgrade-from-0-4-5)
+   shows. Its line says `"from":13` and `"to":14`. Until then a 0.4.15
+   server stops with `the database schema is version 13, older than this
+   binary's 14: run vcon-server migrate`.
+4. **Start the server.**
+
+To go back, stop the server, restore the database from the backup taken
+before `migrate`, install 0.4.14 again and start it. Everything stored
+since that backup is lost. A 0.4.14 server on a database at version 14
+stops with `the database schema is newer than this binary (version 14,
+this binary 13): upgrade this server`.
+
+Four other things are different in 0.4.15:
+
+- **Reads that arrive together share one disk sync of their audit
+  records.** Each read is still answered only after its own record is on
+  disk. See [scale numbers](@/docs/scale.md).
+- **On PostgreSQL, a read no longer waits for a write of its tenant to
+  start.** See
+  [reads while the tenant is written](@/docs/scale.md#reads-while-the-tenant-is-written).
+- **Stores and reads cost the server less CPU** with the SQLite catalog.
+  Nothing is to be configured.
+- **A read that races its tenant's removal is no longer answered as
+  damaged.** With several servers on one PostgreSQL database, such a read
+  could fail with `A stored version is damaged`; the tenant is now
+  refused as a removed tenant's from the removal's first step.
+
 ## From 0.4.13 to 0.4.14
 
 The upgrade is the binary alone. No stored data, configuration or schema
@@ -496,7 +545,7 @@ but do not install it yet. The commands use their own variable names, so
 they do not change the ones from install:
 
 ```sh
-NEW_VERSION=0.4.14
+NEW_VERSION=0.4.15
 NEW_ARCHIVE=vcon-server-$NEW_VERSION-$(uname -m)-unknown-linux-gnu.tar.gz
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/$NEW_ARCHIVE
 curl -fsSL -o SHA256SUMS-$NEW_VERSION.txt https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/SHA256SUMS.txt

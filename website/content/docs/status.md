@@ -7,7 +7,7 @@ weight = 60
 group = "project"
 +++
 
-vcon-server 0.4.14 is released: the `vcon` and `vcon-server` crates are on
+vcon-server 0.4.15 is released: the `vcon` and `vcon-server` crates are on
 crates.io, and the server for Linux on x86_64 and aarch64 is on
 [GitHub](https://github.com/NormB/vcon-server/releases). It is not yet for
 production: [the 1.0 checklist](@/docs/production-checklist.md) says what
@@ -252,7 +252,7 @@ once, for every entry here:
   directory is unchanged by it.
 - **Schema version 14 of the PostgreSQL preview.** `vcon-server migrate`
   of this release leaves the database at version 14; releases 0.4.6 to
-  0.4.13 leave it at 13 and release 0.4.5 at 6, and their servers refuse a
+  0.4.14 leave it at 13 and release 0.4.5 at 6, and their servers refuse a
   database at 14. Version 7 adds the
   column `seq` to the `version` table and, on PostgreSQL 17 and later,
   grants `vcon_app` `MAINTAIN` on three tables. Version 8 adds triggers:

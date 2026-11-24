@@ -6,8 +6,21 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.15] - 2026-11-24
+
 ### Changed
 
+- **Upgrading from 0.4.14: a data-directory deployment replaces the binary
+  only.**
+  - Effect: The catalogs stay at schema version 9; 0.4.14 opens a data
+    directory that 0.4.15 has served.
+  - Do: With `catalog.backend = "postgres"`, stop the server, back up the
+    database, install 0.4.15 and run `vcon-server migrate` before it
+    starts.
+  - Limit: 0.4.14 refuses the database at schema version 14; the way back
+    is the backup taken before `migrate`.
+  - Docs: [From 0.4.14 to
+    0.4.15](https://vcon-server.com/docs/upgrading/#from-0-4-14-to-0-4-15)
 - **Reads that arrive together share one disk sync of their audit records.**
   - Effect: Each read is still answered only after its own record is on
     disk; the server runs 7.24% fewer instructions for 5,000 stores and
@@ -1236,7 +1249,8 @@ All notable changes to this project are recorded here. The format follows
   - Limit: `vcon::MAX_SIGNED_LAYERS`, `vcon::MAX_JSON_DEPTH` and
     `vcon::Rejection::TooDeep` name the limits.
 
-[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.14...HEAD
+[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.15...HEAD
+[0.4.15]: https://github.com/NormB/vcon-server/releases/tag/v0.4.15
 [0.4.14]: https://github.com/NormB/vcon-server/releases/tag/v0.4.14
 [0.4.13]: https://github.com/NormB/vcon-server/releases/tag/v0.4.13
 [0.4.12]: https://github.com/NormB/vcon-server/releases/tag/v0.4.12
