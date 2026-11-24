@@ -96,6 +96,52 @@ Flags after `--` go to `vcon-scale run`:
 | `--mix` | `70:2048,25:16384,5:262144` | the size mix, as `weight:bytes` parts |
 | `--max-load` | 28 | the highest 1-minute load at which a run starts |
 
+### Reads while the tenant is written
+
+To measure reads while other clients write to the same tenant, set
+`SCALE_WRITERS` to a number of writers:
+
+```sh
+SCALE_WRITERS=2 SCALE_LABEL=contended scripts/scale-run.sh target/release/vcon-server \
+  target/release/vcon-scale 5000 contended.json -- --reads 10000
+```
+
+Each writer (`scripts/contend_writes.py`, which needs `python3`) stores a
+vCon of its own and replaces it, one replacement after another, until
+`vcon-scale` ends; the writers run through both the stores and the reads.
+Their summary goes beside the result file, in `contended-writes.json`:
+the writes, writes a second, and the write latency p50 and p99 in
+milliseconds. A writer that fails fails the run, and its error is printed.
+
+To run against another catalog, set `SCALE_CATALOG` to a file whose text
+is added to the end of the server's configuration, for example the
+`[storage]` and `[catalog]` tables of
+[the PostgreSQL catalog](@/docs/postgres-catalog.md). The script does not
+make or migrate that database: give each run an empty, migrated database
+and a bucket prefix nothing else uses.
+
+Measured on 2026-11-24 on the Jetson AGX Thor of the first row, 2,000
+stores then 10,000 reads, 8 clients and 2 writers in one tenant, with
+release builds from just before and just after the change that stopped a
+read's first step from taking the tenant's lock ("before" and "after"
+below), their runs interleaved:
+
+- **PostgreSQL 16** (a test server with `fsync`, `full_page_writes` and
+  `synchronous_commit` off, which makes writes cheaper than in
+  production; objects in RustFS), 7 runs each at 1-minute loads of 13.9
+  to 25.9: reads a second 289 before
+  (248 to 334) and 502 after (371 to 617); read p99 55.4 ms before (37.2 to
+  85.9) and 33.1 ms after (19.9 to 57.9); 27 to 32 writes a second in
+  both.
+- **PostgreSQL 16 with those three settings on**, 1 run each, at loads of
+  19.5 to 22.8: 132 reads a second before and 220 after; read p99 126.3 ms
+  before and 76.4 ms after.
+- **SQLite** (the default catalog), 6 runs before and 4 after, at loads of
+  13.4 to 26.7: 195 and 198
+  reads a second, read p99 80.6 and 75.0 ms: no change, since the SQLite
+  catalog serves each tenant on one connection and a read waits for that
+  tenant's writes either way.
+
 ## Check the result
 
 The harness prints one line, the count, the rate, the read p99 and the

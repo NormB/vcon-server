@@ -13,11 +13,13 @@ All notable changes to this project are recorded here. The format follows
     disk; the server runs 7.24% fewer instructions for 5,000 stores and
     10,000 reads.
   - Docs: [Scale numbers](https://vcon-server.com/docs/scale/)
-- **A read no longer waits for a write of its tenant before it starts.**
-  - Effect: Reads overlap with a tenant's stores, replaces and deletes; each
-    read still answers a version that was current when its answer was recorded.
-  - Limit: It does no less work: the server runs the same instructions for
-    a read as before.
+- **On PostgreSQL, a read no longer waits for a write of its tenant to start.**
+  - Effect: With 2 writers and 8 readers in one tenant, reads rose from 289
+    to 502 a second; p99 fell from 55.4 to 33.1 ms.
+  - Limit: Measured on a PostgreSQL 16 test server with fsync off; one
+    fsync-on pair rose 132 to 220. SQLite shows no change.
+  - Docs: [Reads while the tenant is
+    written](https://vcon-server.com/docs/scale/#reads-while-the-tenant-is-written)
 - **Stores and reads cost the server less CPU.**
   - Effect: With the SQLite catalog, the server runs 19.81% fewer
     instructions for 5,000 stores and 10,000 reads from 8 clients.

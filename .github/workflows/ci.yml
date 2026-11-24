@@ -637,6 +637,10 @@ jobs:
         run: python3 -I scripts/test_published_metrics.py
       - name: The text of a GitHub release, from the changelog
         run: python3 -I scripts/test_release_notes.py
+      # scripts/scale-run.sh's writers (SCALE_WRITERS) and catalog file
+      # (SCALE_CATALOG), the script run whole against a fake server.
+      - name: The scale harness's writers
+        run: python3 -I scripts/test_contend_writes.py
       - name: The site's link checker
         run: python3 -I scripts/test_check_site_links.py
       - name: Dependabot watches every dependency file

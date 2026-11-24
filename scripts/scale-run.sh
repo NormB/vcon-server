@@ -13,9 +13,27 @@
 # "run"); SCALE_DISK states the disk (default: read with lsblk). Flags after
 # `--` go to vcon-scale as they are (--concurrency, --reads, --seed,
 # --mix, --max-load, --list-pages). See website/content/docs/scale.md.
+#
+# SCALE_WRITERS=N also runs N writers (scripts/contend_writes.py) for the
+# whole of vcon-scale's run: each stores a vCon of its own in the same
+# tenant and replaces it until vcon-scale ends, so reads are measured while
+# the tenant is written. Their summary goes to OUT with `.json` replaced by
+# `-writes.json`; a writer that failed fails the run. SCALE_CATALOG=FILE
+# adds FILE's text to the end of the server's configuration (for example
+# a `[catalog]` and a `[storage]` section for PostgreSQL and S3, whose
+# database the caller has migrated).
 set -euo pipefail
 
 [ "$#" -ge 4 ] || { echo "usage: $0 SERVER SCALE COUNT OUT [PARENT] [-- flags]" >&2; exit 2; }
+writers="${SCALE_WRITERS:-0}"
+case "$writers" in
+  '' | *[!0-9]*) echo "scale-run: SCALE_WRITERS must be a number of writers, not \"$writers\"" >&2; exit 2 ;;
+esac
+catalog="${SCALE_CATALOG:-}"
+if [ -n "$catalog" ] && [ ! -r "$catalog" ]; then
+  echo "scale-run: SCALE_CATALOG names $catalog, which cannot be read" >&2
+  exit 2
+fi
 root="$(cd "$(dirname "$0")/.." && pwd)"
 server="$(realpath "$1")"
 scale="$(realpath "$2")"
@@ -27,7 +45,9 @@ if [ "$#" -gt 0 ] && [ "$1" != -- ]; then parent="$1"; shift; fi
 if [ "$#" -gt 0 ] && [ "$1" = -- ]; then shift; fi
 work="$(mktemp -d -p "$parent" vcon-scale.XXXXXX)"
 pid=""
+wpid=""
 cleanup() {
+  if [ -n "$wpid" ]; then kill "$wpid" 2>/dev/null || true; wait "$wpid" 2>/dev/null || true; fi
   if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; fi
   rm -rf "$work"
 }
@@ -57,6 +77,9 @@ openssl x509 -req -in "$work/server.csr" -CA "$work/ca.pem" -CAkey "$work/ca.key
   -days 1 -extfile "$work/server.ext" -out "$work/cert.pem" 2>/dev/null
 printf 'listen = "127.0.0.1:0"\ndata_dir = "%s"\nmaster_key = "%s"\n\n[tls]\ncert = "%s"\nkey = "%s"\n' \
   "$work/data" "$work/master.key" "$work/cert.pem" "$work/key.pem" > "$work/vcon-server.toml"
+if [ -n "$catalog" ]; then
+  { echo; cat "$catalog"; } >> "$work/vcon-server.toml"
+fi
 config=(--config "$work/vcon-server.toml")
 tenant="$("$server" tenant create scale "${config[@]}" | jq -r .id)"
 ( umask 077; "$server" key create --tenant "$tenant" --scope write --scope read --label scale \
@@ -82,6 +105,13 @@ if [ -z "$disk" ]; then
 fi
 commit="$(git -C "$root" rev-parse HEAD 2>/dev/null || echo unknown)"
 
+if [ "$writers" -gt 0 ]; then
+  python3 -I "$root/scripts/contend_writes.py" --port "$port" --ca "$work/ca.pem" \
+    --key-file "$work/api.key" --stop "$work/stop-writers" --out "${out%.json}-writes.json" \
+    --writers "$writers" &
+  wpid=$!
+fi
+
 status=0
 "$scale" run --url "https://localhost:$port" --ca "$work/ca.pem" --key-file "$work/api.key" \
   --count "$count" --out "$out" --data-dir "$work/data" --server-pid "$pid" \
@@ -89,5 +119,15 @@ status=0
 if [ "$status" -ne 0 ]; then
   echo "scale-run: vcon-scale exited $status; the server's last lines:" >&2
   tail -n 20 "$work/server.log" >&2
+fi
+if [ -n "$wpid" ]; then
+  touch "$work/stop-writers"
+  wstatus=0
+  wait "$wpid" || wstatus=$?
+  wpid=""
+  if [ "$wstatus" -ne 0 ]; then
+    echo "scale-run: the writers exited $wstatus" >&2
+    [ "$status" -ne 0 ] || status="$wstatus"
+  fi
 fi
 exit "$status"
