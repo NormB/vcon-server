@@ -25,7 +25,12 @@ file defines or a job its workflow defines.
 The catalogs can be kept in PostgreSQL, a preview behind the `postgres`
 cargo feature, which the release binaries have. CI runs the store's
 conformance suite and a server on PostgreSQL 16 and 18. One server serves
-a database: a second server, on any host, is refused at start.
+a database: a second server, on any host, is refused at start. The first
+step toward several servers is done: each store or replace records its
+write under way, start-up recovery keeps the object of a write that
+another server may still have under way for an hour, and a write whose
+record recovery took fails without adding a row. The conformance suite
+runs those cases on every backend.
 
 Left: a command that moves a data directory's tenants into PostgreSQL and
 back; several servers serving one database; and tests in CI that cut the
@@ -39,6 +44,14 @@ Evidence:
   [ci.yml](https://github.com/NormB/vcon-server/blob/main/.github/workflows/ci.yml)
 - test `a_second_server_on_the_database_is_refused` in
   [serve.rs](https://github.com/NormB/vcon-server/blob/main/crates/vcon-server/tests/serve.rs)
+- the rule for writes under way in
+  [pending.rs](https://github.com/NormB/vcon-server/blob/main/crates/vcon-server/src/store/pending.rs)
+- test `a_postgres_catalog_with_s3_objects_conforms` in
+  [catalog_tests.rs](https://github.com/NormB/vcon-server/blob/main/crates/vcon-server/src/backend/postgres/tests/catalog_tests.rs),
+  which runs the conformance suite's checks of writes under way on
+  PostgreSQL
+- [schema versions](@/docs/postgres-catalog.md#schema-versions) of the
+  PostgreSQL catalog, version 14
 
 ## A backup restored in CI
 

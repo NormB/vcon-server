@@ -59,24 +59,71 @@ pub fn stat_cpu_ns(stat: &str, ticks_per_second: u64) -> Option<u64> {
 }
 
 /// The bytes of every regular file under `root`, symbolic links not
-/// followed.
+/// followed. The server runs while the tree is read, so a file or a
+/// directory below `root` that is removed between its listing and its
+/// reading counts nothing.
 ///
 /// # Errors
 ///
-/// The first error reading a directory or a file's metadata.
+/// `root` that cannot be read, and the first other error reading a
+/// directory or a file's metadata.
 pub fn tree_bytes(root: &Path) -> std::io::Result<u64> {
     let mut total = 0u64;
     let mut pending = vec![root.to_path_buf()];
+    std::fs::read_dir(root)?;
     while let Some(dir) = pending.pop() {
-        for entry in std::fs::read_dir(&dir)? {
-            let entry = entry?;
-            let kind = entry.file_type()?;
-            if kind.is_dir() {
-                pending.push(entry.path());
-            } else if kind.is_file() {
-                total = total.saturating_add(entry.metadata()?.len());
+        for path in subtree_entries(&dir)? {
+            let meta = std::fs::symlink_metadata(&path);
+            if matches!(&meta, Ok(m) if m.is_dir()) {
+                pending.push(path);
+            } else {
+                total = total.saturating_add(file_bytes(meta)?);
             }
         }
     }
     Ok(total)
+}
+
+/// The bytes of `entry` when it is a regular file, else 0; a file removed
+/// since it was listed is 0.
+///
+/// # Errors
+///
+/// An error reading its metadata other than its absence.
+pub fn entry_bytes(entry: &std::fs::DirEntry) -> std::io::Result<u64> {
+    file_bytes(entry.metadata())
+}
+
+/// The bytes a listed entry counts, from its metadata (symbolic links not
+/// followed): a regular file's length, 0 for anything else and for an
+/// entry removed since it was listed.
+fn file_bytes(meta: std::io::Result<std::fs::Metadata>) -> std::io::Result<u64> {
+    match meta {
+        Ok(meta) if meta.is_file() => Ok(meta.len()),
+        Ok(_) => Ok(0),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(e) => Err(e),
+    }
+}
+
+/// The paths listed in `dir`; none when `dir` was removed.
+///
+/// # Errors
+///
+/// An error listing it other than its absence.
+pub fn subtree_entries(dir: &Path) -> std::io::Result<Vec<std::path::PathBuf>> {
+    let listing = match std::fs::read_dir(dir) {
+        Ok(listing) => listing,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    let mut paths = Vec::new();
+    for entry in listing {
+        match entry {
+            Ok(entry) => paths.push(entry.path()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(paths)
 }

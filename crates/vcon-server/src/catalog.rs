@@ -190,6 +190,41 @@ ALTER TABLE version ADD COLUMN place_row INTEGER;
 /// call and restores this.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How many prepared statements a catalog connection keeps for reuse.
+/// A tenant catalog's and server.sqlite's work each use fewer distinct
+/// statements than this, so none is parsed twice.
+pub(crate) const STATEMENT_CACHE: usize = 64;
+
+/// `query_row` and `execute` through the connection's cache of prepared
+/// statements: the statement is parsed on its first use and kept, reset
+/// and with its bindings cleared, for the next. The catalogs' own work
+/// runs through these; a statement that carries a key (`PRAGMA key`) is
+/// never run through them.
+pub(crate) trait Cached {
+    /// [`Connection::query_row`] on the kept statement for `sql`.
+    fn cached_row<T, P, F>(&self, sql: &str, params: P, f: F) -> rusqlite::Result<T>
+    where
+        P: rusqlite::Params,
+        F: FnOnce(&rusqlite::Row<'_>) -> rusqlite::Result<T>;
+
+    /// [`Connection::execute`] on the kept statement for `sql`.
+    fn cached_run<P: rusqlite::Params>(&self, sql: &str, params: P) -> rusqlite::Result<usize>;
+}
+
+impl Cached for Connection {
+    fn cached_row<T, P, F>(&self, sql: &str, params: P, f: F) -> rusqlite::Result<T>
+    where
+        P: rusqlite::Params,
+        F: FnOnce(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+    {
+        self.prepare_cached(sql)?.query_row(params, f)
+    }
+
+    fn cached_run<P: rusqlite::Params>(&self, sql: &str, params: P) -> rusqlite::Result<usize> {
+        self.prepare_cached(sql)?.execute(params)
+    }
+}
+
 /// Why a catalog did not open.
 #[derive(Debug)]
 pub enum CatalogError {
@@ -262,6 +297,7 @@ pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogE
     }
     let conn = Connection::open(path)?;
     conn.busy_timeout(BUSY_TIMEOUT)?;
+    conn.set_prepared_statement_cache_capacity(STATEMENT_CACHE);
     // SQLCipher otherwise writes its own error lines to standard error, a
     // wrong key among them; this program says what went wrong itself.
     conn.pragma_update(None, "cipher_log_level", "NONE")?;
@@ -536,7 +572,78 @@ mod v9_tests;
 
 #[cfg(test)]
 pub(crate) mod testing {
+    use std::collections::BTreeMap;
+    use std::ffi::CStr;
+
     use rusqlite::Connection;
+
+    /// The statements `conn` holds prepared: each one's address, and its
+    /// SQL with runs of white space made one space.
+    pub(crate) fn prepared(conn: &Connection) -> BTreeMap<usize, String> {
+        statements(conn)
+            .into_iter()
+            .map(|(at, (sql, _))| (at, sql))
+            .collect()
+    }
+
+    /// The statements `conn` holds that SQLite has prepared again since
+    /// their first preparation, with how many times: SQLite does so when
+    /// the schema changed, or when a new value bound to a parameter may
+    /// change the query plan, and each time parses the statement anew.
+    pub(crate) fn reprepared(conn: &Connection) -> Vec<(String, i32)> {
+        statements(conn)
+            .into_values()
+            .filter(|(_, again)| *again > 0)
+            .collect()
+    }
+
+    /// Each statement `conn` holds, by address: its SQL with runs of white
+    /// space made one space, and how many times it was prepared again.
+    fn statements(conn: &Connection) -> BTreeMap<usize, (String, i32)> {
+        let mut kept = BTreeMap::new();
+        // SAFETY: the handle is the live connection's, used only on this
+        // thread while `conn` is borrowed, and only to walk its statements.
+        let db = unsafe { conn.handle() };
+        let mut stmt = std::ptr::null_mut();
+        loop {
+            // SAFETY: `db` is a live connection and `stmt` is null or a
+            // statement it gave, which nothing finalizes while `conn` is
+            // borrowed.
+            stmt = unsafe { rusqlite::ffi::sqlite3_next_stmt(db, stmt) };
+            if stmt.is_null() {
+                return kept;
+            }
+            // SAFETY: `stmt` is a live statement of `db`; SQLite keeps its
+            // text until the statement is finalized.
+            let text = unsafe { rusqlite::ffi::sqlite3_sql(stmt) };
+            let sql = if text.is_null() {
+                String::new()
+            } else {
+                // SAFETY: a non-null sqlite3_sql is a NUL-terminated string
+                // that lives as long as the statement.
+                let sql = unsafe { CStr::from_ptr(text) };
+                sql.to_string_lossy()
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            // SAFETY: `stmt` is a live statement of `db`; reading a counter
+            // without resetting it changes nothing.
+            let again = unsafe {
+                rusqlite::ffi::sqlite3_stmt_status(
+                    stmt,
+                    rusqlite::ffi::SQLITE_STMTSTATUS_REPREPARE,
+                    0,
+                )
+            };
+            kept.insert(stmt as usize, (sql, again));
+        }
+    }
+
+    /// Whether some statement `conn` keeps starts with `start`.
+    pub(crate) fn keeps(conn: &Connection, start: &str) -> bool {
+        prepared(conn).values().any(|sql| sql.starts_with(start))
+    }
 
     /// The columns of `table` that take NULL. `row` gives a value for each
     /// column; each column is tried as NULL in that row, and nothing is

@@ -54,6 +54,7 @@ scripts/test-retry.sh
 python3 -I scripts/test_check_repo_links.py
 python3 -I scripts/test_published_metrics.py
 python3 -I scripts/test_release_notes.py
+python3 -I scripts/test_contend_writes.py
 scripts/test-scan-commit-messages.sh
 python3 -I scripts/test_check_site_links.py
 python3 -I scripts/test_check_dependabot.py

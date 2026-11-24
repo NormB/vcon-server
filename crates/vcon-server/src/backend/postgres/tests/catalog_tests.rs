@@ -30,11 +30,12 @@ fn a_write_begins_read_committed_sets_the_tenant_and_locks_its_row() {
         format!(
             "BEGIN ISOLATION LEVEL READ COMMITTED; SET LOCAL vcon.tenant = '{hex}'; \
              DO $$BEGIN \
-             PERFORM 1 FROM vcon.tenant_lock WHERE tenant = '\\x{hex}' FOR UPDATE; \
+             PERFORM 1 FROM vcon.tenant_lock WHERE tenant = '\\x{hex}' AND NOT removing FOR UPDATE; \
              IF NOT FOUND THEN RAISE EXCEPTION 'tenant {hex} has no lock row'; END IF; \
              END$$"
         ),
-        "one batch: the transaction, the tenant, the lock, and an error with no lock row"
+        "one batch: the transaction, the tenant, the lock, and an error with no lock row \
+         or a lock row marked removing"
     );
 }
 
@@ -379,7 +380,9 @@ pub(super) mod on_a_server {
     /// that adds one is seen here. A `get` is two transactions of four:
     /// two reads and the version's row, or two reads and the audit
     /// record, with the begin in the first one's round trip, then the end.
-    const CREATE_TRIPS: usize = 11;
+    /// A create is 13 from schema version 14: its first transaction adds
+    /// the pending row of its write and its last deletes it.
+    const CREATE_TRIPS: usize = 13;
     const GET_TRIPS: usize = 8;
     const LIST_TRIPS: usize = 3;
 
@@ -463,7 +466,7 @@ pub(super) mod on_a_server {
 
     /// The first column of each row `sql` gives the owner in `tenant`'s
     /// scope.
-    fn owner_reads(db: &Db, tenant: TenantId, sql: &str) -> Vec<String> {
+    pub(crate) fn owner_reads(db: &Db, tenant: TenantId, sql: &str) -> Vec<String> {
         wait(async {
             let admin = db.admin().await;
             admin
@@ -515,7 +518,7 @@ pub(super) mod on_a_server {
         version
     }
 
-    fn entry(target: &str) -> Entry {
+    pub(crate) fn entry(target: &str) -> Entry {
         Entry {
             actor: Actor::Cli,
             action: Action::Purge,
@@ -1286,6 +1289,69 @@ pub(super) mod on_a_server {
             owner_reads(&db, tenant, "SELECT count(*) FROM vcon.audit"),
             ["0"],
             "the write sent with the begin did not run"
+        );
+    }
+
+    #[test]
+    fn a_tenant_marked_removing_has_its_first_write_refused_and_writes_nothing() {
+        let (db, database) = database();
+        let (tenant, _, catalog) = tenant_catalog(&database);
+        owner_reads(
+            &db,
+            tenant,
+            "UPDATE vcon.tenant_lock SET removing = true RETURNING 'marked'",
+        );
+        let mut tx = catalog.immediate().expect("a connection");
+        let refused = tx.record(&entry("never"), OffsetDateTime::UNIX_EPOCH);
+        let Err(AuditError::Database(why)) = &refused else {
+            panic!("the record is refused: {refused:?}");
+        };
+        assert!(
+            why.contains(&format!("tenant {tenant} has no lock row")),
+            "refused as a removed tenant's: {why}"
+        );
+        assert_eq!(
+            tx.commit(),
+            Err(CommitError::RolledBack),
+            "nothing was kept"
+        );
+        assert_eq!(
+            owner_reads(&db, tenant, "SELECT count(*) FROM vcon.audit"),
+            ["0"],
+            "the write sent with the begin did not run"
+        );
+    }
+
+    #[test]
+    fn a_tenant_marked_removing_is_still_present_for_the_next_removal() {
+        let (db, database) = database();
+        let (tenant, _, _catalog) = tenant_catalog(&database);
+        owner_reads(
+            &db,
+            tenant,
+            "UPDATE vcon.tenant_lock SET removing = true RETURNING 'marked'",
+        );
+        assert!(
+            PgCatalog::present(&database)
+                .expect("present")
+                .contains(&tenant),
+            "a removal cut off after the mark is made again at the next start"
+        );
+    }
+
+    #[test]
+    fn a_read_snapshot_of_a_tenant_marked_removing_still_begins() {
+        let (db, database) = database();
+        let (tenant, _, catalog) = tenant_catalog(&database);
+        owner_reads(
+            &db,
+            tenant,
+            "UPDATE vcon.tenant_lock SET removing = true RETURNING 'marked'",
+        );
+        assert_eq!(
+            catalog.snapshot().expect("a read begins").count_versions(),
+            Ok(0),
+            "a read takes no lock row: its last step, a write, is the one refused"
         );
     }
 

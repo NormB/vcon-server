@@ -40,6 +40,25 @@ spec.loader.exec_module(dt)
 
 ME = "apt-mirror-setup"
 
+# How late the `late` host answers: past a 1 s limit, as a host can on a
+# loaded machine (2026-11-24, CI's "git hooks" job: two hosts of the tie
+# test answered after the 1 s limit the tests then gave every run, and
+# were left out without a word).
+LATE = 1.5
+
+# The script's --timeout in every run whose hosts all answer: a bound no
+# answer on a loaded machine comes near, and below the 60 s each run may
+# take. It costs no time, as a host that answers ends its wait. Only a
+# test of a host that never answers gives a short limit, and says so.
+ANSWER_WITHIN = 40
+
+# The test of a host that never answers: it sleeps SILENT seconds, and the
+# script's limit is SILENT_LIMIT, which the origin of that test, which must
+# answer, is given too. 4 s holds an answer on a loaded machine, and the
+# run still ends well before the silent host would.
+SILENT = 20
+SILENT_LIMIT = 4
+
 # The Date of each copy of a release file the server hands out. A mirror
 # in sync holds the origin's copy (NOW); one in the middle of a sync holds
 # an older one (BEFORE); NEWER stands for a copy the origin has not been
@@ -109,7 +128,16 @@ class Mirrors(http.server.BaseHTTPRequestHandler):
             self.send_header("Location", "/ok/dists/bookworm/InRelease")
             self.end_headers()
         elif kind == "silent":
-            time.sleep(8)
+            time.sleep(SILENT)
+        elif kind == "late":
+            # The `ok` copy, LATE seconds after it was asked for, as a
+            # loaded host answers.
+            time.sleep(LATE)
+            body = COPIES["ok"](self.path.split("/dists/")[1].split("/")[0])
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         elif kind == "noise":
             self.wfile.write(b"220 this is not a web server\r\n")
         elif kind == "almost":
@@ -207,7 +235,7 @@ class Case(unittest.TestCase):
         with open(self.table, "w", encoding="utf-8") as f:
             f.write(table)
 
-    def run_script(self, table, *options, timeout="1", script=SCRIPT):
+    def run_script(self, table, *options, timeout=str(ANSWER_WITHIN), script=SCRIPT):
         """The script's (exit code, stdout, stderr) for the table `table`: a
         list of (origin, mirrors), or the table's text."""
         self.write_table(table)
@@ -359,7 +387,7 @@ class Success(Case):
         with open(os.path.join(copy, "apt-mirrors.txt"), "w", encoding="utf-8") as f:
             f.write(f"{self.deb} {self.deb}\n")
         done = subprocess.run(
-            ["bash", os.path.join(copy, "apt-mirror-setup.sh"), "--root", self.root, "--timeout", "1"],
+            ["bash", os.path.join(copy, "apt-mirror-setup.sh"), "--root", self.root, "--timeout", str(ANSWER_WITHIN)],
             capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL, check=False,
         )
         self.assertEqual(done.returncode, 0, done.stderr)
@@ -501,14 +529,21 @@ class Failure(Case):
         self.assertNotIn("moved", out, "stdout")
         self.assertIn("/moved/debian/dists/bookworm/InRelease", Mirrors.asked, "it was asked")
 
+    def test_a_mirror_that_answers_late_within_the_limit_is_compared(self):
+        self.source(deb822(self.deb))
+        rc, out, err = self.run_script([(self.deb, [self.at("late"), self.deb])])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.listed(0), [self.at("late"), self.deb], "the late mirror is kept, in its place")
+
     def test_a_mirror_that_sends_nothing_is_left_out_within_the_time_limit(self):
         self.source(deb822(self.deb))
         start = time.monotonic()
-        rc, out, err = self.run_script([(self.deb, [self.at("silent"), self.deb])], timeout="1")
+        rc, out, err = self.run_script([(self.deb, [self.at("silent"), self.deb])], timeout=str(SILENT_LIMIT))
         took = time.monotonic() - start
         self.assertEqual(rc, 0, err)
         self.assertEqual(out, self.only(self.deb) + "\n" + self.come_from(self.deb, self.deb) + "\n", "stdout")
-        self.assertLess(took, 6, "the 1 s limit, not the 8 s the mirror sleeps")
+        self.assertGreaterEqual(took, SILENT_LIMIT - 0.5, "the run waited for the silent host up to its limit")
+        self.assertLess(took, SILENT - 5, f"the {SILENT_LIMIT} s limit, not the {SILENT} s the mirror sleeps")
 
     def test_a_host_that_does_not_speak_http_is_left_out(self):
         noise = self.at("noise")
@@ -726,7 +761,7 @@ class Edge(Case):
         self.source(deb822(self.deb, self.deb_security))
         self.write_table([(self.deb, [self.deb]), (self.deb_security, [self.deb_security])])
         done = subprocess.run(
-            ["bash", str(SCRIPT), "--root", self.root, "--table", self.table, "--timeout", "1"],
+            ["bash", str(SCRIPT), "--root", self.root, "--table", self.table, "--timeout", str(ANSWER_WITHIN)],
             capture_output=True, text=True, timeout=60, input="one\ntwo\n", check=False,
         )
         self.assertEqual(done.returncode, 0, done.stderr)
@@ -881,7 +916,7 @@ class Runner(Case):
 
     def choose(self, suites, table):
         self.write_table(table)
-        return dt.choose_mirrors(suites, ask=lambda s: dt.ask_mirrors(s, table=self.table, timeout=1))
+        return dt.choose_mirrors(suites, ask=lambda s: dt.ask_mirrors(s, table=self.table, timeout=ANSWER_WITHIN))
 
     def test_the_runner_keeps_the_mirrors_the_script_keeps(self):
         chosen, notes = self.choose({self.deb: ("bookworm",)}, [(self.deb, [self.at("ok1"), self.at("old1"), self.deb])])

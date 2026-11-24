@@ -36,7 +36,7 @@ The rule covers 0.4.0 and later. Release 0.3.0 and earlier are not tested.
 | Format | What it is | Version | Where |
 |---|---|---|---|
 | `catalog` | The SQLite catalogs, encrypted with SQLCipher: `server.sqlite` (tenants, keys, users, sessions and its audit log) and each tenant's `catalog.sqlite` (its vCons, versions, tombstones and audit log). The version is SQLite's `user_version`. | 9 | the data directory |
-| `postgres` | The schema of the [PostgreSQL catalog](@/docs/postgres-catalog.md), a preview, in place of the catalogs above. | 13 | the database |
+| `postgres` | The schema of the [PostgreSQL catalog](@/docs/postgres-catalog.md), a preview, in place of the catalogs above. | 14 | the database |
 | `envelope` | The first byte of every sealed blob (an object, a wrapped key, and in PostgreSQL a sealed column): AES-256-GCM with a 12-byte nonce and a 16-byte tag. | 1 | objects and catalogs |
 | `parquet-storage` | The `format` of each manifest of [Parquet storage](@/docs/parquet-storage.md) in a bucket. | vcon-server.parquet-storage/1 | the bucket |
 | `export-manifest` | The `format` of the manifest that [`export parquet`](@/docs/export-parquet.md) writes. | 1 | the export directory |

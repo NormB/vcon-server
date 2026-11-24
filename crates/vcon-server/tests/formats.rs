@@ -278,20 +278,215 @@ fn every_released_binary_since_0_4_0_has_a_fixture() {
     );
 }
 
+/// The text of CHANGELOG.md's `[Unreleased]` section, without its heading,
+/// up to the next release heading; None without that heading.
+fn unreleased(changelog: &str) -> Option<&str> {
+    let heading = "## [Unreleased]";
+    let start = changelog.find(heading)? + heading.len();
+    let rest = &changelog[start..];
+    Some(rest.find("\n## [").map_or(rest, |end| &rest[..end]))
+}
+
+/// Whether `text` holds `version <v>` with no character of a longer
+/// version after it.
+fn names_version(text: &str, v: &str) -> bool {
+    let needle = format!("version {v}");
+    text.match_indices(&needle).any(|(at, _)| {
+        text[at + needle.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '/'))
+    })
+}
+
+/// What the page's rule asks of a format this build writes at another
+/// version than `newest` (the newest release's row): the build's version
+/// is not below the release's, and the CHANGELOG's `[Unreleased]` section
+/// names it as `version <the build's>`. `build` is each format's id and
+/// this build's version; the result names each format that breaks it.
+fn format_changes(
+    build: &[(&str, &str)],
+    newest: &BTreeMap<String, String>,
+    changelog: &str,
+) -> Vec<String> {
+    let section = unreleased(changelog).unwrap_or("");
+    let mut out = Vec::new();
+    for &(id, version) in build {
+        let released = newest.get(id).map(String::as_str);
+        if released == Some(version) {
+            continue;
+        }
+        let below = matches!(
+            (released.and_then(|r| r.parse::<u64>().ok()), version.parse::<u64>().ok()),
+            (Some(r), Some(b)) if b < r
+        );
+        if below {
+            out.push(format!(
+                "{id}: this build's version {version} is below the release's {}",
+                released.unwrap_or_default()
+            ));
+        } else if !names_version(section, version) {
+            out.push(format!(
+                "{id}: this build writes version {version}, the release {}; no [Unreleased] entry names `version {version}`",
+                released.unwrap_or("no version")
+            ));
+        }
+    }
+    out
+}
+
+/// One release row of `pairs`.
+fn row(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    pairs
+        .iter()
+        .map(|(a, b)| ((*a).to_owned(), (*b).to_owned()))
+        .collect()
+}
+
+const LOG_NAMING_14: &str = "# Changelog\n\n## [Unreleased]\n\n### Changed\n\n- **A PostgreSQL catalog moves to schema version 14.**\n\n## [0.4.13] - 2026-11-21\n\n- **Old.** version 13\n";
+const LOG_SILENT: &str =
+    "# Changelog\n\n## [Unreleased]\n\n## [0.4.13] - 2026-11-21\n\n- **Old.** version 14\n";
+
+// Success: what the rule lets through.
+
 #[test]
-fn the_newest_release_row_states_this_builds_versions() {
-    // No format has changed since the newest release; when one does, its
-    // version moves past that row and this test names it, so the page and
-    // CHANGELOG say so.
+fn a_build_at_the_newest_releases_versions_needs_no_entry() {
+    let got = format_changes(
+        &[("catalog", "9"), ("postgres", "13")],
+        &row(&[("catalog", "9"), ("postgres", "13")]),
+        LOG_SILENT,
+    );
+    assert!(got.is_empty(), "nothing changed: {got:?}");
+}
+
+#[test]
+fn a_raised_version_the_unreleased_section_names_passes() {
+    let got = format_changes(
+        &[("catalog", "9"), ("postgres", "14")],
+        &row(&[("catalog", "9"), ("postgres", "13")]),
+        LOG_NAMING_14,
+    );
+    assert!(got.is_empty(), "the entry names version 14: {got:?}");
+}
+
+#[test]
+fn a_format_new_since_the_release_passes_when_named() {
+    let got = format_changes(
+        &[("postgres", "14")],
+        &row(&[("postgres", "none")]),
+        LOG_NAMING_14,
+    );
+    assert!(got.is_empty(), "none to 14, named: {got:?}");
+}
+
+#[test]
+fn the_unreleased_reader_takes_the_section_up_to_the_next_release() {
+    let got = unreleased(LOG_NAMING_14).expect("the section is there");
+    assert!(got.contains("version 14"), "the entry is in it: {got:?}");
+    assert!(
+        !got.contains("version 13"),
+        "the release's entry is not: {got:?}"
+    );
+    assert!(!got.contains("[Unreleased]"), "the heading is not: {got:?}");
+}
+
+// Failure: what the rule refuses.
+
+#[test]
+fn a_raised_version_no_entry_names_is_refused() {
+    let got = format_changes(
+        &[("catalog", "9"), ("postgres", "14")],
+        &row(&[("catalog", "9"), ("postgres", "13")]),
+        LOG_SILENT,
+    );
+    assert_eq!(got.len(), 1, "one format breaks the rule: {got:?}");
+    assert!(got[0].contains("postgres"), "names the format: {got:?}");
+    assert!(got[0].contains("14"), "names the build's version: {got:?}");
+}
+
+#[test]
+fn a_version_named_only_under_a_release_is_refused() {
+    // LOG_SILENT names version 14 under 0.4.13, not under [Unreleased].
+    let got = format_changes(
+        &[("postgres", "14")],
+        &row(&[("postgres", "13")]),
+        LOG_SILENT,
+    );
+    assert_eq!(got.len(), 1, "a released section does not count: {got:?}");
+}
+
+#[test]
+fn a_version_below_the_releases_is_refused_even_when_named() {
+    let log = "## [Unreleased]\n\n- **Back.** schema version 12\n\n## [0.4.13]\n";
+    let got = format_changes(&[("postgres", "12")], &row(&[("postgres", "13")]), log);
+    assert_eq!(got.len(), 1, "a build never goes below a release: {got:?}");
+    assert!(got[0].contains("below"), "says why: {got:?}");
+}
+
+#[test]
+fn a_changelog_without_an_unreleased_section_refuses_a_change() {
+    let log = "# Changelog\n\n## [0.4.13] - 2026-11-21\n\n- **A.** version 14\n";
+    assert_eq!(unreleased(log), None, "no [Unreleased] heading");
+    let got = format_changes(&[("postgres", "14")], &row(&[("postgres", "13")]), log);
+    assert_eq!(got.len(), 1, "no section names it: {got:?}");
+}
+
+// Edge: the boundaries of the rule.
+
+#[test]
+fn a_longer_number_does_not_name_the_version() {
+    let log = "## [Unreleased]\n\n- **A.** schema version 140\n\n## [0.4.13]\n";
+    let got = format_changes(&[("postgres", "14")], &row(&[("postgres", "13")]), log);
+    assert_eq!(got.len(), 1, "version 140 is not version 14: {got:?}");
+}
+
+#[test]
+fn a_version_at_the_end_of_the_section_is_named() {
+    let log = "## [Unreleased]\n\n- **A.** schema version 14";
+    let got = format_changes(&[("postgres", "14")], &row(&[("postgres", "13")]), log);
+    assert!(got.is_empty(), "the last word of the file: {got:?}");
+}
+
+#[test]
+fn a_version_text_that_is_not_a_number_is_compared_as_text() {
+    let log =
+        "## [Unreleased]\n\n- **A.** format version vcon-server.parquet-storage/2\n\n## [0.4.13]\n";
+    let build = [("parquet-storage", "vcon-server.parquet-storage/2")];
+    let named = format_changes(
+        &build,
+        &row(&[("parquet-storage", "vcon-server.parquet-storage/1")]),
+        log,
+    );
+    assert!(
+        named.is_empty(),
+        "named, and not below by number: {named:?}"
+    );
+    let silent = format_changes(
+        &build,
+        &row(&[("parquet-storage", "vcon-server.parquet-storage/1")]),
+        LOG_SILENT,
+    );
+    assert_eq!(silent.len(), 1, "changed and not named: {silent:?}");
+}
+
+#[test]
+fn a_format_the_release_row_lacks_is_a_change() {
+    let got = format_changes(&[("postgres", "14")], &row(&[]), LOG_SILENT);
+    assert_eq!(got.len(), 1, "no cell is a change, not a pass: {got:?}");
+}
+
+#[test]
+fn this_build_keeps_the_rule_against_the_newest_release_row() {
+    // A change to a format raises its version, and the same change adds a
+    // CHANGELOG entry (the page's rule); the release table gains the new
+    // version with the next release's row.
     let releases = page_releases(&page()).expect("the page's release table");
     let newest = fixture_releases().pop().expect("a release");
-    for format in FORMATS {
-        assert_eq!(
-            releases[&newest][format.id], format.version,
-            "{newest} wrote {} at this build's version",
-            format.id
-        );
-    }
+    let changelog =
+        std::fs::read_to_string(root().join("CHANGELOG.md")).expect("CHANGELOG.md is there");
+    let build: Vec<(&str, &str)> = FORMATS.iter().map(|f| (f.id, f.version)).collect();
+    let problems = format_changes(&build, &releases[&newest], &changelog);
+    assert!(problems.is_empty(), "against {newest}: {problems:?}");
 }
 
 // ---- The contract snapshot, contract/formats.json. ----
@@ -1557,17 +1752,30 @@ fn the_postgres_fixtures_are_the_releases_the_page_says_wrote_a_schema() {
 }
 
 #[test]
-fn no_postgres_fixture_wrote_an_older_schema_than_this_build() {
-    // No migration of a released PostgreSQL schema exists yet. When a
-    // release writes an older schema than a later build, this test names
-    // it: add a test that a `migrate` made to fail leaves its schema whole.
+fn no_postgres_fixture_wrote_a_newer_schema_than_this_build() {
+    // A release's schema is this build's or one that `migrate` brings up:
+    // each fixture's live tests run `migrate` first when it is older
+    // (live::Restored::new), and check that a migrate made to fail leaves
+    // the release's schema whole.
     for release in releases_in(&pg_formats_dir()) {
-        assert_eq!(
-            pg_schema(&release),
-            i64::from(vcon_server::formats::POSTGRES_SCHEMA),
-            "{release} wrote this build's schema"
+        assert!(
+            pg_schema(&release) <= i64::from(vcon_server::formats::POSTGRES_SCHEMA),
+            "{release} wrote schema {}, newer than this build's",
+            pg_schema(&release)
         );
     }
+}
+
+#[test]
+fn a_fixture_wrote_an_older_schema_so_the_upgrade_is_tested() {
+    let older: Vec<String> = releases_in(&pg_formats_dir())
+        .into_iter()
+        .filter(|r| pg_schema(r) < i64::from(vcon_server::formats::POSTGRES_SCHEMA))
+        .collect();
+    assert!(
+        !older.is_empty(),
+        "at least one release's fixture is migrated by its live tests"
+    );
 }
 
 // ---- Where CI runs the `postgres` modules. ----
@@ -2233,6 +2441,12 @@ mod live {
         String::from_utf8(out.stdout).expect("UTF-8")
     }
 
+    /// The columns a migration added to a table that releases already had,
+    /// each with the schema version that added it: a release's rows are
+    /// compared without the columns added after its schema, which its
+    /// rows did not have, and with every other column.
+    const ADDED_COLUMNS: &[(&str, &str, i64)] = &[("tenant_lock", "removing", 14)];
+
     /// A release's deployment restored: its dump in a database of the
     /// test's own, its bucket's objects in a bucket of the test's own, its
     /// data directory and master key in a temporary directory, with a
@@ -2246,7 +2460,31 @@ mod live {
     }
 
     impl Restored {
+        /// The release's fixture restored, and brought to this build's
+        /// schema by `migrate` when the release wrote an older one, as the
+        /// how-to's upgrade step does.
         fn new(release: &str) -> Restored {
+            let restored = Restored::as_written(release);
+            if super::pg_schema(release) < i64::from(vcon_server::formats::POSTGRES_SCHEMA) {
+                let out = restored.migrate();
+                assert!(
+                    out.status.success(),
+                    "{release}: migrate brings the schema up: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+            restored
+        }
+
+        /// `migrate`, run as the how-to runs it.
+        fn migrate(&self) -> std::process::Output {
+            self.command(&["migrate"], "vcon-migrate.toml")
+                .output()
+                .expect("migrate runs")
+        }
+
+        /// The release's fixture restored as the release wrote it.
+        fn as_written(release: &str) -> Restored {
             let from = pg_formats_dir().join(release);
             let db = pg::Db::fresh();
             let dump = std::fs::read_to_string(from.join("dump.sql")).expect("the dump");
@@ -2499,14 +2737,36 @@ mod live {
             )
             .expect("the tables");
             assert!(tables.len() > 10, "{}: the schema's tables", self.release);
+            let schema = super::pg_schema(&self.release);
             let rows = tables
                 .iter()
                 .map(|t| {
+                    let skipped: Vec<String> = ADDED_COLUMNS
+                        .iter()
+                        .filter(|(table, _, added)| *table == t.as_str() && *added > schema)
+                        .map(|(_, column, _)| format!("'{column}'"))
+                        .collect();
+                    let columns = pg::superuser(
+                        &self.db.name,
+                        &format!(
+                            "SELECT string_agg(quote_ident(column_name), ',' \
+                             ORDER BY ordinal_position) FROM information_schema.columns \
+                             WHERE table_schema = 'vcon' AND table_name = '{t}' \
+                             AND column_name NOT IN ({})",
+                            if skipped.is_empty() {
+                                "''".to_owned()
+                            } else {
+                                skipped.join(",")
+                            }
+                        ),
+                    )
+                    .expect("the columns")
+                    .concat();
                     let sum = pg::superuser(
                         &self.db.name,
                         &format!(
-                            "SELECT md5(coalesce(string_agg(r::text, E'\\n' ORDER BY r::text), \
-                             '')) FROM vcon.{t} r"
+                            "SELECT md5(coalesce(string_agg(x, E'\\n' ORDER BY x), '')) \
+                             FROM (SELECT ROW({columns})::text AS x FROM vcon.{t}) r"
                         ),
                     )
                     .expect("the rows");
@@ -2780,6 +3040,111 @@ mod live {
         assert_eq!(r.state(), before, "{release}: migrate wrote nothing");
     }
 
+    /// The tables' rows of `state`, without the tables this build's
+    /// migrations added after the release's schema and without
+    /// `schema_version`, where each migration records itself: what a
+    /// migration must leave as it was.
+    fn rows_but_new(rows: &[String], release: &str) -> Vec<String> {
+        let new: &[&str] = if super::pg_schema(release) < 14 {
+            &["pending_write", "schema_version"]
+        } else {
+            &[]
+        };
+        rows.iter()
+            .filter(|row| !new.iter().any(|t| row.split(' ').next() == Some(*t)))
+            .cloned()
+            .collect()
+    }
+
+    pub(super) fn migrate_brings_the_release_s_schema_to_this_build_s_and_keeps_every_row(
+        release: &str,
+    ) {
+        let r = Restored::as_written(release);
+        let (rows, listing, files) = r.state();
+        let out = r.migrate();
+        assert!(
+            out.status.success(),
+            "{release}: migrate passes: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let said: serde_json::Value = serde_json::from_slice(&out.stdout).expect("a JSON line");
+        let (from, to) = (
+            super::pg_schema(release),
+            i64::from(vcon_server::formats::POSTGRES_SCHEMA),
+        );
+        assert_eq!(
+            (
+                said["from"].as_i64(),
+                said["to"].as_i64(),
+                said["migrated"].as_bool()
+            ),
+            (Some(from), Some(to), Some(from < to)),
+            "{release}: from the release's schema to this build's: {said}"
+        );
+        let (after_rows, after_listing, after_files) = r.state();
+        assert_eq!(
+            rows_but_new(&after_rows, release),
+            rows_but_new(&rows, release),
+            "{release}: every row of every table the release made is as it was"
+        );
+        assert_eq!(
+            pg::superuser(
+                &r.db.name,
+                "SELECT count(*) FROM vcon.tenant_lock WHERE removing"
+            )
+            .expect("the marks")
+            .concat(),
+            "0",
+            "{release}: no tenant is marked as being removed after the migration"
+        );
+        assert_eq!(
+            (after_listing, after_files),
+            (listing, files),
+            "{release}: the bucket and the data directory are as they were"
+        );
+        assert_eq!(
+            pg::superuser(&r.db.name, "SELECT max(version) FROM vcon.schema_version")
+                .expect("the version"),
+            [to.to_string()],
+            "{release}: the schema records this build's version"
+        );
+        if from < 14 {
+            assert!(
+                after_rows
+                    .iter()
+                    .any(|row| row == "pending_write d41d8cd98f00b204e9800998ecf8427e"),
+                "{release}: the table of writes under way is there, and empty: {after_rows:?}"
+            );
+        }
+    }
+
+    pub(super) fn a_migrate_that_fails_leaves_the_release_s_schema_whole(release: &str) {
+        let r = Restored::as_written(release);
+        let before = r.state();
+        let version = || {
+            pg::superuser(&r.db.name, "SELECT max(version) FROM vcon.schema_version")
+                .expect("the version")
+                .concat()
+        };
+        let was = version();
+        // A table in the way of the last migration's CREATE TABLE, so the
+        // migration fails after the ones before it ran in its transaction.
+        r.db.as_owner("CREATE TABLE vcon.pending_write (planted int)");
+        let out = r.migrate();
+        assert!(
+            !out.status.success(),
+            "{release}: migrate fails on the planted table: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert_eq!(
+            version(),
+            was,
+            "{release}: the schema's version is the release's"
+        );
+        r.db.as_owner("DROP TABLE vcon.pending_write");
+        assert_eq!(r.state(), before, "{release}: nothing else changed");
+    }
+
     pub(super) fn a_second_check_changes_nothing(release: &str) {
         let r = Restored::new(release);
         r.checked();
@@ -3035,7 +3400,7 @@ mod live {
     }
 
     pub(super) fn the_restored_schema_is_the_one_the_release_wrote(release: &str) {
-        let r = Restored::new(release);
+        let r = Restored::as_written(release);
         let read = pg::superuser(&r.db.name, "SELECT max(version) FROM vcon.schema_version")
             .expect("the version");
         assert_eq!(
@@ -3144,6 +3509,16 @@ macro_rules! pg_release {
                 #[test]
                 fn migrate_finds_the_schema_current_and_changes_nothing() {
                     live::migrate_finds_the_schema_current_and_changes_nothing($release);
+                }
+                #[test]
+                fn migrate_brings_the_release_s_schema_to_this_build_s_and_keeps_every_row() {
+                    live::migrate_brings_the_release_s_schema_to_this_build_s_and_keeps_every_row(
+                        $release,
+                    );
+                }
+                #[test]
+                fn a_migrate_that_fails_leaves_the_release_s_schema_whole() {
+                    live::a_migrate_that_fails_leaves_the_release_s_schema_whole($release);
                 }
                 #[test]
                 fn a_second_check_changes_nothing() {

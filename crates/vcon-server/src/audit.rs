@@ -6,6 +6,8 @@ use std::io::{self, Write};
 
 use rusqlite::{Connection, params};
 use serde_json::json;
+
+use crate::catalog::Cached;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
@@ -276,7 +278,7 @@ pub(crate) fn minute_of(now: OffsetDateTime) -> OffsetDateTime {
 
 /// Appends one record, at `now`, in `tx`.
 pub fn record(tx: &Connection, entry: &Entry, now: OffsetDateTime) -> Result<(), AuditError> {
-    tx.execute(
+    tx.cached_run(
         "INSERT INTO audit (at, actor, action, target, version, status, count)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)",
         params![
@@ -322,14 +324,14 @@ pub fn count_many(
         stored(entry.status),
         times,
     ];
-    let added = tx.execute(
+    let added = tx.cached_run(
         "UPDATE audit SET count = count + ?7
          WHERE at = ?1 AND actor = ?2 AND action = ?3 AND target IS ?4 AND version IS ?5
            AND status IS ?6",
         fields,
     )?;
     if added == 0 {
-        tx.execute(
+        tx.cached_run(
             "INSERT INTO audit (at, actor, action, target, version, status, count)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             fields,
@@ -347,7 +349,7 @@ pub fn export(log: &Connection, since: Option<i64>, out: &mut dyn Write) -> Resu
 /// Writes at most `limit` records after `after` as JSON lines, oldest
 /// first: the one rendering both `export` and `page` write.
 fn lines(log: &Connection, after: i64, limit: i64, out: &mut dyn Write) -> Result<(), AuditError> {
-    let mut rows = log.prepare(
+    let mut rows = log.prepare_cached(
         "SELECT seq, at, actor, action, target, version, status, count
          FROM audit WHERE seq > ?1 ORDER BY seq LIMIT ?2",
     )?;

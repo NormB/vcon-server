@@ -116,8 +116,10 @@ impl TenantSpace for PgTenantSpace {
     /// objects nor rows is removed already. The registry's id has no
     /// objects, and the statements refuse it.
     fn remove(&self, id: TenantId) -> Result<(), TenantError> {
-        self.s3.remove_tenant(id).map_err(tenant_io)?;
-        PgCatalog::remove_in(&self.database, id, REMOVE_BATCH).map_err(tenant_io)
+        PgCatalog::remove(&self.database, id, REMOVE_BATCH, || {
+            self.s3.remove_tenant(id).map_err(|_| CatalogError::Io)
+        })
+        .map_err(tenant_io)
     }
 
     fn catalog_under(&self, id: TenantId, old: &Key, new: &Key) -> Result<Under, TenantError> {

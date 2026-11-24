@@ -35,11 +35,46 @@ fn production(text: &str) -> &str {
     &text[..end]
 }
 
+/// Whether `path` is a test module of its own: named `<name>_tests.rs`
+/// and declared by `parent` only under `#[cfg(test)]`, so no build but a
+/// test's compiles it.
+fn test_module(parent: &str, path: &Path) -> bool {
+    let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    name.ends_with("_tests") && parent.contains(&format!("#[cfg(test)]\nmod {name};"))
+}
+
+#[test]
+fn a_file_is_a_test_module_only_when_its_parent_declares_it_so() {
+    let path = Path::new("src/store/group_tests.rs");
+    assert!(
+        test_module("mod a;\n#[cfg(test)]\nmod group_tests;\n", path),
+        "a file declared under #[cfg(test)] is a test module"
+    );
+    assert!(
+        !test_module("mod a;\nmod group_tests;\n", path),
+        "a file declared without #[cfg(test)] is built into the server"
+    );
+    assert!(
+        !test_module(
+            "#[cfg(test)]\nmod group;\n",
+            Path::new("src/store/group.rs")
+        ),
+        "a file whose name does not end in _tests is not one"
+    );
+}
+
 #[test]
 fn only_the_local_backend_speaks_sqlite_for_the_store() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let parent = std::fs::read_to_string(src.join("store.rs")).expect("reads store.rs");
     let mut store = vec![src.join("store.rs")];
-    store.extend(sources(&src.join("store")));
+    store.extend(
+        sources(&src.join("store"))
+            .into_iter()
+            .filter(|path| !test_module(&parent, path)),
+    );
     let speaking: Vec<String> = store
         .iter()
         .filter(|path| {
@@ -71,8 +106,13 @@ fn only_the_local_backend_speaks_sqlite_for_the_store() {
 #[test]
 fn only_the_local_backend_speaks_sqlite_for_the_registry() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let parent = std::fs::read_to_string(src.join("tenants.rs")).expect("reads tenants.rs");
     let mut registry = vec![src.join("tenants.rs")];
-    registry.extend(sources(&src.join("tenants")));
+    registry.extend(
+        sources(&src.join("tenants"))
+            .into_iter()
+            .filter(|path| !test_module(&parent, path)),
+    );
     let speaking: Vec<String> = registry
         .iter()
         .filter(|path| {

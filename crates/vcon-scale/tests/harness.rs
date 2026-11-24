@@ -659,7 +659,7 @@ fn failure_plan_errors_say_what_is_wrong() {
     );
 }
 
-// ---- host: success 4, failure 2, edge 3
+// ---- host: success 4, failure 2, edge 5
 
 const LSCPU: &str =
     "Architecture:   aarch64\nCPU(s):    14\nModel name:   -\nCPU max MHz:    2601.0000\n";
@@ -796,6 +796,41 @@ fn edge_a_symbolic_link_is_not_followed() {
     );
     std::fs::remove_dir_all(&dir).expect("the scratch directory is removed");
     std::fs::remove_dir_all(&outside).expect("the target directory is removed");
+}
+
+/// A running server removes files while the tree is read (a WAL, an
+/// object's temporary file): a file listed and then removed counts nothing
+/// and is no error, so a run with writers is not failed by its own count.
+#[test]
+fn edge_a_file_removed_after_it_was_listed_counts_nothing() {
+    let dir = scratch("tree-gone-file");
+    std::fs::write(dir.join("gone"), [0u8; 10]).expect("gone is written");
+    std::fs::write(dir.join("kept"), [0u8; 5]).expect("kept is written");
+    let entries: Vec<std::fs::DirEntry> = std::fs::read_dir(&dir)
+        .expect("the directory lists")
+        .map(|e| e.expect("an entry"))
+        .collect();
+    std::fs::remove_file(dir.join("gone")).expect("gone is removed");
+    let total: u64 = entries
+        .iter()
+        .map(|e| host::entry_bytes(e).expect("a removed file is no error"))
+        .sum();
+    assert_eq!(total, 5, "only the file still there is counted");
+    std::fs::remove_dir_all(&dir).expect("the scratch directory is removed");
+}
+
+/// A directory listed and then removed before it is read is skipped; the
+/// root itself missing is still an error.
+#[test]
+fn edge_a_directory_removed_before_it_is_read_is_skipped() {
+    let dir = scratch("tree-gone-dir");
+    let sub = dir.join("sub");
+    std::fs::remove_dir_all(&dir).expect("the scratch directory is removed");
+    assert_eq!(
+        host::subtree_entries(&sub).expect("a removed directory is no error"),
+        Vec::<std::path::PathBuf>::new(),
+        "nothing listed under a directory that is gone"
+    );
 }
 
 // ---- args: success 4, failure 8, edge 3

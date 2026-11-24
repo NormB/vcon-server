@@ -31,6 +31,8 @@ mod keys;
 mod rekey;
 mod role_cap;
 mod sessions;
+#[cfg(test)]
+mod statement_tests;
 mod tenant_admin;
 mod users;
 
