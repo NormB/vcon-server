@@ -56,10 +56,10 @@ fn together(
         .map(|&uuid| {
             let f = f.clone();
             let (answer, answered) = mpsc::channel();
-            std::thread::spawn(move || {
+            let reader = std::thread::spawn(move || {
                 let _ = answer.send(f.store.get(&f.caller, uuid));
             });
-            answered
+            (answered, reader)
         })
         .collect();
     first.wait();
@@ -79,13 +79,18 @@ fn together(
     let outcomes = readers
         .into_iter()
         .enumerate()
-        .map(|(i, answered)| {
-            answered
+        .map(|(i, (answered, reader))| {
+            let outcome = answered
                 .recv_timeout(PATIENCE)
-                .unwrap_or_else(|_| panic!("reader {i} of {n} not answered within {PATIENCE:?}"))
+                .unwrap_or_else(|_| panic!("reader {i} of {n} not answered within {PATIENCE:?}"));
+            // It ends once it has answered: wait for that (see
+            // assert_no_reader_holds).
+            reader.join().expect("the reader ends");
+            outcome
         })
         .collect();
     *f.store.hooks.before_confirm.lock().expect("hook") = None;
+    assert_no_reader_holds(f);
     outcomes
 }
 
@@ -95,12 +100,29 @@ fn together(
 fn bounded_get(f: &Arc<Fixture>, uuid: Uuid) -> Result<Stored, StoreError> {
     let (answer, answered) = mpsc::channel();
     let g = f.clone();
-    std::thread::spawn(move || {
+    let reader = std::thread::spawn(move || {
         let _ = answer.send(g.store.get(&g.caller, uuid));
     });
-    answered
+    let outcome = answered
         .recv_timeout(PATIENCE)
-        .unwrap_or_else(|_| panic!("the read was not answered within {PATIENCE:?}"))
+        .unwrap_or_else(|_| panic!("the read was not answered within {PATIENCE:?}"));
+    reader.join().expect("the reader ends");
+    assert_no_reader_holds(f);
+    outcome
+}
+
+/// No reader thread of a helper still holds the fixture once the helper
+/// has given back its answers: a test process that exits while such a
+/// thread is ending (dropping its clone of the Store, closing SQLite,
+/// freeing OpenSSL's per-thread state) ended with SIGSEGV under coverage
+/// (CI, #272's coverage job 138549185368, after
+/// a_batch_answers_each_read_by_its_own_vcon passed).
+fn assert_no_reader_holds(f: &Arc<Fixture>) {
+    assert_eq!(
+        Arc::strong_count(f),
+        1,
+        "every reader thread has ended and dropped its clone of the fixture"
+    );
 }
 
 fn batches(f: &Fixture) -> Vec<usize> {
@@ -383,7 +405,7 @@ fn read_while_written(
     }));
     let (answer, answered) = mpsc::channel();
     let g = f.clone();
-    std::thread::spawn(move || {
+    let reader = std::thread::spawn(move || {
         let _ = answer.send(g.store.get(&g.caller, uuid));
     });
     let first_step_ended = at_last_step.recv_timeout(within).is_ok();
@@ -391,7 +413,9 @@ fn read_while_written(
     let outcome = answered
         .recv_timeout(PATIENCE)
         .unwrap_or_else(|_| panic!("the read was not answered within {PATIENCE:?}"));
+    reader.join().expect("the reader ends");
     *f.store.hooks.before_confirm.lock().expect("hook") = None;
+    assert_no_reader_holds(f);
     (first_step_ended, outcome)
 }
 
@@ -546,9 +570,10 @@ fn many_readers_at_once_are_all_answered_and_recorded() {
     let f = Arc::new(fixture());
     let (uuid, body) = stored(&f, A, "first");
     let (done, finished) = mpsc::channel();
+    let mut readers = Vec::new();
     for _ in 0..8 {
         let (f, body, done) = (f.clone(), body.clone(), done.clone());
-        std::thread::spawn(move || {
+        readers.push(std::thread::spawn(move || {
             for _ in 0..50 {
                 assert_eq!(
                     f.store.get(&f.caller, uuid).expect("read").body,
@@ -557,13 +582,17 @@ fn many_readers_at_once_are_all_answered_and_recorded() {
                 );
             }
             done.send(()).expect("the test waits");
-        });
+        }));
     }
     for i in 0..8 {
         finished
             .recv_timeout(PATIENCE)
             .unwrap_or_else(|_| panic!("reader {i} of 8 did not end within {PATIENCE:?}"));
     }
+    for reader in readers {
+        reader.join().expect("the reader ends");
+    }
+    assert_no_reader_holds(&f);
     assert_eq!(reads(&f).len(), 400, "every read recorded once");
     let total: usize = batches(&f).iter().sum();
     assert_eq!(total, 400, "every read in exactly one batch");

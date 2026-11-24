@@ -117,14 +117,21 @@ mod on_a_server {
         (target.into(), status.into())
     }
 
+    /// A read on a thread of its own: its answer, and the thread, which
+    /// `answer` joins.
+    struct Reading {
+        answered: mpsc::Receiver<Result<Vec<u8>, StoreError>>,
+        thread: std::thread::JoinHandle<()>,
+    }
+
     /// `t.store.get` of `uuid` on a thread of its own.
-    fn read(t: &Arc<Tenant>, uuid: Uuid) -> mpsc::Receiver<Result<Vec<u8>, StoreError>> {
+    fn read(t: &Arc<Tenant>, uuid: Uuid) -> Reading {
         let (answer, answered) = mpsc::channel();
         let t = t.clone();
-        std::thread::spawn(move || {
+        let thread = std::thread::spawn(move || {
             let _ = answer.send(t.store.get(&t.caller, uuid).map(|s| s.body));
         });
-        answered
+        Reading { answered, thread }
     }
 
     /// A signal each time a read has ended its first step and is about to
@@ -183,32 +190,33 @@ mod on_a_server {
     /// Starts a read of `uuid` while `write` holds the tenant's lock, and
     /// checks that its first step ends anyway and that its last step then
     /// waits for the lock; gives back the read's answer channel.
-    fn read_under(
-        t: &Arc<Tenant>,
-        db: &Db,
-        uuid: Uuid,
-    ) -> mpsc::Receiver<Result<Vec<u8>, StoreError>> {
+    fn read_under(t: &Arc<Tenant>, db: &Db, uuid: Uuid) -> Reading {
         let reached = at_last_step(t);
-        let answered = read(t, uuid);
+        let reading = read(t, uuid);
         assert!(
             reached.recv_timeout(PATIENCE).is_ok(),
             "the read's first step ended while another catalog held the tenant's lock"
         );
         assert!(a_session_waits(db), "its last step waits for the lock");
         assert!(
-            answered.try_recv().is_err(),
+            reading.answered.try_recv().is_err(),
             "and the read has no answer while the write holds the lock"
         );
         t.store.on_last_step(None);
-        answered
+        reading
     }
 
-    fn answer(
-        answered: &mpsc::Receiver<Result<Vec<u8>, StoreError>>,
-    ) -> Result<Vec<u8>, StoreError> {
-        answered
+    /// The read's answer, once its thread has ended: a test process that
+    /// exits while such a thread is ending (dropping its clone of the
+    /// tenant, freeing OpenSSL's per-thread state) can end with SIGSEGV,
+    /// as store::group_tests did under coverage (CI, #272).
+    fn answer(reading: Reading) -> Result<Vec<u8>, StoreError> {
+        let got = reading
+            .answered
             .recv_timeout(PATIENCE)
-            .unwrap_or_else(|_| panic!("the read had no answer within {PATIENCE:?}"))
+            .unwrap_or_else(|_| panic!("the read had no answer within {PATIENCE:?}"));
+        reading.thread.join().expect("the reading thread ends");
+        got
     }
 
     /// A read's first step takes no lock on the tenant: it ends while a
@@ -221,7 +229,7 @@ mod on_a_server {
         let write = held_write(&catalog);
         let answered = read_under(&t, &db, uuid(A));
         write.commit().expect("the write commits");
-        assert_eq!(answer(&answered), Ok(body), "the read is answered after");
+        assert_eq!(answer(answered), Ok(body), "the read is answered after");
         assert_eq!(reads(&t), [rec(A, 200)], "and recorded once, as answered");
     }
 
@@ -239,7 +247,7 @@ mod on_a_server {
             .expect("the write deletes it");
         let answered = read_under(&t, &db, uuid(A));
         write.commit().expect("the delete commits");
-        assert_eq!(answer(&answered), Err(StoreError::Gone), "refused as gone");
+        assert_eq!(answer(answered), Err(StoreError::Gone), "refused as gone");
         assert_eq!(reads(&t), [rec(A, 410)], "the refusal is recorded once");
     }
 
@@ -256,7 +264,7 @@ mod on_a_server {
             .expect("the write deletes it");
         let answered = read_under(&t, &db, uuid(A));
         drop(write);
-        assert_eq!(answer(&answered), Ok(body), "the body");
+        assert_eq!(answer(answered), Ok(body), "the body");
         assert_eq!(reads(&t), [rec(A, 200)], "recorded once");
     }
 
@@ -269,7 +277,7 @@ mod on_a_server {
         let write = held_write(&catalog);
         let answered = read_under(&t, &db, uuid(B));
         write.commit().expect("the write commits");
-        assert_eq!(answer(&answered), Err(StoreError::NotFound), "not found");
+        assert_eq!(answer(answered), Err(StoreError::NotFound), "not found");
         assert_eq!(reads(&t), [rec(B, 404)], "recorded once");
     }
 
@@ -285,7 +293,7 @@ mod on_a_server {
                 .replace(&t.caller, first, &found, &new)
                 .expect("replaced meanwhile");
         });
-        let answered = answer(&read(&t, uuid(A)));
+        let answered = answer(read(&t, uuid(A)));
         t.store.on_last_step(None);
         let (_, want) = vcon(A, "second");
         assert_ne!(answered, Ok(old), "never the replaced version");
@@ -304,7 +312,7 @@ mod on_a_server {
                 .delete(&t.caller, uuid(A), Retention::Years(7))
                 .expect("deleted meanwhile");
         });
-        let answered = answer(&read(&t, uuid(A)));
+        let answered = answer(read(&t, uuid(A)));
         t.store.on_last_step(None);
         assert_eq!(answered, Err(StoreError::Gone), "refused as gone");
         assert_eq!(reads(&t), [rec(A, 410)], "recorded once");
@@ -321,7 +329,7 @@ mod on_a_server {
                 .create(&t.caller, &found, &body)
                 .expect("stored meanwhile");
         });
-        let answered = answer(&read(&t, uuid(B)));
+        let answered = answer(read(&t, uuid(B)));
         t.store.on_last_step(None);
         let (_, want) = vcon(B, "late");
         assert_eq!(answered, Ok(want), "the new vCon");
@@ -364,7 +372,7 @@ mod on_a_server {
             Gap::BeforeOpen => t.store.once_before_open(Box::new(run)),
             Gap::BeforeLastStep => t.store.on_last_step(Some(Arc::new(run))),
         }
-        let answered = answer(&read(t, uuid));
+        let answered = answer(read(t, uuid));
         t.store.in_first_step(None);
         t.store.on_last_step(None);
         answered
