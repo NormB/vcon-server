@@ -42,6 +42,8 @@ pub(crate) mod packer;
 mod purge;
 mod rekey;
 mod rewrite;
+#[cfg(test)]
+mod statement_tests;
 
 pub use backup::{BackupError, Copied, TRIES};
 pub use examine::{Examination, ExamineError};

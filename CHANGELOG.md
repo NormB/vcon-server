@@ -10,13 +10,18 @@ All notable changes to this project are recorded here. The format follows
 
 - **Reads that arrive together share one disk sync of their audit records.**
   - Effect: Each read is still answered only after its own record is on
-    disk; with 8 clients, reads a second rose from 2,761 to 4,354.
+    disk; the server runs 7.24% fewer instructions for 5,000 stores and
+    10,000 reads.
   - Docs: [Scale numbers](https://vcon-server.com/docs/scale/)
 - **A read no longer waits for a write of its tenant before it starts.**
   - Effect: Reads overlap with a tenant's stores, replaces and deletes; each
     read still answers a version that was current when its answer was recorded.
   - Limit: It does no less work: the server runs the same instructions for
     a read as before.
+- **Stores and reads cost the server less CPU.**
+  - Effect: With the SQLite catalog, the server runs 19.81% fewer
+    instructions for 5,000 stores and 10,000 reads from 8 clients.
+  - Limit: The PostgreSQL catalog is not changed.
 
 ## [0.4.13] - 2026-11-21
 

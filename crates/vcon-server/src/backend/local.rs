@@ -18,7 +18,7 @@ use super::{
     Under, UnpackedRow, UserRow, VconRow, VersionRow, WrappedRow,
 };
 use crate::audit::{self, Action, Actor, AuditError, Entry};
-use crate::catalog;
+use crate::catalog::{self, Cached};
 use crate::clock::{Clock, nanos};
 use crate::envelope::{self, Context, Key};
 use crate::fs::Fs;
@@ -104,7 +104,7 @@ impl LocalCatalog {
 
     fn begin(&self, how: &str) -> Result<Box<dyn CatalogTx + '_>, StoreError> {
         let conn = self.conn();
-        conn.execute_batch(how).map_err(io)?;
+        conn.cached_run(how, []).map_err(io)?;
         Ok(Box::new(LocalTx {
             conn,
             open: true,
@@ -126,7 +126,7 @@ impl Catalog for LocalCatalog {
     fn recover(&self) -> Result<(), StoreError> {
         let busy: i64 = self
             .conn()
-            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))
+            .cached_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))
             .map_err(io)?;
         if busy != 0 {
             return Err(StoreError::Io);
@@ -143,7 +143,7 @@ impl Catalog for LocalCatalog {
             let busy: i64 = {
                 let conn = self.conn();
                 conn.busy_timeout(std::time::Duration::ZERO).map_err(io)?;
-                let busy = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0));
+                let busy = conn.cached_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0));
                 conn.busy_timeout(catalog::BUSY_TIMEOUT).map_err(io)?;
                 busy.map_err(io)?
             };
@@ -162,7 +162,7 @@ impl Catalog for LocalCatalog {
         catalog::backup(&self.conn(), to, &self.catalog_key).map_err(io)?;
         let copy = catalog::open(to, &self.catalog_key, "").map_err(io)?;
         let mut rows = copy
-            .prepare(&format!(
+            .prepare_cached(&format!(
                 "SELECT v.version, {PLACE} FROM version v {PLACE_JOIN}"
             ))
             .map_err(io)?;
@@ -227,14 +227,14 @@ impl Drop for LocalTx<'_> {
 
 impl LocalTx<'_> {
     fn count_of(&self, sql: &str, args: impl rusqlite::Params) -> Result<u64, StoreError> {
-        let n: i64 = self.conn.query_row(sql, args, |r| r.get(0)).map_err(io)?;
+        let n: i64 = self.conn.cached_row(sql, args, |r| r.get(0)).map_err(io)?;
         u64::try_from(n).map_err(io)
     }
 
     fn exists(&self, sql: &str, args: impl rusqlite::Params) -> Result<bool, StoreError> {
         Ok(self
             .conn
-            .query_row(sql, args, |_| Ok(()))
+            .cached_row(sql, args, |_| Ok(()))
             .optional()
             .map_err(io)?
             .is_some())
@@ -242,7 +242,7 @@ impl LocalTx<'_> {
 
     /// The file ids `sql` selects, in its order.
     fn file_ids(&self, sql: &str) -> Result<Vec<FileId>, StoreError> {
-        let mut rows = self.conn.prepare(sql).map_err(io)?;
+        let mut rows = self.conn.prepare_cached(sql).map_err(io)?;
         rows.query_map([], |r| r.get::<_, [u8; 16]>(0))
             .map_err(io)?
             .map(|row| row.map(FileId).map_err(io))
@@ -254,7 +254,7 @@ impl LocalTx<'_> {
         sql: &str,
         args: impl rusqlite::Params,
     ) -> Result<Vec<VersionId>, StoreError> {
-        let mut rows = self.conn.prepare(sql).map_err(io)?;
+        let mut rows = self.conn.prepare_cached(sql).map_err(io)?;
         rows.query_map(args, |r| r.get::<_, [u8; 16]>(0))
             .map_err(io)?
             .map(|row| row.map(VersionId).map_err(io))
@@ -270,7 +270,7 @@ impl CatalogTx for LocalTx<'_> {
     fn vcon_row(&mut self, uuid: Uuid) -> Result<Option<VconRow>, StoreError> {
         let row: Option<(Option<[u8; 16]>, Option<i64>)> = self
             .conn
-            .query_row(
+            .cached_row(
                 "SELECT current, deleted_at FROM vcon WHERE uuid = ?1",
                 [uuid.as_bytes()],
                 |r| Ok((r.get(0)?, r.get(1)?)),
@@ -286,10 +286,13 @@ impl CatalogTx for LocalTx<'_> {
     fn version_row(&mut self, version: VersionId) -> Result<Option<VersionRow>, StoreError> {
         let row: Option<(String, bool, Vec<u8>, RawPlace)> = self
             .conn
-            .query_row(
+            .cached_row(
+                // CAST: a bare `?1` here, with the join, makes SQLite mark the
+                // statement to be prepared again when the value changes, and
+                // the kept statement is then parsed on every read.
                 &format!(
                     "SELECT v.form, v.gzip, v.wrapped_key, {PLACE} FROM version v {PLACE_JOIN}
-                     WHERE v.version = ?1"
+                     WHERE v.version = CAST(?1 AS BLOB)"
                 ),
                 [version.0],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, raw_place(r, 3)?)),
@@ -316,7 +319,7 @@ impl CatalogTx for LocalTx<'_> {
 
     fn insert_version(&mut self, row: &NewVersion) -> Result<(), StoreError> {
         self.conn
-            .execute(
+            .cached_run(
                 "INSERT INTO version
                      (version, uuid, form, gzip, size, stored_at, hidden_at, tenant_key_id, wrapped_key)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8)",
@@ -342,7 +345,7 @@ impl CatalogTx for LocalTx<'_> {
         stored_at: i64,
     ) -> Result<(), StoreError> {
         self.conn
-            .execute(
+            .cached_run(
                 "INSERT INTO vcon (uuid, current, stored_at) VALUES (?1, ?2, ?3)",
                 params![uuid.as_bytes(), current.0, stored_at],
             )
@@ -352,7 +355,7 @@ impl CatalogTx for LocalTx<'_> {
 
     fn set_current(&mut self, uuid: Uuid, current: VersionId) -> Result<(), StoreError> {
         self.conn
-            .execute(
+            .cached_run(
                 "UPDATE vcon SET current = ?1 WHERE uuid = ?2",
                 params![current.0, uuid.as_bytes()],
             )
@@ -362,7 +365,7 @@ impl CatalogTx for LocalTx<'_> {
 
     fn hide_version(&mut self, version: VersionId, at: i64) -> Result<(), StoreError> {
         self.conn
-            .execute(
+            .cached_run(
                 "UPDATE version SET hidden_at = ?1 WHERE version = ?2",
                 params![at, version.0],
             )
@@ -372,13 +375,13 @@ impl CatalogTx for LocalTx<'_> {
 
     fn mark_deleted(&mut self, uuid: Uuid, at: i64) -> Result<(), StoreError> {
         self.conn
-            .execute(
+            .cached_run(
                 "UPDATE vcon SET current = NULL, deleted_at = ?1 WHERE uuid = ?2",
                 params![at, uuid.as_bytes()],
             )
             .map_err(io)?;
         self.conn
-            .execute(
+            .cached_run(
                 "UPDATE version SET hidden_at = ?1 WHERE uuid = ?2 AND hidden_at IS NULL",
                 params![at, uuid.as_bytes()],
             )
@@ -389,7 +392,7 @@ impl CatalogTx for LocalTx<'_> {
     fn wraps(&mut self, key: KeyId) -> Result<u64, StoreError> {
         let wraps: Option<i64> = self
             .conn
-            .query_row(
+            .cached_row(
                 "SELECT wraps FROM key_use WHERE tenant_key_id = ?1",
                 [key.bytes()],
                 |r| r.get(0),
@@ -401,7 +404,7 @@ impl CatalogTx for LocalTx<'_> {
 
     fn add_wrap(&mut self, key: KeyId) -> Result<(), StoreError> {
         self.conn
-            .execute(
+            .cached_run(
                 "INSERT INTO key_use (tenant_key_id, wraps) VALUES (?1, 1)
                  ON CONFLICT (tenant_key_id) DO UPDATE SET wraps = wraps + 1",
                 [key.bytes()],
@@ -413,7 +416,7 @@ impl CatalogTx for LocalTx<'_> {
     fn unpacked(&mut self) -> Result<Vec<UnpackedRow>, StoreError> {
         let mut rows = self
             .conn
-            .prepare(
+            .prepare_cached(
                 "SELECT version, stored_at, size FROM version WHERE place_file IS NULL
                  ORDER BY stored_at, version",
             )
@@ -439,7 +442,7 @@ impl CatalogTx for LocalTx<'_> {
 
     fn insert_pack_file(&mut self, row: &NewPackFile) -> Result<(), StoreError> {
         self.conn
-            .execute(
+            .cached_run(
                 "INSERT INTO parquet_file (file_id, date, rows, live_rows, bytes, created_at)
                  VALUES (?1, ?2, ?3, ?3, ?4, ?5)",
                 params![row.file.0, row.date, row.rows, row.bytes, row.created_at],
@@ -455,7 +458,7 @@ impl CatalogTx for LocalTx<'_> {
         place: super::pack::Place,
     ) -> Result<(), StoreError> {
         self.conn
-            .execute(
+            .cached_run(
                 "UPDATE version SET place_file = ?1, place_group = ?2, place_row = ?3
                  WHERE version = ?4",
                 params![file.0, place.group, place.row, version.0],
@@ -471,7 +474,7 @@ impl CatalogTx for LocalTx<'_> {
     fn pack_file(&mut self, file: FileId) -> Result<Option<PackFileRow>, StoreError> {
         let row: Option<(String, i64, Option<i64>)> = self
             .conn
-            .query_row(
+            .cached_row(
                 "SELECT date, bytes, unnamed_at FROM parquet_file WHERE file_id = ?1",
                 [file.0],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
@@ -491,7 +494,7 @@ impl CatalogTx for LocalTx<'_> {
     fn placed_in(&mut self, file: FileId) -> Result<Vec<(VersionId, i64, Packed)>, StoreError> {
         let mut rows = self
             .conn
-            .prepare(&format!(
+            .prepare_cached(&format!(
                 "SELECT v.version, v.stored_at, {PLACE} FROM version v {PLACE_JOIN}
                  WHERE v.place_file = ?1 ORDER BY v.place_group, v.place_row"
             ))
@@ -510,7 +513,7 @@ impl CatalogTx for LocalTx<'_> {
 
     fn add_purge_pending(&mut self, file: FileId) -> Result<(), StoreError> {
         self.conn
-            .execute(
+            .cached_run(
                 "INSERT OR IGNORE INTO purge_pending (file_id) VALUES (?1)",
                 [file.0],
             )
@@ -524,14 +527,14 @@ impl CatalogTx for LocalTx<'_> {
 
     fn delete_purge_pending(&mut self, file: FileId) -> Result<(), StoreError> {
         self.conn
-            .execute("DELETE FROM purge_pending WHERE file_id = ?1", [file.0])
+            .cached_run("DELETE FROM purge_pending WHERE file_id = ?1", [file.0])
             .map(drop)
             .map_err(io)
     }
 
     fn unname_pack_file(&mut self, file: FileId, at: i64) -> Result<(), StoreError> {
         self.conn
-            .execute(
+            .cached_run(
                 "UPDATE parquet_file SET unnamed_at = ?2, live_rows = 0 WHERE file_id = ?1",
                 params![file.0, at],
             )
@@ -547,14 +550,14 @@ impl CatalogTx for LocalTx<'_> {
 
     fn delete_pack_file(&mut self, file: FileId) -> Result<(), StoreError> {
         self.conn
-            .execute("DELETE FROM parquet_file WHERE file_id = ?1", [file.0])
+            .cached_run("DELETE FROM parquet_file WHERE file_id = ?1", [file.0])
             .map(drop)
             .map_err(io)
     }
 
     fn allocate_manifest(&mut self) -> Result<i64, StoreError> {
         self.conn
-            .execute("INSERT INTO manifest (published_at) VALUES (NULL)", [])
+            .cached_run("INSERT INTO manifest (published_at) VALUES (NULL)", [])
             .map_err(io)?;
         Ok(self.conn.last_insert_rowid())
     }
@@ -562,7 +565,7 @@ impl CatalogTx for LocalTx<'_> {
     fn unpublished_manifests(&mut self) -> Result<Vec<i64>, StoreError> {
         let mut rows = self
             .conn
-            .prepare("SELECT seq FROM manifest WHERE published_at IS NULL ORDER BY seq")
+            .prepare_cached("SELECT seq FROM manifest WHERE published_at IS NULL ORDER BY seq")
             .map_err(io)?;
         rows.query_map([], |r| r.get(0))
             .map_err(io)?
@@ -572,7 +575,7 @@ impl CatalogTx for LocalTx<'_> {
 
     fn mark_published(&mut self, seq: i64, at: i64) -> Result<(), StoreError> {
         self.conn
-            .execute(
+            .cached_run(
                 "UPDATE manifest SET published_at = ?2 WHERE seq = ?1",
                 params![seq, at],
             )
@@ -583,7 +586,7 @@ impl CatalogTx for LocalTx<'_> {
     fn published_manifests(&mut self) -> Result<Vec<(i64, i64)>, StoreError> {
         let mut rows = self
             .conn
-            .prepare(
+            .prepare_cached(
                 "SELECT seq, published_at FROM manifest WHERE published_at IS NOT NULL
                  ORDER BY seq",
             )
@@ -596,7 +599,7 @@ impl CatalogTx for LocalTx<'_> {
 
     fn delete_manifest(&mut self, seq: i64) -> Result<(), StoreError> {
         self.conn
-            .execute("DELETE FROM manifest WHERE seq = ?1", [seq])
+            .cached_run("DELETE FROM manifest WHERE seq = ?1", [seq])
             .map(drop)
             .map_err(io)
     }
@@ -604,7 +607,7 @@ impl CatalogTx for LocalTx<'_> {
     fn named_files(&mut self) -> Result<Vec<(FileId, PackFileRow, i64)>, StoreError> {
         let mut rows = self
             .conn
-            .prepare(
+            .prepare_cached(
                 "SELECT file_id, date, bytes, rows FROM parquet_file WHERE unnamed_at IS NULL
                  ORDER BY date, file_id",
             )
@@ -644,7 +647,7 @@ impl CatalogTx for LocalTx<'_> {
     ) -> Result<Vec<(VersionId, Result<Option<Packed>, StoreError>)>, StoreError> {
         let mut rows = self
             .conn
-            .prepare(&format!(
+            .prepare_cached(&format!(
                 "SELECT v.version, {PLACE} FROM version v {PLACE_JOIN} ORDER BY v.version"
             ))
             .map_err(io)?;
@@ -683,10 +686,10 @@ impl CatalogTx for LocalTx<'_> {
     fn hidden_row(&mut self, version: VersionId) -> Result<Option<HiddenRow>, StoreError> {
         let row: Option<([u8; 16], i64, bool, bool)> = self
             .conn
-            .query_row(
+            .cached_row(
                 "SELECT v.uuid, v.stored_at, c.hold != 0, c.deleted_at IS NOT NULL
                  FROM version v JOIN vcon c ON c.uuid = v.uuid
-                 WHERE v.version = ?1 AND v.hidden_at IS NOT NULL",
+                 WHERE v.version = CAST(?1 AS BLOB) AND v.hidden_at IS NOT NULL",
                 [version.0],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
@@ -702,7 +705,7 @@ impl CatalogTx for LocalTx<'_> {
 
     fn delete_version(&mut self, version: VersionId) -> Result<(), StoreError> {
         self.conn
-            .execute("DELETE FROM version WHERE version = ?1", [version.0])
+            .cached_run("DELETE FROM version WHERE version = ?1", [version.0])
             .map_err(io)?;
         Ok(())
     }
@@ -716,10 +719,10 @@ impl CatalogTx for LocalTx<'_> {
 
     fn tombstone(&mut self, uuid: Uuid, at: i64) -> Result<(), StoreError> {
         self.conn
-            .execute("DELETE FROM vcon WHERE uuid = ?1", [uuid.as_bytes()])
+            .cached_run("DELETE FROM vcon WHERE uuid = ?1", [uuid.as_bytes()])
             .map_err(io)?;
         self.conn
-            .execute(
+            .cached_run(
                 "INSERT INTO tombstone (uuid, purged_at) VALUES (?1, ?2)",
                 params![uuid.as_bytes(), at],
             )
@@ -729,7 +732,7 @@ impl CatalogTx for LocalTx<'_> {
 
     fn latest(&mut self, uuid: Uuid) -> Result<Option<VersionId>, StoreError> {
         self.conn
-            .query_row(
+            .cached_row(
                 "SELECT version FROM version WHERE uuid = ?1
                  ORDER BY stored_at DESC, rowid DESC LIMIT 1",
                 [uuid.as_bytes()],
@@ -743,7 +746,7 @@ impl CatalogTx for LocalTx<'_> {
     fn kept(&mut self, uuid: Uuid) -> Result<Vec<KeptRow>, StoreError> {
         let mut rows = self
             .conn
-            .prepare(
+            .prepare_cached(
                 "SELECT version, stored_at, hidden_at FROM version WHERE uuid = ?1
                  ORDER BY stored_at, rowid",
             )
@@ -762,7 +765,7 @@ impl CatalogTx for LocalTx<'_> {
 
     fn unhide(&mut self, version: VersionId) -> Result<(), StoreError> {
         self.conn
-            .execute(
+            .cached_run(
                 "UPDATE version SET hidden_at = NULL WHERE version = ?1",
                 [version.0],
             )
@@ -772,7 +775,7 @@ impl CatalogTx for LocalTx<'_> {
 
     fn undelete(&mut self, uuid: Uuid, version: VersionId) -> Result<(), StoreError> {
         self.conn
-            .execute(
+            .cached_run(
                 "UPDATE vcon SET current = ?1, deleted_at = NULL WHERE uuid = ?2",
                 (version.0, uuid.as_bytes()),
             )
@@ -782,7 +785,7 @@ impl CatalogTx for LocalTx<'_> {
 
     fn set_hold(&mut self, uuid: Uuid, on: bool) -> Result<(), StoreError> {
         self.conn
-            .execute(
+            .cached_run(
                 "UPDATE vcon SET hold = ?1 WHERE uuid = ?2",
                 (on, uuid.as_bytes()),
             )
@@ -793,7 +796,7 @@ impl CatalogTx for LocalTx<'_> {
     fn page(&mut self, query: &PageQuery) -> Result<Vec<ListedRow>, StoreError> {
         let mut rows = self
             .conn
-            .prepare(
+            .prepare_cached(
                 "SELECT vcon.uuid, vcon.current, vcon.stored_at, version.stored_at
                  FROM vcon LEFT JOIN version ON version.version = vcon.current
                  WHERE vcon.current IS NOT NULL
@@ -829,7 +832,7 @@ impl CatalogTx for LocalTx<'_> {
     fn wrapped_under(&mut self, key: KeyId, limit: usize) -> Result<Vec<WrappedRow>, StoreError> {
         let mut rows = self
             .conn
-            .prepare(
+            .prepare_cached(
                 "SELECT version, uuid, wrapped_key FROM version
                  WHERE tenant_key_id = ?1 ORDER BY version LIMIT ?2",
             )
@@ -856,7 +859,7 @@ impl CatalogTx for LocalTx<'_> {
         wrapped: &[u8],
     ) -> Result<(), StoreError> {
         self.conn
-            .execute(
+            .cached_run(
                 "UPDATE version SET wrapped_key = ?1, tenant_key_id = ?2 WHERE version = ?3",
                 params![wrapped, key.bytes(), version.0],
             )
@@ -874,7 +877,7 @@ impl CatalogTx for LocalTx<'_> {
     fn examined(&mut self) -> Result<Vec<ExaminedRow>, StoreError> {
         let mut rows = self
             .conn
-            .prepare(
+            .prepare_cached(
                 "SELECT v.version, v.uuid, v.stored_at, v.hidden_at, c.hold != 0
                  FROM version v JOIN vcon c ON c.uuid = v.uuid ORDER BY v.version",
             )
@@ -900,7 +903,7 @@ impl CatalogTx for LocalTx<'_> {
     ) -> Result<Vec<ExportedRow>, StoreError> {
         let mut rows = self
             .conn
-            .prepare(&format!(
+            .prepare_cached(&format!(
                 "SELECT v.version, v.uuid, v.form, v.gzip, v.size, v.stored_at,
                             c.current IS v.version AND c.deleted_at IS NULL, v.wrapped_key,
                             {PLACE}
@@ -939,7 +942,7 @@ impl CatalogTx for LocalTx<'_> {
     fn purge_times(&mut self) -> Result<Vec<String>, StoreError> {
         let mut rows = self
             .conn
-            .prepare("SELECT at FROM audit WHERE action = ?1 AND status = 200")
+            .prepare_cached("SELECT at FROM audit WHERE action = ?1 AND status = 200")
             .map_err(io)?;
         rows.query_map([Action::Purge.as_str()], |r| r.get(0))
             .map_err(io)?
@@ -948,11 +951,17 @@ impl CatalogTx for LocalTx<'_> {
     }
 
     fn begin_part(&mut self) -> Result<(), StoreError> {
-        self.conn.execute_batch("SAVEPOINT part").map_err(io)
+        self.conn
+            .cached_run("SAVEPOINT part", [])
+            .map(drop)
+            .map_err(io)
     }
 
     fn release_part(&mut self) -> Result<(), StoreError> {
-        self.conn.execute_batch("RELEASE part").map_err(io)
+        self.conn
+            .cached_run("RELEASE part", [])
+            .map(drop)
+            .map_err(io)
     }
 
     fn rollback_part(&mut self) -> Result<(), StoreError> {
@@ -1193,7 +1202,7 @@ impl LocalRegistry {
 
     fn begin(&self, how: &str) -> Result<Box<dyn RegistryTx + '_>, TenantError> {
         let conn = self.conn();
-        conn.execute_batch(how).map_err(tenant_io)?;
+        conn.cached_run(how, []).map_err(tenant_io)?;
         Ok(Box::new(LocalRegistryTx {
             conn,
             open: true,
@@ -1220,7 +1229,7 @@ impl Registry for LocalRegistry {
         catalog::backup(&self.conn(), to, &self.catalog_key).map_err(tenant_io)?;
         let copy = catalog::open(to, &self.catalog_key, "").map_err(tenant_io)?;
         let mut rows = copy
-            .prepare("SELECT id FROM tenant ORDER BY id")
+            .prepare_cached("SELECT id FROM tenant ORDER BY id")
             .map_err(tenant_io)?;
         rows.query_map([], |r| r.get::<_, [u8; 16]>(0))
             .map_err(tenant_io)?
@@ -1348,7 +1357,7 @@ fn session_row(r: &rusqlite::Row) -> rusqlite::Result<SessionRow> {
 impl RegistryTx for LocalRegistryTx<'_> {
     fn tenant(&mut self, id: TenantId) -> Result<Option<TenantRow>, TenantError> {
         self.conn
-            .query_row(
+            .cached_row(
                 &format!("SELECT {TENANT_COLUMNS} FROM tenant WHERE id = ?1"),
                 [id.0],
                 tenant_row,
@@ -1360,7 +1369,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
     fn tenants(&mut self) -> Result<Vec<TenantRow>, TenantError> {
         let mut rows = self
             .conn
-            .prepare(&format!(
+            .prepare_cached(&format!(
                 "SELECT {TENANT_COLUMNS} FROM tenant ORDER BY name"
             ))
             .map_err(tenant_io)?;
@@ -1373,7 +1382,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
     fn name_taken(&mut self, name: &str) -> Result<bool, TenantError> {
         Ok(self
             .conn
-            .query_row("SELECT 1 FROM tenant WHERE name = ?1", [name], |_| Ok(()))
+            .cached_row("SELECT 1 FROM tenant WHERE name = ?1", [name], |_| Ok(()))
             .optional()
             .map_err(tenant_io)?
             .is_some())
@@ -1381,7 +1390,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
 
     fn insert_tenant(&mut self, row: &TenantRow) -> Result<(), TenantError> {
         self.conn
-            .execute(
+            .cached_run(
                 "INSERT INTO tenant (id, name, retention, created_at, tenant_key_id,
                      wrapped_tenant_key, pending_wrapped_tenant_key, key_since, metadata,
                      role_cap)
@@ -1406,7 +1415,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
     fn set_role_cap(&mut self, id: TenantId, cap: Option<&str>) -> Result<bool, TenantError> {
         let changed = self
             .conn
-            .execute(
+            .cached_run(
                 "UPDATE tenant SET role_cap = ?2 WHERE id = ?1",
                 params![id.0, cap],
             )
@@ -1417,7 +1426,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
     fn set_metadata(&mut self, id: TenantId, level: Option<&str>) -> Result<bool, TenantError> {
         let changed = self
             .conn
-            .execute(
+            .cached_run(
                 "UPDATE tenant SET metadata = ?2 WHERE id = ?1",
                 params![id.0, level],
             )
@@ -1432,7 +1441,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
     ) -> Result<bool, TenantError> {
         let changed = self
             .conn
-            .execute(
+            .cached_run(
                 "UPDATE tenant SET retention = ?2 WHERE id = ?1",
                 params![id.0, retention],
             )
@@ -1442,10 +1451,10 @@ impl RegistryTx for LocalRegistryTx<'_> {
 
     fn delete_tenant(&mut self, id: TenantId, at: i64) -> Result<(), TenantError> {
         self.conn
-            .execute("DELETE FROM tenant WHERE id = ?1", [id.0])
+            .cached_run("DELETE FROM tenant WHERE id = ?1", [id.0])
             .map_err(tenant_io)?;
         self.conn
-            .execute(
+            .cached_run(
                 "UPDATE api_key SET revoked_at = ?2 WHERE tenant = ?1 AND revoked_at IS NULL",
                 params![id.0, at],
             )
@@ -1455,7 +1464,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
 
     fn set_pending(&mut self, id: TenantId, pending: &[u8]) -> Result<(), TenantError> {
         self.conn
-            .execute(
+            .cached_run(
                 "UPDATE tenant SET pending_wrapped_tenant_key = ?1 WHERE id = ?2",
                 params![pending, id.0],
             )
@@ -1465,7 +1474,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
 
     fn promote_pending(&mut self, id: TenantId, key: KeyId, at: i64) -> Result<(), TenantError> {
         self.conn
-            .execute(
+            .cached_run(
                 "UPDATE tenant SET tenant_key_id = ?1,
                     wrapped_tenant_key = pending_wrapped_tenant_key,
                     pending_wrapped_tenant_key = NULL, key_since = ?2
@@ -1479,7 +1488,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
     fn master_wraps(&mut self, key: KeyId) -> Result<u64, TenantError> {
         let wraps: Option<i64> = self
             .conn
-            .query_row(
+            .cached_row(
                 "SELECT wraps FROM master_key_use WHERE master_key_id = ?1",
                 [key.bytes()],
                 |r| r.get(0),
@@ -1491,7 +1500,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
 
     fn add_master_wrap(&mut self, key: KeyId, at: i64) -> Result<(), TenantError> {
         self.conn
-            .execute(
+            .cached_run(
                 "INSERT INTO master_key_use (master_key_id, wraps, since) VALUES (?1, 1, ?2)
                  ON CONFLICT (master_key_id) DO UPDATE SET wraps = wraps + 1",
                 params![key.bytes(), at],
@@ -1502,7 +1511,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
 
     fn master_since(&mut self, key: KeyId) -> Result<Option<i64>, TenantError> {
         self.conn
-            .query_row(
+            .cached_row(
                 "SELECT since FROM master_key_use WHERE master_key_id = ?1",
                 [key.bytes()],
                 |r| r.get(0),
@@ -1513,7 +1522,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
 
     fn key(&mut self, id: KeyId) -> Result<Option<KeyRow>, TenantError> {
         self.conn
-            .query_row(
+            .cached_row(
                 &format!("SELECT {KEY_COLUMNS} FROM api_key WHERE id = ?1"),
                 [id.bytes()],
                 key_row,
@@ -1525,7 +1534,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
     fn keys(&mut self, tenant: Option<TenantId>) -> Result<Vec<KeyRow>, TenantError> {
         let mut rows = self
             .conn
-            .prepare(&format!(
+            .prepare_cached(&format!(
                 "SELECT {KEY_COLUMNS} FROM api_key
                  WHERE ?1 IS NULL OR tenant = ?1 ORDER BY created_at, id"
             ))
@@ -1538,7 +1547,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
 
     fn insert_key(&mut self, row: &KeyRow) -> Result<(), TenantError> {
         self.conn
-            .execute(
+            .cached_run(
                 &format!(
                     "INSERT INTO api_key ({KEY_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
                 ),
@@ -1561,7 +1570,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
     fn touch_key(&mut self, id: KeyId, at: i64) -> Result<bool, TenantError> {
         let changed = self
             .conn
-            .execute(
+            .cached_run(
                 "UPDATE api_key SET last_used_at = ?2
                  WHERE id = ?1 AND (last_used_at IS NULL OR last_used_at < ?2)",
                 params![id.bytes(), at],
@@ -1572,7 +1581,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
 
     fn revoke_key(&mut self, id: KeyId, at: i64) -> Result<(), TenantError> {
         self.conn
-            .execute(
+            .cached_run(
                 "UPDATE api_key SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL",
                 params![id.bytes(), at],
             )
@@ -1582,7 +1591,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
 
     fn user(&mut self, id: UserId) -> Result<Option<UserRow>, TenantError> {
         self.conn
-            .query_row(
+            .cached_row(
                 &format!("SELECT {USER_COLUMNS} FROM user_account WHERE id = ?1"),
                 [id.0],
                 user_row,
@@ -1594,7 +1603,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
     fn users(&mut self) -> Result<Vec<UserRow>, TenantError> {
         let mut rows = self
             .conn
-            .prepare(&format!(
+            .prepare_cached(&format!(
                 "SELECT {USER_COLUMNS} FROM user_account ORDER BY created_at, id"
             ))
             .map_err(tenant_io)?;
@@ -1606,7 +1615,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
 
     fn identity_taken(&mut self, issuer: &str, subject: &str) -> Result<bool, TenantError> {
         self.conn
-            .query_row(
+            .cached_row(
                 "SELECT count(*) > 0 FROM user_account
                  WHERE issuer = ?1 AND subject = ?2 AND deactivated_at IS NULL",
                 params![issuer, subject],
@@ -1621,7 +1630,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
             None => (None, None),
         };
         self.conn
-            .execute(
+            .cached_run(
                 &format!(
                     "INSERT INTO user_account ({USER_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
                 ),
@@ -1640,7 +1649,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
 
     fn deactivate_user(&mut self, id: UserId, at: i64) -> Result<(), TenantError> {
         self.conn
-            .execute(
+            .cached_run(
                 "UPDATE user_account SET deactivated_at = ?2
                  WHERE id = ?1 AND deactivated_at IS NULL",
                 params![id.0, at],
@@ -1655,7 +1664,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
         tenant: Option<TenantId>,
     ) -> Result<Option<MembershipRow>, TenantError> {
         self.conn
-            .query_row(
+            .cached_row(
                 &format!(
                     "SELECT {MEMBERSHIP_COLUMNS} FROM membership WHERE user = ?1 AND tenant IS ?2"
                 ),
@@ -1669,7 +1678,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
     fn memberships(&mut self) -> Result<Vec<MembershipRow>, TenantError> {
         let mut rows = self
             .conn
-            .prepare(&format!(
+            .prepare_cached(&format!(
                 "SELECT {MEMBERSHIP_COLUMNS} FROM membership ORDER BY user, granted_at, tenant"
             ))
             .map_err(tenant_io)?;
@@ -1681,7 +1690,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
 
     fn insert_membership(&mut self, row: &MembershipRow) -> Result<(), TenantError> {
         self.conn
-            .execute(
+            .cached_run(
                 &format!("INSERT INTO membership ({MEMBERSHIP_COLUMNS}) VALUES (?1, ?2, ?3, ?4)"),
                 params![
                     row.user.0,
@@ -1696,7 +1705,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
 
     fn set_roles(&mut self, row: &MembershipRow) -> Result<(), TenantError> {
         self.conn
-            .execute(
+            .cached_run(
                 "UPDATE membership SET roles = ?3 WHERE user = ?1 AND tenant IS ?2",
                 params![row.user.0, row.tenant.map(|t| t.0), row.roles],
             )
@@ -1710,7 +1719,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
         tenant: Option<TenantId>,
     ) -> Result<(), TenantError> {
         self.conn
-            .execute(
+            .cached_run(
                 "DELETE FROM membership WHERE user = ?1 AND tenant IS ?2",
                 params![user.0, tenant.map(|t| t.0)],
             )
@@ -1720,21 +1729,21 @@ impl RegistryTx for LocalRegistryTx<'_> {
 
     fn delete_memberships_of_user(&mut self, user: UserId) -> Result<(), TenantError> {
         self.conn
-            .execute("DELETE FROM membership WHERE user = ?1", [user.0])
+            .cached_run("DELETE FROM membership WHERE user = ?1", [user.0])
             .map_err(tenant_io)?;
         Ok(())
     }
 
     fn delete_memberships_in(&mut self, tenant: TenantId) -> Result<(), TenantError> {
         self.conn
-            .execute("DELETE FROM membership WHERE tenant = ?1", [tenant.0])
+            .cached_run("DELETE FROM membership WHERE tenant = ?1", [tenant.0])
             .map_err(tenant_io)?;
         Ok(())
     }
 
     fn session(&mut self, id_hash: &[u8]) -> Result<Option<SessionRow>, TenantError> {
         self.conn
-            .query_row(
+            .cached_row(
                 &format!("SELECT {SESSION_COLUMNS} FROM session WHERE id_hash = ?1"),
                 [id_hash],
                 session_row,
@@ -1745,7 +1754,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
 
     fn insert_session(&mut self, row: &SessionRow) -> Result<(), TenantError> {
         self.conn
-            .execute(
+            .cached_run(
                 &format!(
                     "INSERT INTO session ({SESSION_COLUMNS})
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"
@@ -1775,7 +1784,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
         idle_expires_at: i64,
     ) -> Result<(), TenantError> {
         self.conn
-            .execute(
+            .cached_run(
                 "UPDATE session SET last_seen_at = ?2, idle_expires_at = ?3 WHERE id_hash = ?1",
                 params![id_hash, last_seen_at, idle_expires_at],
             )
@@ -1785,28 +1794,28 @@ impl RegistryTx for LocalRegistryTx<'_> {
 
     fn delete_session(&mut self, id_hash: &[u8]) -> Result<(), TenantError> {
         self.conn
-            .execute("DELETE FROM session WHERE id_hash = ?1", [id_hash])
+            .cached_run("DELETE FROM session WHERE id_hash = ?1", [id_hash])
             .map_err(tenant_io)?;
         Ok(())
     }
 
     fn delete_sessions_of_user(&mut self, user: UserId) -> Result<(), TenantError> {
         self.conn
-            .execute("DELETE FROM session WHERE user = ?1", [user.0])
+            .cached_run("DELETE FROM session WHERE user = ?1", [user.0])
             .map_err(tenant_io)?;
         Ok(())
     }
 
     fn delete_sessions_in(&mut self, tenant: TenantId) -> Result<(), TenantError> {
         self.conn
-            .execute("DELETE FROM session WHERE tenant = ?1", [tenant.0])
+            .cached_run("DELETE FROM session WHERE tenant = ?1", [tenant.0])
             .map_err(tenant_io)?;
         Ok(())
     }
 
     fn delete_sessions_ended(&mut self, at: i64) -> Result<(), TenantError> {
         self.conn
-            .execute(
+            .cached_run(
                 "DELETE FROM session WHERE idle_expires_at <= ?1 OR expires_at <= ?1",
                 [at],
             )
@@ -1817,7 +1826,9 @@ impl RegistryTx for LocalRegistryTx<'_> {
     fn settings(&mut self, tenant: TenantId) -> Result<Vec<(String, String)>, TenantError> {
         let mut rows = self
             .conn
-            .prepare("SELECT name, value FROM tenant_setting WHERE tenant = ?1 ORDER BY name")
+            .prepare_cached(
+                "SELECT name, value FROM tenant_setting WHERE tenant = ?1 ORDER BY name",
+            )
             .map_err(tenant_io)?;
         rows.query_map([tenant.0], |r| Ok((r.get(0)?, r.get(1)?)))
             .map_err(tenant_io)?
@@ -1832,7 +1843,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
         value: &str,
     ) -> Result<(), TenantError> {
         self.conn
-            .execute(
+            .cached_run(
                 "INSERT INTO tenant_setting (tenant, name, value) VALUES (?1, ?2, ?3)
                  ON CONFLICT (tenant, name) DO UPDATE SET value = excluded.value",
                 params![tenant.0, name, value],
@@ -1843,7 +1854,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
 
     fn delete_setting(&mut self, tenant: TenantId, name: &str) -> Result<(), TenantError> {
         self.conn
-            .execute(
+            .cached_run(
                 "DELETE FROM tenant_setting WHERE tenant = ?1 AND name = ?2",
                 params![tenant.0, name],
             )
@@ -1853,7 +1864,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
 
     fn delete_settings_in(&mut self, tenant: TenantId) -> Result<(), TenantError> {
         self.conn
-            .execute("DELETE FROM tenant_setting WHERE tenant = ?1", [tenant.0])
+            .cached_run("DELETE FROM tenant_setting WHERE tenant = ?1", [tenant.0])
             .map_err(tenant_io)?;
         Ok(())
     }
@@ -1861,7 +1872,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
     fn record_times(&mut self, action: Action, status: u16) -> Result<Vec<String>, TenantError> {
         let mut rows = self
             .conn
-            .prepare("SELECT at FROM audit WHERE action = ?1 AND status = ?2")
+            .prepare_cached("SELECT at FROM audit WHERE action = ?1 AND status = ?2")
             .map_err(tenant_io)?;
         rows.query_map(params![action.as_str(), status], |r| r.get(0))
             .map_err(tenant_io)?
@@ -2092,7 +2103,7 @@ pub(crate) fn rekey_master(
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(tenant_io)?;
         let rows: Vec<(TenantId, Vec<u8>, Option<Vec<u8>>)> = tx
-            .prepare("SELECT id, wrapped_tenant_key, pending_wrapped_tenant_key FROM tenant")
+            .prepare_cached("SELECT id, wrapped_tenant_key, pending_wrapped_tenant_key FROM tenant")
             .map_err(tenant_io)?
             .query_map([], |r| Ok((TenantId(r.get(0)?), r.get(1)?, r.get(2)?)))
             .map_err(tenant_io)?
@@ -2104,16 +2115,16 @@ pub(crate) fn rekey_master(
             let rewrap = |w: &[u8]| envelope::rewrap(old, new, &ctx, w).map_err(tenant_io);
             let pending = pending.as_deref().map(rewrap).transpose()?;
             wraps += 1 + i64::from(pending.is_some());
-            tx.execute(
+            tx.cached_run(
                 "UPDATE tenant SET wrapped_tenant_key = ?1, pending_wrapped_tenant_key = ?2
                  WHERE id = ?3",
                 params![rewrap(&wrapped)?, pending, id.0],
             )
             .map_err(tenant_io)?;
         }
-        tx.execute("DELETE FROM master_key_use", [])
+        tx.cached_run("DELETE FROM master_key_use", [])
             .map_err(tenant_io)?;
-        tx.execute(
+        tx.cached_run(
             "INSERT INTO master_key_use (master_key_id, wraps, since) VALUES (?1, ?2, ?3)",
             params![new.id().bytes(), wraps, nanos(now)],
         )
@@ -2138,8 +2149,8 @@ pub(crate) fn rekey_master(
 /// rolls it back; one that fails with the transaction gone may have been
 /// kept.
 fn end(conn: &Connection) -> Result<(), CommitError> {
-    match conn.execute_batch("COMMIT") {
-        Ok(()) => Ok(()),
+    match conn.cached_run("COMMIT", []) {
+        Ok(_) => Ok(()),
         Err(_) if !conn.is_autocommit() => Err(CommitError::RolledBack),
         Err(_) => Err(CommitError::Unknown),
     }
