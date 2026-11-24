@@ -18,6 +18,27 @@ CI runs every command on this page on each change. It installs the previous
 release, sets it up as [getting started](@/docs/getting-started.md) does,
 upgrades it to the server built from the change, and goes back again.
 
+## From 0.4.13 to 0.4.14
+
+The upgrade is the binary alone. No stored data, configuration or schema
+changes: the catalogs in the data directory keep schema version 9, and a
+PostgreSQL catalog keeps version 13. A downgrade is possible: 0.4.13 opens
+a data directory that 0.4.14 has served. Copy the data directory before
+the upgrade all the same, as in
+[copy the data directory](#copy-the-data-directory). Three things are
+different in 0.4.14:
+
+- **A read during a pack run no longer reports an intact vCon as
+  damaged.** With Parquet storage on, a read that met its version's first
+  pack failed with `A stored version is damaged`; it now reads the version
+  again from its pack file. See
+  [Parquet storage](@/docs/parquet-storage.md#check-that-the-server-packs-its-objects).
+- **url 2.5.9 (RUSTSEC-2026-0592).** The affected url version leaves the
+  build. Nothing is to be configured.
+- **parquet 60.2.0 (RUSTSEC-2026-0595).** The affected parquet version
+  leaves the build. Nothing is to be configured; vcon-server writes no
+  Bloom filter and no modular encryption, so no file it wrote is affected.
+
 ## From 0.4.12 to 0.4.13
 
 The upgrade is the binary alone. No stored data, configuration or schema
@@ -475,7 +496,7 @@ but do not install it yet. The commands use their own variable names, so
 they do not change the ones from install:
 
 ```sh
-NEW_VERSION=0.4.13
+NEW_VERSION=0.4.14
 NEW_ARCHIVE=vcon-server-$NEW_VERSION-$(uname -m)-unknown-linux-gnu.tar.gz
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/$NEW_ARCHIVE
 curl -fsSL -o SHA256SUMS-$NEW_VERSION.txt https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/SHA256SUMS.txt
