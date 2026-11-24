@@ -85,7 +85,12 @@ tenant="$("$server" tenant create scale "${config[@]}" | jq -r .id)"
 ( umask 077; "$server" key create --tenant "$tenant" --scope write --scope read --label scale \
   "${config[@]}" | jq -r .token > "$work/api.key" )
 
-"$server" serve "${config[@]}" 2> "$work/server.log" &
+# The log exists before the server starts: the background child creates
+# its redirection target only when it runs, and a first read of the log
+# before that failed the script under `set -e` (seen once in 40 runs of
+# scripts/test_contend_writes.py at load 17).
+: > "$work/server.log"
+"$server" serve "${config[@]}" 2>> "$work/server.log" &
 pid=$!
 port=""
 for _ in $(seq 100); do
