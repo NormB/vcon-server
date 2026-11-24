@@ -1845,6 +1845,81 @@ fn pg_schema(release: &str) -> i64 {
         .unwrap_or_else(|| panic!("{release}: the postgres section states the schema"))
 }
 
+/// Whether `migrate` of a build at `build_schema` has a migration left to
+/// apply to a database at `release_schema`. A release at the build's own
+/// schema has none, so no migration of it can fail part way.
+fn a_migration_is_left(release_schema: i64, build_schema: i64) -> bool {
+    release_schema < build_schema
+}
+
+#[test]
+fn a_fixture_one_schema_below_the_builds_runs_the_failed_migration_case() {
+    // The build's last migration is the one a planted table can break;
+    // a fixture one schema below runs it alone, so its failure is tested.
+    let build = i64::from(vcon_server::formats::POSTGRES_SCHEMA);
+    let below: Vec<String> = releases_in(&pg_formats_dir())
+        .into_iter()
+        .filter(|r| pg_schema(r) == build - 1)
+        .collect();
+    assert!(
+        !below.is_empty(),
+        "a PostgreSQL fixture at schema {} runs the last migration's failure",
+        build - 1
+    );
+    assert!(
+        below
+            .iter()
+            .all(|r| a_migration_is_left(pg_schema(r), build)),
+        "each of {below:?} has the last migration left"
+    );
+}
+
+#[test]
+fn the_0_4_14_fixture_runs_the_planted_table_case_against_version_14() {
+    assert_eq!(pg_schema("0.4.14"), 13, "0.4.14 wrote schema 13");
+    assert!(
+        a_migration_is_left(
+            pg_schema("0.4.14"),
+            i64::from(vcon_server::formats::POSTGRES_SCHEMA)
+        ),
+        "0.4.14's fixture has version 14's migration left, which the planted pending_write table breaks"
+    );
+}
+
+#[test]
+fn a_schema_one_below_the_builds_leaves_a_migration() {
+    assert!(a_migration_is_left(13, 14), "13 to 14 is one migration");
+}
+
+#[test]
+fn a_schema_several_below_the_builds_leaves_migrations() {
+    assert!(a_migration_is_left(6, 14), "6 to 14 is eight migrations");
+}
+
+#[test]
+fn a_database_no_migration_touched_leaves_every_migration() {
+    assert!(
+        a_migration_is_left(0, 14),
+        "version 0: every migration is left"
+    );
+}
+
+#[test]
+fn a_schema_at_the_builds_leaves_no_migration() {
+    assert!(
+        !a_migration_is_left(14, 14),
+        "a release at the build's schema has nothing to migrate"
+    );
+}
+
+#[test]
+fn a_schema_past_the_builds_leaves_no_migration() {
+    assert!(
+        !a_migration_is_left(15, 14),
+        "a newer schema is refused, not migrated"
+    );
+}
+
 const PG_SAMPLE: &str = "\
 ## What each release wrote
 
@@ -3345,6 +3420,26 @@ mod live {
     pub(super) fn a_migrate_that_fails_leaves_the_release_s_schema_whole(release: &str) {
         let r = Restored::as_written(release);
         let before = r.state();
+        let build = i64::from(vcon_server::formats::POSTGRES_SCHEMA);
+        if !super::a_migration_is_left(super::pg_schema(release), build) {
+            // A release at the build's schema has the last migration's
+            // table already and no migration left to fail: migrate applies
+            // nothing and changes nothing. The failure case runs on every
+            // older fixture (a_fixture_one_schema_below_the_builds_runs_the_
+            // failed_migration_case holds that one exists).
+            let out = r.migrate();
+            assert!(
+                out.status.success(),
+                "{release}: migrate at the build's schema succeeds: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert_eq!(
+                r.state(),
+                before,
+                "{release}: migrate with nothing to apply changes nothing"
+            );
+            return;
+        }
         let version = || {
             pg::superuser(&r.db.name, "SELECT max(version) FROM vcon.schema_version")
                 .expect("the version")
