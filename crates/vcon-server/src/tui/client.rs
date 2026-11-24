@@ -58,6 +58,10 @@ pub trait Api: Send + Sync {
     /// [`ApiError`] when no answer arrived, it was a refusal, or it could
     /// not be read.
     fn reveal(&self, uuid: &str, part: Part) -> Result<String, ApiError>;
+
+    /// Ends every request under way, and refuses every later one, at once.
+    /// The UI calls it at its exit, before it joins its requests' threads.
+    fn close(&self) {}
 }
 
 /// Makes the request `effect` names and returns its answer as an event. A
@@ -295,6 +299,9 @@ pub struct HttpApi {
     runtime: tokio::runtime::Runtime,
     /// How long one request may take; [`TIMEOUT`] outside tests.
     timeout: Duration,
+    /// True once [`Api::close`] is called: every request under way ends,
+    /// and no later one starts.
+    closed: tokio::sync::watch::Sender<bool>,
 }
 
 /// The address only: the token is never written.
@@ -328,6 +335,7 @@ impl HttpApi {
             client,
             runtime,
             timeout: TIMEOUT,
+            closed: tokio::sync::watch::Sender::new(false),
         })
     }
 
@@ -367,12 +375,23 @@ impl HttpApi {
             }
             Ok((status, media, body))
         };
+        let mut closed = self.closed.subscribe();
         self.runtime.block_on(async {
-            tokio::time::timeout(self.timeout, exchange)
-                .await
-                .unwrap_or_else(|_| Err(no_answer(self.timeout)))
+            tokio::select! {
+                // First, so a request made after the close never starts.
+                biased;
+                _ = closed.wait_for(|closed| *closed) => Err(was_closed()),
+                answer = tokio::time::timeout(self.timeout, exchange) => {
+                    answer.unwrap_or_else(|_| Err(no_answer(self.timeout)))
+                }
+            }
         })
     }
+}
+
+/// What a request of a closed client gives.
+fn was_closed() -> ApiError {
+    ApiError::Unreachable("the client was closed".to_owned())
 }
 
 /// What a request that took longer than `timeout` gives.
@@ -397,6 +416,11 @@ impl Api for HttpApi {
     fn reveal(&self, uuid: &str, part: Part) -> Result<String, ApiError> {
         let (status, media, body) = self.fetch(&reveal_path(uuid, part), REVEAL_BODY)?;
         reveal_answer(status, &media, &body)
+    }
+
+    fn close(&self) {
+        // Kept even with no request under way, for the requests after it.
+        self.closed.send_replace(true);
     }
 }
 
@@ -1383,6 +1407,92 @@ mod tests {
         );
         drop(listener);
     }
+
+    /// A client of a server whose kernel takes connections that are never
+    /// answered, with a timeout far past the test's bounds: a request ends
+    /// only by [`Api::close`]. Returns the listener too, which the test
+    /// holds open.
+    fn api_of_a_server_that_never_answers(
+        dir: &std::path::Path,
+    ) -> (HttpApi, std::net::TcpListener) {
+        let cert = certificate();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("binds");
+        let port = listener.local_addr().expect("an address").port();
+        let mut api = HttpApi::new(&client(dir, port, &cert, 0o600)).expect("a client");
+        api.timeout = Duration::from_secs(60);
+        (api, listener)
+    }
+
+    #[test]
+    fn close_ends_a_request_under_way_at_once() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (api, listener) = api_of_a_server_that_never_answers(dir.path());
+        let api = std::sync::Arc::new(api);
+        let request = {
+            let api = std::sync::Arc::clone(&api);
+            std::thread::spawn(move || api.key())
+        };
+        std::thread::sleep(Duration::from_millis(300));
+        let closed_at = std::time::Instant::now();
+        api.close();
+        let outcome = request.join().expect("the request's thread ends");
+        assert!(
+            closed_at.elapsed() < Duration::from_secs(10),
+            "the request ended when the client closed, not at its 60 s timeout: {:?}",
+            closed_at.elapsed()
+        );
+        assert!(
+            matches!(&outcome, Err(ApiError::Unreachable(why)) if why.contains("closed")),
+            "the request says the client closed: {outcome:?}"
+        );
+        drop(listener);
+    }
+
+    #[test]
+    fn a_request_after_close_ends_without_waiting() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (api, listener) = api_of_a_server_that_never_answers(dir.path());
+        api.close();
+        let began = std::time::Instant::now();
+        let outcome = api.page(None);
+        assert!(
+            began.elapsed() < Duration::from_secs(10),
+            "no request starts once the client is closed: {:?}",
+            began.elapsed()
+        );
+        assert!(
+            matches!(&outcome, Err(ApiError::Unreachable(why)) if why.contains("closed")),
+            "the request says the client closed: {outcome:?}"
+        );
+        drop(listener);
+    }
+
+    #[test]
+    fn close_twice_is_the_same_as_once() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (api, listener) = api_of_a_server_that_never_answers(dir.path());
+        api.close();
+        api.close();
+        let outcome = api.masked(UUID_FOR_CLOSE);
+        assert!(
+            matches!(&outcome, Err(ApiError::Unreachable(why)) if why.contains("closed")),
+            "still closed: {outcome:?}"
+        );
+        drop(listener);
+    }
+
+    #[test]
+    fn a_client_never_closed_answers_as_before() {
+        let cert = certificate();
+        let (port, _) = server(&cert, response("200 OK", r#"{"vcons":[],"next":null}"#));
+        let dir = tempfile::tempdir().expect("temp dir");
+        let api = HttpApi::new(&client(dir.path(), port, &cert, 0o600)).expect("a client");
+        let page = api.page(None).expect("a page");
+        assert!(page.vcons.is_empty(), "the page was read: {page:?}");
+    }
+
+    /// A vCon id for the requests a closed client refuses.
+    const UUID_FOR_CLOSE: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bc00";
 
     #[test]
     fn a_key_file_other_users_may_read_is_refused_before_any_request() {

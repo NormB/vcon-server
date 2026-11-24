@@ -77,17 +77,21 @@ pub fn run(config: &ClientConfig) -> Result<(), String> {
     );
     with_terminal(|terminal| {
         let (answers, inbox) = mpsc::channel();
-        let mut dispatch = |effects: Vec<Effect>| send(&api, effects, &answers);
-        drive(
+        let mut requests = Requests::new(Arc::clone(&api), answers);
+        let ended = drive(
             terminal,
             &client::base(&config.url),
             theme,
             &mut Keyboard,
             &inbox,
-            &mut dispatch,
+            &mut |effects: Vec<Effect>| requests.send(effects),
             &OffsetDateTime::now_utc,
-        )
-        .map(|_| ())
+        );
+        // Before the process exits, every request's thread has ended and
+        // dropped its clone of the client: a thread still ending while the
+        // process exits can crash it.
+        requests.finish();
+        ended.map(|_| ())
     })?
 }
 
@@ -195,16 +199,67 @@ pub fn drive<B: Backend>(
     Ok(state)
 }
 
-/// Starts each request on a thread that sends its answer to `answers`.
-fn send(api: &Arc<dyn Api>, effects: Vec<Effect>, answers: &Sender<Event>) {
-    for effect in effects {
-        let api = Arc::clone(api);
-        let answers = answers.clone();
-        std::thread::spawn(move || {
-            // The receiver is gone only when the UI has quit; the answer
-            // then has no reader.
-            drop(answers.send(client::perform(api.as_ref(), &effect)));
-        });
+/// The UI's requests, each on a thread of its own that sends its answer to
+/// the UI's inbox.
+struct Requests {
+    api: Arc<dyn Api>,
+    answers: Sender<Event>,
+    running: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl Requests {
+    fn new(api: Arc<dyn Api>, answers: Sender<Event>) -> Self {
+        Self {
+            api,
+            answers,
+            running: Vec::new(),
+        }
+    }
+
+    /// Starts each request on a thread that sends its answer to the inbox,
+    /// and joins the threads of the requests that have ended, so a long
+    /// session keeps only the handles of those under way.
+    fn send(&mut self, effects: Vec<Effect>) {
+        let (ended, running): (Vec<_>, Vec<_>) = std::mem::take(&mut self.running)
+            .into_iter()
+            .partition(std::thread::JoinHandle::is_finished);
+        self.running = running;
+        for handle in ended {
+            // A request's thread only sends its answer; a panic in it has
+            // already been reported on stderr, and the UI goes on.
+            drop(handle.join());
+        }
+        for effect in effects {
+            let api = Arc::clone(&self.api);
+            let answers = self.answers.clone();
+            self.running.push(std::thread::spawn(move || {
+                // The receiver is gone only when the UI has quit; the answer
+                // then has no reader.
+                drop(answers.send(client::perform(api.as_ref(), &effect)));
+            }));
+        }
+    }
+
+    /// The UI's exit: ends every request under way ([`Api::close`]) and
+    /// joins every request's thread, so that none still holds the client
+    /// when the process exits.
+    fn finish(self) {
+        self.api.close();
+        for handle in self.running {
+            drop(handle.join());
+        }
+    }
+
+    #[cfg(test)]
+    fn under_way(&self) -> usize {
+        self.running.len()
+    }
+
+    #[cfg(test)]
+    fn all_ended(&self) -> bool {
+        self.running
+            .iter()
+            .all(std::thread::JoinHandle::is_finished)
     }
 }
 
@@ -408,5 +463,224 @@ mod tests {
             None,
             "pasted text is not typed keys"
         );
+    }
+
+    // The threads of the UI's requests: the exit ends and joins each.
+
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::time::Instant;
+
+    use super::Requests;
+
+    /// How long a [`Held`] request waits for [`Api::close`] before it gives
+    /// up by itself, so that a test whose exit never closes it still ends.
+    const HELD_AT_MOST: Duration = Duration::from_secs(20);
+
+    /// A server whose key request answers only once the client is closed;
+    /// its other requests answer at once. It counts the requests begun.
+    #[derive(Default)]
+    struct Held {
+        state: Mutex<(bool, usize)>,
+        changed: Condvar,
+    }
+
+    impl Held {
+        fn begun(&self) -> usize {
+            self.state.lock().expect("the state").1
+        }
+
+        fn closed(&self) -> bool {
+            self.state.lock().expect("the state").0
+        }
+
+        fn begin(&self) {
+            self.state.lock().expect("the state").1 += 1;
+            self.changed.notify_all();
+        }
+
+        /// Waits until `n` requests have begun, at most 10 s.
+        fn wait_begun(&self, n: usize) {
+            let guard = self.state.lock().expect("the state");
+            let (guard, _) = self
+                .changed
+                .wait_timeout_while(guard, Duration::from_secs(10), |s| s.1 < n)
+                .expect("the state");
+            assert!(guard.1 >= n, "{n} requests began: {}", guard.1);
+        }
+    }
+
+    impl Api for Held {
+        fn key(&self) -> Result<KeyInfo, ApiError> {
+            self.begin();
+            let guard = self.state.lock().expect("the state");
+            let (guard, _) = self
+                .changed
+                .wait_timeout_while(guard, HELD_AT_MOST, |s| !s.0)
+                .expect("the state");
+            drop(guard);
+            Err(ApiError::Unreachable("closed".to_owned()))
+        }
+
+        fn page(&self, _cursor: Option<&str>) -> Result<Page, ApiError> {
+            self.begin();
+            TwoVcons.page(None)
+        }
+
+        fn masked(&self, _uuid: &str) -> Result<Vec<String>, ApiError> {
+            self.begin();
+            Ok(Vec::new())
+        }
+
+        fn reveal(&self, _uuid: &str, _part: crate::reveal::Part) -> Result<String, ApiError> {
+            self.begin();
+            Ok(String::new())
+        }
+
+        fn close(&self) {
+            self.state.lock().expect("the state").0 = true;
+            self.changed.notify_all();
+        }
+    }
+
+    /// Requests on `held`, with the inbox their answers reach.
+    fn requests(held: &Arc<Held>) -> (Requests, mpsc::Receiver<Event>) {
+        let (answers, inbox) = mpsc::channel();
+        let api: Arc<dyn Api> = held.clone();
+        (Requests::new(api, answers), inbox)
+    }
+
+    // Success.
+
+    #[test]
+    fn finish_ends_a_request_under_way_and_joins_its_thread() {
+        let held = Arc::new(Held::default());
+        let (mut running, _inbox) = requests(&held);
+        running.send(vec![Effect::FetchKey]);
+        held.wait_begun(1);
+        let began = Instant::now();
+        running.finish();
+        assert!(held.closed(), "the exit closed the client");
+        assert!(
+            began.elapsed() < Duration::from_secs(10),
+            "the request ended when the client closed: {:?}",
+            began.elapsed()
+        );
+        assert_eq!(
+            Arc::strong_count(&held),
+            1,
+            "every request's thread has ended and dropped its clone of the client"
+        );
+    }
+
+    #[test]
+    fn finish_joins_requests_that_have_answered() {
+        let held = Arc::new(Held::default());
+        let (mut running, inbox) = requests(&held);
+        running.send(vec![Effect::FetchPage(None), Effect::FetchPage(None)]);
+        for _ in 0..2 {
+            let answer = inbox
+                .recv_timeout(Duration::from_secs(10))
+                .expect("an answer");
+            assert!(matches!(answer, Event::Page(Ok(_))), "a page: {answer:?}");
+        }
+        running.finish();
+        assert_eq!(
+            Arc::strong_count(&held),
+            1,
+            "no request's thread holds the client"
+        );
+    }
+
+    #[test]
+    fn each_request_answers_to_the_inbox() {
+        let held = Arc::new(Held::default());
+        let (mut running, inbox) = requests(&held);
+        running.send(vec![Effect::FetchPage(None)]);
+        let answer = inbox
+            .recv_timeout(Duration::from_secs(10))
+            .expect("an answer");
+        assert!(matches!(answer, Event::Page(Ok(_))), "a page: {answer:?}");
+        running.finish();
+    }
+
+    // Failure.
+
+    #[test]
+    fn finish_ends_requests_whose_inbox_is_gone() {
+        // The UI has quit and dropped its inbox: the answers have no reader.
+        let held = Arc::new(Held::default());
+        let (mut running, inbox) = requests(&held);
+        drop(inbox);
+        running.send(vec![Effect::FetchKey, Effect::FetchPage(None)]);
+        held.wait_begun(2);
+        running.finish();
+        assert_eq!(
+            Arc::strong_count(&held),
+            1,
+            "every thread ended though no one read its answer"
+        );
+    }
+
+    #[test]
+    fn finish_ends_several_requests_under_way_together() {
+        let held = Arc::new(Held::default());
+        let (mut running, _inbox) = requests(&held);
+        running.send(vec![Effect::FetchKey, Effect::FetchKey, Effect::FetchKey]);
+        held.wait_begun(3);
+        let began = Instant::now();
+        running.finish();
+        assert!(
+            began.elapsed() < Duration::from_secs(10),
+            "one close ended them all: {:?}",
+            began.elapsed()
+        );
+        assert_eq!(Arc::strong_count(&held), 1, "all three threads ended");
+    }
+
+    // Edge.
+
+    #[test]
+    fn finish_with_no_request_closes_the_client() {
+        let held = Arc::new(Held::default());
+        let (running, _inbox) = requests(&held);
+        running.finish();
+        assert!(held.closed(), "closed");
+        assert_eq!(Arc::strong_count(&held), 1, "nothing holds the client");
+    }
+
+    #[test]
+    fn send_joins_the_threads_of_requests_that_have_ended() {
+        // A long session sends many requests: the ended ones are joined as
+        // it goes, so their handles do not pile up until the exit.
+        let held = Arc::new(Held::default());
+        let (mut running, inbox) = requests(&held);
+        running.send(vec![Effect::FetchPage(None); 3]);
+        for _ in 0..3 {
+            inbox
+                .recv_timeout(Duration::from_secs(10))
+                .expect("an answer");
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !running.all_ended() {
+            assert!(Instant::now() < deadline, "the three threads end");
+            std::thread::yield_now();
+        }
+        running.send(vec![Effect::FetchPage(None)]);
+        assert!(
+            running.under_way() <= 1,
+            "the three ended threads were joined: {} kept",
+            running.under_way()
+        );
+        running.finish();
+    }
+
+    #[test]
+    fn an_empty_send_starts_no_thread() {
+        let held = Arc::new(Held::default());
+        let (mut running, _inbox) = requests(&held);
+        running.send(Vec::new());
+        assert_eq!(running.under_way(), 0, "no thread");
+        assert_eq!(held.begun(), 0, "no request");
+        running.finish();
     }
 }
