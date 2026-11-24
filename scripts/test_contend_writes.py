@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 
 sys.dont_write_bytecode = True
@@ -265,10 +266,25 @@ FAKE_SERVER = textwrap.dedent(
                 self.answer(200 if ok else 400, '"v%d"' % n)
         def log_message(self, *args):
             pass
+    # The fake ends when its script does, on every path: a script killed
+    # with SIGKILL runs no cleanup, and this process is then handed to
+    # another parent. It says so in $FAKE_DIR/orphaned, so a script that
+    # failed to stop it is still seen.
+    parent = os.getppid()
+    def watch_parent():
+        while os.getppid() == parent:
+            time.sleep(0.1)
+        event("orphaned")
+        with open(rec / "orphaned", "a") as f:
+            f.write("server\\n")
+        os._exit(0)
+    threading.Thread(target=watch_parent, daemon=True).start()
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(value("cert"), value("key"))
     server.socket = context.wrap_socket(server.socket, server_side=True)
+    (rec / "server.pid.tmp").write_text(str(os.getpid()))
+    os.replace(rec / "server.pid.tmp", rec / "server.pid")
     print("INFO serving listen=127.0.0.1:%d" % server.server_address[1], file=sys.stderr, flush=True)
     server.serve_forever()
     '''
@@ -278,14 +294,25 @@ FAKE_SCALE = textwrap.dedent(
     '''\
     #!/usr/bin/env python3
     """A stand-in for vcon-scale: ends once the fake server has taken
-    $FAKE_PUTS replacements (at once for 0), then writes its result file."""
+    $FAKE_PUTS replacements (at once for 0), then writes its result file;
+    with $FAKE_SCALE_EXIT, fails at once with that code."""
     import os, pathlib, sys, time
+    if os.environ.get("FAKE_SCALE_EXIT"):
+        sys.exit(int(os.environ["FAKE_SCALE_EXIT"]))
     args = sys.argv[1:]
     out = args[args.index("--out") + 1]
     rec = pathlib.Path(os.environ["FAKE_DIR"])
     want = int(os.environ.get("FAKE_PUTS", "3"))
     deadline = time.monotonic() + 60
+    parent = os.getppid()
+    (rec / "scale.pid.tmp").write_text(str(os.getpid()))
+    os.replace(rec / "scale.pid.tmp", rec / "scale.pid")
     while want > 0:
+        if os.getppid() != parent:
+            # Its script ended without stopping it.
+            with open(rec / "orphaned", "a") as f:
+                f.write("scale\\n")
+            sys.exit(6)
         puts = rec / "puts"
         if puts.exists() and int(puts.read_text()) >= want:
             break
@@ -301,12 +328,57 @@ SCALE_RUN = HERE / "scale-run.sh"
 # How long one run of scale-run.sh may take: a run here takes under 2 s.
 DEADLINE = 90
 
+# How long a process may take to end once nothing it serves is left: the
+# fake server looks for its parent every 0.1 s.
+END_WITHIN = 10
+
+
+def session_processes(sid):
+    """Each process left in session `sid`, as "pid args": a process keeps
+    its session when its parent ends and it is handed to pid 1, so this
+    finds what a run left behind wherever it was reparented."""
+    left = []
+    for entry in pathlib.Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = (entry / "stat").read_text()
+            args = (entry / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace").strip()
+        except OSError:
+            continue  # ended while being read
+        # The fields after the command's closing parenthesis: state, ppid,
+        # pgrp, session.
+        fields = stat.rsplit(")", 1)[1].split()
+        if fields[0] != "Z" and int(fields[3]) == sid:
+            left.append(f"{entry.name} {args}")
+    return left
+
+
+def running(pid):
+    """Whether `pid` is a process that has not ended (a zombie has)."""
+    try:
+        stat = pathlib.Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return False
+    return stat.rsplit(")", 1)[1].split()[0] != "Z"
+
+
+def wait_until(predicate, seconds):
+    """Polls `predicate` until it holds or `seconds` pass; its last answer."""
+    deadline = time.monotonic() + seconds
+    while not predicate():
+        if time.monotonic() > deadline:
+            return predicate()
+        time.sleep(0.05)
+    return True
+
 
 class ScaleRun(unittest.TestCase):
     """scripts/scale-run.sh, run whole with the fakes above."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
         self.dir = pathlib.Path(self.tmp.name)
         self.rec = self.dir / "rec"
         self.rec.mkdir()
@@ -319,16 +391,14 @@ class ScaleRun(unittest.TestCase):
         self.out = self.dir / "run.json"
         self.writes = self.dir / "run-writes.json"
 
-    def tearDown(self):
-        self.tmp.cleanup()
-
-    def run_script(self, **env):
+    def start_script(self, **env):
         full = dict(os.environ, FAKE_DIR=str(self.rec), SCALE_DISK="test disk")
         for name in ("SCALE_WRITERS", "SCALE_CATALOG"):
             full.pop(name, None)
         full.update(env)
         # A session of its own, so the deadline ends the script and every
-        # process it started, the fake server and the writers included.
+        # process it started, the fake server and the writers included, and
+        # so what a run leaves behind can be found by its session.
         proc = subprocess.Popen(
             [str(SCALE_RUN), str(self.dir / "server"), str(self.dir / "scale"), "10", str(self.out), str(self.parent)],
             env=full,
@@ -337,6 +407,41 @@ class ScaleRun(unittest.TestCase):
             text=True,
             start_new_session=True,
         )
+        # Whatever a test does to the run, nothing of its session outlives
+        # the test. Cleanups run last in, first out: this one after the
+        # test's own and before the temporary directory's (setUp).
+        self.addCleanup(self.end_session, proc.pid)
+        return proc
+
+    def end_session(self, sid):
+        try:
+            os.killpg(sid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    def assert_nothing_left(self, sid, orphans=()):
+        """No process of the run's session is left once its script ended,
+        and the fakes that ended by their own watch, because their script
+        had ended without stopping them, are `orphans` (default none)."""
+        self.assertTrue(
+            wait_until(lambda: not session_processes(sid), END_WITHIN),
+            f"processes of the run outlived scale-run.sh: {session_processes(sid)}",
+        )
+        orphaned = self.rec / "orphaned"
+        self.assertEqual(
+            sorted(orphaned.read_text().split()) if orphaned.exists() else [],
+            sorted(orphans),
+            "the fakes that ended because their script had ended without stopping them",
+        )
+
+    def server_pid(self):
+        """The fake server's pid, once it listens."""
+        pid = self.rec / "server.pid"
+        self.assertTrue(wait_until(pid.exists, DEADLINE), "the fake server never listened")
+        return int(pid.read_text())
+
+    def run_script(self, **env):
+        proc = self.start_script(**env)
         try:
             out, err = proc.communicate(timeout=DEADLINE)
         except subprocess.TimeoutExpired:
@@ -350,7 +455,74 @@ class ScaleRun(unittest.TestCase):
                 f"scale-run.sh did not end in {DEADLINE} s; its stderr: {err!r}; still running:\n{left}"
                 "the fake server's events:\n" + (events.read_text() if events.exists() else "(none)")
             )
+        self.assert_nothing_left(proc.pid)
         return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
+
+    def test_the_fakes_of_a_script_that_was_killed_end_by_themselves(self):
+        # SIGKILL runs no trap: the script's cleanup never stops its server.
+        # FAKE_PUTS no run reaches keeps vcon-scale, and so the run, going.
+        proc = self.start_script(FAKE_PUTS="1000000")
+        server = self.server_pid()
+        scale = self.rec / "scale.pid"
+        self.assertTrue(wait_until(scale.exists, DEADLINE), "the fake vcon-scale never started")
+        os.kill(proc.pid, signal.SIGKILL)
+        # Not communicate(): a server left running holds the output pipes.
+        proc.wait(timeout=DEADLINE)
+        self.assertTrue(
+            wait_until(lambda: not running(server), END_WITHIN),
+            f"the fake server {server} outlived its killed script by {END_WITHIN} s",
+        )
+        self.assert_nothing_left(proc.pid, orphans=("scale", "server"))
+
+    def test_a_hangup_stops_the_server_and_deletes_the_work(self):
+        # bash runs the EXIT trap when a signal it does not trap ends it.
+        proc = self.start_script(FAKE_PUTS="1000000")
+        server = self.server_pid()
+        scale = self.rec / "scale.pid"
+        self.assertTrue(wait_until(scale.exists, DEADLINE), "the fake vcon-scale started")
+        os.kill(proc.pid, signal.SIGHUP)
+        proc.communicate(timeout=DEADLINE)
+        self.assertEqual(proc.returncode, -signal.SIGHUP, "the hang-up ended the script")
+        self.assertFalse(running(server), "the script's cleanup stopped its server")
+        self.assertEqual(list(self.parent.iterdir()), [], "the work directory is gone")
+        self.assert_nothing_left(proc.pid)
+
+    def test_a_terminate_ends_the_run_at_once_and_stops_everything(self):
+        # A trapped signal waits for the foreground command to end, so
+        # vcon-scale must not be one.
+        proc = self.start_script(SCALE_WRITERS="1", FAKE_PUTS="1000000")
+        self.server_pid()
+        scale = self.rec / "scale.pid"
+        self.assertTrue(wait_until(scale.exists, DEADLINE), "the fake vcon-scale started")
+        os.kill(proc.pid, signal.SIGTERM)
+        self.assertTrue(
+            wait_until(lambda: proc.poll() is not None, END_WITHIN),
+            f"the script ended within {END_WITHIN} s of SIGTERM",
+        )
+        proc.communicate(timeout=DEADLINE)
+        self.assertEqual(proc.returncode, 143, "the script ends through its TERM trap")
+        self.assertEqual(list(self.parent.iterdir()), [], "the work directory is gone")
+        self.assert_nothing_left(proc.pid)
+
+    def test_a_reader_gone_stops_the_server_and_deletes_the_work(self):
+        # The run's output has no reader once its caller ended, and the
+        # script writes to it when vcon-scale fails.
+        proc = self.start_script(FAKE_PUTS="1000000", FAKE_SCALE_EXIT="5")
+        proc.stdout.close()
+        proc.stderr.close()
+        self.assertTrue(wait_until(lambda: proc.poll() is not None, DEADLINE), "the script ended")
+        self.assertNotEqual(proc.returncode, 0, "the failed run fails")
+        self.assertEqual(list(self.parent.iterdir()), [], "the work directory is gone")
+        self.assert_nothing_left(proc.pid)
+
+    def test_the_session_reader_finds_a_process_left_in_a_session(self):
+        child = subprocess.Popen(["sleep", "30"], start_new_session=True)
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        self.assertEqual(len(session_processes(child.pid)), 1, "the sleep is its session's one process")
+        child.kill()
+        child.wait()
+        self.assertEqual(session_processes(child.pid), [], "an ended process is not listed")
 
     def test_writers_replace_vcons_while_the_run_goes_on(self):
         done = self.run_script(SCALE_WRITERS="2", FAKE_PUTS="6")

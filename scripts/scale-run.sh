@@ -46,7 +46,9 @@ if [ "$#" -gt 0 ] && [ "$1" = -- ]; then shift; fi
 work="$(mktemp -d -p "$parent" vcon-scale.XXXXXX)"
 pid=""
 wpid=""
+spid=""
 cleanup() {
+  if [ -n "$spid" ]; then kill "$spid" 2>/dev/null || true; wait "$spid" 2>/dev/null || true; fi
   if [ -n "$wpid" ]; then kill "$wpid" 2>/dev/null || true; wait "$wpid" 2>/dev/null || true; fi
   if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; fi
   rm -rf "$work"
@@ -118,9 +120,15 @@ if [ "$writers" -gt 0 ]; then
 fi
 
 status=0
+# In the background, waited for: bash runs a trap only once the foreground
+# command has ended, so a SIGTERM would wait for the whole run, and the
+# cleanup stops vcon-scale too when a signal ends the script.
 "$scale" run --url "https://localhost:$port" --ca "$work/ca.pem" --key-file "$work/api.key" \
   --count "$count" --out "$out" --data-dir "$work/data" --server-pid "$pid" \
-  --commit "$commit" --disk "$disk" --label "${SCALE_LABEL:-run}" "$@" || status=$?
+  --commit "$commit" --disk "$disk" --label "${SCALE_LABEL:-run}" "$@" &
+spid=$!
+wait "$spid" || status=$?
+spid=""
 if [ "$status" -ne 0 ]; then
   echo "scale-run: vcon-scale exited $status; the server's last lines:" >&2
   tail -n 20 "$work/server.log" >&2
