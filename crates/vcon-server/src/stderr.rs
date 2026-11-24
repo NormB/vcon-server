@@ -607,12 +607,15 @@ mod tests {
     /// Runs `f` on a thread of its own and fails if it takes past `WAIT`.
     fn within_wait(f: impl FnOnce() + Send + 'static) {
         let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
+        let runner = std::thread::spawn(move || {
             f();
             let _ = tx.send(());
         });
         rx.recv_timeout(WAIT)
             .expect("returns without waiting for the reader");
+        // The thread has sent, so it is at its end: wait for it, so no
+        // test leaves a thread running past its own end.
+        runner.join().expect("the thread ends");
     }
 
     // Success.

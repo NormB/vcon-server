@@ -437,6 +437,88 @@ pub(crate) mod tests {
 
     const BIG: Sizes = SIZES;
 
+    /// No column of a file this writer makes has a Bloom filter, at any
+    /// level and across row groups. Every Parquet file vcon-server writes
+    /// (`export parquet`, the packer, the rewrite) comes from
+    /// [`File::new`]. parquet before 60.2.0 wrote Bloom filters in
+    /// plaintext inside a modular-encrypted file (RUSTSEC-2026-0595), and
+    /// 60.2.0 refuses that write with a runtime error; a file with no
+    /// Bloom filter meets neither case.
+    #[test]
+    fn no_column_of_a_written_file_has_a_bloom_filter() {
+        let rows: Vec<Row> = (1..=5).map(row).collect();
+        let small = Sizes {
+            row_group: 40,
+            file: usize::MAX,
+        };
+        for level in [Metadata::None, Metadata::Counts, Metadata::Full] {
+            let bytes = written(level, &rows, small);
+            let mut file = tempfile::tempfile().expect("a temporary file");
+            std::io::Write::write_all(&mut file, &bytes).expect("writes it");
+            let reader = SerializedFileReader::new(file).expect("a Parquet file");
+            let groups = reader.metadata().row_groups();
+            assert!(groups.len() > 1, "{level:?}: more than one row group");
+            for (g, group) in groups.iter().enumerate() {
+                for column in group.columns() {
+                    assert_eq!(
+                        (column.bloom_filter_offset(), column.bloom_filter_length()),
+                        (None, None),
+                        "{level:?}: row group {g}, column {} has a Bloom filter",
+                        column.column_path()
+                    );
+                }
+            }
+        }
+    }
+
+    /// parquet is built without its `encryption` feature, and vcon-server
+    /// is the one package of each lockfile that depends on it, so no
+    /// feature unification can turn modular encryption on. With the
+    /// feature off, no write can encrypt a file's columns, Bloom filter or
+    /// not (RUSTSEC-2026-0595).
+    #[test]
+    fn parquet_is_built_without_modular_encryption() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest =
+            std::fs::read_to_string(root.join("Cargo.toml")).expect("the crate's Cargo.toml");
+        let line = manifest
+            .lines()
+            .find(|l| l.starts_with("parquet = "))
+            .expect("a parquet dependency line");
+        assert!(
+            line.contains("default-features = false") && !line.contains("encryption"),
+            "parquet without its default features and without encryption: {line}"
+        );
+        for rel in ["../../Cargo.toml", "Cargo.toml", "../../fuzz/Cargo.toml"] {
+            let text = std::fs::read_to_string(root.join(rel)).expect("a manifest");
+            assert!(
+                !text.contains("parquet/encryption") && !text.contains("parquet?/encryption"),
+                "{rel} enables parquet's modular encryption"
+            );
+        }
+        for (rel, depender) in [
+            ("../../Cargo.lock", "vcon-server"),
+            ("../../fuzz/Cargo.lock", "vcon-server"),
+        ] {
+            let lock = std::fs::read_to_string(root.join(rel)).expect("a lockfile");
+            let dependents: Vec<&str> = lock
+                .split("\n[[package]]\n")
+                .filter(|package| {
+                    package.lines().any(|l| {
+                        l.trim().trim_end_matches(',') == "\"parquet\""
+                            || l.trim().starts_with("\"parquet ")
+                    })
+                })
+                .filter_map(|package| package.lines().find_map(|l| l.strip_prefix("name = ")))
+                .collect();
+            assert_eq!(
+                dependents,
+                [format!("\"{depender}\"")],
+                "{rel}: the packages that depend on parquet"
+            );
+        }
+    }
+
     /// Each level writes its own columns, in order, and no more.
     #[test]
     fn each_level_writes_its_columns() {

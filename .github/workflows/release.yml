@@ -255,6 +255,10 @@ jobs:
         with:
           persist-credentials: false
       - name: Install what the curl client needs
+        # Its own limit, under the job's 20 minutes: on 2026-11-23 this step
+        # printed nothing for 20 minutes, twice, and the job's cancel named
+        # no command (scripts/check_workflow_downloads.py holds both bounds).
+        timeout-minutes: 8
         run: |
           set -eu
           if command -v apt-get >/dev/null; then
@@ -262,8 +266,12 @@ jobs:
             # retries ask that host again: this gives apt a list of hosts
             # that answer now, and ends the step when a source has none.
             bash scripts/apt-mirror-setup.sh
-            apt-get -o Acquire::Retries=3 update -qq
-            DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 install -y -qq --no-install-recommends curl jq openssl python3 ca-certificates >/dev/null
+            # Not quiet: each Get, Hit and Ign line names its host, so a
+            # stall shows which one. timeout(1) bounds what apt's own
+            # Acquire::http::Timeout does not: a name lookup, the mirror
+            # method's walk through its hosts, dpkg.
+            timeout 240 apt-get -o Acquire::Retries=3 update
+            timeout 300 env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 install -y --no-install-recommends curl jq openssl python3 ca-certificates
           else
             python3 -I scripts/dnf_install.py jq openssl python3 >/dev/null
           fi

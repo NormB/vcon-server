@@ -984,9 +984,10 @@ fn contributing_states_the_dependency_age_exception_as_the_gate_reads_it() {
 }
 
 #[test]
-fn the_two_past_exceptions_are_written_in_the_form() {
-    // rmcp 3.9.0 and rusqlite 0.42.0 were taken inside the 14 days as
-    // security fixes, each with crates of its own that were as young.
+fn the_past_exceptions_are_written_in_the_form() {
+    // parquet 60.2.0, rmcp 3.9.0 and rusqlite 0.42.0 were taken inside the
+    // 14 days as security fixes; rmcp and rusqlite each with crates of its
+    // own that were as young.
     let manifest = read("crates/vcon-server/Cargo.toml");
     let lines: Vec<&str> = manifest
         .lines()
@@ -995,6 +996,7 @@ fn the_two_past_exceptions_are_written_in_the_form() {
     assert_eq!(
         lines,
         [
+            "# dependency-age-exception: parquet 60.2.0 RUSTSEC-2026-0595 published 2026-11-21",
             "# dependency-age-exception: rmcp 3.9.0 RUSTSEC-2026-0462 published 2026-11-05",
             "# dependency-age-exception: rmcp-macros 3.9.0 RUSTSEC-2026-0462 published 2026-11-05",
             "# dependency-age-exception: rusqlite 0.42.0 RUSTSEC-2026-0459 published 2026-11-11",

@@ -228,14 +228,15 @@ fn one(store: &Store, tx: &mut Tx, read: &Confirm) -> Result<Confirmed, StoreErr
         status,
     };
     match state(tx, read.uuid)? {
-        // A packed version's file may have been rewritten and deleted
-        // after its place was read: read again at the new place. The same
-        // place still failing is the answer.
+        // The version may have moved after its place was read: a packed
+        // version's file rewritten and deleted, or an unpacked version
+        // packed and its object removed. Read again at the new place. The
+        // same place still failing, or a row that does not read, is the
+        // answer.
         State::Live(now)
             if Some(now) == read.version
                 && !read.opened
-                && read.place.is_some()
-                && version_row(tx, now).ok().map(|r| r.place) != Some(read.place.clone()) =>
+                && matches!(version_row(tx, now), Ok(r) if r.place != read.place) =>
         {
             Ok(Confirmed::Again)
         }

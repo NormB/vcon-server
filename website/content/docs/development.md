@@ -497,9 +497,11 @@ it refuses a checkout that is not the commit or has uncommitted changes. It
 prints one line per scenario, `docs scenario <name>: ok in <n> s
 (<why>)`, `FAILED` with the end of its report, or `passed on <commit> ...
 not run again` for one a stamp already holds. When a scenario ran a
-page's release variable with the newest published release, because the
-release the page names is not published yet, the line ends `it ran
-VERSION=<release> in place of the unpublished release its page names`,
+page's release variable with the newest pinned release, because the
+release the page names is not published yet or its assets are not
+pinned yet, the line ends `it ran
+VERSION=<release> in place of the release its page names, not yet
+published with pins`,
 the stamp keeps that after the scenario's name
 (`container VERSION=0.4.6`), and the hook repeats it. The hook prints, for each
 scenario, the stamp or CI job it accepted or why CI's did not count, and
@@ -746,7 +748,7 @@ An HTML comment on the line before a block changes how it runs:
 
 A step that works only from some release on, such as checking a signature
 that older releases do not have, is marked `since`, not `skip`. Until that
-release is published, the runner uses the newest published one, so the step
+release is published and pinned, the runner uses the newest pinned one, so the step
 does not run and the runner says so; from then on it runs. `lint` refuses a
 `skip` whose reason names a release, and a `since` block whose text does
 not name its release, so a reader on an older release is told to skip it.
@@ -775,8 +777,8 @@ how-to scenarios get the server built from the commit under test; a
 scenario whose pages need a cargo feature the default build lacks names it
 (`features`), and CI gives it a server built with that feature
 (`docs_test.py artifact <scenario>` names the artifact). The release scenarios download the release that the install page
-names. Until that release is published, they download the newest published
-release and say so.
+names. Until that release is published and its assets are pinned, they
+download the newest pinned release and say so.
 
 A scenario under systemd runs its pages one after the other in one
 container, and systemd refuses a unit's sixth start within 10 seconds
@@ -916,17 +918,57 @@ Each image names one host for each package source, and apt's retries ask
 that host again. So the job runs `bash scripts/apt-mirror-setup.sh` before
 its first `apt-get`. The script needs bash and coreutils only, because the
 images have no curl and no python3 yet. It reads `scripts/apt-mirrors.txt`,
-the table the how-to runner reads, asks each mirror of each source the
-system's files name for `<mirror>/dists/` with a time limit of 5 seconds,
-and writes those that answer 200, in the table's order, to the list apt's
-`mirror+file:` method reads: the files the how-to runner writes. It ends
-with exit code 3 when no mirror of a source answers and with 4 when no
-source of the system is in the table, and changes nothing in either case.
+the table the how-to runner reads. For each source the system's files
+name, it asks the source's own host and each of its mirrors, all at once
+and each with a time limit of 5 seconds, for the release file
+(`<host>/dists/<suite>/InRelease`) of each suite the system reads from it.
+It keeps a mirror only when each of those files is byte for byte the one
+the source's own host serves, and names each mirror it leaves out in the
+log: on 2026-11-23 a mirror in the middle of a sync answered, and apt
+stopped at "File has unexpected size ... Mirror sync in progress?". For a
+source with a `-security` suite, the source's own host comes first. When
+the source's own host does not answer, the log says so, a mirror whose
+copy has an older `Date:` than another mirror's is left out, and of the
+others the largest group whose files agree is kept; when no two agree,
+only the first is kept, and the log says so. The script writes the kept
+mirrors, in the table's order, to the list apt's `mirror+file:` method
+reads: the files the how-to runner writes. The how-to runner runs the
+same script with `--dry-run` (it asks and writes nothing) to choose its
+mirrors, so both choose by one rule. The script ends with exit code 3
+when no mirror of a source answers or none holds the newest release file
+of every suite, and with 4 when no source of the system is in the table,
+and changes nothing in either case.
+
+The rule keeps no mirror that is one release behind the source's own
+host. From outside, such a mirror looks the same as one in the middle of
+a sync, and the 2026-11-23 failure was a file of the wrong size at a path
+the current release file names. Between two syncs of its mirrors, the
+Ubuntu archive is then often read from archive.ubuntu.com alone: in a dry
+run from this project's host at 16:08 EST on 2026-11-23, its
+`jammy-updates` release file was dated 20:26:43 UTC, the copies on
+azure.archive.ubuntu.com and mirror.math.princeton.edu 18:26:36 UTC, and
+the copy on mirrors.edge.kernel.org 12:50:35 UTC on 2026-11-22. The log
+then names each mirror left out as out of sync, and says that only the
+source's own host remains, so a failure of that host fails the install.
+Under the time limits above, that failure comes within minutes and names
+the host.
 `scripts/check_workflow_downloads.py` fails an `apt-get update` or
 `install` that comes before a run of the script: in a workflow, within a
 job that runs in a container, and in a composite action or a shell script,
 within the file. `scripts/test_apt_mirror_setup.py` tests the script
 against a server on the same machine.
+
+The script also sets apt's `Acquire::http::Timeout`, which bounds a read
+from one host. It does not bound a name lookup, the mirror method's walk
+through its hosts, or dpkg: on 2026-11-23 the ubuntu:22.04 smoke job's
+install step printed nothing for 20 minutes, twice, until the job's limit
+canceled it with no error text. So each `apt-get update` and `install`
+runs under `timeout` and without `-qq`, so that each `Get:` line names its
+host, and each workflow step that installs packages over the network
+(`apt-get`, `dnf`, `pip`, `npm`, Playwright) has a `timeout-minutes` of its
+own. `scripts/check_workflow_downloads.py` fails an `apt-get update` or
+`install` without `timeout` before it, and such a step without its own
+`timeout-minutes`.
 
 ### The GitHub API budget
 
@@ -1220,7 +1262,7 @@ publish job gives its output to `gh release create --notes-file`. Before
 a tag, see the text a release will have:
 
 ```sh
-python3 -I scripts/release_notes.py 0.4.13 --repo NormB/vcon-server
+python3 -I scripts/release_notes.py 0.4.14 --repo NormB/vcon-server
 ```
 
 `scripts/test_release_notes.py` tests the script, and that the workflow
@@ -1362,7 +1404,9 @@ To bump a tool in a workflow:
    asset.
 
 To add a vcon-server release the how-to pages download, once it is
-published (before then the scenarios use the newest published release), add
+published (before then, and until these pins land, the scenarios use the
+newest pinned release, so a release published before its pins fails no
+how-to job), add
 its four assets to `scripts/docs-test-pins.txt`: `SHA256SUMS.txt`,
 `SHA256SUMS.txt.sigstore.json` and the x86_64 and aarch64 archives. Read the
 hashes as in step 2, with `NormB/vcon-server` and the `v` tag, and check the
