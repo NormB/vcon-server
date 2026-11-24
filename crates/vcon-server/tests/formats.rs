@@ -2441,6 +2441,12 @@ mod live {
         String::from_utf8(out.stdout).expect("UTF-8")
     }
 
+    /// The columns a migration added to a table that releases already had,
+    /// each with the schema version that added it: a release's rows are
+    /// compared without the columns added after its schema, which its
+    /// rows did not have, and with every other column.
+    const ADDED_COLUMNS: &[(&str, &str, i64)] = &[("tenant_lock", "removing", 14)];
+
     /// A release's deployment restored: its dump in a database of the
     /// test's own, its bucket's objects in a bucket of the test's own, its
     /// data directory and master key in a temporary directory, with a
@@ -2731,14 +2737,36 @@ mod live {
             )
             .expect("the tables");
             assert!(tables.len() > 10, "{}: the schema's tables", self.release);
+            let schema = super::pg_schema(&self.release);
             let rows = tables
                 .iter()
                 .map(|t| {
+                    let skipped: Vec<String> = ADDED_COLUMNS
+                        .iter()
+                        .filter(|(table, _, added)| *table == t.as_str() && *added > schema)
+                        .map(|(_, column, _)| format!("'{column}'"))
+                        .collect();
+                    let columns = pg::superuser(
+                        &self.db.name,
+                        &format!(
+                            "SELECT string_agg(quote_ident(column_name), ',' \
+                             ORDER BY ordinal_position) FROM information_schema.columns \
+                             WHERE table_schema = 'vcon' AND table_name = '{t}' \
+                             AND column_name NOT IN ({})",
+                            if skipped.is_empty() {
+                                "''".to_owned()
+                            } else {
+                                skipped.join(",")
+                            }
+                        ),
+                    )
+                    .expect("the columns")
+                    .concat();
                     let sum = pg::superuser(
                         &self.db.name,
                         &format!(
-                            "SELECT md5(coalesce(string_agg(r::text, E'\\n' ORDER BY r::text), \
-                             '')) FROM vcon.{t} r"
+                            "SELECT md5(coalesce(string_agg(x, E'\\n' ORDER BY x), '')) \
+                             FROM (SELECT ROW({columns})::text AS x FROM vcon.{t}) r"
                         ),
                     )
                     .expect("the rows");
@@ -3058,6 +3086,16 @@ mod live {
             rows_but_new(&after_rows, release),
             rows_but_new(&rows, release),
             "{release}: every row of every table the release made is as it was"
+        );
+        assert_eq!(
+            pg::superuser(
+                &r.db.name,
+                "SELECT count(*) FROM vcon.tenant_lock WHERE removing"
+            )
+            .expect("the marks")
+            .concat(),
+            "0",
+            "{release}: no tenant is marked as being removed after the migration"
         );
         assert_eq!(
             (after_listing, after_files),
