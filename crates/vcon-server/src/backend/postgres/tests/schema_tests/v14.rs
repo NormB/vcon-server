@@ -195,13 +195,56 @@ fn version_14_changes_no_other_table() {
     let line = one_line();
     assert_eq!(
         line.matches("vcon.").count(),
-        line.matches("vcon.pending_write").count() + line.matches("vcon.tenant()").count(),
-        "every name of the schema is the new table's or the tenant's marker: {line}"
+        line.matches("vcon.pending_write").count()
+            + line.matches("vcon.tenant()").count()
+            + line.matches("vcon.tenant_lock ").count(),
+        "every name of the schema is the new table's, the tenant's marker or the lock row's: {line}"
+    );
+    assert_eq!(
+        line.matches("vcon.tenant_lock ").count(),
+        1,
+        "the lock row's table is named once, in its one change: {line}"
     );
     assert_eq!(
         line.matches("ALTER TABLE").count(),
-        2,
-        "the two statements of row level security"
+        3,
+        "the two statements of row level security and the lock row's column"
+    );
+}
+
+#[test]
+fn the_lock_row_gains_one_removing_column_false_by_default() {
+    assert_eq!(
+        one_line()
+            .matches(
+                "ALTER TABLE vcon.tenant_lock ADD COLUMN removing boolean NOT NULL DEFAULT false;"
+            )
+            .count(),
+        1,
+        "one column, never null, false for every row there is"
+    );
+}
+
+#[test]
+fn the_migration_says_why_the_lock_row_is_marked() {
+    let comment = comment();
+    for said in [
+        "answer that the version is damaged",
+        "sets `removing` on the tenant's lock row",
+        "it waits for every transaction that holds the row",
+        "A removal cut off leaves the row marked",
+    ] {
+        assert!(comment.contains(said), "the comment says: {said}");
+    }
+}
+
+#[test]
+fn a_write_begins_only_on_an_unmarked_lock_row() {
+    use super::super::super::catalog::{Begin, begin_text};
+    let text = begin_text(Begin::Write, crate::ids::TenantId([0xab; 16]));
+    assert!(
+        text.contains("AND NOT removing FOR UPDATE"),
+        "the begin takes the lock row only when it is not marked: {text}"
     );
 }
 
@@ -274,7 +317,49 @@ mod on_a_server {
         db
     }
 
+    /// The statement that makes the lock row of `tenant` (hex).
+    fn lock_row(tenant: &str) -> String {
+        format!("INSERT INTO vcon.tenant_lock (tenant) VALUES ('\\x{tenant}')")
+    }
+
+    /// The mark of the scope's lock row, as text.
+    const MARK: &str = "SELECT removing::text FROM vcon.tenant_lock";
+
     // What must work.
+
+    #[tokio::test]
+    async fn a_lock_row_of_version_13_is_kept_and_not_marked() {
+        let db = at_version_13().await;
+        run(&owner(&db).await, TENANT_A, &lock_row(TENANT_A)).await;
+        db.migrate().await;
+        assert_eq!(
+            one(&db.app().await, TENANT_A, MARK).await,
+            "false",
+            "the row is kept, and no tenant is being removed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_new_lock_row_is_not_marked() {
+        let db = Db::migrated().await;
+        let app = db.app().await;
+        run(&app, TENANT_A, &lock_row(TENANT_A)).await;
+        assert_eq!(one(&app, TENANT_A, MARK).await, "false", "by default");
+    }
+
+    #[tokio::test]
+    async fn the_application_role_marks_its_tenant_s_lock_row() {
+        let db = Db::migrated().await;
+        let app = db.app().await;
+        run(&app, TENANT_A, &lock_row(TENANT_A)).await;
+        run(
+            &app,
+            TENANT_A,
+            "UPDATE vcon.tenant_lock SET removing = true",
+        )
+        .await;
+        assert_eq!(one(&app, TENANT_A, MARK).await, "true", "marked");
+    }
 
     #[tokio::test]
     async fn a_version_13_database_is_brought_to_version_14() {
@@ -370,6 +455,42 @@ mod on_a_server {
         run(&app, TENANT_A, &pending(TENANT_A, "01", 7)).await;
         let why = refused(&app, TENANT_A, &pending(TENANT_A, "01", 8)).await;
         assert!(why.contains("duplicate key"), "the key refuses it: {why}");
+    }
+
+    #[tokio::test]
+    async fn a_tenant_cannot_mark_another_tenant_s_lock_row() {
+        let db = Db::migrated().await;
+        let app = db.app().await;
+        run(&app, TENANT_A, &lock_row(TENANT_A)).await;
+        run(
+            &app,
+            TENANT_B,
+            "UPDATE vcon.tenant_lock SET removing = true",
+        )
+        .await;
+        assert_eq!(
+            one(&app, TENANT_A, MARK).await,
+            "false",
+            "A's row is not marked"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_lock_row_cannot_be_marked_null() {
+        let db = Db::migrated().await;
+        let app = db.app().await;
+        run(&app, TENANT_A, &lock_row(TENANT_A)).await;
+        assert!(
+            in_scope(
+                &app,
+                TENANT_A,
+                "UPDATE vcon.tenant_lock SET removing = NULL"
+            )
+            .await
+            .is_err(),
+            "the mark is true or false"
+        );
+        assert_eq!(one(&app, TENANT_A, MARK).await, "false", "and stays false");
     }
 
     #[tokio::test]

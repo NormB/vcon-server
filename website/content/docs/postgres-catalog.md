@@ -623,7 +623,14 @@ preview, recovery runs before the server writes and takes every such
 row for a cut-off write's, as before. A write whose row recovery took
 adds no row of its own and fails. `vcon_app` reads, adds and deletes the
 rows and is granted no `UPDATE`; the id and the time are in the clear,
-and the table starts empty.
+and the table starts empty. Version 14 also adds the column `removing`
+to `tenant_lock`, false for every row. A tenant's removal sets it in its
+first transaction, which waits for every write of the tenant under way,
+and only then deletes the tenant's objects and rows. A write, and the
+last step of a read, on any server refuse a tenant whose row is marked,
+as a removed tenant's, so a read that races the removal is never
+answered as damaged. A removal cut off leaves the row marked, and the
+next start removes the tenant again.
 
 The audit key does not rotate with the tenant key: a rotation seals the
 same audit key under the new catalog key and changes no audit record.

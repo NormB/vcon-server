@@ -16,6 +16,18 @@ All notable changes to this project are recorded here. The format follows
   - Docs: [Schema
     versions](https://vcon-server.com/docs/postgres-catalog/#schema-versions)
 
+### Fixed
+
+- **A read that races its tenant's removal is no longer answered as damaged.**
+  - Was: With several servers on one PostgreSQL database, a read during
+    another server's removal of the tenant could fail with `A stored
+    version is damaged`.
+  - Effect: The removal first marks the tenant as being removed; from
+    then on every server refuses the tenant's reads and writes as a
+    removed tenant's.
+  - Docs: [Schema
+    versions](https://vcon-server.com/docs/postgres-catalog/#schema-versions)
+
 ### Security
 
 - **url goes from 2.5.8 to 2.5.9 (RUSTSEC-2026-0592).**

@@ -33,3 +33,16 @@ ALTER TABLE vcon.pending_write FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_rows ON vcon.pending_write
     USING (tenant = vcon.tenant()) WITH CHECK (tenant = vcon.tenant());
 GRANT SELECT, INSERT, DELETE ON vcon.pending_write TO vcon_app;
+
+-- A tenant's removal deletes its objects first, then its rows in
+-- transactions of their own, the lock row last. A read on another server
+-- that took its first step before the objects went could find, in its
+-- last step, the vCon's row still there and its object gone, and answer
+-- that the version is damaged. From this version the removal's first
+-- transaction sets `removing` on the tenant's lock row; it waits for
+-- every transaction that holds the row. Every later write or read step
+-- that takes the row is refused as a removed tenant's. A removal cut off
+-- leaves the row marked: the tenant stays refused, and the removal is
+-- made again at the next start, as before. The application role updates
+-- the row already (version 1's grant, version 10's lock_updates policy).
+ALTER TABLE vcon.tenant_lock ADD COLUMN removing boolean NOT NULL DEFAULT false;
