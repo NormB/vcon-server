@@ -459,47 +459,49 @@ impl Store {
     /// The read behind `get`, `reveal` and `read_masked`: every outcome is recorded as
     /// `action`.
     fn read_as(&self, who: &Caller, uuid: Uuid, action: Action) -> Result<Stored, StoreError> {
-        let entry = |status, version| Entry {
-            actor: Actor::Key(who.key),
-            action,
-            target: Some(uuid.to_string()),
-            version,
-            status,
-        };
-        let refuse = |mut tx: Tx, state: State| {
-            let (status, error) = match state {
-                State::Gone => (410, StoreError::Gone),
-                _ => (404, StoreError::NotFound),
-            };
-            self.record(&mut tx, &entry(status, None))?;
-            commit(tx)?;
-            Err(error)
-        };
         loop {
-            let (version, row) = {
-                let mut tx = self.catalog.immediate()?;
+            // The first step only reads, and takes no write lock (on
+            // PostgreSQL, no lock on the tenant): the last step checks
+            // again under the lock, and records the read or its refusal.
+            let found = {
+                let mut tx = self.catalog.snapshot()?;
                 match state(&mut tx, uuid)? {
-                    State::Live(version) => (version, version_row(&mut tx, version)),
-                    other => return refuse(tx, other),
+                    State::Live(version) => {
+                        #[cfg(test)]
+                        {
+                            let hook = self.hooks.in_first_step.lock().expect("hook").clone();
+                            if let Some(hook) = hook {
+                                hook();
+                            }
+                        }
+                        Some((version, version_row(&mut tx, version)))
+                    }
+                    State::Gone | State::Absent => None,
                 }
             };
-            let place = row.as_ref().ok().and_then(|r| r.place.clone());
-            #[cfg(test)]
-            {
-                let hook = self.hooks.before_read.lock().expect("hook").take();
-                if let Some(hook) = hook {
-                    hook();
+            let (version, opened, place) = match found {
+                Some((version, row)) => {
+                    let place = row.as_ref().ok().and_then(|r| r.place.clone());
+                    #[cfg(test)]
+                    {
+                        let hook = self.hooks.before_read.lock().expect("hook").take();
+                        if let Some(hook) = hook {
+                            hook();
+                        }
+                    }
+                    let opened = row.and_then(|row| {
+                        let body = self.open_version(uuid, version, &row)?;
+                        Ok(Stored {
+                            version,
+                            form: row.form,
+                            gzip: row.gzip,
+                            body,
+                        })
+                    });
+                    (Some(version), Some(opened), place)
                 }
-            }
-            let opened = row.and_then(|row| {
-                let body = self.open_version(uuid, version, &row)?;
-                Ok(Stored {
-                    version,
-                    form: row.form,
-                    gzip: row.gzip,
-                    body,
-                })
-            });
+                None => (None, None, None),
+            };
             self.pause();
             #[cfg(test)]
             {
@@ -513,11 +515,17 @@ impl Store {
                 action,
                 uuid,
                 version,
-                opened: opened.is_ok(),
+                opened: opened.as_ref().is_some_and(Result::is_ok),
                 place,
             };
             match self.group.confirm(self, read)? {
-                group::Confirmed::Answer => return opened,
+                // The last step answers only a read that read a version, so
+                // `opened` holds that version's outcome; without one (no
+                // such step answers so) the read would start again.
+                group::Confirmed::Answer => match opened {
+                    Some(opened) => return opened,
+                    None => continue,
+                },
                 group::Confirmed::Again => continue,
                 group::Confirmed::Refused(error) => return Err(error),
             }
@@ -869,6 +877,29 @@ impl Store {
         }
     }
 
+    /// In tests, sets the hook every read runs after its first step and
+    /// before its last; None removes it. The live PostgreSQL read tests
+    /// use it.
+    #[cfg(all(test, feature = "postgres", feature = "backend-tests"))]
+    pub(crate) fn on_last_step(&self, hook: Option<Arc<dyn Fn() + Send + Sync>>) {
+        *self.hooks.before_confirm.lock().expect("hook") = hook;
+    }
+
+    /// In tests, sets the hook every read runs in its first step, after it
+    /// finds the vCon's current version and before it reads that
+    /// version's row; None removes it.
+    #[cfg(all(test, feature = "postgres", feature = "backend-tests"))]
+    pub(crate) fn in_first_step(&self, hook: Option<Arc<dyn Fn() + Send + Sync>>) {
+        *self.hooks.in_first_step.lock().expect("hook") = hook;
+    }
+
+    /// In tests, sets the hook the next read runs once, after its first
+    /// step and before it opens the version's body.
+    #[cfg(all(test, feature = "postgres", feature = "backend-tests"))]
+    pub(crate) fn once_before_open(&self, hook: Box<dyn FnOnce() + Send>) {
+        *self.hooks.before_read.lock().expect("hook") = Some(hook);
+    }
+
     #[cfg(test)]
     pub(crate) fn on_backup_copied(&self, hook: tests::BackupHook) {
         *self.hooks.copied.lock().expect("hook") = Some(hook);
@@ -1135,6 +1166,9 @@ pub(crate) mod tests {
         /// Runs in every read, after its body is read and before it joins
         /// the queue for its last step.
         pub(super) before_confirm: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+        /// Runs in every read's first step, between the read of the
+        /// vCon's current version and the read of that version's row.
+        pub(super) in_first_step: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     }
 
     pub(crate) struct Fixture {

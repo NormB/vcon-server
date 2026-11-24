@@ -1,6 +1,8 @@
 //! Group commit of reads' audit records. A read ends with a transaction
-//! that checks its version is still current and records the read; the
-//! record must be durable before the body is returned. Reads that reach
+//! that checks its version is still current and records the read, or, when
+//! its first step found the vCon deleted or not there, checks that again
+//! and records the refusal; the record must be durable before the read is
+//! answered. Reads that reach
 //! that step while another read's transaction holds the catalog wait in
 //! one queue, and the next of them to run takes the whole queue into one
 //! transaction: each read's check and record in a part of its own, then
@@ -21,7 +23,9 @@ pub(super) struct Confirm {
     pub(super) key: KeyId,
     pub(super) action: Action,
     pub(super) uuid: Uuid,
-    pub(super) version: VersionId,
+    /// The version read, or None when the first step found the vCon
+    /// deleted or not there.
+    pub(super) version: Option<VersionId>,
     /// Whether the version's body opened.
     pub(super) opened: bool,
     /// The version's place when it was read, if it is packed.
@@ -228,19 +232,20 @@ fn one(store: &Store, tx: &mut Tx, read: &Confirm) -> Result<Confirmed, StoreErr
         // after its place was read: read again at the new place. The same
         // place still failing is the answer.
         State::Live(now)
-            if now == read.version
+            if Some(now) == read.version
                 && !read.opened
                 && read.place.is_some()
-                && version_row(tx, read.version).ok().map(|r| r.place)
-                    != Some(read.place.clone()) =>
+                && version_row(tx, now).ok().map(|r| r.place) != Some(read.place.clone()) =>
         {
             Ok(Confirmed::Again)
         }
-        State::Live(now) if now == read.version => {
+        State::Live(now) if Some(now) == read.version => {
             let status = if read.opened { 200 } else { 500 };
-            store.record(tx, &entry(status, Some(read.version)))?;
+            store.record(tx, &entry(status, Some(now)))?;
             Ok(Confirmed::Answer)
         }
+        // Another version, or a vCon stored since the first step found
+        // none: the read starts again.
         State::Live(_) => Ok(Confirmed::Again),
         State::Gone => {
             store.record(tx, &entry(410, None))?;

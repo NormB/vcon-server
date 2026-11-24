@@ -15,6 +15,7 @@ mod edge;
 mod failure;
 mod lock_tests;
 mod place_tests;
+mod read_tests;
 mod registry_tests;
 mod rekey_tests;
 mod reseal_tests;

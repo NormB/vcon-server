@@ -352,6 +352,146 @@ fn a_lone_read_runs_in_no_part() {
     );
 }
 
+/// A second connection to the fixture's catalog file, as another process
+/// would open it.
+fn second_connection(f: &Fixture) -> Connection {
+    let key = crate::envelope::catalog_key(&f.tenant_key()).expect("catalog key");
+    crate::catalog::open(&f.dir.path().join("catalog.sqlite"), &key, "")
+        .expect("a second connection")
+}
+
+/// Runs `f.store.get` on a thread of its own while another connection
+/// holds the catalog's write lock, and says whether the read reached its
+/// last step within `within`; the lock is let go after that, and the read's
+/// answer returned.
+fn read_while_written(
+    f: &Arc<Fixture>,
+    uuid: Uuid,
+    within: Duration,
+) -> (bool, Result<Stored, StoreError>) {
+    let mut writer = second_connection(f);
+    let write = writer
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .expect("the write lock");
+    let (reached, at_last_step) = mpsc::channel();
+    let reached = std::sync::Mutex::new(reached);
+    *f.store.hooks.before_confirm.lock().expect("hook") = Some(Arc::new(move || {
+        let _ = reached.lock().expect("sender").send(());
+    }));
+    let (answer, answered) = mpsc::channel();
+    let g = f.clone();
+    std::thread::spawn(move || {
+        let _ = answer.send(g.store.get(&g.caller, uuid));
+    });
+    let first_step_ended = at_last_step.recv_timeout(within).is_ok();
+    drop(write);
+    let outcome = answered
+        .recv_timeout(PATIENCE)
+        .unwrap_or_else(|_| panic!("the read was not answered within {PATIENCE:?}"));
+    *f.store.hooks.before_confirm.lock().expect("hook") = None;
+    (first_step_ended, outcome)
+}
+
+/// A read's first step only reads, so a writer holding the catalog does
+/// not hold it up (on PostgreSQL, it takes no lock on the tenant); only
+/// its last step, which records it, waits for the writer.
+#[test]
+fn a_reads_first_step_does_not_wait_for_a_writer() {
+    let f = Arc::new(fixture());
+    let (uuid, body) = stored(&f, A, "first");
+    let (first_step_ended, outcome) = read_while_written(&f, uuid, Duration::from_secs(3));
+    assert!(
+        first_step_ended,
+        "the first step ended while another connection held the write lock"
+    );
+    assert_eq!(
+        outcome.expect("read").body,
+        body,
+        "the read is answered after"
+    );
+    assert_eq!(reads(&f).len(), 1, "and recorded once");
+}
+
+/// A read of a deleted vCon is refused in its last step, which records the
+/// refusal; its first step, which found the vCon deleted, waits for no
+/// writer either.
+#[test]
+fn a_read_of_a_deleted_vcon_is_refused_and_recorded_in_its_last_step() {
+    let f = Arc::new(fixture());
+    let (uuid, _) = stored(&f, A, "first");
+    f.store
+        .delete(&f.caller, uuid, crate::retention::Retention::Years(7))
+        .expect("deleted");
+    let (first_step_ended, outcome) = read_while_written(&f, uuid, Duration::from_secs(3));
+    assert!(
+        first_step_ended,
+        "the first step did not wait for the writer"
+    );
+    assert_eq!(
+        outcome,
+        Err(StoreError::Gone),
+        "the read is refused as gone"
+    );
+    assert_eq!(
+        reads(&f),
+        [(Value::from(A), Value::from(410))],
+        "the refusal is recorded once"
+    );
+}
+
+/// The same for a uuid no vCon ever had: refused as not found, and
+/// recorded.
+#[test]
+fn a_read_of_an_unknown_uuid_is_refused_and_recorded_in_its_last_step() {
+    let f = Arc::new(fixture());
+    let uuid = Uuid::parse_str(B).expect("uuid");
+    let (first_step_ended, outcome) = read_while_written(&f, uuid, Duration::from_secs(3));
+    assert!(
+        first_step_ended,
+        "the first step did not wait for the writer"
+    );
+    assert_eq!(
+        outcome,
+        Err(StoreError::NotFound),
+        "the read is refused as not found"
+    );
+    assert_eq!(
+        reads(&f),
+        [(Value::from(B), Value::from(404))],
+        "the refusal is recorded once"
+    );
+}
+
+/// A vCon stored between a read's first step, which found nothing, and
+/// its last is read: the last step finds it, and the read starts again.
+#[test]
+fn a_vcon_stored_after_the_first_step_found_nothing_is_read() {
+    let f = Arc::new(fixture());
+    let uuid = Uuid::parse_str(A).expect("uuid");
+    let (found, body) = vcon(A, "late");
+    let once = std::sync::Mutex::new(Some(f.clone()));
+    *f.store.hooks.before_confirm.lock().expect("hook") = Some(Arc::new(move || {
+        if let Some(f) = once.lock().expect("once").take() {
+            f.store
+                .create(&f.caller, &found, &body)
+                .expect("stored meanwhile");
+        }
+    }));
+    let outcome = bounded_get(&f, uuid);
+    *f.store.hooks.before_confirm.lock().expect("hook") = None;
+    let (_, want) = vcon(A, "late");
+    assert_eq!(
+        outcome.expect("read").body,
+        want,
+        "the read finds the new vCon"
+    );
+    assert_eq!(
+        reads(&f),
+        [(Value::from(A), Value::from(200))],
+        "one record, for the read that was answered"
+    );
+}
+
 #[test]
 fn a_batch_whose_commit_rolls_back_answers_no_read() {
     let f = Arc::new(fixture());

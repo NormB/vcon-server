@@ -12,6 +12,11 @@ All notable changes to this project are recorded here. The format follows
   - Effect: Each read is still answered only after its own record is on
     disk; with 8 clients, reads a second rose from 2,761 to 4,354.
   - Docs: [Scale numbers](https://vcon-server.com/docs/scale/)
+- **A read no longer waits for a write of its tenant before it starts.**
+  - Effect: Reads overlap with a tenant's stores, replaces and deletes; each
+    read still answers a version that was current when its answer was recorded.
+  - Limit: It does no less work: the server runs the same instructions for
+    a read as before.
 
 ## [0.4.13] - 2026-11-21
 
