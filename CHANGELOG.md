@@ -6,6 +6,14 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Quitting the terminal UI no longer waits for a request under way.**
+  - Was: Quitting while the server had not yet answered a request could
+    hold the exit for up to the request's 15 s timeout.
+  - Effect: The UI ends every request under way and exits at once.
+  - Docs: [Use it](https://vcon-server.com/docs/tui/#use-it)
+
 ## [0.4.15] - 2026-11-24
 
 ### Changed
