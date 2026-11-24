@@ -18,6 +18,22 @@ CI runs every command on this page on each change. It installs the previous
 release, sets it up as [getting started](@/docs/getting-started.md) does,
 upgrades it to the server built from the change, and goes back again.
 
+## From 0.4.15 to 0.4.16
+
+The upgrade is the binary alone. No stored data, configuration or schema
+changes: the catalogs in the data directory keep schema version 9, and a
+PostgreSQL catalog keeps version 14, so no `vcon-server migrate` is
+needed. A downgrade is possible: 0.4.15 opens a data directory or a
+PostgreSQL database that 0.4.16 has served. Copy the data directory, or
+back up the database, before the upgrade all the same, as in
+[copy the data directory](#copy-the-data-directory). One thing is
+different in 0.4.16:
+
+- **Quitting the terminal UI no longer waits for a request under way.**
+  Quitting while the server had not yet answered a request could hold the
+  exit for up to the request's 15 s timeout; the UI now ends every request
+  under way and exits at once. See [use it](@/docs/tui.md#use-it).
+
 ## From 0.4.14 to 0.4.15
 
 For a deployment with its catalogs in the data directory, the upgrade is
@@ -545,7 +561,7 @@ but do not install it yet. The commands use their own variable names, so
 they do not change the ones from install:
 
 ```sh
-NEW_VERSION=0.4.15
+NEW_VERSION=0.4.16
 NEW_ARCHIVE=vcon-server-$NEW_VERSION-$(uname -m)-unknown-linux-gnu.tar.gz
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/$NEW_ARCHIVE
 curl -fsSL -o SHA256SUMS-$NEW_VERSION.txt https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/SHA256SUMS.txt

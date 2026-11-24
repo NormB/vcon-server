@@ -6,6 +6,16 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.16] - 2026-11-25
+
+### Changed
+
+- **The upgrade from 0.4.15 is the binary alone.**
+  - Effect: No stored data, configuration or schema changes; 0.4.15 opens a
+    data directory or a PostgreSQL database that 0.4.16 has served.
+  - Docs: [From 0.4.15 to
+    0.4.16](https://vcon-server.com/docs/upgrading/#from-0-4-15-to-0-4-16)
+
 ### Fixed
 
 - **Quitting the terminal UI no longer waits for a request under way.**
@@ -1257,7 +1267,8 @@ All notable changes to this project are recorded here. The format follows
   - Limit: `vcon::MAX_SIGNED_LAYERS`, `vcon::MAX_JSON_DEPTH` and
     `vcon::Rejection::TooDeep` name the limits.
 
-[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.15...HEAD
+[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.16...HEAD
+[0.4.16]: https://github.com/NormB/vcon-server/releases/tag/v0.4.16
 [0.4.15]: https://github.com/NormB/vcon-server/releases/tag/v0.4.15
 [0.4.14]: https://github.com/NormB/vcon-server/releases/tag/v0.4.14
 [0.4.13]: https://github.com/NormB/vcon-server/releases/tag/v0.4.13
