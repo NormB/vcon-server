@@ -31,7 +31,7 @@ permissions:
 # anywhere: #251's analysis reported changed lines only, so it saw none of
 # the 24 that 2.27.5 found in lines it did not change.
 env:
-  CODEQL_VERSION: 2.27.5
+  CODEQL_VERSION: 2.27.6
   CODEQL_ACTION_DIFF_INFORMED_QUERIES: "false"
 
 jobs:
@@ -55,13 +55,13 @@ jobs:
         include:
           - language: actions
             bundle: actions
-            bundle_sha256: fd7915e9f242d823de40fafed58f49816dba8e5a8f443191924eaf9c792f6655
+            bundle_sha256: 3cbe676d1ed731d0befbdc9fb6637c8957e8e3ac389adbc3d75a6cb9f2cc20cc
           - language: javascript-typescript
             bundle: javascript
-            bundle_sha256: b10957140a7969819022eac23a6a37d0c6a65de12a84704ca71c416b980edb5c
+            bundle_sha256: 872a02eaa11b6ed6dac33796d1b964827d12ab93582db5479de579ea8f6a3539
           - language: rust
             bundle: rust
-            bundle_sha256: fac16882d1c56f3cdfe502b1021e44407976e3260cc4660b4f898082c315fac9
+            bundle_sha256: f414638c092843f32185745676a9f737aa7bfbb47606f7756668e94cdad30896
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
