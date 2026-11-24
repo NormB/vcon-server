@@ -16,7 +16,7 @@ mod on_a_server {
     use super::super::super::catalog::{Database, PgCatalog};
     use super::super::catalog_tests::on_a_server::database;
     use super::super::live::value;
-    use super::super::schema_tests::live::{Db, waiters};
+    use super::super::schema_tests::live::{Db, count, waiters};
     use crate::backend::conformance::{START, TestClock, vcon};
     use crate::backend::local::LocalObjects;
     use crate::backend::{Catalog, CatalogTx};
@@ -34,7 +34,7 @@ mod on_a_server {
     const PATIENCE: Duration = Duration::from_secs(20);
 
     /// A tenant's Store on a database of the test's own, its objects in a
-    /// directory. The Store is dropped first, the database last.
+    /// directory.
     struct Tenant {
         store: Store,
         caller: Caller,
@@ -42,10 +42,15 @@ mod on_a_server {
         tenant: TenantId,
         database: Arc<Database>,
         _objects: tempfile::TempDir,
-        db: Db,
     }
 
-    fn tenant() -> Arc<Tenant> {
+    /// The test's database and a tenant on it. The test holds the
+    /// database itself, bound before the tenant (`let (_db, t) =
+    /// tenant();`), so it is dropped when the test ends, pass or fail,
+    /// after the test's own handle of the tenant: a read thread may still
+    /// hold the tenant then, and nextest ends the process once the test
+    /// returns, so a database the tenant held would never be dropped.
+    fn tenant() -> (Db, Arc<Tenant>) {
         let (db, database) = database();
         let tenant = TenantId::generate();
         let key = Key::generate().expect("a tenant key");
@@ -64,7 +69,7 @@ mod on_a_server {
             true,
         )
         .expect("opens");
-        Arc::new(Tenant {
+        let t = Arc::new(Tenant {
             store,
             caller: Caller {
                 key: Key::generate().expect("a key").id(),
@@ -73,8 +78,8 @@ mod on_a_server {
             tenant,
             database,
             _objects: objects,
-            db,
-        })
+        });
+        (db, t)
     }
 
     /// A second catalog of the tenant, as another server would open it.
@@ -146,13 +151,13 @@ mod on_a_server {
 
     /// Whether some session of the test's database waits for a lock,
     /// asked up to fifty times a tenth of a second apart.
-    fn a_session_waits(t: &Tenant) -> bool {
+    fn a_session_waits(db: &Db) -> bool {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("a runtime");
         runtime.block_on(async {
-            let admin = t.db.admin().await;
+            let admin = db.admin().await;
             for _ in 0..50 {
                 if value(&admin, &waiters(None)).await == "1" {
                     return true;
@@ -178,14 +183,18 @@ mod on_a_server {
     /// Starts a read of `uuid` while `write` holds the tenant's lock, and
     /// checks that its first step ends anyway and that its last step then
     /// waits for the lock; gives back the read's answer channel.
-    fn read_under(t: &Arc<Tenant>, uuid: Uuid) -> mpsc::Receiver<Result<Vec<u8>, StoreError>> {
+    fn read_under(
+        t: &Arc<Tenant>,
+        db: &Db,
+        uuid: Uuid,
+    ) -> mpsc::Receiver<Result<Vec<u8>, StoreError>> {
         let reached = at_last_step(t);
         let answered = read(t, uuid);
         assert!(
             reached.recv_timeout(PATIENCE).is_ok(),
             "the read's first step ended while another catalog held the tenant's lock"
         );
-        assert!(a_session_waits(t), "its last step waits for the lock");
+        assert!(a_session_waits(db), "its last step waits for the lock");
         assert!(
             answered.try_recv().is_err(),
             "and the read has no answer while the write holds the lock"
@@ -206,11 +215,11 @@ mod on_a_server {
     /// write holds the lock, and only its last step waits for that write.
     #[test]
     fn a_reads_first_step_does_not_wait_for_a_write_of_the_tenant() {
-        let t = tenant();
+        let (db, t) = tenant();
         let (_, body) = stored(&t, A, "first");
         let catalog = other(&t);
         let write = held_write(&catalog);
-        let answered = read_under(&t, uuid(A));
+        let answered = read_under(&t, &db, uuid(A));
         write.commit().expect("the write commits");
         assert_eq!(answer(&answered), Ok(body), "the read is answered after");
         assert_eq!(reads(&t), [rec(A, 200)], "and recorded once, as answered");
@@ -221,14 +230,14 @@ mod on_a_server {
     /// waited for the write in its first step was.
     #[test]
     fn a_vcon_a_held_write_deletes_is_refused_as_gone() {
-        let t = tenant();
+        let (db, t) = tenant();
         stored(&t, A, "first");
         let catalog = other(&t);
         let mut write = held_write(&catalog);
         write
             .mark_deleted(uuid(A), nanos(START))
             .expect("the write deletes it");
-        let answered = read_under(&t, uuid(A));
+        let answered = read_under(&t, &db, uuid(A));
         write.commit().expect("the delete commits");
         assert_eq!(answer(&answered), Err(StoreError::Gone), "refused as gone");
         assert_eq!(reads(&t), [rec(A, 410)], "the refusal is recorded once");
@@ -238,14 +247,14 @@ mod on_a_server {
     /// with the body.
     #[test]
     fn a_held_write_that_is_rolled_back_leaves_the_read_answered() {
-        let t = tenant();
+        let (db, t) = tenant();
         let (_, body) = stored(&t, A, "first");
         let catalog = other(&t);
         let mut write = held_write(&catalog);
         write
             .mark_deleted(uuid(A), nanos(START))
             .expect("the write deletes it");
-        let answered = read_under(&t, uuid(A));
+        let answered = read_under(&t, &db, uuid(A));
         drop(write);
         assert_eq!(answer(&answered), Ok(body), "the body");
         assert_eq!(reads(&t), [rec(A, 200)], "recorded once");
@@ -255,10 +264,10 @@ mod on_a_server {
     /// not found, and recorded once.
     #[test]
     fn an_unknown_uuid_read_under_a_held_write_is_not_found() {
-        let t = tenant();
+        let (db, t) = tenant();
         let catalog = other(&t);
         let write = held_write(&catalog);
-        let answered = read_under(&t, uuid(B));
+        let answered = read_under(&t, &db, uuid(B));
         write.commit().expect("the write commits");
         assert_eq!(answer(&answered), Err(StoreError::NotFound), "not found");
         assert_eq!(reads(&t), [rec(B, 404)], "recorded once");
@@ -268,7 +277,7 @@ mod on_a_server {
     /// the version it read first; it reads again and answers the new one.
     #[test]
     fn a_replace_between_the_steps_is_read_at_the_new_version() {
-        let t = tenant();
+        let (_db, t) = tenant();
         let (first, old) = stored(&t, A, "first");
         let (found, new) = vcon(A, "second");
         once_before_last_step(&t, move |t| {
@@ -288,7 +297,7 @@ mod on_a_server {
     /// recorded once.
     #[test]
     fn a_delete_between_the_steps_is_refused_as_gone() {
-        let t = tenant();
+        let (_db, t) = tenant();
         stored(&t, A, "first");
         once_before_last_step(&t, |t| {
             t.store
@@ -305,7 +314,7 @@ mod on_a_server {
     /// finds it in its last step and reads it.
     #[test]
     fn a_vcon_stored_between_the_steps_is_read() {
-        let t = tenant();
+        let (_db, t) = tenant();
         let (found, body) = vcon(B, "late");
         once_before_last_step(&t, move |t| {
             t.store
@@ -365,7 +374,7 @@ mod on_a_server {
     /// the replaced version is purged too, its object removed after the
     /// purge commits.
     fn replaced_at(gap: Gap, purge: bool) {
-        let t = tenant();
+        let (_db, t) = tenant();
         let (first, old) = stored(&t, A, "first");
         let (found, new) = vcon(A, "second");
         let answered = read_with_write_at(&t, gap, uuid(A), move |t| {
@@ -385,7 +394,7 @@ mod on_a_server {
 
     /// A is deleted at `gap` and kept for `retention`: refused as gone.
     fn deleted_at(gap: Gap, retention: Retention) {
-        let t = tenant();
+        let (_db, t) = tenant();
         stored(&t, A, "first");
         let answered = read_with_write_at(&t, gap, uuid(A), move |t| {
             t.store
@@ -400,7 +409,7 @@ mod on_a_server {
     /// does it: its objects first, then its rows, the lock row last. The
     /// read is refused: its last step finds no tenant to lock.
     fn tenant_removed_at(gap: Gap) {
-        let t = tenant();
+        let (_db, t) = tenant();
         let (_, old) = stored(&t, A, "first");
         let answered = read_with_write_at(&t, gap, uuid(A), |t| {
             for entry in std::fs::read_dir(t._objects.path()).expect("the objects") {
@@ -558,7 +567,7 @@ mod on_a_server {
         use std::sync::atomic::Ordering::SeqCst;
         use std::sync::atomic::{AtomicBool, AtomicUsize};
         const ROUNDS: usize = 12;
-        let t = tenant();
+        let (_db, t) = tenant();
         let (mut current, _) = stored(&t, A, &subject(0));
         let done = Arc::new(AtomicBool::new(false));
         // Every version before this one is purged.
@@ -598,7 +607,7 @@ mod on_a_server {
     fn reads_racing_a_delete_and_purge_answer_the_version_or_gone() {
         use std::sync::atomic::Ordering::SeqCst;
         use std::sync::atomic::{AtomicBool, AtomicUsize};
-        let t = tenant();
+        let (_db, t) = tenant();
         let (_, body) = stored(&t, A, &subject(0));
         let done = Arc::new(AtomicBool::new(false));
         // 1 once the delete and its purge have committed.
@@ -654,5 +663,44 @@ mod on_a_server {
             recorded[first_gone..].iter().all(|r| *r == rec(A, 410)),
             "after the first refusal in the log, no read is recorded as answered"
         );
+    }
+
+    /// How many databases named `name` the server holds, asked from a
+    /// database of its own.
+    fn databases_named(name: &str) -> i64 {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        runtime.block_on(async {
+            let asker = Db::fresh().await;
+            let admin = asker.admin().await;
+            count(
+                &admin,
+                &format!("SELECT count(*) FROM pg_database WHERE datname = '{name}'"),
+            )
+            .await
+        })
+    }
+
+    /// A test's database goes when the test ends, although a thread of the
+    /// test (a read that has sent its answer and not yet ended, or one a
+    /// failed assertion left waiting) still holds the tenant: nextest ends
+    /// the process when the test returns, and a database whose drop waits
+    /// for that thread is never dropped.
+    #[test]
+    fn the_database_goes_when_the_test_ends_while_a_thread_holds_the_tenant() {
+        let (db, t) = tenant();
+        let name = db.name.clone();
+        let held = t.clone();
+        // The test's end: its own bindings go, in their order.
+        drop(t);
+        drop(db);
+        assert_eq!(
+            databases_named(&name),
+            0,
+            "the database {name} was dropped with the test's own handles"
+        );
+        drop(held);
     }
 }

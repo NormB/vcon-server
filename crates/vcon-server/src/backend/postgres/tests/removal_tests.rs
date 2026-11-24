@@ -32,17 +32,22 @@ mod on_a_server {
     const RACE_READS: usize = 40;
 
     /// A tenant's Store on a database of the test's own, its objects in a
-    /// directory. The Store is dropped first, the database last.
+    /// directory.
     struct Tenant {
         store: Store,
         caller: Caller,
         tenant: TenantId,
         database: Arc<Database>,
         objects: tempfile::TempDir,
-        db: Db,
     }
 
-    fn tenant() -> Arc<Tenant> {
+    /// The test's database and a tenant on it. The test holds the
+    /// database itself, bound before the tenant (`let (db, t) =
+    /// tenant();`), so it is dropped when the test ends, pass or fail: a
+    /// reader thread a failed check left running may still hold the
+    /// tenant, and nextest ends the process once the test returns, so a
+    /// database the tenant held would never be dropped.
+    fn tenant() -> (Db, Arc<Tenant>) {
         let (db, database) = database();
         let tenant = TenantId::generate();
         let key = Key::generate().expect("a tenant key");
@@ -61,7 +66,7 @@ mod on_a_server {
             true,
         )
         .expect("opens");
-        Arc::new(Tenant {
+        let t = Arc::new(Tenant {
             store,
             caller: Caller {
                 key: Key::generate().expect("a key").id(),
@@ -69,8 +74,8 @@ mod on_a_server {
             tenant,
             database,
             objects,
-            db,
-        })
+        });
+        (db, t)
     }
 
     fn stored(t: &Tenant) -> Vec<u8> {
@@ -141,7 +146,7 @@ mod on_a_server {
     /// after the removal ended is refused.
     #[test]
     fn reads_racing_a_tenant_removal_answer_the_version_or_are_refused() {
-        let t = tenant();
+        let (_db, t) = tenant();
         let body = stored(&t);
         let done = Arc::new(AtomicBool::new(false));
         let removed = Arc::new(AtomicUsize::new(0));
@@ -184,12 +189,8 @@ mod on_a_server {
 
     /// The tenant's lock row, as the owner reads it: `["false"]`,
     /// `["true"]`, or no row.
-    fn mark(t: &Tenant) -> Vec<String> {
-        owner_reads(
-            &t.db,
-            t.tenant,
-            "SELECT removing::text FROM vcon.tenant_lock",
-        )
+    fn mark(db: &Db, t: &Tenant) -> Vec<String> {
+        owner_reads(db, t.tenant, "SELECT removing::text FROM vcon.tenant_lock")
     }
 
     fn present(t: &Tenant) -> bool {
@@ -206,16 +207,20 @@ mod on_a_server {
 
     #[test]
     fn a_made_tenant_s_lock_row_is_not_marked() {
-        let t = tenant();
-        assert_eq!(mark(&t), ["false"], "a new tenant is not being removed");
+        let (db, t) = tenant();
+        assert_eq!(
+            mark(&db, &t),
+            ["false"],
+            "a new tenant is not being removed"
+        );
     }
 
     #[test]
     fn the_lock_row_is_marked_before_the_objects_go() {
-        let t = tenant();
+        let (db, t) = tenant();
         let body = stored(&t);
         PgCatalog::remove(&t.database, t.tenant, 10, || {
-            assert_eq!(mark(&t), ["true"], "marked when the objects go");
+            assert_eq!(mark(&db, &t), ["true"], "marked when the objects go");
             assert!(
                 std::fs::read_dir(t.objects.path())
                     .expect("the objects")
@@ -229,7 +234,7 @@ mod on_a_server {
         })
         .expect("removed");
         assert_eq!(
-            mark(&t),
+            mark(&db, &t),
             Vec::<String>::new(),
             "the lock row is gone at the end"
         );
@@ -238,7 +243,7 @@ mod on_a_server {
 
     #[test]
     fn a_read_after_the_mark_is_refused_not_damaged_while_the_object_is_there() {
-        let t = tenant();
+        let (_db, t) = tenant();
         stored(&t);
         PgCatalog::remove(&t.database, t.tenant, 10, || {
             let read = t.store.get(&t.caller, a()).map(|s| s.body);
@@ -258,7 +263,7 @@ mod on_a_server {
 
     #[test]
     fn a_read_after_the_removal_is_refused_not_damaged() {
-        let t = tenant();
+        let (_db, t) = tenant();
         stored(&t);
         PgCatalog::remove(&t.database, t.tenant, 1, || {
             objects_removed(&t);
@@ -274,7 +279,7 @@ mod on_a_server {
 
     #[test]
     fn a_removal_made_again_after_its_objects_failed_removes_the_tenant() {
-        let t = tenant();
+        let (_db, t) = tenant();
         stored(&t);
         assert_eq!(
             PgCatalog::remove(&t.database, t.tenant, 10, || Err(CatalogError::Io)),
@@ -291,10 +296,10 @@ mod on_a_server {
 
     #[test]
     fn a_tenant_whose_lock_row_is_gone_is_removed_with_its_objects() {
-        let t = tenant();
+        let (db, t) = tenant();
         stored(&t);
         owner_reads(
-            &t.db,
+            &db,
             t.tenant,
             "DELETE FROM vcon.tenant_lock RETURNING 'gone'",
         );
@@ -307,7 +312,7 @@ mod on_a_server {
         .expect("removed");
         assert!(called.load(SeqCst), "its objects are removed");
         assert_eq!(
-            owner_reads(&t.db, t.tenant, "SELECT count(*) FROM vcon.vcon"),
+            owner_reads(&db, t.tenant, "SELECT count(*) FROM vcon.vcon"),
             ["0"],
             "and its rows"
         );
@@ -357,7 +362,7 @@ mod on_a_server {
 
     #[test]
     fn a_write_after_the_mark_is_refused_and_stores_nothing() {
-        let t = tenant();
+        let (db, t) = tenant();
         stored(&t);
         PgCatalog::remove(&t.database, t.tenant, 10, || {
             let (found, body) = vcon("01a07da8-c2bb-83e5-b9a2-279e0d16bcb2", "late");
@@ -366,7 +371,7 @@ mod on_a_server {
                 "a write after the mark is refused"
             );
             assert_eq!(
-                owner_reads(&t.db, t.tenant, "SELECT count(*) FROM vcon.vcon"),
+                owner_reads(&db, t.tenant, "SELECT count(*) FROM vcon.vcon"),
                 ["1"],
                 "and stores no vCon"
             );
@@ -378,14 +383,14 @@ mod on_a_server {
 
     #[test]
     fn a_removal_whose_objects_fail_keeps_the_rows_and_the_mark() {
-        let t = tenant();
+        let (db, t) = tenant();
         stored(&t);
         assert_eq!(
             PgCatalog::remove(&t.database, t.tenant, 10, || Err(CatalogError::Io)),
             Err(CatalogError::Io),
             "the objects' error"
         );
-        assert_eq!(mark(&t), ["true"], "the lock row stays marked");
+        assert_eq!(mark(&db, &t), ["true"], "the lock row stays marked");
         assert!(
             present(&t),
             "so the tenant is present, for the next removal"
@@ -399,7 +404,7 @@ mod on_a_server {
 
     #[test]
     fn the_registry_s_id_is_refused_before_anything_is_removed() {
-        let t = tenant();
+        let (_db, t) = tenant();
         let called = AtomicBool::new(false);
         assert_eq!(
             PgCatalog::remove(&t.database, REGISTRY, 10, || {
@@ -414,7 +419,7 @@ mod on_a_server {
 
     #[test]
     fn a_batch_of_no_rows_is_refused_after_the_objects() {
-        let t = tenant();
+        let (db, t) = tenant();
         stored(&t);
         assert_eq!(
             PgCatalog::remove(&t.database, t.tenant, 0, || Ok(())),
@@ -422,7 +427,7 @@ mod on_a_server {
             "remove_in's refusal of a batch of 0"
         );
         assert_eq!(
-            mark(&t),
+            mark(&db, &t),
             ["true"],
             "the tenant stays marked, refused to reads"
         );
