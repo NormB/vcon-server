@@ -775,12 +775,19 @@ pub(crate) mod tests {
     fn bounded_get(f: &Arc<Fixture>, uuid: uuid::Uuid) -> Result<Vec<u8>, StoreError> {
         let (answer, answered) = std::sync::mpsc::channel();
         let g = f.clone();
-        std::thread::spawn(move || {
+        let reader = std::thread::spawn(move || {
             let _ = answer.send(g.store.get(&g.caller, uuid).map(|s| s.body));
         });
-        answered.recv_timeout(BOUND).unwrap_or_else(|_| {
+        let got = answered.recv_timeout(BOUND).unwrap_or_else(|_| {
             panic!("the read had no answer within {BOUND:?}: it tries again without end")
-        })
+        });
+        // The thread ends after it answers: it drops its clone of the store
+        // and OpenSSL frees its per-thread state. Wait for that, as
+        // manifest.rs's publish test does: a test process that exits while
+        // the thread is ending made LeakSanitizer report OpenSSL's
+        // per-thread allocations (CI, AddressSanitizer job 138173071466).
+        reader.join().expect("the reading thread ends");
+        got
     }
 
     /// An unpacked version whose object is lost, with no pack run between
