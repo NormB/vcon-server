@@ -377,6 +377,203 @@ class Findings(unittest.TestCase):
         self.assertEqual(hook_fixture.findings([], "", 3), [])
 
 
+ONE_TEST = "test_the_page_lost_a_line"
+REAL_MODULE = "\n".join(
+    [
+        '"""A script test with two tests; the fixture runs one of them."""',
+        "",
+        "import os",
+        "import unittest",
+        "",
+        "",
+        "class Pages(unittest.TestCase):",
+        f"    def {ONE_TEST}(self):",
+        '        with open(os.environ["RECORD"], "a", encoding="utf-8") as record:',
+        f'            record.write("{ONE_TEST}\\n")',
+        '        self.assertEqual(os.environ.get("ONE_FAILS"), None, "the page lost a line")',
+        "",
+        "    def test_another_page(self):",
+        '        with open(os.environ["RECORD"], "a", encoding="utf-8") as record:',
+        '            record.write("test_another_page\\n")',
+        "",
+        "",
+        'if __name__ == "__main__":',
+        "    unittest.main()",
+        "",
+    ]
+)
+
+
+class Only(unittest.TestCase):
+    """`only`: the real script test in place of its stand-in, running the one
+    test a case needs; the fixture's first commit ran the rest of it."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = fixture(self.directory.name)
+        run_main("stub", str(self.root))
+        self.source = pathlib.Path(self.directory.name) / "real" / "test_alpha.py"
+        self.source.parent.mkdir()
+        self.source.write_text(REAL_MODULE, encoding="utf-8")
+        self.record = pathlib.Path(self.directory.name) / "record"
+        self.target = self.root / "scripts" / "test_alpha.py"
+
+    def only(self, *argv):
+        return run_main("only", str(self.root), str(self.source), *(argv or (ONE_TEST,)))
+
+    def run_target(self, **env):
+        full = {k: v for k, v in os.environ.items() if k not in ("ONE_FAILS", hook_fixture.CALLS)}
+        full.update(RECORD=str(self.record), **env)
+        return subprocess.run(
+            ["python3", "-I", "scripts/test_alpha.py"],
+            cwd=self.root,
+            env=full,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+
+    def ran(self):
+        return self.record.read_text(encoding="utf-8").splitlines() if self.record.exists() else []
+
+    # Success.
+    def test_only_returns_zero_and_names_the_test(self):
+        code, out, err = self.only()
+        self.assertEqual((code, err), (0, ""), "only succeeds")
+        self.assertIn(f"scripts/test_alpha.py: only {ONE_TEST}", out, "it says what it installed")
+
+    def test_the_installed_test_runs_only_the_named_test(self):
+        self.only()
+        done = self.run_target()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.ran(), [ONE_TEST], "the other test of the module did not run")
+
+    def test_the_named_test_failing_fails_the_run_and_names_it(self):
+        self.only()
+        done = self.run_target(ONE_FAILS="1")
+        self.assertEqual(done.returncode, 1, "a failure of the one test fails the run")
+        self.assertIn(ONE_TEST, done.stderr, "the failure names the test, as a case's why reads it")
+
+    def test_the_installed_file_is_the_real_module_up_to_its_run(self):
+        self.only()
+        text = self.target.read_text(encoding="utf-8")
+        head = REAL_MODULE[: REAL_MODULE.index('if __name__ == "__main__":')]
+        self.assertTrue(text.startswith(head), "the tests are the real module's, byte for byte")
+
+    def test_the_installed_file_records_no_stand_in_call(self):
+        self.only()
+        calls = pathlib.Path(self.directory.name) / "calls"
+        self.run_target(**{hook_fixture.CALLS: str(calls)})
+        self.assertFalse(calls.exists(), "the real test is not a stand-in")
+
+    def test_only_keeps_the_files_mode(self):
+        self.target.chmod(0o640)
+        self.only()
+        self.assertEqual(stat.S_IMODE(self.target.stat().st_mode), 0o640, "written in place")
+
+    # Failure.
+    def test_a_test_the_module_does_not_define_is_refused_and_nothing_written(self):
+        before = self.target.read_bytes()
+        code, _, err = self.only("test_no_such_test")
+        self.assertEqual(code, 1, "refused")
+        self.assertIn("does not define test_no_such_test", err, "says why")
+        self.assertEqual(self.target.read_bytes(), before, "the stand-in is left")
+
+    def test_a_name_that_is_not_a_test_name_is_refused(self):
+        code, _, err = self.only("Pages")
+        self.assertEqual(code, 1, "refused")
+        self.assertIn("not a test's name", err, "says why")
+
+    def test_a_name_that_is_a_pattern_is_refused(self):
+        # -k takes a pattern: a name such as test_* would run every test.
+        code, _, err = self.only("test_*")
+        self.assertEqual(code, 1, "refused")
+        self.assertIn("not a test's name", err, "says why")
+
+    def test_a_module_that_does_not_end_with_unittest_main_is_refused(self):
+        self.source.write_text(REAL_MODULE.replace("    unittest.main()\n", "    run()\n"), encoding="utf-8")
+        code, _, err = self.only()
+        self.assertEqual(code, 1, "refused")
+        self.assertIn("does not end with unittest.main()", err, "says why")
+
+    def test_a_test_the_hook_keeps_or_does_not_stub_is_refused(self):
+        self.source = self.source.with_name("test_check_repo_links.py")
+        self.source.write_text(REAL_MODULE, encoding="utf-8")
+        code, _, err = self.only()
+        self.assertEqual(code, 1, "refused")
+        self.assertIn("is not a stubbed Python script test", err, "says why")
+
+    def test_a_shell_script_test_is_refused(self):
+        self.source = self.source.with_name("test-beta.sh")
+        self.source.write_text(REAL_MODULE, encoding="utf-8")
+        code, _, err = self.only()
+        self.assertEqual(code, 1, "refused")
+        self.assertIn("is not a stubbed Python script test", err, "says why")
+
+    def test_a_missing_source_is_refused(self):
+        self.source.unlink()
+        code, _, err = self.only()
+        self.assertEqual(code, 1, "refused")
+        self.assertIn("test_alpha.py", err, "names the file")
+
+    def test_a_target_that_is_a_symbolic_link_is_refused(self):
+        elsewhere = pathlib.Path(self.directory.name) / "elsewhere.py"
+        elsewhere.write_text("", encoding="utf-8")
+        self.target.unlink()
+        self.target.symlink_to(elsewhere)
+        code, _, err = self.only()
+        self.assertEqual(code, 1, "refused")
+        self.assertIn("symbolic link", err, "says why")
+        self.assertEqual(elsewhere.read_text(encoding="utf-8"), "", "nothing written through it")
+
+    def test_only_with_a_missing_argument_prints_the_usage(self):
+        code, _, err = run_main("only", str(self.root), str(self.source))
+        self.assertEqual(code, 2, "usage")
+        self.assertIn("usage:", err, "prints the usage")
+
+    # Edge.
+    def test_a_test_defined_twice_is_refused(self):
+        self.source.write_text(REAL_MODULE.replace("def test_another_page", f"def {ONE_TEST}"), encoding="utf-8")
+        code, _, err = self.only()
+        self.assertEqual(code, 1, "refused: -k would run both")
+        self.assertIn(f"defines {ONE_TEST} 2 times", err, "says why")
+
+    def test_a_name_that_is_the_start_of_another_tests_name_is_refused(self):
+        # -k matches a part of a name: test_another would run test_another_page too.
+        extra = "    def test_another(self):\n        pass\n\n"
+        self.source.write_text(REAL_MODULE.replace("    def test_another_page", extra + "    def test_another_page"), encoding="utf-8")
+        code, _, err = self.only("test_another")
+        self.assertEqual(code, 1, "refused")
+        self.assertIn("test_another_page", err, "names the other test it would run")
+
+    def test_a_module_with_windows_line_ends_is_read(self):
+        self.source.write_bytes(REAL_MODULE.replace("\n", "\r\n").encode("utf-8"))
+        code, _, err = self.only()
+        self.assertEqual((code, err), (0, ""), "read")
+        self.assertEqual(self.run_target().returncode, 0, "runs")
+        self.assertEqual(self.ran(), [ONE_TEST], "only the one test")
+
+
+class RealOnly(unittest.TestCase):
+    """The case of scripts/test-hooks.sh that runs one real test of
+    scripts/test_docs_test.py names a test that module defines once."""
+
+    def test_the_hook_test_runs_one_test_of_test_docs_test_with_only(self):
+        text = (HERE / "test-hooks.sh").read_text(encoding="utf-8")
+        self.assertTrue('hook_fixture.py" only "$repo" "$src/scripts/test_docs_test.py" ' in text, "the case uses only")
+        self.assertFalse('cp "$src/scripts/test_docs_test.py"' in text, "the whole module is not copied in")
+
+    def test_the_named_test_is_defined_once_and_is_the_cases_why(self):
+        text = (HERE / "test-hooks.sh").read_text(encoding="utf-8")
+        line = next(line for line in text.splitlines() if 'hook_fixture.py" only ' in line)
+        name = line.split('"$src/scripts/test_docs_test.py" ', 1)[1].split()[0]
+        module = (HERE / "test_docs_test.py").read_text(encoding="utf-8")
+        self.assertEqual(module.count(f"def {name}("), 1, f"{name} is defined once")
+        self.assertIn(f"why='{name}'", text, "the case's refusal is that test's failure")
+
+
 class Main(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()

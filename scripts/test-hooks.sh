@@ -175,6 +175,55 @@ expect() {
   git clean -qfdx -e target
 }
 
+# expect_accepted_together <description> <file> <content> [<description> <file> <content>]...
+# Cases that each change one file the hook must accept, committed together:
+# each commit the hook accepts runs the whole hook, about 4 to 9 seconds
+# here, and 14 such cases one commit each took about 110 of this test's 290
+# seconds on 2026-11-24. Every file is its own case's and no two are the
+# same path, so a refusal names the case it is about. A refused commit
+# fails every case in it, since the hook stops at its first refusal and the
+# others were not seen to pass; the failure says which cases' files the
+# findings name.
+expect_accepted_together() {
+  local -a whats=() files=()
+  local file
+  while [ "$#" -gt 0 ]; do
+    [ "$#" -ge 3 ] || { echo "FAIL: expect_accepted_together takes a description, a file and a content per case"; exit 1; }
+    for file in "${files[@]}"; do
+      [ "$file" != "$2" ] || { echo "FAIL: expect_accepted_together: two cases change $2"; exit 1; }
+    done
+    whats+=("$1")
+    files+=("$2")
+    n=$((n + 1))
+    mkdir -p "$(dirname "$2")"
+    printf '%s\n' "$3" > "$2"
+    git add -f -- "$2"
+    shift 3
+  done
+  if git commit -q -m "Change some files" >"$work/out" 2>&1; then
+    pass=$((pass + ${#files[@]}))
+  else
+    # Some checks name a file by its base name (the package check prints
+    # README.md for crates/vcon-server/README.md), so a case is named by
+    # its path or its base name, followed by ": ".
+    local i
+    for i in "${!files[@]}"; do
+      fail=$((fail + 1))
+      if grep -qF -e "${files[$i]}: " -e "$(basename -- "${files[$i]}"): " "$work/out"; then
+        echo "FAIL (accept expected, got refuse, naming ${files[$i]}): ${whats[$i]}"
+      else
+        echo "FAIL (accept expected, the commit with it was refused): ${whats[$i]}"
+      fi
+    done
+    # The findings, which the build's output after them would push out of
+    # the last lines, then the last lines.
+    grep -E 'refused|FAIL|error|: ' "$work/out" | grep -v '^ *Summary' | sed 's/^/    /' | head -20 || true
+    sed 's/^/    /' "$work/out" | tail -15
+  fi
+  git reset -q --hard HEAD
+  git clean -qfdx -e target
+}
+
 c=cl; a=an
 ai_word="${c}aude"; ai_co="${a}thropic"
 sur="br""andinger"
@@ -188,21 +237,12 @@ why='notes.txt: AI tool name:' expect refuse "AI tool named" notes.txt "written 
 why='notes.txt: AI company name:' expect refuse "AI company named" notes.txt "see ${ai_co}.com"
 why='notes.txt: robot emoji:' expect refuse "robot emoji" notes.txt "done $robot"
 why='notes.txt: email address:' expect refuse "real-looking email" notes.txt "mail someone@gm""ail.com"
-expect accept "reserved email" notes.txt "mail someone@example.com"
-expect accept "reserved .invalid email" notes.txt "mail a@host.invalid"
 why='notes.txt: phone number:' expect refuse "phone number" notes.txt "call 212-867-""5309"
 why='notes.txt: phone number:' expect refuse "E.164 phone" notes.txt "call +44207""9460000"
-expect accept "reserved 555-01xx" notes.txt "call 212-555-0100"
 why='notes.txt: IP address:' expect refuse "public IPv4" notes.txt "host 8.8.""4.4"
 why='notes.txt: IP address:' expect refuse "private IPv4" notes.txt "host 172.31.""78.11"
-expect accept "RFC 5737 IPv4" notes.txt "host 192.0.2.10"
-expect accept "loopback IPv4" notes.txt "bind 127.0.0.1"
 why='notes.txt: IP address:' expect refuse "public IPv6" notes.txt "host 2606:47""00:4700:"":1111"
-expect accept "RFC 3849 IPv6" notes.txt "host 2001:db8::5"
 why="notes.txt: owner's name:" expect refuse "owner surname" notes.txt "by Norm ${sur^}"
-expect accept "owner's credit in the README" README.md "Copyright 2026 Norm ${sur^}"
-expect accept "owner's credit in the site config" website/config.toml "author = \"Norm ${sur^}\""
-expect accept "Best Practices answer linking to a file in the tree" .bestpractices.json "{\"a\": \"$links/crates/vcon-server/src/lib.rs\"}"
 why='test_every_path_bestpractices_links_to_exists' expect refuse "Best Practices answer linking to a file that moved" .bestpractices.json "{\"a\": \"$links/src/gone.rs\"}"
 why="website/content/a.md: owner's name:" expect refuse "owner surname in a site page" website/content/a.md "by Norm ${sur^}"
 why="crates/x/README.md: owner's name:" expect refuse "owner surname in a nested README" crates/x/README.md "by Norm ${sur^}"
@@ -210,15 +250,11 @@ why='notes.txt: design rule id:' expect refuse "design rule id" notes.txt "see F
 why='notes.txt: design rule id:' expect refuse "design rule id in lower case" notes.txt "see sto""-4"
 why='notes.txt: design rule id:' expect refuse "backend design rule id" notes.txt "see BKD""-4"
 why='crates/x/src/a.rs: design rule id:' expect refuse "design rule id in a name" crates/x/src/a.rs "fn written_in_the_sto""_3_order() {}"
-expect accept "word ending in a rule prefix" crates/x/src/b.rs "let restore_2 = histo_3;"
 why='notes.txt: design decision id:' expect refuse "design decision id" notes.txt "see CD""8"
 why='notes.txt: scope decision id:' expect refuse "scope decision id" notes.txt "see D""40"
 why='notes.txt: plan task id:' expect refuse "plan task id" notes.txt "done P""0.3"
 why='notes.txt: plan task id:' expect refuse "plan task id past phase ten" notes.txt "done P""11.7"
 why='notes.txt: plan task id:' expect refuse "plan task id in phase fourteen" notes.txt "see P""14.12"
-expect accept "crate README with absolute links" crates/vcon-server/README.md "# hook-fixture
-
-See [the docs](https://docs.rs/hook-fixture)."
 why="README.md: relative link 'docs/guide.md'" expect refuse "crate README with a relative link" crates/vcon-server/README.md "# hook-fixture
 
 See [the guide](docs/guide.md)."
@@ -232,15 +268,33 @@ why='notes.txt: plan task id:' expect refuse "plan task id with a three-digit ta
 why='notes.txt: design decision id:' expect refuse "design decision id past 99" notes.txt "see CD""100"
 why='notes.txt: scope decision id:' expect refuse "scope decision id past 99" notes.txt "see D""100"
 why='notes.txt: design rule id:' expect refuse "design rule id past 99" notes.txt "see FMT""-100"
-expect accept "names like plan ids" notes.txt "RFC 9457, P-256, P256, XP11.4, HTTP/1.1, 0.1.0, AES-256-GCM, D-Bus"
 why='notes.txt: private draft number:' expect refuse "draft number" notes.txt "from draft ""6.8"
 ietf_tel="+1234567""8901"
-expect accept "IETF example number in IETF fixtures" crates/x/tests/fixtures/ietf/a.vcon "{\"tel\": \"$ietf_tel\"}"
 why='notes.txt: phone number:' expect refuse "IETF example number elsewhere" notes.txt "tel $ietf_tel"
 why='crates/x/tests/fixtures/ietf/b.vcon: phone number:' expect refuse "other number in IETF fixtures" crates/x/tests/fixtures/ietf/b.vcon "call 212-867-""5309"
 why='crates/x/tests/fixtures/ietf/d.vcon: phone number:' expect refuse "other E.164 number in IETF fixtures" crates/x/tests/fixtures/ietf/d.vcon "tel +44207""9460000"
 why='crates/x/tests/fixtures/c.json: phone number:' expect refuse "IETF example number in other fixtures" crates/x/tests/fixtures/c.json "tel $ietf_tel"
-expect accept "ids allowed in fixtures" crates/x/tests/fixtures/a.json '{"k": "D''40 FMT''-3"}'
+# What the hook must accept, one commit for all of them (see
+# expect_accepted_together): reserved values, the owner's credit where the
+# owner asked for it, links that resolve, and words and ids the scan's
+# rules allow.
+expect_accepted_together \
+  "reserved email" reserved-email.txt "mail someone@example.com" \
+  "reserved .invalid email" reserved-invalid-email.txt "mail a@host.invalid" \
+  "reserved 555-01xx" reserved-phone.txt "call 212-555-0100" \
+  "RFC 5737 IPv4" rfc5737.txt "host 192.0.2.10" \
+  "loopback IPv4" loopback.txt "bind 127.0.0.1" \
+  "RFC 3849 IPv6" rfc3849.txt "host 2001:db8::5" \
+  "owner's credit in the README" README.md "Copyright 2026 Norm ${sur^}" \
+  "owner's credit in the site config" website/config.toml "author = \"Norm ${sur^}\"" \
+  "Best Practices answer linking to a file in the tree" .bestpractices.json "{\"a\": \"$links/crates/vcon-server/src/lib.rs\"}" \
+  "word ending in a rule prefix" crates/x/src/b.rs "let restore_2 = histo_3;" \
+  "crate README with absolute links" crates/vcon-server/README.md "# hook-fixture
+
+See [the docs](https://docs.rs/hook-fixture)." \
+  "names like plan ids" plan-like-names.txt "RFC 9457, P-256, P256, XP11.4, HTTP/1.1, 0.1.0, AES-256-GCM, D-Bus" \
+  "IETF example number in IETF fixtures" crates/x/tests/fixtures/ietf/a.vcon "{\"tel\": \"$ietf_tel\"}" \
+  "ids allowed in fixtures" crates/x/tests/fixtures/a.json '{"k": "D''40 FMT''-3"}'
 why='pre-commit: refused: private document export staged: vcon-server — Notes.md' expect refuse "export staged by force" "vcon-server — Notes.md" "words"
 why='TRACKED PRIVATE FILE: docs/plan.local.md' expect refuse "plan staged by force" docs/plan.local.md "words"
 why='TRACKED PRIVATE FILE: spec.local.md' expect refuse "spec at the root staged by force" spec.local.md "words"
@@ -369,8 +423,9 @@ why='crates/held/Cargo.toml:1: not of the form' expect refuse "dependency-age-ex
 # page lost a line of a step's expected output, the hook accepted the commit
 # and CI's how-to job, the first to run scripts/test_docs_test.py, refused
 # it. This case commits that change with the real test in place of its
-# stand-in (the reset after the case puts the stand-in back).
-cp "$src/scripts/test_docs_test.py" scripts/test_docs_test.py
+# stand-in, limited to the one test the change fails (the first commit ran
+# the whole module); the reset after the case puts the stand-in back.
+python3 -I "$src/scripts/hook_fixture.py" only "$repo" "$src/scripts/test_docs_test.py" test_the_terminal_ui_page_opens_each_view_on_the_live_server >/dev/null || { echo "FAIL: the real test of the terminal UI page was not put in"; exit 1; }
 git add scripts/test_docs_test.py
 why='test_the_terminal_ui_page_opens_each_view_on_the_live_server' expect refuse "how-to page that lost a line of expected output" website/content/docs/tui.md "$(grep -v '^  ?      Show or close this help$' "$src/website/content/docs/tui.md")"
 # The other checks of the tree that CI's scan job runs, each refused by the

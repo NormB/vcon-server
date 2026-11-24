@@ -428,8 +428,11 @@ those files, or a file under one of those directories, runs both. The hook
 prints `hook tests: needed: the push changes <path> ...` or `hook tests:
 not needed: ...`, and refuses the push with `pre-push: refused: the hook
 tests failed` when one fails. On the maintainer's build host on
-2026-11-15, `scripts/test-hooks.sh` took 159 to 195 seconds and
-`scripts/test-pre-push.sh` 1 second. CI also runs both again from inside a
+2026-11-24, `scripts/test-hooks.sh` took 125 seconds: the cases the hook
+must accept share one commit, and the case that
+needs one real test of `scripts/test_docs_test.py` runs only that test
+(`scripts/hook_fixture.py only`). `scripts/test-pre-push.sh` takes about
+4 seconds. CI also runs both again from inside a
 scratch hook; that check stays in CI only. Every commit on `main` is
 signed and shows as verified on GitHub.
 

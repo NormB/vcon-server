@@ -15,8 +15,14 @@ stay as they are: a case commits a change that one of them must refuse.
 The list of script tests is read from the hook itself, so a script test
 added to the hook is stubbed without a change here.
 
+A case that needs one test of a stubbed script test to refuse its change
+puts the real module back with `only`, limited to that test: the whole
+module ran in the first commit, and test_docs_test.py alone took about 22 of
+the hook tests' 290 seconds when a case ran all of it (2026-11-24).
+
 Run with: python3 -I scripts/hook_fixture.py stub <fixture repository>
           python3 -I scripts/hook_fixture.py check <fixture repository> <calls file> <runs>
+          python3 -I scripts/hook_fixture.py only <fixture repository> <script test> <test name>
 """
 
 import collections
@@ -30,7 +36,10 @@ CALLS = "HOOK_FIXTURE_CALLS"
 KEPT = {
     "scripts/test_check_repo_links.py": "refuses a Best Practices answer that links to a file that moved",
 }
-USAGE = "usage: hook_fixture.py stub <fixture repository> | check <fixture repository> <calls file> <runs>"
+USAGE = (
+    "usage: hook_fixture.py stub <fixture repository> | check <fixture repository> <calls file> <runs>"
+    " | only <fixture repository> <script test> <test name>"
+)
 
 # The two ways the hook runs a script's own test, each a whole line.
 RUNS = (
@@ -127,6 +136,55 @@ def install(root):
     return names
 
 
+# The run at the end of a unittest module, which `only` limits to one test.
+MAIN_RUN = 'if __name__ == "__main__":\n    unittest.main()\n'
+TEST_NAME = re.compile(r"test_[A-Za-z0-9_]+")
+TEST_DEF = re.compile(r"^\s*def (test_[A-Za-z0-9_]+)\(", re.MULTILINE)
+
+
+def only_text(text, name, path):
+    """The text of the unittest module `text` (at `path`), run with only its
+    test `name`: the module's own tests, byte for byte, and a run limited to
+    that one. unittest's -k takes a part of a name, so `name` must be a
+    test's whole name, defined once, and part of no other test's name."""
+    text = text.replace("\r\n", "\n")
+    if not TEST_NAME.fullmatch(name):
+        raise HookError(f"{name!r} is not a test's name")
+    defined = TEST_DEF.findall(text)
+    if defined.count(name) == 0:
+        raise HookError(f"{path} does not define {name}")
+    if defined.count(name) > 1:
+        raise HookError(f"{path} defines {name} {defined.count(name)} times")
+    wider = sorted({other for other in defined if other != name and name in other})
+    if wider:
+        raise HookError(f"{name} is part of the name of {', '.join(wider)}, which -k would run too")
+    if not text.endswith(MAIN_RUN) or text.count(MAIN_RUN) != 1:
+        raise HookError(f"{path} does not end with unittest.main() under __main__")
+    run = f'if __name__ == "__main__":\n    unittest.main(argv=["{path}", "-k", "{name}"])\n'
+    return text[: -len(MAIN_RUN)] + run
+
+
+def install_only(root, source, name):
+    """Puts the real script test `source` in the fixture at root in place of
+    its stand-in, running only its test `name`; returns its path in the
+    fixture."""
+    root = pathlib.Path(root)
+    path = f"scripts/{pathlib.Path(source).name}"
+    if not path.endswith(".py") or path not in stubbed(read_hook(root)):
+        raise HookError(f"{path} is not a stubbed Python script test of {HOOK}")
+    target = root / path
+    if target.is_symlink():
+        raise HookError(f"{target} is a symbolic link; the test would be written through it")
+    try:
+        text = pathlib.Path(source).read_text(encoding="utf-8")
+    except OSError as error:
+        raise HookError(f"{source}: {error.strerror}") from error
+    # Built before the file is written, so a refusal leaves the stand-in.
+    limited = only_text(text, name, path)
+    target.write_text(limited, encoding="utf-8")
+    return path
+
+
 def findings(names, calls_text, runs):
     """What is wrong when each of names should have been called runs times."""
     counts = collections.Counter(line for line in calls_text.splitlines() if line.strip())
@@ -143,6 +201,8 @@ def main(argv):
         command = "stub"
     elif len(argv) == 4 and argv[0] == "check" and argv[3].isascii() and argv[3].isdigit():
         command = "check"
+    elif len(argv) == 4 and argv[0] == "only":
+        command = "only"
     else:
         print(USAGE, file=sys.stderr)
         return 2
@@ -150,6 +210,9 @@ def main(argv):
         if command == "stub":
             for name in install(argv[1]):
                 print(name)
+            return 0
+        if command == "only":
+            print(f"{install_only(argv[1], argv[2], argv[3])}: only {argv[3]}")
             return 0
         names = stubbed(read_hook(argv[1]))
         calls = pathlib.Path(argv[2])
