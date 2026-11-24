@@ -336,6 +336,10 @@ fn a_vcon_purged_before_a_rotation_cannot_be_recovered_from_an_old_copy() {
 #[cfg(all(feature = "backend-tests", feature = "postgres"))]
 mod pg;
 
+#[cfg(all(feature = "backend-tests", feature = "postgres"))]
+#[path = "support/joined.rs"]
+mod joined;
+
 /// The same rotation with the catalogs in PostgreSQL and the objects in a
 /// bucket, run with the binary alone: a server stores and deletes, the
 /// commands rotate. The copy an attacker keeps is the database's rows and
@@ -349,6 +353,7 @@ mod postgres {
     use std::process::{Child, Stdio};
     use std::time::{Duration, Instant};
 
+    use super::joined::Joined;
     use super::pg::{self, var};
     use super::*;
 
@@ -505,7 +510,7 @@ mod postgres {
                 .expect("starts");
             let stderr = child.stderr.take().expect("piped");
             let (tx, lines) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
+            let reader = Joined::spawn(move || {
                 for line in std::io::BufReader::new(stderr)
                     .lines()
                     .map_while(Result::ok)
@@ -519,6 +524,7 @@ mod postgres {
                 child,
                 addr: None,
                 pem: self.pem.clone(),
+                _reader: reader,
             };
             let deadline = Instant::now() + Duration::from_secs(20);
             let mut said = Vec::new();
@@ -555,6 +561,10 @@ mod postgres {
         child: Child,
         addr: Option<SocketAddr>,
         pem: String,
+        /// The thread that reads the server's stderr: the last field, so
+        /// it is joined after the server has ended (the drop kills it, or
+        /// `stop` waits for it), which ends the pipe.
+        _reader: Joined<()>,
     }
 
     impl Drop for Server {

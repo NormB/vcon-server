@@ -47,6 +47,20 @@ The rules are the Google Rust Style Guide's
   file name passed to a parameter named `password` as a hard-coded
   password.
 
+- thread-detached: no `thread::spawn(...)` or `thread::Builder`'s
+  `.spawn(...)` drops the handle it returns: as a statement of its own
+  (`spawn(f);`, `spawn(f).expect("x");`, `spawn(f)?;`), bound to `_`,
+  passed to `drop(` or mapped to `drop`. Such a thread is never joined, and
+  the process can exit while it still runs or is dropping what it holds:
+  on 2026-11-24 a test's reader thread, dropping its clone of a Store
+  (SQLite, SQLCipher and OpenSSL's per-thread state), crashed CI's
+  coverage run with SIGSEGV after the test had passed. Keep the handle and
+  join it, or use `std::thread::scope`. A thread that must outlive its
+  caller says why in a `// thread-detached: <reason>` comment on the line
+  above. A handle bound to a name, returned, pushed or joined in the same
+  statement is allowed; one bound and then dropped, and a `spawn` imported
+  by name, are not found.
+
 - lint-table: every package holds the lints of [workspace.lints] in
   Cargo.toml, at their level or stricter: with `[lints] workspace = true`,
   or in a table of its own (vcon's adds unsafe_code = "forbid"). The fuzz
@@ -684,10 +698,128 @@ def findings(text, nonleaf=False, uuids=True):
         else:
             header.append(t)
         k += 1
+    out.extend(_detached_threads(toks, lines))
     return out
 
 
 TRANSACTIONS = ("snapshot", "immediate")
+
+OPENING = ("(", "[", "{")
+CLOSING = (")", "]", "}")
+# A statement starts after one of these; a spawn there whose statement
+# ends at its `;` drops the handle.
+STATEMENT_START = (";", "{", "}")
+DETACHED_REASON = re.compile(r"^// thread-detached: \S")
+
+
+def _closing(toks, open_at):
+    """The index of the bracket that closes the one at `open_at`, or None
+    when the text ends first."""
+    depth = 0
+    for j in range(open_at, len(toks)):
+        x = toks[j]
+        if x.kind != "punct":
+            continue
+        if x.text in OPENING:
+            depth += 1
+        elif x.text in CLOSING:
+            depth -= 1
+            if depth == 0:
+                return j
+    return None
+
+
+def _spawn_call(toks, k):
+    """For a `thread` token at `k`: the index of the `(` that opens its
+    spawn call (`thread::spawn(` or `thread::Builder::new()...spawn(`), or
+    None."""
+    if k + 3 >= len(toks) or toks[k + 1].text != "::":
+        return None
+    if toks[k + 2].text == "spawn" and toks[k + 3].text == "(":
+        return k + 3
+    if toks[k + 2].text != "Builder":
+        return None
+    j = k + 3
+    if j + 1 < len(toks) and toks[j].text == "::" and toks[j + 1].kind == "ident":
+        j += 2
+    while j + 2 < len(toks):
+        if toks[j].text == "(" and toks[j].kind == "punct":
+            end = _closing(toks, j)
+            if end is None:
+                return None
+            j = end + 1
+        elif toks[j].text == "." and toks[j + 1].kind == "ident":
+            if toks[j + 1].text == "spawn" and toks[j + 2].text == "(":
+                return j + 2
+            j += 2
+        else:
+            return None
+    return None
+
+
+def _detached_threads(toks, lines):
+    """The thread-detached findings: a spawned thread's handle dropped."""
+    out = []
+    for k, t in enumerate(toks):
+        if t.kind != "ident" or t.text != "thread":
+            continue
+        open_at = _spawn_call(toks, k)
+        if open_at is None:
+            continue
+        end = _closing(toks, open_at)
+        if end is None:
+            continue
+        # The path's first segment (`std` of `std::thread::spawn`).
+        start = k
+        while start >= 2 and toks[start - 1].text == "::" and toks[start - 2].kind == "ident":
+            start -= 2
+        # The calls chained on the handle (or on the Builder's result).
+        joined = mapped_to_drop = False
+        j = end + 1
+        while j < len(toks):
+            if toks[j].text == "?":
+                j += 1
+            elif toks[j].text == "." and j + 1 < len(toks) and toks[j + 1].kind == "ident":
+                name = toks[j + 1].text
+                joined = joined or name == "join"
+                if j + 2 < len(toks) and toks[j + 2].text == "(":
+                    close = _closing(toks, j + 2)
+                    if close is None:
+                        break
+                    argument = [x.text for x in toks[j + 3 : close]]
+                    mapped_to_drop = mapped_to_drop or (name == "map" and argument == ["drop"])
+                    j = close + 1
+                else:
+                    j += 2
+            else:
+                break
+        follow = toks[j].text if j < len(toks) else None
+        before = [x.text for x in toks[max(0, start - 3) : start]]
+        if joined:
+            continue
+        if mapped_to_drop:
+            how = "maps its handle to `drop`"
+        elif before[-2:] == ["drop", "("]:
+            how = "passes its handle to `drop`"
+        elif before == ["let", "_", "="]:
+            how = "binds its handle to `_`"
+        elif (not before or before[-1] in STATEMENT_START) and follow == ";":
+            how = "drops its handle at the end of the statement"
+        else:
+            continue
+        line = toks[start].line
+        above = lines[line - 2].strip() if line >= 2 else ""
+        if DETACHED_REASON.match(above):
+            continue
+        out.append(
+            Finding(
+                line,
+                "thread-detached",
+                f"this spawn {how}, so the thread is never joined: keep and join it,"
+                " or say why it may outlive its caller in `// thread-detached: <reason>` on the line above",
+            )
+        )
+    return out
 
 
 def _held_transaction(toks, k):

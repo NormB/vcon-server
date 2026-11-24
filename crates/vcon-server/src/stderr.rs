@@ -128,6 +128,13 @@ struct State {
 type Spawn = fn(Box<dyn FnOnce() + Send>) -> io::Result<()>;
 
 fn spawn_thread(run: Box<dyn FnOnce() + Send>) -> io::Result<()> {
+    // The process's sink is a static that lives as long as the process,
+    // and its thread with it; the exit waits for its queue with a bound
+    // (drain), never a join, because a reader that does not read must not
+    // hold the exit, and a join would wait for it. A test's sink thread
+    // ends once its sink is dropped and its queue written; it holds only
+    // that sink's writer.
+    // thread-detached: the writer of the process's stderr, see above.
     std::thread::Builder::new()
         .name("stderr".to_owned())
         .spawn(run)
@@ -661,7 +668,7 @@ mod tests {
         let (sink, gate) = stopped_sink(CAPACITY, b"first\n");
         let sink = Arc::new(sink);
         let (done_tx, done) = std::sync::mpsc::channel();
-        std::thread::spawn({
+        let draining = std::thread::spawn({
             let sink = sink.clone();
             move || {
                 let _ = done_tx.send(sink.drain(WAIT * 30));
@@ -678,6 +685,12 @@ mod tests {
             done.recv_timeout(WAIT)
                 .expect("drain returns once the line is written"),
             "drained"
+        );
+        draining.join().expect("the draining thread ends");
+        assert_eq!(
+            Arc::strong_count(&sink),
+            1,
+            "the draining thread has ended and dropped its clone of the sink"
         );
     }
 
@@ -753,7 +766,7 @@ mod tests {
         assert!(sink.dropped() > 0, "a pipe never read drops lines");
         // The reader reads again, on a thread of its own, to the end.
         let (read_tx, read_rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
+        let reading = std::thread::spawn(move || {
             let mut read = Vec::new();
             let _ = reader.read_to_end(&mut read);
             let _ = read_tx.send(read);
@@ -764,6 +777,7 @@ mod tests {
         let read = read_rx
             .recv_timeout(WAIT)
             .expect("the pipe ends once the sink is dropped");
+        reading.join().expect("the reading thread ends");
         let text = String::from_utf8_lossy(&read);
         assert!(
             text.contains("log lines dropped"),

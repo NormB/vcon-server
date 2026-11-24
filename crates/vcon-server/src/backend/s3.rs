@@ -913,6 +913,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::stub_server::StubServer;
 
     /// Settings for a service that is never called: nothing listens on
     /// port 9 of the loopback address.
@@ -934,41 +935,36 @@ mod tests {
 
     /// A plain-HTTP service on the loopback address: to every request it
     /// gives `answer`, or with None it never answers and holds the
-    /// connection open.
-    pub(super) fn http_service(answer: Option<&'static str>) -> std::net::SocketAddr {
+    /// connection open until the client closes it or the service is
+    /// dropped, which ends its threads.
+    pub(super) fn http_service(answer: Option<&'static str>) -> StubServer {
         use std::io::{BufRead, BufReader, Write};
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("binds");
-        let address = listener.local_addr().expect("address");
-        std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(stream) = stream else { return };
-                std::thread::spawn(move || {
-                    let mut reader = BufReader::new(stream.try_clone().expect("clone"));
-                    let mut writer = stream;
-                    loop {
-                        // A GET has no body: the request ends at its blank line.
-                        let mut line = String::new();
-                        loop {
-                            line.clear();
-                            match reader.read_line(&mut line) {
-                                Ok(0) | Err(_) => return,
-                                Ok(_) if line == "\r\n" => break,
-                                Ok(_) => {}
-                            }
-                        }
-                        let Some(answer) = answer else {
-                            std::thread::sleep(Duration::from_secs(60));
-                            return;
-                        };
-                        if writer.write_all(answer.as_bytes()).is_err() {
-                            return;
-                        }
+        StubServer::start(move |stream| {
+            let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+            let mut writer = stream;
+            loop {
+                // A GET has no body: the request ends at its blank line.
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    match reader.read_line(&mut line) {
+                        Ok(0) | Err(_) => return,
+                        Ok(_) if line == "\r\n" => break,
+                        Ok(_) => {}
                     }
-                });
+                }
+                let Some(answer) = answer else {
+                    // Reads, and drops, whatever comes until the stream
+                    // ends: the client's close, or the drop's shutdown.
+                    drop(std::io::copy(&mut reader, &mut std::io::sink()));
+                    return;
+                };
+                if writer.write_all(answer.as_bytes()).is_err() {
+                    return;
+                }
             }
-        });
-        address
+        })
     }
 
     /// RustFS 1.0.1's answer to a GetObject by a key that may not get
@@ -1007,6 +1003,7 @@ mod tests {
     fn a_read_the_service_fails_is_a_failure_by_kind_never_missing() {
         // A refused connection is retried, so it is reported once every
         // try has failed, well within its 30 seconds.
+        let (silent, denied) = (http_service(None), http_service(Some(ACCESS_DENIED)));
         let cases = [
             (
                 "http://127.0.0.1:9".to_owned(),
@@ -1015,13 +1012,13 @@ mod tests {
                 "nothing listens",
             ),
             (
-                format!("http://{}", http_service(None)),
+                format!("http://{}", silent.address()),
                 Duration::from_secs(1),
                 std::io::ErrorKind::TimedOut,
                 "no answer within the timeout",
             ),
             (
-                format!("http://{}", http_service(Some(ACCESS_DENIED))),
+                format!("http://{}", denied.address()),
                 Duration::from_secs(30),
                 std::io::ErrorKind::PermissionDenied,
                 "the key may not get objects",
@@ -1050,8 +1047,9 @@ mod tests {
 
     #[test]
     fn a_key_the_bucket_does_not_hold_is_missing() {
+        let service = http_service(Some(NO_SUCH_KEY));
         let objects = objects_at(
-            format!("http://{}", http_service(Some(NO_SUCH_KEY))),
+            format!("http://{}", service.address()),
             Duration::from_secs(30),
             TenantId::generate(),
         );
@@ -1272,11 +1270,13 @@ mod tests {
 
     /// An HTTPS service on the loopback address with `pki`'s certificate:
     /// to every request it answers as S3 does for a bucket never
-    /// versioned. Its address, and how many requests it has answered.
-    fn https_service(pki: &Pki) -> (std::net::SocketAddr, Arc<std::sync::atomic::AtomicUsize>) {
+    /// versioned. The service, which ends its threads when dropped, and how
+    /// many requests it has answered.
+    fn https_service(pki: &Pki) -> (StubServer, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::io::{Read, Write};
+
         use rustls::pki_types::pem::PemObject;
         use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let certs = vec![CertificateDer::from_pem_slice(pki.cert.as_bytes()).expect("cert")];
         let key = PrivateKeyDer::from_pem_slice(pki.key.as_bytes()).expect("key");
@@ -1288,56 +1288,41 @@ mod tests {
         .with_no_client_auth()
         .with_single_cert(certs, key)
         .expect("server config");
-        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("binds");
-        listener.set_nonblocking(true).expect("nonblocking");
-        let address = listener.local_addr().expect("address");
+        let config = Arc::new(config);
         let answered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let count = answered.clone();
-        std::thread::spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("runtime");
-            runtime.block_on(async move {
-                let listener = tokio::net::TcpListener::from_std(listener).expect("listener");
-                loop {
-                    let Ok((tcp, _)) = listener.accept().await else {
-                        continue;
-                    };
-                    let acceptor = acceptor.clone();
-                    let count = count.clone();
-                    tokio::spawn(async move {
-                        let Ok(mut tls) = acceptor.accept(tcp).await else {
-                            return;
-                        };
-                        let mut request = Vec::new();
-                        let mut buf = [0; 4096];
-                        while !request.windows(4).any(|w| w == b"\r\n\r\n") {
-                            match tls.read(&mut buf).await {
-                                Ok(0) | Err(_) => return,
-                                Ok(n) => request.extend_from_slice(&buf[..n]),
-                            }
-                        }
-                        let body = r#"<?xml version="1.0" encoding="UTF-8"?><VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>"#;
-                        let answer = format!(
-                            "HTTP/1.1 200 OK\r\ncontent-type: application/xml\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                            body.len()
-                        );
-                        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        let _ = tls.write_all(answer.as_bytes()).await;
-                        let _ = tls.shutdown().await;
-                    });
+        let service = StubServer::start(move |tcp| {
+            let Ok(conn) = rustls::ServerConnection::new(Arc::clone(&config)) else {
+                return;
+            };
+            let mut tls = rustls::StreamOwned::new(conn, tcp);
+            let mut request = Vec::new();
+            let mut buf = [0; 4096];
+            // A failed handshake is an error here, as is a closed stream.
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                match tls.read(&mut buf) {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => request.extend_from_slice(&buf[..n]),
                 }
-            });
+            }
+            let body = r#"<?xml version="1.0" encoding="UTF-8"?><VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>"#;
+            let answer = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/xml\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let _ = tls.write_all(answer.as_bytes());
+            tls.conn.send_close_notify();
+            let _ = tls.flush();
         });
-        (address, answered)
+        (service, answered)
     }
 
     #[test]
     fn a_private_ca_is_trusted_only_when_named() {
         let made = pki();
-        let (address, answered) = https_service(&made);
+        let (service, answered) = https_service(&made);
+        let address = service.address();
         let settings = S3Settings {
             endpoint: Some(format!("https://{address}")),
             allow_http: false,
@@ -1370,6 +1355,13 @@ mod tests {
             answered.load(std::sync::atomic::Ordering::SeqCst),
             1,
             "no request is sent over an untrusted connection"
+        );
+        drop((trusting, plain));
+        drop(service);
+        assert_eq!(
+            Arc::strong_count(&answered),
+            1,
+            "every thread of the service has ended and dropped its counter"
         );
     }
 
@@ -1577,10 +1569,12 @@ pub(crate) mod remote {
             let s3 = self.s3.clone();
             let objects = Arc::new(s3.tenant(tenant));
             let planted = self.s3.clone();
-            // A client of a service that never answers, for `unreadable`.
+            // A client of a service that never answers, for `unreadable`,
+            // which holds the service: dropping the Fresh ends its threads.
+            let service = super::tests::http_service(None);
             let silent = S3::connect(
                 &S3Settings {
-                    endpoint: Some(format!("http://{}", super::tests::http_service(None))),
+                    endpoint: Some(format!("http://{}", service.address())),
                     timeout: Duration::from_secs(1),
                     ..settings("unanswered")
                 },
@@ -1633,7 +1627,10 @@ pub(crate) mod remote {
             Fresh {
                 store: open(&s3, true),
                 reopen: Box::new(move || reopen(&s3, true)),
-                unreadable: Box::new(move || unreadable(&silent, false)),
+                unreadable: Box::new(move || {
+                    let _held = &service;
+                    unreadable(&silent, false)
+                }),
                 held,
                 lose,
                 alter,

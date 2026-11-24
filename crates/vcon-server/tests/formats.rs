@@ -2708,7 +2708,12 @@ fn the_manifest_names_packed_versions_and_one_object_per_object_version(release:
 mod pg;
 
 #[cfg(all(feature = "backend-tests", feature = "postgres"))]
+#[path = "support/joined.rs"]
+mod joined;
+
+#[cfg(all(feature = "backend-tests", feature = "postgres"))]
 mod live {
+    use super::joined::Joined;
     use super::*;
     use std::ffi::OsStr;
     use std::process::{Child, Stdio};
@@ -2952,7 +2957,7 @@ mod live {
                 .expect("serve starts");
             let stderr = child.stderr.take().expect("piped");
             let (tx, lines) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
+            let reader = Joined::spawn(move || {
                 use std::io::BufRead;
                 for line in std::io::BufReader::new(stderr)
                     .lines()
@@ -2991,6 +2996,7 @@ mod live {
                 out: self.path("read.body"),
                 lines,
                 log: std::cell::RefCell::new(early),
+                _reader: reader,
             }
         }
 
@@ -3111,6 +3117,10 @@ mod live {
         lines: std::sync::mpsc::Receiver<String>,
         /// Every line the server wrote to stderr so far.
         log: std::cell::RefCell<Vec<String>>,
+        /// The thread that reads the server's stderr: the last field, so
+        /// it is joined after the drop has killed the server, which ends
+        /// the pipe.
+        _reader: Joined<()>,
     }
 
     impl Drop for Server {

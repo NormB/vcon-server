@@ -166,6 +166,147 @@ class RustfmtSkip(unittest.TestCase):
         self.assertEqual(rules("// #[rustfmt::skip]\n"), [])
 
 
+def detached(text):
+    """The lines of the thread-detached findings in `text`."""
+    return [line for line, rule in rules(text) if rule == "thread-detached"]
+
+
+def body(*lines):
+    """`lines` as the body of a function, one statement per line from
+    line 2."""
+    return "fn f() {\n" + "".join(f"    {line}\n" for line in lines) + "}\n"
+
+
+class DetachedThreads(unittest.TestCase):
+    """A thread whose handle is dropped is never joined: the process can
+    exit while it still runs or is dropping what it holds (on 2026-11-24 a
+    test's reader thread dropping a Store, SQLCipher and OpenSSL's
+    per-thread state, crashed a coverage run with SIGSEGV after the test
+    passed)."""
+
+    # Failure: the handle is dropped.
+
+    def test_a_spawn_as_a_statement_is_refused(self):
+        self.assertEqual(detached(body("std::thread::spawn(move || g());")), [2])
+
+    def test_a_spawn_by_the_imported_module_is_refused(self):
+        self.assertEqual(detached(body("thread::spawn(move || g());")), [2])
+
+    def test_a_spawn_bound_to_the_wildcard_is_refused(self):
+        self.assertEqual(detached(body("let _ = std::thread::spawn(move || g());")), [2])
+
+    def test_a_spawn_passed_to_drop_is_refused(self):
+        self.assertEqual(detached(body("drop(std::thread::spawn(move || g()));")), [2])
+
+    def test_a_spawn_of_many_lines_is_refused_at_its_first(self):
+        text = body("std::thread::spawn(move || {", "    g();", "});")
+        self.assertEqual(detached(text), [2])
+
+    def test_a_spawn_after_another_statement_is_refused(self):
+        self.assertEqual(detached(body("let x = 1;", "std::thread::spawn(move || g(x));")), [3])
+
+    def test_a_spawn_in_a_closure_body_is_refused(self):
+        text = body("let start = || {", "    std::thread::spawn(move || g());", "};")
+        self.assertEqual(detached(text), [3])
+
+    def test_a_builder_spawn_whose_result_is_unwrapped_is_refused(self):
+        text = body('std::thread::Builder::new().name("r".into()).spawn(move || g()).expect("starts");')
+        self.assertEqual(detached(text), [2])
+
+    def test_a_builder_spawn_mapped_to_drop_is_refused(self):
+        text = "fn s(run: Run) -> io::Result<()> {\n    std::thread::Builder::new().spawn(run).map(drop)\n}\n"
+        self.assertEqual(detached(text), [2])
+
+    def test_a_builder_spawn_with_its_result_tried_is_refused(self):
+        self.assertEqual(detached(body("thread::Builder::new().spawn(move || g())?;")), [2])
+
+    def test_each_of_two_detached_spawns_is_refused(self):
+        text = body("std::thread::spawn(move || g());", "std::thread::spawn(move || h());")
+        self.assertEqual(detached(text), [2, 3])
+
+    def test_a_spawn_in_a_match_arm_block_is_refused(self):
+        text = body("match x {", "    _ => {", "        std::thread::spawn(move || g());", "    }", "}")
+        self.assertEqual(detached(text), [4])
+
+    def test_a_reason_two_lines_above_does_not_allow_it(self):
+        text = body("// thread-detached: lives as long as the process.", "", "std::thread::spawn(move || g());")
+        self.assertEqual(detached(text), [4])
+
+    def test_a_reason_with_no_text_does_not_allow_it(self):
+        text = body("// thread-detached:", "std::thread::spawn(move || g());")
+        self.assertEqual(detached(text), [3])
+
+    # Success: the handle is kept, returned or joined.
+
+    def test_a_spawn_bound_to_a_name_is_allowed(self):
+        self.assertEqual(detached(body("let reader = std::thread::spawn(move || g());")), [])
+
+    def test_a_spawn_assigned_to_a_place_is_allowed(self):
+        self.assertEqual(detached(body("self.reader = Some(std::thread::spawn(move || g()));")), [])
+
+    def test_a_spawn_joined_in_its_statement_is_allowed(self):
+        text = body("let n = std::thread::spawn(move || g())", "    .join()", '    .expect("ends");')
+        self.assertEqual(detached(text), [])
+
+    def test_a_spawn_joined_as_a_statement_is_allowed(self):
+        self.assertEqual(detached(body('std::thread::spawn(move || g()).join().expect("ends");')), [])
+
+    def test_a_spawn_returned_as_the_tail_is_allowed(self):
+        text = "fn start() -> JoinHandle<()> {\n    std::thread::spawn(move || g())\n}\n"
+        self.assertEqual(detached(text), [])
+
+    def test_a_spawn_returned_from_a_block_is_allowed(self):
+        self.assertEqual(detached(body("let r = {", "    let x = 1;", "    std::thread::spawn(move || g(x))", "};")), [])
+
+    def test_a_spawn_pushed_onto_a_list_is_allowed(self):
+        self.assertEqual(detached(body("running.push(std::thread::spawn(move || g()));")), [])
+
+    def test_spawns_collected_from_a_map_are_allowed(self):
+        text = body("let all: Vec<_> = (0..8)", "    .map(|_| std::thread::spawn(move || g()))", "    .collect();")
+        self.assertEqual(detached(text), [])
+
+    def test_a_builder_spawn_bound_to_a_name_is_allowed(self):
+        text = body('let r = std::thread::Builder::new().spawn(move || g()).expect("starts");')
+        self.assertEqual(detached(text), [])
+
+    def test_a_spawn_with_a_reason_on_the_line_above_is_allowed(self):
+        text = body("// thread-detached: lives as long as the process.", "std::thread::spawn(move || g());")
+        self.assertEqual(detached(text), [])
+
+    def test_a_spawn_returned_with_return_is_allowed(self):
+        self.assertEqual(detached(body("return std::thread::spawn(move || g());")), [])
+
+    # Edge: what is not a thread of std.
+
+    def test_a_scoped_spawn_is_allowed(self):
+        self.assertEqual(detached(body("std::thread::scope(|s| {", "    s.spawn(|| g());", "});")), [])
+
+    def test_a_tokio_task_is_not_a_thread(self):
+        self.assertEqual(detached(body("tokio::spawn(async move { g().await });", "runtime.spawn(f);")), [])
+
+    def test_a_child_process_spawn_is_not_a_thread(self):
+        self.assertEqual(detached(body('Command::new("x").spawn().expect("starts");')), [])
+
+    def test_a_spawn_in_a_comment_is_not_code(self):
+        self.assertEqual(detached(body("// std::thread::spawn(move || g());")), [])
+
+    def test_a_spawn_in_a_string_is_not_code(self):
+        self.assertEqual(detached(body('let s = "std::thread::spawn(move || g());";')), [])
+
+    def test_a_spawn_of_a_function_by_name_is_refused(self):
+        self.assertEqual(detached(body("std::thread::spawn(run);")), [2])
+
+    def test_a_spawn_whose_closure_holds_a_statement_spawn_is_refused_once(self):
+        text = body("let r = std::thread::spawn(move || {", "    std::thread::spawn(move || g());", "});")
+        self.assertEqual(detached(text), [3])
+
+    def test_a_path_named_spawn_that_is_not_called_is_allowed(self):
+        self.assertEqual(detached(body("let f = std::thread::spawn::<fn(), ()>;")), [])
+
+    def test_a_spawn_cut_off_at_the_end_of_the_file_is_not_a_crash(self):
+        self.assertEqual(detached("fn f() {\n    std::thread::spawn(move || {\n"), [])
+
+
 class NonLeaf(unittest.TestCase):
     def test_root_and_mod_files_are_non_leaf(self):
         with tempfile.TemporaryDirectory() as d:

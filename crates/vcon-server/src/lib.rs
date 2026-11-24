@@ -92,6 +92,9 @@ pub mod stderr;
     )
 )]
 pub mod store;
+#[cfg(test)]
+#[path = "../tests/support/stub_server.rs"]
+pub(crate) mod stub_server;
 #[expect(
     missing_docs,
     missing_debug_implementations,

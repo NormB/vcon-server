@@ -299,12 +299,17 @@ fn migrate_in_a_build_without_postgres_names_the_cargo_feature() {
 }
 
 #[cfg(feature = "postgres")]
+#[path = "support/stub_server.rs"]
+mod stub_server;
+
+#[cfg(feature = "postgres")]
 mod with_postgres {
     use std::io::{Read, Write};
-    use std::net::{TcpListener, TcpStream};
+    use std::net::TcpStream;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use super::stub_server::StubServer;
     use super::*;
 
     /// What the listener does with a connection.
@@ -321,22 +326,23 @@ mod with_postgres {
     struct Listener {
         port: u16,
         taken: Arc<AtomicUsize>,
+        /// Ends and joins its threads when dropped.
+        _server: StubServer,
     }
 
     impl Listener {
         fn start(answer: Answer) -> Listener {
-            let listener = TcpListener::bind("127.0.0.1:0").expect("binds");
-            let port = listener.local_addr().expect("an address").port();
             let taken = Arc::new(AtomicUsize::new(0));
             let count = Arc::clone(&taken);
-            std::thread::spawn(move || {
-                for stream in listener.incoming() {
-                    let Ok(stream) = stream else { break };
-                    count.fetch_add(1, Ordering::SeqCst);
-                    answer_one(stream, answer);
-                }
+            let server = StubServer::start(move |stream| {
+                count.fetch_add(1, Ordering::SeqCst);
+                answer_one(stream, answer);
             });
-            Listener { port, taken }
+            Listener {
+                port: server.address().port(),
+                taken,
+                _server: server,
+            }
         }
 
         fn taken(&self) -> usize {

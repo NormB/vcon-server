@@ -425,11 +425,15 @@ mod tests {
     /// A TLS server for one test: to each request, after its headers, it
     /// answers 200 with a chunked `application/json` body of spaces that
     /// never ends, until the client closes or `cap` bytes are sent. It
-    /// returns how many body bytes it sent, over every connection.
+    /// returns the server, which ends its threads when dropped, and how
+    /// many body bytes it sent, over every connection.
     fn endless_json_server(
         cert: &rcgen::CertifiedKey<rcgen::KeyPair>,
         cap: usize,
-    ) -> (u16, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    ) -> (
+        crate::stub_server::StubServer,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
         use std::io::{Read, Write};
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -444,43 +448,38 @@ mod tests {
             .expect("a server config");
         config.alpn_protocols = vec![b"http/1.1".to_vec()];
         let config = Arc::new(config);
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("binds");
-        let port = listener.local_addr().expect("an address").port();
         let sent = Arc::new(AtomicUsize::new(0));
         let counter = sent.clone();
-        std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(tcp) = stream else { return };
-                let conn = rustls::ServerConnection::new(config.clone()).expect("a connection");
-                let mut tls = rustls::StreamOwned::new(conn, tcp);
-                let mut head = Vec::new();
-                let mut byte = [0u8; 1];
-                while !head.ends_with(b"\r\n\r\n") {
-                    match tls.read(&mut byte) {
-                        Ok(1) => head.push(byte[0]),
-                        _ => break,
-                    }
-                }
-                let reply = b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\n\r\n";
-                if tls.write_all(reply).is_err() {
-                    continue;
-                }
-                let chunk = vec![b' '; 64 * 1024];
-                let framed = [
-                    format!("{:x}\r\n", chunk.len()).into_bytes(),
-                    chunk,
-                    b"\r\n".to_vec(),
-                ]
-                .concat();
-                while counter.load(Ordering::SeqCst) < cap {
-                    if tls.write_all(&framed).is_err() {
-                        break;
-                    }
-                    counter.fetch_add(64 * 1024, Ordering::SeqCst);
+        let server = crate::stub_server::StubServer::start(move |tcp| {
+            let conn = rustls::ServerConnection::new(config.clone()).expect("a connection");
+            let mut tls = rustls::StreamOwned::new(conn, tcp);
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                match tls.read(&mut byte) {
+                    Ok(1) => head.push(byte[0]),
+                    _ => break,
                 }
             }
+            let reply = b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\n\r\n";
+            if tls.write_all(reply).is_err() {
+                return;
+            }
+            let chunk = vec![b' '; 64 * 1024];
+            let framed = [
+                format!("{:x}\r\n", chunk.len()).into_bytes(),
+                chunk,
+                b"\r\n".to_vec(),
+            ]
+            .concat();
+            while counter.load(Ordering::SeqCst) < cap {
+                if tls.write_all(&framed).is_err() {
+                    break;
+                }
+                counter.fetch_add(64 * 1024, Ordering::SeqCst);
+            }
         });
-        (port, sent)
+        (server, sent)
     }
 
     /// RUSTSEC-2026-0462: before rmcp 3.9.0 its Streamable HTTP client read
@@ -493,7 +492,8 @@ mod tests {
         const CAP: usize = 128 * 1024 * 1024;
         let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()])
             .expect("a certificate");
-        let (port, sent) = endless_json_server(&cert, CAP);
+        let (server, sent) = endless_json_server(&cert, CAP);
+        let port = server.address().port();
         let dir = tempfile::tempdir().expect("temp dir");
         let ca = dir.path().join("ca.pem");
         std::fs::write(&ca, cert.cert.pem()).expect("write the CA");
@@ -519,6 +519,12 @@ mod tests {
         assert!(
             bytes < 32 * 1024 * 1024,
             "the bridge stopped reading near rmcp's 16 MiB limit, not after {bytes} bytes"
+        );
+        drop(server);
+        assert_eq!(
+            std::sync::Arc::strong_count(&sent),
+            1,
+            "every thread of the server has ended and dropped its counter"
         );
     }
 

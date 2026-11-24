@@ -953,6 +953,7 @@ mod tests {
 
     use super::HttpApi;
     use crate::mcp::stdio::ClientConfig;
+    use crate::stub_server::StubServer;
 
     const TOKEN: &str = "vcs_0011223344556677_secret";
 
@@ -963,8 +964,9 @@ mod tests {
     }
 
     /// A TLS server for one test: it answers every request with `reply`, a
-    /// whole HTTP/1.1 response, and keeps each request's head.
-    fn server(cert: &Certificate, reply: Vec<u8>) -> (u16, Arc<Mutex<Vec<String>>>) {
+    /// whole HTTP/1.1 response, and keeps each request's head. The server
+    /// ends its threads when dropped; then its port.
+    fn server(cert: &Certificate, reply: Vec<u8>) -> (StubServer, u16, Arc<Mutex<Vec<String>>>) {
         let chain = vec![cert.cert.der().clone()];
         let key = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
         let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
@@ -976,37 +978,32 @@ mod tests {
             .expect("a server config");
         config.alpn_protocols = vec![b"http/1.1".to_vec()];
         let config = Arc::new(config);
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("binds");
-        let port = listener.local_addr().expect("an address").port();
         let heads = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&heads);
-        std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(tcp) = stream else { return };
-                let conn =
-                    rustls::ServerConnection::new(Arc::clone(&config)).expect("a connection");
-                let mut tls = rustls::StreamOwned::new(conn, tcp);
-                let mut head = Vec::new();
-                let mut byte = [0u8; 1];
-                while !head.ends_with(b"\r\n\r\n") {
-                    match tls.read(&mut byte) {
-                        Ok(1) => head.push(byte[0]),
-                        _ => break,
-                    }
+        let stub = StubServer::start(move |tcp| {
+            let conn = rustls::ServerConnection::new(Arc::clone(&config)).expect("a connection");
+            let mut tls = rustls::StreamOwned::new(conn, tcp);
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                match tls.read(&mut byte) {
+                    Ok(1) => head.push(byte[0]),
+                    _ => break,
                 }
-                if !head.is_empty() {
-                    seen.lock()
-                        .expect("the lock")
-                        .push(String::from_utf8_lossy(&head).to_ascii_lowercase());
-                }
-                // A client that stops reading early closes; that is its
-                // test's point, not a failure here.
-                drop(tls.write_all(&reply));
-                tls.conn.send_close_notify();
-                drop(tls.flush());
             }
+            if !head.is_empty() {
+                seen.lock()
+                    .expect("the lock")
+                    .push(String::from_utf8_lossy(&head).to_ascii_lowercase());
+            }
+            // A client that stops reading early closes; that is its
+            // test's point, not a failure here.
+            drop(tls.write_all(&reply));
+            tls.conn.send_close_notify();
+            drop(tls.flush());
         });
-        (port, heads)
+        let port = stub.address().port();
+        (stub, port, heads)
     }
 
     /// An HTTP/1.1 response with a JSON body.
@@ -1037,7 +1034,7 @@ mod tests {
     #[test]
     fn the_key_request_carries_the_token_as_a_bearer_and_its_answer_is_read() {
         let cert = certificate();
-        let (port, heads) = server(
+        let (_stub, port, heads) = server(
             &cert,
             response(
                 "200 OK",
@@ -1079,7 +1076,7 @@ mod tests {
     fn the_masked_request_asks_for_the_view_and_its_answer_is_read_as_lines() {
         let cert = certificate();
         let body = serde_json::to_vec(&crate::masked::summary("{}")).expect("JSON");
-        let (port, heads) = server(&cert, typed("200 OK", "application/json", &body));
+        let (_stub, port, heads) = server(&cert, typed("200 OK", "application/json", &body));
         let dir = tempfile::tempdir().expect("temp dir");
         let api = HttpApi::new(&client(dir.path(), port, &cert, 0o600)).expect("a client");
         let lines = api.masked(VCON_UUID).expect("the masked view");
@@ -1106,7 +1103,7 @@ mod tests {
         gz.write_all(br#"{"subject":"Renewal call"}"#)
             .expect("gzip");
         let body = gz.finish().expect("gzip");
-        let (port, heads) = server(&cert, typed("200 OK", "application/vcon+gzip", &body));
+        let (_stub, port, heads) = server(&cert, typed("200 OK", "application/vcon+gzip", &body));
         let dir = tempfile::tempdir().expect("temp dir");
         let api = HttpApi::new(&client(dir.path(), port, &cert, 0o600)).expect("a client");
         let text = api.reveal(VCON_UUID, Part::Subject).expect("the vCon");
@@ -1122,7 +1119,7 @@ mod tests {
     #[test]
     fn the_page_request_carries_the_limit_and_the_cursor() {
         let cert = certificate();
-        let (port, heads) = server(&cert, response("200 OK", r#"{"next":null,"vcons":[]}"#));
+        let (_stub, port, heads) = server(&cert, response("200 OK", r#"{"next":null,"vcons":[]}"#));
         let dir = tempfile::tempdir().expect("temp dir");
         let api = HttpApi::new(&client(dir.path(), port, &cert, 0o600)).expect("a client");
         api.page(Some("abc")).expect("a page");
@@ -1137,7 +1134,7 @@ mod tests {
     #[test]
     fn a_refusal_from_the_server_is_its_status_and_title() {
         let cert = certificate();
-        let (port, _) = server(
+        let (_stub, port, _) = server(
             &cert,
             response(
                 "401 Unauthorized",
@@ -1157,7 +1154,7 @@ mod tests {
     fn a_certificate_the_ca_does_not_cover_gets_no_request_and_no_token() {
         let served = certificate();
         let trusted = certificate();
-        let (port, heads) = server(&served, response("200 OK", "{}"));
+        let (_stub, port, heads) = server(&served, response("200 OK", "{}"));
         let dir = tempfile::tempdir().expect("temp dir");
         let api = HttpApi::new(&client(dir.path(), port, &trusted, 0o600)).expect("a client");
         let outcome = api.key();
@@ -1198,7 +1195,7 @@ mod tests {
     /// What the UI is told when a server presents `served` and the client
     /// file trusts `trusted`, and the heads of the requests the server got.
     fn refusal(served: &Certificate, trusted: &Certificate) -> (String, Vec<String>) {
-        let (port, heads) = server(served, response("200 OK", "{}"));
+        let (_stub, port, heads) = server(served, response("200 OK", "{}"));
         let dir = tempfile::tempdir().expect("temp dir");
         let api = HttpApi::new(&client(dir.path(), port, trusted, 0o600)).expect("a client");
         let error = api.key().expect_err("the certificate is refused");
@@ -1338,7 +1335,7 @@ mod tests {
     fn a_refused_certificate_shows_the_connection_as_not_connected() {
         use crate::tui::state::{Connection, State};
         let cert = ca_certificate();
-        let (port, _) = server(&cert, response("200 OK", "{}"));
+        let (_stub, port, _) = server(&cert, response("200 OK", "{}"));
         let dir = tempfile::tempdir().expect("temp dir");
         let api = HttpApi::new(&client(dir.path(), port, &cert, 0o600)).expect("a client");
         let (mut state, _) = State::new("https://localhost", (80, 24));
@@ -1381,7 +1378,7 @@ mod tests {
     #[test]
     fn an_answer_longer_than_the_limit_is_given_up() {
         let cert = certificate();
-        let (port, _) = server(&cert, response("200 OK", &" ".repeat(2 * super::MAX_BODY)));
+        let (_stub, port, _) = server(&cert, response("200 OK", &" ".repeat(2 * super::MAX_BODY)));
         let dir = tempfile::tempdir().expect("temp dir");
         let api = HttpApi::new(&client(dir.path(), port, &cert, 0o600)).expect("a client");
         let outcome = api.page(None);
@@ -1484,7 +1481,7 @@ mod tests {
     #[test]
     fn a_client_never_closed_answers_as_before() {
         let cert = certificate();
-        let (port, _) = server(&cert, response("200 OK", r#"{"vcons":[],"next":null}"#));
+        let (_stub, port, _) = server(&cert, response("200 OK", r#"{"vcons":[],"next":null}"#));
         let dir = tempfile::tempdir().expect("temp dir");
         let api = HttpApi::new(&client(dir.path(), port, &cert, 0o600)).expect("a client");
         let page = api.page(None).expect("a page");

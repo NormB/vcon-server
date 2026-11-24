@@ -23,6 +23,11 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
+use joined::Joined;
+
+#[path = "support/joined.rs"]
+mod joined;
+
 /// How long a test waits for the UI to do one thing. The host that runs
 /// these also runs builds: the wait is long, and no test sleeps it out.
 const PATIENCE: Duration = Duration::from_secs(60);
@@ -53,6 +58,9 @@ struct Session {
     seen: String,
     before: Modes,
     size: (u16, u16),
+    /// The thread that reads the master: the last field, so it is joined
+    /// after the drop has ended the child, which ends its reads.
+    _reader: Joined<()>,
 }
 
 /// The screen a terminal of `columns` by `lines` shows after `written`: its
@@ -188,7 +196,7 @@ impl Session {
         drop(command);
         let mut reader = master.try_clone().expect("clone the master");
         let (send, output) = mpsc::channel();
-        std::thread::spawn(move || {
+        let reader = Joined::spawn(move || {
             let mut buf = [0_u8; 4096];
             // Ends at 0 or at the error a master gives once no process
             // holds the terminal.
@@ -205,6 +213,7 @@ impl Session {
             seen: String::new(),
             before,
             size: (columns, lines),
+            _reader: reader,
         }
     }
 

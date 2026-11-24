@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
+use joined::Joined;
 use time::OffsetDateTime;
 
 use vcon_server::access::{Scope, Scopes};
@@ -24,6 +25,8 @@ use vcon_server::retention::Retention;
 use vcon_server::store::Caller;
 use vcon_server::tenants::Tenants;
 
+#[path = "support/joined.rs"]
+mod joined;
 #[cfg(all(feature = "backend-tests", feature = "postgres"))]
 mod pg;
 
@@ -160,6 +163,7 @@ fn refused(mut command: Command) -> Output {
             .stderr(Stdio::piped())
             .spawn()
             .expect("starts"),
+        None,
     );
     let deadline = Instant::now() + Duration::from_secs(20);
     while running.0.try_wait().expect("wait").is_none() {
@@ -190,7 +194,9 @@ fn stderr(output: &Output) -> String {
 
 /// A running server, killed when dropped, so a failed assertion leaves no
 /// server behind.
-struct Running(Child);
+/// A server, and the thread that reads its stderr if one does: joined
+/// after the drop has ended the server, which ends the pipe.
+struct Running(Child, Option<Joined<()>>);
 
 impl Drop for Running {
     fn drop(&mut self) {
@@ -220,10 +226,11 @@ fn start(mut command: Command) -> Started {
             .stderr(Stdio::piped())
             .spawn()
             .expect("starts"),
+        None,
     );
     let stderr = running.0.stderr.take().expect("piped");
     let (line_tx, lines) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    running.1 = Some(Joined::spawn(move || {
         use std::io::BufRead;
         for line in std::io::BufReader::new(stderr)
             .lines()
@@ -233,7 +240,7 @@ fn start(mut command: Command) -> Started {
                 break;
             }
         }
-    });
+    }));
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut early = VecDeque::new();
     let addr = loop {
@@ -401,6 +408,7 @@ fn start_then_close_stderr(mut command: Command) -> (Running, SocketAddr) {
             .stderr(Stdio::piped())
             .spawn()
             .expect("starts"),
+        None,
     );
     let mut reader = std::io::BufReader::new(running.0.stderr.take().expect("piped"));
     let mut line = String::new();
@@ -837,6 +845,7 @@ fn start_then_hold_stderr(mut command: Command) -> Held {
             .stderr(Stdio::piped())
             .spawn()
             .expect("starts"),
+        None,
     );
     let mut reader = std::io::BufReader::new(running.0.stderr.take().expect("piped"));
     let mut line = String::new();
@@ -914,19 +923,19 @@ impl Held {
     /// reads, as they come.
     fn read_again(self) -> (Running, SocketAddr, Receiver<String>) {
         let Held {
-            running,
+            mut running,
             addr,
             reader,
         } = self;
         let (line_tx, lines) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
+        running.1 = Some(Joined::spawn(move || {
             use std::io::BufRead;
             for line in reader.lines().map_while(Result::ok) {
                 if line_tx.send(line).is_err() {
                     break;
                 }
             }
-        });
+        }));
         (running, addr, lines)
     }
 }

@@ -8,6 +8,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+#[path = "support/joined.rs"]
+mod joined;
+use joined::Joined;
+
 struct Setup {
     dir: tempfile::TempDir,
     config: PathBuf,
@@ -113,7 +117,9 @@ impl Setup {
     }
 }
 
-struct Running(Child);
+/// A server, and the thread that reads its stderr: joined after the drop
+/// has ended the server, which ends the pipe.
+struct Running(Child, Option<Joined<()>>);
 
 impl Drop for Running {
     fn drop(&mut self) {
@@ -135,10 +141,11 @@ fn start(s: &Setup, config: &Path) -> Result<(Running, SocketAddr), String> {
             .stderr(Stdio::piped())
             .spawn()
             .expect("starts"),
+        None,
     );
     let stderr = running.0.stderr.take().expect("piped");
     let (line_tx, lines) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    running.1 = Some(Joined::spawn(move || {
         use std::io::BufRead;
         // Read to the end even once no one wants the lines: a pipe left
         // unread fills, and a closed one fails serve's next log line;
@@ -149,7 +156,7 @@ fn start(s: &Setup, config: &Path) -> Result<(Running, SocketAddr), String> {
         {
             let _ = line_tx.send(line);
         }
-    });
+    }));
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut said = Vec::new();
     loop {

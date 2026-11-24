@@ -9,6 +9,7 @@ use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
+use joined::Joined;
 use serde_json::{Value, json};
 use vcon_server::access::{Scope, Scopes};
 use vcon_server::audit::Actor;
@@ -16,6 +17,9 @@ use vcon_server::clock::SystemClock;
 use vcon_server::envelope::Key;
 use vcon_server::fs::OsFs;
 use vcon_server::tenants::Tenants;
+
+#[path = "support/joined.rs"]
+mod joined;
 
 /// A data directory with one tenant and a key for it, a certificate, and a
 /// running server; the server is killed when this is dropped.
@@ -29,7 +33,9 @@ struct Setup {
 }
 
 /// A child process killed when dropped, so a failed assertion leaves none.
-struct Running(Child);
+/// A process, and the thread that reads its output if one does: joined
+/// after the drop has ended the process, which ends the pipe.
+struct Running(Child, Option<Joined<()>>);
 
 impl Drop for Running {
     fn drop(&mut self) {
@@ -115,17 +121,18 @@ fn setup_at(listen: &str) -> Setup {
             .stderr(Stdio::piped())
             .spawn()
             .expect("serve starts"),
+        None,
     );
     // Its stderr is read to the end on a thread, so the server never
     // blocks on a full pipe; the lines come here until it says where it
     // listens.
     let stderr = server.0.stderr.take().expect("piped");
     let (send, log) = mpsc::channel();
-    std::thread::spawn(move || {
+    server.1 = Some(Joined::spawn(move || {
         for line in BufReader::new(stderr).lines().map_while(Result::ok) {
             let _ = send.send(line);
         }
-    });
+    }));
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut early = Vec::new();
     let addr = loop {
@@ -198,20 +205,23 @@ fn mcp(client_file: &Path) -> Running {
             .stderr(Stdio::piped())
             .spawn()
             .expect("mcp starts"),
+        None,
     )
 }
 
-/// Lines from a child's stdout, read on a thread so a wait can time out.
-fn lines(stdout: ChildStdout) -> mpsc::Receiver<String> {
+/// Lines from the child's stdout, read on a thread so a wait can time
+/// out; `running` holds the thread.
+fn lines(running: &mut Running) -> mpsc::Receiver<String> {
+    let stdout: ChildStdout = running.0.stdout.take().expect("stdout");
     let (send, receive) = mpsc::channel();
-    std::thread::spawn(move || {
+    running.1 = Some(Joined::spawn(move || {
         for line in BufReader::new(stdout).lines() {
             let Ok(line) = line else { return };
             if send.send(line).is_err() {
                 return;
             }
         }
-    });
+    }));
     receive
 }
 
@@ -263,7 +273,7 @@ fn the_handshake_over_stdio_comes_from_the_server() {
     let s = setup();
     let mut running = mcp(&s.client_file("agent", &s.token));
     let mut stdin = running.0.stdin.take().expect("stdin");
-    let out = lines(running.0.stdout.take().expect("stdout"));
+    let out = lines(&mut running);
     let initialize = json!({
         "jsonrpc": "2.0",
         "id": 1,
