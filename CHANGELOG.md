@@ -24,7 +24,25 @@ All notable changes to this project are recorded here. The format follows
   - Effect: With the SQLite catalog, the server runs 19.81% fewer
     instructions for 5,000 stores and 10,000 reads from 8 clients.
   - Limit: The PostgreSQL catalog is not changed.
+- **A PostgreSQL catalog moves to schema version 14.**
+  - Effect: Each store or replace records its write under way until its
+    version's row is added, a step toward several servers on one database.
+  - Do: Run `vcon-server migrate` with the new binary before any server
+    starts; a server refuses a database at version 13.
+  - Docs: [Schema
+    versions](https://vcon-server.com/docs/postgres-catalog/#schema-versions)
 
+### Fixed
+
+- **A read that races its tenant's removal is no longer answered as damaged.**
+  - Was: With several servers on one PostgreSQL database, a read during
+    another server's removal of the tenant could fail with `A stored
+    version is damaged`.
+  - Effect: The removal first marks the tenant as being removed; from
+    then on every server refuses the tenant's reads and writes as a
+    removed tenant's.
+  - Docs: [Schema
+    versions](https://vcon-server.com/docs/postgres-catalog/#schema-versions)
 ## [0.4.14] - 2026-11-24
 
 ### Changed

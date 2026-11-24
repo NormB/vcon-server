@@ -161,14 +161,16 @@ kernel and disk. To add a run to this page, copy the file to
 
 ## When a run fails
 
-- **"the 1-minute load is ..., above the cap of 28: not started":** the
-  machine is busy. Wait, or name a cap that suits the machine with
+- **`vcon-scale: the 1-minute load is <load>, above the cap of 28: not started`:**
+  the machine is busy. Wait, or name a cap that suits the machine with
   `--max-load`.
-- **"the size mix part ... is not weight:bytes":** each part of `--mix` is
-  two whole numbers with a colon between them.
-- **Exit 1 and "ingest: N of M failed":** the server refused or dropped
-  requests. The line "first error" names the first one, and the script
+- **`vcon-scale: the size mix part "<part>" is not weight:bytes`:** each
+  part of `--mix` is two whole numbers with a colon between them.
+- **Exit 1 and `vcon-scale: ingest: <errors> of <requests> failed`:** the
+  server refused or dropped requests. A failed read or list phase is named
+  the same way, `reads:` or `lists:`, after a `;`. The line
+  `vcon-scale: first error: <reason>` names the first one, and the script
   prints the server's last 20 log lines.
-- **"the server stopped":** the server did not start. The script prints
-  its log, which names the reason, for example a memory lock limit too
-  small for the server.
+- **`scale-run: the server stopped`:** the server did not start. The
+  script prints its log, which names the reason, for example a memory lock
+  limit too small for the server.

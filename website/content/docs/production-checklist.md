@@ -25,7 +25,12 @@ file defines or a job its workflow defines.
 The catalogs can be kept in PostgreSQL, a preview behind the `postgres`
 cargo feature, which the release binaries have. CI runs the store's
 conformance suite and a server on PostgreSQL 16 and 18. One server serves
-a database: a second server, on any host, is refused at start.
+a database: a second server, on any host, is refused at start. The first
+step toward several servers is done: each store or replace records its
+write under way, start-up recovery keeps the object of a write that
+another server may still have under way for an hour, and a write whose
+record recovery took fails without adding a row. The conformance suite
+runs those cases on every backend.
 
 Left: a command that moves a data directory's tenants into PostgreSQL and
 back; several servers serving one database; and tests in CI that cut the
@@ -39,6 +44,14 @@ Evidence:
   [ci.yml](https://github.com/NormB/vcon-server/blob/main/.github/workflows/ci.yml)
 - test `a_second_server_on_the_database_is_refused` in
   [serve.rs](https://github.com/NormB/vcon-server/blob/main/crates/vcon-server/tests/serve.rs)
+- the rule for writes under way in
+  [pending.rs](https://github.com/NormB/vcon-server/blob/main/crates/vcon-server/src/store/pending.rs)
+- test `a_postgres_catalog_with_s3_objects_conforms` in
+  [catalog_tests.rs](https://github.com/NormB/vcon-server/blob/main/crates/vcon-server/src/backend/postgres/tests/catalog_tests.rs),
+  which runs the conformance suite's checks of writes under way on
+  PostgreSQL
+- [schema versions](@/docs/postgres-catalog.md#schema-versions) of the
+  PostgreSQL catalog, version 14
 
 ## A backup restored in CI
 
@@ -144,9 +157,9 @@ HTTP API page. Every table of the configuration file refuses a key it does
 not know. [On-disk formats](@/docs/on-disk-format.md) lists every on-disk
 format with its version and what each release wrote, and a test holds the
 page to the code. The repository keeps a data directory written by each
-released binary from 0.4.0 to 0.4.13; on every change, CI opens each one
+released binary from 0.4.0 to 0.4.14; on every change, CI opens each one
 with the new build, checks it, reads every kept version back byte-equal,
-and refuses a catalog one version past the build. From 0.4.6 to 0.4.13 it
+and refuses a catalog one version past the build. From 0.4.6 to 0.4.14 it
 also keeps each release's deployment with its catalogs in PostgreSQL and
 its objects in Parquet storage, which CI restores and opens the same way on
 PostgreSQL 16 and 18. CI also upgrades the previous release to this one and

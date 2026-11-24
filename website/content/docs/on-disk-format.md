@@ -36,7 +36,7 @@ The rule covers 0.4.0 and later. Release 0.3.0 and earlier are not tested.
 | Format | What it is | Version | Where |
 |---|---|---|---|
 | `catalog` | The SQLite catalogs, encrypted with SQLCipher: `server.sqlite` (tenants, keys, users, sessions and its audit log) and each tenant's `catalog.sqlite` (its vCons, versions, tombstones and audit log). The version is SQLite's `user_version`. | 9 | the data directory |
-| `postgres` | The schema of the [PostgreSQL catalog](@/docs/postgres-catalog.md), a preview, in place of the catalogs above. | 13 | the database |
+| `postgres` | The schema of the [PostgreSQL catalog](@/docs/postgres-catalog.md), a preview, in place of the catalogs above. | 14 | the database |
 | `envelope` | The first byte of every sealed blob (an object, a wrapped key, and in PostgreSQL a sealed column): AES-256-GCM with a 12-byte nonce and a 16-byte tag. | 1 | objects and catalogs |
 | `parquet-storage` | The `format` of each manifest of [Parquet storage](@/docs/parquet-storage.md) in a bucket. | vcon-server.parquet-storage/1 | the bucket |
 | `export-manifest` | The `format` of the manifest that [`export parquet`](@/docs/export-parquet.md) writes. | 1 | the export directory |
@@ -68,6 +68,7 @@ describes the key hierarchy.
 | 0.4.11 | 9 | 13 | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
 | 0.4.12 | 9 | 13 | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
 | 0.4.13 | 9 | 13 | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
+| 0.4.14 | 9 | 13 | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
 
 `none`: the release binary has no PostgreSQL catalog. The `postgres`
 feature, a preview, is in the release binaries from 0.4.6 on. A build from
@@ -97,7 +98,8 @@ every step. From 0.4.4, which added users, it also makes two users with
 memberships. The sizes measured on 2026-11-17: 246,084 bytes for each of
 0.4.0 to 0.4.3, and 299,479 bytes for each of 0.4.4 to 0.4.9; on
 2026-11-18, 299,480 bytes for 0.4.10; on 2026-11-19, 299,480 bytes for
-0.4.11; on 2026-11-21, 299,480 bytes for each of 0.4.12 and 0.4.13.
+0.4.11; on 2026-11-21, 299,480 bytes for each of 0.4.12 and 0.4.13; on
+2026-11-24, 299,480 bytes for 0.4.14.
 
 The test
 [formats.rs](https://github.com/NormB/vcon-server/blob/main/crates/vcon-server/tests/formats.rs)
@@ -143,7 +145,8 @@ whose pack run packs every object, then two more vCons in each tenant,
 stored as objects. The sizes measured on 2026-11-17: 159,490 to 159,500
 bytes for each of 0.4.6 to 0.4.9; on 2026-11-18, 159,657 bytes for 0.4.10;
 on 2026-11-19, 159,497 bytes for 0.4.11; on 2026-11-21, 159,489 bytes for
-0.4.12 and 159,494 bytes for 0.4.13.
+0.4.12 and 159,494 bytes for 0.4.13; on 2026-11-24, 159,494 bytes for
+0.4.14.
 
 On every change, the same test checks each release's files without a
 database: the dump has no psql meta-command, every object starts with the

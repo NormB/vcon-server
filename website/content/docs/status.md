@@ -250,9 +250,10 @@ once, for every entry here:
   `cargo install` and a build from source get it with
   `--features postgres`. A deployment with its catalogs in the data
   directory is unchanged by it.
-- **Schema version 13 of the PostgreSQL preview.** `vcon-server migrate`
-  of release 0.4.6 leaves the database at version 13; release 0.4.5 leaves
-  it at 6, and its server refuses a database at 13. Version 7 adds the
+- **Schema version 14 of the PostgreSQL preview.** `vcon-server migrate`
+  of this release leaves the database at version 14; releases 0.4.6 to
+  0.4.13 leave it at 13 and release 0.4.5 at 6, and their servers refuse a
+  database at 14. Version 7 adds the
   column `seq` to the `version` table and, on PostgreSQL 17 and later,
   grants `vcon_app` `MAINTAIN` on three tables. Version 8 adds triggers:
   the tables `audit` and `admin_audit` take new records and a larger
@@ -268,7 +269,9 @@ once, for every entry here:
   catalog key the registry is sealed under, and the table
   `admin_audit_key`, the key of the registry's audit log. Version 13
   adds the table `storage_claim`, whose one row holds the claim of the
-  bucket prefix. See
+  bucket prefix. Version 14 adds the table `pending_write`, where each
+  store or replace records its write under way until its version's row
+  is added. See
   [after an upgrade from 0.4.5](@/docs/postgres-catalog.md#after-an-upgrade-from-0-4-5).
 - **A server and the commands on a PostgreSQL catalog.** With
   `catalog.backend = "postgres"`, `serve` and every command keep the

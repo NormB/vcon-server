@@ -13,6 +13,7 @@ use super::testing::vcon;
 use super::tests::{Fixture, fixture};
 use super::{StoreError, Stored};
 use crate::backend::CommitError;
+use crate::ids::VersionId;
 
 const A: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bca1";
 const B: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bcb2";
@@ -222,7 +223,8 @@ fn a_read_whose_version_changed_in_the_batch_starts_again_alone() {
     let (a, _) = stored(&f, A, "first");
     let (b, b_body) = stored(&f, B, "b");
     let (_, newer) = vcon(A, "newer");
-    let (version, wrapped) = f.store.write_version(a, &newer).expect("written");
+    let version = VersionId::generate();
+    let wrapped = f.store.write_version(a, version, &newer).expect("written");
     let key = f.store.tenant_key.id();
     let outcomes = together(&f, &[a, b], |conn| {
         conn.execute(
@@ -261,7 +263,8 @@ fn a_batch_that_records_nothing_commits_nothing() {
     let f = Arc::new(fixture());
     let (a, _) = stored(&f, A, "first");
     let (_, newer) = vcon(A, "newer");
-    let (version, wrapped) = f.store.write_version(a, &newer).expect("written");
+    let version = VersionId::generate();
+    let wrapped = f.store.write_version(a, version, &newer).expect("written");
     let key = f.store.tenant_key.id();
     let outcomes = together(&f, &[a], |conn| {
         conn.execute(

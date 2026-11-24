@@ -22,7 +22,7 @@
     },
     "postgres": {
       "read_back": true,
-      "version": "13"
+      "version": "14"
     }
   },
   "releases": {
@@ -67,6 +67,14 @@
       "postgres": "13"
     },
     "0.4.13": {
+      "catalog": "9",
+      "envelope": "1",
+      "export-columns": "1",
+      "export-manifest": "1",
+      "parquet-storage": "vcon-server.parquet-storage/1",
+      "postgres": "13"
+    },
+    "0.4.14": {
       "catalog": "9",
       "envelope": "1",
       "export-columns": "1",

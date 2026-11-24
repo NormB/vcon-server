@@ -17,6 +17,7 @@ use crate::clock::Clock;
 use crate::envelope::Key;
 use crate::ids::VersionId;
 use crate::retention::Retention;
+use crate::store::pending::{WRITE_LEASE, Writers};
 use crate::store::{Caller, Created, Cursor, ExamineError, ListQuery, Store, StoreError};
 
 /// A clock a test moves by hand.
@@ -92,7 +93,7 @@ type Check = (&'static str, fn(&dyn Harness));
 
 /// Every check, in order; each panics with its name on failure.
 pub(crate) fn run(harness: &dyn Harness) {
-    let checks: [Check; 18] = [
+    let checks: [Check; 24] = [
         ("create_then_get", create_then_get),
         (
             "reads_at_once_are_each_answered_and_recorded",
@@ -125,6 +126,30 @@ pub(crate) fn run(harness: &dyn Harness) {
         (
             "an_object_the_storage_cannot_read_is_a_failure",
             an_object_the_storage_cannot_read_is_a_failure,
+        ),
+        (
+            "a_create_under_way_keeps_its_object_through_recovery",
+            a_create_under_way_keeps_its_object_through_recovery,
+        ),
+        (
+            "a_replace_under_way_keeps_its_object_through_recovery",
+            a_replace_under_way_keeps_its_object_through_recovery,
+        ),
+        (
+            "a_create_past_its_lease_is_refused_and_leaves_nothing",
+            a_create_past_its_lease_is_refused_and_leaves_nothing,
+        ),
+        (
+            "a_replace_past_its_lease_is_refused_and_keeps_the_old_version",
+            a_replace_past_its_lease_is_refused_and_keeps_the_old_version,
+        ),
+        (
+            "recovery_with_no_other_writer_takes_a_stopped_write_for_a_leftover",
+            recovery_with_no_other_writer_takes_a_stopped_write_for_a_leftover,
+        ),
+        (
+            "a_write_that_ended_leaves_no_pending_row",
+            a_write_that_ended_leaves_no_pending_row,
         ),
     ];
     for (name, check) in checks {
@@ -162,6 +187,262 @@ fn new_version(store: &Store, who: &Caller, uuid: &str, subject: &str) -> (Versi
         Ok(Created::New(version)) => (version, body),
         other => panic!("a new vCon, got {other:?}"),
     }
+}
+
+/// Runs `write` on a thread of its own, stops it between its object and
+/// its last transaction, runs `during` while it is stopped, and returns
+/// what the write returned.
+fn stopped<T: Send>(
+    store: &Store,
+    write: impl FnOnce(&Store) -> T + Send,
+    during: impl FnOnce(),
+) -> T {
+    let (stopped, at_stop) = std::sync::mpsc::channel();
+    let (go, on_go) = std::sync::mpsc::channel::<()>();
+    store.on_between(Box::new(move || {
+        stopped.send(()).expect("the test waits");
+        on_go.recv().expect("the test lets the write go on");
+    }));
+    std::thread::scope(|scope| {
+        // Owned here, so a failed check in `during` drops it while the
+        // scope unwinds: the write's wait then ends, and the scope's join
+        // does not wait for ever.
+        let go = go;
+        let writer = scope.spawn(|| write(store));
+        at_stop
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("the write stops between its object and its row");
+        during();
+        go.send(()).expect("the write waits");
+        writer.join().expect("the write ends")
+    })
+}
+
+/// The objects held besides `kept`, as `held` gives them.
+fn others(held: &Held, kept: &[VersionId]) -> Vec<String> {
+    let kept: Vec<String> = kept.iter().map(ToString::to_string).collect();
+    held().into_iter().filter(|n| !kept.contains(n)).collect()
+}
+
+/// A nanosecond count as the time it is.
+fn plus(at: OffsetDateTime, nanos: i64) -> OffsetDateTime {
+    at + time::Duration::nanoseconds(nanos)
+}
+
+fn a_create_under_way_keeps_its_object_through_recovery(h: &dyn Harness) {
+    let clock = TestClock::at(START);
+    let f = h.fresh(clock.clone());
+    let who = caller();
+    let (found, body) = vcon(&uuid(1), "first");
+    let created = stopped(
+        &f.store,
+        |store| store.create(&who, &found, &body),
+        || {
+            clock.set(plus(START, WRITE_LEASE - 1));
+            f.store.recover(Writers::Maybe).expect("recovers");
+            assert_eq!(
+                others(&f.held, &[]).len(),
+                1,
+                "a_create_under_way_keeps_its_object_through_recovery: the write's object"
+            );
+        },
+    );
+    let Ok(Created::New(version)) = created else {
+        panic!("a_create_under_way_keeps_its_object_through_recovery: created, got {created:?}");
+    };
+    assert_eq!(
+        f.store
+            .get(&who, Uuid::parse_str(&uuid(1)).expect("uuid"))
+            .expect("reads")
+            .body,
+        body,
+        "a_create_under_way_keeps_its_object_through_recovery: the vCon reads back"
+    );
+    assert_eq!(
+        (f.held)(),
+        vec![version.to_string()],
+        "a_create_under_way_keeps_its_object_through_recovery: its object alone"
+    );
+}
+
+fn a_replace_under_way_keeps_its_object_through_recovery(h: &dyn Harness) {
+    let clock = TestClock::at(START);
+    let f = h.fresh(clock.clone());
+    let who = caller();
+    let (first, _) = new_version(&f.store, &who, &uuid(1), "first");
+    let (found, body) = vcon(&uuid(1), "second");
+    let replaced = stopped(
+        &f.store,
+        |store| store.replace(&who, first, &found, &body),
+        || {
+            f.store.recover(Writers::Maybe).expect("recovers");
+            assert_eq!(
+                others(&f.held, &[first]).len(),
+                1,
+                "a_replace_under_way_keeps_its_object_through_recovery: the write's object"
+            );
+        },
+    );
+    let second = replaced.unwrap_or_else(|e| {
+        panic!("a_replace_under_way_keeps_its_object_through_recovery: replaced, got {e:?}")
+    });
+    assert_eq!(
+        f.store
+            .get(&who, Uuid::parse_str(&uuid(1)).expect("uuid"))
+            .expect("reads")
+            .body,
+        body,
+        "a_replace_under_way_keeps_its_object_through_recovery: the new version reads back"
+    );
+    let mut both = vec![first.to_string(), second.to_string()];
+    both.sort();
+    assert_eq!(
+        (f.held)(),
+        both,
+        "a_replace_under_way_keeps_its_object_through_recovery: the two versions' objects"
+    );
+}
+
+fn a_create_past_its_lease_is_refused_and_leaves_nothing(h: &dyn Harness) {
+    let clock = TestClock::at(START);
+    let f = h.fresh(clock.clone());
+    let who = caller();
+    let (found, body) = vcon(&uuid(1), "first");
+    let created = stopped(
+        &f.store,
+        |store| store.create(&who, &found, &body),
+        || {
+            clock.set(plus(START, WRITE_LEASE));
+            f.store.recover(Writers::Maybe).expect("recovers");
+            assert_eq!(
+                (f.held)(),
+                Vec::<String>::new(),
+                "a_create_past_its_lease_is_refused_and_leaves_nothing: recovery removed it"
+            );
+        },
+    );
+    assert!(
+        matches!(created, Err(StoreError::Io)),
+        "a_create_past_its_lease_is_refused_and_leaves_nothing: refused, got {created:?}"
+    );
+    assert!(
+        matches!(
+            f.store.get(&who, Uuid::parse_str(&uuid(1)).expect("uuid")),
+            Err(StoreError::NotFound)
+        ),
+        "a_create_past_its_lease_is_refused_and_leaves_nothing: no row names it"
+    );
+    assert_eq!(
+        (f.held)(),
+        Vec::<String>::new(),
+        "a_create_past_its_lease_is_refused_and_leaves_nothing: no object"
+    );
+}
+
+fn a_replace_past_its_lease_is_refused_and_keeps_the_old_version(h: &dyn Harness) {
+    let clock = TestClock::at(START);
+    let f = h.fresh(clock.clone());
+    let who = caller();
+    let (first, old) = new_version(&f.store, &who, &uuid(1), "first");
+    let (found, body) = vcon(&uuid(1), "second");
+    let replaced = stopped(
+        &f.store,
+        |store| store.replace(&who, first, &found, &body),
+        || {
+            clock.set(plus(START, 2 * WRITE_LEASE));
+            f.store.recover(Writers::Maybe).expect("recovers");
+        },
+    );
+    assert!(
+        matches!(replaced, Err(StoreError::Io)),
+        "a_replace_past_its_lease_is_refused_and_keeps_the_old_version: refused, got {replaced:?}"
+    );
+    assert_eq!(
+        f.store
+            .get(&who, Uuid::parse_str(&uuid(1)).expect("uuid"))
+            .expect("reads")
+            .body,
+        old,
+        "a_replace_past_its_lease_is_refused_and_keeps_the_old_version: the old version is current"
+    );
+    assert_eq!(
+        (f.held)(),
+        vec![first.to_string()],
+        "a_replace_past_its_lease_is_refused_and_keeps_the_old_version: the old object alone"
+    );
+}
+
+fn recovery_with_no_other_writer_takes_a_stopped_write_for_a_leftover(h: &dyn Harness) {
+    let f = h.fresh(TestClock::at(START));
+    let who = caller();
+    let (found, body) = vcon(&uuid(1), "first");
+    let created = stopped(
+        &f.store,
+        |store| store.create(&who, &found, &body),
+        || {
+            f.store.recover(Writers::None).expect("recovers");
+            assert_eq!(
+                (f.held)(),
+                Vec::<String>::new(),
+                "recovery_with_no_other_writer_takes_a_stopped_write_for_a_leftover: removed"
+            );
+        },
+    );
+    assert!(
+        matches!(created, Err(StoreError::Io)),
+        "recovery_with_no_other_writer_takes_a_stopped_write_for_a_leftover: refused, got \
+         {created:?}"
+    );
+    assert!(
+        matches!(
+            f.store.get(&who, Uuid::parse_str(&uuid(1)).expect("uuid")),
+            Err(StoreError::NotFound)
+        ),
+        "recovery_with_no_other_writer_takes_a_stopped_write_for_a_leftover: no row"
+    );
+}
+
+fn a_write_that_ended_leaves_no_pending_row(h: &dyn Harness) {
+    let clock = TestClock::at(START);
+    let f = h.fresh(clock.clone());
+    let who = caller();
+    let (first, _) = new_version(&f.store, &who, &uuid(1), "first");
+    let (found, body) = vcon(&uuid(1), "other");
+    assert!(
+        matches!(
+            f.store.create(&who, &found, &body),
+            Err(StoreError::Conflict)
+        ),
+        "a_write_that_ended_leaves_no_pending_row: a refused create"
+    );
+    let (found, body) = vcon(&uuid(2), "second");
+    let racing = stopped(
+        &f.store,
+        |store| store.create(&who, &found, &body),
+        || {
+            let (found, body) = vcon(&uuid(2), "winner");
+            f.store
+                .create(&who, &found, &body)
+                .expect("the other create wins");
+        },
+    );
+    assert!(
+        matches!(racing, Err(StoreError::Conflict)),
+        "a_write_that_ended_leaves_no_pending_row: the create that lost, got {racing:?}"
+    );
+    assert_eq!(
+        f.store.pending_writes().expect("reads"),
+        vec![],
+        "a_write_that_ended_leaves_no_pending_row: no row is left by a created, a refused or a \
+         lost write"
+    );
+    clock.set(plus(START, 3 * WRITE_LEASE));
+    f.store.recover(Writers::Maybe).expect("recovers");
+    assert_eq!(
+        others(&f.held, &[first]).len(),
+        1,
+        "a_write_that_ended_leaves_no_pending_row: the winner's object is kept"
+    );
 }
 
 fn create_then_get(h: &dyn Harness) {
