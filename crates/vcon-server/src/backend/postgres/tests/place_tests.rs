@@ -84,15 +84,13 @@ mod on_a_server {
     }
 
     #[test]
-    fn a_server_holds_the_database_against_a_second_server() {
+    fn a_second_server_connects_while_the_first_serves() {
         let (_db, _dir, catalog) = catalog(true);
         let _first = catalog_for(&catalog, Sharing::Serve).expect("the first server connects");
-        let StorageError(why) =
-            catalog_for(&catalog, Sharing::Serve).expect_err("the second is refused");
-        assert_eq!(
-            why,
-            format!("catalog.postgres: {SERVER_LOCK_HELD}"),
-            "one server serves a database"
+        let second = catalog_for(&catalog, Sharing::Serve).expect("the second connects too");
+        assert!(
+            matches!(second, Catalogs::Postgres(_)),
+            "several servers serve one database: {second:?}"
         );
     }
 

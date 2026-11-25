@@ -25,6 +25,13 @@ All notable changes to this project are recorded here. The format follows
   - Effect: Azure Key Vault and Google Cloud KMS join HashiCorp Vault
     Transit, OpenBao, PKCS#11 and AWS KMS.
   - Docs: [1.0 checklist](https://vcon-server.com/docs/production-checklist/)
+- **Several servers can serve one PostgreSQL catalog database.**
+  - Effect: Servers share the database's lock; one of them, under a lease,
+    runs the purge sweep and the pack run for all.
+  - Do: Stop every server of 0.4.16 or earlier and run `vcon-server
+    migrate` before a server of this release starts.
+  - Docs: [Commands beside a server, and
+    alone](https://vcon-server.com/docs/postgres-catalog/#commands-beside-a-server-and-alone)
 - **A PostgreSQL catalog moves to schema version 15.**
   - Effect: Tenant creates and new pack files are recorded under way; a
     new table holds the leases of the purge sweep and pack run.

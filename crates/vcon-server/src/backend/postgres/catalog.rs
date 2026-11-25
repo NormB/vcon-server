@@ -78,6 +78,9 @@ pub(crate) struct Database {
     /// (lease.rs): new at each connect, so a server that starts again
     /// never holds its earlier run's lease.
     holder: String,
+    /// The work this process does with the database: a server, a command
+    /// beside servers, or a command alone.
+    holds: schema::Holds,
     /// In tests, how many times a call waited on the database: the round
     /// trips, since each wait sends one batch and reads its answer.
     #[cfg(test)]
@@ -168,6 +171,7 @@ impl Database {
             runtime,
             server,
             holder: super::lease::new_holder(),
+            holds,
             #[cfg(test)]
             trips: std::sync::atomic::AtomicUsize::new(0),
         }))
@@ -183,6 +187,11 @@ impl Database {
     /// ([`super::lease::new_holder`]).
     pub(crate) fn holder(&self) -> &str {
         &self.holder
+    }
+
+    /// The work this process took the database's locks for.
+    pub(crate) fn holds(&self) -> schema::Holds {
+        self.holds
     }
 
     /// Waits for `call` on the pool's runtime. The calling thread must not

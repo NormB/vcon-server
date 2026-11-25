@@ -72,15 +72,16 @@ impl From<crate::datadir::Sharing> for Holds {
 /// answers two columns, the servers' lock and the commands' lock, each
 /// true when the lock was given or is not taken for this work.
 ///
-/// - A server takes the servers' lock for itself: this release serves a
-///   database from one instance.
+/// - A server shares the servers' lock with the other servers: several
+///   serve one database. A server of release 0.4.16 or earlier took it
+///   for itself, so neither starts while the other serves.
 /// - A command beside a server shares the commands' lock with other such
 ///   commands and takes nothing a server holds.
 /// - A command alone takes both for itself, as `migrate` does
 ///   ([`take_locks`]), so it runs with no server and no other command.
 pub(crate) fn lock_text(holds: Holds) -> String {
     match holds {
-        Holds::Serve => format!("SELECT pg_try_advisory_lock({SERVERS_LOCK}), true"),
+        Holds::Serve => format!("SELECT pg_try_advisory_lock_shared({SERVERS_LOCK}), true"),
         Holds::Beside => format!("SELECT true, pg_try_advisory_lock_shared({COMMANDS_LOCK})"),
         Holds::Alone => format!(
             "SELECT pg_try_advisory_lock({SERVERS_LOCK}), pg_try_advisory_lock({COMMANDS_LOCK})"
@@ -352,12 +353,16 @@ async fn take_locks(client: &Client) -> Result<(), String> {
     }
 }
 
-/// What a server is told when its lock is held: `migrate` and a command
-/// that runs alone try the same lock.
-pub(crate) const SERVER_LOCK_HELD: &str = "another server, a command that runs alone, or a \
-                                           migration holds this database's lock; one server \
-                                           serves a database, and those commands run while none \
-                                           does";
+/// What a server is told when the servers' lock is held for one process
+/// alone: by `migrate` or a command that runs alone, or by a server of
+/// release 0.4.16 or earlier, which served a database alone. Such a
+/// server's database is at an older schema version, which a server of
+/// this release refuses first, and `migrate` refuses while it serves.
+pub(crate) const SERVER_LOCK_HELD: &str = "a command that runs alone, a migration, or a server \
+                                           of release 0.4.16 or earlier holds this database's \
+                                           lock for itself; start this server when that command \
+                                           has ended, or stop the earlier release's server: \
+                                           every server of one database runs the same release";
 
 /// The version recorded, or 0 for a database no migration has touched.
 async fn installed_for_migrate(client: &Client) -> Result<i32, String> {

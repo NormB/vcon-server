@@ -1601,7 +1601,7 @@ pub(crate) mod remote {
                     Some(Arc::new(s3.packs(tenant))),
                     Arc::new(OsFs),
                     clock.clone(),
-                    recover,
+                    recover.then_some(crate::store::pending::Writers::None),
                 )
                 .map(|mut store| {
                     if packed {

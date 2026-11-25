@@ -34,7 +34,7 @@ mod registry_conformance;
 #[cfg(feature = "s3")]
 pub(crate) mod migrate;
 pub(crate) mod pack;
-// The catalogs in PostgreSQL, a preview: one server serves a database.
+// The catalogs in PostgreSQL, a preview: several servers serve a database.
 #[cfg(feature = "postgres")]
 pub(crate) mod postgres;
 #[cfg(feature = "s3")]
@@ -580,13 +580,6 @@ pub struct SessionRow {
 /// The work one server does for every server of its catalogs, under a
 /// lease ([`Registry::lead`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "a server takes the leases from the next step; the tests do now"
-    )
-)]
 pub enum Job {
     /// The purge sweep, with the recovery that runs before it.
     Sweep,
@@ -613,23 +606,9 @@ pub trait Registry: Send + Sync {
     /// from now by the catalogs' clock. A registry in a data directory has
     /// one process, which always holds it; in a database, one server of
     /// those that serve it does.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "a server takes the leases from the next step; the tests do now"
-        )
-    )]
     fn lead(&self, job: Job, ttl: std::time::Duration) -> Result<bool, TenantError>;
     /// Gives up the lease of `job` when this process holds it, so another
     /// server may take it at once; another's lease is left as it is.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "a server takes the leases from the next step; the tests do now"
-        )
-    )]
     fn step_down(&self, job: Job) -> Result<(), TenantError>;
     /// Makes the `nth` commit from now fail as `how` says.
     #[cfg(test)]
@@ -767,12 +746,13 @@ pub trait RegistryTx {
 pub trait TenantSpace: Send + Sync {
     /// Makes a new tenant's catalog and objects, durably.
     fn make(&self, id: TenantId, key: Key, clock: Arc<dyn Clock>) -> Result<(), OpenError>;
-    /// Opens a tenant's Store; with `recover`, runs start-up recovery.
+    /// Opens a tenant's Store; with `recover`, runs start-up recovery,
+    /// which assumes the writers it names.
     fn open(
         &self,
         id: TenantId,
         key: Key,
-        recover: bool,
+        recover: Option<crate::store::pending::Writers>,
         clock: Arc<dyn Clock>,
     ) -> Result<Store, OpenError>;
     /// Every tenant that has a catalog or objects here, by id.
@@ -830,6 +810,23 @@ impl Catalogs {
             Catalogs::Local => {}
             #[cfg(feature = "postgres")]
             Catalogs::Postgres(database) => database.give_up_lock(),
+        }
+    }
+
+    /// Who else may write while this process recovers: no one in a data
+    /// directory, whose lock lets one process serve it, nor beside a
+    /// command alone on a database, which holds every lock; other servers
+    /// otherwise, since several serve one database.
+    pub(crate) fn writers(&self) -> crate::store::pending::Writers {
+        match self {
+            Catalogs::Local => crate::store::pending::Writers::None,
+            #[cfg(feature = "postgres")]
+            Catalogs::Postgres(database) => match database.holds() {
+                postgres::Holds::Alone => crate::store::pending::Writers::None,
+                postgres::Holds::Serve | postgres::Holds::Beside => {
+                    crate::store::pending::Writers::Maybe
+                }
+            },
         }
     }
 

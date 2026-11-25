@@ -2293,7 +2293,7 @@ impl TenantSpace for LocalTenantSpace {
     fn make(&self, id: TenantId, key: Key, clock: Arc<dyn Clock>) -> Result<(), OpenError> {
         let dir = self.dir(id);
         self.fs.create_dir_all(&dir).map_err(|_| StoreError::Io)?;
-        drop(self.open(id, key, true, clock)?);
+        drop(self.open(id, key, Some(crate::store::pending::Writers::None), clock)?);
         self.fs
             .sync_dir(&self.tenants)
             .map_err(|_| StoreError::Io)?;
@@ -2304,17 +2304,16 @@ impl TenantSpace for LocalTenantSpace {
         &self,
         id: TenantId,
         key: Key,
-        recover: bool,
+        recover: Option<crate::store::pending::Writers>,
         clock: Arc<dyn Clock>,
     ) -> Result<Store, OpenError> {
         match &self.objects {
             ObjectPlace::Local => {
-                let open = if recover {
-                    Store::open
-                } else {
-                    Store::open_beside
-                };
-                open(&self.dir(id), id, key, self.fs.clone(), clock)
+                let store = Store::open_beside(&self.dir(id), id, key, self.fs.clone(), clock)?;
+                if let Some(writers) = recover {
+                    store.recover(writers)?;
+                }
+                Ok(store)
             }
             #[cfg(feature = "s3")]
             ObjectPlace::S3(s3) => {

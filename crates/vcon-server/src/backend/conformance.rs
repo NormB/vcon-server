@@ -1272,7 +1272,7 @@ mod packed_local {
                         Some(packs.clone()),
                         Arc::new(OsFs),
                         clock.clone(),
-                        recover,
+                        recover.then_some(Writers::None),
                     )
                     .expect("opens");
                     store.pack_after_every_write(alone());

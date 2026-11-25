@@ -2009,8 +2009,10 @@ fn the_background_lines_are_the_ones_the_jobs_log() {
     let source = repository_file("crates/vcon-server/src/serve.rs");
     let mut logged = Vec::new();
     for name in [
-        "pub fn pack_all(",
-        "pub fn sweep(",
+        "fn pack_while(",
+        "pub fn lead_pack(",
+        "pub fn sweep_while(",
+        "pub fn lead_sweep(",
         "fn warn_if_rotation_overdue(",
     ] {
         let at = source
@@ -2030,7 +2032,7 @@ fn the_background_lines_are_the_ones_the_jobs_log() {
             logged.push(call[open + 1..close].to_owned());
         }
     }
-    assert_eq!(logged.len(), 4, "the lines the three jobs log: {logged:?}");
+    assert_eq!(logged.len(), 6, "the lines the three jobs log: {logged:?}");
     for message in &logged {
         assert!(
             BACKGROUND_LINES.iter().any(|m| message.starts_with(m)),
@@ -3226,15 +3228,21 @@ mod postgres {
     // What must be refused.
 
     #[test]
-    fn a_second_server_on_the_database_is_refused() {
+    fn a_second_server_on_another_host_serves_the_database_beside_the_first() {
         let w = world();
-        let _first = started(&w.s);
-        let said = serve_refusal(&another_host(&w));
-        assert!(
-            said.contains("catalog.postgres: another server")
-                && said.contains("one server serves a database"),
-            "the database's lock, not the data directory's: {said}"
+        let first = started(&w.s);
+        let mut other = another_host(&w);
+        other.token = w.s.token.clone();
+        let second = started(&other);
+        store_example(&first, &w.s);
+        assert_eq!(
+            read_example(&second, &other).0,
+            200,
+            "the second reads what the first stored"
         );
+        assert!(stop(second).success(), "the second stops");
+        assert_eq!(read_example(&first, &w.s).0, 200, "the first serves on");
+        assert!(stop(first).success(), "the first stops");
     }
 
     #[test]

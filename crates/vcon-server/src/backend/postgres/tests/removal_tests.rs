@@ -63,7 +63,7 @@ mod on_a_server {
             None,
             Arc::new(OsFs),
             TestClock::at(START),
-            true,
+            Some(crate::store::pending::Writers::None),
         )
         .expect("opens");
         let t = Arc::new(Tenant {

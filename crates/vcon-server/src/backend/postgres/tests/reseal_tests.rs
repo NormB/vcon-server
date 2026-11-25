@@ -639,7 +639,12 @@ mod on_a_server {
             .expect("re-seals");
         assert!(
             matches!(
-                space.open(keys.tenant, keys.key(), true, clock()),
+                space.open(
+                    keys.tenant,
+                    keys.key(),
+                    Some(crate::store::pending::Writers::None),
+                    clock(),
+                ),
                 Err(OpenError::WrongKey)
             ),
             "the store says the key is the wrong one"

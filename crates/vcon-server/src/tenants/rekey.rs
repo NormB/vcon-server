@@ -14,6 +14,7 @@ use crate::clock::nanos;
 use crate::envelope::{self, Key, WrapLimit};
 use crate::ids::TenantId;
 use crate::store::StoreError;
+use crate::store::pending::Writers;
 
 /// How many data keys one catalog transaction rewraps.
 pub(super) const REKEY_BATCH: usize = 1000;
@@ -158,7 +159,7 @@ impl Tenants {
         }
         let store = self
             .space
-            .open(id, old, true, self.clock.clone())
+            .open(id, old, Some(Writers::None), self.clock.clone())
             .map_err(io)?;
         loop {
             let done = store.rewrap(new, batch).map_err(|e| match e {

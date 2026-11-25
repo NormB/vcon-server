@@ -832,7 +832,7 @@ the process runs. The database's locks are what stop a second host.
 
 | Work | Runs | Refused while |
 |---|---|---|
-| `serve` | one per database | another server, a command that runs alone, or `migrate` holds the database |
+| `serve` | beside other servers and the commands beside a server | a command that runs alone, `migrate`, or a server of release 0.4.16 or earlier holds the database |
 | `tenant list`, the `tenant set-` commands, `tenant role-cap`, `key create`, `key list`, `key revoke`, the `user` and `membership` commands, `audit export`, `export parquet` | beside a server and beside each other | a command that runs alone, or `migrate`, holds the database |
 | `tenant create`, `tenant remove`, `rekey tenant`, `rekey master`, `check` | alone | a server or any other command holds the database |
 | `migrate` | alone | a server or any command holds the database |
@@ -1113,7 +1113,7 @@ catalog.postgres.connect_timeout`.
 ### Another process holds the database
 
 ```text
-vcon-server: the storage cannot be used: catalog.postgres: another server, a command that runs alone, or a migration holds this database's lock; one server serves a database, and those commands run while none does
+vcon-server: the storage cannot be used: catalog.postgres: a command that runs alone, a migration, or a server of release 0.4.16 or earlier holds this database's lock for itself; start this server when that command has ended, or stop the earlier release's server: every server of one database runs the same release
 vcon-server: the storage cannot be used: catalog.postgres: a server or another command holds this database's locks; this command runs alone: stop every server, wait for the other commands to end, and run it again
 vcon-server: the storage cannot be used: catalog.postgres: a command that runs alone, or a migration, holds this database's lock; run this command again when it has ended
 vcon-server: the storage cannot be used: catalog.postgres: another server or command holds the database's locks; stop every server and command and run migrate again
@@ -1125,6 +1125,18 @@ the third that of a command beside a server, the fourth `migrate`'s. See
 To see which connection holds a lock, as a superuser on the database host:
 `SELECT a.pid, a.client_addr, a.backend_start FROM pg_locks l JOIN
 pg_stat_activity a USING (pid) WHERE l.locktype = 'advisory'`.
+
+A server of release 0.4.15 or 0.4.16 serves its database alone: it holds
+the servers' lock for itself, and a server of a later release, which
+shares that lock with the other servers, is refused with the first
+message. In practice the version is checked first: that database is at
+schema version 14, so a server of this release is refused with
+`the database schema is version 14, older than this binary's 15: run vcon-server migrate`,
+and `migrate` is refused with the fourth message while the earlier
+server runs. Stop every server of the earlier release,
+run `migrate`, and start the servers of this release. An earlier
+release's server started against a database this release serves is
+refused by its own lock message, and by the schema version.
 
 A second server on the same host and data directory is stopped by the
 data directory's lock first, with `the data directory is in use by

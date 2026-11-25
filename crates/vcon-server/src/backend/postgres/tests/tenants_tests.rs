@@ -61,6 +61,7 @@ mod on_a_server {
     use crate::envelope::Key;
     use crate::fs::OsFs;
     use crate::ids::{TenantId, VersionId};
+    use crate::retention::Retention;
     use crate::store::Caller;
     use crate::store::pending::Writers;
     use crate::tenants::{BackupError, RegistryError, Removal, TenantError, Tenants};
@@ -154,6 +155,22 @@ mod on_a_server {
 
         fn serve(&self) -> (Catalogs, Tenants) {
             self.serve_under("master.key").expect("the registry opens")
+        }
+
+        /// `serve`, with the server's clock, which the test moves.
+        fn serve_clocked(&self) -> (Catalogs, Tenants, Arc<TestClock>) {
+            let (catalogs, objects) = self.places(Sharing::Serve);
+            let clock = TestClock::at(conformance::START);
+            let tenants = Tenants::open_in(
+                &self.data(),
+                self.master("master.key"),
+                Arc::new(OsFs),
+                clock.clone(),
+                objects,
+                &catalogs,
+            )
+            .expect("the registry opens");
+            (catalogs, tenants, clock)
         }
 
         /// The registry as a command beside a server opens it.
@@ -678,6 +695,265 @@ mod on_a_server {
             );
             stop(opened);
         }
+    }
+
+    /// A test's hold on a thread at a hook: the hook says it has arrived
+    /// and waits, up to a minute, for the test's word to go on.
+    struct Pause {
+        arrived: std::sync::mpsc::Receiver<()>,
+        go: std::sync::mpsc::Sender<()>,
+    }
+
+    const MINUTE: std::time::Duration = std::time::Duration::from_secs(60);
+
+    fn pause() -> (impl FnOnce() + Send + 'static, Pause) {
+        let (arrive, arrived) = std::sync::mpsc::channel();
+        let (go, went) = std::sync::mpsc::channel::<()>();
+        let hook = move || {
+            arrive.send(()).expect("the test waits for the hook");
+            went.recv_timeout(MINUTE).expect("the test says go on");
+        };
+        (hook, Pause { arrived, go })
+    }
+
+    impl Pause {
+        fn wait(&self) {
+            self.arrived
+                .recv_timeout(MINUTE)
+                .expect("the work reached its hook");
+        }
+
+        fn release(&self) {
+            self.go.send(()).expect("the work waits at its hook");
+        }
+    }
+
+    #[test]
+    fn a_server_that_starts_during_another_s_create_keeps_the_create() {
+        let w = world();
+        let (_serving, first) = w.serve();
+        let (hook, pause) = pause();
+        first.between_create(Box::new(move |_| hook()));
+        let id = std::thread::scope(|s| {
+            let creating = s.spawn(|| first.create(Actor::Cli, "acme", None));
+            pause.wait();
+            stop(w.serve());
+            pause.release();
+            creating.join().expect("joins")
+        })
+        .expect("the create commits");
+        assert_eq!(w.rows(id, "tenant_catalog"), 1, "its catalog is kept");
+        store_one(&first, id, 1);
+    }
+
+    #[test]
+    fn a_server_that_opens_a_store_during_another_s_write_keeps_the_write() {
+        let w = world();
+        let (_serving, first) = w.serve();
+        let id = first.create(Actor::Cli, "acme", None).expect("a tenant");
+        let store = first.store(id).expect("the first's store");
+        let (hook, pause) = pause();
+        store.on_between(Box::new(hook));
+        let who = Caller {
+            key: Key::generate().expect("a key").id(),
+        };
+        let (found, body) = conformance::vcon("01a07da8-c2bb-83e5-b9a2-279e0d16bcf1", "under way");
+        std::thread::scope(|s| {
+            let writing = s.spawn(|| store.create(&who, &found, &body));
+            pause.wait();
+            let second = w.serve();
+            drop(
+                second
+                    .1
+                    .store(id)
+                    .expect("the second opens the tenant's store"),
+            );
+            stop(second);
+            pause.release();
+            writing.join().expect("joins").expect("the write commits");
+        });
+        store
+            .get(&who, found.uuid)
+            .expect("read back: its object was kept");
+    }
+
+    #[test]
+    fn a_server_assumes_other_servers_write_and_a_command_alone_that_none_does() {
+        let w = world();
+        let (serving, _first) = w.serve();
+        assert_eq!(serving.writers(), Writers::Maybe, "a server");
+        stop((serving, _first));
+        let (alone, _) = w.places(Sharing::Alone);
+        assert_eq!(alone.writers(), Writers::None, "a command alone");
+        give_up(&alone);
+        let (beside, _) = w.places(Sharing::Beside);
+        assert_eq!(
+            beside.writers(),
+            Writers::Maybe,
+            "a command beside a server"
+        );
+        give_up(&beside);
+    }
+
+    #[test]
+    fn only_the_server_that_holds_the_sweep_lease_sweeps() {
+        let w = world();
+        let (_one, first, clock) = w.serve_clocked();
+        let (_two, second, _) = w.serve_clocked();
+        let id = first
+            .create(Actor::Cli, "acme", Some(Retention::Days(1)))
+            .expect("a tenant");
+        let uuid = store_one(&first, id, 1);
+        let who = Caller {
+            key: Key::generate().expect("a key").id(),
+        };
+        first
+            .store(id)
+            .expect("the store")
+            .delete(&who, uuid, Retention::Days(1))
+            .expect("deleted");
+        clock.set(conformance::START + time::Duration::days(3));
+        let ttl = crate::serve::lease_for(std::time::Duration::from_secs(3_600));
+        assert_eq!(
+            crate::serve::lead_sweep(&first, Retention::Days(1), ttl, &|| false),
+            Some(crate::serve::SweepReport {
+                purged: 1,
+                failed: 0
+            }),
+            "the first leads and purges"
+        );
+        assert_eq!(
+            crate::serve::lead_sweep(&second, Retention::Days(1), ttl, &|| false),
+            None,
+            "the second leaves the sweep to the first"
+        );
+        assert_eq!(
+            w.registry_value("SELECT count(*) FROM vcon.lease WHERE name = 'sweep'"),
+            "1",
+            "the first still holds it, for its next sweep"
+        );
+    }
+
+    #[test]
+    fn only_the_server_that_holds_the_pack_lease_packs() {
+        let w = world();
+        let (_one, first, _) = w.serve_clocked();
+        let (_two, second, _) = w.serve_clocked();
+        let settings = crate::config::ParquetSettings {
+            pack_interval: crate::config::PACK_INTERVAL,
+            pack_limit: crate::config::PACK_LIMIT,
+            reader_grace: crate::config::READER_GRACE,
+        };
+        let ttl = crate::serve::lease_for(settings.pack_interval);
+        assert!(
+            crate::serve::lead_pack(&first, &settings, ttl, &|| false).is_some(),
+            "the first leads"
+        );
+        assert_eq!(
+            crate::serve::lead_pack(&second, &settings, ttl, &|| false),
+            None,
+            "the second leaves the pack run to the first"
+        );
+    }
+
+    #[test]
+    fn the_sweep_s_leader_removes_a_space_with_no_row_while_it_serves() {
+        let w = world();
+        let (_serving, first) = w.serve();
+        let id = first.create(Actor::Cli, "acme", None).expect("a tenant");
+        w.without_the_tenant_rows();
+        let ttl = crate::serve::lease_for(std::time::Duration::from_secs(3_600));
+        crate::serve::lead_sweep(&first, Retention::Days(1), ttl, &|| false).expect("led");
+        assert_eq!(
+            w.rows(id, "tenant_catalog"),
+            0,
+            "recovery runs at the sweep, not only at a start"
+        );
+    }
+
+    #[test]
+    fn the_sweep_s_recovery_keeps_another_server_s_write_under_way() {
+        let w = world();
+        let (_one, first) = w.serve();
+        let (_two, second) = w.serve();
+        let id = first.create(Actor::Cli, "acme", None).expect("a tenant");
+        let store = second.store(id).expect("the second's store");
+        let (hook, pause) = pause();
+        store.on_between(Box::new(hook));
+        let who = Caller {
+            key: Key::generate().expect("a key").id(),
+        };
+        let (found, body) = conformance::vcon("01a07da8-c2bb-83e5-b9a2-279e0d16bcf2", "under way");
+        let ttl = crate::serve::lease_for(std::time::Duration::from_secs(3_600));
+        std::thread::scope(|s| {
+            let writing = s.spawn(|| store.create(&who, &found, &body));
+            pause.wait();
+            crate::serve::lead_sweep(&first, Retention::Days(1), ttl, &|| false).expect("the first leads");
+            pause.release();
+            writing.join().expect("joins").expect("the write commits");
+        });
+        store.get(&who, found.uuid).expect("its object was kept");
+    }
+
+    #[test]
+    fn the_sweep_s_recovery_keeps_another_server_s_create_under_way() {
+        let w = world();
+        let (_one, first) = w.serve();
+        let (_two, second) = w.serve();
+        let (hook, pause) = pause();
+        second.between_create(Box::new(move |_| hook()));
+        let ttl = crate::serve::lease_for(std::time::Duration::from_secs(3_600));
+        let id = std::thread::scope(|s| {
+            let creating = s.spawn(|| second.create(Actor::Cli, "acme", None));
+            pause.wait();
+            crate::serve::lead_sweep(&first, Retention::Days(1), ttl, &|| false).expect("the first leads");
+            pause.release();
+            creating.join().expect("joins")
+        })
+        .expect("the create commits");
+        assert_eq!(w.rows(id, "tenant_catalog"), 1, "its catalog is kept");
+    }
+
+    #[test]
+    fn a_server_that_stops_gives_up_its_leases_for_the_next() {
+        let w = world();
+        let (_one, first) = w.serve();
+        let (_two, second) = w.serve();
+        let minute = std::time::Duration::from_secs(60);
+        assert_eq!(first.lead(Job::Sweep, minute), Ok(true), "the sweep");
+        assert_eq!(first.lead(Job::Pack, minute), Ok(true), "the pack run");
+        crate::serve::give_up_leases(&first);
+        assert_eq!(w.registry_rows("lease"), 0, "no lease is left");
+        assert_eq!(
+            second.lead(Job::Sweep, minute),
+            Ok(true),
+            "the next takes it"
+        );
+    }
+
+    #[test]
+    fn a_server_that_stops_leaves_the_leases_another_server_holds() {
+        let w = world();
+        let (_one, first) = w.serve();
+        let (_two, second) = w.serve();
+        let minute = std::time::Duration::from_secs(60);
+        assert_eq!(
+            first.lead(Job::Sweep, minute),
+            Ok(true),
+            "the first's sweep"
+        );
+        assert_eq!(
+            second.lead(Job::Pack, minute),
+            Ok(true),
+            "the second's pack run"
+        );
+        crate::serve::give_up_leases(&second);
+        assert_eq!(w.registry_rows("lease"), 1, "the first's lease is left");
+        assert_eq!(
+            second.lead(Job::Sweep, minute),
+            Ok(false),
+            "still the first's"
+        );
     }
 
     /// The two processes' clocks disagree by more than a year, and both

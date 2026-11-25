@@ -9,11 +9,11 @@ use crate::datadir::Sharing;
 // What must work.
 
 #[test]
-fn a_server_tries_the_servers_lock_alone_and_not_shared() {
+fn a_server_shares_the_servers_lock_with_the_other_servers() {
     assert_eq!(
         lock_text(Holds::Serve),
-        format!("SELECT pg_try_advisory_lock({SERVERS_LOCK}), true"),
-        "one instance serves a database in this release"
+        format!("SELECT pg_try_advisory_lock_shared({SERVERS_LOCK}), true"),
+        "several servers serve one database"
     );
 }
 
@@ -58,9 +58,11 @@ fn a_server_is_told_what_may_hold_the_database() {
     let why = lock_refusal(Holds::Serve, false, true).expect("refused");
     assert_eq!(
         why,
-        "another server, a command that runs alone, or a migration holds this database's \
-         lock; one server serves a database, and those commands run while none does",
-        "who it may be, and the rule"
+        "a command that runs alone, a migration, or a server of release 0.4.16 or earlier \
+         holds this database's lock for itself; start this server when that command has \
+         ended, or stop the earlier release's server: every server of one database runs the \
+         same release",
+        "who it may be, and what to do"
     );
 }
 
@@ -139,6 +141,23 @@ mod on_a_server {
             .block_on(call)
     }
 
+    /// A server of release 0.4.15 or 0.4.16 on `db`, as far as the lock
+    /// goes: a session that holds the servers' lock for itself, as such a
+    /// server takes it. It holds it while the runtime and the client are
+    /// kept.
+    fn earlier_server(db: &Db) -> (tokio::runtime::Runtime, tokio_postgres::Client) {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        let client = runtime.block_on(db.admin());
+        runtime
+            .block_on(client.batch_execute(&format!("SELECT pg_advisory_lock({SERVERS_LOCK})")))
+            .expect("the earlier release's server holds the lock for itself");
+        (runtime, client)
+    }
+
     /// A migrated database of the test's own.
     fn migrated() -> Db {
         wait(Db::migrated())
@@ -164,8 +183,9 @@ mod on_a_server {
         })
     }
 
-    const SERVER_REFUSED: &str = "catalog.postgres: another server, a command that runs alone, \
-                                  or a migration holds this database's lock";
+    const SERVER_REFUSED: &str = "catalog.postgres: a command that runs alone, a migration, or \
+                                  a server of release 0.4.16 or earlier holds this database's \
+                                  lock for itself";
     const BESIDE_REFUSED: &str =
         "catalog.postgres: a command that runs alone, or a migration, holds this database's lock";
     const ALONE_REFUSED: &str =
@@ -180,9 +200,30 @@ mod on_a_server {
         let _command = connect(&db, Holds::Beside).expect("a command beside it");
         assert_eq!(
             held(&db),
-            format!("{SERVERS_LOCK}:ExclusiveLock,{COMMANDS_LOCK}:ShareLock"),
+            format!("{SERVERS_LOCK}:ShareLock,{COMMANDS_LOCK}:ShareLock"),
             "each holds its own lock"
         );
+    }
+
+    #[test]
+    fn two_servers_serve_one_database_and_share_the_servers_lock() {
+        let db = migrated();
+        let _one = connect(&db, Holds::Serve).expect("one server");
+        let _two = connect(&db, Holds::Serve).expect("a second server");
+        assert_eq!(
+            held(&db),
+            format!("{SERVERS_LOCK}:ShareLock,{SERVERS_LOCK}:ShareLock"),
+            "both hold the servers' lock, shared"
+        );
+    }
+
+    #[test]
+    fn a_command_beside_runs_while_three_servers_serve() {
+        let db = migrated();
+        let _servers: Vec<_> = (0..3)
+            .map(|_| connect(&db, Holds::Serve).expect("a server"))
+            .collect();
+        connect(&db, Holds::Beside).expect("a command beside them");
     }
 
     #[test]
@@ -235,6 +276,81 @@ mod on_a_server {
         let _server = connect(&db, Holds::Serve).expect("the server");
         let why = connect(&db, Holds::Alone).expect_err("refused");
         assert!(why.starts_with(ALONE_REFUSED), "says who holds it: {why}");
+    }
+
+    #[test]
+    fn a_command_alone_is_refused_while_the_second_of_two_servers_runs() {
+        let db = migrated();
+        let first = connect(&db, Holds::Serve).expect("the first");
+        let _second = connect(&db, Holds::Serve).expect("the second");
+        first.give_up_lock();
+        let why = connect(&db, Holds::Alone).expect_err("refused");
+        assert!(
+            why.starts_with(ALONE_REFUSED),
+            "one server still runs: {why}"
+        );
+    }
+
+    /// A server of 0.4.15 or 0.4.16 tries the servers' lock for itself:
+    /// `pg_try_advisory_lock`, held here by a session of the test's own.
+    #[test]
+    fn a_server_is_refused_while_a_server_of_an_earlier_release_holds_the_database_alone() {
+        let db = migrated();
+        let _earlier = earlier_server(&db);
+        let why = connect(&db, Holds::Serve).expect_err("refused");
+        assert!(why.starts_with(SERVER_REFUSED), "names it: {why}");
+        assert!(
+            why.contains("server of release 0.4.16 or earlier")
+                && why.contains("every server of one database runs the same release"),
+            "says what to do: {why}"
+        );
+        assert_eq!(
+            held(&db),
+            format!("{SERVERS_LOCK}:ExclusiveLock"),
+            "the refused server holds nothing"
+        );
+    }
+
+    /// What the earlier release's server tries, `pg_try_advisory_lock`, is
+    /// refused while a server of this release holds the lock shared.
+    #[test]
+    fn a_server_of_an_earlier_release_cannot_take_a_database_this_release_serves() {
+        let db = migrated();
+        let _server = connect(&db, Holds::Serve).expect("this release's server");
+        let tried = wait(async {
+            value(
+                &db.admin().await,
+                &format!("SELECT pg_try_advisory_lock({SERVERS_LOCK})"),
+            )
+            .await
+        });
+        assert_eq!(tried, "f", "the earlier release's try is refused");
+    }
+
+    /// The order an operator meets: an earlier release serves a database
+    /// at its own schema version, 14. A server of this release is refused
+    /// by the version first, and `migrate` by the earlier server's lock.
+    #[test]
+    fn a_new_server_against_a_database_an_earlier_release_serves_is_told_to_migrate_and_migrate_to_stop_it()
+     {
+        let db = wait(async {
+            let db = Db::fresh().await;
+            db.migrate_with(&MIGRATIONS[..14])
+                .await
+                .expect("version 14");
+            db
+        });
+        let _earlier = earlier_server(&db);
+        let why = connect(&db, Holds::Serve).expect_err("refused");
+        assert!(
+            why.contains("version 14") && why.contains("vcon-server migrate"),
+            "the version, and the command: {why}"
+        );
+        let refused = wait(db.migrate_with(MIGRATIONS)).expect_err("migrate is refused");
+        assert!(
+            refused.contains("stop every server"),
+            "migrate says to stop the earlier server: {refused}"
+        );
     }
 
     #[test]
@@ -349,8 +465,8 @@ mod on_a_server {
         let _server = connect(&db, Holds::Serve).expect("the server");
         assert_eq!(
             held(&db),
-            format!("{SERVERS_LOCK}:ExclusiveLock"),
-            "the servers' lock alone"
+            format!("{SERVERS_LOCK}:ShareLock"),
+            "the servers' lock alone, shared"
         );
     }
 
@@ -399,7 +515,7 @@ mod on_a_server {
         let _server = Database::connect(&settings).expect("a server");
         assert_eq!(
             held(&db),
-            format!("{SERVERS_LOCK}:ExclusiveLock"),
+            format!("{SERVERS_LOCK}:ShareLock"),
             "connect is a server's connect"
         );
     }

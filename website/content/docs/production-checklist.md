@@ -42,7 +42,7 @@ Evidence:
 - [the limits of the preview](@/docs/postgres-catalog.md#the-limits-of-the-preview)
 - CI job `backends-postgres` in
   [ci.yml](https://github.com/NormB/vcon-server/blob/main/.github/workflows/ci.yml)
-- test `a_second_server_on_the_database_is_refused` in
+- test `a_second_server_on_another_host_serves_the_database_beside_the_first` in
   [serve.rs](https://github.com/NormB/vcon-server/blob/main/crates/vcon-server/tests/serve.rs)
 - the rule for writes under way in
   [pending.rs](https://github.com/NormB/vcon-server/blob/main/crates/vcon-server/src/store/pending.rs)

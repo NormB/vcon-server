@@ -10,7 +10,7 @@ use tokio::net::TcpListener;
 
 use crate::access::Plane;
 use crate::api::{self, App, Limits, TlsError};
-use crate::backend;
+use crate::backend::{self, Job};
 use crate::clock::{Clock, SystemClock};
 use crate::config::{Config, Operator, ParquetSettings, StorageError};
 use crate::datadir::{self, LockError, Work};
@@ -284,6 +284,8 @@ async fn serve_opened(
         None => None,
     };
     let tenants = Arc::new(tenants);
+    // Kept to give up this server's leases when it stops.
+    let leaving = tenants.clone();
     // The start's lines, logged before any background job is spawned: whoever
     // waits for the serving line finds every listener bound, and no line of
     // the sweep, the pack run or the rotation warning before it.
@@ -293,22 +295,26 @@ async fn serve_opened(
     tracing::info!(listen = %bound, "serving");
     // The background jobs, each at start and then its interval after each
     // run ends, until the server stops: the purge sweep, the pack run with
-    // Parquet storage, and the rotation warning.
+    // Parquet storage, and the rotation warning. On a database that several
+    // servers serve, the sweep and the pack run are done by the one that
+    // holds the job's lease.
     let (swept, default) = (tenants.clone(), config.retention_default);
+    let ttl = lease_for(config.purge_interval);
     let mut jobs = vec![Background::start(
         "purge sweep",
         config.purge_interval,
         move |stopping| {
-            sweep(&swept, default, stopping);
+            lead_sweep(&swept, default, ttl, stopping);
         },
     )];
     if let Some(parquet) = config.storage.parquet {
         let packed = tenants.clone();
+        let ttl = lease_for(parquet.pack_interval);
         jobs.push(Background::start(
             "pack run",
             parquet.pack_interval,
             move |stopping| {
-                pack_all(&packed, &parquet, stopping);
+                lead_pack(&packed, &parquet, ttl, stopping);
             },
         ));
     }
@@ -382,6 +388,9 @@ async fn serve_opened(
         }
     };
     Background::stop_all(jobs).await;
+    // After every run has ended: a run going could renew a lease given up
+    // before it.
+    blocking(move || give_up_leases(&leaving)).await;
     served.map_err(ServeError::Serve)
 }
 
@@ -524,6 +533,16 @@ pub fn pack_all(
     settings: &ParquetSettings,
     stopping: &dyn Fn() -> bool,
 ) -> PackRunReport {
+    pack_while(tenants, settings, &mut || !stopping())
+}
+
+/// [`pack_all`], asking `held` before each tenant, and stopping when it
+/// answers false, as [`sweep_while`] does.
+fn pack_while(
+    tenants: &Tenants,
+    settings: &ParquetSettings,
+    held: &mut dyn FnMut() -> bool,
+) -> PackRunReport {
     let mut report = PackRunReport::default();
     let plan = crate::store::packer::PackPlan {
         grace: settings.reader_grace,
@@ -532,7 +551,7 @@ pub fn pack_all(
     match tenants.ids() {
         Ok(ids) => {
             for id in ids {
-                if stopping() {
+                if !held() {
                     break;
                 }
                 #[cfg(test)]
@@ -557,13 +576,17 @@ pub fn pack_all(
     report
 }
 
-/// What one purge sweep did.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct SweepReport {
-    /// Versions purged, over every tenant.
-    pub purged: u64,
-    /// Tenants that could not be swept; they wait for the next sweep.
-    pub failed: u64,
+/// The shortest lease of a job: long enough for a renewal to arrive.
+const SHORTEST_LEASE: Duration = Duration::from_secs(60);
+
+/// The lease of a job that runs `interval` after each run ends: two
+/// intervals, and at least a minute. Its holder renews it at the start of
+/// each run and before each tenant, so it keeps the job while it runs;
+/// when it stops without a word, another server takes the job once the
+/// lease ends.
+#[must_use]
+pub fn lease_for(interval: Duration) -> Duration {
+    interval.saturating_mul(2).max(SHORTEST_LEASE)
 }
 
 /// One purge sweep: each tenant purges what is due under its own retention
@@ -573,11 +596,88 @@ pub struct SweepReport {
 /// it answers true, the sweep ends there, and the rest wait for the next
 /// sweep. The sweep is logged with counts only, never a tenant.
 pub fn sweep(tenants: &Tenants, default: Retention, stopping: &dyn Fn() -> bool) -> SweepReport {
+    sweep_while(tenants, default, &mut || !stopping())
+}
+
+/// Whether this server holds the lease of `job` for `ttl` now, taking or
+/// renewing it. A lease that cannot be read is not held.
+fn holds(tenants: &Tenants, job: Job, ttl: Duration) -> bool {
+    tenants.lead(job, ttl) == Ok(true)
+}
+
+/// The purge sweep, when this server holds its lease (several servers
+/// share one database; a data directory's server always holds it): the
+/// recovery of a running server first (`Tenants::recover_all`), then
+/// the sweep, which stops at a tenant where the lease is no longer held.
+/// `None` when another server holds the lease and does the sweep, or the
+/// server is stopping. `stopping` is asked before the lease each time,
+/// so a run of a stopping server takes and renews no lease: one given
+/// up at the stop stays given up.
+pub fn lead_sweep(
+    tenants: &Tenants,
+    default: Retention,
+    ttl: Duration,
+    stopping: &dyn Fn() -> bool,
+) -> Option<SweepReport> {
+    if stopping() {
+        return None;
+    }
+    if !holds(tenants, Job::Sweep, ttl) {
+        tracing::info!("purge sweep: another server holds it");
+        return None;
+    }
+    let recovery_failed = tenants.recover_all().unwrap_or(1);
+    let mut report = sweep_while(tenants, default, &mut || {
+        !stopping() && holds(tenants, Job::Sweep, ttl)
+    });
+    report.failed += recovery_failed;
+    Some(report)
+}
+
+/// The pack run, when this server holds its lease, as [`lead_sweep`]
+/// holds the sweep's; `None` when another server holds it, or the server
+/// is stopping.
+pub fn lead_pack(
+    tenants: &Tenants,
+    settings: &ParquetSettings,
+    ttl: Duration,
+    stopping: &dyn Fn() -> bool,
+) -> Option<PackRunReport> {
+    if stopping() {
+        return None;
+    }
+    if !holds(tenants, Job::Pack, ttl) {
+        tracing::info!("pack run: another server holds it");
+        return None;
+    }
+    Some(pack_while(tenants, settings, &mut || {
+        !stopping() && holds(tenants, Job::Pack, ttl)
+    }))
+}
+
+/// Gives up this server's leases, as a server that stops does, so the
+/// next server takes the jobs at once. A lease not given up ends by
+/// itself.
+pub(crate) fn give_up_leases(tenants: &Tenants) {
+    for job in [Job::Sweep, Job::Pack] {
+        // Not given up: the lease ends at its time.
+        let _ended = tenants.step_down(job);
+    }
+}
+
+/// [`sweep`], asking `held` before each tenant, and stopping when it
+/// answers false: the lease went to another server, which sweeps the
+/// rest, or the server is stopping.
+pub fn sweep_while(
+    tenants: &Tenants,
+    default: Retention,
+    held: &mut dyn FnMut() -> bool,
+) -> SweepReport {
     let mut report = SweepReport::default();
     match tenants.ids() {
         Ok(ids) => {
             for id in ids {
-                if stopping() {
+                if !held() {
                     break;
                 }
                 #[cfg(test)]
@@ -600,6 +700,15 @@ pub fn sweep(tenants: &Tenants, default: Retention, stopping: &dyn Fn() -> bool)
         "purge sweep"
     );
     report
+}
+
+/// What one purge sweep did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct SweepReport {
+    /// Versions purged, over every tenant.
+    pub purged: u64,
+    /// Tenants that could not be swept; they wait for the next sweep.
+    pub failed: u64,
 }
 
 /// Runs `job` at once, then again `interval` after each run ends, until
@@ -922,7 +1031,9 @@ mod tests {
         use crate::audit::Actor;
         use crate::ids::{KeyId, TenantId};
         use crate::retention::Retention;
-        use crate::serve::{SweepReport, every, sweep};
+        use crate::serve::{
+            PackRunReport, SweepReport, every, lead_pack, lead_sweep, lease_for, sweep, sweep_while,
+        };
         use crate::store::Caller;
         use crate::store::testing::vcon;
         use crate::tenants::{Tenants, fixture};
@@ -980,6 +1091,140 @@ mod tests {
             assert_eq!(kept(&f.tenants, own), 0);
             assert_eq!(kept(&f.tenants, default), 0);
             assert_eq!(kept(&f.tenants, long), 1, "seven years have not passed");
+        }
+
+        #[test]
+        fn a_lease_lasts_two_intervals_so_its_holder_renews_it_in_time() {
+            assert_eq!(
+                lease_for(Duration::from_secs(3_600)),
+                Duration::from_secs(7_200),
+                "an hour's sweep holds its lease two hours"
+            );
+        }
+
+        #[test]
+        fn a_server_with_a_data_directory_always_leads_the_sweep() {
+            let f = fixture();
+            let own = f
+                .tenants
+                .create(Actor::Cli, "own", Some(Retention::Days(1)))
+                .expect("made");
+            deleted(&f.tenants, own, "0199e5c6-0d7a-7c11-8000-000000000001");
+            f.clock.set(datetime!(2026-10-25 13:00 UTC));
+            assert_eq!(
+                lead_sweep(
+                    &f.tenants,
+                    Retention::Days(1),
+                    lease_for(Duration::from_secs(60)),
+                    &|| false
+                ),
+                Some(SweepReport {
+                    purged: 1,
+                    failed: 0
+                }),
+                "one process: it always holds the lease"
+            );
+            assert_eq!(kept(&f.tenants, own), 0, "purged");
+        }
+
+        #[test]
+        fn a_server_with_a_data_directory_always_leads_the_pack_run() {
+            let f = fixture();
+            let settings = crate::config::ParquetSettings {
+                pack_interval: crate::config::PACK_INTERVAL,
+                pack_limit: crate::config::PACK_LIMIT,
+                reader_grace: crate::config::READER_GRACE,
+            };
+            assert_eq!(
+                lead_pack(&f.tenants, &settings, lease_for(settings.pack_interval), &|| false),
+                Some(PackRunReport::default()),
+                "no tenant, nothing packed, and the run was this server's"
+            );
+        }
+
+        #[test]
+        fn a_sweep_stops_at_the_tenant_where_its_lease_was_lost() {
+            let f = fixture();
+            let first = f
+                .tenants
+                .create(Actor::Cli, "a-first", Some(Retention::Days(1)))
+                .expect("made");
+            let second = f
+                .tenants
+                .create(Actor::Cli, "b-second", Some(Retention::Days(1)))
+                .expect("made");
+            deleted(&f.tenants, first, "0199e5c6-0d7a-7c11-8000-000000000001");
+            deleted(&f.tenants, second, "0199e5c6-0d7a-7c11-8000-000000000002");
+            f.clock.set(datetime!(2026-10-25 13:00 UTC));
+            let mut asked = 0;
+            let report = sweep_while(&f.tenants, Retention::Days(1), &mut || {
+                asked += 1;
+                asked == 1
+            });
+            assert_eq!(report.purged, 1, "the first tenant only: {report:?}");
+            assert_eq!(asked, 2, "asked before each tenant");
+            assert_eq!(
+                kept(&f.tenants, first) + kept(&f.tenants, second),
+                1,
+                "the other waits for the next holder"
+            );
+        }
+
+        #[test]
+        fn a_sweep_that_does_not_hold_its_lease_at_the_start_sweeps_nothing() {
+            let f = fixture();
+            let own = f
+                .tenants
+                .create(Actor::Cli, "own", Some(Retention::Days(1)))
+                .expect("made");
+            deleted(&f.tenants, own, "0199e5c6-0d7a-7c11-8000-000000000001");
+            f.clock.set(datetime!(2026-10-25 13:00 UTC));
+            let report = sweep_while(&f.tenants, Retention::Days(1), &mut || false);
+            assert_eq!(report, SweepReport::default(), "nothing");
+            assert_eq!(kept(&f.tenants, own), 1, "kept for the holder");
+        }
+
+        #[test]
+        fn a_pack_run_stops_at_the_tenant_where_its_lease_was_lost() {
+            let f = fixture();
+            for name in ["a-first", "b-second"] {
+                f.tenants.create(Actor::Cli, name, None).expect("made");
+            }
+            let settings = crate::config::ParquetSettings {
+                pack_interval: crate::config::PACK_INTERVAL,
+                pack_limit: crate::config::PACK_LIMIT,
+                reader_grace: crate::config::READER_GRACE,
+            };
+            // The lease is asked for before each tenant: a run that lost it
+            // at the first is asked no more.
+            let mut asked = 0;
+            super::super::pack_while(&f.tenants, &settings, &mut || {
+                asked += 1;
+                true
+            });
+            assert_eq!(asked, 2, "asked before each tenant");
+            let mut asked = 0;
+            let none = super::super::pack_while(&f.tenants, &settings, &mut || {
+                asked += 1;
+                false
+            });
+            assert_eq!(asked, 1, "the run stopped at the first tenant");
+            assert_eq!(none, PackRunReport::default(), "nothing done: {none:?}");
+        }
+
+        #[test]
+        fn a_lease_never_lasts_less_than_a_minute() {
+            assert_eq!(
+                lease_for(Duration::from_secs(10)),
+                Duration::from_secs(60),
+                "a short interval still gives a renewal time to arrive"
+            );
+            assert_eq!(lease_for(Duration::ZERO), Duration::from_secs(60), "zero");
+        }
+
+        #[test]
+        fn a_lease_of_the_longest_interval_does_not_overflow() {
+            assert_eq!(lease_for(Duration::MAX), Duration::MAX, "saturates");
         }
 
         #[test]

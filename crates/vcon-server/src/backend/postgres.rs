@@ -1,6 +1,7 @@
 //! The PostgreSQL catalog (cargo feature `postgres`), a preview: the
 //! connector, the pool, and the registry and tenant catalogs kept in a
-//! database, which one server serves.
+//! database, which several servers serve, one of them doing the purge
+//! sweep and the pack run for all under a lease (lease.rs).
 //!
 //! - Every connection is TLS, with the server's certificate chain and host
 //!   name verified by rustls against `catalog.postgres.ca_file` or the

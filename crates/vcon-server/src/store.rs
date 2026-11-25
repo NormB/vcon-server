@@ -252,7 +252,7 @@ impl Store {
     }
 
     /// A Store over the given catalog, objects and pack files; with
-    /// `recover`, start-up recovery runs, as `open` runs it.
+    /// `recover`, start-up recovery runs, assuming the writers it names.
     #[cfg(feature = "s3")]
     #[expect(
         clippy::too_many_arguments,
@@ -266,14 +266,14 @@ impl Store {
         packs: Option<Arc<dyn Packs>>,
         fs: Arc<dyn Fs>,
         clock: Arc<dyn Clock>,
-        recover: bool,
+        recover: Option<Writers>,
     ) -> Result<Store, OpenError> {
         let store = Store::with_backends(tenant, tenant_key, catalog, objects, packs, fs, clock);
-        if recover {
-            // A process that runs recovery holds the catalog alone: the
-            // data directory's lock, or the database's lock, which one
-            // serving server holds.
-            store.recover(Writers::None)?;
+        if let Some(writers) = recover {
+            // Writers::None for a process that holds the catalog alone
+            // (the data directory's lock, or a command alone on a
+            // database); Writers::Maybe for a server among several.
+            store.recover(writers)?;
         }
         Ok(store)
     }

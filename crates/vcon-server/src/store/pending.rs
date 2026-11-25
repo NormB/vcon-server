@@ -27,18 +27,11 @@ pub(crate) const WRITE_LEASE: i64 = 3_600 * 1_000_000_000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Writers {
     /// No one: the process holds the catalog alone (a data directory's
-    /// lock, or the database's lock of a server that serves it alone), so
-    /// no write is under way and every pending row is a leftover's.
+    /// lock, or the database's locks of a command that runs alone), so no
+    /// write is under way and every pending row is a leftover's.
     None,
     /// Other processes may: a pending row younger than the lease is a write
     /// under way.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "servers that share one database recover with it from a later step; the tests do now"
-        )
-    )]
     Maybe,
 }
 

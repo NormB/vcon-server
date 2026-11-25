@@ -331,8 +331,11 @@ pub struct Tenants {
     registry: Box<dyn Registry>,
     /// Each tenant's Store, once a request has opened it.
     stores: Mutex<HashMap<TenantId, Slot>>,
-    /// Opened beside a server: its Stores are opened without recovery.
-    beside: bool,
+    /// The recovery its Stores are opened with, and who else that
+    /// recovery assumes may be writing; none for a process opened beside
+    /// a server, whose recovery would take the server's work under way
+    /// for a crash's leftovers.
+    recovery: Option<Writers>,
     fs: Arc<dyn Fs>,
     clock: Arc<dyn Clock>,
     /// Whether a key may be made with no expiry (`keys.no_expiry`).
@@ -376,11 +379,12 @@ impl Tenants {
             objects,
             catalogs,
         )?;
-        // A process that opens the registry this way holds it alone: the
-        // data directory's lock, or the database's lock of a server that
-        // serves it alone.
+        // A process that opens the registry this way holds the data
+        // directory alone, or the database alone as a command alone does;
+        // a server on a database shares it with the other servers, whose
+        // work under way its recovery keeps.
         registry
-            .recover(Writers::None)
+            .recover(catalogs.writers())
             .map_err(RegistryError::Recovery)?;
         Ok(registry)
     }
@@ -452,27 +456,29 @@ impl Tenants {
                 crate::backend::postgres::open(database, &catalog_key, objects, fs.clone())?
             }
         };
+        let recovery = (!beside).then(|| catalogs.writers());
         Ok(Tenants::with_backends(
-            registry, space, wrap, fs, clock, beside,
+            registry, space, wrap, fs, clock, recovery,
         ))
     }
 
     /// The registry over the given backends, opened as `open_beside` opens
-    /// one when `beside`, else without its start-up recovery yet.
+    /// one when `recovery` is none, else without its start-up recovery
+    /// yet, which assumes the writers `recovery` names.
     pub(crate) fn with_backends(
         registry: Box<dyn Registry>,
         space: Box<dyn TenantSpace>,
         wrap: Box<dyn KeyWrap>,
         fs: Arc<dyn Fs>,
         clock: Arc<dyn Clock>,
-        beside: bool,
+        recovery: Option<Writers>,
     ) -> Tenants {
         Tenants {
             space,
             wrap,
             registry,
             stores: Mutex::new(HashMap::new()),
-            beside,
+            recovery,
             fs,
             clock,
             no_expiry: std::sync::atomic::AtomicBool::new(true),
@@ -492,28 +498,35 @@ impl Tenants {
     /// Takes or renews the lease of `job` for `ttl` ([`Registry::lead`]):
     /// true when this process holds it now. The catalogs' clock decides,
     /// never this process's.
-    #[cfg_attr(
-        not(all(test, feature = "postgres", feature = "backend-tests")),
-        expect(
-            dead_code,
-            reason = "a server takes the leases from the next step; the live tests do now"
-        )
-    )]
     pub(crate) fn lead(&self, job: Job, ttl: std::time::Duration) -> Result<bool, TenantError> {
         self.registry.lead(job, ttl)
     }
 
     /// Gives up the lease of `job` when this process holds it
     /// ([`Registry::step_down`]).
-    #[cfg_attr(
-        not(all(test, feature = "postgres", feature = "backend-tests")),
-        expect(
-            dead_code,
-            reason = "a server takes the leases from the next step; the live tests do now"
-        )
-    )]
     pub(crate) fn step_down(&self, job: Job) -> Result<(), TenantError> {
         self.registry.step_down(job)
+    }
+
+    /// The recovery a running server repeats at each of its sweeps
+    /// (design 7.4): the registry's, then each tenant's Store's, all with
+    /// other writers possibly at work, since this process writes while it
+    /// runs and other servers may too. A tenant whose Store cannot be
+    /// opened or recovered, such as one being removed, is counted and left
+    /// for the next sweep; the answer is how many were.
+    pub(crate) fn recover_all(&self) -> Result<u64, TenantError> {
+        self.recover(Writers::Maybe)?;
+        let mut failed = 0;
+        for id in self.ids()? {
+            let recovered = self
+                .store(id)
+                .map_err(|_| ())
+                .and_then(|store| store.recover(Writers::Maybe).map_err(|_| ()));
+            if recovered.is_err() {
+                failed += 1;
+            }
+        }
+        Ok(failed)
     }
 
     /// Removes each tenant space with no row: a create cut off before its
@@ -905,7 +918,7 @@ impl Tenants {
             }
         }
         self.space
-            .open(id, tenant_key, !self.beside, self.clock.clone())
+            .open(id, tenant_key, self.recovery, self.clock.clone())
             .map_err(OpenFailure::from)
     }
 
@@ -2168,6 +2181,55 @@ mod tests {
         );
         f.tenants.recover(Writers::None).expect("recovery runs");
         assert_eq!(f.creating(), Vec::new(), "alone, every row is a leftover's");
+    }
+
+    /// The recovery a running server repeats at each sweep: the leftover
+    /// space goes without a restart, and the tenant's Store is recovered
+    /// as one other writers may be using.
+    #[test]
+    fn a_running_server_s_recovery_removes_a_space_with_no_row_and_keeps_the_rest() {
+        let f = fixture();
+        let kept = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        let orphan = TenantId::generate();
+        let tenants = f.tenants_dir();
+        for name in [orphan.to_string(), "notes".to_owned()] {
+            f.fs.create_dir_all(&tenants.join(name))
+                .expect("a directory");
+        }
+        f.tenants.recover_all().expect("recovery runs");
+        assert_eq!(
+            f.dirs(),
+            [OsString::from(kept.to_string()), OsString::from("notes")],
+            "the space with no row goes; the tenant and a name not ours stay"
+        );
+        drop(f.store(kept));
+    }
+
+    #[test]
+    fn a_running_server_s_recovery_keeps_a_write_under_way_in_this_process() {
+        let f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        let store = f.tenants.store(id).expect("its store");
+        let (arrive, arrived) = std::sync::mpsc::channel();
+        let (go, went) = std::sync::mpsc::channel::<()>();
+        let wait = std::time::Duration::from_secs(60);
+        store.on_between(Box::new(move || {
+            arrive.send(()).expect("the test waits");
+            went.recv_timeout(wait).expect("the test says go on");
+        }));
+        let (found, body) =
+            crate::store::testing::vcon("0199e5c6-0d7a-7c11-8000-0000000000a1", "under way");
+        let who = crate::store::Caller {
+            key: crate::ids::KeyId([3; 8]),
+        };
+        std::thread::scope(|s| {
+            let writing = s.spawn(|| store.create(&who, &found, &body));
+            arrived.recv_timeout(wait).expect("the write is under way");
+            f.tenants.recover_all().expect("recovery runs mid-write");
+            go.send(()).expect("the write waits");
+            writing.join().expect("joins").expect("the write commits");
+        });
+        store.get(&who, found.uuid).expect("its object was kept");
     }
 
     #[test]

@@ -28,6 +28,7 @@ use crate::clock::Clock;
 use crate::envelope::{self, Key};
 use crate::fs::Fs;
 use crate::ids::TenantId;
+use crate::store::pending::Writers;
 use crate::store::{OpenError, Store, StoreError};
 use crate::tenants::TenantError;
 
@@ -75,7 +76,9 @@ impl TenantSpace for PgTenantSpace {
             Ok(_) | Err(CatalogError::Exists) => {}
             Err(e) => return Err(open_error(e)),
         }
-        drop(self.open(id, key, true, clock)?);
+        // A new tenant's catalog has no row yet, so no other server writes
+        // to it.
+        drop(self.open(id, key, Some(Writers::None), clock)?);
         Ok(())
     }
 
@@ -83,7 +86,7 @@ impl TenantSpace for PgTenantSpace {
         &self,
         id: TenantId,
         key: Key,
-        recover: bool,
+        recover: Option<Writers>,
         clock: Arc<dyn Clock>,
     ) -> Result<Store, OpenError> {
         let catalog_key = envelope::catalog_key(&key).map_err(|_| StoreError::Io)?;

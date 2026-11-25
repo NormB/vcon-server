@@ -1132,9 +1132,25 @@ pub(super) mod on_a_server {
     }
 
     #[test]
-    fn a_second_server_on_the_database_is_refused_by_the_lock() {
-        let (db, _database) = database();
+    fn a_second_server_on_the_database_shares_it() {
+        let (db, first) = database();
         let (_dir, settings) = db.settings("vcon_app");
+        let second = Database::connect(&settings).expect("the second server connects");
+        assert_ne!(first.holder(), second.holder(), "two holders of leases");
+        assert_eq!(
+            PgCatalog::exists(&second, TenantId::generate()),
+            Ok(false),
+            "the second server reads the database"
+        );
+    }
+
+    #[test]
+    fn a_second_server_is_refused_while_a_command_alone_holds_the_lock() {
+        let (db, first) = database();
+        first.give_up_lock();
+        let (_dir, settings) = db.settings("vcon_app");
+        let _alone = Database::connect_as(&settings, super::super::super::schema::Holds::Alone)
+            .expect("the command alone");
         let StorageError(why) = Database::connect(&settings).expect_err("refused");
         assert_eq!(
             why,
@@ -1947,16 +1963,17 @@ pub(super) mod on_a_server {
     fn a_server_that_has_given_up_the_lock_lets_the_next_in_while_still_connected() {
         let (db, first) = database();
         let (_dir, settings) = db.settings("vcon_app");
+        let alone = super::super::super::schema::Holds::Alone;
         assert!(
-            Database::connect(&settings).is_err(),
-            "refused while the first holds the lock"
+            Database::connect_as(&settings, alone).is_err(),
+            "a command alone is refused while the server holds the lock"
         );
         first.give_up_lock();
-        let second = Database::connect(&settings).expect("the lock is free at once");
+        let command = Database::connect_as(&settings, alone).expect("the lock is free at once");
         assert_eq!(
-            PgCatalog::exists(&second, TenantId::generate()),
+            PgCatalog::exists(&command, TenantId::generate()),
             Ok(false),
-            "the second server reads the database"
+            "the command reads the database"
         );
         assert_eq!(
             PgCatalog::exists(&first, TenantId::generate()),
@@ -1966,7 +1983,7 @@ pub(super) mod on_a_server {
         first.give_up_lock();
         assert!(
             Database::connect(&settings).is_err(),
-            "giving up twice takes nothing from the second server"
+            "giving up twice takes nothing from the command"
         );
     }
 

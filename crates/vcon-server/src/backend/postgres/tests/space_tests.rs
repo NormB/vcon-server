@@ -96,7 +96,12 @@ pub(super) mod on_a_server {
 
     pub(crate) fn open(space: &PgTenantSpace, keys: &Keys) -> Store {
         space
-            .open(keys.tenant, keys.key(), true, clock())
+            .open(
+                keys.tenant,
+                keys.key(),
+                Some(crate::store::pending::Writers::None),
+                clock(),
+            )
             .expect("opens the tenant")
     }
 
@@ -317,7 +322,7 @@ pub(super) mod on_a_server {
         let keys = made(&space);
         let uuid = store_one(&open(&space, &keys), 1);
         let beside = space
-            .open(keys.tenant, keys.key(), false, clock())
+            .open(keys.tenant, keys.key(), None, clock())
             .expect("opens beside a server");
         assert!(reads(&beside, uuid), "and reads what is stored");
     }
@@ -400,7 +405,12 @@ pub(super) mod on_a_server {
     fn a_tenant_that_was_never_made_does_not_open() {
         let (_db, _database, _s3, space) = space();
         let keys = Keys::new();
-        let e = open_error(space.open(keys.tenant, keys.key(), true, clock()));
+        let e = open_error(space.open(
+            keys.tenant,
+            keys.key(),
+            Some(crate::store::pending::Writers::None),
+            clock(),
+        ));
         assert!(
             matches!(e, OpenError::Store(StoreError::Io)),
             "no catalog: {e:?}"
@@ -413,7 +423,12 @@ pub(super) mod on_a_server {
         let (_db, _database, _s3, space) = space();
         let keys = made(&space);
         let other = Keys::of(keys.tenant);
-        let e = open_error(space.open(keys.tenant, other.key(), true, clock()));
+        let e = open_error(space.open(
+            keys.tenant,
+            other.key(),
+            Some(crate::store::pending::Writers::None),
+            clock(),
+        ));
         assert!(matches!(e, OpenError::WrongKey), "another key: {e:?}");
     }
 
@@ -515,7 +530,12 @@ pub(super) mod on_a_server {
         let keys = made(&space);
         store_one(&open(&space, &keys), 1);
         space.remove(keys.tenant).expect("removes");
-        let e = open_error(space.open(keys.tenant, keys.key(), true, clock()));
+        let e = open_error(space.open(
+            keys.tenant,
+            keys.key(),
+            Some(crate::store::pending::Writers::None),
+            clock(),
+        ));
         assert!(
             matches!(e, OpenError::Store(StoreError::Io)),
             "no catalog: {e:?}"
