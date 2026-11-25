@@ -123,7 +123,9 @@ mod on_a_server {
         // the registry's log (schema_tests::v12); since version 13 it
         // neither changes nor deletes the claim of the bucket prefix
         // (schema_tests::v13); since version 14 it changes no pending row,
-        // and its DELETE with no tenant is refused in schema_tests::v14.
+        // and its DELETE with no tenant is refused in schema_tests::v14;
+        // since version 15 it changes no creating row of the registry
+        // (schema_tests::v15).
         let writable: Vec<&str> = all_tables()
             .into_iter()
             .filter(|t| {
@@ -136,6 +138,7 @@ mod on_a_server {
                         | "registry_key"
                         | "storage_claim"
                         | "pending_write"
+                        | "pending_tenant"
                 )
             })
             .collect();

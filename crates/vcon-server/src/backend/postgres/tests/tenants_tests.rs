@@ -62,6 +62,7 @@ mod on_a_server {
     use crate::fs::OsFs;
     use crate::ids::{TenantId, VersionId};
     use crate::store::Caller;
+    use crate::store::pending::Writers;
     use crate::tenants::{BackupError, RegistryError, Removal, TenantError, Tenants};
 
     /// Runs `call` on a runtime of its own.
@@ -493,6 +494,51 @@ mod on_a_server {
             1,
             "a command beside a server runs no start-up recovery"
         );
+    }
+
+    #[test]
+    fn a_create_under_way_on_one_server_survives_another_s_recovery() {
+        let w = world();
+        let (_serving, first) = w.serve();
+        let (_beside, other) = w.beside();
+        let other = Arc::new(other);
+        let recovering = other.clone();
+        first.between_create(Box::new(move |_| {
+            recovering
+                .recover(Writers::Maybe)
+                .expect("the other's recovery runs");
+        }));
+        let id = first
+            .create(Actor::Cli, "acme", None)
+            .expect("the create commits");
+        assert_eq!(w.rows(id, "tenant_catalog"), 1, "its catalog is kept");
+        store_one(&first, id, 1);
+        assert_eq!(
+            w.registry_rows("pending_tenant"),
+            0,
+            "and its creating row is gone"
+        );
+    }
+
+    #[test]
+    fn a_create_whose_creating_row_another_server_took_adds_no_tenant() {
+        let w = world();
+        let (_serving, first) = w.serve();
+        let (_beside, other) = w.beside();
+        let other = Arc::new(other);
+        let recovering = other.clone();
+        first.between_create(Box::new(move |_| {
+            recovering
+                .recover(Writers::None)
+                .expect("the other's recovery runs");
+        }));
+        assert_eq!(
+            first.create(Actor::Cli, "acme", None),
+            Err(TenantError::Io),
+            "a recovery alone took the create for a leftover"
+        );
+        assert_eq!(names(&first), Vec::<String>::new(), "no tenant");
+        assert_eq!(w.registry_rows("pending_tenant"), 0, "and no creating row");
     }
 
     #[test]

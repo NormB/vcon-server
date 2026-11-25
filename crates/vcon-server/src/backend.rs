@@ -614,6 +614,14 @@ pub trait RegistryTx {
     /// Wraps counted against a master key.
     fn master_wraps(&mut self, key: KeyId) -> Result<u64, TenantError>;
     fn add_master_wrap(&mut self, key: KeyId, at: i64) -> Result<(), TenantError>;
+    /// Records that a create of tenant `id` began at `at`, before its space
+    /// is made: until the tenant's row is added, this creating row tells
+    /// recovery the space is a create under way (store/pending.rs).
+    fn add_creating(&mut self, id: TenantId, at: i64) -> Result<(), TenantError>;
+    /// Deletes the creating row of `id`, and says whether there was one.
+    fn drop_creating(&mut self, id: TenantId) -> Result<bool, TenantError>;
+    /// Every creating row: the tenant and when its create began, by id.
+    fn creating(&mut self) -> Result<Vec<(TenantId, i64)>, TenantError>;
     /// When the master key's use began, if it is recorded.
     fn master_since(&mut self, key: KeyId) -> Result<Option<i64>, TenantError>;
     fn key(&mut self, id: KeyId) -> Result<Option<KeyRow>, TenantError>;

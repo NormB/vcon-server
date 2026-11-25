@@ -87,7 +87,8 @@ The other pages link here for these and do not repeat them.
 - **Run `migrate` first after an upgrade.** A new binary refuses a
   database of an older schema version. A database that release 0.4.5
   migrated is at version 6, one that releases 0.4.6 to 0.4.14 migrated is
-  at version 13, and this release needs version 14 (see
+  at version 13, one that release 0.4.15 migrated is at version 14, and
+  this release needs version 15 (see
   [after an upgrade from 0.4.5](#after-an-upgrade-from-0-4-5)).
 - **The data directory stays.** It holds the two lock files of
   [the commands](#commands-beside-a-server-and-alone) and nothing else.
@@ -482,8 +483,9 @@ binary's.
 ### After an upgrade from 0.4.5
 
 Release 0.4.5 and the releases before it leave the schema at version 6.
-Releases 0.4.6 to 0.4.14 make version 13, and
-this release makes version 14, so a database that any of them migrated
+Releases 0.4.6 to 0.4.14 make version 13, release 0.4.15 makes
+version 14, and
+this release makes version 15, so a database that any of them migrated
 needs the command once more, with the new binary and before any server
 starts:
 
@@ -493,17 +495,18 @@ sudo -u vcon vcon-server migrate --config /etc/vcon-server/vcon-migrate.toml
 ```
 
 ```text
-{"from":6,"message":"schema version 6 to schema version 14","migrated":true,"to":14}
+{"from":6,"message":"schema version 6 to schema version 15","migrated":true,"to":15}
 ```
 
-From version 13 the line says `"from":13`. Until then a server stops with
+From version 13 the line says `"from":13`, and from version 14
+`"from":14`. Until then a server stops with
 `the database schema is version 6, older than
-this binary's 14: run vcon-server migrate`.
+this binary's 15: run vcon-server migrate`.
 
 ### Schema versions
 
 What each version of the schema after 6 changes, for an operator who
-reads the database or grants on it. Versions 7 to 14 change no row there
+reads the database or grants on it. Versions 7 to 15 change no row there
 is. Version 7 changes two things:
 
 - The `version` table gains the column `seq`, a number PostgreSQL gives
@@ -631,6 +634,19 @@ last step of a read, on any server refuse a tenant whose row is marked,
 as a removed tenant's, so a read that races the removal is never
 answered as damaged. A removal cut off leaves the row marked, and the
 next start removes the tenant again.
+
+Version 15 makes the table `pending_tenant`, where the registry records
+its tenant creates under way. A create adds a row, the tenant's id and
+the time the create began, before it makes the tenant's space (its row
+of `tenant_lock` and its prefix in the bucket), and deletes the row in
+the transaction that adds the tenant's row. Start-up recovery removes a
+space that no row of `tenant` names; a row of `pending_tenant` younger
+than an hour marks the space of a create under way, which recovery keeps
+when other servers may be writing. A create whose row recovery took adds
+no tenant and fails. The rows are the registry's, read and written in
+its transactions only; `vcon_app` reads, adds and deletes them and is
+granted no `UPDATE`. The id and the time are in the clear, and the table
+starts empty.
 
 The audit key does not rotate with the tenant key: a rotation seals the
 same audit key under the new catalog key and changes no audit record.
@@ -1006,8 +1022,8 @@ primary in `hosts`; a standby before it is passed over.
 
 ```text
 vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database has no vCon schema: run vcon-server migrate
-vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is version 6, older than this binary's 14: run vcon-server migrate
-vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is newer than this binary (version 15, this binary 14): upgrade this server
+vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is version 6, older than this binary's 15: run vcon-server migrate
+vcon-server: the storage cannot be used: catalog.postgres: no server could be used: db1.example.com:5432: the database schema is newer than this binary (version 16, this binary 15): upgrade this server
 ```
 
 Run `vcon-server migrate` with `vcon_migrate`'s configuration, or upgrade

@@ -22,7 +22,7 @@
     },
     "postgres": {
       "read_back": true,
-      "version": "14"
+      "version": "15"
     }
   },
   "releases": {

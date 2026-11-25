@@ -82,6 +82,18 @@ CREATE TEMP TABLE pending_write (
 );
 ";
 
+/// The creating rows of the tenant creates under way (store/pending.rs):
+/// a table of the registry connection's own, kept out of server.sqlite as
+/// `pending_write` is kept out of a catalog, and for the same reason: a
+/// data directory is written by one process, so every create under way is
+/// one of this process's.
+const PENDING_TENANTS: &str = "
+CREATE TEMP TABLE pending_tenant (
+    id BLOB PRIMARY KEY NOT NULL,
+    started_at INTEGER NOT NULL
+);
+";
+
 /// How long a checkpoint waits before it tries again while a reader still
 /// holds the WAL.
 const CHECKPOINT_RETRY: std::time::Duration = std::time::Duration::from_millis(10);
@@ -1422,6 +1434,8 @@ impl LocalRegistry {
             catalog::CatalogError::WrongKey => RegistryError::WrongKey,
             e => RegistryError::failed(OpenStep::OpenCatalog, path.clone(), e),
         })?;
+        conn.execute_batch(PENDING_TENANTS)
+            .map_err(|e| RegistryError::failed(OpenStep::OpenCatalog, path.clone(), e))?;
         Ok(LocalRegistry {
             conn: Mutex::new(conn),
             catalog_key,
@@ -1743,6 +1757,41 @@ impl RegistryTx for LocalRegistryTx<'_> {
             )
             .map_err(tenant_io)?;
         Ok(())
+    }
+
+    fn add_creating(&mut self, id: TenantId, at: i64) -> Result<(), TenantError> {
+        self.conn
+            .cached_run(
+                "INSERT INTO pending_tenant (id, started_at) VALUES (?1, ?2)",
+                params![id.0, at],
+            )
+            .map(drop)
+            .map_err(tenant_io)
+    }
+
+    fn drop_creating(&mut self, id: TenantId) -> Result<bool, TenantError> {
+        self.conn
+            .cached_run("DELETE FROM pending_tenant WHERE id = ?1", [id.0])
+            .map(|deleted| deleted > 0)
+            .map_err(tenant_io)
+    }
+
+    fn creating(&mut self) -> Result<Vec<(TenantId, i64)>, TenantError> {
+        let mut rows = self
+            .conn
+            .prepare_cached("SELECT id, started_at FROM pending_tenant ORDER BY id")
+            .map_err(tenant_io)?;
+        rows.query_map([], |r| {
+            let id: Vec<u8> = r.get(0)?;
+            Ok((id, r.get::<_, i64>(1)?))
+        })
+        .map_err(tenant_io)?
+        .map(|row| {
+            let (id, at) = row.map_err(tenant_io)?;
+            let id: [u8; 16] = id.try_into().map_err(tenant_io)?;
+            Ok((TenantId(id), at))
+        })
+        .collect()
     }
 
     fn master_since(&mut self, key: KeyId) -> Result<Option<i64>, TenantError> {

@@ -32,6 +32,7 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     include_str!("schema_v12.sql"),
     include_str!("schema_v13.sql"),
     include_str!("schema_v14.sql"),
+    include_str!("schema_v15.sql"),
 ];
 
 /// The schema version this binary makes and reads:

@@ -1864,6 +1864,80 @@ fn pg_schema(release: &str) -> i64 {
         .unwrap_or_else(|| panic!("{release}: the postgres section states the schema"))
 }
 
+/// The tables the migrations after schema version 13 make, each with the
+/// version that makes it, oldest first: a release's restored rows are
+/// compared without the tables made after its schema, each such table
+/// must be there and empty after `migrate`, and the first table the
+/// build's last migration makes is the one a planted table breaks.
+const LATER_TABLES: &[(i64, &str)] = &[(14, "pending_write"), (15, "pending_tenant")];
+
+/// The tables of [`LATER_TABLES`] a migration past `release_schema` makes.
+fn tables_made_after(release_schema: i64) -> Vec<&'static str> {
+    LATER_TABLES
+        .iter()
+        .filter(|(version, _)| *version > release_schema)
+        .map(|(_, table)| *table)
+        .collect()
+}
+
+/// The first table the migration to `build_schema` makes, if it makes one.
+fn last_migration_table(build_schema: i64) -> Option<&'static str> {
+    LATER_TABLES
+        .iter()
+        .find(|(version, _)| *version == build_schema)
+        .map(|(_, table)| *table)
+}
+
+#[test]
+fn the_tables_made_after_a_schema_are_the_later_migrations_tables() {
+    assert_eq!(
+        tables_made_after(13),
+        ["pending_write", "pending_tenant"],
+        "a release at 13 lacks both"
+    );
+    assert_eq!(
+        tables_made_after(14),
+        ["pending_tenant"],
+        "one at 14 lacks the newer"
+    );
+}
+
+#[test]
+fn a_release_at_the_build_s_schema_lacks_no_later_table() {
+    assert!(
+        tables_made_after(i64::from(vcon_server::formats::POSTGRES_SCHEMA)).is_empty(),
+        "the build's own schema has every table"
+    );
+}
+
+#[test]
+fn the_build_s_last_migration_makes_a_table_a_planted_one_breaks() {
+    assert_eq!(
+        last_migration_table(i64::from(vcon_server::formats::POSTGRES_SCHEMA)),
+        Some("pending_tenant"),
+        "the first table of the build's last migration"
+    );
+}
+
+#[test]
+fn a_schema_no_later_migration_reached_has_no_last_table() {
+    assert_eq!(last_migration_table(13), None, "13 is before the list");
+    assert_eq!(last_migration_table(99), None, "and 99 after it");
+}
+
+#[test]
+fn the_later_tables_are_in_order_and_end_at_the_build_s_schema() {
+    assert!(
+        LATER_TABLES.windows(2).all(|w| w[0].0 <= w[1].0),
+        "oldest first: {LATER_TABLES:?}"
+    );
+    assert_eq!(
+        LATER_TABLES.last().map(|(version, _)| *version),
+        Some(i64::from(vcon_server::formats::POSTGRES_SCHEMA)),
+        "a new migration's table is added here"
+    );
+}
+
 /// Whether `migrate` of a build at `build_schema` has a migration left to
 /// apply to a database at `release_schema`. A release at the build's own
 /// schema has none, so no migration of it can fail part way.
@@ -1901,7 +1975,7 @@ fn the_0_4_14_fixture_runs_the_planted_table_case_against_version_14() {
             pg_schema("0.4.14"),
             i64::from(vcon_server::formats::POSTGRES_SCHEMA)
         ),
-        "0.4.14's fixture has version 14's migration left, which the planted pending_write table breaks"
+        "0.4.14's fixture has the migrations from version 14 left, which a planted table breaks"
     );
 }
 
@@ -3373,11 +3447,11 @@ mod live {
     /// `schema_version`, where each migration records itself: what a
     /// migration must leave as it was.
     fn rows_but_new(rows: &[String], release: &str) -> Vec<String> {
-        let new: &[&str] = if super::pg_schema(release) < 14 {
-            &["pending_write", "schema_version"]
-        } else {
-            &[]
-        };
+        let schema = super::pg_schema(release);
+        let mut new = super::tables_made_after(schema);
+        if schema < i64::from(vcon_server::formats::POSTGRES_SCHEMA) {
+            new.push("schema_version");
+        }
         rows.iter()
             .filter(|row| !new.iter().any(|t| row.split(' ').next() == Some(*t)))
             .cloned()
@@ -3436,12 +3510,11 @@ mod live {
             [to.to_string()],
             "{release}: the schema records this build's version"
         );
-        if from < 14 {
+        for table in super::tables_made_after(from) {
+            let empty = format!("{table} d41d8cd98f00b204e9800998ecf8427e");
             assert!(
-                after_rows
-                    .iter()
-                    .any(|row| row == "pending_write d41d8cd98f00b204e9800998ecf8427e"),
-                "{release}: the table of writes under way is there, and empty: {after_rows:?}"
+                after_rows.contains(&empty),
+                "{release}: the table {table} is there, and empty: {after_rows:?}"
             );
         }
     }
@@ -3474,10 +3547,13 @@ mod live {
                 .expect("the version")
                 .concat()
         };
-        let was = version();
-        // A table in the way of the last migration's CREATE TABLE, so the
-        // migration fails after the ones before it ran in its transaction.
-        r.db.as_owner("CREATE TABLE vcon.pending_write (planted int)");
+        // A table in the way of the last migration's CREATE TABLE, so that
+        // migration fails. Each migration runs in a transaction of its own
+        // (backend/postgres/schema.rs), so the ones before it are kept and
+        // the database is whole at the version before the build's.
+        let planted = super::last_migration_table(build)
+            .unwrap_or_else(|| panic!("schema {build}'s migration makes a table (LATER_TABLES)"));
+        r.db.as_owner(&format!("CREATE TABLE vcon.{planted} (planted int)"));
         let out = r.migrate();
         assert!(
             !out.status.success(),
@@ -3486,11 +3562,16 @@ mod live {
         );
         assert_eq!(
             version(),
-            was,
-            "{release}: the schema's version is the release's"
+            (build - 1).to_string(),
+            "{release}: the schema's version is the one before the failed migration"
         );
-        r.db.as_owner("DROP TABLE vcon.pending_write");
-        assert_eq!(r.state(), before, "{release}: nothing else changed");
+        r.db.as_owner(&format!("DROP TABLE vcon.{planted}"));
+        let (rows, listing, files) = r.state();
+        assert_eq!(
+            (rows_but_new(&rows, release), listing, files),
+            (rows_but_new(&before.0, release), before.1, before.2),
+            "{release}: no row of the release's tables changed"
+        );
     }
 
     pub(super) fn a_second_check_changes_nothing(release: &str) {

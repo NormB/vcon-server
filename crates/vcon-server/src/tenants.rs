@@ -23,6 +23,7 @@ use crate::fs::Fs;
 use crate::ids::TenantId;
 use crate::key_wrap::{FileWrap, KeyWrap};
 use crate::retention::Retention;
+use crate::store::pending::{self, Writers};
 use crate::store::{OpenError, Store};
 
 mod backup;
@@ -375,7 +376,12 @@ impl Tenants {
             objects,
             catalogs,
         )?;
-        registry.recover().map_err(RegistryError::Recovery)?;
+        // A process that opens the registry this way holds it alone: the
+        // data directory's lock, or the database's lock of a server that
+        // serves it alone.
+        registry
+            .recover(Writers::None)
+            .map_err(RegistryError::Recovery)?;
         Ok(registry)
     }
 
@@ -475,13 +481,52 @@ impl Tenants {
         }
     }
 
-    /// Removes each tenant directory with no row: a create cut off before
-    /// its commit. A name that is not a tenant id is not ours and is left
+    /// Runs `hook` once in the next create, between its space and the
+    /// transaction that adds its row: where another server's recovery
+    /// would find the create under way.
+    #[cfg(all(test, feature = "postgres", feature = "backend-tests"))]
+    pub(crate) fn between_create(&self, hook: tests::CreateHook) {
+        *self.hooks.between.lock().expect("hook") = Some(hook);
+    }
+
+    /// Removes each tenant space with no row: a create cut off before its
+    /// commit. A name that is not a tenant id is not ours and is left
     /// alone. A removal a crash undoes is made again at the next start, so
     /// none is synced.
-    fn recover(&self) -> Result<(), TenantError> {
-        for id in self.space.present()? {
-            if self.registry.snapshot()?.tenant(id)?.is_none() {
+    ///
+    /// With other writers possibly at work (`writers`), a space whose
+    /// create is under way (store/pending.rs) is kept, by the order that
+    /// keeps a write's object: a creating row no create can still be under
+    /// way for is deleted first, so that create's last transaction refuses
+    /// to add its row; the spaces are listed next, and the rows read after:
+    /// a create adds its creating row before it makes its space, so every
+    /// space listed has its creating row or its tenant's row in that read.
+    pub(crate) fn recover(&self, writers: Writers) -> Result<(), TenantError> {
+        let now = nanos(self.clock.now());
+        {
+            let mut tx = self.registry.immediate()?;
+            for (id, started_at) in tx.creating()? {
+                if !pending::under_way(writers, started_at, now) {
+                    tx.drop_creating(id)?;
+                }
+            }
+            commit(tx)?;
+        }
+        let present = self.space.present()?;
+        let (tenants, creating) = {
+            let mut tx = self.registry.snapshot()?;
+            let tenants: std::collections::HashSet<TenantId> =
+                tx.tenants()?.into_iter().map(|row| row.id).collect();
+            let creating: std::collections::HashSet<TenantId> = tx
+                .creating()?
+                .into_iter()
+                .filter(|(_, started_at)| pending::under_way(writers, *started_at, now))
+                .map(|(id, _)| id)
+                .collect();
+            (tenants, creating)
+        };
+        for id in present {
+            if pending::leftover(tenants.contains(&id), false, creating.contains(&id)) {
                 self.space.remove(id)?;
             }
         }
@@ -526,7 +571,11 @@ impl Tenants {
             }
             // The wrap is counted before it is made, so every wrap is
             // counted once whether this create wins or loses.
-            tx.add_master_wrap(master_id, nanos(self.clock.now()))?;
+            let now = nanos(self.clock.now());
+            tx.add_master_wrap(master_id, now)?;
+            // Before the space is made: until the row, recovery on another
+            // server keeps the space of a create under way.
+            tx.add_creating(id, now)?;
             commit(tx)?;
         }
 
@@ -545,11 +594,16 @@ impl Tenants {
             {
                 let hook = self.hooks.between.lock().expect("hook").take();
                 if let Some(hook) = hook {
-                    hook();
+                    hook(self);
                 }
             }
 
             let mut tx = self.registry.immediate()?;
+            if !tx.drop_creating(id)? {
+                // Recovery took this create for a leftover, and its space
+                // is removed or going: no row may name it.
+                return Err(TenantError::Io);
+            }
             if tx.name_taken(name)? {
                 // A refusal's record commits.
                 self.record(&mut tx, &entry(409, None))?;
@@ -582,6 +636,15 @@ impl Tenants {
         // the next start.
         if made.is_err() && !unknown.get() {
             let _ = self.space.remove(id);
+            // The creating row goes after the space, so recovery never
+            // finds the space without it; a row left here is a leftover
+            // that recovery drops once its lease passes.
+            let begun = self.registry.immediate();
+            if let Ok(mut tx) = begun
+                && tx.drop_creating(id).is_ok()
+            {
+                let _ = tx.commit();
+            }
         }
         made
     }
@@ -1071,14 +1134,18 @@ mod tests {
         }
     }
 
+    /// What a create runs between its space and its row, given the
+    /// `Tenants` creating.
+    pub(crate) type CreateHook = Box<dyn FnOnce(&Tenants) + Send>;
+
     /// What a backup runs at each try, after it copies server.sqlite.
     pub(super) type RegistryHook = Box<dyn FnMut(&Tenants) + Send>;
 
     #[derive(Default)]
     pub(super) struct Hooks {
         /// Runs once, between a create's directory and catalog and the
-        /// transaction that commits its row.
-        pub(super) between: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+        /// transaction that commits its row, given the `Tenants` creating.
+        pub(super) between: Mutex<Option<CreateHook>>,
         /// Runs once, as `store` opens a tenant's Store.
         pub(super) opening: Mutex<Option<Box<dyn FnOnce() + Send>>>,
         /// Stops a key rotation, as a failure, after this step.
@@ -1664,7 +1731,7 @@ mod tests {
     fn a_name_taken_while_the_directory_is_made_loses_and_leaves_nothing() {
         let f = fixture();
         let other = f.other();
-        *f.tenants.hooks.between.lock().expect("hook") = Some(Box::new(move || {
+        *f.tenants.hooks.between.lock().expect("hook") = Some(Box::new(move |_| {
             other
                 .execute(
                     "INSERT INTO tenant (id, name, created_at, tenant_key_id,
@@ -1857,7 +1924,7 @@ mod tests {
         let mut f = fixture();
         let other = f.other();
         let fs = f.fs.clone();
-        *f.tenants.hooks.between.lock().expect("hook") = Some(Box::new(move || {
+        *f.tenants.hooks.between.lock().expect("hook") = Some(Box::new(move |_| {
             fs.fail_from(0);
             other
                 .execute_batch(
@@ -1874,6 +1941,206 @@ mod tests {
         f.restart();
         assert_eq!(f.count("SELECT count(*) FROM tenant"), 0);
         assert_eq!(f.dirs(), Vec::<OsString>::new(), "removed at start");
+    }
+
+    /// The fixture clock's start, as the creates below begin.
+    const START: OffsetDateTime = datetime!(2026-10-23 12:00 UTC);
+
+    /// `START` moved by `nanos` nanoseconds.
+    fn start_plus(nanos: i64) -> OffsetDateTime {
+        START + time::Duration::nanoseconds(nanos)
+    }
+
+    impl Fixture {
+        /// The creating rows of the registry: the creates under way.
+        fn creating(&self) -> Vec<(TenantId, i64)> {
+            self.tenants
+                .registry
+                .snapshot()
+                .expect("a read begins")
+                .creating()
+                .expect("lists")
+        }
+
+        /// Sets the hook between a create's space and its row to move the
+        /// clock to `to` and run recovery with `writers`, as another
+        /// process recovering at that time would.
+        fn recover_between(&self, to: OffsetDateTime, writers: Writers) {
+            let clock = self.clock.clone();
+            *self.tenants.hooks.between.lock().expect("hook") =
+                Some(Box::new(move |tenants: &Tenants| {
+                    clock.set(to);
+                    tenants.recover(writers).expect("recovery runs");
+                }));
+        }
+    }
+
+    #[test]
+    fn a_create_under_way_keeps_its_space_through_recovery_beside_other_writers() {
+        let f = fixture();
+        f.recover_between(START, Writers::Maybe);
+        let id = f
+            .tenants
+            .create(Actor::Cli, "acme", None)
+            .expect("the create commits");
+        assert_eq!(f.dirs(), [OsString::from(id.to_string())], "its space kept");
+        drop(f.store(id));
+    }
+
+    #[test]
+    fn a_create_just_inside_its_lease_keeps_its_space() {
+        let f = fixture();
+        f.recover_between(start_plus(pending::WRITE_LEASE - 1), Writers::Maybe);
+        let id = f
+            .tenants
+            .create(Actor::Cli, "acme", None)
+            .expect("the create commits");
+        assert_eq!(f.dirs(), [OsString::from(id.to_string())], "its space kept");
+        drop(f.store(id));
+    }
+
+    #[test]
+    fn a_create_seen_from_a_clock_behind_is_still_under_way() {
+        let f = fixture();
+        f.recover_between(start_plus(1 - pending::WRITE_LEASE), Writers::Maybe);
+        let id = f
+            .tenants
+            .create(Actor::Cli, "acme", None)
+            .expect("a clock behind within the lease keeps it");
+        assert_eq!(f.dirs(), [OsString::from(id.to_string())], "its space kept");
+        drop(f.store(id));
+    }
+
+    #[test]
+    fn a_create_past_its_lease_is_a_leftover_and_adds_no_row() {
+        let f = fixture();
+        f.recover_between(start_plus(pending::WRITE_LEASE), Writers::Maybe);
+        assert_eq!(
+            f.tenants.create(Actor::Cli, "acme", None),
+            Err(TenantError::Io),
+            "recovery took its space, so the create is refused"
+        );
+        assert_eq!(f.count("SELECT count(*) FROM tenant"), 0, "no row");
+        assert_eq!(f.dirs(), Vec::<OsString>::new(), "and no space");
+        assert_eq!(f.creating(), Vec::new(), "nor a creating row");
+    }
+
+    #[test]
+    fn a_create_under_way_is_a_leftover_to_a_process_that_holds_the_registry_alone() {
+        let f = fixture();
+        f.recover_between(START, Writers::None);
+        assert_eq!(
+            f.tenants.create(Actor::Cli, "acme", None),
+            Err(TenantError::Io),
+            "with no other writer, the space is a leftover's"
+        );
+        assert_eq!(f.count("SELECT count(*) FROM tenant"), 0, "no row");
+        assert_eq!(f.dirs(), Vec::<OsString>::new(), "and no space");
+    }
+
+    #[test]
+    fn a_create_records_itself_under_way_until_its_row() {
+        let f = fixture();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let into = seen.clone();
+        *f.tenants.hooks.between.lock().expect("hook") =
+            Some(Box::new(move |tenants: &Tenants| {
+                *into.lock().expect("seen") = tenants
+                    .registry
+                    .snapshot()
+                    .expect("a read begins")
+                    .creating()
+                    .expect("lists");
+            }));
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        assert_eq!(
+            *seen.lock().expect("seen"),
+            vec![(id, nanos(START))],
+            "between its space and its row, the create is under way"
+        );
+        assert_eq!(f.creating(), Vec::new(), "the row's commit drops it");
+    }
+
+    #[test]
+    fn a_create_refused_for_its_name_leaves_no_creating_row() {
+        let f = fixture();
+        f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        assert_eq!(
+            f.tenants.create(Actor::Cli, "acme", None),
+            Err(TenantError::NameTaken),
+            "the name is taken at the first step"
+        );
+        assert_eq!(f.creating(), Vec::new(), "a first-step refusal adds none");
+        let other = f.other();
+        *f.tenants.hooks.between.lock().expect("hook") = Some(Box::new(move |_| {
+            other
+                .execute(
+                    "INSERT INTO tenant (id, name, created_at, tenant_key_id,
+                         wrapped_tenant_key, key_since)
+                     VALUES (x'01', 'beta', 1, x'02', x'03', 1)",
+                    [],
+                )
+                .expect("another create wins the name");
+        }));
+        assert_eq!(
+            f.tenants.create(Actor::Cli, "beta", None),
+            Err(TenantError::NameTaken),
+            "another create took the name before the row"
+        );
+        assert_eq!(f.creating(), Vec::new(), "nor a refusal at the row");
+    }
+
+    #[test]
+    fn a_create_whose_row_fails_leaves_no_creating_row() {
+        let f = fixture();
+        f.conn()
+            .execute_batch(
+                "CREATE TEMP TRIGGER no_tenant BEFORE INSERT ON tenant
+                 BEGIN SELECT RAISE(ABORT, 'no row'); END;",
+            )
+            .expect("trigger");
+        assert!(
+            f.tenants.create(Actor::Cli, "acme", None).is_err(),
+            "the row cannot be written"
+        );
+        assert_eq!(f.creating(), Vec::new(), "the failed create drops it");
+        assert_eq!(f.dirs(), Vec::<OsString>::new(), "and its space");
+    }
+
+    #[test]
+    fn recovery_beside_other_writers_removes_a_space_with_no_row_and_no_create() {
+        let f = fixture();
+        let kept = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        let orphan = TenantId::generate();
+        f.fs.create_dir_all(&f.tenants_dir().join(orphan.to_string()))
+            .expect("a directory");
+        f.tenants.recover(Writers::Maybe).expect("recovery runs");
+        assert_eq!(
+            f.dirs(),
+            [OsString::from(kept.to_string())],
+            "no create is under way for the orphan"
+        );
+    }
+
+    #[test]
+    fn recovery_drops_only_the_creating_rows_past_their_lease() {
+        let f = fixture();
+        {
+            let mut tx = f.tenants.registry.immediate().expect("a write begins");
+            tx.add_creating(TenantId([1; 16]), nanos(START) - pending::WRITE_LEASE)
+                .expect("adds");
+            tx.add_creating(TenantId([2; 16]), nanos(START) - pending::WRITE_LEASE + 1)
+                .expect("adds");
+            tx.commit().expect("commits");
+        }
+        f.tenants.recover(Writers::Maybe).expect("recovery runs");
+        assert_eq!(
+            f.creating(),
+            vec![(TenantId([2; 16]), nanos(START) - pending::WRITE_LEASE + 1)],
+            "the row inside the lease is a create under way"
+        );
+        f.tenants.recover(Writers::None).expect("recovery runs");
+        assert_eq!(f.creating(), Vec::new(), "alone, every row is a leftover's");
     }
 
     #[test]

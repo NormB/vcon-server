@@ -1091,6 +1091,39 @@ impl RegistryTx for PgRegistryTx<'_> {
         )
     }
 
+    fn add_creating(&mut self, id: TenantId, at: i64) -> Result<(), TenantError> {
+        self.run(
+            "INSERT INTO vcon.pending_tenant (id, started_at) VALUES ($1, $2)",
+            &[(&id.0.as_slice(), Type::BYTEA), (&at, Type::INT8)],
+        )
+    }
+
+    fn drop_creating(&mut self, id: TenantId) -> Result<bool, TenantError> {
+        self.0
+            .execute(
+                "DELETE FROM vcon.pending_tenant WHERE id = $1",
+                &[(&id.0.as_slice(), Type::BYTEA)],
+            )
+            .map(|deleted| deleted > 0)
+            .map_err(io)
+    }
+
+    fn creating(&mut self) -> Result<Vec<(TenantId, i64)>, TenantError> {
+        let rows = self
+            .0
+            .query(
+                "SELECT id, started_at FROM vcon.pending_tenant ORDER BY id",
+                &[],
+            )
+            .map_err(io)?;
+        rows.iter()
+            .map(|row| {
+                let id: Vec<u8> = col(row, 0)?;
+                Ok((TenantId(fixed(&id)?), col(row, 1)?))
+            })
+            .collect()
+    }
+
     fn master_since(&mut self, key: KeyId) -> Result<Option<i64>, TenantError> {
         let rows = self
             .0

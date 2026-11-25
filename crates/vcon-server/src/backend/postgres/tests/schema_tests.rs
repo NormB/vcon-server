@@ -16,6 +16,7 @@ mod v11;
 mod v12;
 mod v13;
 mod v14;
+mod v15;
 mod v2;
 mod v3;
 mod v4;
@@ -94,6 +95,7 @@ pub(super) mod live {
         "api_key",
         "master_key_use",
         "membership",
+        "pending_tenant",
         "registry_key",
         "session",
         "storage_claim",
@@ -389,6 +391,7 @@ pub(super) mod live {
             "registry_key" => "INSERT INTO vcon.registry_key (catalog_key_id) VALUES ('\\x01')".to_owned(),
             "admin_audit_key" => "INSERT INTO vcon.admin_audit_key (key_id, ordinal, wrapped) VALUES ('\\x01', 1, '\\x02')".to_owned(),
             "storage_claim" => "INSERT INTO vcon.storage_claim (claim_id) VALUES ('0123456789abcdef0123456789abcdef')".to_owned(),
+            "pending_tenant" => "INSERT INTO vcon.pending_tenant (id, started_at) VALUES ('\\x01', 1)".to_owned(),
             other => panic!("no insert for {other}"),
         }
     }

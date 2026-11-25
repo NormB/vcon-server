@@ -110,6 +110,14 @@ macro_rules! registry_conformance {
             edge_an_export_after_a_seq_leaves_out_the_older,
             edge_settings_of_two_tenants_are_apart,
             edge_an_empty_registry_lists_nothing,
+            ok_a_creating_row_reads_back_with_its_time,
+            ok_creating_rows_are_listed_by_id,
+            ok_a_creating_row_is_dropped_once,
+            no_creating_row_is_kept_without_a_commit,
+            no_creating_row_is_a_tenant,
+            no_second_creating_row_takes_an_id,
+            edge_a_creating_row_beside_its_tenants_row,
+            edge_creating_times_at_the_ends_of_the_range_read_back,
         );
     };
     (@each $fresh:path; $($name:ident),* $(,)?) => {
@@ -1692,6 +1700,147 @@ pub(crate) fn edge_an_empty_registry_lists_nothing(r: &dyn Registry) {
     assert!(exported(r, 0).is_empty(), "and no records");
     let tx = r.immediate().expect("a write begins");
     assert_eq!(tx.commit(), Ok(()), "a write of nothing commits");
+}
+
+pub(crate) fn ok_a_creating_row_reads_back_with_its_time(r: &dyn Registry) {
+    write(r, |tx| tx.add_creating(tenant_id(7), T0 + 3).expect("adds"));
+    let rows = read(r, |tx| tx.creating().expect("lists"));
+    assert_eq!(
+        rows,
+        vec![(tenant_id(7), T0 + 3)],
+        "the create under way, with the time it began"
+    );
+}
+
+pub(crate) fn ok_creating_rows_are_listed_by_id(r: &dyn Registry) {
+    write(r, |tx| {
+        for n in [9, 2, 5] {
+            tx.add_creating(tenant_id(n), T0 - i64::from(n))
+                .expect("adds");
+        }
+    });
+    let ids: Vec<TenantId> = read(r, |tx| tx.creating().expect("lists"))
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(
+        ids,
+        vec![tenant_id(2), tenant_id(5), tenant_id(9)],
+        "by id, whatever the order added or the times"
+    );
+}
+
+pub(crate) fn ok_a_creating_row_is_dropped_once(r: &dyn Registry) {
+    write(r, |tx| {
+        tx.add_creating(tenant_id(1), T0).expect("adds");
+        tx.add_creating(tenant_id(2), T0).expect("adds");
+    });
+    let first = write(r, |tx| tx.drop_creating(tenant_id(1)).expect("drops"));
+    let second = write(r, |tx| tx.drop_creating(tenant_id(1)).expect("drops"));
+    assert!(first, "the row was there");
+    assert!(!second, "and is gone after the first drop");
+    assert_eq!(
+        read(r, |tx| tx.creating().expect("lists")),
+        vec![(tenant_id(2), T0)],
+        "the other row is kept"
+    );
+}
+
+pub(crate) fn no_creating_row_is_kept_without_a_commit(r: &dyn Registry) {
+    {
+        let mut tx = r.immediate().expect("a write begins");
+        tx.add_creating(tenant_id(1), T0).expect("adds");
+    }
+    assert!(
+        read(r, |tx| tx.creating().expect("lists")).is_empty(),
+        "a write dropped without a commit adds no creating row"
+    );
+    write(r, |tx| tx.add_creating(tenant_id(1), T0).expect("adds"));
+    {
+        let mut tx = r.immediate().expect("a write begins");
+        assert!(
+            tx.drop_creating(tenant_id(1)).expect("drops"),
+            "it was there"
+        );
+    }
+    assert_eq!(
+        read(r, |tx| tx.creating().expect("lists")).len(),
+        1,
+        "nor does it delete one"
+    );
+}
+
+pub(crate) fn no_creating_row_is_a_tenant(r: &dyn Registry) {
+    write(r, |tx| tx.add_creating(tenant_id(4), T0).expect("adds"));
+    let (row, tenants, taken) = read(r, |tx| {
+        (
+            tx.tenant(tenant_id(4)).expect("reads"),
+            tx.tenants().expect("lists"),
+            tx.name_taken("alpha").expect("reads"),
+        )
+    });
+    assert_eq!(row, None, "a create under way has no tenant row");
+    assert!(tenants.is_empty(), "and is not listed");
+    assert!(!taken, "and takes no name");
+}
+
+pub(crate) fn no_second_creating_row_takes_an_id(r: &dyn Registry) {
+    write(r, |tx| tx.add_creating(tenant_id(3), T0).expect("adds"));
+    {
+        let mut tx = r.immediate().expect("a write begins");
+        assert_eq!(
+            tx.add_creating(tenant_id(3), T0 + 1),
+            Err(TenantError::Io),
+            "one create per tenant id"
+        );
+    }
+    assert_eq!(
+        read(r, |tx| tx.creating().expect("lists")),
+        vec![(tenant_id(3), T0)],
+        "the first row and its time are kept"
+    );
+}
+
+pub(crate) fn edge_a_creating_row_beside_its_tenants_row(r: &dyn Registry) {
+    write(r, |tx| {
+        tx.add_creating(tenant_id(1), T0).expect("adds");
+        tx.insert_tenant(&tenant(1, "alpha")).expect("inserts");
+    });
+    let (creating, row) = read(r, |tx| {
+        (
+            tx.creating().expect("lists"),
+            tx.tenant(tenant_id(1)).expect("reads"),
+        )
+    });
+    assert_eq!(creating, vec![(tenant_id(1), T0)], "the two rows are apart");
+    assert_eq!(row, Some(tenant(1, "alpha")), "and the tenant reads back");
+    write(r, |tx| {
+        assert!(
+            tx.drop_creating(tenant_id(1)).expect("drops"),
+            "it was there"
+        );
+    });
+    assert!(
+        read(r, |tx| tx.tenant(tenant_id(1)).expect("reads")).is_some(),
+        "dropping the creating row keeps the tenant"
+    );
+}
+
+pub(crate) fn edge_creating_times_at_the_ends_of_the_range_read_back(r: &dyn Registry) {
+    write(r, |tx| {
+        tx.add_creating(tenant_id(1), i64::MIN).expect("adds");
+        tx.add_creating(tenant_id(2), i64::MAX).expect("adds");
+        tx.add_creating(tenant_id(3), 0).expect("adds");
+    });
+    assert_eq!(
+        read(r, |tx| tx.creating().expect("lists")),
+        vec![
+            (tenant_id(1), i64::MIN),
+            (tenant_id(2), i64::MAX),
+            (tenant_id(3), 0)
+        ],
+        "every time an i64 holds reads back as written"
+    );
 }
 
 /// The traits' own shape, read from the source.

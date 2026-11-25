@@ -134,25 +134,23 @@ fn the_migration_says_why_the_table_starts_empty() {
 #[test]
 fn the_how_to_says_what_version_14_changes_under_schema_versions() {
     let page = flat("../../website/content/docs/postgres-catalog.md");
-    let (before, versions) = page
+    let (_, versions) = page
         .split_once(" ### Schema versions ")
         .expect("the how-to has the section Schema versions");
     assert!(
         versions.contains("Version 14 makes the table `pending_write`"),
         "version 14, in the section of the schema's versions"
     );
-    assert!(
-        before.contains("schema version 6 to schema version 14"),
-        "the upgrade step names this version"
-    );
+    // The line migrate prints names the binary's version, 15 from schema
+    // version 15 on (schema_tests::v9).
 }
 
 #[test]
 fn the_status_page_names_version_14() {
     let page = flat("../../website/content/docs/status.md");
     assert!(
-        page.contains("**Schema version 14 of the PostgreSQL preview.**"),
-        "the entry of the PostgreSQL preview's schema version"
+        page.contains("Version 14 adds the table `pending_write`"),
+        "in the entry of the PostgreSQL preview's schema version"
     );
 }
 
