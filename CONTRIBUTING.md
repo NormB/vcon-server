@@ -215,7 +215,44 @@ applies the same rule before each commit and refuses it with
 | `no Signed-off-by line names the author email ... with a name` | The line names another address than the commit's author, or no name: set `user.name` and `user.email`, then step 3. |
 | `the author email is not a GitHub noreply address` | Step 1, then step 3: `--reset-author` puts the new address on each commit. |
 | `<commit message>: email address:` from the commit hook | The sign-off names a real address; use the noreply address (step 1). |
+| `<commit message>: email address in a trailer:` from the commit hook | A trailer names an address other than your noreply sign-off; see [Personal data in commit messages](#personal-data-in-commit-messages). |
 | `DCO: cannot read ...; nothing was checked` | GitHub's API did not answer; run the job again. |
+
+## Personal data in commit messages
+
+A commit message is published with the commit and stays in the history of
+`main`. A commit carries an email address only in its author and committer
+fields. The commit hook, the pre-push hook and CI refuse:
+
+- an email address in a trailer, even a reserved one such as
+  `person@example.com`. A trailer is a line that
+  `git interpret-trailers --parse` reads as one: a `Key: value` line in the
+  last paragraph of the message, a folded line included. `Signed-off-by:`,
+  `Co-authored-by:`, `Reported-by:` and `Cc:` are trailers.
+- an email address at a domain that is not reserved, anywhere in the
+  message.
+- a co-author trailer or a footer line that credits an AI tool.
+
+These pass:
+
+- your DCO sign-off, a `Signed-off-by:` line naming your GitHub noreply
+  address ([Signing off commits](#signing-off-commits)).
+- the sign-off that Dependabot writes, with GitHub's service address.
+- a reserved address in the body of the message, such as
+  `alice@example.com` or a `.invalid` name.
+- a trailer that names a person and no address: `Reviewed-by: A Reviewer`.
+
+The maintainer's own commits need no sign-off, so they carry no trailer that
+names an address. To check a message before you commit it, run
+`python3 -I scripts/scan_forbidden.py --commit-message <file>`: it prints
+each finding and exits 1, or prints nothing and exits 0.
+
+The rule is the same for every commit, the maintainer's and a contributor's,
+in the commit hook, the pre-push hook and CI. It accepts in a trailer exactly
+the two addresses above, and the noreply address it accepts is the one the
+required `DCO` check accepts: both read one matcher, `GITHUB_NOREPLY` in
+`scripts/scan_forbidden.py`. A contributor signs off with their GitHub
+noreply address, never another one.
 
 ## The retired Contributor License Agreement
 

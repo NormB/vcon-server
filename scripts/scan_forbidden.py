@@ -10,7 +10,10 @@ match itself, for example "(c)laude".
 """
 
 import ipaddress
+import os
+import pathlib
 import re
+import subprocess
 import sys
 
 # Other AI assistants are refused where they take credit: a co-author
@@ -49,7 +52,10 @@ PRIVATE_DOC_IDS = [
     ("private draft number", re.compile(r"\bdraft\s+[0-9]+\.[0-9]+\b", re.I)),
 ]
 
-EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)")
+# The local part may hold `[` and `]`, as a GitHub bot's noreply alias does
+# (`<ID>+dependabot[bot]` at `users.noreply.github.com`); without them the
+# pattern could not start a match at `]@`, and `x]@` before any domain passed.
+EMAIL = re.compile(r"[A-Za-z0-9._%+\[\]-]+@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)")
 RESERVED_DOMAINS = ("example.com", "example.net", "example.org")
 # Addresses of GitHub's own services, not of a person: Dependabot signs
 # its commits "Signed-off-by: dependabot[bot] <support@github.com>".
@@ -198,10 +204,118 @@ def main(stdin, out, err):
     return 1 if found else 0
 
 
-def run(stdin, out, err):
-    """main, with a scan that cannot run answered 2: an exit of 1 would read
-    as a finding, and no scan took place."""
+# A trailer is published on main with its commit. The project's policy
+# (CONTRIBUTING.md, "Personal data in commit messages") allows an email
+# address in a commit only in its author and committer fields, so no trailer
+# names one, not even a reserved one. Two forms name no person and stay
+# allowed: a whole Signed-off-by trailer naming a GitHub noreply address, the
+# DCO sign-off a contributor makes (NOREPLY_SIGN_OFF), and GitHub's service
+# addresses (SERVICE_ADDRESSES), which Dependabot signs with.
+TRAILER_ADDRESS = "email address in a trailer"
+
+# The comment character for the reading of a message stored whole: a
+# control character no line starts with, so `#` lines and a scissors line
+# are text, as git commit -m and -F keep them.
+NO_COMMENT_CHAR = "\x01"
+
+
+def trailer_env(environ):
+    """The environment `git interpret-trailers` runs in: `environ` without
+    any repository or configuration git would read. A `trailer.*` setting
+    changes which lines are trailers, and a commit-msg hook runs with the
+    repository's GIT_DIR set, so the verdict would differ by machine."""
+    env = {k: v for k, v in environ.items() if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT")}
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    return env
+
+
+def git_trailers(message, comment_char=None, git="git"):
+    """The trailers of `message`, one per line with folded lines joined, as
+    `git interpret-trailers --parse --no-divider` reads them. `--no-divider`
+    reads past a `---` line, as git commit does; Dependabot's bodies hold one.
+    `comment_char` None keeps git's own `#` comments and scissors line.
+    Raises OSError when git does not start and RuntimeError when it fails:
+    a message nobody read is not a clean message."""
+    args = [git]
+    if comment_char is not None:
+        args += ["-c", f"core.commentChar={comment_char}"]
+    args += ["interpret-trailers", "--parse", "--no-divider"]
+    proc = subprocess.run(
+        args,
+        input=message.encode("utf-8", errors="surrogateescape"),
+        capture_output=True,
+        cwd="/",
+        env=trailer_env(os.environ),
+        timeout=60,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"git interpret-trailers failed ({proc.returncode}): {proc.stderr.decode(errors='replace').strip()}")
+    return proc.stdout.decode("utf-8", errors="replace").splitlines()
+
+
+def trailer_names_an_address(trailer):
+    """Whether one trailer, as git unfolds it, names an address it may not."""
+    allowed = None
+    m = NOREPLY_SIGN_OFF.fullmatch(trailer)
+    if m:
+        allowed = m.span(1)
+    for e in EMAIL.finditer(trailer):
+        if e.span() == allowed or e.group(0).lower() in SERVICE_ADDRESSES:
+            continue
+        return True
+    return False
+
+
+def trailer_findings(message, git="git"):
+    """Each trailer of the commit message `message` that names an address.
+    The hook reads every line, `#` lines too, so both readings count: with
+    git's `#` comments and scissors line, as for a message edited in an
+    editor, and with none, as git commit -m and -F store it. Each trailer is
+    named once, in order."""
+    seen = []
+    for comment_char in (None, NO_COMMENT_CHAR):
+        for trailer in git_trailers(message, comment_char, git):
+            if trailer not in seen and trailer_names_an_address(trailer):
+                seen.append(trailer)
+    return [(TRAILER_ADDRESS, t) for t in seen]
+
+
+def message_findings(message, git="git"):
+    """Every finding in the commit message `message`: each line, as
+    <commit message>, then its trailers."""
+    found = []
+    for line in message.splitlines():
+        found += list(scan(COMMIT_MESSAGE, line))
+    return found + trailer_findings(message, git)
+
+
+def scan_message_file(path, stdin, out, err):
+    """`--commit-message FILE` (`-` for standard input): prints each finding
+    in the message; 1 if anything was found, else 0. A message that is not
+    UTF-8 is scanned with U+FFFD for each such byte, and noted on `err`."""
+    data = stdin.read() if path == "-" else pathlib.Path(path).read_bytes()
+    text, utf8 = decode(data)
+    if not utf8:
+        print(f"{COMMIT_MESSAGE}: not UTF-8: scanned with U+FFFD for each byte that is not", file=err)
+    found = message_findings(text)
+    for reason, hit in found:
+        print(f"{COMMIT_MESSAGE}: {reason}: {hit!r}", file=out)
+    return 1 if found else 0
+
+
+def run(stdin, out, err, argv=()):
+    """main, or `--commit-message FILE` when `argv` says so, with a scan that
+    cannot run answered 2: an exit of 1 would read as a finding, and no scan
+    took place."""
     try:
+        if list(argv[:1]) == ["--commit-message"]:
+            if len(argv) != 2:
+                raise ValueError("usage: scan_forbidden.py --commit-message FILE|-")
+            return scan_message_file(argv[1], stdin, out, err)
+        if argv:
+            raise ValueError(f"unknown arguments {list(argv)!r}")
         return main(stdin, out, err)
     except Exception as error:  # noqa: BLE001 - any failure is "no verdict"
         print(f"scan_forbidden: cannot scan: {error}", file=err)
@@ -218,4 +332,4 @@ def utf8_out(*streams):
 
 if __name__ == "__main__":
     utf8_out(sys.stdout, sys.stderr)
-    sys.exit(run(sys.stdin.buffer, sys.stdout, sys.stderr))
+    sys.exit(run(sys.stdin.buffer, sys.stdout, sys.stderr, sys.argv[1:]))

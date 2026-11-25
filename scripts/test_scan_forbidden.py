@@ -10,6 +10,7 @@ Run with: python3 -I scripts/test_scan_forbidden.py
 
 import importlib.util
 import io
+import os
 import pathlib
 import re
 import subprocess
@@ -30,11 +31,9 @@ TRAILER = "Co-Authored" + "-By"
 
 def message(text):
     """The findings for a commit message, read the way the commit-msg hook
-    and scan-commit-messages.sh read one: every line, as <commit message>."""
-    found = []
-    for line in text.splitlines():
-        found += list(scan_forbidden.scan("<commit message>", line))
-    return found
+    and scan-commit-messages.sh read one: every line, as <commit message>,
+    then its trailers (scan_forbidden.message_findings)."""
+    return scan_forbidden.message_findings(text)
 
 
 class Trailers(unittest.TestCase):
@@ -431,6 +430,269 @@ class SignOffs(unittest.TestCase):
         self.assertTrue(scan_forbidden.is_noreply(f"49699333+dependabot[bot]{AT}{NOREPLY}"))
         self.assertFalse(scan_forbidden.is_noreply(f"a{AT}{NOREPLY}.example.com"))
         self.assertFalse(scan_forbidden.is_noreply(f"-a{AT}{NOREPLY}"))
+
+
+TRAILER_REASON = "email address in a trailer"
+SCISSORS = "# ------------------------ >8 ------------------------"
+NOREPLY_SIGN_OFF = f"Signed-off-by: A Contributor <12345+contributor{AT}{NOREPLY}>"
+REAL = "gm" "ail.com"
+
+
+def trailer_hits(text):
+    """The trailers `message_findings` refuses for naming an address."""
+    return [hit for reason, hit in message(text) if reason == TRAILER_REASON]
+
+
+def reasons(text):
+    return [reason for reason, _ in message(text)]
+
+
+class TrailerAddressesAccepted(unittest.TestCase):
+    """What the trailer rule lets through: no address, GitHub's noreply alias
+    on a sign-off, and GitHub's service address."""
+
+    def test_a_message_without_trailers_passes(self):
+        self.assertEqual(message("Fix it\n\nThe header was read twice.\n"), [])
+
+    def test_a_noreply_sign_off_passes(self):
+        self.assertEqual(message(f"Fix it\n\nBody.\n\n{NOREPLY_SIGN_OFF}\n"), [])
+
+    def test_an_older_noreply_sign_off_passes(self):
+        self.assertEqual(message(f"Fix it\n\nBody.\n\nSigned-off-by: A <contributor{AT}{NOREPLY}>\n"), [])
+
+    def test_dependabots_sign_off_passes(self):
+        self.assertEqual(message("deps: bump a\n\nBumps a.\n\nSigned-off-by: dependabot[bot] <support@github.com>\n"), [])
+
+    def test_a_reserved_address_in_the_body_passes(self):
+        self.assertEqual(message("Fix it\n\nReproduce with alice@example.com as the caller.\n"), [])
+
+    def test_an_invalid_tld_address_in_the_body_passes(self):
+        self.assertEqual(message("Fix it\n\nThe sender was bob@host.example.invalid.\n"), [])
+
+    def test_a_trailer_without_an_address_passes(self):
+        self.assertEqual(message("Fix it\n\nBody.\n\nReviewed-by: A Reviewer\nReported-by: Another Person\n"), [])
+
+    def test_reference_trailers_pass(self):
+        self.assertEqual(message("Fix it\n\nBody.\n\nFixes: #12\nRefs: https://github.com/NormB/vcon-server/issues/1\n"), [])
+
+    def test_a_merge_message_passes(self):
+        self.assertEqual(message("Merge origin/main into fix/x\n\n# Conflicts:\n#\tsrc/lib.rs\n"), [])
+
+    def test_a_fixup_message_passes(self):
+        self.assertEqual(message("fixup! Fix it\n"), [])
+
+    def test_a_key_value_line_inside_prose_is_body_text(self):
+        # Not a trailer block: one `Cc:` line among prose, no Signed-off-by.
+        self.assertEqual(message("Fix it\n\nThe report came in as\nCc: someone@example.com\nwith no detail.\n"), [])
+
+    def test_a_mixed_case_noreply_sign_off_passes(self):
+        self.assertEqual(message("Fix it\n\nBody.\n\nsigned-off-by: A <12345+A" f"{AT}Users.NoReply.GitHub.com>\n"), [])
+
+    def test_a_human_co_author_named_without_an_address_passes(self):
+        self.assertEqual(message(f"Fix it\n\nBody.\n\n{TRAILER}: Jane Doe\n"), [])
+
+    def test_the_command_line_passes_a_clean_message_file(self):
+        proc = run_message_file(f"Fix it\n\nBody.\n\n{NOREPLY_SIGN_OFF}\n".encode())
+        self.assertEqual((proc.returncode, proc.stdout, proc.stderr), (0, b"", b""))
+
+
+class TrailerAddressesRefused(unittest.TestCase):
+    """A trailer is published on main with its commit; it names no address."""
+
+    def test_a_reserved_address_in_a_sign_off_is_refused(self):
+        self.assertEqual(
+            trailer_hits("Fix it\n\nBody.\n\nSigned-off-by: A Person <person@example.com>\n"),
+            ["Signed-off-by: A Person <person@example.com>"],
+        )
+
+    def test_a_real_address_in_a_sign_off_is_refused_twice(self):
+        found = reasons(f"Fix it\n\nBody.\n\nSigned-off-by: A <a{AT}{REAL}>\n")
+        self.assertIn("email address", found)
+        self.assertIn(TRAILER_REASON, found)
+
+    def test_two_trailers_with_addresses_are_both_refused(self):
+        hits = trailer_hits(
+            "Fix it\n\nBody.\n\nReported-by: One <one@example.org>\nReviewed-by: Two\nSigned-off-by: Three <three@example.net>\n"
+        )
+        self.assertEqual(hits, ["Reported-by: One <one@example.org>", "Signed-off-by: Three <three@example.net>"])
+
+    def test_a_co_author_address_is_refused(self):
+        self.assertEqual(len(trailer_hits(f"Fix it\n\nBody.\n\n{TRAILER}: Jane Doe <jane@example.com>\n")), 1)
+
+    def test_an_ai_co_author_is_refused_for_the_credit_and_the_address(self):
+        tool = "Cl" + "aude"
+        found = reasons(f"Fix it\n\nBody.\n\n{TRAILER}: {tool} <noreply@example.invalid>\n")
+        self.assertIn("AI tool name", found)
+        self.assertIn(TRAILER_REASON, found)
+
+    def test_an_address_on_a_folded_line_is_refused_as_git_unfolds_it(self):
+        self.assertEqual(
+            trailer_hits("Fix it\n\nBody.\n\nReported-by: A Person\n <person@example.org>\n"),
+            ["Reported-by: A Person <person@example.org>"],
+        )
+
+    def test_a_test_tld_address_in_a_trailer_is_refused(self):
+        self.assertEqual(len(trailer_hits("Fix it\n\nBody.\n\nReported-by: A <a@lab.test>\n")), 1)
+
+    def test_a_trailer_block_right_after_the_subject_is_read(self):
+        self.assertEqual(trailer_hits("Fix it\n\nCc: someone@example.net\n"), ["Cc: someone@example.net"])
+
+    def test_a_noreply_alias_on_another_trailer_is_refused(self):
+        self.assertEqual(len(trailer_hits(f"Fix it\n\nBody.\n\n{TRAILER}: A <12345+a{AT}{NOREPLY}>\n")), 1)
+
+    def test_a_noreply_lookalike_on_a_sign_off_is_refused(self):
+        for addr in (f"12345+a{AT}noreply.github.com", f"a{AT}{NOREPLY}.example.org", "someone@github.com.example.com"):
+            with self.subTest(addr=addr):
+                self.assertEqual(len(trailer_hits(f"Fix it\n\nBody.\n\nSigned-off-by: A <{addr}>\n")), 1)
+
+    def test_a_bare_address_in_a_trailer_is_refused(self):
+        self.assertEqual(len(trailer_hits("Fix it\n\nBody.\n\nCc: someone@example.com\n")), 1)
+
+    def test_a_mailto_link_in_a_trailer_is_refused(self):
+        self.assertEqual(len(trailer_hits("Fix it\n\nBody.\n\nLink: mailto:someone@example.com\n")), 1)
+
+    def test_a_sign_off_makes_a_mixed_paragraph_a_trailer_block(self):
+        self.assertEqual(
+            trailer_hits("Fix it\n\nas reported\nCc: someone@example.com\nSigned-off-by: A Person\n"),
+            ["Cc: someone@example.com"],
+        )
+
+    def test_the_command_line_refuses_and_names_the_trailer(self):
+        proc = run_message_file(b"Fix it\n\nBody.\n\nSigned-off-by: A <a@example.com>\n")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn(
+            "<commit message>: email address in a trailer: 'Signed-off-by: A <a@example.com>'", proc.stdout.decode()
+        )
+
+
+class TrailerAddressEdges(unittest.TestCase):
+    def test_a_trailer_below_a_scissors_line_is_read(self):
+        # The hook reads every line: git commit -m keeps a scissors line.
+        self.assertEqual(len(trailer_hits(f"Fix it\n\nBody.\n{SCISSORS}\n\nSigned-off-by: A <a@example.com>\n")), 1)
+
+    def test_a_hash_line_does_not_hide_the_trailer_below_it(self):
+        # Read with `#` as a comment the Cc line is a trailer block of its own;
+        # read whole it is not. The rule takes both readings.
+        self.assertEqual(trailer_hits("Fix it\n\nBody.\n\n# a note\nCc: someone@example.com\n"), ["Cc: someone@example.com"])
+
+    def test_crlf_line_ends_do_not_hide_a_trailer(self):
+        self.assertEqual(len(trailer_hits("Fix it\r\n\r\nBody.\r\n\r\nSigned-off-by: A <a@example.com>\r\n")), 1)
+
+    def test_of_two_sign_offs_only_the_one_with_an_address_is_refused(self):
+        hits = trailer_hits(f"Fix it\n\nBody.\n\n{NOREPLY_SIGN_OFF}\nSigned-off-by: B <b@example.com>\n")
+        self.assertEqual(hits, ["Signed-off-by: B <b@example.com>"])
+
+    def test_a_subject_shaped_like_a_trailer_is_not_a_trailer(self):
+        self.assertEqual(trailer_hits("Signed-off-by: A <a@example.com>\n"), [])
+
+    def test_an_empty_message_has_no_finding(self):
+        self.assertEqual(message(""), [])
+
+    def test_a_divider_line_does_not_end_the_message(self):
+        text = "deps: bump a\n\nBumps a.\n\n---\nupdated-dependencies:\n- dependency-name: a\n...\n\nSigned-off-by: A <a@example.com>\n"
+        self.assertEqual(len(trailer_hits(text)), 1)
+
+    def test_letter_case_does_not_hide_a_trailer_address(self):
+        self.assertEqual(len(trailer_hits("Fix it\n\nBody.\n\nSIGNED-OFF-BY: A <A@EXAMPLE.COM>\n")), 1)
+
+    def test_space_before_the_separator_does_not_hide_a_trailer(self):
+        self.assertEqual(trailer_hits("Fix it\n\nBody.\n\nSigned-off-by : A <a@example.com>\n"), ["Signed-off-by: A <a@example.com>"])
+
+    def test_a_name_outside_ascii_is_kept(self):
+        self.assertEqual(
+            trailer_hits("Fix it\n\nCorrigé.\n\nSigned-off-by: Zoë Ångström <zoe@example.com>\n"),
+            ["Signed-off-by: Zoë Ångström <zoe@example.com>"],
+        )
+
+    def test_a_bot_noreply_alias_is_one_whole_address(self):
+        # The local part of a bot's alias holds brackets; the address is read whole.
+        bot = f"49699333+dependabot[bot]{AT}{NOREPLY}"
+        self.assertEqual([m.group(0) for m in scan_forbidden.EMAIL.finditer(f"<{bot}>")], [bot])
+        self.assertEqual(message(f"Fix it\n\nBody.\n\nSigned-off-by: dependabot[bot] <{bot}>\n"), [])
+
+    def test_a_git_that_does_not_start_is_an_error(self):
+        with self.assertRaises(OSError):
+            scan_forbidden.git_trailers("Fix\n\nCc: a@example.com\n", git="/nonexistent/vcon-no-such-git")
+
+    def test_a_git_that_fails_is_an_error(self):
+        with self.assertRaises(RuntimeError):
+            scan_forbidden.git_trailers("Fix\n\nCc: a@example.com\n", git="false")
+
+    def test_the_parse_reads_no_git_configuration(self):
+        env = scan_forbidden.trailer_env({"GIT_DIR": "/x", "GIT_CONFIG_PARAMETERS": "'a.b=c'", "GIT_CONFIG_COUNT": "1", "PATH": "/bin"})
+        self.assertEqual(env.get("GIT_CONFIG_NOSYSTEM"), "1")
+        self.assertEqual(env.get("GIT_CONFIG_GLOBAL"), os.devnull)
+        for gone in ("GIT_DIR", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT"):
+            self.assertNotIn(gone, env)
+        self.assertEqual(env.get("PATH"), "/bin")
+
+    def test_a_trailer_setting_in_the_environment_changes_nothing(self):
+        # A `trailer.separators` setting would make `Cc= x` a trailer.
+        saved = os.environ.get("GIT_CONFIG_PARAMETERS")
+        os.environ["GIT_CONFIG_PARAMETERS"] = "'trailer.separators=:='"
+        try:
+            self.assertEqual(trailer_hits("Fix it\n\nBody.\n\nCc= someone@example.com\n"), [])
+        finally:
+            if saved is None:
+                del os.environ["GIT_CONFIG_PARAMETERS"]
+            else:
+                os.environ["GIT_CONFIG_PARAMETERS"] = saved
+
+    def test_the_command_line_answers_2_when_it_cannot_read_the_file(self):
+        proc = subprocess.run(
+            [sys.executable, "-I", str(HERE / "scan_forbidden.py"), "--commit-message", "/nonexistent/msg"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 2)
+
+
+def run_message_file(data):
+    """`scan_forbidden.py --commit-message -` on `data`, as the hooks run it."""
+    return subprocess.run(
+        [sys.executable, "-I", str(HERE / "scan_forbidden.py"), "--commit-message", "-"],
+        input=data,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+
+
+_dco_spec = importlib.util.spec_from_file_location("check_dco", HERE / "check_dco.py")
+check_dco = importlib.util.module_from_spec(_dco_spec)
+_dco_spec.loader.exec_module(check_dco)
+
+
+class OneNoreplyRuleWithDco(unittest.TestCase):
+    """The trailer rule accepts exactly the sign-off addresses the required
+    DCO check accepts (scripts/check_dco.py), for everyone: the owner's
+    decision of 2026-11-18 sets sign-off addresses to GitHub noreply only."""
+
+    SAMPLES = (
+        f"12345+contributor{AT}{NOREPLY}",
+        f"contributor{AT}{NOREPLY}",
+        f"49699333+dependabot[bot]{AT}{NOREPLY}",
+        f"12345+A{AT}Users.NoReply.GitHub.com",
+        f"12345+a{AT}noreply.github.com",
+        f"a{AT}{NOREPLY}.example.org",
+        f"-a{AT}{NOREPLY}",
+        "a.contributor@real-" "company.com",
+        "person@example.com",
+    )
+
+    def test_the_dco_check_uses_this_files_noreply_rule(self):
+        self.assertEqual(
+            pathlib.Path(check_dco.scan_forbidden.__file__).resolve(), pathlib.Path(scan_forbidden.__file__).resolve()
+        )
+        self.assertEqual(check_dco.is_noreply.__code__.co_names, ("scan_forbidden", "is_noreply"))
+
+    def test_a_sign_off_trailer_passes_exactly_when_dco_accepts_its_address(self):
+        for addr in self.SAMPLES:
+            with self.subTest(addr=addr):
+                trailer = f"Signed-off-by: A Contributor <{addr}>"
+                self.assertEqual(not scan_forbidden.trailer_names_an_address(trailer), check_dco.is_noreply(addr))
 
 
 if __name__ == "__main__":

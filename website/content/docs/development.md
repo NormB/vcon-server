@@ -406,9 +406,14 @@ git config core.hooksPath .githooks
   path, in the manifest or the lock file; a relative link in the README; and
   anything the scan above refuses.
 - **commit-msg** refuses the same in the message, every line of it,
-  including lines that start with `#`, which `git commit -m` keeps. The
-  one address it lets through is a GitHub noreply address on a
-  `Signed-off-by:` line. It then refuses a message that has no DCO
+  including lines that start with `#`, which `git commit -m` keeps. It
+  also refuses any email address in a trailer, a line that
+  `git interpret-trailers --parse` reads as one, a reserved address
+  included. In a trailer it lets through only a GitHub noreply address on a
+  `Signed-off-by:` line and GitHub's service address that Dependabot signs
+  with (see
+  [Personal data in commit messages](https://github.com/NormB/vcon-server/blob/main/CONTRIBUTING.md#personal-data-in-commit-messages)).
+  It then refuses a message that has no DCO
   sign-off that the required `DCO` check would accept
   (`scripts/check_dco.py`; see
   [Signing off commits](https://github.com/NormB/vcon-server/blob/main/CONTRIBUTING.md#signing-off-commits)).

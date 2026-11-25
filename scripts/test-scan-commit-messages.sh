@@ -89,6 +89,16 @@ loose="$(commit "Ask $noreply about it")"
 expect 0 "a sign-off naming a GitHub noreply address" "" "$signed"
 expect 1 "a sign-off naming a real address" "<commit message>: email address:" "$signed_real"
 expect 1 "a noreply address outside a sign-off line" "<commit message>: email address:" "$loose"
+# No trailer names an address, a reserved one included; the body may hold a
+# reserved one.
+reserved_sign_off="$(commit "Change it
+
+Signed-off-by: A Person <person@example.com>")"
+reserved_body="$(commit "Change it
+
+Reproduce with alice@example.com as the caller.")"
+expect 1 "a sign-off naming a reserved address" "<commit message>: email address in a trailer:" "$reserved_sign_off"
+expect 0 "a reserved address in the body" "" "$reserved_body"
 # The commit-msg hook: the same scan, then a refusal of a message without a
 # sign-off the required DCO job would accept. It runs against the scripts
 # of the repository it is in, so they are copied in.
@@ -121,11 +131,17 @@ Signed-off-by: A Contributor <$gmail>"
 git config dco.exempt true
 hook 0 "the hook is silent for a maintainer with dco.exempt" "" "Change it"
 hook 1 "dco.exempt does not skip the personal-data scan" "<commit message>: email address:" "Ask $gmail"
+hook 1 "dco.exempt does not skip the trailer-address scan" "<commit message>: email address in a trailer:" "Change it
+
+Signed-off-by: A Person <person@example.com>"
 git config dco.exempt false
 hook 1 "dco.exempt set to false refuses an unsigned message" "commit-msg: refused: no Signed-off-by line" "Change it"
 git config --unset dco.exempt
 git config user.email "test@example.com"
 hook 1 "the hook refuses an author email that is not noreply" "not a GitHub noreply address" "Change it
+
+Signed-off-by: Test User <test@example.com>"
+hook 1 "the same message is also refused for the address in its trailer" "<commit message>: email address in a trailer:" "Change it
 
 Signed-off-by: Test User <test@example.com>"
 echo "test-scan-commit-messages: $pass of $((pass + fail)) passed"
