@@ -71,6 +71,7 @@ describes the key hierarchy.
 | 0.4.14 | 9 | 13 | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
 | 0.4.15 | 9 | 14 | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
 | 0.4.16 | 9 | 14 | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
+| 0.4.17 | 10 | 14 | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
 
 `none`: the release binary has no PostgreSQL catalog. The `postgres`
 feature, a preview, is in the release binaries from 0.4.6 on. A build from
@@ -102,7 +103,7 @@ memberships. The sizes measured on 2026-11-17: 246,084 bytes for each of
 2026-11-18, 299,480 bytes for 0.4.10; on 2026-11-19, 299,480 bytes for
 0.4.11; on 2026-11-21, 299,480 bytes for each of 0.4.12 and 0.4.13; on
 2026-11-24, 299,480 bytes for each of 0.4.14 and 0.4.15; on 2026-11-25,
-299,480 bytes for 0.4.16.
+299,480 bytes for each of 0.4.16 and 0.4.17.
 
 The test
 [formats.rs](https://github.com/NormB/vcon-server/blob/main/crates/vcon-server/tests/formats.rs)
@@ -150,7 +151,7 @@ bytes for each of 0.4.6 to 0.4.9; on 2026-11-18, 159,657 bytes for 0.4.10;
 on 2026-11-19, 159,497 bytes for 0.4.11; on 2026-11-21, 159,489 bytes for
 0.4.12 and 159,494 bytes for 0.4.13; on 2026-11-24, 159,494 bytes for
 0.4.14 and 160,747 bytes for 0.4.15; on 2026-11-25, 160,906 bytes for
-0.4.16.
+0.4.16 and 160,751 bytes for 0.4.17.
 
 On every change, the same test checks each release's files without a
 database: the dump has no psql meta-command, every object starts with the
