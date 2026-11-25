@@ -35,8 +35,11 @@ first for production, needs.
     release.
 - **February 2027: keys kept in a KMS or an HSM.**
   - Work: one interface for wrapping keys, with the key file as one
-    backend, and backends for HashiCorp Vault Transit, OpenBao, PKCS#11 and
-    AWS KMS, each tested in CI, each with a key rotation drill.
+    backend, and backends for HashiCorp Vault Transit, OpenBao, PKCS#11
+    (for HSMs), AWS KMS, Azure Key Vault and Google Cloud KMS. Each has a
+    key rotation drill. CI tests the first five against a local service,
+    and Google Cloud KMS, which has no local service, against recorded
+    responses.
   - Status: [Keys kept in a KMS or an HSM](@/docs/production-checklist.md#keys-kept-in-a-kms-or-an-hsm),
     an item of the 1.0 checklist.
 - **April 2027: a conformance suite for the vCon core draft.**

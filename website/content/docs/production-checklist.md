@@ -90,10 +90,11 @@ which a key kept in a KMS or an HSM cannot give, so the registry needs a
 key of its own first: a change of the on-disk format.
 
 Left: one interface for wrapping keys, with the key file as one backend;
-backends for HashiCorp Vault Transit, OpenBao, PKCS#11 (for HSMs) and AWS
-KMS, each tested in CI against a local service; and a key rotation drill
-for each. Google Cloud KMS and Azure Key Vault have no local service to
-test against; whether to add them is not decided.
+backends for HashiCorp Vault Transit, OpenBao, PKCS#11 (for HSMs), AWS
+KMS, Azure Key Vault and Google Cloud KMS; and a key rotation drill for
+each. CI tests the first five against a local service. Google Cloud KMS
+has no local service: CI tests its backend against recorded responses,
+and a maintainer runs its drill by hand.
 
 Evidence:
 

@@ -12,7 +12,10 @@
 //! - the `Not planned` section lists at least one thing, each as a bullet
 //!   with a bold lead;
 //! - every link to a page of the site leads to a page, and its anchor to a
-//!   heading of that page.
+//!   heading of that page;
+//! - the milestone of keys kept in a KMS or an HSM, and the 1.0 checklist
+//!   item of the same name, each list the six backends of the owner's plan
+//!   and the approved KMS design, so the two pages agree.
 //!
 //! The readers are pure functions over the page's text, today's month and
 //! a [`Pages`] lookup, so their own tests drive them with pages, months and
@@ -40,6 +43,27 @@ const MILESTONES: &str = "Milestones";
 
 /// The section that lists what the project does not plan to do.
 const NOT_PLANNED: &str = "Not planned";
+
+/// The 1.0 checklist, from the repository root.
+const CHECKLIST: &str = "website/content/docs/production-checklist.md";
+
+/// The checklist item, and the roadmap milestone, of key wrapping.
+const KMS_ITEM: &str = "Keys kept in a KMS or an HSM";
+
+/// The words that open the list of key wrapping backends.
+const BACKEND_LIST: &str = "backends for ";
+
+/// The key wrapping backends of the owner's plan and the approved KMS
+/// design, as the pages name them. The roadmap milestone and the
+/// checklist item each list all of them.
+const BACKENDS: [&str; 6] = [
+    "HashiCorp Vault Transit",
+    "OpenBao",
+    "PKCS#11",
+    "AWS KMS",
+    "Azure Key Vault",
+    "Google Cloud KMS",
+];
 
 /// The names of the months, January first.
 const MONTHS: [&str; 12] = [
@@ -300,6 +324,36 @@ fn broken_links(page: &str, site: &dyn Pages) -> Vec<String> {
         }
     }
     found
+}
+
+/// The bullet of the `Milestones` section whose lead names [`KMS_ITEM`],
+/// with its wrapped lines and sub-bullets.
+fn kms_milestone(page: &str) -> Option<String> {
+    let lead = KMS_ITEM.to_lowercase();
+    section(page, MILESTONES).and_then(|text| {
+        bullets(text).into_iter().find(|bullet| {
+            bullet
+                .lines()
+                .next()
+                .is_some_and(|first| first.to_lowercase().contains(&lead))
+        })
+    })
+}
+
+/// The entries of [`BACKENDS`] that the list `backends for A, B and C` in
+/// `text` leaves out. The list starts at the first [`BACKEND_LIST`] and
+/// ends at the next `;` or `.`, so a backend named elsewhere in `text`
+/// does not count as listed.
+fn unlisted_backends(text: &str) -> Result<Vec<&'static str>, String> {
+    let text = flat(text);
+    let Some((_, rest)) = text.split_once(BACKEND_LIST) else {
+        return Err(format!("the text has no list `{BACKEND_LIST}...`"));
+    };
+    let list = rest.split([';', '.']).next().unwrap_or_default();
+    Ok(BACKENDS
+        .into_iter()
+        .filter(|backend| !list.contains(backend))
+        .collect())
 }
 
 /// The civil date of a day counted from 1970-01-01 (day 0), as
@@ -912,5 +966,326 @@ fn a_lower_case_month_is_not_read() {
         parse_month("january 2027"),
         None,
         "month names are capitalized"
+    );
+}
+
+// The key wrapping backends.
+
+/// A milestone section whose key wrapping milestone lists every backend,
+/// over wrapped lines.
+const KMS_GOOD: &str = "## Milestones
+
+- **January 2027: a first thing.**
+  - Work: backends for nothing here.
+  - Status: none yet.
+- **February 2027: keys kept in a KMS or an HSM.**
+  - Work: one interface, and backends for HashiCorp Vault Transit,
+    OpenBao, PKCS#11 (for HSMs), AWS KMS, Azure Key Vault and Google
+    Cloud KMS. Each has a key rotation drill.
+  - Status: none yet.
+
+## Not planned
+
+- **Nothing.** None.
+";
+
+/// `KMS_GOOD`'s key wrapping milestone.
+fn kms_good() -> String {
+    kms_milestone(KMS_GOOD).expect("KMS_GOOD has the key wrapping milestone")
+}
+
+fn read_checklist_item() -> String {
+    let text = std::fs::read_to_string(root().join(CHECKLIST)).expect("the checklist page exists");
+    section(&text, KMS_ITEM)
+        .unwrap_or_else(|| panic!("{CHECKLIST} has the `## {KMS_ITEM}` item"))
+        .to_string()
+}
+
+#[test]
+fn the_kms_milestone_lists_every_backend() {
+    let milestone = kms_milestone(&read_page()).expect("the roadmap has the KMS milestone");
+    assert_eq!(
+        unlisted_backends(&milestone),
+        Ok(Vec::new()),
+        "{PAGE}: the KMS milestone lists every backend of the plan"
+    );
+}
+
+#[test]
+fn the_checklist_kms_item_lists_every_backend() {
+    assert_eq!(
+        unlisted_backends(&read_checklist_item()),
+        Ok(Vec::new()),
+        "{CHECKLIST}: the `{KMS_ITEM}` item lists every backend of the plan"
+    );
+}
+
+#[test]
+fn the_checklist_kms_item_does_not_leave_a_backend_undecided() {
+    let item = flat(&read_checklist_item());
+    assert!(
+        !item.contains("not decided"),
+        "{CHECKLIST}: the `{KMS_ITEM}` item says a backend is not decided: {item}"
+    );
+}
+
+#[test]
+fn the_roadmap_links_the_checklist_kms_item() {
+    let milestone = kms_milestone(&read_page()).expect("the roadmap has the KMS milestone");
+    assert!(
+        milestone.contains("(@/docs/production-checklist.md#keys-kept-in-a-kms-or-an-hsm)"),
+        "{PAGE}: the KMS milestone's status links the checklist item: {milestone}"
+    );
+}
+
+#[test]
+fn a_list_of_every_backend_leaves_none_out() {
+    assert_eq!(
+        unlisted_backends(&kms_good()),
+        Ok(Vec::new()),
+        "KMS_GOOD lists all six"
+    );
+}
+
+#[test]
+fn a_list_of_every_backend_on_one_line_leaves_none_out() {
+    let text = format!("{BACKEND_LIST}{}.", BACKENDS.join(", "));
+    assert_eq!(
+        unlisted_backends(&text),
+        Ok(Vec::new()),
+        "the six, comma separated"
+    );
+}
+
+#[test]
+fn a_list_ended_by_a_semicolon_is_read() {
+    let text = format!("{BACKEND_LIST}{}; and a drill.", BACKENDS.join(", "));
+    assert_eq!(
+        unlisted_backends(&text),
+        Ok(Vec::new()),
+        "the list runs to the `;`"
+    );
+}
+
+#[test]
+fn a_list_at_the_end_of_the_text_is_read() {
+    let text = format!("{BACKEND_LIST}{}", BACKENDS.join(", "));
+    assert_eq!(
+        unlisted_backends(&text),
+        Ok(Vec::new()),
+        "a list without a full stop runs to the end"
+    );
+}
+
+#[test]
+fn a_backend_with_a_note_in_brackets_is_listed() {
+    assert!(
+        kms_good().contains("PKCS#11 (for HSMs)"),
+        "KMS_GOOD names PKCS#11 with a note"
+    );
+    assert_eq!(
+        unlisted_backends(&kms_good()),
+        Ok(Vec::new()),
+        "the note does not hide PKCS#11"
+    );
+}
+
+#[test]
+fn the_kms_milestone_is_found_by_its_lead() {
+    assert!(
+        kms_good().starts_with("**February 2027: keys kept in a KMS or an HSM.**"),
+        "the February milestone, not the January one: {}",
+        kms_good()
+    );
+}
+
+#[test]
+fn the_kms_milestone_keeps_its_wrapped_lines() {
+    assert!(
+        kms_good().contains("    Cloud KMS. Each has a key rotation drill."),
+        "the wrapped line belongs to the milestone: {}",
+        kms_good()
+    );
+}
+
+#[test]
+fn the_kms_milestone_lead_is_matched_without_case() {
+    let page = KMS_GOOD.replace("keys kept in a KMS", "Keys kept in a KMS");
+    assert!(
+        kms_milestone(&page).is_some(),
+        "a capitalized lead is the same milestone"
+    );
+}
+
+#[test]
+fn a_four_backend_list_leaves_out_azure_and_google() {
+    let text = "backends for HashiCorp Vault Transit, OpenBao, PKCS#11 and \
+                AWS KMS, each tested in CI, each with a key rotation drill.";
+    assert_eq!(
+        unlisted_backends(text),
+        Ok(vec!["Azure Key Vault", "Google Cloud KMS"]),
+        "the list of 2026-11-24 named four"
+    );
+}
+
+#[test]
+fn a_backend_named_after_the_list_is_not_listed() {
+    let text = "backends for HashiCorp Vault Transit, OpenBao, PKCS#11 and AWS \
+                KMS; and a drill for each. Google Cloud KMS and Azure Key Vault \
+                have no local service.";
+    assert_eq!(
+        unlisted_backends(text),
+        Ok(vec!["Azure Key Vault", "Google Cloud KMS"]),
+        "the checklist text of 2026-11-24 named the two only outside its list"
+    );
+}
+
+#[test]
+fn a_full_stop_ends_the_list() {
+    let text = "backends for HashiCorp Vault Transit, OpenBao, PKCS#11 and AWS \
+                KMS. Azure Key Vault and Google Cloud KMS come later";
+    assert_eq!(
+        unlisted_backends(text),
+        Ok(vec!["Azure Key Vault", "Google Cloud KMS"]),
+        "a name after the `.` is not in the list"
+    );
+}
+
+#[test]
+fn a_semicolon_ends_the_list() {
+    let text = "backends for HashiCorp Vault Transit, OpenBao, PKCS#11 and AWS \
+                KMS; Azure Key Vault and Google Cloud KMS come later";
+    assert_eq!(
+        unlisted_backends(text),
+        Ok(vec!["Azure Key Vault", "Google Cloud KMS"]),
+        "a name after the `;` is not in the list"
+    );
+}
+
+#[test]
+fn a_backend_named_before_the_list_is_not_listed() {
+    let text = "Azure Key Vault later. backends for HashiCorp Vault Transit, \
+                OpenBao, PKCS#11, AWS KMS and Google Cloud KMS.";
+    assert_eq!(
+        unlisted_backends(text),
+        Ok(vec!["Azure Key Vault"]),
+        "only the list counts"
+    );
+}
+
+#[test]
+fn each_backend_left_out_is_named() {
+    for (left, backend) in BACKENDS.iter().enumerate() {
+        let rest: Vec<&str> = BACKENDS
+            .iter()
+            .enumerate()
+            .filter(|(at, _)| *at != left)
+            .map(|(_, name)| *name)
+            .collect();
+        let text = format!("{BACKEND_LIST}{}.", rest.join(", "));
+        assert_eq!(
+            unlisted_backends(&text),
+            Ok(vec![*backend]),
+            "a list without {backend}"
+        );
+    }
+}
+
+#[test]
+fn an_empty_list_leaves_out_every_backend() {
+    assert_eq!(
+        unlisted_backends("backends for nothing yet."),
+        Ok(BACKENDS.to_vec()),
+        "no backend is listed"
+    );
+}
+
+#[test]
+fn a_text_without_a_list_is_refused() {
+    let found = unlisted_backends("one interface for wrapping keys.");
+    assert!(
+        found
+            .as_ref()
+            .is_err_and(|problem| problem.contains(BACKEND_LIST)),
+        "a text without `{BACKEND_LIST}` is refused: {found:?}"
+    );
+}
+
+#[test]
+fn a_capitalized_list_opening_is_not_read() {
+    let text = format!("Backends for {}.", BACKENDS.join(", "));
+    assert!(
+        unlisted_backends(&text).is_err(),
+        "the list opens with lower-case `{BACKEND_LIST}`"
+    );
+}
+
+#[test]
+fn a_backend_split_over_two_lines_is_listed() {
+    let text = format!(
+        "{BACKEND_LIST}HashiCorp Vault\n  Transit, OpenBao, PKCS#11, AWS KMS, Azure Key Vault and Google Cloud KMS."
+    );
+    assert_eq!(
+        unlisted_backends(&text),
+        Ok(Vec::new()),
+        "a line break inside a name reads as a space"
+    );
+}
+
+#[test]
+fn a_backend_named_in_lower_case_is_not_listed() {
+    let text = format!(
+        "{BACKEND_LIST}HashiCorp Vault Transit, OpenBao, PKCS#11, AWS KMS, azure key vault and Google Cloud KMS."
+    );
+    assert_eq!(
+        unlisted_backends(&text),
+        Ok(vec!["Azure Key Vault"]),
+        "the pages use each product's own capitals"
+    );
+}
+
+#[test]
+fn a_page_without_milestones_has_no_kms_milestone() {
+    assert_eq!(
+        kms_milestone("## Not planned\n\n- **Nothing.** None.\n"),
+        None,
+        "no Milestones section"
+    );
+}
+
+#[test]
+fn a_milestone_section_without_the_kms_milestone_has_none() {
+    let page = KMS_GOOD.replace("keys kept in a KMS or an HSM", "a signed archive");
+    assert_eq!(kms_milestone(&page), None, "no lead names the KMS item");
+}
+
+#[test]
+fn a_kms_lead_in_the_not_planned_section_is_not_the_milestone() {
+    let page = "## Milestones\n\n- **May 2027: other.**\n  - Status: none.\n\n\
+                ## Not planned\n\n- **Keys kept in a KMS or an HSM.** backends for OpenBao.\n";
+    assert_eq!(
+        kms_milestone(page),
+        None,
+        "only the Milestones section is searched"
+    );
+}
+
+#[test]
+fn a_kms_name_on_a_sub_bullet_is_not_the_lead() {
+    let page = "## Milestones\n\n- **May 2027: other.**\n  - Work: keys kept in a KMS or an HSM.\n";
+    assert_eq!(
+        kms_milestone(page),
+        None,
+        "the name must be on the bullet's first line"
+    );
+}
+
+#[test]
+fn the_backends_are_six_and_distinct() {
+    let distinct: std::collections::BTreeSet<&str> = BACKENDS.into_iter().collect();
+    assert_eq!(
+        distinct.len(),
+        6,
+        "the plan names six backends: {BACKENDS:?}"
     );
 }

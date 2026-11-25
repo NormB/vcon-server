@@ -13,6 +13,10 @@ All notable changes to this project are recorded here. The format follows
   - Effect: The plan runs through December 2027, and each month is a target,
     not a promise.
   - Docs: [Roadmap](https://vcon-server.com/docs/roadmap/)
+- **The roadmap and the 1.0 checklist plan six key wrapping backends.**
+  - Effect: Azure Key Vault and Google Cloud KMS join HashiCorp Vault
+    Transit, OpenBao, PKCS#11 and AWS KMS.
+  - Docs: [1.0 checklist](https://vcon-server.com/docs/production-checklist/)
 
 ### Fixed
 
