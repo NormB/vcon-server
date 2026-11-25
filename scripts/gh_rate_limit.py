@@ -42,6 +42,7 @@ DEFAULT_MARGIN = 5
 SECONDARY_WAIT = 60
 GH_DEADLINE = 60
 _LIMITED = re.compile(r"api rate limit exceeded|secondary rate limit", re.IGNORECASE)
+_STATUS = re.compile(r"\bHTTP (4\d\d)\b")
 
 
 class Budget(NamedTuple):
@@ -53,6 +54,17 @@ class Budget(NamedTuple):
 def rate_limited(text: str) -> bool:
     """Whether gh's output names a spent rate limit."""
     return bool(_LIMITED.search(text or ""))
+
+
+def refused(text: str) -> bool:
+    """Whether gh's output is a real refusal that asking again cannot
+    change: an HTTP 4xx status (`(HTTP 404)` or `HTTP 404:`), other than 429
+    and a spent rate limit, which `run_gh` waits for. Every other failure (a
+    5xx, a dropped connection, an empty or cut body) may pass when asked
+    again; the caller decides whether it asks."""
+    text = text or ""
+    status = _STATUS.search(text)
+    return bool(status) and status.group(1) != "429" and not rate_limited(text)
 
 
 def _count(value, name):

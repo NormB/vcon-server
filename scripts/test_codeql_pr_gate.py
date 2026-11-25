@@ -45,9 +45,11 @@ class FakeApi:
     def __init__(self, answers):
         self.answers = answers
         self.asked = []
+        self.deadlines = []
 
-    def __call__(self, path):
+    def __call__(self, path, deadline=None):
         self.asked.append(path)
+        self.deadlines.append(deadline)
         for prefix, answer in self.answers.items():
             if path.startswith(prefix):
                 if isinstance(answer, Exception):
@@ -422,6 +424,264 @@ class GhApi(unittest.TestCase):
 
     def test_the_gate_waits_at_most_the_rate_limit_wait(self):
         self.assertEqual(gate.RATE_LIMIT_WAIT, 900, "15 min, inside the job's deadline")
+
+
+EMPTY = "unexpected end of JSON input\n"
+NOT_FOUND = "gh: Not Found (HTTP 404)\n"
+FORBIDDEN = "gh: Resource not accessible by integration (HTTP 403)\n"
+
+
+class Gh:
+    """A fake `run` for gh_api: answers each call from `script` in turn, the
+    last one again. Each item is (exit, stdout, stderr), or an exception to
+    raise. It records every command it was given."""
+
+    def __init__(self, *script):
+        self.script = list(script)
+        self.calls = []
+
+    def __call__(self, cmd, **kw):
+        self.calls.append(cmd)
+        item = self.script.pop(0) if len(self.script) > 1 else self.script[0]
+        if isinstance(item, BaseException):
+            raise item
+        code, out, err = item
+        return subprocess.CompletedProcess(cmd, code, out, err)
+
+
+def ok(answer):
+    return (0, json.dumps(answer), "")
+
+
+def timeout():
+    return subprocess.TimeoutExpired(["gh"], 60)
+
+
+def ask(gh, deadline, clock=None):
+    """gh_api through `gh` on a clock at 0 with `deadline`: (answer or the
+    GateError, clock, stderr)."""
+    clock, err = clock or Clock(), io.StringIO()
+    try:
+        answer = gate.gh_api("repos/x/y", run=gh, clock=clock, sleep=clock.sleep, err=err, deadline=deadline)
+    except gate.GateError as error:
+        answer = error
+    return answer, clock, err.getvalue()
+
+
+def run_gh(argv, gh):
+    """main with gh_api over the fake `gh`: (code, stdout, stderr, clock)."""
+    clock, out, err = Clock(), io.StringIO(), io.StringIO()
+
+    def api(path, deadline=None):
+        return gate.gh_api(path, run=gh, clock=clock, sleep=clock.sleep, err=err, deadline=deadline)
+
+    code = gate.main(argv, {"GITHUB_REPOSITORY": REPO}, api, clock, clock.sleep, out, err)
+    return code, out.getvalue(), err.getvalue(), clock
+
+
+class RetrySuccess(unittest.TestCase):
+    """A transient read is asked again while the --wait budget lasts."""
+
+    def test_an_empty_answer_is_asked_again(self):
+        answer, clock, _ = ask(Gh((0, "", ""), ok({"a": 1})), deadline=900)
+        self.assertEqual(answer, {"a": 1}, "the second answer")
+        self.assertEqual(clock.slept, [5], "one wait of 5 s")
+
+    def test_a_gh_failure_on_an_empty_body_is_asked_again(self):
+        answer, _, _ = ask(Gh((1, "", EMPTY), ok([])), deadline=900)
+        self.assertEqual(answer, [], "the #282 failure is retried")
+
+    def test_a_read_that_timed_out_is_asked_again(self):
+        answer, _, _ = ask(Gh(timeout(), ok({"b": 2})), deadline=900)
+        self.assertEqual(answer, {"b": 2}, "the answer after the timeout")
+
+    def test_a_502_is_asked_again(self):
+        answer, _, _ = ask(Gh((1, "", "gh: Bad Gateway (HTTP 502)\n"), ok([1])), deadline=900)
+        self.assertEqual(answer, [1], "a server error is transient")
+
+    def test_a_500_is_asked_again(self):
+        answer, _, _ = ask(Gh((1, "", "HTTP 500: Internal Server Error\n"), ok([2])), deadline=900)
+        self.assertEqual(answer, [2], "the other form of gh's message")
+
+    def test_an_answer_that_is_not_json_is_asked_again(self):
+        answer, _, _ = ask(Gh((0, "<html>unicorn</html>", ""), ok({"c": 3})), deadline=900)
+        self.assertEqual(answer, {"c": 3}, "an HTML error page is transient")
+
+    def test_a_429_without_the_rate_limit_text_is_asked_again(self):
+        answer, _, _ = ask(Gh((1, "", "gh: Too Many Requests (HTTP 429)\n"), ok([3])), deadline=900)
+        self.assertEqual(answer, [3], "429 is no refusal")
+
+    def test_the_waits_double_from_5_s(self):
+        _, clock, _ = ask(Gh((0, "", ""), (0, "", ""), (0, "", ""), ok([])), deadline=900)
+        self.assertEqual(clock.slept, [5, 10, 20], "5, 10, 20")
+
+    def test_the_waits_stop_doubling_at_a_minute(self):
+        script = [(0, "", "")] * 7 + [ok([])]
+        _, clock, _ = ask(Gh(*script), deadline=900)
+        self.assertEqual(clock.slept, [5, 10, 20, 40, 60, 60, 60], "at most 60 s each")
+
+    def test_each_retry_is_said_with_its_error_and_its_wait(self):
+        _, _, said = ask(Gh((1, "", EMPTY), ok([])), deadline=900)
+        self.assertIn("unexpected end of JSON input", said, "the error")
+        self.assertIn("5 s", said, "the wait")
+
+    def test_the_gate_passes_after_an_empty_alert_listing(self):
+        gh = Gh(ok(status("complete")), (1, "", EMPTY), ok([]), ok([]))
+        code, out, err, _ = run_gh(pr_args(), gh)
+        self.assertEqual(code, 0, err)
+        self.assertIn("adds no CodeQL alert", out)
+
+    def test_the_gate_passes_after_a_sarif_read_that_timed_out(self):
+        gh = Gh(timeout(), ok(status("complete")))
+        code, _, err, _ = run_gh(["check", "--sarif-id", SARIF, "--category", JS], gh)
+        self.assertEqual(code, 0, err)
+
+    def test_main_gives_every_read_the_wait_budget(self):
+        code, _, _, api, _ = run(pr_args(wait="300"), complete_with([], []))
+        self.assertEqual(code, 0)
+        self.assertEqual(set(api.deadlines), {300}, "one deadline, --wait seconds from the start")
+
+    def test_the_same_command_is_asked_each_time(self):
+        gh = Gh((0, "", ""), ok([]))
+        ask(gh, deadline=900)
+        self.assertEqual(gh.calls, [["gh", "api", "repos/x/y"]] * 2, "the same read again")
+
+
+class RetryFailure(unittest.TestCase):
+    """A real refusal is not asked again, and a spent budget fails closed."""
+
+    def test_a_404_is_not_asked_again(self):
+        gh = Gh((1, "", NOT_FOUND), ok([]))
+        answer, clock, _ = ask(gh, deadline=900)
+        self.assertIsInstance(answer, gate.GateError)
+        self.assertEqual((len(gh.calls), clock.slept), (1, []), "one ask, no wait")
+
+    def test_a_403_is_not_asked_again(self):
+        gh = Gh((1, "", FORBIDDEN), ok([]))
+        answer, _, _ = ask(gh, deadline=900)
+        self.assertIsInstance(answer, gate.GateError)
+        self.assertEqual(len(gh.calls), 1, "one ask")
+
+    def test_a_401_is_not_asked_again(self):
+        gh = Gh((1, "", "gh: Bad credentials (HTTP 401)\n"), ok([]))
+        ask(gh, deadline=900)
+        self.assertEqual(len(gh.calls), 1, "one ask")
+
+    def test_a_422_is_not_asked_again(self):
+        gh = Gh((1, "", "HTTP 422: Validation Failed\n"), ok([]))
+        ask(gh, deadline=900)
+        self.assertEqual(len(gh.calls), 1, "one ask")
+
+    def test_a_refusal_keeps_its_message(self):
+        answer, _, _ = ask(Gh((1, "", NOT_FOUND)), deadline=900)
+        self.assertIn("HTTP 404", str(answer), "gh's message")
+
+    def test_a_read_still_failing_at_the_deadline_is_a_gate_error(self):
+        answer, clock, _ = ask(Gh((1, "", EMPTY)), deadline=100)
+        self.assertIsInstance(answer, gate.GateError)
+        self.assertEqual(clock.now, 100, "it waited the whole budget")
+
+    def test_the_last_error_is_named(self):
+        answer, _, _ = ask(Gh(timeout(), (0, "<html>", "")), deadline=30)
+        self.assertIn("no JSON", str(answer), "the last error, not the first")
+        self.assertNotIn("did not answer", str(answer), "the first error is not the one named")
+
+    def test_the_error_says_the_budget_is_spent(self):
+        answer, _, _ = ask(Gh((1, "", EMPTY)), deadline=30)
+        self.assertIn("--wait budget is spent", str(answer), "the budget")
+        self.assertIn("asked 4 times", str(answer), "how often it asked: at 0, 5, 15 and 30 s")
+
+    def test_the_gate_answers_2_when_the_alerts_cannot_be_read_in_time(self):
+        gh = Gh(ok(status("complete")), (1, "", EMPTY))
+        code, _, err, _ = run_gh(pr_args(wait="60"), gh)
+        self.assertEqual(code, 2, "fails closed")
+        self.assertIn("cannot read code scanning", err)
+
+    def test_the_gate_answers_2_at_once_on_an_unknown_sarif(self):
+        gh = Gh((1, "", NOT_FOUND))
+        code, _, _, clock = run_gh(pr_args(), gh)
+        self.assertEqual((code, clock.slept), (2, []), "a 404 for the SARIF is final")
+
+    def test_no_deadline_asks_once(self):
+        gh = Gh((1, "", EMPTY), ok([]))
+        answer, _, _ = ask(gh, deadline=None)
+        self.assertIsInstance(answer, gate.GateError)
+        self.assertEqual(len(gh.calls), 1, "a caller with no budget gets the first error")
+
+    def test_a_deadline_already_passed_asks_once(self):
+        clock = Clock()
+        clock.now = 50
+        gh = Gh((1, "", EMPTY), ok([]))
+        ask(gh, deadline=40, clock=clock)
+        self.assertEqual((len(gh.calls), clock.slept), (1, []), "no time left")
+
+    def test_a_refusal_is_not_transient_and_an_empty_body_is(self):
+        refused, _, _ = ask(Gh((1, "", NOT_FOUND)), deadline=None)
+        empty, _, _ = ask(Gh((1, "", EMPTY)), deadline=None)
+        self.assertEqual((refused.transient, empty.transient), (False, True), "the error says which it is")
+
+
+class RetryEdge(unittest.TestCase):
+    def test_the_last_wait_is_cut_to_the_deadline(self):
+        _, clock, _ = ask(Gh((0, "", "")), deadline=12)
+        self.assertEqual(clock.slept, [5, 7], "5 s, then the 7 s left")
+
+    def test_no_wait_passes_the_deadline(self):
+        _, clock, _ = ask(Gh((0, "", "")), deadline=333)
+        self.assertEqual(clock.now, 333, "it stops at the deadline exactly")
+
+    def test_a_json_answer_is_not_asked_again(self):
+        gh = Gh(ok([]), ok([1]))
+        answer, clock, _ = ask(gh, deadline=900)
+        self.assertEqual((answer, clock.slept), ([], []), "the first answer")
+
+    def test_a_json_null_is_an_answer(self):
+        answer, _, _ = ask(Gh((0, "null", ""), ok([])), deadline=900)
+        self.assertIsNone(answer, "valid JSON is returned; the caller judges it")
+
+    def test_a_body_of_blanks_is_asked_again(self):
+        answer, _, _ = ask(Gh((0, " \n\t", ""), ok([4])), deadline=900)
+        self.assertEqual(answer, [4], "only blanks is an empty body")
+
+    def test_a_refusal_after_a_transient_failure_ends_the_asking(self):
+        gh = Gh((0, "", ""), (1, "", NOT_FOUND), ok([]))
+        answer, clock, _ = ask(gh, deadline=900)
+        self.assertIsInstance(answer, gate.GateError)
+        self.assertEqual((len(gh.calls), clock.slept), (2, [5]), "stops at the 404")
+
+    def test_a_refusal_on_stdout_is_read(self):
+        gh = Gh((1, '{"message":"Not Found","status":"404"} gh: Not Found (HTTP 404)', ""), ok([]))
+        ask(gh, deadline=900)
+        self.assertEqual(len(gh.calls), 1, "gh may print the error on stdout")
+
+    def test_a_rate_limit_403_is_left_to_the_rate_limit_rule(self):
+        limited = "gh: API rate limit exceeded for installation (HTTP 403)\n"
+        budget = json.dumps({"resources": {"core": {"limit": 5000, "remaining": 0, "reset": 10**9}}})
+        gh = Gh((1, "", limited), (0, budget, ""), (1, "", limited))
+        answer, clock, _ = ask(gh, deadline=900)
+        self.assertIn("rate limit", str(answer), "gh's message is kept")
+        self.assertEqual(len(gh.calls), 2, "the read and the budget read; no transient retry of a spent budget")
+        self.assertEqual(clock.slept, [], "a reset further off than the rule allows is not waited for")
+
+    def test_a_wait_of_0_asks_each_read_once(self):
+        gh = Gh((1, "", EMPTY), ok(status("complete")))
+        code, _, _, clock = run_gh(pr_args(wait="0"), gh)
+        self.assertEqual((code, clock.slept, len(gh.calls)), (2, [], 1), "no budget, no retry")
+
+    def test_the_budget_is_shared_by_every_read(self):
+        gh = Gh(ok(status("pending")), ok(status("pending")), ok(status("complete")), (1, "", EMPTY))
+        code, _, _, clock = run_gh(pr_args(wait="20"), gh)
+        self.assertEqual(code, 2)
+        self.assertEqual(clock.now, 20, "the alert reads get only what the processing left")
+
+    def test_a_status_line_without_a_code_is_transient(self):
+        answer, _, _ = ask(Gh((1, "", "Post \"https://api.github.com\": EOF\n"), ok([5])), deadline=900)
+        self.assertEqual(answer, [5], "a dropped connection is retried")
+
+    def test_a_longer_number_after_http_4_is_no_refusal(self):
+        gh = Gh((1, "", "HTTP 4040 something\n"), ok([6]))
+        answer, _, _ = ask(gh, deadline=900)
+        self.assertEqual(answer, [6], "HTTP 4040 is not a 4xx status")
 
 
 class Workflow(unittest.TestCase):

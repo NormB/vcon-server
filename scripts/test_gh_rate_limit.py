@@ -374,6 +374,41 @@ def step_of(text, uses):
     return text[begin : end if end != -1 else len(text)]
 
 
+class Refusal(unittest.TestCase):
+    """refused(): a gh failure that a retry cannot change, an HTTP 4xx other
+    than a spent rate limit or 429."""
+
+    def test_a_404_is_a_refusal(self):
+        self.assertTrue(rl.refused("gh: Not Found (HTTP 404)"), "404")
+
+    def test_a_403_is_a_refusal(self):
+        self.assertTrue(rl.refused("gh: Resource not accessible by integration (HTTP 403)"), "403")
+
+    def test_the_status_first_form_is_a_refusal(self):
+        self.assertTrue(rl.refused("HTTP 422: Validation Failed (https://api.github.com/x)"), "422")
+
+    def test_a_5xx_is_no_refusal(self):
+        self.assertFalse(rl.refused("gh: Bad Gateway (HTTP 502)"), "502")
+
+    def test_a_429_is_no_refusal(self):
+        self.assertFalse(rl.refused("gh: Too Many Requests (HTTP 429)"), "429")
+
+    def test_a_spent_rate_limit_is_no_refusal(self):
+        self.assertFalse(rl.refused(LIMITED + " (HTTP 403)"), "the rate-limit rule's case")
+
+    def test_no_status_is_no_refusal(self):
+        self.assertFalse(rl.refused("unexpected end of JSON input"), "#282's failure")
+
+    def test_empty_text_is_no_refusal(self):
+        self.assertFalse(rl.refused(""), "empty")
+
+    def test_none_is_no_refusal(self):
+        self.assertFalse(rl.refused(None), "no text")
+
+    def test_a_longer_number_is_no_status(self):
+        self.assertFalse(rl.refused("HTTP 4040"), "four digits")
+
+
 class Workflows(unittest.TestCase):
     """The rule reaches every workflow, and the ClusterFuzzLite build step
     that spent the budget on 2026-11-19 looks up no artifact."""

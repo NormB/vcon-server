@@ -23,6 +23,13 @@ status, no SARIF id and a SARIF still pending at the deadline are refused.
 An alert with no category is counted for every job. An empty --pr (a push
 or a scheduled run) checks only the processing.
 
+Every read of code scanning shares the same --wait budget. A read that
+failed in a way that asking again may fix (no answer in time, a gh failure
+that is no 4xx refusal, an empty or non-JSON body) is asked again after 5,
+10, 20, 40 and then every 60 seconds until that budget is spent. A 4xx
+refusal (scripts/gh_rate_limit.py's `refused`) and a spent API budget are
+final at once.
+
 Exit 0 when it passes, 1 when it refuses (each reason on stderr), 2 when
 code scanning cannot be read or the arguments are wrong. GITHUB_REPOSITORY
 names the repository; GH_TOKEN is read by gh.
@@ -52,25 +59,58 @@ RATE_LIMIT_WAIT = 900
 
 
 class GateError(Exception):
-    """Code scanning cannot be read; the message says why."""
+    """Code scanning cannot be read; the message says why. `transient` is
+    True for a failure that asking again may pass."""
+
+    def __init__(self, message, transient=False):
+        super().__init__(message)
+        self.transient = transient
 
 
-def gh_api(path: str, run=subprocess.run, clock=time.time, sleep=time.sleep, err=sys.stderr):
-    """The JSON answer of `gh api <path>`. A spent API budget is waited for
-    (at most RATE_LIMIT_WAIT seconds) by scripts/gh_rate_limit.py's rule."""
+def _read(path, run, clock, sleep, err):
+    """One `gh api <path>`: its JSON answer, or a GateError. A spent API
+    budget is waited for (at most RATE_LIMIT_WAIT seconds) by
+    scripts/gh_rate_limit.py's rule and is not transient after it; a real
+    refusal (gh_rate_limit.refused, a 4xx) is not transient either."""
     try:
         done = gh_rate_limit.run_gh(
             ["gh", "api", path], run=run, clock=clock, sleep=sleep, max_wait=RATE_LIMIT_WAIT, err=err,
             capture_output=True, text=True, timeout=GH_DEADLINE,
         )
     except subprocess.TimeoutExpired as error:
-        raise GateError(f"gh api {path} did not answer in {GH_DEADLINE} s") from error
+        raise GateError(f"gh api {path} did not answer in {GH_DEADLINE} s", transient=True) from error
     if done.returncode != 0:
-        raise GateError(done.stderr.strip() or f"gh api {path} exited {done.returncode}")
+        said = f"{done.stderr or ''}\n{done.stdout or ''}"
+        final = gh_rate_limit.refused(said) or gh_rate_limit.rate_limited(said)
+        raise GateError((done.stderr or "").strip() or f"gh api {path} exited {done.returncode}", transient=not final)
     try:
         return json.loads(done.stdout)
     except json.JSONDecodeError as error:
-        raise GateError(f"gh api {path} answered no JSON") from error
+        raise GateError(f"gh api {path} answered no JSON", transient=True) from error
+
+
+def gh_api(path: str, run=subprocess.run, clock=time.time, sleep=time.sleep, err=sys.stderr, deadline=None):
+    """The JSON answer of `gh api <path>`. A transient failure (no answer in
+    GH_DEADLINE seconds, a gh failure that is no refusal, an empty or
+    non-JSON body) is asked again after 5, 10, 20, 40 and then every 60
+    seconds while clock() is before `deadline`, the --wait budget; on
+    #282 (2026-11-25) one alert listing came back empty and the job failed.
+    With no deadline, or once it is passed, the last error is raised."""
+    asked, pause = 0, FIRST_WAIT
+    while True:
+        asked += 1
+        try:
+            return _read(path, run, clock, sleep, err)
+        except GateError as error:
+            left = None if deadline is None else deadline - clock()
+            if not error.transient or left is None:
+                raise
+            if left <= 0:
+                raise GateError(f"{error} (asked {asked} times; the --wait budget is spent)") from error
+            seconds = min(pause, left)
+            print(f"codeql gate: {error}; asking again in {seconds:g} s", file=err)
+            sleep(seconds)
+            pause = min(pause * 2, LONGEST_WAIT)
 
 
 def processed(repo, sarif_id, api, clock, sleep, wait) -> str | None:
@@ -160,8 +200,15 @@ def main(argv, env, api, clock, sleep, out, err) -> int:
     if not repo:
         print("codeql gate: GITHUB_REPOSITORY names no repository", file=err)
         return 2
+    # One budget for every read: the processing wait and each retry of a
+    # transient read end at the same deadline.
+    deadline = clock() + args.wait
+
+    def read(path):
+        return api(path, deadline=deadline)
+
     try:
-        reason = processed(repo, args.sarif_id, api, clock, sleep, args.wait)
+        reason = processed(repo, args.sarif_id, read, clock, sleep, args.wait)
         if reason:
             print(f"codeql gate: refused: {reason}", file=err)
             return 1
@@ -169,7 +216,7 @@ def main(argv, env, api, clock, sleep, out, err) -> int:
         if not args.pr:
             return 0
         added = new_alerts(
-            open_alerts(repo, f"refs/pull/{args.pr}/merge", api), open_alerts(repo, f"refs/heads/{args.base}", api), args.category
+            open_alerts(repo, f"refs/pull/{args.pr}/merge", read), open_alerts(repo, f"refs/heads/{args.base}", read), args.category
         )
     except GateError as error:
         print(f"codeql gate: cannot read code scanning: {error}", file=err)
