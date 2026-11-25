@@ -38,6 +38,8 @@ mod group_tests;
 mod legal;
 mod list;
 pub(crate) mod manifest;
+#[cfg(test)]
+mod manifest_grace_tests;
 pub(crate) mod packed;
 pub(crate) mod packer;
 pub(crate) mod pending;

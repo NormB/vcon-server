@@ -89,7 +89,7 @@ allowed a group to write them. To check a host before an upgrade, see
 | `storage.s3.timeout` | Seconds one request to the bucket may take | `30` |
 | `storage.parquet.pack_interval` | Seconds from the end of one pack run to the start of the next; the table `[storage.parquet]` turns [Parquet storage](#parquet-storage) on | `300` (5 minutes) |
 | `storage.parquet.pack_limit` | Largest sealed object packed into a Parquet file, in bytes; a larger one stays an object | `16777216` (16 MiB) |
-| `storage.parquet.reader_grace` | Seconds an older manifest, and a file a compaction merged away, stays after a newer manifest is written, for readers outside the server; a purge deletes them at once | `900` (15 minutes) |
+| `storage.parquet.reader_grace` | Seconds an older manifest, and a file a compaction merged away, stays after a newer manifest is written, for readers outside the server; a purge that rewrites a pack file deletes them at once | `900` (15 minutes) |
 | `export.s3.region` | Region of the S3-compatible service that [`export parquet`](@/docs/export-parquet.md) writes an `s3://` target to; without an `export.s3` table the export uses `storage.s3`'s service and keys | required with `export.s3` |
 | `export.s3.endpoint` | As `storage.s3.endpoint`, for the export's service | none |
 | `export.s3.path_style` | As `storage.s3.path_style` | `false` |
@@ -361,8 +361,8 @@ pack_limit = 16777216
   numbered manifest, `<prefix>tenants/<tenant id>/manifest/<20 digits>.json`,
   naming the files and the live versions. Each pack run merges a date's
   small files into one. A file merged away, and an older manifest, stay for
-  `reader_grace` seconds for readers on an older manifest; a purge deletes
-  them at once. A replaced or deleted version stays in its file, hidden,
+  `reader_grace` seconds for readers on an older manifest; a purge that
+  rewrites a pack file deletes them at once. A replaced or deleted version stays in its file, hidden,
   until retention purges it.
 - **No way back.** Once versions are packed, keep `[storage.parquet]`:
   there is no command that turns packed versions back into objects. Without

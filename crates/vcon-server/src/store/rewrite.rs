@@ -52,20 +52,31 @@ struct NewFile {
 impl Store {
     /// Rewrites every file a purge listed, and deletes every unnamed file
     /// at once, as the module describes: any unnamed file may hold the
-    /// purged row. With no purge listed it does nothing; unnamed files then
-    /// wait for the reader grace. A Store with no pack storage has neither.
+    /// purged row. With no purge listed it removes nothing; unnamed files
+    /// and older manifests then wait for the reader grace, which the pack
+    /// run applies. A Store with no pack storage has neither.
     pub(crate) fn finish_purges(&self) -> Result<(), StoreError> {
         let Some(packs) = self.packs.as_deref() else {
             return Ok(());
         };
+        // Whether this call found a purge listed, and so rewrote or
+        // deleted its file before the list was empty.
+        let mut rewrote = false;
         for _ in 0..ROUNDS {
             let pending = self.read(|tx| tx.purge_pending())?;
             if pending.is_empty() {
-                // The manifests the rewrites numbered, and none older:
-                // those name the files just deleted.
+                // The manifests the rewrites numbered. Only after a
+                // rewrite are the older ones removed at once: those name
+                // the files just deleted. Otherwise a reader may still be
+                // on one, and it stays for the reader grace.
                 self.publish()?;
-                return self.prune_manifests(None);
+                return if rewrote {
+                    self.prune_manifests(None)
+                } else {
+                    Ok(())
+                };
             }
+            rewrote = true;
             let unnamed = self.read(|tx| tx.unnamed_files())?;
             for file in unnamed {
                 self.remove_unnamed(packs, file)?;

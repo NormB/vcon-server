@@ -37,7 +37,9 @@ has it, before the purge is done.
   numbered manifest, naming the files and the live versions. Each pack run
   merges a date's small files into one. A file merged away, and an older
   manifest, stay for `reader_grace` seconds (900 unless set), so a reader on
-  an older manifest can finish; a purge deletes them at once. A replaced or
+  an older manifest can finish; a purge that rewrites a pack file deletes
+  them at once. A start-up, a delete or a sweep that rewrites no file
+  removes none of them. A replaced or
   deleted version stays in its file, hidden, until retention purges it.
 - **There is no way back.** No command turns packed versions back into
   objects, so once a tenant has a packed version, keep `[storage.parquet]`.

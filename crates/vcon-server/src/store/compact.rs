@@ -4,8 +4,9 @@
 //! byte into one new file, which one transaction records while it moves the
 //! places and stops naming the old files, only if those still hold exactly
 //! the rows copied. The old files stay for the reader grace, for readers on
-//! an older manifest, and are then deleted; a purge deletes them at once,
-//! since any of them may hold the purged row. A file with a purge pending
+//! an older manifest, and are then deleted; a purge that rewrites or
+//! deletes a pack file deletes them at once, since any of them may hold the
+//! purged row. A file with a purge pending
 //! is never merged: the purge rewrites it.
 
 use std::collections::{BTreeMap, HashSet};

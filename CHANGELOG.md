@@ -6,6 +6,15 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Readers on an older Parquet manifest no longer lose it early.**
+  - Was: A start-up, a delete or a sweep removed every manifest but the
+    newest, inside `storage.parquet.reader_grace`.
+  - Effect: An older manifest stays for the reader grace unless a purge
+    rewrites a pack file it names.
+  - Docs: [Parquet storage](https://vcon-server.com/docs/parquet-storage/)
+
 ## [0.4.17] - 2026-11-25
 
 ### Changed
