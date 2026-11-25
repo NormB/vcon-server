@@ -66,6 +66,6 @@ below open each page's source in the repository.
 
 - [Development](../website/content/docs/development.md): The code's layout, how it is tested, the gates every commit passes, and how to work on this site.
 - [What is built](../website/content/docs/status.md): Which parts of vcon-server work today, and which are being built.
-- [Roadmap](../website/content/docs/roadmap.md): The next milestones for vcon-server.
+- [Roadmap](../website/content/docs/roadmap.md): What vcon-server plans to do through December 2027, by target month, and what it does not plan to do.
 - [The 1.0 checklist](../website/content/docs/production-checklist.md): What vcon-server needs before release 1.0, the first release for production: each item's state, what is left, and the evidence.
 - [Scale numbers](../website/content/docs/scale.md): Measured ingest rates, read latencies and disk use, each with the machine, the commit and the vCon count, and how to run the harness that measures them.

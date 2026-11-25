@@ -6,6 +6,14 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The roadmap gives each milestone a target month and lists what is not
+  planned.**
+  - Effect: The plan runs through December 2027, and each month is a target,
+    not a promise.
+  - Docs: [Roadmap](https://vcon-server.com/docs/roadmap/)
+
 ### Fixed
 
 - **Readers on an older Parquet manifest no longer lose it early.**
