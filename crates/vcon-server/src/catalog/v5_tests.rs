@@ -250,7 +250,9 @@ pub(super) fn tables(conn: &Connection) -> Vec<String> {
     )
 }
 
-const AUDIT_READ: &str =
+/// Every audit record with the columns of versions 4 to 9, in order:
+/// version 10 adds its own.
+pub(super) const AUDIT_READ: &str =
     "SELECT seq, at, actor, action, target, version, status, count FROM audit ORDER BY seq";
 
 fn filled() -> Entry {

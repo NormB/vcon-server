@@ -17,10 +17,12 @@ use crate::envelope::Key;
 /// version 6 added each tenant's role cap to server.sqlite; version 7 added
 /// the table of the settings a tenant's administrator sets; version 8
 /// added the table of the sessions of users who signed in; version 9 added
-/// each access key's expiry and last-used time to server.sqlite.
+/// each access key's expiry and last-used time to server.sqlite; version
+/// 10 added to every audit log the mark of the records a count made, the
+/// only ones a count adds to.
 /// A build refuses every version it does not know, so a catalog this
-/// build has opened is refused by release 0.4.3 and earlier.
-pub const SCHEMA_VERSION: i64 = 9;
+/// build has opened is refused by release 0.4.16 and earlier.
+pub const SCHEMA_VERSION: i64 = 10;
 
 /// Brings server.sqlite from version 8 to 9: each access key's expiry and
 /// its last-used time, both NULL for every key there is. A key made
@@ -325,7 +327,7 @@ pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogE
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
         }
-        from @ 1..=8 => {
+        from @ 1..=9 => {
             // One transaction, so a failed upgrade leaves the old version
             // whole. A tenant catalog has a vcon table, server.sqlite a
             // tenant table, and both an audit log.
@@ -364,6 +366,14 @@ pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogE
             }
             if from < 9 && has("api_key")? {
                 tx.execute_batch(KEY_LIFE)?;
+            }
+            if from < 10 && has("audit")? {
+                // A log older than 5 was made again above from this
+                // build's text, the column included.
+                if from >= 5 {
+                    tx.execute_batch(crate::audit::COUNTED_COLUMN)?;
+                }
+                tx.execute_batch(crate::audit::COUNTED_BEFORE_10)?;
             }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
@@ -569,6 +579,9 @@ mod v8_tests;
 
 #[cfg(test)]
 mod v9_tests;
+
+#[cfg(test)]
+mod v10_tests;
 
 #[cfg(test)]
 pub(crate) mod testing {

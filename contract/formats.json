@@ -2,7 +2,7 @@
   "formats": {
     "catalog": {
       "read_back": true,
-      "version": "9"
+      "version": "10"
     },
     "envelope": {
       "read_back": true,

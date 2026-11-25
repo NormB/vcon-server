@@ -10,9 +10,11 @@
 use rusqlite::Connection;
 
 use super::v5_tests::{
-    KEYS_V4, Old, REGISTRY_ROWS, REGISTRY_V4, TENANT_V4, declared, number, rows, tables, version,
+    AUDIT_READ, KEYS_V4, Old, REGISTRY_ROWS, REGISTRY_V4, TENANT_V4, declared, number, rows,
+    tables, version,
 };
 use super::v6_tests::{AUDIT_V5, ROWS_V5, USERS_V5, columns};
+use super::v10_tests::with_mark;
 use super::{CatalogError, SCHEMA_VERSION, open};
 use crate::backend::local::LocalRegistry;
 use crate::backend::{Registry, SessionRow};
@@ -137,7 +139,7 @@ fn a_version_7_registry_keeps_every_row_it_had() {
             rows(conn, "SELECT * FROM membership ORDER BY user"),
             rows(conn, KEYS_V4),
             rows(conn, "SELECT * FROM tenant_setting"),
-            rows(conn, "SELECT * FROM audit ORDER BY seq"),
+            rows(conn, AUDIT_READ),
         ]
     };
     let before = read(&old.raw());
@@ -382,15 +384,15 @@ fn sessions_written_in_a_transaction_that_is_dropped_are_not_kept() {
 // Limits and odd inputs.
 
 #[test]
-fn a_version_7_tenant_catalog_changes_only_its_number() {
+fn a_version_7_tenant_catalog_gains_only_the_audit_logs_mark() {
     let old = Old::at(7, &[TENANT_V4, AUDIT_V5]);
     let before = declared(&old.raw());
     let conn = old.upgraded();
     assert_eq!(version(&conn), SCHEMA_VERSION, "the number");
     assert_eq!(
         declared(&conn),
-        before,
-        "a tenant catalog has no tenant table, so no session table"
+        with_mark(before),
+        "a tenant catalog has no tenant table, so no session table; version 10 marks its log"
     );
 }
 

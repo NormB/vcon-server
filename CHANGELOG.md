@@ -6,6 +6,18 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A count no longer changes the audit record of a single request.**
+  - Was: A request recorded at the first instant of a minute could have a
+    later count of the same kind added to its record.
+  - Effect: A count adds only to a counted record; the catalogs move to
+    schema version 10 when the server first opens them.
+  - Limit: An older release refuses a data directory this build has
+    opened, so copy it before the upgrade.
+  - Docs: [Counted
+    records](https://vcon-server.com/docs/audit-logs/#counted-records)
+
 ## [0.4.16] - 2026-11-25
 
 ### Changed

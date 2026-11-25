@@ -10,8 +10,10 @@
 use rusqlite::Connection;
 
 use super::v5_tests::{
-    KEYS_V4, Old, REGISTRY_ROWS, REGISTRY_V4, TENANT_V4, declared, number, rows, tables, version,
+    AUDIT_READ, KEYS_V4, Old, REGISTRY_ROWS, REGISTRY_V4, TENANT_V4, declared, number, rows,
+    tables, version,
 };
+use super::v10_tests::with_mark;
 use super::{CatalogError, SCHEMA_VERSION, open};
 use crate::backend::Registry;
 use crate::backend::local::LocalRegistry;
@@ -133,7 +135,7 @@ fn a_version_5_registry_keeps_its_users_memberships_keys_and_log() {
             rows(conn, "SELECT * FROM membership ORDER BY user"),
             rows(conn, KEYS_V4),
             rows(conn, "SELECT * FROM master_key_use"),
-            rows(conn, "SELECT * FROM audit ORDER BY seq"),
+            rows(conn, AUDIT_READ),
         ]
     };
     let before = read(&old.raw());
@@ -389,15 +391,15 @@ fn the_column_does_not_check_what_it_is_given() {
 // Limits and odd inputs.
 
 #[test]
-fn a_version_5_tenant_catalog_changes_only_its_number() {
+fn a_version_5_tenant_catalog_gains_only_the_audit_logs_mark() {
     let old = Old::at(5, &[TENANT_V4, AUDIT_V5]);
     let before = declared(&old.raw());
     let conn = old.upgraded();
     assert_eq!(version(&conn), SCHEMA_VERSION, "the number");
     assert_eq!(
         declared(&conn),
-        before,
-        "a tenant catalog has no tenant table"
+        with_mark(before),
+        "a tenant catalog has no tenant table; version 10 marks its log"
     );
 }
 
