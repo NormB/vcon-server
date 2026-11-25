@@ -15,7 +15,11 @@ use crate::ids::{KeyId, UserId, VersionId};
 use crate::query::{self, BadQuery};
 use crate::reveal::Part;
 
-/// The audit table, part of every catalog that holds a log.
+/// The audit table, part of every catalog that holds a log. `counted` is 1
+/// for a record [`count_many`] made, the only kind a count adds to, and 0
+/// for a record of one request ([`record`]). It is declared last, as
+/// `COUNTED_COLUMN` adds it to an older log, so a new log and an upgraded
+/// one are declared alike.
 pub const SCHEMA: &str = "
 CREATE TABLE audit (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -26,8 +30,32 @@ CREATE TABLE audit (
     version TEXT,
     status INTEGER,
     count INTEGER NOT NULL
-);
+, counted INTEGER NOT NULL DEFAULT 0 CHECK (counted IN (0, 1)));
 CREATE INDEX audit_counted ON audit (actor, action, status, at);
+";
+
+/// Brings an audit log from catalog schema version 9 or earlier (5 to 9:
+/// a log made before 5 is made again from [`SCHEMA`], column included) to
+/// version 10: the `counted` column, 0 for every record there is.
+pub(crate) const COUNTED_COLUMN: &str =
+    "ALTER TABLE audit ADD COLUMN counted INTEGER NOT NULL DEFAULT 0 CHECK (counted IN (0, 1));";
+
+/// Marks the records of a log older than version 10 that a count made,
+/// the second step of its upgrade. Such a log does not say which they are,
+/// so only a record that a count must have made is marked: one at the
+/// start of a minute (the only time a count writes) whose count is above
+/// 1 (a record of one request is written with 1), or whose action every
+/// release from 0.4.0 to 0.4.16 only counted and never recorded. Every
+/// other record stays plain. The limits: a count of 1 of another action
+/// (an MCP call refused 429 or 503) stays plain, so a count in the very
+/// minute of the upgrade makes a second record of that minute, the two
+/// adding up to the same total; and a plain record that a count already
+/// added to is marked counted, since what each added cannot be told apart.
+pub(crate) const COUNTED_BEFORE_10: &str = "
+UPDATE audit SET counted = 1
+WHERE at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:00Z'
+  AND (count > 1
+       OR action IN ('health', 'auth_failed', 'wrong_listener', 'listener_full', 'csp_report'));
 ";
 
 /// Who made a request.
@@ -324,16 +352,18 @@ pub fn count_many(
         stored(entry.status),
         times,
     ];
+    // Only a record a count made is added to: a record of one request at
+    // the start of a minute has the same time and fields, and keeps its 1.
     let added = tx.cached_run(
         "UPDATE audit SET count = count + ?7
-         WHERE at = ?1 AND actor = ?2 AND action = ?3 AND target IS ?4 AND version IS ?5
-           AND status IS ?6",
+         WHERE counted = 1 AND at = ?1 AND actor = ?2 AND action = ?3 AND target IS ?4
+           AND version IS ?5 AND status IS ?6",
         fields,
     )?;
     if added == 0 {
         tx.cached_run(
-            "INSERT INTO audit (at, actor, action, target, version, status, count)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO audit (at, actor, action, target, version, status, count, counted)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1)",
             fields,
         )?;
     }
@@ -438,6 +468,9 @@ pub(crate) mod testing {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod counted_tests;
 
 #[cfg(test)]
 mod tests {

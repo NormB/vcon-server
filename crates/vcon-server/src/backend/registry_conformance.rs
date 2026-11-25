@@ -62,6 +62,7 @@ macro_rules! registry_conformance {
             ok_a_record_is_exported,
             ok_counts_in_one_minute_are_one_record,
             ok_count_many_adds_its_times,
+            ok_a_count_adds_to_no_plain_record_at_a_minute_start,
             ok_record_times_are_read_by_action_and_status,
             ok_a_page_of_the_log_follows_a_seq_up_to_its_limit,
             ok_deleting_a_tenant_revokes_its_keys,
@@ -87,6 +88,7 @@ macro_rules! registry_conformance {
             no_identity_is_taken_by_a_deactivated_user,
             no_unknown_key_is_touched,
             no_use_is_recorded_for_an_unused_master_key,
+            no_count_many_changes_a_plain_record,
             edge_a_commit_of_unknown_outcome_may_have_kept_the_write,
             edge_a_commit_fault_counts_commits,
             edge_a_touch_to_the_same_or_an_earlier_time_changes_nothing,
@@ -98,6 +100,7 @@ macro_rules! registry_conformance {
             edge_empty_text_reads_back,
             edge_a_count_of_nothing_makes_no_record,
             edge_counts_in_two_minutes_are_two_records,
+            edge_a_plain_record_between_two_counts_keeps_its_one,
             edge_a_record_with_no_target_and_no_answer_is_exported,
             edge_the_log_after_its_last_seq_is_empty,
             edge_a_session_ends_at_its_limit_exactly,
@@ -1417,6 +1420,51 @@ pub(crate) fn edge_a_count_of_nothing_makes_no_record(r: &dyn Registry) {
             .expect("answers");
     });
     assert!(exported(r, 0).is_empty(), "no record for a count of 0");
+}
+
+/// Each record's count, oldest first.
+fn counts_of(r: &dyn Registry) -> Vec<i64> {
+    exported(r, 0)
+        .iter()
+        .map(|rec| rec["count"].as_i64().expect("a count"))
+        .collect()
+}
+
+pub(crate) fn ok_a_count_adds_to_no_plain_record_at_a_minute_start(r: &dyn Registry) {
+    // at(0) is the first nanosecond of a minute, the time the count's own
+    // record has: only the record a count made is added to.
+    let refused = entry(Action::Read, None, 429);
+    write(r, |tx| tx.record(&refused, at(0)).expect("records"));
+    write(r, |tx| tx.count(&refused, at(10)).expect("counts"));
+    write(r, |tx| tx.count(&refused, at(20)).expect("counts"));
+    assert_eq!(
+        counts_of(r),
+        [1, 2],
+        "the plain record keeps 1; the two counts share a record"
+    );
+}
+
+pub(crate) fn no_count_many_changes_a_plain_record(r: &dyn Registry) {
+    let refused = entry(Action::Read, Some("a"), 429);
+    write(r, |tx| {
+        tx.record(&refused, at(0)).expect("records");
+        tx.count_many(&refused, at(0), 40).expect("counts");
+    });
+    assert_eq!(counts_of(r), [1, 40], "the plain record is not added to");
+}
+
+pub(crate) fn edge_a_plain_record_between_two_counts_keeps_its_one(r: &dyn Registry) {
+    let refused = entry(Action::Read, None, 503);
+    write(r, |tx| {
+        tx.count_many(&refused, at(1), 2).expect("counts");
+        tx.record(&refused, at(0)).expect("records");
+        tx.count_many(&refused, at(2), 3).expect("counts");
+    });
+    assert_eq!(
+        counts_of(r),
+        [5, 1],
+        "both counts on the counted record, 1 on the plain one"
+    );
 }
 
 pub(crate) fn edge_counts_in_two_minutes_are_two_records(r: &dyn Registry) {

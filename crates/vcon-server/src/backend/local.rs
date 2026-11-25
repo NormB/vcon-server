@@ -2559,8 +2559,8 @@ mod tests {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .expect("the version");
-        assert_eq!(version, 9, "the catalog's schema version is unchanged");
-        assert_eq!(catalog::SCHEMA_VERSION, 9, "and this build's");
+        assert_eq!(version, 10, "the catalog's schema version is unchanged");
+        assert_eq!(catalog::SCHEMA_VERSION, 10, "and this build's");
     }
 
     #[test]

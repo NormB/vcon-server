@@ -1437,17 +1437,24 @@ fn a_failed_migration_leaves_the_releases_version_whole(release: &str) {
         old < SCHEMA_VERSION,
         "{release} wrote an older version: {old}"
     );
-    // The last step of every migration adds the access keys' expiry: a
-    // column of that name already there makes it fail, and with it the
-    // whole transaction.
+    // A step of the migration adds a column: a column of that name already
+    // there makes it fail, and with it the whole transaction. A registry
+    // before version 9 gains the access keys' expiry; one at 9 gains only
+    // the audit log's mark (a log before version 5 is made again, so a
+    // column put in it would not be in the way).
+    let (table, column) = if old < 9 {
+        ("api_key", "expires_at")
+    } else {
+        ("audit", "counted")
+    };
     case.raw_registry()
-        .execute_batch("ALTER TABLE api_key ADD COLUMN expires_at INTEGER;")
+        .execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} INTEGER;"))
         .expect("the column in the way");
     let before = case.schema();
     let out = case.check();
     assert!(
         !out.status.success(),
-        "{release}: the migration fails at its last step"
+        "{release}: the migration fails at the {table} step"
     );
     assert_eq!(
         case.registry_version(),
@@ -1460,7 +1467,7 @@ fn a_failed_migration_leaves_the_releases_version_whole(release: &str) {
         "{release}: no earlier step of the migration is kept"
     );
     case.raw_registry()
-        .execute_batch("ALTER TABLE api_key DROP COLUMN expires_at;")
+        .execute_batch(&format!("ALTER TABLE {table} DROP COLUMN {column};"))
         .expect("the column taken away");
     case.checked();
     assert_eq!(
@@ -1645,18 +1652,19 @@ release!(release_0_4_0, "0.4.0", older);
 release!(release_0_4_1, "0.4.1", older);
 release!(release_0_4_2, "0.4.2", older);
 release!(release_0_4_3, "0.4.3", older);
-release!(release_0_4_4, "0.4.4");
-release!(release_0_4_5, "0.4.5");
-release!(release_0_4_6, "0.4.6");
-release!(release_0_4_7, "0.4.7");
-release!(release_0_4_8, "0.4.8");
-release!(release_0_4_9, "0.4.9");
-release!(release_0_4_10, "0.4.10");
-release!(release_0_4_11, "0.4.11");
-release!(release_0_4_12, "0.4.12");
-release!(release_0_4_13, "0.4.13");
-release!(release_0_4_14, "0.4.14");
-release!(release_0_4_15, "0.4.15");
+release!(release_0_4_4, "0.4.4", older);
+release!(release_0_4_5, "0.4.5", older);
+release!(release_0_4_6, "0.4.6", older);
+release!(release_0_4_7, "0.4.7", older);
+release!(release_0_4_8, "0.4.8", older);
+release!(release_0_4_9, "0.4.9", older);
+release!(release_0_4_10, "0.4.10", older);
+release!(release_0_4_11, "0.4.11", older);
+release!(release_0_4_12, "0.4.12", older);
+release!(release_0_4_13, "0.4.13", older);
+release!(release_0_4_14, "0.4.14", older);
+release!(release_0_4_15, "0.4.15", older);
+release!(release_0_4_16, "0.4.16", older);
 
 #[test]
 fn the_older_tests_cover_exactly_the_releases_that_wrote_an_older_version() {
@@ -1664,10 +1672,20 @@ fn the_older_tests_cover_exactly_the_releases_that_wrote_an_older_version() {
         .into_iter()
         .filter(|r| written_version(r) < SCHEMA_VERSION)
         .collect();
+    // The releases whose `release!` line carries `older`, in the file's order.
+    let marked: Vec<String> = SOURCE
+        .lines()
+        .filter(|line| line.starts_with("release!(") && line.ends_with(", older);"))
+        .filter_map(|line| line.split('"').nth(1))
+        .map(str::to_owned)
+        .collect();
     assert_eq!(
-        older,
-        ["0.4.0", "0.4.1", "0.4.2", "0.4.3"],
+        older, marked,
         "the releases whose fixtures get the failed-migration test"
+    );
+    assert!(
+        older.contains(&"0.4.16".to_owned()),
+        "0.4.16 wrote version 9, older than this build's {SCHEMA_VERSION}"
     );
 }
 
@@ -3908,3 +3926,4 @@ pg_release!(pg_release_0_4_12, "0.4.12");
 pg_release!(pg_release_0_4_13, "0.4.13");
 pg_release!(pg_release_0_4_14, "0.4.14");
 pg_release!(pg_release_0_4_15, "0.4.15");
+pg_release!(pg_release_0_4_16, "0.4.16");

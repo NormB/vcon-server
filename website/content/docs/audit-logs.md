@@ -92,6 +92,14 @@ counted instead: one record per actor, action, status and minute, whose
 as unhealthy. Failures by tokens that name no known key are counted with an
 empty actor, so made-up tokens cannot grow the log without bound.
 
+A count adds only to a record that a count made. The record of a single
+request keeps its `count` of 1, even when its time is the start of a
+minute and a counted record of the same kind follows it. Up to release
+0.4.16, the SQLite catalogs could add the count to such a record. The first
+open by a later build marks the records that a count made and leaves every
+other record as it is; a record that a count already added to keeps the
+sum.
+
 Requests to the MCP server at `/mcp` are counted the same way, as action `mcp`
 with the status each was answered, in the key's tenant log or, for an
 operator key, the admin log. A request whose count cannot be written is
