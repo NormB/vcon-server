@@ -615,3 +615,419 @@ fn the_masked_view_table_names_every_field_of_the_answer() {
         .collect();
     assert_eq!(named, fields, "the table's fields");
 }
+
+// ---- The catalog's refusal of a schema version, as the pages quote it. ----
+//
+// A binary that meets a catalog with a newer schema version than its own
+// stops with `CatalogError::UnknownSchema`'s text, which names the
+// catalog's version. A page that tells a reader what that refusal says
+// names the version this build writes (an older binary reading this
+// build's data) or the one past it (this build reading newer data). Only
+// a `## From A to B` section of a page, the record of one upgrade, names
+// an older version. On 2026-11-25 three troubleshooting entries still
+// quoted version 9 after 0.4.17 moved the catalogs to 10.
+
+/// One quote of the refusal on a page.
+#[derive(Debug, PartialEq)]
+struct RefusalQuote {
+    /// The `## ` heading of the section that holds it, "" before the first.
+    section: String,
+    /// The version the quote names.
+    version: i64,
+    /// Whether the words after the number are the code's words.
+    exact: bool,
+}
+
+/// The refusal's words after the version number, from the code.
+fn refusal_tail() -> String {
+    let text = vcon_server::catalog::CatalogError::UnknownSchema(0).to_string();
+    let lead = "schema version 0";
+    assert!(
+        text.starts_with(lead),
+        "the refusal starts with the version: {text}"
+    );
+    text[lead.len()..].to_owned()
+}
+
+/// Every quote of the refusal in `page`: the words `schema version N`
+/// followed by ` is not`, whatever the line breaks between them.
+fn refusal_quotes(page: &str, tail: &str) -> Vec<RefusalQuote> {
+    const LEAD: &str = "schema version ";
+    let mut found = Vec::new();
+    let mut section = String::new();
+    let mut body: Vec<String> = Vec::new();
+    let mut flush = |section: &str, body: &mut Vec<String>| {
+        // The section's words, one space between each, so a quote reads
+        // the same across a line break.
+        let text = body
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        body.clear();
+        let mut rest = text.as_str();
+        while let Some(at) = rest.find(LEAD) {
+            let after = &rest[at + LEAD.len()..];
+            let digits = after.len() - after.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+            rest = &after[digits..];
+            if digits == 0 || !rest.starts_with(" is not") {
+                continue;
+            }
+            found.push(RefusalQuote {
+                section: section.to_owned(),
+                version: after[..digits].parse().expect("digits"),
+                exact: rest.starts_with(tail),
+            });
+        }
+    };
+    for line in page.lines() {
+        if let Some(heading) = line.strip_prefix("## ") {
+            flush(&section, &mut body);
+            section = heading.trim().to_owned();
+        } else {
+            body.push(line.to_owned());
+        }
+    }
+    flush(&section, &mut body);
+    found
+}
+
+/// What is wrong with the quotes of `file`, for a build at schema
+/// version `build`.
+fn stale_refusals(file: &str, page: &str, tail: &str, build: i64) -> Vec<String> {
+    refusal_quotes(page, tail)
+        .into_iter()
+        .filter_map(|q| {
+            let record = q.section.starts_with("From ");
+            if !q.exact {
+                Some(format!(
+                    "{file}, section {:?}: schema version {}: the words after the number are not the code's {tail:?}",
+                    q.section, q.version
+                ))
+            } else if record && q.version > build {
+                Some(format!(
+                    "{file}, section {:?}: schema version {}: an upgrade record names a version past this build's {build}",
+                    q.section, q.version
+                ))
+            } else if !record && q.version != build && q.version != build + 1 {
+                Some(format!(
+                    "{file}, section {:?}: schema version {}: name {build} (an older binary on this build's data) or {} (this build on newer data)",
+                    q.section,
+                    q.version,
+                    build + 1
+                ))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Every Markdown page of the site, and the READMEs, by path from the root.
+fn quoted_pages() -> Vec<(String, String)> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut pages = Vec::new();
+    let mut dirs = vec![root.join("website/content")];
+    while let Some(dir) = dirs.pop() {
+        let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+        for entry in entries {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|x| x == "md") {
+                let name = path
+                    .strip_prefix(&root)
+                    .expect("under the root")
+                    .to_string_lossy()
+                    .into_owned();
+                pages.push((name.clone(), read(&name)));
+            }
+        }
+    }
+    for name in [
+        "README.md",
+        "crates/vcon-server/README.md",
+        "crates/vcon/README.md",
+    ] {
+        pages.push((name.to_owned(), read(name)));
+    }
+    pages.sort();
+    pages
+}
+
+const TAIL: &str = " is not one this build knows";
+
+fn quote(section: &str, version: i64, exact: bool) -> RefusalQuote {
+    RefusalQuote {
+        section: section.to_owned(),
+        version,
+        exact,
+    }
+}
+
+// Success.
+
+#[test]
+fn the_tail_is_the_codes_text_after_the_number() {
+    assert_eq!(refusal_tail(), TAIL, "the refusal's words after the number");
+}
+
+#[test]
+fn a_quote_on_one_line_is_read() {
+    let page = "## When it fails\n\n- `schema version 10 is not one this build knows`: copy.\n";
+    assert_eq!(
+        refusal_quotes(page, TAIL),
+        vec![quote("When it fails", 10, true)],
+        "one quote, its section and its version"
+    );
+}
+
+#[test]
+fn a_quote_across_a_line_break_is_read() {
+    let page = "## A\n\n`the registry cannot be opened: … schema version 10 is not one this\n  build knows`\n";
+    assert_eq!(
+        refusal_quotes(page, TAIL),
+        vec![quote("A", 10, true)],
+        "the words are joined across the break"
+    );
+}
+
+#[test]
+fn two_quotes_in_two_sections_are_both_read() {
+    let page = "## A\nschema version 10 is not one this build knows\n## B\nschema version 11 is not one this build knows\n";
+    assert_eq!(
+        refusal_quotes(page, TAIL),
+        vec![quote("A", 10, true), quote("B", 11, true)],
+        "each quote with its own section"
+    );
+}
+
+#[test]
+fn a_quote_under_a_subheading_keeps_its_section() {
+    let page = "## From 0.4.3 to 0.4.4\n### Schema version 9\nschema version 9 is not one this build knows\n";
+    assert_eq!(
+        refusal_quotes(page, TAIL),
+        vec![quote("From 0.4.3 to 0.4.4", 9, true)],
+        "a ### heading does not start a section"
+    );
+}
+
+#[test]
+fn a_quote_naming_this_builds_version_passes() {
+    let page = "## When a step fails\nschema version 10 is not one this build knows\n";
+    assert_eq!(
+        stale_refusals("p.md", page, TAIL, 10),
+        Vec::<String>::new(),
+        "an older binary reading this build's data names 10"
+    );
+}
+
+#[test]
+fn a_quote_naming_the_version_past_this_build_passes() {
+    let page = "## Versions\nschema version 11 is not one this build knows\n";
+    assert_eq!(
+        stale_refusals("p.md", page, TAIL, 10),
+        Vec::<String>::new(),
+        "this build reading newer data names 11"
+    );
+}
+
+#[test]
+fn an_upgrade_record_may_name_an_older_version() {
+    let page = "## From 0.3.0 to 0.4.0\nschema version 4 is not one this build knows\n";
+    assert_eq!(
+        stale_refusals("p.md", page, TAIL, 10),
+        Vec::<String>::new(),
+        "a From section records what that upgrade printed"
+    );
+}
+
+#[test]
+fn an_upgrade_record_may_name_this_builds_version() {
+    let page = "## From 0.4.16 to 0.4.17\nschema version 10 is not one this build knows\n";
+    assert_eq!(
+        stale_refusals("p.md", page, TAIL, 10),
+        Vec::<String>::new(),
+        "the upgrade to this build records the version it writes"
+    );
+}
+
+#[test]
+fn every_page_quotes_the_refusal_with_the_codes_words_and_a_live_version() {
+    let tail = refusal_tail();
+    let build = vcon_server::catalog::SCHEMA_VERSION;
+    let problems: Vec<String> = quoted_pages()
+        .iter()
+        .flat_map(|(file, page)| stale_refusals(file, page, &tail, build))
+        .collect();
+    assert!(
+        problems.is_empty(),
+        "stale refusal quotes:\n{}",
+        problems.join("\n")
+    );
+}
+
+#[test]
+fn the_pages_that_name_the_refusal_are_all_read() {
+    let tail = refusal_tail();
+    let quoted: BTreeSet<String> = quoted_pages()
+        .into_iter()
+        .filter(|(_, page)| !refusal_quotes(page, &tail).is_empty())
+        .map(|(file, _)| file)
+        .collect();
+    for file in [
+        "website/content/docs/on-disk-format.md",
+        "website/content/docs/roles-and-scopes.md",
+        "website/content/docs/tenant-administration.md",
+        "website/content/docs/upgrading.md",
+        "website/content/docs/users-and-memberships.md",
+    ] {
+        assert!(
+            quoted.contains(file),
+            "{file} quotes the refusal: {quoted:?}"
+        );
+    }
+}
+
+// Failure.
+
+#[test]
+fn a_quote_one_version_behind_this_build_is_refused() {
+    let page = "## When a step fails\nschema version 9 is not one this build knows\n";
+    let found = stale_refusals("p.md", page, TAIL, 10);
+    assert_eq!(found.len(), 1, "one problem: {found:?}");
+    assert!(
+        found[0].contains("p.md")
+            && found[0].contains("When a step fails")
+            && found[0].contains('9'),
+        "the problem names the file, the section and the version: {}",
+        found[0]
+    );
+}
+
+#[test]
+fn a_quote_two_versions_past_this_build_is_refused() {
+    let page = "## Versions\nschema version 12 is not one this build knows\n";
+    assert_eq!(
+        stale_refusals("p.md", page, TAIL, 10).len(),
+        1,
+        "no release prints 12 for this build's data"
+    );
+}
+
+#[test]
+fn a_quote_in_other_words_is_refused() {
+    let page = "## A\nschema version 10 is not known to this build\n";
+    let found = stale_refusals("p.md", page, TAIL, 10);
+    assert_eq!(found.len(), 1, "one problem: {found:?}");
+    assert!(
+        found[0].contains("words"),
+        "the problem says the words differ: {}",
+        found[0]
+    );
+}
+
+#[test]
+fn an_upgrade_record_past_this_build_is_refused() {
+    let page = "## From 0.4.16 to 0.4.17\nschema version 11 is not one this build knows\n";
+    assert_eq!(
+        stale_refusals("p.md", page, TAIL, 10).len(),
+        1,
+        "an upgrade to this build cannot have printed a later version"
+    );
+}
+
+#[test]
+fn a_quote_before_any_heading_is_held_to_this_build() {
+    let page = "schema version 9 is not one this build knows\n## From 0.4.3 to 0.4.4\n";
+    assert_eq!(
+        stale_refusals("p.md", page, TAIL, 10).len(),
+        1,
+        "text before the first section is not an upgrade record"
+    );
+}
+
+#[test]
+fn each_stale_quote_is_reported_once() {
+    let page = "## A\nschema version 8 is not one this build knows\nschema version 9 is not one this build knows\n";
+    assert_eq!(
+        stale_refusals("p.md", page, TAIL, 10).len(),
+        2,
+        "two stale quotes, two problems"
+    );
+}
+
+// Edge.
+
+#[test]
+fn a_version_named_without_the_refusal_is_no_quote() {
+    let page = "## A\nThe catalogs move to schema version 10.\n`schema version 4` or `3`\n";
+    assert_eq!(
+        refusal_quotes(page, TAIL),
+        Vec::<RefusalQuote>::new(),
+        "only a version followed by ` is not` is a quote"
+    );
+}
+
+#[test]
+fn a_heading_named_schema_version_is_no_quote() {
+    let page = "### Schema version 9, and no way back without the copy\n";
+    assert_eq!(
+        refusal_quotes(page, TAIL),
+        Vec::<RefusalQuote>::new(),
+        "a capital S heading is not the refusal"
+    );
+}
+
+#[test]
+fn a_long_version_number_is_read_whole() {
+    let page = "## A\nschema version 1234 is not one this build knows\n";
+    assert_eq!(
+        refusal_quotes(page, TAIL),
+        vec![quote("A", 1234, true)],
+        "every digit"
+    );
+}
+
+#[test]
+fn a_quote_at_the_end_of_the_page_is_read() {
+    let page = "## A\nschema version 10 is not one this build knows";
+    assert_eq!(
+        refusal_quotes(page, TAIL),
+        vec![quote("A", 10, true)],
+        "no newline after it"
+    );
+}
+
+#[test]
+fn a_from_word_inside_a_heading_is_not_an_upgrade_record() {
+    let page = "## Away from the old version\nschema version 4 is not one this build knows\n";
+    assert_eq!(
+        stale_refusals("p.md", page, TAIL, 10).len(),
+        1,
+        "only a heading that starts with `From ` records an upgrade"
+    );
+}
+
+#[test]
+fn a_page_with_no_quote_has_no_problem() {
+    assert_eq!(
+        stale_refusals("p.md", "## A\nNothing here.\n", TAIL, 10),
+        Vec::<String>::new(),
+        "nothing to check"
+    );
+}
+
+#[test]
+fn the_page_walk_finds_the_site_and_the_readmes() {
+    let pages = quoted_pages();
+    let names: BTreeSet<&str> = pages.iter().map(|(name, _)| name.as_str()).collect();
+    for name in [
+        "README.md",
+        "website/content/_index.md",
+        "website/content/docs/upgrading.md",
+        "website/content/problems/internal.md",
+    ] {
+        assert!(names.contains(name), "the walk reads {name}");
+    }
+}
