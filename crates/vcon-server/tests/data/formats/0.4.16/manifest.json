@@ -1,0 +1,234 @@
+{
+ "archive_sha256": "adfcef41ea86d8ffc262f4f97ef0a357ca793e7e197c4b9635c3110d5d46a4d3",
+ "binary_sha256": "88028bddf8108be32fda4bc330f388ba1b89ec6cf90a8b43dbad5eced2b4ba2d",
+ "image": "debian@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2",
+ "made_by": "scripts/make-format-fixtures.py",
+ "master_key": "master.key, SHA-256 of a fixed text and the release: test data only",
+ "purged": [
+  {
+   "tenant": "tenant-b",
+   "uuid": "9f290b0c-68b5-445a-8699-ce87fbf8a591"
+  }
+ ],
+ "release": "0.4.16",
+ "tenants": [
+  {
+   "name": "tenant-a",
+   "retention": "default"
+  },
+  {
+   "name": "tenant-b",
+   "retention": "0d"
+  }
+ ],
+ "users": [
+  {
+   "label": "Reader Example",
+   "roles": "reader in tenant-a"
+  },
+  {
+   "label": "Records Example",
+   "roles": "records in tenant-b"
+  }
+ ],
+ "versions": [
+  {
+   "bytes": 427,
+   "order": 0,
+   "sha256": "4a22dd1e433969473c8aecde7710b7b3692c2174dda0291005ca74312a4a55f6",
+   "state": "deleted+held",
+   "tenant": "tenant-a",
+   "uuid": "12ff6ac1-65b1-4d1a-b8e9-9b68e7e918d3",
+   "version": "c7bdda85002719c64319868b9cd6ed8d"
+  },
+  {
+   "bytes": 427,
+   "order": 0,
+   "sha256": "366b67d04a9a568443a2dbe4b0e099a1831daf3e4618f1eec6a99f0e6ecb7256",
+   "state": "current",
+   "tenant": "tenant-a",
+   "uuid": "15ab9718-2181-42f5-bca9-5c52d72b525b",
+   "version": "3f487a95fc4bebdeea5d3fbaa07f7a31"
+  },
+  {
+   "bytes": 427,
+   "order": 0,
+   "sha256": "2fd1f0ddc85ffc0287bbc346f70f6b9fcb18e750d5f3b17dbcfb6b17e11f8f09",
+   "state": "hidden",
+   "tenant": "tenant-a",
+   "uuid": "41fcde1c-e46a-437d-816e-d97062692ace",
+   "version": "43316ee6b54bc6b792583562d6598b76"
+  },
+  {
+   "bytes": 427,
+   "order": 1,
+   "sha256": "f6f28256b82bb319e460b90a8b81d70937f964dd480ac63964d932e13f3145ab",
+   "state": "current",
+   "tenant": "tenant-a",
+   "uuid": "41fcde1c-e46a-437d-816e-d97062692ace",
+   "version": "7862c90fe21be14d7b006dedf40a5005"
+  },
+  {
+   "bytes": 427,
+   "order": 0,
+   "sha256": "acee39c8ac14bec8f92223cfd2caca6dd756c4fed131e198d4a2889a9f291c21",
+   "state": "deleted",
+   "tenant": "tenant-a",
+   "uuid": "52961991-bb41-4076-9809-dd90dba9fedc",
+   "version": "5e8ec7acc15524ecc18b531672135cb0"
+  },
+  {
+   "bytes": 427,
+   "order": 0,
+   "sha256": "1e30bdb4d5b7f0cdb4c4c93bb7966484b30fcebc4bed253229f92e90d1cc8e20",
+   "state": "deleted",
+   "tenant": "tenant-a",
+   "uuid": "86ed4ce2-a7e4-430e-8425-79118f35311a",
+   "version": "d038b80d8bcd600700ce0178b58af0fd"
+  },
+  {
+   "bytes": 427,
+   "order": 0,
+   "sha256": "15e8256a79d257a0f412ae53ca7888fb2c6049d42870ff22a6f8e99a94f64cce",
+   "state": "current+held",
+   "tenant": "tenant-a",
+   "uuid": "a84e7d55-0580-44b4-bbe6-6b85f294bc1b",
+   "version": "a4748a724f75f32d3fdc9635275ed4bc"
+  },
+  {
+   "bytes": 427,
+   "order": 0,
+   "sha256": "1d73e858b745d4b6031a49714d55cc54af5eb6d9208e6f6f95aed0dc96ba2c51",
+   "state": "current",
+   "tenant": "tenant-a",
+   "uuid": "c198cfa4-1c8e-4d9f-94f5-3aab44bedbde",
+   "version": "2742628216d63c9a36bfd1c9e5e4c738"
+  },
+  {
+   "bytes": 427,
+   "order": 0,
+   "sha256": "013228f1b71a751fb12b54c76540fd6d58108137c7f47ec2fd059466eba10077",
+   "state": "current",
+   "tenant": "tenant-a",
+   "uuid": "cbdc81af-51fa-418d-92d9-90ab6aa2f09d",
+   "version": "c2cad6421a6e1f6a78170b433da2e122"
+  },
+  {
+   "bytes": 427,
+   "order": 0,
+   "sha256": "0dc659471ddf67a2fb15906757cf7739567d882795cc05f2a3f06d83664f62e0",
+   "state": "hidden",
+   "tenant": "tenant-a",
+   "uuid": "f2eece56-1a5f-4c8a-a014-5ecde63a0fad",
+   "version": "f13134f1c0613f477e63b8f1135f53c8"
+  },
+  {
+   "bytes": 427,
+   "order": 1,
+   "sha256": "ee83c920c7fe3ed294a77762a8a7b1c55e109d885e1fbc3d68945f3be168c86f",
+   "state": "current",
+   "tenant": "tenant-a",
+   "uuid": "f2eece56-1a5f-4c8a-a014-5ecde63a0fad",
+   "version": "278a26192c3e4d3273a82d84117ec6e1"
+  },
+  {
+   "bytes": 427,
+   "order": 0,
+   "sha256": "2bda84ff1890444b89735f927f212c42a96b41c69b34009dc99e10bbb14e01f0",
+   "state": "current",
+   "tenant": "tenant-a",
+   "uuid": "f9c2465a-42a1-4604-8eaa-af4f2598b8c0",
+   "version": "216d9ea23efcd46055d1ac7b4dc8535f"
+  },
+  {
+   "bytes": 427,
+   "order": 0,
+   "sha256": "c11c7ac1664c28dbbe8ee2f6d8dbb283b41cb38079d2a644a3cd5e1383450f4f",
+   "state": "current",
+   "tenant": "tenant-b",
+   "uuid": "09b6c272-9922-4444-83c2-b796a4807f0d",
+   "version": "e2000213c452ea5618dd731118be3f18"
+  },
+  {
+   "bytes": 427,
+   "order": 0,
+   "sha256": "3c0a1b3f0aed4aa09a4076495af765cc8be1379ee69da8e0c6a0bad758d1b76f",
+   "state": "current",
+   "tenant": "tenant-b",
+   "uuid": "17aebe1e-7c00-42f4-be43-fa608f52b8a0",
+   "version": "25ee22a99b32df9a4e5654ba2fe3c706"
+  },
+  {
+   "bytes": 427,
+   "order": 0,
+   "sha256": "9c3491906e7f6ef106a081c222604a69bd1dd2fa3625725962efea3c30e25047",
+   "state": "current",
+   "tenant": "tenant-b",
+   "uuid": "25aeb1ba-4a2c-46d3-a5a6-c39872953a13",
+   "version": "9d31ed3b42dacfa652c825e953b512e9"
+  },
+  {
+   "bytes": 427,
+   "order": 0,
+   "sha256": "a3c883682a85f8a3a95b5149362a86e0747adce718474c5b74594511ad70df11",
+   "state": "current",
+   "tenant": "tenant-b",
+   "uuid": "2ff4dffe-62a7-4e82-9f55-79d165004610",
+   "version": "cb5e18fbdee8c5ec23a4723507ef690d"
+  },
+  {
+   "bytes": 427,
+   "order": 0,
+   "sha256": "658fc6ad0b4bf366ccc7360b1a0f9225416efd8c9dbb6ab1a42fc4e68c0f71e8",
+   "state": "current",
+   "tenant": "tenant-b",
+   "uuid": "3c02c9f7-4ac9-4c14-8d71-862093e7d8c7",
+   "version": "a6402e5a0dd62fd857ae3589701e2142"
+  },
+  {
+   "bytes": 427,
+   "order": 0,
+   "sha256": "05fcf8d9771e2162ea196669f1b7e8b33984597d7cab53aed8b0aa399a09190e",
+   "state": "hidden+held",
+   "tenant": "tenant-b",
+   "uuid": "3c79f6da-258c-426b-bc7c-dae3d2b42a88",
+   "version": "0adcfba43437a226036d1bef2541031b"
+  },
+  {
+   "bytes": 427,
+   "order": 1,
+   "sha256": "4c618a9dd0295d2ecd49e1a63b2a619798ac5403e25a80849f5f0567ef3aaa84",
+   "state": "current+held",
+   "tenant": "tenant-b",
+   "uuid": "3c79f6da-258c-426b-bc7c-dae3d2b42a88",
+   "version": "75b5514ae7f37dfd05deebc5acd268e2"
+  },
+  {
+   "bytes": 427,
+   "order": 0,
+   "sha256": "555b7a8b339580458d476faaf480d8cb1258f34ddad42e0c888900164393afab",
+   "state": "current",
+   "tenant": "tenant-b",
+   "uuid": "5fc38aa6-9478-4db4-a776-025f07db0404",
+   "version": "5f941587baf34fd6c0e1364d69781b9c"
+  },
+  {
+   "bytes": 427,
+   "order": 0,
+   "sha256": "295757ef21dd7612d550a9e677decb49ee7670ee8b55041494bc749bae40bf0a",
+   "state": "deleted+held",
+   "tenant": "tenant-b",
+   "uuid": "93417266-9795-4d38-b843-8f1c9a39ec49",
+   "version": "ceb4cb84e47f147beb010a633189edb6"
+  },
+  {
+   "bytes": 427,
+   "order": 0,
+   "sha256": "ef42d012f70ff6b8342715d687be7b6655558e6875e3cd4b28281258739bbc75",
+   "state": "current",
+   "tenant": "tenant-b",
+   "uuid": "c59dcdb5-ceeb-42e6-952a-f41761b06457",
+   "version": "f82f305ee968293e00abc961d98055a3"
+  }
+ ]
+}

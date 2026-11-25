@@ -278,9 +278,9 @@ CI = (HERE.parent / ".github" / "workflows" / "ci.yml").read_text()
 
 class PostgresReleases(unittest.TestCase):
     # success
-    def test_the_postgres_releases_are_0_4_6_to_0_4_15(self):
+    def test_the_postgres_releases_are_0_4_6_to_0_4_16(self):
         self.assertEqual(mff.PG_RELEASES, ("0.4.6", "0.4.7", "0.4.8", "0.4.9", "0.4.10", "0.4.11", "0.4.12", "0.4.13",
-                                           "0.4.14", "0.4.15"),
+                                           "0.4.14", "0.4.15", "0.4.16"),
                          "the release binaries with `postgres`")
 
     def test_every_release_from_0_4_6_on_is_a_postgres_release(self):

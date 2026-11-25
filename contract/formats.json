@@ -90,6 +90,14 @@
       "parquet-storage": "vcon-server.parquet-storage/1",
       "postgres": "14"
     },
+    "0.4.16": {
+      "catalog": "9",
+      "envelope": "1",
+      "export-columns": "1",
+      "export-manifest": "1",
+      "parquet-storage": "vcon-server.parquet-storage/1",
+      "postgres": "14"
+    },
     "0.4.2": {
       "catalog": "4",
       "envelope": "1",
