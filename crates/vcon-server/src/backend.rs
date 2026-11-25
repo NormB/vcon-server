@@ -292,6 +292,16 @@ pub trait CatalogTx {
     /// Every pending row: the version and when its write began, by
     /// version id.
     fn pending(&mut self) -> Result<Vec<(VersionId, i64)>, StoreError>;
+    /// Records that the writing of pack file `file` began at `at`, before
+    /// the file is put: until the file's row is added, this pending row
+    /// tells recovery the file is a write under way.
+    fn add_pending_file(&mut self, file: FileId, at: i64) -> Result<(), StoreError>;
+    /// Deletes the pending row of pack file `file`, and says whether there
+    /// was one.
+    fn drop_pending_file(&mut self, file: FileId) -> Result<bool, StoreError>;
+    /// Every pending row of a pack file: the file and when its writing
+    /// began, by file id.
+    fn pending_files(&mut self) -> Result<Vec<(FileId, i64)>, StoreError>;
     /// Every version still in its own object, by store time and then
     /// version id.
     fn unpacked(&mut self) -> Result<Vec<UnpackedRow>, StoreError>;

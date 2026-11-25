@@ -40,6 +40,8 @@ mod list;
 pub(crate) mod manifest;
 #[cfg(test)]
 mod manifest_grace_tests;
+#[cfg(test)]
+mod pack_pending_tests;
 pub(crate) mod packed;
 pub(crate) mod packer;
 pub(crate) mod pending;
@@ -305,17 +307,17 @@ impl Store {
     }
 
     /// Start-up recovery: the catalog recovers itself, and temporary
-    /// objects and objects with no row are removed, unless a write is
-    /// under way for them (store/pending.rs), and how many is logged. A
-    /// name that is not a version id, with or without `.tmp`, is not ours
-    /// and is left alone.
+    /// objects, objects with no row and pack files with no row are
+    /// removed, unless a write is under way for them (store/pending.rs),
+    /// and how many is logged. A name that is not a version id, with or
+    /// without `.tmp`, or not a pack file's, is not ours and is left alone.
     ///
     /// The order is what keeps a write under way safe. A pending row no
     /// write can still be under way for is deleted first, so that write's
-    /// last transaction refuses to add its row. The objects are listed
-    /// next, and the rows read after: a write adds its pending row before
-    /// it writes its object, so every object listed has its pending row or
-    /// its version's row in that read.
+    /// last transaction refuses to add its row. The objects and the pack
+    /// files are listed next, and the rows read after: a write adds its
+    /// pending row before it puts its object or its file, so every one
+    /// listed has its pending row or its own row in that read.
     pub(crate) fn recover(&self, writers: Writers) -> Result<(), StoreError> {
         self.catalog.recover()?;
         let now = nanos(self.clock.now());
@@ -326,11 +328,20 @@ impl Store {
                     tx.drop_pending(version)?;
                 }
             }
+            for (file, started_at) in tx.pending_files()? {
+                if !pending::under_way(writers, started_at, now) {
+                    tx.drop_pending_file(file)?;
+                }
+            }
             commit(tx)?;
         }
         let names = self.objects.list().map_err(io)?;
+        let pack_names = match &self.packs {
+            Some(packs) => packs.list().map_err(io)?,
+            None => Vec::new(),
+        };
         // Nothing is removed on what the read saw until it is durable.
-        let (places, files, writing) = self.read(|tx| {
+        let (places, files, writing, putting) = self.read(|tx| {
             let places: std::collections::HashMap<VersionId, bool> = tx
                 .places()?
                 .into_iter()
@@ -343,8 +354,21 @@ impl Store {
                 .filter(|(_, started_at)| pending::under_way(writers, *started_at, now))
                 .map(|(version, _)| version)
                 .collect();
-            Ok((places, files, writing))
+            let putting: std::collections::HashSet<crate::ids::FileId> = tx
+                .pending_files()?
+                .into_iter()
+                .filter(|(_, started_at)| pending::under_way(writers, *started_at, now))
+                .map(|(file, _)| file)
+                .collect();
+            Ok((places, files, writing, putting))
         })?;
+        #[cfg(test)]
+        {
+            let hook = self.hooks.after_snapshot.lock().expect("hook").take();
+            if let Some(hook) = hook {
+                hook(self);
+            }
+        }
         let mut removed: u64 = 0;
         for name in names {
             let (id, temporary) = match name.strip_suffix(".tmp") {
@@ -364,11 +388,11 @@ impl Store {
             let mut unnamed: u64 = 0;
             // A file a rewrite wrote but did not record is removed below; a
             // purge whose file side was cut off is finished after.
-            for name in packs.list().map_err(io)? {
+            for name in pack_names {
                 let Some((_, file)) = packed::parse_name(&name) else {
                     continue;
                 };
-                if !files.contains(&file) {
+                if pending::leftover(files.contains(&file), false, putting.contains(&file)) {
                     packs.remove(&name).map_err(io)?;
                     unnamed += 1;
                 }
@@ -1264,6 +1288,9 @@ pub(crate) mod tests {
     /// What a backup runs at each try, after it copies the catalog.
     pub(crate) type BackupHook = Box<dyn FnMut(&Store) + Send>;
 
+    /// What a hook that runs once inside the Store is given: the Store.
+    pub(crate) type StoreHook = Box<dyn FnOnce(&Store) + Send>;
+
     /// Test-only points where a test can step in.
     #[derive(Default)]
     pub(super) struct Hooks {
@@ -1285,6 +1312,9 @@ pub(crate) mod tests {
         /// Runs in every read's first step, between the read of the
         /// vCon's current version and the read of that version's row.
         pub(super) in_first_step: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+        /// Runs once, in recovery, after it reads the catalog's rows and
+        /// before it removes anything.
+        pub(super) after_snapshot: Mutex<Option<StoreHook>>,
     }
 
     pub(crate) struct Fixture {

@@ -649,6 +649,20 @@ its transactions only; `vcon_app` reads, adds and deletes them and is
 granted no `UPDATE`. The id and the time are in the clear, and the table
 starts empty.
 
+Version 15 also makes the table `pending_file`, where each tenant
+records its pack files under way. A pack run, and the rewrite of a
+purge, add a row, the file's id and the time its writing began, before
+they put a new Parquet file in the bucket, and delete the row in the
+transaction that records the file in `parquet_file`. Start-up recovery
+removes a pack file that no row of `parquet_file` names; a row of
+`pending_file` younger than an hour marks a file under way, which
+recovery keeps when other servers may be writing. A run whose row
+recovery took records nothing, and its versions stay in their objects
+for the next run. The rows are the tenant's, under the policy of
+`pending_write`; `vcon_app` reads, adds and deletes them and is granted
+no `UPDATE`. The file id and the time are in the clear, and the table
+starts empty.
+
 The audit key does not rotate with the tenant key: a rotation seals the
 same audit key under the new catalog key and changes no audit record.
 The statements of that rotation move a tenant's catalog to the new key

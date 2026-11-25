@@ -114,11 +114,65 @@ fn the_application_role_is_granted_no_update_on_pending_tenant() {
     );
 }
 
+// The pack files under way: a tenant's rows, as vcon.pending_write's are.
+
+#[test]
+fn version_15_makes_the_pending_file_table_once() {
+    assert_eq!(
+        text().matches("CREATE TABLE vcon.pending_file (").count(),
+        1,
+        "the fifteenth makes pending_file once"
+    );
+}
+
+#[test]
+fn a_pending_file_row_is_a_tenant_s_file_and_the_time_its_writing_began() {
+    assert!(
+        one_line().contains(
+            "CREATE TABLE vcon.pending_file ( tenant bytea NOT NULL, file_id bytea NOT NULL, \
+             started_at bigint NOT NULL, PRIMARY KEY (tenant, file_id) );"
+        ),
+        "{}",
+        one_line()
+    );
+}
+
+#[test]
+fn the_pending_file_table_has_the_policy_of_a_tenant_s_rows() {
+    for statement in [
+        "ALTER TABLE vcon.pending_file ENABLE ROW LEVEL SECURITY;",
+        "ALTER TABLE vcon.pending_file FORCE ROW LEVEL SECURITY;",
+        "CREATE POLICY tenant_rows ON vcon.pending_file USING (tenant = vcon.tenant()) \
+         WITH CHECK (tenant = vcon.tenant());",
+        "GRANT SELECT, INSERT, DELETE ON vcon.pending_file TO vcon_app;",
+    ] {
+        assert!(one_line().contains(statement), "{statement}");
+    }
+}
+
+#[test]
+fn the_migration_says_why_pack_files_under_way_are_recorded() {
+    let comment = comment();
+    assert!(
+        comment.contains("vcon.pending_file") && comment.contains("before it puts the file"),
+        "the reason, in the migration's comment: {comment}"
+    );
+}
+
+#[test]
+fn the_application_role_is_granted_no_update_on_pending_file() {
+    assert!(
+        !one_line().contains("UPDATE ON vcon.pending_file"),
+        "a file's writing begins once: {}",
+        one_line()
+    );
+}
+
 /// Live, against the servers of scripts/pg-test-server.sh.
 #[cfg(feature = "backend-tests")]
 mod on_a_server {
     use super::super::super::super::schema::{MIGRATIONS, Migrated};
-    use super::super::live::{Db, TENANT_A, in_scope, no_scope};
+    use super::super::live::{Db, TENANT_A, TENANT_B, in_scope, no_scope};
     use super::super::v8::on_a_server::{one, owner, refused};
     use super::THIS;
 
@@ -243,6 +297,110 @@ mod on_a_server {
             one(&app, "registry", ROWS).await,
             "01:7",
             "the registry's row is kept"
+        );
+    }
+
+    /// The pending file rows a tenant reads: each file and its time.
+    const FILES: &str = "SELECT coalesce(string_agg(encode(file_id, 'hex') || ':' || started_at, \
+                         ',' ORDER BY file_id), '') FROM vcon.pending_file";
+
+    fn pending_file(tenant: &str, file: &str, at: i64) -> String {
+        format!(
+            "INSERT INTO vcon.pending_file (tenant, file_id, started_at) \
+             VALUES ('\\x{tenant}', '\\x{file}', {at})"
+        )
+    }
+
+    #[tokio::test]
+    async fn the_application_role_adds_reads_and_deletes_pending_file_rows() {
+        let db = Db::migrated().await;
+        let app = db.app().await;
+        run(&app, TENANT_A, &pending_file(TENANT_A, "01", 7)).await;
+        run(&app, TENANT_A, &pending_file(TENANT_A, "02", -7)).await;
+        assert_eq!(one(&app, TENANT_A, FILES).await, "01:7,02:-7", "both rows");
+        run(
+            &app,
+            TENANT_A,
+            "DELETE FROM vcon.pending_file WHERE file_id = '\\x01'",
+        )
+        .await;
+        assert_eq!(one(&app, TENANT_A, FILES).await, "02:-7", "one is left");
+    }
+
+    #[tokio::test]
+    async fn the_application_role_cannot_change_a_pending_file_row() {
+        let db = Db::migrated().await;
+        let app = db.app().await;
+        run(&app, TENANT_A, &pending_file(TENANT_A, "01", 7)).await;
+        for sql in [
+            "UPDATE vcon.pending_file SET started_at = 8",
+            "TRUNCATE vcon.pending_file",
+        ] {
+            assert_eq!(
+                refused(&app, TENANT_A, sql).await,
+                "permission denied for table pending_file",
+                "{sql}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_tenant_neither_reads_nor_deletes_another_tenant_s_pending_files() {
+        let db = Db::migrated().await;
+        let app = db.app().await;
+        run(&app, TENANT_A, &pending_file(TENANT_A, "01", 7)).await;
+        assert_eq!(one(&app, TENANT_B, FILES).await, "", "B reads none of A's");
+        run(&app, TENANT_B, "DELETE FROM vcon.pending_file").await;
+        assert_eq!(one(&app, TENANT_A, FILES).await, "01:7", "A's row is kept");
+        let why = refused(&app, TENANT_B, &pending_file(TENANT_A, "02", 7)).await;
+        assert!(
+            why.contains("row-level security"),
+            "B cannot add a row of A's: {why}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pending_file_statement_with_no_tenant_is_refused() {
+        let db = Db::migrated().await;
+        let app = db.app().await;
+        for sql in [
+            "SELECT * FROM vcon.pending_file".to_owned(),
+            "DELETE FROM vcon.pending_file".to_owned(),
+            pending_file(TENANT_A, "01", 7),
+        ] {
+            let why = no_scope(&app, &sql).await.expect_err("refused");
+            assert!(
+                why.contains("no tenant set for this transaction"),
+                "{sql}: {why}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_registry_s_transaction_reads_and_adds_no_pending_file_row() {
+        let db = Db::migrated().await;
+        run(
+            &owner(&db).await,
+            TENANT_A,
+            &pending_file(TENANT_A, "01", 7),
+        )
+        .await;
+        let app = db.app().await;
+        for sql in [
+            FILES.to_owned(),
+            pending_file(TENANT_A, "02", 1),
+            "DELETE FROM vcon.pending_file".to_owned(),
+        ] {
+            assert_eq!(
+                refused(&app, "registry", &sql).await,
+                "this transaction is the registry's, not a tenant's",
+                "{sql}"
+            );
+        }
+        assert_eq!(
+            one(&app, TENANT_A, FILES).await,
+            "01:7",
+            "the tenant's row is kept"
         );
     }
 }

@@ -786,6 +786,7 @@ impl PgCatalog {
         for table in [
             "key_use",
             "parquet_file",
+            "pending_file",
             "pending_write",
             "purge_pending",
             "manifest",
@@ -1990,6 +1991,43 @@ impl CatalogTx for PgTx<'_> {
             .map(|row| {
                 let version = VersionId(id_of(&row.try_get::<_, Vec<u8>>(0).map_err(io)?)?);
                 Ok((version, row.try_get(1).map_err(io)?))
+            })
+            .collect()
+    }
+
+    fn add_pending_file(&mut self, file: FileId, at: i64) -> Result<(), StoreError> {
+        self.execute(
+            "INSERT INTO vcon.pending_file (tenant, file_id, started_at) VALUES ($1, $2, $3)",
+            &[
+                (&self.tenant.0.as_slice(), Type::BYTEA),
+                (&file.0.as_slice(), Type::BYTEA),
+                (&at, Type::INT8),
+            ],
+        )
+        .map(drop)
+    }
+
+    fn drop_pending_file(&mut self, file: FileId) -> Result<bool, StoreError> {
+        self.execute(
+            "DELETE FROM vcon.pending_file WHERE tenant = $1 AND file_id = $2",
+            &[
+                (&self.tenant.0.as_slice(), Type::BYTEA),
+                (&file.0.as_slice(), Type::BYTEA),
+            ],
+        )
+        .map(|deleted| deleted > 0)
+    }
+
+    fn pending_files(&mut self) -> Result<Vec<(FileId, i64)>, StoreError> {
+        let rows = self.query(
+            "SELECT file_id, started_at FROM vcon.pending_file WHERE tenant = $1
+             ORDER BY file_id",
+            &[(&self.tenant.0.as_slice(), Type::BYTEA)],
+        )?;
+        rows.iter()
+            .map(|row| {
+                let file = FileId(id_of(&row.try_get::<_, Vec<u8>>(0).map_err(io)?)?);
+                Ok((file, row.try_get(1).map_err(io)?))
             })
             .collect()
     }

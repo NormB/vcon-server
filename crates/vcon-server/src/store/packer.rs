@@ -13,7 +13,7 @@
 
 use super::{Store, StoreError, io, read_failed};
 use crate::backend::pack::{self, Place};
-use crate::backend::{CommitError, NewPackFile, ObjectError};
+use crate::backend::{CommitError, NewPackFile, ObjectError, Packs};
 use crate::clock::nanos;
 use crate::envelope::SEALED_OVERHEAD;
 use crate::export::Metadata;
@@ -173,6 +173,7 @@ impl Store {
         let bytes = file.finish().map_err(io)?;
         let id = FileId::generate();
         let name = pack::name(&planned.date, id);
+        self.begin_file(id)?;
         match packs.put_new(&name, &bytes) {
             Ok(true) => {}
             Ok(false) => {
@@ -191,18 +192,53 @@ impl Store {
         }))
     }
 
+    /// Records that the writing of pack file `file` begins, in a
+    /// transaction of its own before the file is put: until its row is
+    /// added, recovery takes the file for a write under way
+    /// (store/pending.rs).
+    pub(crate) fn begin_file(&self, file: FileId) -> Result<(), StoreError> {
+        let mut tx = self.catalog.immediate()?;
+        tx.add_pending_file(file, nanos(self.clock.now()))?;
+        super::commit(tx)
+    }
+
+    /// Removes pack file `name`, which no row names, and then its pending
+    /// row: the file goes first, so recovery never finds it without one.
+    pub(crate) fn forget_file(
+        &self,
+        packs: &dyn Packs,
+        name: &str,
+        file: FileId,
+    ) -> Result<(), StoreError> {
+        packs.remove(name).map_err(read_failed)?;
+        let mut tx = self.catalog.immediate()?;
+        tx.drop_pending_file(file)?;
+        super::commit(tx)
+    }
+
     /// Records `written` and moves its versions' places, if every one of
-    /// them is still kept and unpacked; if not, removes the file and
-    /// answers false. A commit rolled back removes the file too; one whose
-    /// outcome is unknown keeps it, since its rows may be kept.
+    /// them is still kept and unpacked and its pending row is still there;
+    /// if not, removes the file and answers false. A pending row that is
+    /// gone was taken by recovery for a leftover's, which removes the file:
+    /// a row now would name nothing. A commit rolled back removes the file
+    /// too; one whose outcome is unknown keeps it, since its rows may be
+    /// kept.
     pub(crate) fn record_file(&self, written: &Written) -> Result<bool, StoreError> {
         let packs = self.packs.as_deref().ok_or(StoreError::Io)?;
         let name = pack::name(&written.date, written.file);
         let mut tx = self.catalog.immediate()?;
+        if !tx.drop_pending_file(written.file)? {
+            drop(tx);
+            tracing::warn!(
+                "recovery took a pack file under way for a leftover; it is not recorded"
+            );
+            packs.remove(&name).map_err(read_failed)?;
+            return Ok(false);
+        }
         for (version, _) in &written.rows {
             if !tx.is_unpacked(*version)? {
                 drop(tx);
-                packs.remove(&name).map_err(read_failed)?;
+                self.forget_file(packs, &name, written.file)?;
                 return Ok(false);
             }
         }
@@ -220,7 +256,7 @@ impl Store {
         match tx.commit() {
             Ok(()) => Ok(true),
             Err(CommitError::RolledBack) => {
-                packs.remove(&name).map_err(read_failed)?;
+                self.forget_file(packs, &name, written.file)?;
                 Err(StoreError::Io)
             }
             Err(CommitError::Unknown) => Err(StoreError::Io),
@@ -228,7 +264,7 @@ impl Store {
     }
 
     /// Removes the objects of the versions `written` packed.
-    fn release(&self, written: &Written) -> Result<(), StoreError> {
+    pub(crate) fn release(&self, written: &Written) -> Result<(), StoreError> {
         for (version, _) in &written.rows {
             match self.objects.remove(*version) {
                 Ok(()) | Err(ObjectError::Missing) => {}
@@ -519,8 +555,10 @@ pub(crate) mod tests {
             let packs = with_packs(&mut f);
             match &cut {
                 Cut::Put => packs.fail_puts.store(true, Ordering::SeqCst),
-                Cut::RolledBack => f.store.catalog.fail_commit(1, CommitError::RolledBack),
-                Cut::Unknown => f.store.catalog.fail_commit(1, CommitError::Unknown),
+                // The record's commit: the second, after the file's
+                // pending row (pack_pending_tests cuts that one).
+                Cut::RolledBack => f.store.catalog.fail_commit(2, CommitError::RolledBack),
+                Cut::Unknown => f.store.catalog.fail_commit(2, CommitError::Unknown),
                 Cut::At(n, _) => f.fs.fail_from(f.fs.log().len() + n),
             }
             let what = format!("{cut:?}");

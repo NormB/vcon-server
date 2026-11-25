@@ -1869,7 +1869,11 @@ fn pg_schema(release: &str) -> i64 {
 /// compared without the tables made after its schema, each such table
 /// must be there and empty after `migrate`, and the first table the
 /// build's last migration makes is the one a planted table breaks.
-const LATER_TABLES: &[(i64, &str)] = &[(14, "pending_write"), (15, "pending_tenant")];
+const LATER_TABLES: &[(i64, &str)] = &[
+    (14, "pending_write"),
+    (15, "pending_tenant"),
+    (15, "pending_file"),
+];
 
 /// The tables of [`LATER_TABLES`] a migration past `release_schema` makes.
 fn tables_made_after(release_schema: i64) -> Vec<&'static str> {
@@ -1892,12 +1896,12 @@ fn last_migration_table(build_schema: i64) -> Option<&'static str> {
 fn the_tables_made_after_a_schema_are_the_later_migrations_tables() {
     assert_eq!(
         tables_made_after(13),
-        ["pending_write", "pending_tenant"],
+        ["pending_write", "pending_tenant", "pending_file"],
         "a release at 13 lacks both"
     );
     assert_eq!(
         tables_made_after(14),
-        ["pending_tenant"],
+        ["pending_tenant", "pending_file"],
         "one at 14 lacks the newer"
     );
 }

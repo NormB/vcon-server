@@ -272,7 +272,9 @@ once, for every entry here:
   bucket prefix. Version 14 adds the table `pending_write`, where each
   store or replace records its write under way until its version's row
   is added. Version 15 adds the table `pending_tenant`, where each tenant
-  create records itself under way until the tenant's row is added. See
+  create records itself under way until the tenant's row is added, and
+  the table `pending_file`, where each pack run and purge rewrite records
+  its new Parquet file under way until the file's row is added. See
   [after an upgrade from 0.4.5](@/docs/postgres-catalog.md#after-an-upgrade-from-0-4-5).
 - **A server and the commands on a PostgreSQL catalog.** With
   `catalog.backend = "postgres"`, `serve` and every command keep the

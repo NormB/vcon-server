@@ -162,6 +162,7 @@ impl Store {
         }
         let bytes = file.finish().map_err(io)?;
         let id = FileId::generate();
+        self.begin_file(id)?;
         if !packs
             .put_new(&pack::name(&date, id), &bytes)
             .map_err(read_failed)?
@@ -188,22 +189,34 @@ impl Store {
     }
 
     /// Moves `copied`'s rows to its new file if every file of `copied.from`
-    /// is still named and they still hold exactly those rows; if not,
-    /// removes the new file and answers false. The old files are marked
-    /// unnamed and the next manifest numbered; a purge's listing stays
-    /// until its file is deleted. A commit rolled back removes the new
-    /// file; one whose outcome is unknown keeps it.
+    /// is still named and they still hold exactly those rows, and the new
+    /// file's pending row is still there; if not, removes the new file and
+    /// answers false. The old files are marked unnamed and the next
+    /// manifest numbered; a purge's listing stays until its file is
+    /// deleted. A commit rolled back removes the new file; one whose
+    /// outcome is unknown keeps it.
     pub(crate) fn swap(&self, copied: &Copied) -> Result<bool, StoreError> {
         let packs = self.packs.as_deref().ok_or(StoreError::Io)?;
         let remove_new = || -> Result<(), StoreError> {
             match &copied.to {
-                Some(to) => packs
-                    .remove(&pack::name(&to.date, to.file))
-                    .map_err(read_failed),
+                Some(to) => self.forget_file(packs, &pack::name(&to.date, to.file), to.file),
                 None => Ok(()),
             }
         };
         let mut tx = self.catalog.immediate()?;
+        if let Some(to) = &copied.to
+            && !tx.drop_pending_file(to.file)?
+        {
+            // Recovery took the copy for a leftover and removes it.
+            drop(tx);
+            tracing::warn!(
+                "recovery took a rewritten pack file for a leftover; it is not recorded"
+            );
+            packs
+                .remove(&pack::name(&to.date, to.file))
+                .map_err(read_failed)?;
+            return Ok(false);
+        }
         let mut now = BTreeSet::new();
         let mut named = true;
         for &file in &copied.from {
@@ -481,9 +494,10 @@ mod tests {
             later(&f);
             match cut {
                 Cut::Put => packs.fail_puts.store(true, Ordering::SeqCst),
-                // The purge's own commit is the first; the swap's the second.
-                Cut::RolledBack => f.store.catalog.fail_commit(2, CommitError::RolledBack),
-                Cut::Unknown => f.store.catalog.fail_commit(2, CommitError::Unknown),
+                // The swap's commit: the third, after the purge's and the
+                // new file's pending row.
+                Cut::RolledBack => f.store.catalog.fail_commit(3, CommitError::RolledBack),
+                Cut::Unknown => f.store.catalog.fail_commit(3, CommitError::Unknown),
                 Cut::Delete => packs.fail_removes.store(true, Ordering::SeqCst),
                 Cut::Kept => packs.keep_removed.store(true, Ordering::SeqCst),
             }
@@ -499,6 +513,13 @@ mod tests {
                 Err(StoreError::Gone),
                 "{what}: the purged version is gone at once"
             );
+            if matches!(cut, Cut::Put | Cut::RolledBack) {
+                assert_eq!(
+                    packs.list().expect("listed"),
+                    vec![old.clone()],
+                    "{what}: no new file is left that no row names, before any restart"
+                );
+            }
             for flag in [&packs.fail_puts, &packs.fail_removes, &packs.keep_removed] {
                 flag.store(false, Ordering::SeqCst);
             }

@@ -541,6 +541,122 @@ mod on_a_server {
         assert_eq!(w.registry_rows("pending_tenant"), 0, "and no creating row");
     }
 
+    /// A deployment whose bucket holds Parquet pack files.
+    fn packed_world() -> World {
+        let mut w = world();
+        w.storage.parquet = Some(crate::config::ParquetSettings {
+            pack_interval: std::time::Duration::from_secs(600),
+            pack_limit: 8_388_608,
+            reader_grace: crate::config::READER_GRACE,
+        });
+        w
+    }
+
+    /// A first server and a second, each its catalogs and registry.
+    type TwoServers = ((Catalogs, Tenants), (Catalogs, Tenants));
+
+    /// A tenant on two servers of one database, two vCons stored through
+    /// the first (each uuid and body), and the first's pack file of them
+    /// put and not recorded.
+    fn a_file_under_way(
+        w: &World,
+    ) -> (
+        TwoServers,
+        Vec<(uuid::Uuid, Vec<u8>)>,
+        crate::store::packer::Written,
+    ) {
+        let serving = w.serve();
+        let beside = w.beside();
+        let id = serving
+            .1
+            .create(Actor::Cli, "acme", None)
+            .expect("a tenant");
+        let store = serving.1.store(id).expect("the first server's store");
+        let who = Caller {
+            key: Key::generate().expect("a key").id(),
+        };
+        let mut kept = Vec::new();
+        for n in 1..=2u8 {
+            let (found, body) = crate::store::testing::vcon(
+                &format!("01a07da8-c2bb-83e5-b9a2-279e0d16be{n:02x}"),
+                "packed on one server",
+            );
+            store.create(&who, &found, &body).expect("stored");
+            kept.push((found.uuid, body));
+        }
+        let plan = crate::store::packer::PackPlan::with_limit(1 << 20);
+        let planned = store.plan_files(&plan).expect("planned");
+        let written = store
+            .write_file(&planned[0], &plan)
+            .expect("written")
+            .expect("a file");
+        ((serving, beside), kept, written)
+    }
+
+    #[test]
+    fn a_pack_file_under_way_on_one_server_survives_another_s_recovery() {
+        let w = packed_world();
+        let ((serving, beside), kept, written) = a_file_under_way(&w);
+        let id = names_to_ids(&serving.1);
+        let other = beside.1.store(id).expect("the other server's store");
+        other
+            .recover(Writers::Maybe)
+            .expect("the other's recovery runs");
+        let store = serving.1.store(id).expect("the first server's store");
+        assert_eq!(
+            store.record_file(&written),
+            Ok(true),
+            "the first server records its file"
+        );
+        store.release(&written).expect("its objects go");
+        let who = Caller {
+            key: Key::generate().expect("a key").id(),
+        };
+        for (n, (uuid, body)) in kept.iter().enumerate() {
+            assert_eq!(
+                other.get(&who, *uuid).map(|s| s.body).as_ref(),
+                Ok(body),
+                "vCon {n} reads back from the pack file on the other server"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pack_file_whose_pending_row_another_server_took_is_not_recorded() {
+        let w = packed_world();
+        let ((serving, beside), kept, written) = a_file_under_way(&w);
+        let id = names_to_ids(&serving.1);
+        beside
+            .1
+            .store(id)
+            .expect("the other server's store")
+            .recover(Writers::None)
+            .expect("a recovery alone runs");
+        let store = serving.1.store(id).expect("the first server's store");
+        assert_eq!(
+            store.record_file(&written),
+            Ok(false),
+            "a recovery alone took the file for a leftover"
+        );
+        let who = Caller {
+            key: Key::generate().expect("a key").id(),
+        };
+        for (n, (uuid, body)) in kept.iter().enumerate() {
+            assert_eq!(
+                store.get(&who, *uuid).map(|s| s.body).as_ref(),
+                Ok(body),
+                "vCon {n} still reads back from its object"
+            );
+        }
+    }
+
+    /// The one tenant's id.
+    fn names_to_ids(tenants: &Tenants) -> TenantId {
+        let ids = tenants.ids().expect("the tenants");
+        assert_eq!(ids.len(), 1, "one tenant");
+        ids[0]
+    }
+
     #[test]
     fn the_same_master_key_opens_the_database_again_and_again() {
         let w = world();

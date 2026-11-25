@@ -79,6 +79,7 @@ pub(super) mod live {
         "key_use",
         "manifest",
         "parquet_file",
+        "pending_file",
         "pending_write",
         "purge_pending",
         "tenant_catalog",
@@ -357,6 +358,9 @@ pub(super) mod live {
             }
             "pending_write" => format!(
                 "INSERT INTO vcon.pending_write (tenant, version, started_at) VALUES ({t}, '\\x01', 1)"
+            ),
+            "pending_file" => format!(
+                "INSERT INTO vcon.pending_file (tenant, file_id, started_at) VALUES ({t}, '\\x01', 1)"
             ),
             "manifest" => {
                 format!("INSERT INTO vcon.manifest (tenant, published_at) VALUES ({t}, 1)")

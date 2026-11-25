@@ -74,10 +74,15 @@ CREATE TABLE key_use (
 /// the file, so the catalog's schema and version stay as they are. A data
 /// directory is written by one process, which holds its lock, so every
 /// write under way is one of this process's, on this connection; a row
-/// goes with the process, as its write does.
+/// goes with the process, as its write does. The pack files under way
+/// are kept the same way.
 const PENDING_WRITES: &str = "
 CREATE TEMP TABLE pending_write (
     version BLOB PRIMARY KEY NOT NULL,
+    started_at INTEGER NOT NULL
+);
+CREATE TEMP TABLE pending_file (
+    file_id BLOB PRIMARY KEY NOT NULL,
     started_at INTEGER NOT NULL
 );
 ";
@@ -628,6 +633,34 @@ impl CatalogTx for LocalTx<'_> {
             .prepare("SELECT version, started_at FROM pending_write ORDER BY version")
             .map_err(io)?;
         rows.query_map([], |r| Ok((VersionId(r.get(0)?), r.get(1)?)))
+            .map_err(io)?
+            .collect::<Result<_, _>>()
+            .map_err(io)
+    }
+
+    fn add_pending_file(&mut self, file: FileId, at: i64) -> Result<(), StoreError> {
+        self.conn
+            .execute(
+                "INSERT INTO pending_file (file_id, started_at) VALUES (?1, ?2)",
+                params![file.0, at],
+            )
+            .map(drop)
+            .map_err(io)
+    }
+
+    fn drop_pending_file(&mut self, file: FileId) -> Result<bool, StoreError> {
+        self.conn
+            .execute("DELETE FROM pending_file WHERE file_id = ?1", [file.0])
+            .map(|deleted| deleted > 0)
+            .map_err(io)
+    }
+
+    fn pending_files(&mut self) -> Result<Vec<(FileId, i64)>, StoreError> {
+        let mut rows = self
+            .conn
+            .prepare("SELECT file_id, started_at FROM pending_file ORDER BY file_id")
+            .map_err(io)?;
+        rows.query_map([], |r| Ok((FileId(r.get(0)?), r.get(1)?)))
             .map_err(io)?
             .collect::<Result<_, _>>()
             .map_err(io)
@@ -2630,6 +2663,114 @@ mod tests {
             "a new process has no write under way"
         );
         assert_eq!(tx.wraps(KeyId([7; 8])).expect("reads"), 1, "the file's row");
+    }
+
+    #[test]
+    fn a_new_tenant_catalog_has_no_pending_file() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let (_, _, catalog) = tenant_catalog(&dir);
+        let mut tx = catalog.snapshot().expect("a snapshot");
+        assert_eq!(
+            tx.pending_files().expect("reads"),
+            vec![],
+            "no pack file is being written"
+        );
+    }
+
+    #[test]
+    fn a_pending_file_reads_back_with_its_time_until_it_is_dropped() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let (_, _, catalog) = tenant_catalog(&dir);
+        let file = FileId::generate();
+        let mut tx = catalog.immediate().expect("a write");
+        tx.add_pending_file(file, 42).expect("adds the row");
+        tx.commit().expect("commits");
+        let mut tx = catalog.immediate().expect("a write");
+        assert_eq!(
+            tx.pending_files().expect("reads"),
+            vec![(file, 42)],
+            "the pending row, with the time the file's writing began"
+        );
+        assert_eq!(
+            tx.pending().expect("reads"),
+            vec![],
+            "a pending file is no pending write"
+        );
+        assert!(
+            tx.drop_pending_file(file).expect("drops"),
+            "the row was there"
+        );
+        assert_eq!(tx.pending_files().expect("reads"), vec![], "no row is left");
+        assert!(
+            !tx.drop_pending_file(file).expect("drops"),
+            "a second drop finds no row"
+        );
+    }
+
+    #[test]
+    fn pending_files_read_back_by_file_id() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let (_, _, catalog) = tenant_catalog(&dir);
+        let mut tx = catalog.immediate().expect("a write");
+        let (high, low) = (FileId([0xff; 16]), FileId([0x01; 16]));
+        tx.add_pending_file(high, 1).expect("adds");
+        tx.add_pending_file(low, 2).expect("adds");
+        assert_eq!(
+            tx.pending_files().expect("reads"),
+            vec![(low, 2), (high, 1)],
+            "by file id"
+        );
+    }
+
+    #[test]
+    fn a_second_pending_row_for_one_file_is_refused() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let (_, _, catalog) = tenant_catalog(&dir);
+        let file = FileId::generate();
+        let mut tx = catalog.immediate().expect("a write");
+        tx.add_pending_file(file, 1).expect("adds");
+        assert!(
+            matches!(tx.add_pending_file(file, 2), Err(StoreError::Io)),
+            "a file's writing begins once"
+        );
+    }
+
+    #[test]
+    fn a_pending_file_row_of_a_rolled_back_transaction_is_not_kept() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let (_, _, catalog) = tenant_catalog(&dir);
+        let mut tx = catalog.immediate().expect("a write");
+        tx.add_pending_file(FileId::generate(), 1).expect("adds");
+        drop(tx);
+        let mut tx = catalog.snapshot().expect("a snapshot");
+        assert_eq!(
+            tx.pending_files().expect("reads"),
+            vec![],
+            "nothing committed"
+        );
+    }
+
+    #[test]
+    fn the_pending_file_table_is_not_in_the_file_and_goes_with_the_catalog() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let (path, key, catalog) = tenant_catalog(&dir);
+        let mut tx = catalog.immediate().expect("a write");
+        tx.add_pending_file(FileId::generate(), 1).expect("adds");
+        tx.commit().expect("commits");
+        let conn = catalog::open(&path, &under(&key), "").expect("a second connection");
+        assert!(
+            !has_table(&conn, "pending_file"),
+            "the file's schema has no pending file table"
+        );
+        drop(conn);
+        drop(catalog);
+        let catalog = LocalCatalog::open(&path, under(&key)).expect("opens again");
+        let mut tx = catalog.snapshot().expect("a snapshot");
+        assert_eq!(
+            tx.pending_files().expect("reads"),
+            vec![],
+            "a new process has no pack file under way"
+        );
     }
 
     #[test]
