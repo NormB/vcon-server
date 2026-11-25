@@ -29,6 +29,8 @@ use crate::reveal::Part;
 use pending::Writers;
 
 mod backup;
+#[cfg(test)]
+mod clock_reading_tests;
 mod compact;
 mod examine;
 mod export;
@@ -306,6 +308,22 @@ impl Store {
         }
     }
 
+    /// The catalog's clock in `tx` ([`CatalogTx::clock_now`]), `host`
+    /// being this process's.
+    fn catalog_now(&self, tx: &mut dyn CatalogTx, host: i64) -> Result<i64, StoreError> {
+        let now = tx.clock_now(host)?;
+        #[cfg(test)]
+        let now = {
+            let mut steps = self.hooks.clock_steps.lock().expect("hook");
+            if steps.is_empty() {
+                now
+            } else {
+                now + steps.remove(0)
+            }
+        };
+        Ok(now)
+    }
+
     /// Start-up recovery: the catalog recovers itself, and temporary
     /// objects, objects with no row and pack files with no row are
     /// removed, unless a write is under way for them (store/pending.rs),
@@ -321,9 +339,9 @@ impl Store {
     pub(crate) fn recover(&self, writers: Writers) -> Result<(), StoreError> {
         self.catalog.recover()?;
         let host = nanos(self.clock.now());
-        {
+        let now = {
             let mut tx = self.catalog.immediate()?;
-            let now = tx.clock_now(host)?;
+            let now = self.catalog_now(tx.as_mut(), host)?;
             for (version, started_at) in tx.pending()? {
                 if !pending::under_way(writers, started_at, now) {
                     tx.drop_pending(version)?;
@@ -335,7 +353,8 @@ impl Store {
                 }
             }
             commit(tx)?;
-        }
+            now
+        };
         let names = self.objects.list().map_err(io)?;
         let pack_names = match &self.packs {
             Some(packs) => packs.list().map_err(io)?,
@@ -343,7 +362,6 @@ impl Store {
         };
         // Nothing is removed on what the read saw until it is durable.
         let (places, files, writing, putting) = self.read(|tx| {
-            let now = tx.clock_now(host)?;
             let places: std::collections::HashMap<VersionId, bool> = tx
                 .places()?
                 .into_iter()
@@ -1317,6 +1335,10 @@ pub(crate) mod tests {
         /// Runs once, in recovery, after it reads the catalog's rows and
         /// before it removes anything.
         pub(super) after_snapshot: Mutex<Option<StoreHook>>,
+        /// Nanoseconds added to each reading of the catalog's clock in
+        /// recovery, one per reading, in order: time passing between two
+        /// readings, which no test can make a database's clock do.
+        pub(super) clock_steps: Mutex<Vec<i64>>,
     }
 
     pub(crate) struct Fixture {

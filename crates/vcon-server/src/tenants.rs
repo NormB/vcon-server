@@ -529,6 +529,22 @@ impl Tenants {
         Ok(failed)
     }
 
+    /// The registry's clock in `tx` ([`RegistryTx::clock_now`]), `host`
+    /// being this process's.
+    fn registry_now(&self, tx: &mut dyn RegistryTx, host: i64) -> Result<i64, TenantError> {
+        let now = tx.clock_now(host)?;
+        #[cfg(test)]
+        let now = {
+            let mut steps = self.hooks.clock_steps.lock().expect("hook");
+            if steps.is_empty() {
+                now
+            } else {
+                now + steps.remove(0)
+            }
+        };
+        Ok(now)
+    }
+
     /// Removes each tenant space with no row: a create cut off before its
     /// commit. A name that is not a tenant id is not ours and is left
     /// alone. A removal a crash undoes is made again at the next start, so
@@ -543,20 +559,20 @@ impl Tenants {
     /// space listed has its creating row or its tenant's row in that read.
     pub(crate) fn recover(&self, writers: Writers) -> Result<(), TenantError> {
         let host = nanos(self.clock.now());
-        {
+        let now = {
             let mut tx = self.registry.immediate()?;
-            let now = tx.clock_now(host)?;
+            let now = self.registry_now(tx.as_mut(), host)?;
             for (id, started_at) in tx.creating()? {
                 if !pending::under_way(writers, started_at, now) {
                     tx.drop_creating(id)?;
                 }
             }
             commit(tx)?;
-        }
+            now
+        };
         let present = self.space.present()?;
         let (tenants, creating) = {
             let mut tx = self.registry.snapshot()?;
-            let now = tx.clock_now(host)?;
             let tenants: std::collections::HashSet<TenantId> =
                 tx.tenants()?.into_iter().map(|row| row.id).collect();
             let creating: std::collections::HashSet<TenantId> = tx
@@ -1197,6 +1213,9 @@ mod tests {
         pub(super) registry_copied: Mutex<Option<RegistryHook>>,
         /// Runs as a background job begins its step for a tenant.
         pub(super) job_step: Mutex<Option<JobHook>>,
+        /// Nanoseconds added to each reading of the registry's clock in
+        /// recovery, one per reading, in order, as for a Store.
+        pub(super) clock_steps: Mutex<Vec<i64>>,
     }
 
     /// What a background job runs as it begins its step for a tenant, with
@@ -2026,6 +2045,29 @@ mod tests {
             .create(Actor::Cli, "acme", None)
             .expect("the create commits");
         assert_eq!(f.dirs(), [OsString::from(id.to_string())], "its space kept");
+        drop(f.store(id));
+    }
+
+    /// Recovery reads the registry's clock once: a create a minute inside
+    /// its lease at that reading is kept, though the clock passes the
+    /// lease before recovery lists the spaces. Else its space would go
+    /// while its creating row stays, and the create would add a tenant
+    /// with no space.
+    #[test]
+    fn recovery_judges_every_creating_row_by_one_reading_of_the_clock() {
+        let f = fixture();
+        let minute = 60 * 1_000_000_000;
+        *f.tenants.hooks.clock_steps.lock().expect("hook") = vec![0, 2 * minute];
+        f.recover_between(start_plus(pending::WRITE_LEASE - minute), Writers::Maybe);
+        let id = f
+            .tenants
+            .create(Actor::Cli, "acme", None)
+            .expect("the create commits");
+        assert_eq!(
+            f.dirs(),
+            [OsString::from(id.to_string())],
+            "its space was kept with its row"
+        );
         drop(f.store(id));
     }
 

@@ -22,6 +22,10 @@
 //! on a database, the database's `now()`, so servers on hosts whose clocks
 //! differ by more than the lease still agree on which write is under way;
 //! on a data directory, which one process holds, that process's clock.
+//! Recovery reads that clock once, in the transaction that deletes the
+//! leftover rows, and judges by that reading in its later read of the
+//! rows too: a row it kept there is never taken for a leftover's after,
+//! which would remove the object of a row that stays.
 
 /// How long a write's pending row keeps its object from recovery, in
 /// nanoseconds: one hour, far above the time a write takes between its
