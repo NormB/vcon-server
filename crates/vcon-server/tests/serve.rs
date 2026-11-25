@@ -3245,6 +3245,206 @@ mod postgres {
         assert!(stop(first).success(), "the first stops");
     }
 
+    /// Two hosts of one deployment, each sweeping every second, both
+    /// started: the first's setup and the second's, with the same token.
+    fn two_sweeping(w: &World) -> (Started, Setup, Started) {
+        sweep_every_second(&w.s);
+        let mut other = another_host(w);
+        other.token = w.s.token.clone();
+        sweep_every_second(&other);
+        let first = started(&w.s);
+        let second = started(&other);
+        (first, other, second)
+    }
+
+    /// Sets `purge_interval` to one second in `s`'s configuration.
+    fn sweep_every_second(s: &Setup) {
+        let text = std::fs::read_to_string(&s.config).expect("reads");
+        assert_eq!(
+            text.matches("purge_interval = 3600\n").count(),
+            1,
+            "the setup's interval: {text}"
+        );
+        let text = text.replace("purge_interval = 3600\n", "purge_interval = 1\n");
+        std::fs::write(&s.config, text).expect("writes");
+    }
+
+    /// The holder of the sweep's lease, or `none`, read as the owner in a
+    /// registry transaction.
+    fn sweep_holder(db: &pg::Db) -> String {
+        db.as_owner(
+            "BEGIN; SET LOCAL vcon.tenant = 'registry'; SELECT coalesce((SELECT holder FROM \
+             vcon.lease WHERE name = 'sweep'), 'none'); COMMIT",
+        )
+        .concat()
+    }
+
+    /// The process id a holder names, after its last `:`.
+    fn holder_pid(holder: &str) -> u32 {
+        holder
+            .rsplit_once(':')
+            .and_then(|(_, pid)| pid.parse().ok())
+            .unwrap_or_else(|| panic!("a holder names its process: {holder}"))
+    }
+
+    /// Waits up to 20 seconds for the sweep's holder to be the process
+    /// `pid`; the holder then.
+    fn until_sweep_held_by(db: &pg::Db, pid: u32) -> String {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let holder = sweep_holder(db);
+            if holder != "none" && holder_pid(&holder) == pid {
+                return holder;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "process {pid} never held the sweep: {holder}"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// Waits up to 20 seconds for either server to hold the sweep; the
+    /// holder.
+    fn until_sweep_held(db: &pg::Db) -> String {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let holder = sweep_holder(db);
+            if holder != "none" {
+                return holder;
+            }
+            assert!(Instant::now() < deadline, "no server held the sweep");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// Sweeps of the server `started` logged so far: the lines naming the
+    /// purge sweep, read without waiting.
+    fn sweep_lines(started: &mut Started) -> Vec<String> {
+        let mut lines: Vec<String> = started.early.drain(..).collect();
+        lines.extend(started.lines.try_iter());
+        lines
+            .into_iter()
+            .filter(|l| l.contains("purge sweep"))
+            .collect()
+    }
+
+    #[test]
+    fn of_two_servers_one_holds_the_sweep_and_keeps_it_while_it_runs() {
+        let w = world();
+        let (first, _other, second) = two_sweeping(&w);
+        let pids = [first.running.0.id(), second.running.0.id()];
+        let holder = until_sweep_held(&w.db);
+        assert!(
+            pids.contains(&holder_pid(&holder)),
+            "one of the two holds it: {holder} of {pids:?}"
+        );
+        let watched = Instant::now();
+        while watched.elapsed() < Duration::from_secs(3) {
+            assert_eq!(sweep_holder(&w.db), holder, "the holder renews it");
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        assert!(stop(first).success() && stop(second).success(), "both stop");
+    }
+
+    #[test]
+    fn the_server_that_does_not_hold_the_sweep_logs_that_another_does() {
+        let w = world();
+        let (first, _other, second) = two_sweeping(&w);
+        let holder = holder_pid(&until_sweep_held(&w.db));
+        let (mut holding, mut waiting) = if holder == first.running.0.id() {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut lines = Vec::new();
+        while !lines
+            .iter()
+            .any(|l: &String| l.contains("another server holds it"))
+        {
+            assert!(Instant::now() < deadline, "the waiting server: {lines:?}");
+            std::thread::sleep(Duration::from_millis(200));
+            lines.extend(sweep_lines(&mut waiting));
+        }
+        assert!(
+            !sweep_lines(&mut holding)
+                .iter()
+                .any(|l| l.contains("another server holds it")),
+            "the holder sweeps"
+        );
+        assert!(
+            stop(holding).success() && stop(waiting).success(),
+            "both stop"
+        );
+    }
+
+    #[test]
+    fn a_server_that_stops_hands_the_sweep_to_the_other_at_once() {
+        let w = world();
+        let (first, _other, second) = two_sweeping(&w);
+        let holder = holder_pid(&until_sweep_held(&w.db));
+        let (holding, waiting) = if holder == first.running.0.id() {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        let next = waiting.running.0.id();
+        assert!(stop(holding).success(), "the holder stops");
+        until_sweep_held_by(&w.db, next);
+        assert!(stop(waiting).success(), "the other stops");
+    }
+
+    #[test]
+    fn a_server_killed_keeps_the_sweep_until_its_lease_ends_by_the_database_s_clock() {
+        let w = world();
+        let (first, _other, second) = two_sweeping(&w);
+        let holder = until_sweep_held(&w.db);
+        let (mut holding, waiting) = if holder_pid(&holder) == first.running.0.id() {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        holding.running.0.kill().expect("SIGKILL");
+        holding.running.0.wait().expect("reaped");
+        let watched = Instant::now();
+        while watched.elapsed() < Duration::from_secs(3) {
+            assert_eq!(
+                sweep_holder(&w.db),
+                holder,
+                "the lease of a killed server is held until it ends"
+            );
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        w.db.as_owner(
+            "BEGIN; SET LOCAL vcon.tenant = 'registry'; UPDATE vcon.lease SET expires_at = now() \
+             - interval '1 second' WHERE name = 'sweep'; COMMIT",
+        );
+        until_sweep_held_by(&w.db, waiting.running.0.id());
+        assert!(stop(waiting).success(), "the other stops");
+    }
+
+    #[test]
+    fn a_command_beside_runs_while_two_servers_serve_and_a_command_alone_is_refused() {
+        let w = world();
+        let first = started(&w.s);
+        let mut other = another_host(&w);
+        other.token = w.s.token.clone();
+        let second = started(&other);
+        assert_eq!(
+            ok(&w.s, &["tenant", "list"]).len(),
+            1,
+            "a command beside lists the tenant"
+        );
+        let third = another_host(&w);
+        let said = refusal(&third, &["tenant", "create", "other"]);
+        assert!(
+            said.contains("a server or another command holds this database's locks"),
+            "a command alone waits for both servers: {said}"
+        );
+        assert!(stop(first).success() && stop(second).success(), "both stop");
+    }
+
     #[test]
     fn a_second_server_on_the_data_directory_is_refused_before_the_database() {
         let w = world();
