@@ -145,7 +145,8 @@ impl Store {
             }
         }
         found.leftovers.sort();
-        drop(tx);
+        // Nothing is reported from what may be lost (CatalogTx::end).
+        tx.end()?;
         (found.purges_since_key, found.oldest_purge_since_key) = self.purges_since(key_since)?;
         Ok(found)
     }
@@ -156,7 +157,7 @@ impl Store {
         &self,
         since: OffsetDateTime,
     ) -> Result<(u64, Option<OffsetDateTime>), StoreError> {
-        let purged = self.catalog.snapshot()?.purge_times()?;
+        let purged = self.read(|tx| tx.purge_times())?;
         let (mut count, mut oldest) = (0, None::<OffsetDateTime>);
         for at in purged {
             let at = OffsetDateTime::parse(&at, &Rfc3339).map_err(|_| StoreError::Damaged)?;
@@ -191,6 +192,31 @@ mod examine_tests {
 
     fn examine(f: &Fixture, retention: Retention, now: OffsetDateTime) -> Examination {
         f.store.examine(retention, START, now).expect("examined")
+    }
+
+    /// An examination that read a commit whose sync then failed reports
+    /// nothing: what it read may be lost.
+    #[test]
+    fn an_examination_that_read_a_commit_whose_sync_failed_is_refused() {
+        let f = fixture();
+        stored(&f, 0);
+        let (found, body) = vcon("01a07da8-c2bb-83e5-b9a2-279e0d16bc49", "kept");
+        f.fs.hold_syncs();
+        std::thread::scope(|t| {
+            let creating = t.spawn(|| f.store.create(&f.caller, &found, &body));
+            f.fs.await_held(1);
+            let examining = t.spawn(|| f.store.examine(Retention::Years(7), START, START));
+            f.store.catalog.await_sync_waiters(2);
+            f.fs.fail_syncs();
+            assert!(creating.join().expect("ends").is_err(), "the create");
+            assert!(
+                matches!(
+                    examining.join().expect("ends"),
+                    Err(ExamineError::Failed(StoreError::Io))
+                ),
+                "no report from what may be lost"
+            );
+        });
     }
 
     #[test]

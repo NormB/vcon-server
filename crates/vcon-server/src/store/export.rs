@@ -46,7 +46,7 @@ impl Store {
         since: Option<i64>,
         until: Option<i64>,
     ) -> Result<Vec<KeptVersion>, StoreError> {
-        let rows = self.catalog.snapshot()?.exported(since, until)?;
+        let rows = self.read(|tx| tx.exported(since, until))?;
         Ok(rows
             .into_iter()
             .map(|row| KeptVersion {
@@ -77,7 +77,7 @@ impl Store {
                     // A purge removes the row first, then the object; a
                     // purge's rewrite moves a packed row to a new file
                     // first, then deletes the old one.
-                    let row = self.catalog.snapshot()?.version_row(kept.version)?;
+                    let row = self.read(|tx| tx.version_row(kept.version))?;
                     match row {
                         None => return Ok(None),
                         Some(row) if row.place != place => place = row.place,

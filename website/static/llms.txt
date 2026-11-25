@@ -41,6 +41,7 @@
 - [Assurance case](https://vcon-server.com/docs/assurance-case/): the threat model, the trust boundaries, and how common weaknesses are countered
 - [Producers](https://vcon-server.com/docs/producers/): sending vCons and handling each answer
 - [Operations](https://vcon-server.com/docs/operations/): the data directory, locks, the purge sweep, logs, health, backups and key rotation
+- [Durability](https://vcon-server.com/docs/durability/): when an answered request is on disk, what a crash or power cut keeps, and the crash test
 
 ## Reference
 

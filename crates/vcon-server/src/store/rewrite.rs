@@ -59,19 +59,19 @@ impl Store {
             return Ok(());
         };
         for _ in 0..ROUNDS {
-            let pending = self.catalog.snapshot()?.purge_pending()?;
+            let pending = self.read(|tx| tx.purge_pending())?;
             if pending.is_empty() {
                 // The manifests the rewrites numbered, and none older:
                 // those name the files just deleted.
                 self.publish()?;
                 return self.prune_manifests(None);
             }
-            let unnamed = self.catalog.snapshot()?.unnamed_files()?;
+            let unnamed = self.read(|tx| tx.unnamed_files())?;
             for file in unnamed {
                 self.remove_unnamed(packs, file)?;
             }
             for file in pending {
-                let info = self.catalog.snapshot()?.pack_file(file)?;
+                let info = self.read(|tx| tx.pack_file(file))?;
                 match info {
                     // Rewritten, then cut off before its deletion: the
                     // deletion above finished it.
@@ -109,10 +109,7 @@ impl Store {
         let mut rows = Vec::new();
         let mut date = None;
         for &file in from {
-            let (info, placed) = {
-                let mut tx = self.catalog.snapshot()?;
-                (tx.pack_file(file)?, tx.placed_in(file)?)
-            };
+            let (info, placed) = self.read(|tx| Ok((tx.pack_file(file)?, tx.placed_in(file)?)))?;
             let Some(info) = info else {
                 return Ok(None);
             };
@@ -236,7 +233,8 @@ impl Store {
     /// Deletes an unnamed file, checks that the storage no longer has it,
     /// and removes its row.
     pub(super) fn remove_unnamed(&self, packs: &dyn Packs, file: FileId) -> Result<(), StoreError> {
-        let Some(info) = self.catalog.snapshot()?.pack_file(file)? else {
+        // The file is removed only once the row read is durable.
+        let Some(info) = self.read(|tx| tx.pack_file(file))? else {
             return Ok(());
         };
         let name = pack::name(&info.date, file);
@@ -507,6 +505,85 @@ mod tests {
                 "{what}: nothing is left to finish"
             );
         }
+    }
+
+    /// The one pack file three_packed wrote.
+    fn only_file(f: &Fixture) -> FileId {
+        let conn = f.store.conn_for_test();
+        conn.query_row("SELECT file_id FROM parquet_file", [], |r| r.get(0))
+            .map(FileId)
+            .expect("the file")
+    }
+
+    /// A pack file is removed only once the commit that unnamed it is
+    /// durable: while the swap's sync is held, a removal that read the
+    /// unnamed file waits and the file stays; after the sync it goes.
+    #[test]
+    fn an_unnamed_pack_file_stays_until_the_swap_that_unnamed_it_is_synced() {
+        let mut f = fixture();
+        let (packs, _, old) = three_packed(&mut f);
+        let file = only_file(&f);
+        let copied = f
+            .store
+            .copy_file(file)
+            .expect("copied")
+            .expect("rows to copy");
+        f.fs.hold_syncs();
+        std::thread::scope(|t| {
+            let swapping = t.spawn(|| f.store.swap(&copied));
+            f.fs.await_held(1);
+            let removing = t.spawn(|| f.store.remove_unnamed(&*packs, file));
+            f.store.catalog.await_sync_waiters(2);
+            crate::store::sync_tests::still_waiting(&removing, "the removal waits for the sync");
+            assert!(
+                packs.list().expect("listed").contains(&old),
+                "the file stays while the swap may be lost"
+            );
+            f.fs.release_syncs();
+            assert_eq!(swapping.join().expect("ends"), Ok(true), "swapped");
+            assert_eq!(removing.join().expect("ends"), Ok(()), "removed");
+        });
+        assert!(
+            !packs.list().expect("listed").contains(&old),
+            "the unnamed file is gone after the sync"
+        );
+    }
+
+    /// A removal that read an unnamed file whose swap then failed its sync
+    /// removes nothing: the swap may be lost, and the rows then still name
+    /// the old file.
+    #[test]
+    fn an_unnamed_pack_file_whose_swap_sync_failed_is_kept() {
+        let mut f = fixture();
+        let (packs, _, old) = three_packed(&mut f);
+        let file = only_file(&f);
+        let copied = f
+            .store
+            .copy_file(file)
+            .expect("copied")
+            .expect("rows to copy");
+        f.fs.hold_syncs();
+        std::thread::scope(|t| {
+            let swapping = t.spawn(|| f.store.swap(&copied));
+            f.fs.await_held(1);
+            let removing = t.spawn(|| f.store.remove_unnamed(&*packs, file));
+            f.store.catalog.await_sync_waiters(2);
+            f.fs.fail_syncs();
+            assert_eq!(
+                swapping.join().expect("ends"),
+                Err(StoreError::Io),
+                "the swap's outcome is unknown"
+            );
+            assert_eq!(
+                removing.join().expect("ends"),
+                Err(StoreError::Io),
+                "the removal read what may be lost"
+            );
+        });
+        assert!(
+            packs.list().expect("listed").contains(&old),
+            "the old file is kept"
+        );
     }
 
     /// A rewrite that copied a file whose rows changed before its swap (a

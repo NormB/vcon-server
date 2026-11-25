@@ -357,6 +357,8 @@ fn an_upgraded_tenant_catalog_is_declared_as_a_new_one_is() {
     let new = LocalCatalog::open(
         &dir.path().join("catalog.sqlite"),
         Key::generate().expect("key"),
+        &crate::fs::OsFs,
+        crate::backend::local::Durability::Group,
     )
     .expect("a new one");
     let upgraded = Old::tenant().upgraded();

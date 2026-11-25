@@ -1160,6 +1160,12 @@ pub(crate) mod tests {
             fn remove_dir_all(&self, dir: &Path) -> std::io::Result<()> {
                 OsFs.remove_dir_all(dir)
             }
+            fn open_for_sync(
+                &self,
+                path: &Path,
+            ) -> std::io::Result<Box<dyn crate::fs::SyncHandle>> {
+                OsFs.open_for_sync(path)
+            }
         }
         let f = fixture();
         stored(&f);

@@ -106,7 +106,7 @@ impl Store {
     /// date and then store order, a new file begun once one holds about
     /// its size.
     pub(crate) fn plan_files(&self, plan: &PackPlan) -> Result<Vec<Planned>, StoreError> {
-        let rows = self.catalog.snapshot()?.unpacked()?;
+        let rows = self.read(|tx| tx.unpacked())?;
         let mut files: Vec<Planned> = Vec::new();
         let mut held = 0u64;
         for row in rows {
@@ -250,6 +250,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::backend::Packs;
     use crate::clock::Clock;
+    use crate::fs::Op;
     use crate::retention::Retention;
     use crate::store::Created;
     use crate::store::packed::tests::DirPacks;
@@ -459,7 +460,7 @@ pub(crate) mod tests {
     }
 
     /// Where a pack run is cut off.
-    #[derive(Debug, Clone, Copy)]
+    #[derive(Debug, Clone)]
     enum Cut {
         /// The file's PUT fails.
         Put,
@@ -467,28 +468,60 @@ pub(crate) mod tests {
         RolledBack,
         /// The commit is kept, then reported unknown.
         Unknown,
-        /// The process dies at the nth change to the objects after the
-        /// commit.
-        Removal(usize),
+        /// The process dies at the nth step of the run's filesystem log:
+        /// the commit's WAL sync or a change to the objects after it.
+        At(usize, Op),
+    }
+
+    /// The filesystem log of a pack run of three versions when nothing
+    /// fails.
+    fn uncut_pack_log() -> Vec<Op> {
+        let mut f = fixture();
+        let _kept: Vec<Kept> = (0..3u8).map(|n| created(&f, n, "cut")).collect();
+        with_packs(&mut f);
+        let ops = f.fs.log().len();
+        f.store.pack(&PackPlan::with_limit(1 << 20)).expect("packs");
+        f.fs.log()[ops..].to_vec()
     }
 
     /// 4.3 and 4.4: a pack run cut off at any step returns an error, and
-    /// every version still reads back. After a restart's recovery each
-    /// version is held exactly once, and the next run packs the rest.
+    /// every version still reads back, unless the cut failed the commit's
+    /// WAL sync: then the catalog is poisoned and refuses reads until it is
+    /// reopened (nothing is answered from a commit that may be lost).
+    /// After a restart's recovery each version is held exactly once, and
+    /// the next run packs the rest.
     #[test]
     fn a_pack_run_cut_off_at_any_step_leaves_every_version_held_once() {
+        let uncut = uncut_pack_log();
+        assert!(
+            matches!(uncut.first(), Some(Op::SyncData(_))),
+            "the commit's sync comes before any object is removed: {uncut:?}"
+        );
+        assert_eq!(
+            uncut
+                .iter()
+                .filter(|op| matches!(op, Op::Remove(_)))
+                .count(),
+            3,
+            "three objects, one removal each: {uncut:?}"
+        );
         let mut cuts = vec![Cut::Put, Cut::RolledBack, Cut::Unknown];
-        // Three objects, one removal each.
-        cuts.extend((0..3).map(Cut::Removal));
+        cuts.extend(
+            uncut
+                .iter()
+                .cloned()
+                .enumerate()
+                .map(|(n, op)| Cut::At(n, op)),
+        );
         for cut in cuts {
             let mut f = fixture();
             let kept: Vec<Kept> = (0..3u8).map(|n| created(&f, n, "cut")).collect();
             let packs = with_packs(&mut f);
-            match cut {
+            match &cut {
                 Cut::Put => packs.fail_puts.store(true, Ordering::SeqCst),
                 Cut::RolledBack => f.store.catalog.fail_commit(1, CommitError::RolledBack),
                 Cut::Unknown => f.store.catalog.fail_commit(1, CommitError::Unknown),
-                Cut::Removal(n) => f.fs.fail_from(f.fs.log().len() + n),
+                Cut::At(n, _) => f.fs.fail_from(f.fs.log().len() + n),
             }
             let what = format!("{cut:?}");
             let ran = f.store.pack(&PackPlan::with_limit(1 << 20));
@@ -501,12 +534,24 @@ pub(crate) mod tests {
                 );
             }
             packs.fail_puts.store(false, Ordering::SeqCst);
+            // The process lives on: what it answers next is checked.
+            f.fs.revive();
+            let poisoned = matches!(cut, Cut::At(_, Op::SyncData(_)));
             for (n, k) in kept.iter().enumerate() {
-                assert_eq!(
-                    f.store.get(&f.caller, k.uuid).map(|s| s.body),
-                    Ok(k.body.clone()),
-                    "{what}: version {n} reads back before the restart"
-                );
+                let read = f.store.get(&f.caller, k.uuid).map(|s| s.body);
+                if poisoned {
+                    assert_eq!(
+                        read,
+                        Err(StoreError::Io),
+                        "{what}: version {n} is refused until the catalog is reopened"
+                    );
+                } else {
+                    assert_eq!(
+                        read,
+                        Ok(k.body.clone()),
+                        "{what}: version {n} reads back before the restart"
+                    );
+                }
             }
             f.fs.crash();
             f.reopen();

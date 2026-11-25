@@ -221,6 +221,7 @@ key and status, not one record each.
 SIGTERM or SIGINT stops the server, which logs `stopped` and exits.
 Every write is crash-safe, so a kill or a power cut loses at most the requests
 not yet answered; start-up recovery removes what they left.
+[Durability](@/docs/durability.md) says why, and how to run the crash test.
 
 ## Checking the data
 

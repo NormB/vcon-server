@@ -486,6 +486,13 @@ anything deeper is read.
 Each layer is read in turn, not by recursion, so the stack a request needs
 does not grow with the layers.
 
+## Durability
+
+No key changes how a commit reaches the disk, or turns its sync off: a
+request is answered only after its commit is synced.
+[Durability](@/docs/durability.md) says how the SQLite catalog syncs its
+commits and what a crash keeps.
+
 ## Retention periods
 
 A period is a whole number, with no leading zero, followed by `y`, `m` or `d`. It is counted in

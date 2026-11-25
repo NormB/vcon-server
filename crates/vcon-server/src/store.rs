@@ -15,7 +15,7 @@ use uuid::Uuid;
 use vcon::read::Inspection;
 
 use crate::audit::{self, Action, Actor, Entry};
-use crate::backend::local::{LocalCatalog, LocalObjects};
+use crate::backend::local::{Durability, LocalCatalog, LocalObjects};
 use crate::backend::{
     Catalog, CatalogTx, CommitError, NewVersion, ObjectError, Objects, Packed, Packs,
 };
@@ -42,10 +42,14 @@ pub(crate) mod packed;
 pub(crate) mod packer;
 pub(crate) mod pending;
 mod purge;
+#[cfg(test)]
+mod read_race_tests;
 mod rekey;
 mod rewrite;
 #[cfg(test)]
 mod statement_tests;
+#[cfg(test)]
+mod sync_tests;
 
 pub use backup::{BackupError, Copied, TRIES};
 pub use examine::{Examination, ExamineError};
@@ -182,16 +186,16 @@ impl Store {
         fs: Arc<dyn Fs>,
         clock: Arc<dyn Clock>,
     ) -> Result<Store, OpenError> {
-        let store = Store::open_beside(dir, tenant, tenant_key, fs, clock)?;
         // Every process that runs recovery holds the catalog alone: a
         // server or a command that runs alone (datadir.rs).
+        let store = Store::open_as(dir, tenant, tenant_key, fs, clock, Durability::Group)?;
         store.recover(Writers::None)?;
         Ok(store)
     }
 
     /// Opens the store as a command running beside a server does: without
     /// start-up recovery, which would take the server's writes in progress
-    /// for a crash's leftovers.
+    /// for a crash's leftovers, and syncing what it reads (Durability).
     pub fn open_beside(
         dir: &Path,
         tenant: TenantId,
@@ -199,8 +203,22 @@ impl Store {
         fs: Arc<dyn Fs>,
         clock: Arc<dyn Clock>,
     ) -> Result<Store, OpenError> {
+        Store::open_as(dir, tenant, tenant_key, fs, clock, Durability::Beside)
+    }
+
+    /// Opens the store without start-up recovery, its catalog made durable
+    /// as `durability` says.
+    pub(crate) fn open_as(
+        dir: &Path,
+        tenant: TenantId,
+        tenant_key: Key,
+        fs: Arc<dyn Fs>,
+        clock: Arc<dyn Clock>,
+        durability: Durability,
+    ) -> Result<Store, OpenError> {
         let catalog_key = envelope::catalog_key(&tenant_key).map_err(|_| StoreError::Io)?;
-        let catalog = LocalCatalog::open(&dir.join("catalog.sqlite"), catalog_key)?;
+        let catalog =
+            LocalCatalog::open(&dir.join("catalog.sqlite"), catalog_key, &*fs, durability)?;
         let objects = dir.join("objects");
         fs.create_dir_all(&objects).map_err(|_| StoreError::Io)?;
         // Each version is written into objects/, so it must be writable too.
@@ -309,8 +327,8 @@ impl Store {
             commit(tx)?;
         }
         let names = self.objects.list().map_err(io)?;
-        let (places, files, writing) = {
-            let mut tx = self.catalog.snapshot()?;
+        // Nothing is removed on what the read saw until it is durable.
+        let (places, files, writing) = self.read(|tx| {
             let places: std::collections::HashMap<VersionId, bool> = tx
                 .places()?
                 .into_iter()
@@ -323,8 +341,8 @@ impl Store {
                 .filter(|(_, started_at)| pending::under_way(writers, *started_at, now))
                 .map(|(version, _)| version)
                 .collect();
-            (places, files, writing)
-        };
+            Ok((places, files, writing))
+        })?;
         let mut removed: u64 = 0;
         for name in names {
             let (id, temporary) = match name.strip_suffix(".tmp") {
@@ -510,9 +528,8 @@ impl Store {
             // The first step only reads, and takes no write lock (on
             // PostgreSQL, no lock on the tenant): the last step checks
             // again under the lock, and records the read or its refusal.
-            let found = {
-                let mut tx = self.catalog.snapshot()?;
-                match state(&mut tx, uuid)? {
+            let found = self.read(|tx| {
+                Ok(match state(tx, uuid)? {
                     State::Live(version) => {
                         #[cfg(test)]
                         {
@@ -521,11 +538,11 @@ impl Store {
                                 hook();
                             }
                         }
-                        Some((version, version_row(&mut tx, version)))
+                        Some((version, version_row(tx, version)))
                     }
                     State::Gone | State::Absent => None,
-                }
-            };
+                })
+            })?;
             let (version, opened, place) = match found {
                 Some((version, row)) => {
                     let place = row.as_ref().ok().and_then(|r| r.place.clone());
@@ -717,7 +734,7 @@ impl Store {
     /// whose pack file is missing or not the length its row says. Such a
     /// version answers 500 when read; it is reported, never dropped.
     pub fn check(&self) -> Result<Vec<VersionId>, StoreError> {
-        let versions = self.catalog.snapshot()?.places()?;
+        let versions = self.read(|tx| tx.places())?;
         let present: std::collections::BTreeSet<String> =
             self.objects.list().map_err(io)?.into_iter().collect();
         let mut whole = std::collections::HashMap::new();
@@ -855,16 +872,40 @@ impl Store {
     /// the storage must keep Parquet storage on, since nothing turns them
     /// back into objects.
     pub fn packed_versions(&self) -> Result<u64, StoreError> {
-        self.catalog.snapshot()?.count_packed()
+        self.read(|tx| tx.count_packed())
+    }
+
+    /// Waits until every commit this Store made is durable and answers
+    /// whether it is (Io: a sync failed, and a commit may be lost). For a
+    /// caller that closes an idle store: it calls this, begins nothing
+    /// more, and drops the Store. Dropping without it stays safe: every
+    /// commit has already waited for its own sync.
+    pub fn close(&self) -> Result<(), StoreError> {
+        self.catalog.close()
     }
 
     /// How many versions the Store keeps and how many uuids are held.
     pub fn counts(&self) -> Result<Counts, StoreError> {
-        let mut tx = self.catalog.snapshot()?;
-        Ok(Counts {
-            versions: tx.count_versions()?,
-            held: tx.count_held()?,
+        self.read(|tx| {
+            Ok(Counts {
+                versions: tx.count_versions()?,
+                held: tx.count_held()?,
+            })
         })
+    }
+
+    /// Runs `read` in a snapshot and ends it (CatalogTx::end): what it
+    /// returns is given back only once every commit it may have seen is
+    /// durable, so nothing answered or done after it rests on a commit that
+    /// may be lost. A failed end overrides the result.
+    pub(crate) fn read<T>(
+        &self,
+        read: impl FnOnce(&mut Tx<'_>) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
+        let mut tx = self.catalog.snapshot()?;
+        let out = read(&mut tx);
+        tx.end()?;
+        out
     }
 
     /// Writes the tenant's log after `since` as JSON lines, oldest first.
@@ -970,7 +1011,7 @@ impl Store {
     /// The catalog's pending rows, for tests.
     #[cfg(test)]
     pub(crate) fn pending_writes(&self) -> Result<Vec<(VersionId, i64)>, StoreError> {
-        self.catalog.snapshot()?.pending()
+        self.read(|tx| tx.pending())
     }
 
     #[cfg(test)]
@@ -1456,6 +1497,22 @@ pub(crate) mod tests {
         assert_eq!(audit_page(&f, 0, 10), Err(StoreError::AuditFailed));
     }
 
+    /// The tenant catalog's WAL, whose syncs the crash filesystem logs.
+    pub(super) fn wal(f: &Fixture) -> std::path::PathBuf {
+        f.dir.path().join("catalog.sqlite-wal")
+    }
+
+    /// Since log entry `ops`, a refused or unchanged request wrote no file:
+    /// the one entry is the sync of the commit holding its audit record,
+    /// made before the answer was returned.
+    fn only_its_record_synced(f: &Fixture, ops: usize) {
+        assert_eq!(
+            f.fs.log()[ops..],
+            [Op::SyncData(wal(f))],
+            "no file written; the record's commit synced before the answer"
+        );
+    }
+
     #[test]
     fn a_new_vcon_is_written_in_order_and_recorded() {
         let f = fixture();
@@ -1471,11 +1528,22 @@ pub(crate) mod tests {
         assert_eq!(
             f.fs.log()[ops..],
             [
+                // The pending row's commit is durable before the object is
+                // written, so recovery never takes the object for a leftover.
+                Op::SyncData(wal(&f)),
                 Op::Write(tmp.clone()),
                 Op::SyncFile(tmp.clone()),
                 Op::Rename(tmp, done),
                 Op::SyncDir(f.store.objects_dir.clone()),
-            ]
+                // The version's row and its record: synced before the answer.
+                Op::SyncData(wal(&f)),
+            ],
+            "every change and sync of a create, in order"
+        );
+        assert_eq!(
+            f.fs.log().len() - ops,
+            WRITE_STEPS,
+            "the steps a cut can hit"
         );
         assert_eq!(stored_body(&f, found.uuid, version), body);
         assert_eq!(
@@ -1506,6 +1574,39 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_replace_is_written_in_order_and_synced() {
+        let f = fixture();
+        let (found, old) = stored(&f, "first");
+        let (_, newer) = vcon(UUID, "second");
+        let ops = f.fs.log().len();
+        let version = f
+            .store
+            .replace(&f.caller, old, &found, &newer)
+            .expect("replaced");
+        let (tmp, done) = (
+            f.store.objects_dir.join(format!("{version}.tmp")),
+            f.store.objects_dir.join(version.to_string()),
+        );
+        assert_eq!(
+            f.fs.log()[ops..],
+            [
+                Op::SyncData(wal(&f)),
+                Op::Write(tmp.clone()),
+                Op::SyncFile(tmp.clone()),
+                Op::Rename(tmp, done),
+                Op::SyncDir(f.store.objects_dir.clone()),
+                Op::SyncData(wal(&f)),
+            ],
+            "every change and sync of a replace, in order"
+        );
+        assert_eq!(
+            f.fs.log().len() - ops,
+            REPLACE_STEPS,
+            "the steps a cut can hit"
+        );
+    }
+
+    #[test]
     fn the_same_body_again_is_same_and_writes_nothing() {
         let f = fixture();
         let (found, body) = vcon(UUID, "first");
@@ -1517,7 +1618,7 @@ pub(crate) mod tests {
             f.store.create(&f.caller, &found, &body),
             Ok(Created::Same(version))
         );
-        assert_eq!(f.fs.log().len(), ops, "no file written");
+        only_its_record_synced(&f, ops);
         assert_eq!(count(&f.store, "SELECT count(*) FROM version"), 1);
         assert_eq!(wraps(&f.store), 1, "nothing wrapped");
         let log = audit_log(&f.store);
@@ -1539,7 +1640,7 @@ pub(crate) mod tests {
             f.store.create(&f.caller, &found, &other),
             Err(StoreError::Conflict)
         );
-        assert_eq!(f.fs.log().len(), ops, "no file written");
+        only_its_record_synced(&f, ops);
         assert_eq!(wraps(&f.store), 1, "nothing wrapped");
         assert_eq!(audit_log(&f.store)[1]["status"], 409);
     }
@@ -1562,7 +1663,7 @@ pub(crate) mod tests {
                 Err(StoreError::Gone),
                 "{sql}"
             );
-            assert_eq!(f.fs.log().len(), ops, "no file written");
+            only_its_record_synced(&f, ops);
             assert_eq!(wraps(&f.store), 0, "nothing wrapped");
             assert_eq!(audit_log(&f.store)[0]["status"], 410);
         }
@@ -1639,7 +1740,7 @@ pub(crate) mod tests {
             f.store.create(&f.caller, &found, &body),
             Err(StoreError::LimitReached)
         );
-        assert_eq!(f.fs.log().len(), ops, "no file written");
+        only_its_record_synced(&f, ops);
         assert_eq!(audit_log(&f.store)[0]["status"], 503);
     }
 
@@ -2384,7 +2485,7 @@ pub(crate) mod tests {
                 .replace(&f.caller, VersionId([7; 16]), &found, &newer),
             Err(StoreError::PreconditionFailed)
         );
-        assert_eq!(f.fs.log().len(), ops, "no file written");
+        only_its_record_synced(&f, ops);
         assert_eq!(wraps(&f.store), 1, "nothing wrapped");
         assert_eq!(get_entry_status(&f), 412);
     }
@@ -2412,7 +2513,7 @@ pub(crate) mod tests {
             f.store.replace(&f.caller, version, &found, &newer),
             Err(StoreError::Immutable)
         );
-        assert_eq!(f.fs.log().len(), ops, "no file written");
+        only_its_record_synced(&f, ops);
         assert_eq!(get_entry_status(&f), 409);
 
         let g = fixture();
@@ -2908,9 +3009,15 @@ pub(crate) mod tests {
         assert!(f.open().is_ok(), "opens once the reader is done");
     }
 
-    /// The filesystem changes a create or replace makes when nothing
-    /// fails: write, sync, rename, sync the directory.
-    const WRITE_STEPS: usize = 4;
+    /// The filesystem steps a create makes when nothing fails (pinned by
+    /// a_new_vcon_is_written_in_order_and_recorded): the pending row's
+    /// sync, write, sync, rename, sync the directory, the final commit's
+    /// sync.
+    const WRITE_STEPS: usize = 6;
+
+    /// The same for a replace (pinned by
+    /// a_replace_is_written_in_order_and_synced).
+    const REPLACE_STEPS: usize = 6;
 
     /// After a restart, no row lacks its file and every file has a row.
     fn assert_whole(f: &Fixture, step: usize) {
@@ -2965,9 +3072,49 @@ pub(crate) mod tests {
         f.reopen();
     }
 
+    /// The log a write makes from a fresh fixture when nothing fails.
+    fn uncut_log(write: impl Fn(&Fixture)) -> Vec<Op> {
+        let f = fixture();
+        let ops = f.fs.log().len();
+        write(&f);
+        f.fs.log()[ops..].to_vec()
+    }
+
+    /// A cut at a WAL sync is a failed fdatasync: the request is refused
+    /// with Io (its commit's outcome is unknown) and the catalog is
+    /// poisoned. With the filesystem working again, a read is still
+    /// refused: nothing is answered until the catalog is reopened.
+    fn assert_poisoned_at_a_sync(
+        f: &Fixture,
+        uncut: &[Op],
+        step: usize,
+        result: Result<(), StoreError>,
+    ) {
+        if !matches!(uncut.get(step), Some(Op::SyncData(_))) {
+            return;
+        }
+        assert_eq!(result, Err(StoreError::Io), "step {step}: a failed sync");
+        f.fs.revive();
+        assert_eq!(
+            f.store
+                .get(&f.caller, Uuid::parse_str(UUID).expect("uuid"))
+                .map(|_| ()),
+            Err(StoreError::Io),
+            "step {step}: poisoned until the catalog is reopened"
+        );
+    }
+
     #[test]
     fn a_create_cut_off_at_any_step_leaves_no_vcon_or_the_whole_vcon() {
         let (found, body) = vcon(UUID, "first");
+        let uncut = uncut_log(|f| {
+            f.store.create(&f.caller, &found, &body).expect("created");
+        });
+        assert_eq!(
+            uncut.len(),
+            WRITE_STEPS,
+            "every step of a create: {uncut:?}"
+        );
         for step in 0..=WRITE_STEPS {
             let mut f = fixture();
             f.fs.fail_from(f.fs.log().len() + step);
@@ -2977,6 +3124,7 @@ pub(crate) mod tests {
                 step == WRITE_STEPS,
                 "step {step}: {result:?}"
             );
+            assert_poisoned_at_a_sync(&f, &uncut, step, result.map(|_| ()));
             restart(&mut f);
             match f.store.get(&f.caller, found.uuid) {
                 Ok(stored) => assert_eq!(stored.body, body, "step {step}"),
@@ -3007,7 +3155,27 @@ pub(crate) mod tests {
     fn a_replace_cut_off_at_any_step_leaves_the_old_version_or_the_new() {
         let (found, old_body) = vcon(UUID, "first");
         let (_, new_body) = vcon(UUID, "second");
-        for step in 0..=WRITE_STEPS {
+        let uncut = {
+            let f = fixture();
+            let Ok(Created::New(old)) = f.store.create(&f.caller, &found, &old_body) else {
+                panic!("stored")
+            };
+            let ops = f.fs.log().len();
+            f.store
+                .replace(&f.caller, old, &found, &new_body)
+                .expect("replaced");
+            f.fs.log()[ops..].to_vec()
+        };
+        assert_eq!(
+            uncut.len(),
+            REPLACE_STEPS,
+            "every step of a replace: {uncut:?}"
+        );
+        let last_sync = uncut
+            .iter()
+            .rposition(|op| matches!(op, Op::SyncData(_)))
+            .expect("the final commit syncs");
+        for step in 0..=REPLACE_STEPS {
             let mut f = fixture();
             let Ok(Created::New(old)) = f.store.create(&f.caller, &found, &old_body) else {
                 panic!("stored")
@@ -3016,9 +3184,10 @@ pub(crate) mod tests {
             let result = f.store.replace(&f.caller, old, &found, &new_body);
             assert_eq!(
                 result.is_ok(),
-                step == WRITE_STEPS,
+                step == REPLACE_STEPS,
                 "step {step}: {result:?}"
             );
+            assert_poisoned_at_a_sync(&f, &uncut, step, result.map(|_| ()));
             restart(&mut f);
             let stored = f
                 .store
@@ -3030,6 +3199,12 @@ pub(crate) mod tests {
                     (new, new_body.clone()),
                     "step {step}"
                 ),
+                // The final commit's sync failed: its frames were written,
+                // so whether it is kept is unknown, and the refusal says
+                // so; either whole version is right.
+                Err(_) if step == last_sync && stored.version != old => {
+                    assert_eq!(stored.body, new_body, "step {step}: the new version whole")
+                }
                 Err(_) => assert_eq!(
                     (stored.version, stored.body),
                     (old, old_body.clone()),

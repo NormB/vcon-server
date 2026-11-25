@@ -142,6 +142,25 @@ below), their runs interleaved:
   catalog serves each tenant on one connection and a read waits for that
   tenant's writes either way.
 
+Measured again on 2026-11-24 on the same machine, SQLite only, with
+release builds of `09a93d0` ("before") and of the change that syncs a
+tenant's commits together, after its connection is let go ("after"; see
+[durability](@/docs/durability.md)): 1,000 stores then 2,000 reads, 8
+clients, 4 interleaved runs each with 0, 1 and 2 writers, at 1-minute
+loads of 13.4 to 23.8; medians:
+
+- **No writers:** 406 reads a second before and 896 after; read p99 46.4
+  ms and 36.2 ms; 56.8 stores a second and 193.7.
+- **1 writer:** 232 reads a second before and 562 after; read p99 77.5 ms
+  and 28.2 ms; 10.4 writes a second and 31.7; write p50 65.0 ms and 27.6
+  ms, write p99 287.5 ms and 73.5 ms.
+- **2 writers:** 170 reads a second before and 485 after; read p99 95.4 ms
+  and 30.8 ms; 17.2 writes a second and 54.4; write p50 78.0 ms and 33.7
+  ms, write p99 325.2 ms and 71.8 ms.
+- **Instructions:** the server's user-space instructions for 1,000 stores
+  and 5,000 reads with no writers, median of 3 runs each: 3.623 billion
+  before and 3.615 billion after.
+
 ## Check the result
 
 The harness prints one line, the count, the rate, the read p99 and the

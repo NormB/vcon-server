@@ -36,9 +36,7 @@ impl Store {
     /// How many version rows name a key other than this Store's tenant key:
     /// a rotation stopped part way leaves some.
     pub fn rows_under_other_keys(&self) -> Result<u64, StoreError> {
-        self.catalog
-            .snapshot()?
-            .count_not_under(self.tenant_key.id())
+        self.read(|tx| tx.count_not_under(self.tenant_key.id()))
     }
 }
 

@@ -220,6 +220,14 @@ pub trait Catalog: Send + Sync {
     /// What follows purges (local: the WAL is checkpointed with truncation,
     /// asking without waiting and waiting between tries).
     fn after_purge(&self) -> Result<(), StoreError>;
+    /// Waits until every commit made so far is durable and answers whether
+    /// it is: Io when a sync failed, so a commit may be lost. A caller
+    /// closing an idle store calls it before dropping the store, and
+    /// begins nothing after it. A catalog whose commits are durable when
+    /// they return (PostgreSQL) answers Ok at once.
+    fn close(&self) -> Result<(), StoreError> {
+        Ok(())
+    }
     /// Copies the catalog, as it is in one transaction, into a local
     /// catalog file at `to` under the same catalog key, and returns the
     /// version ids that copy holds, each with its place in that copy.
@@ -243,6 +251,11 @@ pub trait Catalog: Send + Sync {
     fn on_checkpoint_wait(&self, busy: std::sync::mpsc::Sender<()>);
     #[cfg(test)]
     fn local_conn(&self) -> std::sync::MutexGuard<'_, rusqlite::Connection>;
+    /// For tests: returns once `n` threads wait for a sync of the local
+    /// catalog's WAL (panics after 20 s); a catalog with no such sync
+    /// returns at once.
+    #[cfg(test)]
+    fn await_sync_waiters(&self, _n: usize) {}
 }
 
 /// The statements Store runs in a catalog transaction. Dropping one
@@ -389,6 +402,18 @@ pub trait CatalogTx {
         out: &mut dyn Write,
     ) -> Result<(), AuditError>;
     fn commit(self: Box<Self>) -> Result<(), CommitError>;
+    /// Ends a transaction without committing it, once nothing it read can
+    /// be lost: the local catalog rolls it back, lets the connection go and
+    /// waits until every commit it may have seen is durable. Dropping a
+    /// transaction does the same but cannot report a failed wait, so what is
+    /// answered from what a transaction read is answered after this.
+    ///
+    /// # Errors
+    ///
+    /// `Io` if a commit it may have seen could not be made durable.
+    fn end(self: Box<Self>) -> Result<(), StoreError> {
+        Ok(())
+    }
 }
 
 /// Why an object call failed.

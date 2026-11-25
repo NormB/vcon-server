@@ -1252,8 +1252,18 @@ mod packed_local {
                 std::rc::Rc::new(move |recover: bool| {
                     let key = envelope::unwrap(&master, &ctx, &wrapped).expect("unwraps");
                     let catalog_key = envelope::catalog_key(&key).expect("catalog key");
-                    let catalog = LocalCatalog::open(&dir.join("catalog.sqlite"), catalog_key)
-                        .expect("catalog");
+                    let durability = if recover {
+                        crate::backend::local::Durability::Group
+                    } else {
+                        crate::backend::local::Durability::Beside
+                    };
+                    let catalog = LocalCatalog::open(
+                        &dir.join("catalog.sqlite"),
+                        catalog_key,
+                        &crate::fs::OsFs,
+                        durability,
+                    )
+                    .expect("catalog");
                     let mut store = Store::open_on(
                         tenant,
                         key,

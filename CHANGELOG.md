@@ -6,6 +6,16 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **A tenant's SQLite catalog serves concurrent writes and reads two to
+  three times faster.**
+  - Effect: Commits made at once share one disk sync; measured 3.0 to 3.2
+    times the writes a second and 2.3 to 3.0 times the reads.
+  - Limit: After a failed disk sync, that tenant's requests are answered
+    `internal` until the server is restarted.
+  - Docs: [Durability](https://vcon-server.com/docs/durability/)
+
 ## [0.4.16] - 2026-11-25
 
 ### Changed

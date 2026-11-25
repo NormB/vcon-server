@@ -515,7 +515,7 @@ fn remove_if_there(file: &Path) -> Result<(), CatalogError> {
 }
 
 /// `path` with `suffix` added to its file name.
-fn sibling(path: &Path, suffix: &str) -> PathBuf {
+pub(crate) fn sibling(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
     name.push(suffix);
     PathBuf::from(name)

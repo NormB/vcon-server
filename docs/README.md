@@ -40,6 +40,7 @@ below open each page's source in the repository.
 ## Operating
 
 - [Operations](../website/content/docs/operations.md): Running vcon-server day to day: the data directory, what may run beside the server, the purge sweep, logs, health checks and backups.
+- [Durability](../website/content/docs/durability.md): When an answered request is on disk: how the SQLite catalog syncs its commits, what a killed process and a power cut keep, what happens when a sync fails, and how to run the crash test.
 - [Back up and restore](../website/content/docs/backup-and-restore.md): Back up the master key and the data directory while the server runs, restore the data directory, check it, and see what a restore brings back, revoked keys included.
 - [Keep vCons in an S3 bucket](../website/content/docs/s3-storage.md): Keep each version's sealed object in an S3-compatible bucket (RustFS, MinIO or AWS S3) instead of the data directory: the bucket and its keys on the storage side, the configuration, a check that the objects go there and that a purge removes them, what each refusal means, and how to clean up.
 - [Keep vCons as Parquet files in a bucket](../website/content/docs/parquet-storage.md): Turn on Parquet storage over an S3 bucket: what the bucket must be, the configuration, a check that the server packs its objects into Parquet files and still reads each vCon back, a read of the files with DuckDB, what a purge removes from the bucket and from the storage's disks, and what each refusal means.

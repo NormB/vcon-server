@@ -65,7 +65,7 @@ impl Store {
         retention: Retention,
         uuid: Option<Uuid>,
     ) -> Result<PurgeReport, StoreError> {
-        let hidden = self.catalog.snapshot()?.hidden_versions(uuid)?;
+        let hidden = self.read(|tx| tx.hidden_versions(uuid))?;
         // A restore, hold or read may commit here, between the listing and
         // each version's own transaction, which checks the rule again.
         self.pause();

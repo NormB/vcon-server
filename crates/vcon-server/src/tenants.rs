@@ -1736,9 +1736,11 @@ mod tests {
     }
 
     /// The steps of a create that the filesystem sees: the tenant's
-    /// directory, its objects directory, the sync of the tenant's directory
-    /// and the sync of `tenants/`. The row's commit follows them.
-    const CREATE_STEPS: usize = 4;
+    /// directory; the new catalog's WAL and then the tenant's directory
+    /// synced when the catalog opens; its objects directory and the sync of
+    /// the tenant's directory; start-up recovery's commit synced; the sync
+    /// of `tenants/`. The row's commit follows them.
+    const CREATE_STEPS: usize = 7;
 
     #[test]
     fn a_create_writes_its_directories_in_order() {
@@ -1746,20 +1748,40 @@ mod tests {
         let ops = f.fs.log().len();
         let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
         let dir = f.tenants_dir().join(id.to_string());
+        let wal = dir.join("catalog.sqlite-wal");
         assert_eq!(
             f.fs.log()[ops..],
             [
                 Op::CreateDir(dir.clone()),
+                Op::SyncData(wal.clone()),
+                Op::SyncDir(dir.clone()),
                 Op::CreateDir(dir.join("objects")),
                 Op::SyncDir(dir),
+                Op::SyncData(wal),
                 Op::SyncDir(f.tenants_dir()),
-            ]
+            ],
+            "the WAL is synced, then its directory, before anything else is made"
         );
-        assert_eq!(f.fs.log().len() - ops, CREATE_STEPS);
+        assert_eq!(
+            f.fs.log().len() - ops,
+            CREATE_STEPS,
+            "the steps a cut can hit"
+        );
     }
 
     #[test]
     fn a_create_cut_off_at_any_step_leaves_a_whole_tenant_or_none() {
+        let uncut = {
+            let f = fixture();
+            let ops = f.fs.log().len();
+            f.tenants.create(Actor::Cli, "acme", None).expect("made");
+            f.fs.log()[ops..].to_vec()
+        };
+        assert_eq!(
+            uncut.len(),
+            CREATE_STEPS,
+            "every step of a create: {uncut:?}"
+        );
         for step in 0..=CREATE_STEPS {
             let mut f = fixture();
             f.fs.fail_from(f.fs.log().len() + step);

@@ -22,11 +22,10 @@ impl Store {
         if self.packs.is_none() || plan.merge_below == 0 {
             return Ok(0);
         }
-        let (named, pending) = {
-            let mut tx = self.catalog.snapshot()?;
+        let (named, pending) = self.read(|tx| {
             let pending: HashSet<FileId> = tx.purge_pending()?.into_iter().collect();
-            (tx.named_files()?, pending)
-        };
+            Ok((tx.named_files()?, pending))
+        })?;
         // Each date's small files, in the catalog's order, up to one file's
         // size together.
         let mut dates: BTreeMap<String, Vec<(FileId, u64)>> = BTreeMap::new();
@@ -66,8 +65,8 @@ impl Store {
         };
         let now = nanos(self.clock.now());
         let grace = i64::try_from(plan.grace.as_nanos()).unwrap_or(i64::MAX);
-        let (unnamed, pending) = {
-            let mut tx = self.catalog.snapshot()?;
+        // Expired files are removed only once what was read is durable.
+        let (unnamed, pending) = self.read(|tx| {
             let pending: HashSet<FileId> = tx.purge_pending()?.into_iter().collect();
             let mut unnamed = Vec::new();
             for file in tx.unnamed_files()? {
@@ -75,8 +74,8 @@ impl Store {
                     unnamed.push((file, info.unnamed_at));
                 }
             }
-            (unnamed, pending)
-        };
+            Ok((unnamed, pending))
+        })?;
         for (file, at) in unnamed {
             let expired = at.is_some_and(|at| now.saturating_sub(at) >= grace);
             if expired && !pending.contains(&file) {

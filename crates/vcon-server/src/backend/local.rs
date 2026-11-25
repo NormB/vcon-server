@@ -26,6 +26,8 @@ use crate::ids::{FileId, KeyId, TenantId, UserId, VersionId};
 use crate::store::{OpenError, Store, StoreError};
 use crate::tenants::{OpenStep, RegistryError, TenantError};
 
+mod durable;
+
 /// The connection tests reach the local catalogs through.
 #[cfg(test)]
 pub(crate) type LocalConn = Connection;
@@ -84,10 +86,30 @@ CREATE TEMP TABLE pending_write (
 /// holds the WAL.
 const CHECKPOINT_RETRY: std::time::Duration = std::time::Duration::from_millis(10);
 
+/// How a tenant catalog's commits are made durable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Durability {
+    /// The process that writes the data directory: a server, or a command
+    /// that runs alone. The connection runs with `synchronous = NORMAL`; a
+    /// commit lets the connection go once its frames are in the WAL and
+    /// returns after one fdatasync of the WAL covers it (a group sync), and
+    /// a transaction that only read waits until every commit it may have
+    /// seen is durable (durable.rs).
+    Group,
+    /// A command beside a server. Its own commits sync inside COMMIT
+    /// (`synchronous = FULL`), so the server never sees one of them before
+    /// it is durable; and since it can read the server's commits before
+    /// the server has synced them, which it cannot count, each of its
+    /// transactions syncs the WAL at its end, before anything is answered.
+    Beside,
+}
+
 /// A tenant catalog in a SQLCipher file.
 pub struct LocalCatalog {
     conn: Mutex<Connection>,
     catalog_key: Key,
+    durable: durable::Durable,
+    durability: Durability,
     #[cfg(test)]
     fault: Mutex<Option<(usize, CommitError)>>,
     #[cfg(test)]
@@ -95,14 +117,39 @@ pub struct LocalCatalog {
 }
 
 impl LocalCatalog {
-    /// Opens the catalog at `path` under `catalog_key`, making it if new.
-    pub fn open(path: &Path, catalog_key: Key) -> Result<LocalCatalog, catalog::CatalogError> {
+    /// Opens the catalog at `path` under `catalog_key`, making it if new,
+    /// and opens its WAL for the syncs `durability` makes, through `fs`.
+    pub fn open(
+        path: &Path,
+        catalog_key: Key,
+        fs: &dyn Fs,
+        durability: Durability,
+    ) -> Result<LocalCatalog, catalog::CatalogError> {
         let schema = format!("{TABLES}{}{}", catalog::PACK_TABLES, audit::SCHEMA);
         let conn = catalog::open(path, &catalog_key, &schema)?;
         conn.execute_batch(PENDING_WRITES)?;
+        if durability == Durability::Group {
+            conn.pragma_update(None, "synchronous", "NORMAL")?;
+        }
+        // The WAL exists once the connection has read the file in WAL mode
+        // (catalog::open reads its schema version). It is opened here, once,
+        // so the handle sees every writeback error from now on; synced, so
+        // commits an earlier process left unsynced (a process that crashed)
+        // are durable before anything here answers from them; and the
+        // directory synced, so the file's entry is too.
+        let wal = fs
+            .open_for_sync(&catalog::sibling(path, "-wal"))
+            .and_then(|wal| wal.sync_data().map(|()| wal))
+            .and_then(|wal| {
+                fs.sync_dir(path.parent().unwrap_or(Path::new(".")))
+                    .map(|()| wal)
+            })
+            .map_err(catalog::CatalogError::Io)?;
         Ok(LocalCatalog {
             conn: Mutex::new(conn),
             catalog_key,
+            durable: durable::Durable::new(wal),
+            durability,
             #[cfg(test)]
             fault: Mutex::new(None),
             #[cfg(test)]
@@ -118,13 +165,34 @@ impl LocalCatalog {
 
     fn begin(&self, how: &str) -> Result<Box<dyn CatalogTx + '_>, StoreError> {
         let conn = self.conn();
+        self.durable.check().map_err(io)?;
         conn.cached_run(how, []).map_err(io)?;
         Ok(Box::new(LocalTx {
-            conn,
+            conn: Held::On(conn),
+            durable: &self.durable,
+            durability: self.durability,
             open: true,
             #[cfg(test)]
             fault: &self.fault,
         }))
+    }
+}
+
+/// A transaction's hold on the tenant's connection, let go before the
+/// transaction waits for a sync.
+enum Held<'a> {
+    On(MutexGuard<'a, Connection>),
+    Gone,
+}
+
+impl std::ops::Deref for Held<'_> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Connection {
+        match self {
+            Held::On(conn) => conn,
+            Held::Gone => unreachable!("a transaction uses its connection only until it ends"),
+        }
     }
 }
 
@@ -172,8 +240,21 @@ impl Catalog for LocalCatalog {
         }
     }
 
+    /// The copy holds only what is durable: with `Group`, every commit
+    /// written is synced before the copy is made (no commit can start while
+    /// the connection is held); with `Beside`, the WAL is synced after the
+    /// copy is made, before it is returned.
     fn backup_into(&self, to: &Path) -> Result<Vec<(VersionId, Option<Packed>)>, StoreError> {
-        catalog::backup(&self.conn(), to, &self.catalog_key).map_err(io)?;
+        {
+            let conn = self.conn();
+            if self.durability == Durability::Group {
+                self.durable.wait(self.durable.seen()).map_err(io)?;
+            }
+            catalog::backup(&conn, to, &self.catalog_key).map_err(io)?;
+            if self.durability == Durability::Beside {
+                self.durable.sync_seen(data_version(&conn)).map_err(io)?;
+            }
+        }
         let copy = catalog::open(to, &self.catalog_key, "").map_err(io)?;
         let mut rows = copy
             .prepare_cached(&format!(
@@ -202,8 +283,45 @@ impl Catalog for LocalCatalog {
         .map_err(io)
     }
 
+    /// Writes nothing that is not durable: with `Group`, every commit
+    /// written is synced first (none can start while the connection is
+    /// held); with `Beside`, a read transaction fixes what is read, the WAL
+    /// is synced, and only then are the records written out.
     fn export(&self, after: i64, out: &mut dyn Write) -> Result<(), AuditError> {
-        audit::export(&self.conn(), Some(after), out)
+        let conn = self.conn();
+        let poisoned = |_| AuditError::Sqlite(not_durable());
+        match self.durability {
+            Durability::Group => {
+                self.durable.wait(self.durable.seen()).map_err(poisoned)?;
+                audit::export(&conn, Some(after), out)
+            }
+            Durability::Beside => {
+                conn.execute_batch("BEGIN DEFERRED")?;
+                let exported = (|| {
+                    let _: i64 =
+                        conn.query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get(0))?;
+                    self.durable
+                        .sync_seen(data_version(&conn))
+                        .map_err(poisoned)?;
+                    audit::export(&conn, Some(after), out)
+                })();
+                let _ = conn.execute_batch("ROLLBACK");
+                exported
+            }
+        }
+    }
+
+    /// With `Group`: holding the connection (no commit can begin), waits
+    /// until a sync covers every commit written, which is no wait when
+    /// each has returned; Io once any sync failed. With `Beside`, whose
+    /// own commits sync inside COMMIT and whose reads synced at their end:
+    /// Io once a sync failed.
+    fn close(&self) -> Result<(), StoreError> {
+        let _conn = self.conn();
+        match self.durability {
+            Durability::Group => self.durable.wait(self.durable.seen()).map_err(io),
+            Durability::Beside => self.durable.check().map_err(io),
+        }
     }
 
     #[cfg(test)]
@@ -220,12 +338,19 @@ impl Catalog for LocalCatalog {
     fn local_conn(&self) -> MutexGuard<'_, Connection> {
         self.conn()
     }
+
+    #[cfg(test)]
+    fn await_sync_waiters(&self, n: usize) {
+        self.durable.await_waiting(n);
+    }
 }
 
 /// A transaction on a local catalog, begun with `BEGIN`, and rolled back
 /// when dropped without a commit.
 struct LocalTx<'a> {
-    conn: MutexGuard<'a, Connection>,
+    conn: Held<'a>,
+    durable: &'a durable::Durable,
+    durability: Durability,
     open: bool,
     #[cfg(test)]
     fault: &'a Mutex<Option<(usize, CommitError)>>,
@@ -233,10 +358,51 @@ struct LocalTx<'a> {
 
 impl Drop for LocalTx<'_> {
     fn drop(&mut self) {
+        // A failed wait cannot be reported here; the catalog is poisoned,
+        // so every later transaction fails (CatalogTx::end).
+        let _ = self.finish();
+    }
+}
+
+impl LocalTx<'_> {
+    /// Ends the transaction if it is not ended: rolls back what is open,
+    /// lets the connection go, then waits until every commit it may have
+    /// seen is durable.
+    fn finish(&mut self) -> Result<(), durable::Poisoned> {
+        if matches!(self.conn, Held::Gone) {
+            return Ok(());
+        }
         if self.open && !self.conn.is_autocommit() {
             let _ = self.conn.execute_batch("ROLLBACK");
         }
+        match self.durability {
+            Durability::Group => {
+                let seen = self.durable.seen();
+                self.conn = Held::Gone;
+                self.durable.wait(seen)
+            }
+            Durability::Beside => {
+                let version = data_version(&self.conn);
+                self.conn = Held::Gone;
+                self.durable.sync_seen(version)
+            }
+        }
     }
+}
+
+/// The error of a catalog whose WAL could not be synced (durable.rs).
+fn not_durable() -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_IOERR),
+        Some("the catalog's WAL could not be synced".to_owned()),
+    )
+}
+
+/// SQLite's data_version of the file as `conn` sees it: it changes when
+/// another connection commits. None if it cannot be read.
+fn data_version(conn: &Connection) -> Option<i64> {
+    conn.cached_row("PRAGMA data_version", [], |r| r.get(0))
+        .ok()
 }
 
 impl LocalTx<'_> {
@@ -1032,15 +1198,43 @@ impl CatalogTx for LocalTx<'_> {
         }
     }
 
+    /// With `Group`: numbered, COMMIT (frames written, not synced), the
+    /// connection let go, then the wait for the group sync; with `Beside`,
+    /// COMMIT syncs (FULL), which covers every frame before it as well.
     fn commit(mut self: Box<Self>) -> Result<(), CommitError> {
+        let number = match self.durability {
+            // Poisoned: nothing more is written to this catalog; Drop
+            // rolls the transaction back.
+            Durability::Group => Some(
+                self.durable
+                    .begin_commit()
+                    .map_err(|_| CommitError::RolledBack)?,
+            ),
+            Durability::Beside => None,
+        };
         #[cfg(test)]
         if let Some(outcome) = injected(&self.conn, self.fault) {
             self.open = false;
+            if let Some(n) = number {
+                self.durable.written(n);
+            }
             return outcome;
         }
         let outcome = end(&self.conn);
+        if let Some(n) = number {
+            self.durable.written(n);
+        }
         self.open = outcome == Err(CommitError::RolledBack) && !self.conn.is_autocommit();
-        outcome
+        outcome?;
+        self.conn = Held::Gone;
+        match number {
+            Some(n) => self.durable.wait(n).map_err(|_| CommitError::Unknown),
+            None => Ok(()),
+        }
+    }
+
+    fn end(mut self: Box<Self>) -> Result<(), StoreError> {
+        self.finish().map_err(io)
     }
 }
 
@@ -2032,7 +2226,13 @@ impl TenantSpace for LocalTenantSpace {
             #[cfg(feature = "s3")]
             ObjectPlace::S3(s3) => {
                 let catalog_key = envelope::catalog_key(&key).map_err(|_| StoreError::Io)?;
-                let catalog = LocalCatalog::open(&self.catalog(id), catalog_key)?;
+                let durability = if recover {
+                    Durability::Group
+                } else {
+                    Durability::Beside
+                };
+                let catalog =
+                    LocalCatalog::open(&self.catalog(id), catalog_key, &*self.fs, durability)?;
                 Store::open_on(
                     id,
                     key,
@@ -2241,7 +2441,8 @@ mod tests {
     fn tenant_catalog(dir: &tempfile::TempDir) -> (std::path::PathBuf, Key, LocalCatalog) {
         let path = dir.path().join("catalog.sqlite");
         let key = Key::generate().expect("a key");
-        let catalog = LocalCatalog::open(&path, under(&key)).expect("the catalog opens");
+        let catalog = LocalCatalog::open(&path, under(&key), &OsFs, Durability::Group)
+            .expect("the catalog opens");
         (path, key, catalog)
     }
 
@@ -2371,7 +2572,8 @@ mod tests {
         tx.add_wrap(KeyId([7; 8])).expect("a row of the file");
         tx.commit().expect("commits");
         drop(catalog);
-        let catalog = LocalCatalog::open(&path, under(&key)).expect("opens again");
+        let catalog =
+            LocalCatalog::open(&path, under(&key), &OsFs, Durability::Group).expect("opens again");
         let mut tx = catalog.snapshot().expect("a snapshot");
         assert_eq!(
             tx.pending().expect("reads"),
@@ -2463,6 +2665,638 @@ mod tests {
         assert!(
             matches!(objects.get(version), Err(ObjectError::Missing)),
             "a removed file is a missing object"
+        );
+    }
+
+    /// A tenant catalog in a crash filesystem's root, whose WAL syncs the
+    /// filesystem holds, fails and counts.
+    struct Synced {
+        dir: tempfile::TempDir,
+        fs: Arc<crate::fs::CrashFs>,
+        key: Key,
+        catalog: LocalCatalog,
+    }
+
+    impl Synced {
+        fn path(&self) -> PathBuf {
+            self.dir.path().join("catalog.sqlite")
+        }
+
+        fn wal(&self) -> PathBuf {
+            self.dir.path().join("catalog.sqlite-wal")
+        }
+
+        fn syncs(&self) -> usize {
+            self.fs.syncs(&self.wal())
+        }
+
+        /// Another catalog on the same file, as another process opens it.
+        fn open(&self, durability: Durability) -> LocalCatalog {
+            LocalCatalog::open(&self.path(), under(&self.key), &*self.fs, durability)
+                .expect("opens again")
+        }
+    }
+
+    fn synced(durability: Durability) -> Synced {
+        let dir = tempfile::tempdir().expect("a directory");
+        let fs = Arc::new(crate::fs::CrashFs::new(dir.path()));
+        let key = Key::generate().expect("a key");
+        let catalog = LocalCatalog::open(
+            &dir.path().join("catalog.sqlite"),
+            under(&key),
+            &*fs,
+            durability,
+        )
+        .expect("the catalog opens");
+        Synced {
+            dir,
+            fs,
+            key,
+            catalog,
+        }
+    }
+
+    /// A commit that writes a frame to the WAL: one more wrap under a key.
+    fn wrap(catalog: &LocalCatalog, key: KeyId) -> Result<(), CommitError> {
+        let mut tx = catalog.immediate().expect("a write begins");
+        tx.add_wrap(key).expect("adds a wrap");
+        tx.commit()
+    }
+
+    fn a_key() -> KeyId {
+        Key::generate().expect("a key").id()
+    }
+
+    fn synchronous(catalog: &LocalCatalog) -> i64 {
+        catalog
+            .local_conn()
+            .pragma_query_value(None, "synchronous", |r| r.get(0))
+            .expect("reads synchronous")
+    }
+
+    #[test]
+    fn a_catalog_written_by_its_own_process_runs_with_synchronous_normal() {
+        let s = synced(Durability::Group);
+        assert_eq!(
+            synchronous(&s.catalog),
+            1,
+            "NORMAL: COMMIT does not sync; the group sync does, after the connection is let go"
+        );
+    }
+
+    #[test]
+    fn a_catalog_opened_beside_a_server_keeps_synchronous_full() {
+        let s = synced(Durability::Beside);
+        assert_eq!(
+            synchronous(&s.catalog),
+            2,
+            "FULL: the server never sees a commit of a command beside it before it is durable"
+        );
+    }
+
+    #[test]
+    fn opening_a_catalog_syncs_its_wal_then_its_directory() {
+        let s = synced(Durability::Group);
+        let order: Vec<crate::fs::Op> =
+            s.fs.log()
+                .into_iter()
+                .filter(|op| matches!(op, crate::fs::Op::SyncData(_) | crate::fs::Op::SyncDir(_)))
+                .collect();
+        assert_eq!(
+            order,
+            [
+                crate::fs::Op::SyncData(s.wal()),
+                crate::fs::Op::SyncDir(s.dir.path().to_owned()),
+            ],
+            "the WAL a crash could otherwise lose with commits a restart saw, then its entry"
+        );
+    }
+
+    #[test]
+    fn a_catalog_whose_wal_cannot_be_synced_does_not_open() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let fs = crate::fs::CrashFs::new(dir.path());
+        fs.fail_syncs();
+        let key = Key::generate().expect("a key");
+        assert!(
+            LocalCatalog::open(
+                &dir.path().join("catalog.sqlite"),
+                under(&key),
+                &fs,
+                Durability::Group
+            )
+            .is_err(),
+            "commits a restart can read must be durable before anything is served"
+        );
+    }
+
+    #[test]
+    fn a_catalog_whose_directory_cannot_be_synced_does_not_open() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let tenant = dir.path().join("tenant");
+        std::fs::create_dir(&tenant).expect("made on disk, outside the model");
+        let fs = crate::fs::CrashFs::new(dir.path());
+        let key = Key::generate().expect("a key");
+        assert!(
+            LocalCatalog::open(
+                &tenant.join("catalog.sqlite"),
+                under(&key),
+                &fs,
+                Durability::Group
+            )
+            .is_err(),
+            "the directory sync failed (the model has no such directory)"
+        );
+    }
+
+    #[test]
+    fn a_commit_returns_only_after_its_sync() {
+        let s = synced(Durability::Group);
+        let key = a_key();
+        s.fs.hold_syncs();
+        std::thread::scope(|t| {
+            let committing = t.spawn(|| wrap(&s.catalog, key));
+            s.fs.await_held(1);
+            assert!(
+                !committing.is_finished(),
+                "no return while the sync is held"
+            );
+            s.fs.release_syncs();
+            committing
+                .join()
+                .expect("the commit thread ends")
+                .expect("commits once synced");
+        });
+        assert_eq!(s.syncs(), 2, "the open's sync and the commit's");
+    }
+
+    #[test]
+    fn a_snapshot_reads_while_a_commit_waits_for_its_sync_and_ends_after_it() {
+        let s = synced(Durability::Group);
+        let key = a_key();
+        s.fs.hold_syncs();
+        std::thread::scope(|t| {
+            let committing = t.spawn(|| wrap(&s.catalog, key));
+            s.fs.await_held(1);
+            let (read, seen) = std::sync::mpsc::channel();
+            let catalog = &s.catalog;
+            let ending = t.spawn(move || {
+                let mut tx = catalog.snapshot()?;
+                read.send(tx.wraps(key)?).expect("the test listens");
+                tx.end()
+            });
+            assert_eq!(
+                seen.recv_timeout(std::time::Duration::from_secs(20))
+                    .expect("the snapshot reads while the commit's sync is held"),
+                1,
+                "the commit is visible before it is durable"
+            );
+            s.fs.release_syncs();
+            committing.join().expect("ends").expect("commits");
+            ending
+                .join()
+                .expect("ends")
+                .expect("the snapshot ends once what it saw is durable");
+        });
+    }
+
+    #[test]
+    fn a_snapshot_that_saw_an_unsynced_commit_does_not_end_before_the_sync() {
+        let s = synced(Durability::Group);
+        let key = a_key();
+        s.fs.hold_syncs();
+        std::thread::scope(|t| {
+            let committing = t.spawn(|| wrap(&s.catalog, key));
+            s.fs.await_held(1);
+            let ending = t.spawn(|| s.catalog.snapshot()?.end());
+            // The syncing commit's wait is held; the snapshot's end waits
+            // for it, and holds no sync of its own.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+            while std::time::Instant::now() < deadline {
+                assert!(!ending.is_finished(), "nothing it saw is durable yet");
+                std::thread::yield_now();
+            }
+            s.fs.release_syncs();
+            committing.join().expect("ends").expect("commits");
+            ending.join().expect("ends").expect("ends after the sync");
+        });
+    }
+
+    #[test]
+    fn a_snapshot_that_saw_no_commit_ends_without_a_sync() {
+        let s = synced(Durability::Group);
+        let before = s.syncs();
+        let mut tx = s.catalog.snapshot().expect("a snapshot");
+        assert_eq!(tx.wraps(a_key()).expect("reads"), 0, "nothing there");
+        tx.end().expect("ends");
+        assert_eq!(s.syncs(), before, "everything it saw was durable already");
+    }
+
+    #[test]
+    fn a_snapshot_after_a_synced_commit_ends_without_another_sync() {
+        let s = synced(Durability::Group);
+        wrap(&s.catalog, a_key()).expect("commits");
+        let before = s.syncs();
+        s.catalog
+            .snapshot()
+            .expect("a snapshot")
+            .end()
+            .expect("ends");
+        assert_eq!(s.syncs(), before, "the commit's own sync covers it");
+    }
+
+    #[test]
+    fn a_dropped_snapshot_still_waits_for_what_it_saw() {
+        let s = synced(Durability::Group);
+        let key = a_key();
+        s.fs.hold_syncs();
+        std::thread::scope(|t| {
+            let committing = t.spawn(|| wrap(&s.catalog, key));
+            s.fs.await_held(1);
+            let dropping = t.spawn(|| drop(s.catalog.snapshot().expect("a snapshot")));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+            while std::time::Instant::now() < deadline {
+                assert!(!dropping.is_finished(), "a drop is an end too");
+                std::thread::yield_now();
+            }
+            s.fs.release_syncs();
+            committing.join().expect("ends").expect("commits");
+            dropping.join().expect("the drop ends after the sync");
+        });
+    }
+
+    #[test]
+    fn a_write_dropped_without_commit_still_waits_for_what_it_saw() {
+        let s = synced(Durability::Group);
+        let (first, second) = (a_key(), a_key());
+        s.fs.hold_syncs();
+        std::thread::scope(|t| {
+            let committing = t.spawn(|| wrap(&s.catalog, first));
+            s.fs.await_held(1);
+            let dropping = t.spawn(|| {
+                let mut tx = s.catalog.immediate().expect("a write begins");
+                tx.add_wrap(second).expect("adds");
+                // Refused part-way, as a request that fails after a read.
+                drop(tx);
+            });
+            s.catalog.durable.await_waiting(2);
+            assert!(
+                !dropping.is_finished(),
+                "the drop ends only once what the write read is durable"
+            );
+            s.fs.release_syncs();
+            committing.join().expect("ends").expect("commits");
+            dropping.join().expect("the drop ends after the sync");
+        });
+        let mut tx = s.catalog.snapshot().expect("a snapshot");
+        assert_eq!(
+            (
+                tx.wraps(first).expect("reads"),
+                tx.wraps(second).expect("reads")
+            ),
+            (1, 0),
+            "the commit is kept and the dropped write rolled back"
+        );
+    }
+
+    /// The accepted decision for a write dropped without commit whose wait
+    /// fails: Drop cannot return the error, so the request is refused with
+    /// the error it already had, and the poisoned catalog refuses every
+    /// later request until it is reopened.
+    #[test]
+    fn a_write_dropped_without_commit_after_a_failed_sync_leaves_later_requests_refused() {
+        let s = synced(Durability::Group);
+        let (first, second) = (a_key(), a_key());
+        s.fs.hold_syncs();
+        std::thread::scope(|t| {
+            let committing = t.spawn(|| wrap(&s.catalog, first));
+            s.fs.await_held(1);
+            let dropping = t.spawn(|| {
+                let mut tx = s.catalog.immediate().expect("a write begins");
+                tx.add_wrap(second).expect("adds");
+                drop(tx);
+            });
+            s.catalog.durable.await_waiting(2);
+            s.fs.fail_syncs();
+            assert_eq!(
+                committing.join().expect("ends"),
+                Err(CommitError::Unknown),
+                "the commit it saw"
+            );
+            dropping
+                .join()
+                .expect("the drop ends; its failed wait is not lost");
+        });
+        s.fs.heal_syncs();
+        s.fs.release_syncs();
+        assert!(
+            matches!(s.catalog.immediate(), Err(StoreError::Io)),
+            "the next write is refused"
+        );
+        assert!(
+            matches!(s.catalog.snapshot(), Err(StoreError::Io)),
+            "the next read is refused"
+        );
+        let again = s.open(Durability::Group);
+        let mut tx = again.snapshot().expect("a reopened catalog reads");
+        assert_eq!(
+            tx.wraps(second).expect("reads"),
+            0,
+            "the dropped write is not there"
+        );
+    }
+
+    #[test]
+    fn a_close_waits_for_the_sync_of_a_commit_made_before_it() {
+        let s = synced(Durability::Group);
+        let key = a_key();
+        s.fs.hold_syncs();
+        std::thread::scope(|t| {
+            let committing = t.spawn(|| wrap(&s.catalog, key));
+            s.fs.await_held(1);
+            let closing = t.spawn(|| s.catalog.close());
+            s.catalog.await_sync_waiters(2);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+            while std::time::Instant::now() < deadline {
+                assert!(
+                    !closing.is_finished(),
+                    "no close while the commit's sync is held"
+                );
+                std::thread::yield_now();
+            }
+            s.fs.release_syncs();
+            assert_eq!(committing.join().expect("ends"), Ok(()), "committed");
+            assert_eq!(
+                closing.join().expect("ends"),
+                Ok(()),
+                "closed once the commit is durable"
+            );
+        });
+    }
+
+    #[test]
+    fn a_close_whose_commit_sync_fails_while_it_waits_answers_the_error() {
+        let s = synced(Durability::Group);
+        let key = a_key();
+        s.fs.hold_syncs();
+        std::thread::scope(|t| {
+            let committing = t.spawn(|| wrap(&s.catalog, key));
+            s.fs.await_held(1);
+            let closing = t.spawn(|| s.catalog.close());
+            s.catalog.await_sync_waiters(2);
+            s.fs.fail_syncs();
+            assert_eq!(
+                committing.join().expect("ends"),
+                Err(CommitError::Unknown),
+                "the commit's sync failed"
+            );
+            assert_eq!(
+                closing.join().expect("ends"),
+                Err(StoreError::Io),
+                "the close says a commit may be lost"
+            );
+        });
+    }
+
+    #[test]
+    fn a_close_whose_last_sync_failed_answers_the_error() {
+        let s = synced(Durability::Group);
+        s.fs.fail_syncs();
+        assert!(wrap(&s.catalog, a_key()).is_err(), "the sync failed");
+        s.fs.heal_syncs();
+        assert_eq!(
+            s.catalog.close(),
+            Err(StoreError::Io),
+            "a close after a failed sync answers it, though syncs work again"
+        );
+    }
+
+    #[test]
+    fn a_close_with_nothing_pending_answers_ok_without_a_sync() {
+        let s = synced(Durability::Group);
+        wrap(&s.catalog, a_key()).expect("committed and synced");
+        let before = s.syncs();
+        assert_eq!(s.catalog.close(), Ok(()), "every commit is durable");
+        assert_eq!(s.syncs(), before, "nothing to sync: the close made none");
+    }
+
+    #[test]
+    fn a_close_of_a_catalog_opened_beside_a_server_answers_a_failed_sync() {
+        let s = synced(Durability::Group);
+        let beside = s.open(Durability::Beside);
+        assert_eq!(beside.close(), Ok(()), "nothing failed");
+        s.fs.fail_syncs();
+        assert!(
+            beside.snapshot().and_then(|tx| tx.end()).is_err(),
+            "its end's sync failed"
+        );
+        s.fs.heal_syncs();
+        assert_eq!(beside.close(), Err(StoreError::Io), "the close answers it");
+    }
+
+    #[test]
+    fn a_failed_sync_makes_the_commit_unknown() {
+        let s = synced(Durability::Group);
+        s.fs.fail_syncs();
+        assert_eq!(
+            wrap(&s.catalog, a_key()),
+            Err(CommitError::Unknown),
+            "the frames are in the WAL; whether they reach the disk is not known"
+        );
+    }
+
+    #[test]
+    fn after_a_failed_sync_no_transaction_begins_until_the_catalog_is_reopened() {
+        let s = synced(Durability::Group);
+        s.fs.fail_syncs();
+        assert!(wrap(&s.catalog, a_key()).is_err(), "the sync failed");
+        s.fs.heal_syncs();
+        assert!(
+            matches!(s.catalog.immediate(), Err(StoreError::Io)),
+            "no write begins on a poisoned catalog"
+        );
+        assert!(
+            matches!(s.catalog.snapshot(), Err(StoreError::Io)),
+            "nor a read"
+        );
+        let again = s.open(Durability::Group);
+        wrap(&again, a_key()).expect("a reopened catalog commits again");
+    }
+
+    #[test]
+    fn a_snapshot_that_saw_a_commit_whose_sync_failed_ends_with_an_error() {
+        let s = synced(Durability::Group);
+        let key = a_key();
+        s.fs.hold_syncs();
+        std::thread::scope(|t| {
+            let committing = t.spawn(|| wrap(&s.catalog, key));
+            s.fs.await_held(1);
+            let ending = t.spawn(|| s.catalog.snapshot()?.end());
+            s.catalog.durable.await_waiting(2);
+            s.fs.fail_syncs();
+            assert_eq!(
+                committing.join().expect("ends"),
+                Err(CommitError::Unknown),
+                "the commit"
+            );
+            assert!(
+                matches!(ending.join().expect("ends"), Err(StoreError::Io)),
+                "the snapshot read what may be lost: its end fails, nothing is answered"
+            );
+        });
+    }
+
+    #[test]
+    fn a_commit_begun_on_a_poisoned_catalog_keeps_nothing() {
+        let s = synced(Durability::Group);
+        let (first, second) = (a_key(), a_key());
+        s.fs.hold_syncs();
+        std::thread::scope(|t| {
+            let committing = t.spawn(|| wrap(&s.catalog, first));
+            s.fs.await_held(1);
+            // The connection is free while the first commit waits: a second
+            // write begins, then the first one's sync fails.
+            let mut tx = s.catalog.immediate().expect("begins before the failure");
+            tx.add_wrap(second).expect("adds");
+            s.fs.fail_syncs();
+            assert_eq!(
+                committing.join().expect("ends"),
+                Err(CommitError::Unknown),
+                "the first commit"
+            );
+            assert_eq!(
+                tx.commit(),
+                Err(CommitError::RolledBack),
+                "a commit on a poisoned catalog rolls back: nothing of it is kept"
+            );
+        });
+        s.fs.heal_syncs();
+        s.fs.release_syncs();
+        let again = s.open(Durability::Group);
+        let mut tx = again.snapshot().expect("a snapshot");
+        assert_eq!(
+            tx.wraps(second).expect("reads"),
+            0,
+            "the second write is not there"
+        );
+    }
+
+    #[test]
+    fn a_catalog_beside_a_server_syncs_the_wal_at_a_snapshot_end() {
+        let s = synced(Durability::Beside);
+        let server = s.open(Durability::Group);
+        let before = s.syncs();
+        wrap(&server, a_key()).expect("the server commits");
+        s.catalog
+            .snapshot()
+            .expect("a snapshot")
+            .end()
+            .expect("ends");
+        assert_eq!(
+            s.syncs(),
+            before + 2,
+            "the server's commit synced once, and the command's end syncs again: it cannot count the server's commits"
+        );
+    }
+
+    #[test]
+    fn a_catalog_beside_a_server_does_not_sync_again_when_nothing_changed() {
+        let s = synced(Durability::Beside);
+        s.catalog
+            .snapshot()
+            .expect("a snapshot")
+            .end()
+            .expect("ends");
+        let before = s.syncs();
+        s.catalog
+            .snapshot()
+            .expect("a snapshot")
+            .end()
+            .expect("ends");
+        assert_eq!(
+            s.syncs(),
+            before,
+            "no other connection committed since the last sync, which covered everything"
+        );
+    }
+
+    #[test]
+    fn a_catalog_beside_a_server_syncs_its_own_commit_inside_commit() {
+        let s = synced(Durability::Beside);
+        let before = s.syncs();
+        wrap(&s.catalog, a_key()).expect("commits");
+        assert_eq!(
+            s.syncs(),
+            before,
+            "FULL syncs inside COMMIT, before the server can see it: no sync of ours"
+        );
+    }
+
+    #[test]
+    fn an_export_waits_for_the_records_it_may_write() {
+        let s = synced(Durability::Group);
+        s.fs.hold_syncs();
+        std::thread::scope(|t| {
+            let committing = t.spawn(|| wrap(&s.catalog, a_key()));
+            s.fs.await_held(1);
+            let exporting = t.spawn(|| {
+                let mut out = Vec::new();
+                s.catalog.export(0, &mut out).map(|()| out)
+            });
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+            while std::time::Instant::now() < deadline {
+                assert!(!exporting.is_finished(), "no output before the sync");
+                std::thread::yield_now();
+            }
+            s.fs.release_syncs();
+            committing.join().expect("ends").expect("commits");
+            exporting.join().expect("ends").expect("exports");
+        });
+    }
+
+    #[test]
+    fn an_export_beside_a_server_syncs_before_writing() {
+        let s = synced(Durability::Beside);
+        let server = s.open(Durability::Group);
+        let before = s.syncs();
+        wrap(&server, a_key()).expect("the server commits");
+        let mut out = Vec::new();
+        s.catalog.export(0, &mut out).expect("exports");
+        assert_eq!(
+            s.syncs(),
+            before + 2,
+            "the server's sync, then the export's"
+        );
+    }
+
+    #[test]
+    fn a_backup_beside_a_server_syncs_what_it_copied() {
+        let s = synced(Durability::Beside);
+        let server = s.open(Durability::Group);
+        let before = s.syncs();
+        wrap(&server, a_key()).expect("the server commits");
+        let to = tempfile::tempdir().expect("a directory");
+        s.catalog
+            .backup_into(&to.path().join("catalog.sqlite"))
+            .expect("backs up");
+        assert_eq!(
+            s.syncs(),
+            before + 2,
+            "the server's sync, then the backup's"
+        );
+    }
+
+    #[test]
+    fn a_backup_on_a_poisoned_catalog_fails() {
+        let s = synced(Durability::Group);
+        s.fs.fail_syncs();
+        assert!(wrap(&s.catalog, a_key()).is_err(), "poisoned");
+        let to = tempfile::tempdir().expect("a directory");
+        assert!(
+            s.catalog
+                .backup_into(&to.path().join("catalog.sqlite"))
+                .is_err(),
+            "a copy could hold a commit that may be lost"
         );
     }
 }

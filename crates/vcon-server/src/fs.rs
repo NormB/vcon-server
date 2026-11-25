@@ -87,6 +87,32 @@ pub trait Fs: Send + Sync {
     /// `NotFound` if there is no such directory, an error if the path is a
     /// file, or any other I/O error.
     fn remove_dir_all(&self, dir: &Path) -> io::Result<()>;
+    /// Opens an existing file, to make its data durable later through the
+    /// handle, as often as needed. Linux reports a failed writeback to each
+    /// file open at the time, once: a file opened after the failure does not
+    /// see it, so a file that must see every failure is opened once, before
+    /// the writes, and kept open.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` if there is no such file, or any other I/O error.
+    fn open_for_sync(&self, path: &Path) -> io::Result<Box<dyn SyncHandle>>;
+}
+
+/// A file kept open so its data can be made durable again and again.
+pub trait SyncHandle: Send + Sync {
+    /// Makes the file's data durable (fdatasync).
+    ///
+    /// # Errors
+    ///
+    /// The I/O error the sync reported, a failed writeback among them.
+    fn sync_data(&self) -> io::Result<()>;
+}
+
+impl SyncHandle for File {
+    fn sync_data(&self) -> io::Result<()> {
+        File::sync_data(self)
+    }
 }
 
 /// The operating system's filesystem. No test can see whether a sync
@@ -164,6 +190,10 @@ impl Fs for OsFs {
     fn remove_dir_all(&self, dir: &Path) -> io::Result<()> {
         std::fs::remove_dir_all(dir)
     }
+
+    fn open_for_sync(&self, path: &Path) -> io::Result<Box<dyn SyncHandle>> {
+        Ok(Box::new(File::open(path)?))
+    }
 }
 
 #[cfg(test)]
@@ -175,15 +205,18 @@ mod crash {
     use std::ffi::OsString;
     use std::io;
     use std::path::{Path, PathBuf};
-    use std::sync::Mutex;
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::time::{Duration, Instant};
 
-    use super::Fs;
+    use super::{Fs, SyncHandle};
 
     /// One call, as the crash filesystem logs it.
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub(crate) enum Op {
         Write(PathBuf),
         SyncFile(PathBuf),
+        /// A sync through a handle of a file on disk.
+        SyncData(PathBuf),
         Rename(PathBuf, PathBuf),
         SyncDir(PathBuf),
         Remove(PathBuf),
@@ -203,8 +236,19 @@ mod crash {
     /// SQLite opens its catalogs there; a crash drops it only from the model.
     /// A directory is removed only from the model, since a crash may bring
     /// it back and SQLite's files in it must then still be there.
+    ///
+    /// A file opened for sync is a file on disk (SQLite's WAL): its syncs
+    /// are real, logged as `SyncData`, counted, and can be held or made to
+    /// fail, so a test can order a commit's sync against everything else.
     pub(crate) struct CrashFs {
+        shared: Arc<Shared>,
+    }
+
+    struct Shared {
         state: Mutex<State>,
+        /// Wakes held syncs when they are let go, and a test waiting for a
+        /// sync to be held.
+        turn: Condvar,
     }
 
     struct State {
@@ -214,6 +258,14 @@ mod crash {
         log: Vec<Op>,
         /// From this many changes on, every change fails.
         fail_from: Option<usize>,
+        /// While set, a sync through a handle waits.
+        hold_syncs: bool,
+        /// The syncs waiting now.
+        held: usize,
+        /// While set, a sync through a handle fails.
+        fail_syncs: bool,
+        /// The syncs done through handles, per file.
+        syncs: BTreeMap<PathBuf, usize>,
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,6 +296,14 @@ mod crash {
         match (path.parent(), path.file_name()) {
             (Some(dir), Some(name)) => Ok((dir.to_owned(), name.to_owned())),
             _ => Err(io::Error::from(io::ErrorKind::InvalidInput)),
+        }
+    }
+
+    impl Shared {
+        fn state(&self) -> std::sync::MutexGuard<'_, State> {
+            self.state
+                .lock()
+                .expect("no test panicked holding the lock")
         }
     }
 
@@ -292,20 +352,70 @@ mod crash {
         /// A model rooted at `root`, an existing directory.
         pub(crate) fn new(root: &Path) -> CrashFs {
             CrashFs {
-                state: Mutex::new(State {
-                    root: root.to_owned(),
-                    dirs: BTreeMap::from([(root.to_owned(), Dir::default())]),
-                    files: Vec::new(),
-                    log: Vec::new(),
-                    fail_from: None,
+                shared: Arc::new(Shared {
+                    state: Mutex::new(State {
+                        root: root.to_owned(),
+                        dirs: BTreeMap::from([(root.to_owned(), Dir::default())]),
+                        files: Vec::new(),
+                        log: Vec::new(),
+                        fail_from: None,
+                        hold_syncs: false,
+                        held: 0,
+                        fail_syncs: false,
+                        syncs: BTreeMap::new(),
+                    }),
+                    turn: Condvar::new(),
                 }),
             }
         }
 
         fn state(&self) -> std::sync::MutexGuard<'_, State> {
-            self.state
-                .lock()
-                .expect("no test panicked holding the lock")
+            self.shared.state()
+        }
+
+        /// From now on, a sync through a handle waits until `release_syncs`.
+        pub(crate) fn hold_syncs(&self) {
+            self.state().hold_syncs = true;
+        }
+
+        /// Lets every held sync go on, and later ones run at once.
+        pub(crate) fn release_syncs(&self) {
+            self.state().hold_syncs = false;
+            self.shared.turn.notify_all();
+        }
+
+        /// From now on, a sync through a handle fails, as a failed
+        /// writeback would make it.
+        pub(crate) fn fail_syncs(&self) {
+            self.state().fail_syncs = true;
+            self.shared.turn.notify_all();
+        }
+
+        /// Syncs through handles succeed again.
+        pub(crate) fn heal_syncs(&self) {
+            self.state().fail_syncs = false;
+        }
+
+        /// The syncs done through handles of `path` so far.
+        pub(crate) fn syncs(&self, path: &Path) -> usize {
+            self.state().syncs.get(path).copied().unwrap_or(0)
+        }
+
+        /// Waits until `n` syncs are held; panics after 20 s, so a test
+        /// that never holds one fails instead of hanging.
+        pub(crate) fn await_held(&self, n: usize) {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            let mut state = self.state();
+            while state.held < n {
+                let left = deadline.saturating_duration_since(Instant::now());
+                assert!(!left.is_zero(), "{n} syncs held within 20 s");
+                state = self
+                    .shared
+                    .turn
+                    .wait_timeout(state, left)
+                    .expect("no test panicked holding the lock")
+                    .0;
+            }
         }
 
         /// Loses everything not yet synced.
@@ -325,6 +435,14 @@ mod crash {
         /// has died. `crash` clears it.
         pub(crate) fn fail_from(&self, n: usize) {
             self.state().fail_from = Some(n);
+        }
+
+        /// Ends the fail point without a crash: later changes work again
+        /// and nothing is lost, as after an I/O error the process lived
+        /// through. A test uses it to see what a live process does next
+        /// (a poisoned catalog stays poisoned).
+        pub(crate) fn revive(&self) {
+            self.state().fail_from = None;
         }
 
         /// Every change so far, in order.
@@ -463,6 +581,55 @@ mod crash {
             }
             state.dir(&parent)?.now.remove(&name);
             state.log.push(Op::RemoveDir(dir.to_owned()));
+            Ok(())
+        }
+
+        fn open_for_sync(&self, path: &Path) -> io::Result<Box<dyn SyncHandle>> {
+            Ok(Box::new(CrashSync {
+                path: path.to_owned(),
+                file: std::fs::File::open(path)?,
+                shared: self.shared.clone(),
+            }))
+        }
+    }
+
+    /// A handle of a file on disk whose syncs the crash filesystem holds,
+    /// fails, logs and counts.
+    struct CrashSync {
+        path: PathBuf,
+        file: std::fs::File,
+        shared: Arc<Shared>,
+    }
+
+    impl SyncHandle for CrashSync {
+        fn sync_data(&self) -> io::Result<()> {
+            let mut state = self.shared.state();
+            state.alive()?;
+            state.held += 1;
+            self.shared.turn.notify_all();
+            // A test that never lets a held sync go fails here, after 60 s,
+            // instead of hanging.
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while state.hold_syncs && !state.fail_syncs {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    state.held -= 1;
+                    return Err(io::Error::other("a held sync was not let go within 60 s"));
+                }
+                state = self
+                    .shared
+                    .turn
+                    .wait_timeout(state, left)
+                    .expect("no test panicked holding the lock")
+                    .0;
+            }
+            state.held -= 1;
+            if state.fail_syncs {
+                return Err(io::Error::other("the writeback failed"));
+            }
+            self.file.sync_data()?;
+            state.log.push(Op::SyncData(self.path.clone()));
+            *state.syncs.entry(self.path.clone()).or_default() += 1;
             Ok(())
         }
     }
@@ -941,5 +1108,168 @@ mod tests {
         m.fs.crash();
         m.fs.write_new(&g, b"x")
             .expect("works again after the crash");
+    }
+
+    /// A file on disk, beside the model, as SQLite's WAL is.
+    fn on_disk(root: &Path) -> PathBuf {
+        let wal = root.join("catalog.sqlite-wal");
+        std::fs::write(&wal, b"frames").expect("write the file on disk");
+        wal
+    }
+
+    #[test]
+    fn the_os_filesystem_opens_an_existing_file_for_sync_and_syncs_it_again_and_again() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let wal = on_disk(root.path());
+        let handle = OsFs.open_for_sync(&wal).expect("opens");
+        handle.sync_data().expect("the first sync");
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&wal)
+            .and_then(|mut f| f.write_all(b"more"))
+            .expect("another writer appends");
+        handle.sync_data().expect("the same handle syncs again");
+    }
+
+    #[test]
+    fn the_os_filesystem_refuses_to_open_a_missing_file_for_sync() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let missing = root.path().join("catalog.sqlite-wal");
+        assert_eq!(
+            OsFs.open_for_sync(&missing).err().map(|e| e.kind()),
+            Some(NotFound),
+            "no file, no handle: the WAL must exist before it is opened for sync"
+        );
+        assert!(!missing.exists(), "opening for sync never creates the file");
+    }
+
+    #[test]
+    fn the_crash_filesystem_refuses_to_open_a_missing_file_for_sync() {
+        let m = Model::new();
+        assert_eq!(
+            m.fs.open_for_sync(&m.root().join("absent-wal"))
+                .err()
+                .map(|e| e.kind()),
+            Some(NotFound),
+            "a handle is of a file on disk"
+        );
+    }
+
+    #[test]
+    fn a_sync_through_a_crash_handle_is_logged_in_order_and_counted() {
+        let m = Model::new();
+        let wal = on_disk(m.root());
+        let handle = m.fs.open_for_sync(&wal).expect("opens");
+        assert_eq!(m.fs.syncs(&wal), 0, "opening is not a sync");
+        m.fs.create_dir_all(&m.dir()).expect("create the dir");
+        handle.sync_data().expect("sync");
+        m.fs.sync_dir(&m.dir()).expect("sync the dir");
+        handle.sync_data().expect("sync again");
+        assert_eq!(
+            m.fs.log(),
+            [
+                Op::CreateDir(m.dir()),
+                Op::SyncData(wal.clone()),
+                Op::SyncDir(m.dir()),
+                Op::SyncData(wal.clone()),
+            ],
+            "each sync is logged where it happened"
+        );
+        assert_eq!(m.fs.syncs(&wal), 2, "and counted per file");
+    }
+
+    #[test]
+    fn a_failing_crash_handle_fails_every_sync_and_logs_none() {
+        let m = Model::new();
+        let wal = on_disk(m.root());
+        let handle = m.fs.open_for_sync(&wal).expect("opens");
+        m.fs.fail_syncs();
+        assert!(handle.sync_data().is_err(), "the first sync fails");
+        assert!(handle.sync_data().is_err(), "and every later one");
+        assert_eq!(m.fs.syncs(&wal), 0, "a failed sync is not counted");
+        assert!(m.fs.log().is_empty(), "nor logged");
+    }
+
+    #[test]
+    fn a_crash_handle_cannot_sync_once_the_process_has_died() {
+        let m = Model::new();
+        let wal = on_disk(m.root());
+        let handle = m.fs.open_for_sync(&wal).expect("opens");
+        m.fs.fail_from(0);
+        assert!(handle.sync_data().is_err(), "a dead process syncs nothing");
+        assert_eq!(m.fs.syncs(&wal), 0, "nothing counted");
+    }
+
+    #[test]
+    fn a_held_sync_waits_until_it_is_let_go_and_other_calls_go_on() {
+        let m = Model::new();
+        let wal = on_disk(m.root());
+        let handle = m.fs.open_for_sync(&wal).expect("opens");
+        m.fs.hold_syncs();
+        std::thread::scope(|s| {
+            let syncing = s.spawn(|| handle.sync_data());
+            m.fs.await_held(1);
+            assert!(!syncing.is_finished(), "the sync waits while held");
+            assert_eq!(m.fs.syncs(&wal), 0, "and has not happened");
+            m.fs.create_dir_all(&m.dir())
+                .expect("other calls are not held");
+            m.fs.release_syncs();
+            syncing
+                .join()
+                .expect("the sync thread ends")
+                .expect("and syncs once let go");
+        });
+        assert_eq!(m.fs.syncs(&wal), 1, "one sync, after the release");
+        assert_eq!(
+            m.fs.log(),
+            [Op::CreateDir(m.dir()), Op::SyncData(wal)],
+            "the held sync is logged after what ran while it waited"
+        );
+    }
+
+    #[test]
+    fn a_held_sync_fails_when_syncs_are_made_to_fail_while_it_waits() {
+        let m = Model::new();
+        let wal = on_disk(m.root());
+        let handle = m.fs.open_for_sync(&wal).expect("opens");
+        m.fs.hold_syncs();
+        std::thread::scope(|s| {
+            let syncing = s.spawn(|| handle.sync_data());
+            m.fs.await_held(1);
+            m.fs.fail_syncs();
+            assert!(
+                syncing.join().expect("the sync thread ends").is_err(),
+                "a sync held when syncs start to fail fails, without a release"
+            );
+        });
+        assert_eq!(m.fs.syncs(&wal), 0, "not counted");
+    }
+
+    #[test]
+    fn a_revived_crash_filesystem_changes_again_and_loses_nothing() {
+        let m = after(|fs, f| fs.write_new(f, b"data").expect("write"));
+        m.fs.fail_from(m.fs.log().len());
+        let g = m.dir().join("g");
+        assert!(m.fs.write_new(&g, b"x").is_err(), "the fail point holds");
+        m.fs.revive();
+        m.fs.write_new(&g, b"x")
+            .expect("a revived filesystem changes again");
+        assert_eq!(
+            m.fs.read(&m.f()).expect("still there"),
+            b"data",
+            "revive is not a crash: the unsynced write is kept"
+        );
+    }
+
+    #[test]
+    fn a_revived_crash_handle_syncs_again() {
+        let m = Model::new();
+        let wal = on_disk(m.root());
+        let handle = m.fs.open_for_sync(&wal).expect("opens");
+        m.fs.fail_from(0);
+        assert!(handle.sync_data().is_err(), "the fail point holds");
+        m.fs.revive();
+        handle.sync_data().expect("a revived handle syncs");
+        assert_eq!(m.fs.syncs(&wal), 1, "counted once");
     }
 }

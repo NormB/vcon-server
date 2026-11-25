@@ -9,14 +9,14 @@
 12	crates/vcon-server/src/mcp/stdio.rs
 50	crates/vcon-server/src/mcp/tests.rs
 13	crates/vcon-server/src/serve.rs
-113	crates/vcon-server/src/store.rs
+112	crates/vcon-server/src/store.rs
 11	crates/vcon-server/src/store/backup.rs
 13	crates/vcon-server/src/store/examine.rs
 48	crates/vcon-server/src/store/legal.rs
 35	crates/vcon-server/src/store/list.rs
 51	crates/vcon-server/src/store/purge.rs
 9	crates/vcon-server/src/store/rekey.rs
-137	crates/vcon-server/src/tenants.rs
+135	crates/vcon-server/src/tenants.rs
 11	crates/vcon-server/src/tenants/backup.rs
 16	crates/vcon-server/src/tenants/examine.rs
 46	crates/vcon-server/src/tenants/keys.rs

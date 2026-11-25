@@ -1554,7 +1554,15 @@ pub(crate) mod remote {
         Arc::new(move |tenant, catalog_key| {
             let dir = dir.join(tenant.to_string());
             std::fs::create_dir_all(&dir).expect("tenant directory");
-            Box::new(LocalCatalog::open(&dir.join("catalog.sqlite"), catalog_key).expect("catalog"))
+            Box::new(
+                LocalCatalog::open(
+                    &dir.join("catalog.sqlite"),
+                    catalog_key,
+                    &crate::fs::OsFs,
+                    crate::backend::local::Durability::Group,
+                )
+                .expect("catalog"),
+            )
         })
     }
 

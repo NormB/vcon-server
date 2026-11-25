@@ -39,12 +39,9 @@ impl Store {
         };
         // Bound first, so the snapshot (which holds the catalog) ends here,
         // not at the end of the loop, whose body takes the catalog again.
-        let unpublished = self.catalog.snapshot()?.unpublished_manifests()?;
+        let unpublished = self.read(|tx| tx.unpublished_manifests())?;
         for seq in unpublished {
-            let (files, live) = {
-                let mut tx = self.catalog.snapshot()?;
-                (tx.named_files()?, tx.live_versions()?)
-            };
+            let (files, live) = self.read(|tx| Ok((tx.named_files()?, tx.live_versions()?)))?;
             let now = self.clock.now();
             let listed: Vec<serde_json::Value> = files
                 .iter()
@@ -87,15 +84,14 @@ impl Store {
         let Some(packs) = self.packs.as_deref() else {
             return Ok(());
         };
-        let (unpublished, written, files, live) = {
-            let mut tx = self.catalog.snapshot()?;
-            (
+        let (unpublished, written, files, live) = self.read(|tx| {
+            Ok((
                 tx.unpublished_manifests()?,
                 tx.published_manifests()?,
                 tx.named_files()?,
                 tx.live_versions()?,
-            )
-        };
+            ))
+        })?;
         if !unpublished.is_empty() {
             // `publish` writes it from the catalog as it is then.
             return Ok(());
@@ -145,7 +141,8 @@ impl Store {
         let Some(packs) = self.packs.as_deref() else {
             return Ok(());
         };
-        let written = self.catalog.snapshot()?.published_manifests()?;
+        // A manifest is removed only once the rows read are durable.
+        let written = self.read(|tx| tx.published_manifests())?;
         let now = nanos(self.clock.now());
         let grace = grace.map(|g| i64::try_from(g.as_nanos()).unwrap_or(i64::MAX));
         for pair in written.windows(2) {
@@ -485,6 +482,83 @@ mod tests {
 
     /// Older manifests stay for the reader grace after a newer one is
     /// written, then a pack run removes them; the newest always stays.
+    /// A store with manifest 1 published and manifest 2 numbered by a
+    /// pack run's commit but not yet written.
+    fn one_published_one_numbered(f: &mut Fixture) -> std::sync::Arc<DirPacks> {
+        created(f, 1, "a");
+        let packs = with_packs(f);
+        f.store.pack(&plan()).expect("packs");
+        assert_eq!(manifests(&packs).len(), 1, "manifest 1 written");
+        created(f, 2, "b");
+        let plan = plan();
+        for planned in f.store.plan_files(&plan).expect("planned") {
+            let written = f
+                .store
+                .write_file(&planned, &plan)
+                .expect("written")
+                .expect("a file");
+            assert_eq!(f.store.record_file(&written), Ok(true), "recorded");
+        }
+        packs
+    }
+
+    /// An older manifest is removed only once the commit that published
+    /// the newer one is durable: while that commit's sync is held, a prune
+    /// that read it waits and manifest 1 stays; after the sync it goes.
+    #[test]
+    fn an_older_manifest_stays_until_the_newer_ones_commit_is_synced() {
+        let mut f = fixture();
+        let packs = one_published_one_numbered(&mut f);
+        f.fs.hold_syncs();
+        std::thread::scope(|t| {
+            let publishing = t.spawn(|| f.store.publish());
+            f.fs.await_held(1);
+            let pruning = t.spawn(|| f.store.prune_manifests(None));
+            f.store.catalog.await_sync_waiters(2);
+            crate::store::sync_tests::still_waiting(&pruning, "the prune waits for the sync");
+            let seqs: Vec<i64> = manifests(&packs).iter().map(|(s, _)| *s).collect();
+            assert_eq!(
+                seqs,
+                [1, 2],
+                "manifest 1 stays while 2's commit may be lost"
+            );
+            f.fs.release_syncs();
+            assert_eq!(publishing.join().expect("ends"), Ok(()), "published");
+            assert_eq!(pruning.join().expect("ends"), Ok(()), "pruned");
+        });
+        let seqs: Vec<i64> = manifests(&packs).iter().map(|(s, _)| *s).collect();
+        assert_eq!(seqs, [2], "manifest 1 goes after the sync");
+    }
+
+    /// A prune that read a newer manifest whose commit then failed its
+    /// sync removes nothing: that commit may be lost, and manifest 1 is
+    /// then the newest a reader can trust.
+    #[test]
+    fn an_older_manifest_is_kept_when_the_newer_ones_sync_failed() {
+        let mut f = fixture();
+        let packs = one_published_one_numbered(&mut f);
+        f.fs.hold_syncs();
+        std::thread::scope(|t| {
+            let publishing = t.spawn(|| f.store.publish());
+            f.fs.await_held(1);
+            let pruning = t.spawn(|| f.store.prune_manifests(None));
+            f.store.catalog.await_sync_waiters(2);
+            f.fs.fail_syncs();
+            assert_eq!(
+                publishing.join().expect("ends"),
+                Err(StoreError::Io),
+                "the publish's outcome is unknown"
+            );
+            assert_eq!(
+                pruning.join().expect("ends"),
+                Err(StoreError::Io),
+                "the prune read what may be lost"
+            );
+        });
+        let seqs: Vec<i64> = manifests(&packs).iter().map(|(s, _)| *s).collect();
+        assert_eq!(seqs, [1, 2], "manifest 1 is kept");
+    }
+
     #[test]
     fn older_manifests_go_after_the_reader_grace() {
         let mut f = fixture();
