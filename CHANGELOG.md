@@ -6,8 +6,18 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.17] - 2026-11-25
+
 ### Changed
 
+- **Upgrading from 0.4.16: copy the data directory first; it is the only way
+  back.**
+  - Effect: The catalogs in the data directory move to schema version 10 the
+    first time 0.4.17 opens them; no `vcon-server migrate` is needed.
+  - Limit: 0.4.16 refuses a data directory that 0.4.17 has opened; a
+    PostgreSQL catalog stays at version 14, so 0.4.16 still opens it.
+  - Docs: [From 0.4.16 to
+    0.4.17](https://vcon-server.com/docs/upgrading/#from-0-4-16-to-0-4-17)
 - **A tenant's SQLite catalog serves concurrent writes and reads two to
   three times faster.**
   - Effect: Commits made at once share one disk sync; measured 3.0 to 3.2
@@ -15,6 +25,7 @@ All notable changes to this project are recorded here. The format follows
   - Limit: After a failed disk sync, that tenant's requests are answered
     `internal` until the server is restarted.
   - Docs: [Durability](https://vcon-server.com/docs/durability/)
+
 ### Fixed
 
 - **A count no longer changes the audit record of a single request.**
@@ -1288,7 +1299,8 @@ All notable changes to this project are recorded here. The format follows
   - Limit: `vcon::MAX_SIGNED_LAYERS`, `vcon::MAX_JSON_DEPTH` and
     `vcon::Rejection::TooDeep` name the limits.
 
-[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.16...HEAD
+[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.17...HEAD
+[0.4.17]: https://github.com/NormB/vcon-server/releases/tag/v0.4.17
 [0.4.16]: https://github.com/NormB/vcon-server/releases/tag/v0.4.16
 [0.4.15]: https://github.com/NormB/vcon-server/releases/tag/v0.4.15
 [0.4.14]: https://github.com/NormB/vcon-server/releases/tag/v0.4.14

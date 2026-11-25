@@ -18,6 +18,34 @@ CI runs every command on this page on each change. It installs the previous
 release, sets it up as [getting started](@/docs/getting-started.md) does,
 upgrades it to the server built from the change, and goes back again.
 
+## From 0.4.16 to 0.4.17
+
+There is no downgrade from 0.4.17 for a data directory: release 0.4.16
+refuses one that 0.4.17 has opened. Copy the data directory before the
+upgrade, as in [copy the data directory](#copy-the-data-directory); that
+copy is the only way back. The configuration is read as it was, and no
+`vcon-server migrate` is needed. Three things are different in 0.4.17:
+
+- **The catalogs move to schema version 10.** The new binary brings every
+  catalog in the data directory from schema version 9 to 10, each in one
+  transaction: `server.sqlite` the first time `serve`, `check` or any other
+  command opens it, and each tenant's catalog the first time that tenant's
+  data is opened after it. Every audit log gains the mark of the records a
+  count made, the only ones a later count adds to; see
+  [counted records](@/docs/audit-logs.md#counted-records). Release 0.4.16
+  then stops with `the registry cannot be opened: … schema version 10 is
+  not one this build knows`. With `catalog.backend = "postgres"` the
+  database stays at schema version 14: the upgrade there is the binary
+  alone, and 0.4.16 opens a database that 0.4.17 has served.
+- **A tenant's SQLite catalog serves concurrent writes and reads faster.**
+  Commits of a tenant made at once share one disk sync, and every request
+  is still answered only after its commit is on disk. See
+  [durability](@/docs/durability.md).
+- **A failed disk sync stops the tenant until a restart.** After a sync
+  of a tenant's catalog fails, that tenant's requests are answered
+  `internal` until the server is restarted. See
+  [when a sync fails](@/docs/durability.md#when-a-sync-fails).
+
 ## From 0.4.15 to 0.4.16
 
 The upgrade is the binary alone. No stored data, configuration or schema
@@ -561,7 +589,7 @@ but do not install it yet. The commands use their own variable names, so
 they do not change the ones from install:
 
 ```sh
-NEW_VERSION=0.4.16
+NEW_VERSION=0.4.17
 NEW_ARCHIVE=vcon-server-$NEW_VERSION-$(uname -m)-unknown-linux-gnu.tar.gz
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/$NEW_ARCHIVE
 curl -fsSL -o SHA256SUMS-$NEW_VERSION.txt https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/SHA256SUMS.txt

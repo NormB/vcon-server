@@ -20,7 +20,7 @@ audit log, is not the vCon Conserver. The Conserver, a pipeline that runs
 vCons through chains of processing steps, is at
 [github.com/vcon-dev/vcon-server](https://github.com/vcon-dev/vcon-server).
 
-**Status: 0.4.16 released, not yet for production.** The `vcon` and
+**Status: 0.4.17 released, not yet for production.** The `vcon` and
 `vcon-server` crates are on crates.io, and the server for Linux on x86_64 and
 aarch64 is on [GitHub](https://github.com/NormB/vcon-server/releases).
 [What is built](https://vcon-server.com/docs/status/) says what works today,

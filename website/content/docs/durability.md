@@ -43,9 +43,10 @@ few.
 
 Up to 0.4.16, each tenant commit synced the WAL inside COMMIT, holding
 the tenant's connection: every request of the tenant waited for every
-other request's sync, one at a time. The data on disk is the same: no
-file, table or format changed, and a data directory moves between the
-two in either direction.
+other request's sync, one at a time. This change leaves the data on disk
+as it was: no file, table or format changed for it. Release 0.4.17 also
+moves the catalogs to schema version 10, which 0.4.16 refuses; see
+[from 0.4.16 to 0.4.17](@/docs/upgrading.md#from-0-4-16-to-0-4-17).
 
 Nothing configures this; there is no setting to turn the sync off.
 
