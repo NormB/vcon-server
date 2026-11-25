@@ -17,16 +17,19 @@ use crate::backend::{
     Catalogs, CommitError, ObjectPlace, Registry, RegistryTx, TenantRow, TenantSpace,
 };
 use crate::clock::{Clock, from_nanos, nanos};
-use crate::envelope::{self, Context, Key, WrapLimit};
+use crate::envelope::{self, Key, WrapLimit};
 use crate::export::Metadata;
 use crate::fs::Fs;
 use crate::ids::TenantId;
+use crate::key_wrap::{FileWrap, KeyWrap};
 use crate::retention::Retention;
 use crate::store::{OpenError, Store};
 
 mod backup;
 mod examine;
 pub(crate) mod key_life;
+#[cfg(test)]
+mod key_wrap_tests;
 mod keys;
 mod rekey;
 mod role_cap;
@@ -321,7 +324,9 @@ enum Slot {
 pub struct Tenants {
     /// Where each tenant's catalog and objects are kept.
     space: Box<dyn TenantSpace>,
-    master: Key,
+    /// What holds the root server.sqlite's key is derived from, and wraps
+    /// and unwraps each tenant key.
+    wrap: Box<dyn KeyWrap>,
     registry: Box<dyn Registry>,
     /// Each tenant's Store, once a request has opened it.
     stores: Mutex<HashMap<TenantId, Slot>>,
@@ -361,7 +366,15 @@ impl Tenants {
         objects: ObjectPlace,
         catalogs: &Catalogs,
     ) -> Result<Tenants, RegistryError> {
-        let registry = Tenants::opened(dir, master, fs, clock, false, objects, catalogs)?;
+        let registry = Tenants::opened(
+            dir,
+            Box::new(FileWrap::new(master)),
+            fs,
+            clock,
+            false,
+            objects,
+            catalogs,
+        )?;
         registry.recover().map_err(RegistryError::Recovery)?;
         Ok(registry)
     }
@@ -378,7 +391,7 @@ impl Tenants {
     ) -> Result<Tenants, RegistryError> {
         Tenants::opened(
             dir,
-            master,
+            Box::new(FileWrap::new(master)),
             fs,
             clock,
             true,
@@ -397,7 +410,15 @@ impl Tenants {
         objects: ObjectPlace,
         catalogs: &Catalogs,
     ) -> Result<Tenants, RegistryError> {
-        Tenants::opened(dir, master, fs, clock, true, objects, catalogs)
+        Tenants::opened(
+            dir,
+            Box::new(FileWrap::new(master)),
+            fs,
+            clock,
+            true,
+            objects,
+            catalogs,
+        )
     }
 
     /// The one opener: the registry and the tenants' space of `catalogs`,
@@ -405,14 +426,14 @@ impl Tenants {
     /// `Tenants`.
     fn opened(
         dir: &Path,
-        master: Key,
+        wrap: Box<dyn KeyWrap>,
         fs: Arc<dyn Fs>,
         clock: Arc<dyn Clock>,
         beside: bool,
         objects: ObjectPlace,
         catalogs: &Catalogs,
     ) -> Result<Tenants, RegistryError> {
-        let catalog_key = envelope::catalog_key(&master).map_err(|e| {
+        let catalog_key = envelope::catalog_key(wrap.root()).map_err(|e| {
             RegistryError::failed(OpenStep::CatalogKey, dir.join("server.sqlite"), e)
         })?;
         let (registry, space): crate::backend::Backends = match catalogs {
@@ -426,7 +447,7 @@ impl Tenants {
             }
         };
         Ok(Tenants::with_backends(
-            registry, space, master, fs, clock, beside,
+            registry, space, wrap, fs, clock, beside,
         ))
     }
 
@@ -435,14 +456,14 @@ impl Tenants {
     pub(crate) fn with_backends(
         registry: Box<dyn Registry>,
         space: Box<dyn TenantSpace>,
-        master: Key,
+        wrap: Box<dyn KeyWrap>,
         fs: Arc<dyn Fs>,
         clock: Arc<dyn Clock>,
         beside: bool,
     ) -> Tenants {
         Tenants {
             space,
-            master,
+            wrap,
             registry,
             stores: Mutex::new(HashMap::new()),
             beside,
@@ -467,7 +488,7 @@ impl Tenants {
         Ok(())
     }
 
-    /// Makes a tenant: a new tenant key wrapped under the master key, the
+    /// Makes a tenant: a new tenant key wrapped by the key-wrapping backend, the
     /// tenant's directory and catalog, and then its row. A create that
     /// fails after making its directory removes it if it can; any directory
     /// left without a row, by a crash or a failed removal, goes at the next
@@ -486,7 +507,7 @@ impl Tenants {
             version: None,
             status,
         };
-        let master_id = self.master.id();
+        let master_id = self.wrap.key_id();
         {
             let mut tx = self.registry.immediate()?;
             let refused = if !good_name(name) {
@@ -511,7 +532,7 @@ impl Tenants {
 
         let tenant_key = Key::generate().map_err(|_| TenantError::Io)?;
         let key_id = tenant_key.id();
-        let wrapped = envelope::wrap(&self.master, &Context::Tenant { tenant: id }, &tenant_key);
+        let wrapped = self.wrap.wrap(id, &tenant_key).map_err(io)?;
         // The directory and its catalog are made before the row, and made
         // durable: the directory's entry in `tenants/` by syncing it. Any
         // step that fails once the directory may exist removes it.
@@ -785,8 +806,7 @@ impl Tenants {
             .tenant(id)?
             .ok_or(TenantError::NotFound)?
             .wrapped;
-        let tenant_key = envelope::unwrap(&self.master, &Context::Tenant { tenant: id }, &wrapped)
-            .map_err(io)?;
+        let tenant_key = self.wrap.unwrap(id, &wrapped).map_err(io)?;
         #[cfg(test)]
         {
             let hook = self.hooks.opening.lock().expect("hook").take();
@@ -1018,6 +1038,7 @@ mod tests {
     use crate::catalog;
     use crate::catalog::testing::columns_taking_null;
     use crate::clock::ManualClock;
+    use crate::envelope::Context;
     use crate::fs::{CrashFs, Op};
     use crate::ids::VersionId;
     use crate::store::testing::vcon;

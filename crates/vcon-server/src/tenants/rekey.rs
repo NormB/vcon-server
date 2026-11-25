@@ -11,7 +11,7 @@ use super::{TenantError, Tenants, commit, io};
 use crate::audit::{Action, Actor, Entry};
 use crate::backend::Under;
 use crate::clock::nanos;
-use crate::envelope::{self, Context, Key, WrapLimit};
+use crate::envelope::{self, Key, WrapLimit};
 use crate::ids::TenantId;
 use crate::store::StoreError;
 
@@ -88,7 +88,6 @@ impl Tenants {
             version: None,
             status,
         };
-        let ctx = Context::Tenant { tenant: id };
 
         // 1. The new key, committed as pending before anything uses it, so a
         // stopped run's data keys are never wrapped under a key that is lost.
@@ -100,11 +99,11 @@ impl Tenants {
                 return Err(TenantError::NotFound);
             };
             let (wrapped, pending) = (row.wrapped, row.pending);
-            let old = envelope::unwrap(&self.master, &ctx, &wrapped).map_err(io)?;
+            let old = self.wrap.unwrap(id, &wrapped).map_err(io)?;
             let new = match pending {
-                Some(pending) => envelope::unwrap(&self.master, &ctx, &pending).map_err(io)?,
+                Some(pending) => self.wrap.unwrap(id, &pending).map_err(io)?,
                 None => {
-                    let master_id = self.master.id();
+                    let master_id = self.wrap.key_id();
                     if envelope::wrap_limit(tx.master_wraps(master_id)?) == WrapLimit::Refuse {
                         self.record(&mut tx, &entry(503))?;
                         commit(tx)?;
@@ -112,7 +111,9 @@ impl Tenants {
                     }
                     tx.add_master_wrap(master_id, nanos(self.clock.now()))?;
                     let new = Key::generate().map_err(io)?;
-                    let pending = envelope::wrap(&self.master, &ctx, &new);
+                    // A wrap that fails drops the transaction, and with it
+                    // the count above: nothing is pending, nothing counted.
+                    let pending = self.wrap.wrap(id, &new).map_err(io)?;
                     tx.set_pending(id, &pending)?;
                     new
                 }

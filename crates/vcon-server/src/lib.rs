@@ -60,6 +60,7 @@ pub(crate) mod export;
 pub mod formats;
 pub mod fs;
 pub mod ids;
+pub mod key_wrap;
 pub mod masked;
 pub mod mcp;
 pub mod query;

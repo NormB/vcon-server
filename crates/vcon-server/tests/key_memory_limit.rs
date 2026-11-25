@@ -5,15 +5,23 @@
 
 use vcon_server::envelope::{Context, Key, KeyError, unwrap, wrap};
 use vcon_server::ids::TenantId;
+use vcon_server::key_wrap::{FileWrap, KeyWrap, WrapError};
 
 #[test]
 fn mlock_a_key_is_refused_when_its_memory_cannot_be_locked() {
-    let ctx = Context::Tenant {
-        tenant: TenantId([1; 16]),
-    };
+    let tenant = TenantId([1; 16]);
+    let ctx = Context::Tenant { tenant };
     let wrapping = Key::generate().expect("wrapping key");
     let wrapped = wrap(&wrapping, &ctx, &Key::generate().expect("key"));
     assert!(unwrap(&wrapping, &ctx, &wrapped).is_ok(), "unwraps before");
+    let backend = FileWrap::new(Key::generate().expect("master key"));
+    let backend_wrapped = backend
+        .wrap(tenant, &Key::generate().expect("key"))
+        .expect("wraps");
+    assert!(
+        backend.unwrap(tenant, &backend_wrapped).is_ok(),
+        "the backend unwraps before"
+    );
 
     let none = libc::rlimit {
         rlim_cur: 0,
@@ -29,5 +37,12 @@ fn mlock_a_key_is_refused_when_its_memory_cannot_be_locked() {
     assert!(
         matches!(unwrap(&wrapping, &ctx, &wrapped), Err(KeyError::Memory(_))),
         "unwrapped into memory that is not locked"
+    );
+    assert!(
+        matches!(
+            backend.unwrap(tenant, &backend_wrapped),
+            Err(WrapError::Memory(_))
+        ),
+        "unwrapped by the backend into memory that is not locked"
     );
 }

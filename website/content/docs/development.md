@@ -37,6 +37,7 @@ crates/
         ├── export.rs      export parquet: a tenant's versions as Parquet files
         ├── tenants.rs     the registry: tenants, their keys, API keys, users, memberships, the admin log
         ├── envelope.rs    keys in locked memory; seal, wrap, HKDF
+        ├── key_wrap.rs    the backend that holds the root key and wraps tenant keys
         ├── catalog.rs     SQLCipher catalogs
         ├── formats.rs     every on-disk format and its version
         ├── audit.rs       the audit log

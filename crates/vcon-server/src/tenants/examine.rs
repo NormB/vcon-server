@@ -8,7 +8,6 @@ use time::format_description::well_known::Rfc3339;
 use super::{OpenFailure, TenantError, Tenants, io, stored_retention};
 use crate::audit::Action;
 use crate::clock::from_nanos;
-use crate::envelope::{self, Context};
 use crate::ids::TenantId;
 use crate::retention::Retention;
 use crate::store::{Examination, ExamineError};
@@ -90,7 +89,7 @@ impl Tenants {
         let mut order = KeyOrder::default();
         for row in rows {
             let (id, wrapped, pending) = (row.id, row.wrapped, row.pending.is_some());
-            if envelope::unwrap(&self.master, &Context::Tenant { tenant: id }, &wrapped).is_err() {
+            if self.wrap.unwrap(id, &wrapped).is_err() {
                 order.wrapped_elsewhere += 1;
                 continue;
             }
@@ -150,7 +149,7 @@ impl Tenants {
     fn removals_since_master(&self) -> Result<(u64, Option<OffsetDateTime>), TenantError> {
         let (since, removals) = {
             let mut tx = self.registry.snapshot()?;
-            let since = tx.master_since(self.master.id())?;
+            let since = tx.master_since(self.wrap.key_id())?;
             let removals = tx.record_times(Action::TenantRemove, 204)?;
             (since, removals)
         };
