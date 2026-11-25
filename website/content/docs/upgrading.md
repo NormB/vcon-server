@@ -87,7 +87,9 @@ order:
    [after an upgrade from 0.4.5](@/docs/postgres-catalog.md#after-an-upgrade-from-0-4-5)
    shows. Its line says `"from":13` and `"to":14`. Until then a 0.4.15
    server stops with `the database schema is version 13, older than this
-   binary's 14: run vcon-server migrate`.
+   binary's 14: run vcon-server migrate`. A `migrate` that fails part way
+   stops at the last version it finished, and running `migrate` again
+   continues from there; the backup is still the way back.
 4. **Start the server.**
 
 To go back, stop the server, restore the database from the backup taken

@@ -30,8 +30,8 @@ All notable changes to this project are recorded here. The format follows
     runs the purge sweep and the pack run for all.
   - Do: Stop every server of 0.4.16 or earlier and run `vcon-server
     migrate` before a server of this release starts.
-  - Docs: [Commands beside a server, and
-    alone](https://vcon-server.com/docs/postgres-catalog/#commands-beside-a-server-and-alone)
+  - Docs: [Several servers on one
+    database](https://vcon-server.com/docs/postgres-catalog/#several-servers-on-one-database)
 - **A PostgreSQL catalog moves to schema version 15.**
   - Effect: Tenant creates and new pack files are recorded under way; a
     new table holds the leases of the purge sweep and pack run.

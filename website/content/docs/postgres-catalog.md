@@ -1,6 +1,6 @@
 +++
 title = "Keep the catalogs in PostgreSQL"
-description = "Preview: keep the registry and every tenant's catalog in a PostgreSQL database, reached over TLS, with one server per database: the database's side, the roles, the schema and `migrate`, TLS and client certificates, the configuration, the secret files, the first start, the commands, backups, key rotation, and what each refusal means."
+description = "Preview: keep the registry and every tenant's catalog in a PostgreSQL database, reached over TLS, served by one server or several: the database's side, the roles, the schema and `migrate`, TLS and client certificates, the configuration, the secret files, the first start, the commands, backups, key rotation, and what each refusal means."
 weight = 30
 
 [extra]
@@ -49,11 +49,12 @@ command that adds it.
 
 The other pages link here for these and do not repeat them.
 
-- **One server serves a database.** A second server on the same database,
-  on any host, is refused at start (see
-  [another process holds the database](#another-process-holds-the-database)).
-  Several servers on one database are the next step of the
-  [roadmap](@/docs/roadmap.md).
+- **Every server of a database runs the same release.** Several servers
+  serve one database (see
+  [several servers on one database](#several-servers-on-one-database)),
+  but a server of 0.4.16 or earlier serves a database alone, so a server
+  of a later release beside it is refused at start, and it is refused
+  beside one.
 - **A database starts with no tenant, and no command moves tenants.** No
   command moves the tenants of a data directory into PostgreSQL, or out of
   it. Setting `catalog.backend` to `"postgres"` on a deployment that has
@@ -447,7 +448,10 @@ vcon-server: the storage cannot be used: catalog.postgres: no server could be us
 ```
 
 `vcon-server migrate` makes the catalog's schema in the database, as
-`vcon_owner`, one transaction per schema version. It needs no data
+`vcon_owner`, one transaction per schema version. A `migrate` that fails
+part way stops at the last version it finished, and running `migrate`
+again continues from there; the backup taken before it is still the way
+back. It needs no data
 directory or master key, only `[catalog.postgres]`, so run it with a copy
 of the configuration whose `user` and `password_file` are `vcon_migrate`'s:
 
@@ -622,9 +626,9 @@ to the bucket, and deletes the row in the transaction that adds the
 version's row. Start-up recovery removes an object that no row of
 `version` names; a row of `pending_write` younger than an hour marks
 the object of a write under way, which recovery keeps when other
-servers may be writing. With one server on a database, as in the
-preview, recovery runs before the server writes and takes every such
-row for a cut-off write's, as before. A write whose row recovery took
+servers may be writing: a server always assumes they may, and a command
+that runs alone, which no server runs beside, takes every such row for a
+cut-off write's. A write whose row recovery took
 adds no row of its own and fails. `vcon_app` reads, adds and deletes the
 rows and is granted no `UPDATE`; the id and the time are in the clear,
 and the table starts empty. Version 14 also adds the column `removing`
@@ -662,6 +666,14 @@ for the next run. The rows are the tenant's, under the policy of
 `pending_write`; `vcon_app` reads, adds and deletes them and is granted
 no `UPDATE`. The file id and the time are in the clear, and the table
 starts empty.
+
+From version 15 the time of a row of `pending_write`, `pending_tenant`
+and `pending_file` is the database's `now()`, written by the statement
+that adds the row, and recovery reads a row's age by the database's
+clock too. So servers whose clocks differ by more than an hour still
+agree on which write is under way. A row an earlier release wrote has
+its server's time, and recovery takes it for a leftover once that time
+is an hour or more from the database's.
 
 Version 15 also makes the table `lease`, where the registry records
 which server does a job that one server does for all: the purge sweep
@@ -822,6 +834,78 @@ sudo -u vcon vcon-server key list --config /etc/vcon-server/vcon-server.toml | j
 ```text
 pg-check
 ```
+
+## Several servers on one database
+
+Several servers can serve one database, each on a host of its own, so
+that a client may reach any of them. They store and read the same
+tenants and vCons. One of them at a time does the purge sweep, and one the
+pack run, for all of them.
+
+What each server needs:
+
+- **The same release.** A server of release 0.4.16 or earlier serves a
+  database alone and refuses to start beside another; stop every such
+  server and run `migrate` with the new binary first (see
+  [another process holds the database](#another-process-holds-the-database)).
+- **A data directory of its own**, as on the first host, with its own
+  `lock` files. Two servers never share a data directory.
+- **The same master key file, `[catalog.postgres]` and bucket.** Copy the
+  master key file with its mode 0600, the configuration, the secret files
+  and the CA as on the first host. The objects' prefix is the database's
+  (see [the bucket prefix belongs to something else](#the-bucket-prefix-belongs-to-something-else)).
+- **A direct connection to PostgreSQL, or session pooling.** Each server
+  holds the servers' lock on a connection of its own for as long as it
+  runs.
+
+The hosts' clocks need not agree: who does each job and until when, and
+which write is still under way, are decided by the database's clock
+alone.
+
+On the second host, with the files copied, start the server as on the
+first (see [start the server](#start-the-server)):
+
+<!-- docs-test: skip the scenario has one host -->
+```sh
+sudo systemctl start vcon-server
+```
+
+To verify, read on the second host a vCon stored through the first, as in
+[verify](#verify), and see which server holds each job. A superuser reads
+the leases; each row names its holder as random digits, then the host and
+the process id, and ends two intervals after its holder last renewed it,
+by the database's clock:
+
+<!-- docs-test: skip the holder's digits, host and process id change on each start -->
+```sh
+sudo -u postgres psql -At -d vcon -c "SELECT name, holder, expires_at > now() FROM vcon.lease ORDER BY name"
+```
+
+```text
+pack|5b0e9c1f6a2d4e8b9c7a3f1e0d2b4c6a@vcon-a.example.com:4242|t
+sweep|5b0e9c1f6a2d4e8b9c7a3f1e0d2b4c6a@vcon-a.example.com:4242|t
+```
+
+The `pack` row is there with `[storage.parquet]` only. The other servers
+log `purge sweep: another server holds it` and `pack run: another server
+holds it` at each interval. Each server's start, and the holder of the
+sweep before each sweep, keeps any create, write or pack file another
+server has under way for an hour, and removes the leftovers of one that
+was cut off.
+
+If it does not work:
+
+- **A server is refused at start** with a message naming a server of
+  release 0.4.16 or earlier: an older server still runs; see
+  [another process holds the database](#another-process-holds-the-database).
+- **No server sweeps after the holder stopped.** A server that stops gives
+  its leases up, and another takes them at its next interval. A server
+  that was killed, or lost its connection, keeps them until they end: two
+  intervals of the job (`purge_interval`, `storage.parquet.pack_interval`),
+  at least a minute.
+- **A command that runs alone is refused** while any server runs: stop
+  every server first (see
+  [commands beside a server, and alone](#commands-beside-a-server-and-alone)).
 
 ## Commands beside a server, and alone
 

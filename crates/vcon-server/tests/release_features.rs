@@ -948,8 +948,8 @@ fn a_manifest_comment_is_the_lines_directly_above_its_key() {
 /// What the limits section must name, each as the flat text holds it.
 const LIMITS: [(&str, &[&str]); 9] = [
     (
-        "one server per database",
-        &["a second server", "refused at start"],
+        "one release per database",
+        &["the same release", "0.4.16 or earlier", "refused at start"],
     ),
     (
         "no tenant, and none moved",

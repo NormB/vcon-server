@@ -24,16 +24,16 @@ file defines or a job its workflow defines.
 
 The catalogs can be kept in PostgreSQL, a preview behind the `postgres`
 cargo feature, which the release binaries have. CI runs the store's
-conformance suite and a server on PostgreSQL 16 and 18. One server serves
-a database: a second server, on any host, is refused at start. The first
-step toward several servers is done: each store or replace records its
-write under way, start-up recovery keeps the object of a write that
-another server may still have under way for an hour, and a write whose
-record recovery took fails without adding a row. The conformance suite
-runs those cases on every backend.
+conformance suite and a server on PostgreSQL 16 and 18. Several servers
+serve one database: each store or replace, tenant create and new pack
+file records itself under way, recovery keeps what another server may
+still have under way for an hour, and one server at a time holds the
+purge sweep and the pack run under a lease timed by the database's
+clock. CI runs two server processes on one database on PostgreSQL 16
+and 18.
 
 Left: a command that moves a data directory's tenants into PostgreSQL and
-back; several servers serving one database; and tests in CI that cut the
+back; and tests in CI that cut the
 connection to PostgreSQL at each step of a write and fail over from a
 primary to a standby, with every acknowledged write read back once.
 

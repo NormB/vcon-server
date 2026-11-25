@@ -91,18 +91,22 @@ for a crash's leftovers. See the [command line](@/docs/command-line.md). While
 the server runs, the admin API does the tenant work instead.
 
 With the [catalogs in PostgreSQL](@/docs/postgres-catalog.md), a preview,
-the rule is the same and is held in the database as well: one server
-serves a database, and a server, a command beside it and a command that
-runs alone each hold advisory locks there for as long as they run, so a
-second host is refused as a second process on one host is. The data
+the rule is held in the database as well: a server, a command beside it
+and a command that runs alone each hold advisory locks there for as long
+as they run. Several servers, each with a data directory of its own,
+share a database; a command that runs alone is refused while any of them
+runs, on any host, as a second process on one host is. The data
 directory then holds its two lock files and nothing else; the registry,
 the catalogs and the claim of the bucket prefix are rows of the database.
 
 ## The purge sweep
 
 At start, then `purge_interval` seconds after each sweep ends, every tenant's
-due versions are purged (see [retention](@/docs/retention-and-holds.md)). Each
-sweep logs one line with counts only:
+due versions are purged (see [retention](@/docs/retention-and-holds.md)).
+With several servers on one PostgreSQL database, one of them sweeps for all
+and the others log `purge sweep: another server holds it` (see
+[several servers on one database](@/docs/postgres-catalog.md#several-servers-on-one-database)).
+Each sweep logs one line with counts only:
 
 ```text
 2026-10-25T15:44:58.372109Z  INFO vcon_server::serve: purge sweep purged=0 failed=0
