@@ -29,6 +29,9 @@ are not judged; the marker moves down as they are rewritten):
 - No line of an entry is longer than WRAP characters, but a line that is
   one word (a link's address) cannot be wrapped and passes.
 
+In the whole file, every heading below the first line has a blank line
+before it.
+
 A link counts as the words a reader sees: `[two words](address)` is two.
 A link definition, `[label]: address` on a line of its own (the file's
 last lines), is not text of a section or an entry.
@@ -53,6 +56,7 @@ WRAP = 80
 LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 LABELED = re.compile(r"^(\w+): ")
 DEFINITION = re.compile(r"^\[[^\]\s][^\]]*\]: \S+$")
+HEADING = re.compile(r"^#{1,6} ")
 
 
 def is_definition(line):
@@ -221,9 +225,24 @@ def section_problems(heading, lines):
     return found
 
 
-def problems(text, marker):
-    """One line per problem of the sections that are judged."""
+def unspaced_headings(text):
+    """One line per heading of the whole file, below its first line, with no
+    blank line before it. Markdown would render such a heading, but the line
+    before it is then the end of an entry: a merge that keeps both sides'
+    entries (CHANGELOG.md merge=union) can leave an entry run into the next
+    heading."""
     found = []
+    lines = text.split("\n")
+    for at in range(1, len(lines)):
+        if HEADING.match(lines[at]) and lines[at - 1].strip():
+            found.append(f"line {at + 1}: `{lines[at]}`: a heading needs a blank line before it")
+    return found
+
+
+def problems(text, marker):
+    """One line per problem of the sections that are judged, and of a
+    heading anywhere in the file with no blank line before it."""
+    found = unspaced_headings(text)
     for heading, lines in judged(text, marker):
         found.extend(section_problems(heading, lines))
     return found

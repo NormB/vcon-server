@@ -1308,6 +1308,11 @@ what changed, what must be done, what the limit is, where the detail is.
 - No text stands between a release's heading and its first `###` heading.
   What an upgrade needs is an entry too, the first under the section's
   first heading, so that the release's text opens with it.
+- Every heading below the file's first line has a blank line before it.
+  A merge of two branches that each add an entry under `[Unreleased]` can
+  join the first entry to the next heading when a `merge=union`
+  attribute on `CHANGELOG.md` keeps both sides' lines: git counts the
+  blank line that ends each side's entry as one line the two sides share.
 
 `scripts/check_changelog.py` holds the shape, in the commit hook and in
 CI's scan job, for every section from `[Unreleased]` down to the section
@@ -1327,6 +1332,7 @@ script prints the section, the entry's lead and the rule for each problem:
 | `a line of <n> characters, at most 80` | Wrap the line. |
 | `text outside an entry, under a heading` | Make it an entry. |
 | `text before the section's first heading` | Write it as an entry, the first under the first heading. |
+| `line <n>: <heading>: a heading needs a blank line before it` | Add a blank line before the heading. |
 
 `scripts/test_check_changelog.py` tests the script.
 

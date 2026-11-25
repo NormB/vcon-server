@@ -127,6 +127,7 @@ All notable changes to this project are recorded here. The format follows
     removed tenant's.
   - Docs: [Schema
     versions](https://vcon-server.com/docs/postgres-catalog/#schema-versions)
+
 ## [0.4.14] - 2026-11-24
 
 ### Changed

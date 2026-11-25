@@ -369,5 +369,146 @@ class LinkDefinitions(unittest.TestCase):
         self.assertIn("text outside an entry, under a heading", found[0])
 
 
+# The [Unreleased] section as the merge of 95d3f58 into docs/roadmap-dates
+# (6ea46f6, 2026-11-25) wrote it: CHANGELOG.md's merge=union attribute kept
+# both sides' entries, and git's merge counted the blank line that ended
+# each side's entry as one shared line, so the first entry ran into the
+# second heading.
+MERGED = (
+    f"{HEAD}## [Unreleased]\n\n### Changed\n\n"
+    "- **The roadmap gives each milestone a target month and lists what is not\n"
+    "  planned.**\n"
+    "  - Effect: The plan runs through December 2027, and each month is a target,\n"
+    "    not a promise.\n"
+    "  - Docs: [Roadmap](https://vcon-server.example.com/docs/roadmap/)\n"
+    "### Fixed\n\n"
+    "- **A count no longer changes the audit record of a single request.**\n"
+    "  - Was: A request recorded at the first instant of a minute could have a\n"
+    "    later count of the same kind added to its record.\n"
+    "  - Docs: [Counted\n"
+    "    records](https://vcon-server.example.com/docs/audit-logs/#counted-records)\n"
+    f"\n## [0.1.0] - 2026-10-26\n\n### Added\n\n{GOOD}"
+)
+
+
+def unspaced(found):
+    """The problems of `found` that are about a heading's blank line."""
+    return [problem for problem in found if "blank line before it" in problem]
+
+
+class HeadingSpacing(unittest.TestCase):
+    def test_the_merge_of_2026_11_25_is_refused_at_its_second_heading(self):
+        found = cc.problems(MERGED, "0.1.0")
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("`### Fixed`", found[0])
+        self.assertIn("blank line before it", found[0])
+
+    def test_the_problem_names_the_line(self):
+        line = MERGED.split("\n").index("### Fixed") + 1
+        found = cc.problems(MERGED, "0.1.0")
+        self.assertEqual(len(found), 1, found)
+        self.assertIn(f"line {line}:", found[0])
+
+    def test_the_merge_with_its_blank_line_restored_passes(self):
+        text = MERGED.replace("/roadmap/)\n### Fixed", "/roadmap/)\n\n### Fixed")
+        self.assertEqual(cc.problems(text, "0.1.0"), [])
+
+    def test_a_release_heading_right_after_an_entry_is_refused(self):
+        text = log(GOOD).replace("\n\n## [0.1.0]", "\n## [0.1.0]")
+        self.assertNotEqual(text, log(GOOD), "the fixture changed")
+        found = unspaced(cc.problems(text, "Unreleased"))
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("`## [0.1.0] - 2026-10-26`", found[0])
+
+    def test_a_kind_heading_right_after_the_release_heading_is_refused(self):
+        text = log(GOOD).replace("## [Unreleased]\n\n### Added", "## [Unreleased]\n### Added")
+        self.assertNotEqual(text, log(GOOD), "the fixture changed")
+        found = unspaced(problems_of(text))
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("`### Added`", found[0])
+
+    def test_a_release_heading_right_after_the_intro_is_refused(self):
+        text = log(GOOD).replace("All notable changes.\n\n## [Unreleased]", "All notable changes.\n## [Unreleased]")
+        self.assertNotEqual(text, log(GOOD), "the fixture changed")
+        found = unspaced(problems_of(text))
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("`## [Unreleased]`", found[0])
+
+    def test_a_heading_right_after_a_link_definition_is_refused(self):
+        text = OLDEST + "[1]: https://example.com/\n## [0.0.9] - 2026-10-01\n"
+        found = unspaced(cc.problems(text, "0.1.0"))
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("`## [0.0.9] - 2026-10-01`", found[0])
+
+    def test_a_heading_below_the_marker_is_refused_too(self):
+        text = log(GOOD) + "- Older prose.\n## [0.0.9] - 2026-10-01\n\n- More.\n"
+        found = unspaced(problems_of(text))
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("`## [0.0.9] - 2026-10-01`", found[0])
+
+    def test_two_unspaced_headings_are_two_problems(self):
+        text = MERGED.replace("\n\n## [0.1.0]", "\n## [0.1.0]")
+        found = unspaced(cc.problems(text, "0.1.0"))
+        self.assertEqual(len(found), 2, found)
+
+    def test_a_good_changelog_has_no_spacing_problem(self):
+        self.assertEqual(problems(GOOD), [])
+
+    def test_the_title_on_the_first_line_needs_no_blank_line(self):
+        self.assertTrue(log(GOOD).startswith("# Changelog\n"), "the title is the first line")
+        self.assertEqual(problems(GOOD), [])
+
+    def test_a_line_of_spaces_before_a_heading_counts_as_blank(self):
+        text = MERGED.replace("/roadmap/)\n### Fixed", "/roadmap/)\n   \n### Fixed")
+        self.assertEqual(unspaced(cc.problems(text, "0.1.0")), [])
+
+    def test_a_hash_without_a_space_is_not_a_heading(self):
+        text = log(GOOD).replace("  - Do: Run", "#1\n  - Do: Run")
+        self.assertEqual(unspaced(problems_of(text)), [])
+
+    def test_a_hash_inside_a_line_is_not_a_heading(self):
+        text = log(GOOD).replace("  - Do: Run `vcon-server migrate` first.", "  - Do: Run step ### 2 first.")
+        self.assertNotEqual(text, log(GOOD), "the fixture changed")
+        self.assertEqual(unspaced(problems_of(text)), [])
+
+    def test_an_indented_hash_line_is_not_a_heading(self):
+        text = log(GOOD).replace("  - Do: Run", "    ### not a heading\n  - Do: Run")
+        self.assertEqual(unspaced(problems_of(text)), [])
+
+    def test_a_deeper_heading_is_held_to_the_rule(self):
+        text = log(GOOD).replace("  - Do: Run", "#### Deeper\n  - Do: Run")
+        found = unspaced(problems_of(text))
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("`#### Deeper`", found[0])
+
+    def test_a_title_below_the_first_line_is_held_to_the_rule(self):
+        text = log(GOOD).replace("All notable changes.\n", "All notable changes.\n# Second title\n")
+        found = unspaced(problems_of(text))
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("`# Second title`", found[0])
+
+    def test_a_heading_on_the_second_line_is_held_to_the_rule(self):
+        text = log(GOOD).replace("# Changelog\n\n", "# Changelog\n## Notes\n\n")
+        self.assertNotEqual(text, log(GOOD), "the fixture changed")
+        found = unspaced(problems_of(text))
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("line 2: `## Notes`", found[0])
+
+    def test_the_main_function_refuses_the_merge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pathlib.Path(tmp, "CHANGELOG.md").write_text(MERGED, encoding="utf-8")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                code = cc.main(pathlib.Path(tmp))
+        self.assertEqual(code, 1, err.getvalue())
+        self.assertIn("blank line before it", err.getvalue())
+
+
+def problems_of(text):
+    """The problems of a whole changelog made by log(), judged to its
+    [0.1.0] section."""
+    return cc.problems(text, "0.1.0")
+
+
 if __name__ == "__main__":
     unittest.main()
