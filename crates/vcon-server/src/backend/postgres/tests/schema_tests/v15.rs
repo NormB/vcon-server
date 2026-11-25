@@ -152,6 +152,31 @@ mod on_a_server {
         assert_eq!(one(&db.app().await, "registry", ROWS).await, "", "empty");
     }
 
+    #[test]
+    fn a_server_of_this_binary_refuses_a_database_at_version_14() {
+        let db = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime")
+            .block_on(async {
+                let db = Db::fresh().await;
+                db.migrate_with(&MIGRATIONS[..THIS])
+                    .await
+                    .expect("version 14");
+                db
+            });
+        let (_dir, settings) = db.settings("vcon_app");
+        let crate::config::StorageError(why) =
+            super::super::super::super::catalog::Database::connect(&settings).expect_err("refused");
+        assert!(
+            why.contains(&format!(
+                "version 14, older than this binary's {}",
+                super::super::super::super::schema::SCHEMA_VERSION
+            )) && why.contains("vcon-server migrate"),
+            "the versions and the command: {why}"
+        );
+    }
+
     #[tokio::test]
     async fn the_application_role_adds_reads_and_deletes_creating_rows() {
         let db = Db::migrated().await;

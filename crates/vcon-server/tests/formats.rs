@@ -3568,9 +3568,38 @@ mod live {
         r.db.as_owner(&format!("DROP TABLE vcon.{planted}"));
         let (rows, listing, files) = r.state();
         assert_eq!(
-            (rows_but_new(&rows, release), listing, files),
-            (rows_but_new(&before.0, release), before.1, before.2),
+            (rows_but_new(&rows, release), listing.clone(), files.clone()),
+            (
+                rows_but_new(&before.0, release),
+                before.1.clone(),
+                before.2.clone()
+            ),
             "{release}: no row of the release's tables changed"
+        );
+        // Run again with the table out of the way, migrate starts from the
+        // version the failure left and finishes.
+        let again = r.migrate();
+        assert!(
+            again.status.success(),
+            "{release}: a second migrate passes: {}",
+            String::from_utf8_lossy(&again.stderr)
+        );
+        let said: serde_json::Value = serde_json::from_slice(&again.stdout).expect("a JSON line");
+        assert_eq!(
+            (said["from"].as_i64(), said["to"].as_i64()),
+            (Some(build - 1), Some(build)),
+            "{release}: from the version the failure left to this build's: {said}"
+        );
+        assert_eq!(
+            version(),
+            build.to_string(),
+            "{release}: the schema is at this build's version"
+        );
+        let (rows, after_listing, after_files) = r.state();
+        assert_eq!(
+            (rows_but_new(&rows, release), after_listing, after_files),
+            (rows_but_new(&before.0, release), before.1, before.2),
+            "{release}: and still no row of the release's tables changed"
         );
     }
 
