@@ -1136,16 +1136,13 @@ impl Tenants {
         self.clock.now()
     }
 
-    /// The record's time is the transaction's, by the registry's clock
-    /// ([`Tenants::now_in`]): a removal's record is judged against the
-    /// time the master key's use began, which another server may have
-    /// written.
+    /// The time given is this process's clock, as for a Store's record:
+    /// a database's log writes the transaction's reading of its own clock
+    /// instead. A removal's record is judged against the time the master
+    /// key's use began, which another server may have written.
     fn record(&self, tx: &mut RTx, entry: &Entry) -> Result<(), TenantError> {
-        let at = self
-            .now_in(tx.as_mut())
-            .map_err(|_| TenantError::AuditFailed)?;
-        let at = from_nanos(at).ok_or(TenantError::AuditFailed)?;
-        tx.record(entry, at).map_err(|_| TenantError::AuditFailed)
+        tx.record(entry, self.clock.now())
+            .map_err(|_| TenantError::AuditFailed)
     }
 
     /// The local registry's connection, for tests.

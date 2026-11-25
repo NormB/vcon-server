@@ -30,8 +30,8 @@ use tokio_postgres::Row;
 use tokio_postgres::types::{FromSql, Type};
 
 use super::catalog::{
-    AuditKey, Begin, Database, PgTx, all_changed, audit_key_id, new_audit_key, open_audit_keys,
-    reseal_audit_keys,
+    AuditKey, Begin, CLOCK_NANOS, Database, PgTx, all_changed, audit_key_id, new_audit_key,
+    open_audit_keys, reseal_audit_keys,
 };
 use super::lease;
 use crate::audit::{Action, Actor, AuditError, Entry};
@@ -1089,15 +1089,18 @@ impl RegistryTx for PgRegistryTx<'_> {
         )
     }
 
-    fn promote_pending(&mut self, id: TenantId, key: KeyId, at: i64) -> Result<(), TenantError> {
+    /// The new key is in use since the transaction's reading of the
+    /// database's clock ([`CLOCK_NANOS`]): the process's clock, `_at`, is
+    /// not read.
+    fn promote_pending(&mut self, id: TenantId, key: KeyId, _at: i64) -> Result<(), TenantError> {
         self.run(
-            "UPDATE vcon.tenant SET tenant_key_id = $1,
-                 wrapped_tenant_key = pending_wrapped_tenant_key,
-                 pending_wrapped_tenant_key = NULL, key_since = $2
-             WHERE id = $3",
+            &format!(
+                "UPDATE vcon.tenant SET tenant_key_id = $1, \
+                 wrapped_tenant_key = pending_wrapped_tenant_key, \
+                 pending_wrapped_tenant_key = NULL, key_since = {CLOCK_NANOS} WHERE id = $2"
+            ),
             &[
                 (&key.0.as_slice(), Type::BYTEA),
-                (&at, Type::INT8),
                 (&id.0.as_slice(), Type::BYTEA),
             ],
         )

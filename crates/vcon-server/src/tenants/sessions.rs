@@ -253,8 +253,7 @@ impl Tenants {
     /// when no live session has the id, under the user for a token.
     pub fn session(&self, id: &str, proof: Proof<'_>) -> Result<SessionInfo, SessionError> {
         let mut tx = self.registry.immediate()?;
-        let now = self.now_in(tx.as_mut())?;
-        let Some(row) = live(&mut tx, id, now)? else {
+        let Some((row, now)) = self.live(&mut tx, id)? else {
             commit(tx)?;
             self.count_session(Action::AuthFailed, 401, None);
             return Err(SessionError::NoSession);
@@ -283,8 +282,7 @@ impl Tenants {
     /// the tenant's log too.
     pub fn end_session(&self, id: &str) -> Result<SessionInfo, SessionError> {
         let mut tx = self.registry.immediate()?;
-        let now = self.now_in(tx.as_mut())?;
-        let Some(row) = live(&mut tx, id, now)? else {
+        let Some((row, _)) = self.live(&mut tx, id)? else {
             commit(tx)?;
             return Err(SessionError::NoSession);
         };
@@ -314,8 +312,7 @@ impl Tenants {
     pub fn step_up_session(&self, id: &str, amr: &[&str]) -> Result<Started, SessionError> {
         let amr = amr_text(amr).ok_or(SessionError::BadAmr)?;
         let mut tx = self.registry.immediate()?;
-        let now = self.now_in(tx.as_mut())?;
-        let Some(row) = live(&mut tx, id, now)? else {
+        let Some((row, now)) = self.live(&mut tx, id)? else {
             commit(tx)?;
             return Err(SessionError::NoSession);
         };
@@ -366,20 +363,26 @@ impl Tenants {
     }
 }
 
-/// The session with this id unless it has ended; one found ended is
-/// removed, for the caller to commit.
-fn live(tx: &mut RTx<'_>, id: &str, now: i64) -> Result<Option<SessionRow>, TenantError> {
-    if !well_formed(id) {
-        return Ok(None);
+impl Tenants {
+    /// The session with this id unless it has ended, with the time it
+    /// was judged at: the registry's clock in `tx`, read after the row,
+    /// so the begin's batch took it in the row's round trip. That one
+    /// reading is the time the caller writes too. A session found ended
+    /// is removed, for the caller to commit.
+    fn live(&self, tx: &mut RTx<'_>, id: &str) -> Result<Option<(SessionRow, i64)>, TenantError> {
+        if !well_formed(id) {
+            return Ok(None);
+        }
+        let Some(row) = tx.session(&hash(id))? else {
+            return Ok(None);
+        };
+        let now = self.now_in(tx.as_mut())?;
+        if row.idle_expires_at <= now || row.expires_at <= now {
+            tx.delete_session(&row.id_hash)?;
+            return Ok(None);
+        }
+        Ok(Some((row, now)))
     }
-    let Some(row) = tx.session(&hash(id))? else {
-        return Ok(None);
-    };
-    if row.idle_expires_at <= now || row.expires_at <= now {
-        tx.delete_session(&row.id_hash)?;
-        return Ok(None);
-    }
-    Ok(Some(row))
 }
 
 /// The scopes a user's membership gives now, and the settings a session

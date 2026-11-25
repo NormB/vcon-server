@@ -1267,3 +1267,56 @@ fn a_write_that_waits_for_its_tenant_s_lock_reads_the_clock_after_it() {
         "the store time is read after the lock: {stored} is not before {released}"
     );
 }
+
+// The clock is read after a transaction's first row (it then costs no
+// round trip): the decision and the times written still take that one
+// reading.
+
+#[test]
+fn a_session_is_judged_and_seen_by_one_reading_taken_after_its_row() {
+    let w = world();
+    let (_first, s) = started_at(&w, conformance::START);
+    let started = number(&w, "registry", "SELECT created_at FROM vcon.session");
+    let behind = w.serve_at(conformance::START - SKEW);
+    behind.1.step_clock(vec![IDLE - 60 * SECOND]);
+    assert_eq!(
+        asked(&behind.1, &s),
+        Ok(()),
+        "a minute inside the idle limit by the stepped reading"
+    );
+    let (seen, limit) = (
+        number(&w, "registry", "SELECT last_seen_at FROM vcon.session"),
+        number(&w, "registry", "SELECT idle_expires_at FROM vcon.session"),
+    );
+    assert!(
+        seen >= started + IDLE - 60 * SECOND,
+        "seen at the reading the judgment took: {started} then {seen}"
+    );
+    assert_eq!(limit - seen, IDLE, "and the idle limit counted from it");
+}
+
+#[test]
+fn a_tenant_key_s_rotation_and_its_record_are_one_reading() {
+    let w = world();
+    let (_catalogs, tenants) = w.serve_at(conformance::START + SKEW);
+    let id = tenants.create(Actor::Cli, "acme", None).expect("a tenant");
+    tenants.rekey_tenant(Actor::Cli, id).expect("rotated");
+    let since = number(
+        &w,
+        "registry",
+        &format!("SELECT key_since FROM vcon.tenant WHERE id = '\\x{id}'"),
+    );
+    let at = crate::audit::rfc3339(crate::clock::from_nanos(since).expect("a time"));
+    assert_eq!(
+        w.registry_value(
+            "SELECT at FROM vcon.admin_audit WHERE action = 'rekey_tenant' AND status = 200"
+        ),
+        at,
+        "the record is at the new key's start, the transaction's one reading"
+    );
+    assert_eq!(
+        by_the_database(&w, "registry", "tenant", "key_since"),
+        "1/1",
+        "which is the database's"
+    );
+}

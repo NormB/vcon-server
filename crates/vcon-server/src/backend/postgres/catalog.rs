@@ -1330,16 +1330,20 @@ impl<'a> PgTx<'a> {
     }
 
     /// The database's clock for this transaction, in nanoseconds: the
-    /// reading its begin's batch took ([`TX_CLOCK`]), or, when that batch
-    /// answered none, one read now and kept. A transaction not begun yet
-    /// begins here. Each call answers the same time.
+    /// reading its begin's batch took ([`TX_CLOCK`]). A transaction not
+    /// begun yet begins here, in a round trip of its own; one whose batch
+    /// answered no reading reads the setting the batch made. Either way
+    /// the answer is the batch's reading, the one the statements read in
+    /// SQL ([`CLOCK_NANOS`]), and each call answers the same time.
     pub(super) fn clock(&self) -> Result<i64, StoreError> {
         if let Some(at) = self.clock.get() {
             return Ok(at);
         }
-        let rows = self.query(TX_CLOCK, &[])?;
-        let at = rows.first().ok_or(StoreError::Io)?.try_get(0).map_err(io)?;
-        let at = self.clock.get().unwrap_or(at);
+        let rows = self.query(&format!("SELECT {CLOCK_NANOS}"), &[])?;
+        let at = match self.clock.get() {
+            Some(at) => at,
+            None => rows.first().ok_or(StoreError::Io)?.try_get(0).map_err(io)?,
+        };
         self.clock.set(Some(at));
         Ok(at)
     }
@@ -1657,10 +1661,12 @@ impl<'a> PgTx<'a> {
 
     /// Inserts one audit record at `at`, counting `count`; `counted`
     /// marks a record [`PgTx::count_record`] adds to.
+    /// `at` None is the transaction's reading of the clock, written in
+    /// SQL ([`CLOCK_RFC3339`]).
     fn insert_audit(
         &self,
         entry: &Entry,
-        at: &str,
+        at: Option<&str>,
         count: i64,
         counted: bool,
     ) -> Result<(), AuditError> {
@@ -1697,7 +1703,8 @@ impl<'a> PgTx<'a> {
         self.execute_checked(
             &format!(
                 "INSERT INTO {} (at, actor, action, target_mac, target_sealed, version, status, \
-                 count, counted{column}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9{value})",
+                 count, counted{column}) VALUES (COALESCE($1, {CLOCK_RFC3339}), $2, $3, $4, $5, $6, \
+                 $7, $8, $9{value})",
                 table.sql
             ),
             &params,
@@ -1706,9 +1713,11 @@ impl<'a> PgTx<'a> {
         .map_err(|e| audit_failed(&e))
     }
 
-    /// Inserts one audit record at the time `now`.
-    pub(super) fn record(&self, entry: &Entry, now: OffsetDateTime) -> Result<(), AuditError> {
-        self.insert_audit(entry, &audit::rfc3339(now), 1, false)
+    /// Inserts one audit record at the transaction's reading of the
+    /// database's clock: the process's clock, `_now`, is not read, so
+    /// servers whose host clocks differ write their records by one clock.
+    pub(super) fn record(&self, entry: &Entry, _now: OffsetDateTime) -> Result<(), AuditError> {
+        self.insert_audit(entry, None, 1, false)
     }
 
     /// Adds `times` to the record for this actor, action, target, version
@@ -1774,7 +1783,7 @@ impl<'a> PgTx<'a> {
             .execute_checked(&more, &params)
             .map_err(|e| audit_failed(&e))?;
         if added == 0 {
-            return self.insert_audit(entry, &at, times, true);
+            return self.insert_audit(entry, Some(&at), times, true);
         }
         Ok(())
     }
@@ -1817,9 +1826,26 @@ impl<'a> PgTx<'a> {
 /// writes of one tenant, which that lock puts in order, read times in the
 /// same order. One reading serves the whole transaction ([`PgTx::clock`]):
 /// the times it writes, and the times it judges others' rows by, so
-/// servers whose host clocks differ agree on every one.
-pub(super) const TX_CLOCK: &str =
-    "SELECT (extract(epoch FROM clock_timestamp()) * 1000000000)::bigint";
+/// servers whose host clocks differ agree on every one. The reading is
+/// also the transaction's setting `vcon.clock`, which a statement reads
+/// in SQL ([`CLOCK_RFC3339`]): a statement that is the transaction's
+/// first needs no reading of its own before it, which would cost a
+/// round trip.
+pub(super) const TX_CLOCK: &str = "SELECT set_config('vcon.clock', \
+     ((extract(epoch FROM clock_timestamp()) * 1000000000)::bigint)::text, true)";
+
+/// The transaction's reading of the clock ([`TX_CLOCK`]), in SQL, as
+/// nanoseconds.
+pub(super) const CLOCK_NANOS: &str = "current_setting('vcon.clock')::bigint";
+
+/// The transaction's reading of the clock as the text of an audit
+/// record's time: what `audit::rfc3339` writes for the same instant, in
+/// UTC, whole seconds then the fraction with no trailing zero, and `Z`.
+const CLOCK_RFC3339: &str = "(to_char(to_timestamp(div(current_setting('vcon.clock')::bigint, \
+     1000000000)) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS') || CASE WHEN \
+     mod(current_setting('vcon.clock')::bigint, 1000000000) = 0 THEN '' ELSE '.' || \
+     rtrim(lpad(mod(current_setting('vcon.clock')::bigint, 1000000000)::text, 9, '0'), '0') \
+     END || 'Z')";
 
 /// The clock reading a begin batch answered: the value of its last row,
 /// the batch's last statement being [`TX_CLOCK`]. None when the answer

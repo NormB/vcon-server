@@ -1094,16 +1094,15 @@ impl Store {
     }
 
     /// Writes an audit record in `tx`; if it cannot, nothing is done.
-    /// The record's time is the transaction's, by the catalog's clock
-    /// ([`Store::now_in`]): a purge's record is judged against the time
+    /// The time given is this process's clock, which a data directory's
+    /// log keeps; a database's log writes the transaction's reading of
+    /// its own clock instead, in the statement, so the record costs no
+    /// reading of its own: a purge's record is judged against the time
     /// the tenant's key was rotated, which another server may have
     /// written.
     fn record(&self, tx: &mut Tx, entry: &Entry) -> Result<(), StoreError> {
-        let at = self
-            .now_in(tx.as_mut())
-            .map_err(|_| StoreError::AuditFailed)?;
-        let at = crate::clock::from_nanos(at).ok_or(StoreError::AuditFailed)?;
-        tx.record(entry, at).map_err(|_| StoreError::AuditFailed)
+        tx.record(entry, self.clock.now())
+            .map_err(|_| StoreError::AuditFailed)
     }
 
     /// The local catalog's connection, for tests.

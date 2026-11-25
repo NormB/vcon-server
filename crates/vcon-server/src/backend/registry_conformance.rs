@@ -338,9 +338,11 @@ pub(crate) fn ok_a_pending_key_is_set_and_promoted(r: &dyn Registry) {
     let found = read(r, |tx| tx.tenant(row.id).expect("reads")).expect("the tenant");
     assert_eq!(found.pending, Some(vec![7; 48]), "the pending key is held");
     assert_eq!(found.wrapped, row.wrapped, "the current key is unchanged");
-    write(r, |tx| {
+    let since = write(r, |tx| {
+        let since = tx.clock_now(T0 + 77).expect("the registry's clock");
         tx.promote_pending(row.id, KeyId([9; 8]), T0 + 77)
-            .expect("promotes")
+            .expect("promotes");
+        since
     });
     let found = read(r, |tx| tx.tenant(row.id).expect("reads")).expect("the tenant");
     assert_eq!(
@@ -350,7 +352,10 @@ pub(crate) fn ok_a_pending_key_is_set_and_promoted(r: &dyn Registry) {
     );
     assert_eq!(found.pending, None, "no key is pending");
     assert_eq!(found.tenant_key_id, KeyId([9; 8]), "the new key's id");
-    assert_eq!(found.key_since, T0 + 77, "since the time given");
+    assert_eq!(
+        found.key_since, since,
+        "since the registry's clock in the transaction: the time given on a data directory"
+    );
 }
 
 pub(crate) fn ok_master_wraps_are_counted_from_the_first(r: &dyn Registry) {
@@ -822,9 +827,11 @@ pub(crate) fn ok_settings_are_deleted_one_and_by_tenant(r: &dyn Registry) {
 
 pub(crate) fn ok_a_record_is_exported(r: &dyn Registry) {
     let target = tenant_id(1).to_string();
-    write(r, |tx| {
+    let recorded = write(r, |tx| {
+        let recorded = clock_text(tx, at(3));
         tx.record(&entry(Action::Create, Some(&target), 201), at(3))
             .expect("records");
+        recorded
     });
     let records = exported(r, 0);
     assert_eq!(records.len(), 1, "one record");
@@ -836,8 +843,8 @@ pub(crate) fn ok_a_record_is_exported(r: &dyn Registry) {
     assert_eq!(record["count"], 1, "counted once");
     assert_eq!(
         record["at"],
-        crate::audit::rfc3339(at(3)).as_str(),
-        "at the time given"
+        recorded.as_str(),
+        "at the registry's clock in the transaction: the time given on a data directory"
     );
     assert!(record["version"].is_null(), "no version");
 }
@@ -895,7 +902,8 @@ pub(crate) fn ok_count_many_adds_its_times(r: &dyn Registry) {
 }
 
 pub(crate) fn ok_record_times_are_read_by_action_and_status(r: &dyn Registry) {
-    write(r, |tx| {
+    let expected = write(r, |tx| {
+        let expected = [clock_text(tx, at(1)), clock_text(tx, at(4))];
         tx.record(&entry(Action::Purge, None, 200), at(1))
             .expect("records");
         tx.record(&entry(Action::Purge, None, 500), at(2))
@@ -904,12 +912,14 @@ pub(crate) fn ok_record_times_are_read_by_action_and_status(r: &dyn Registry) {
             .expect("records");
         tx.record(&entry(Action::Purge, Some("x"), 200), at(4))
             .expect("records");
+        expected
     });
     let mut times = read(r, |tx| tx.record_times(Action::Purge, 200).expect("reads"));
     times.sort();
+    let mut expected = expected.to_vec();
+    expected.sort();
     assert_eq!(
-        times,
-        [crate::audit::rfc3339(at(1)), crate::audit::rfc3339(at(4))],
+        times, expected,
         "the times of the records with the action and the status"
     );
 }
@@ -1705,6 +1715,16 @@ pub(crate) fn edge_an_empty_registry_lists_nothing(r: &dyn Registry) {
     assert!(exported(r, 0).is_empty(), "and no records");
     let tx = r.immediate().expect("a write begins");
     assert_eq!(tx.commit(), Ok(()), "a write of nothing commits");
+}
+
+/// The time text a record written in `tx` at `at` holds: the registry's
+/// clock in the transaction (`RegistryTx::clock_now`), `at` itself on a
+/// data directory.
+fn clock_text(tx: &mut dyn RegistryTx, at: OffsetDateTime) -> String {
+    let now = tx
+        .clock_now(crate::clock::nanos(at))
+        .expect("the registry's clock");
+    crate::audit::rfc3339(crate::clock::from_nanos(now).expect("a time"))
 }
 
 /// Adds the creating row of `id`, the process's clock at `at`, and

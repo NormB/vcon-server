@@ -201,8 +201,11 @@ impl Tenants {
     pub(crate) fn stored_key(&self, id: KeyId) -> Result<Option<StoredKey>, TenantError> {
         let (row, read_at) = {
             let mut tx = self.registry.snapshot()?;
+            let row = tx.key(id)?;
+            // After the row: the begin's batch took the reading, in the
+            // round trip of the row's read.
             let read_at = self.now_in(tx.as_mut())?;
-            (tx.key(id)?, read_at)
+            (row, read_at)
         };
         row.map(|row| {
             Ok(StoredKey {

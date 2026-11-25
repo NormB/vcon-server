@@ -135,8 +135,8 @@ impl Tenants {
         // transaction with its record.
         {
             let mut tx = self.registry.immediate()?;
-            let now = self.now_in(tx.as_mut())?;
-            tx.promote_pending(id, new.id(), now)?;
+            // A database writes its own reading as the new key's start.
+            tx.promote_pending(id, new.id(), nanos(self.clock.now()))?;
             self.record(&mut tx, &entry(200))?;
             commit(tx)?;
         }

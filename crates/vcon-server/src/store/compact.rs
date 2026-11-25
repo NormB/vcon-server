@@ -66,10 +66,11 @@ impl Store {
         let grace = i64::try_from(plan.grace.as_nanos()).unwrap_or(i64::MAX);
         // Expired files are removed only once what was read is durable.
         let (unnamed, pending, now) = self.read(|tx| {
-            // The unnamed times were written by the catalog's clock, by
-            // whichever server swapped the files: judged by it too.
-            let now = self.now_in(tx.as_mut())?;
             let pending: HashSet<FileId> = tx.purge_pending()?.into_iter().collect();
+            // The unnamed times were written by the catalog's clock, by
+            // whichever server swapped the files: judged by it too. Read
+            // after a row, the begin's batch took it in that round trip.
+            let now = self.now_in(tx.as_mut())?;
             let mut unnamed = Vec::new();
             for file in tx.unnamed_files()? {
                 if let Some(info) = tx.pack_file(file)? {

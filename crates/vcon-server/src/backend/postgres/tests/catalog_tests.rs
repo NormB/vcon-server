@@ -362,7 +362,9 @@ pub(super) mod on_a_server {
     use time::OffsetDateTime;
     use uuid::Uuid;
 
-    use super::super::super::catalog::{CatalogError, Database, PgCatalog, pool_refusal};
+    use super::super::super::catalog::{
+        Begin, CatalogError, Database, PgCatalog, PgTx, pool_refusal,
+    };
     use super::super::super::schema::{COMMANDS_LOCK, MIGRATIONS, SERVER_LOCK_HELD, SERVERS_LOCK};
     use super::super::live::value;
     use super::super::schema_tests::live::{Db, in_scope, waiters};
@@ -746,6 +748,12 @@ pub(super) mod on_a_server {
         let at = OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(90);
         let mut tx = catalog.immediate().expect("begins");
         tx.record(&entry("one"), at).expect("records");
+        // A record's time is the transaction's reading of the database's
+        // clock; a counted record's minute is the one given.
+        let recorded = crate::audit::rfc3339(
+            OffsetDateTime::from_unix_timestamp_nanos(i128::from(tx.clock_now(0).expect("clock")))
+                .expect("a time"),
+        );
         tx.count(&entry("one"), at).expect("counts");
         tx.count(&entry("one"), at).expect("counts again");
         tx.count(&entry("two"), at).expect("counts another target");
@@ -764,11 +772,11 @@ pub(super) mod on_a_server {
         assert_eq!(
             shown,
             [
-                ("one", "1970-01-01T00:01:30Z", 1),
+                ("one", recorded.as_str(), 1),
                 ("one", "1970-01-01T00:01:00Z", 2),
                 ("two", "1970-01-01T00:01:00Z", 1),
             ],
-            "the record at its second, and one counted record a target in the minute"
+            "the record at the database's reading, and one counted record a target in the minute"
         );
         assert!(
             lines.iter().all(|l| l["actor"] == "cli"
@@ -1011,6 +1019,57 @@ pub(super) mod on_a_server {
             Ok(4),
             "the first tenant's four"
         );
+    }
+
+    /// One answer of `sql` on `lease`'s connection, outside any
+    /// transaction: the text of its first column, None for NULL.
+    fn on_the_connection(lease: &super::super::super::pool::Lease, sql: &str) -> Option<String> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime")
+            .block_on(lease.client().query_one(sql, &[]))
+            .unwrap_or_else(|e| panic!("{sql}: {e}"))
+            .get(0)
+    }
+
+    /// The reading of the clock a transaction keeps in its setting
+    /// `vcon.clock` ends with it, committed or rolled back: a later
+    /// transaction on the same pooled connection whose begin answered no
+    /// reading reads its own begin's setting, never an earlier one.
+    #[test]
+    fn the_clock_reading_ends_with_its_transaction_on_its_pooled_connection() {
+        let (_db, database) = database();
+        let (tenant, _, _catalog) = tenant_catalog(&database);
+        for commit in [true, false] {
+            let lease = database.lease().expect("a connection");
+            let pid = on_the_connection(&lease, "SELECT pg_backend_pid()::text");
+            let tx = PgTx::begin(&database, lease, tenant, None, Begin::Read);
+            let at = tx.clock().expect("the transaction's reading");
+            if commit {
+                tx.finish().expect("commits");
+            }
+            // The connection goes back to the pool with the transaction.
+            drop(tx);
+            // The pool's other connections are held until it gives this
+            // one again.
+            let mut others = Vec::new();
+            let lease = loop {
+                let lease = database.lease().expect("a connection");
+                if on_the_connection(&lease, "SELECT pg_backend_pid()::text") == pid {
+                    break lease;
+                }
+                others.push(lease);
+                assert!(others.len() < 32, "the pool gives the connection again");
+            };
+            drop(others);
+            let left = on_the_connection(&lease, "SELECT current_setting('vcon.clock', true)");
+            assert!(
+                left.as_deref().is_none_or(str::is_empty),
+                "commit {commit}: the reading {at} is gone with its transaction: {left:?}"
+            );
+            drop(lease);
+        }
     }
 
     #[test]

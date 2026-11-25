@@ -45,8 +45,8 @@ impl Store {
             // clock, which the server that prunes manifests, perhaps
             // another one, judges it by.
             let (files, live, now) = self.read(|tx| {
-                let now = self.now_in(tx.as_mut())?;
-                Ok((tx.named_files()?, tx.live_versions()?, now))
+                let (files, live) = (tx.named_files()?, tx.live_versions()?);
+                Ok((files, live, self.now_in(tx.as_mut())?))
             })?;
             let now = from_nanos(now).ok_or(StoreError::Damaged)?;
             let listed: Vec<serde_json::Value> = files
@@ -149,8 +149,8 @@ impl Store {
         };
         // A manifest is removed only once the rows read are durable.
         let (written, now) = self.read(|tx| {
-            let now = self.now_in(tx.as_mut())?;
-            Ok((tx.published_manifests()?, now))
+            let written = tx.published_manifests()?;
+            Ok((written, self.now_in(tx.as_mut())?))
         })?;
         let grace = grace.map(|g| i64::try_from(g.as_nanos()).unwrap_or(i64::MAX));
         for pair in written.windows(2) {
