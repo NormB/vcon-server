@@ -1,5 +1,6 @@
 -- Schema version 15: the registry records its tenant creates under way,
--- and each tenant its pack files under way.
+-- and each tenant its pack files under way; the registry holds the leases
+-- of the work one server does for every server.
 --
 -- A tenant's create makes its space (the tenant's lock row and its
 -- prefix in the bucket) and then, in a transaction of its own, the
@@ -62,3 +63,32 @@ ALTER TABLE vcon.pending_file FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_rows ON vcon.pending_file
     USING (tenant = vcon.tenant()) WITH CHECK (tenant = vcon.tenant());
 GRANT SELECT, INSERT, DELETE ON vcon.pending_file TO vcon_app;
+
+-- Several servers on one database share two jobs that one of them does
+-- for all: the purge sweep, with the recovery that runs before it, and
+-- the pack run. From this version vcon.lease holds a row per job while a
+-- server holds it: the job's name, the holder (random bits that name one
+-- connect of one process, then its host and process id, for an
+-- operator), the time it was taken and the time it ends.
+--
+-- Both times are by the database's clock, now() in the one statement
+-- that takes or renews a lease, and no server's own clock is read: two
+-- servers whose clocks disagree agree on who holds a job and until when.
+-- A holder's lease is renewed by its holder, taken by another only once
+-- it has ended, and given up by deleting the row.
+--
+-- The rows are the registry's: read and written in its transactions
+-- only. The application role may read the rows, add them, change them
+-- (a renewal, or the take of a lease that ended) and delete them. The
+-- table starts empty, as vcon.pending_tenant does.
+CREATE TABLE vcon.lease (
+    name text PRIMARY KEY,
+    holder text NOT NULL,
+    taken_at timestamptz NOT NULL,
+    expires_at timestamptz NOT NULL
+);
+ALTER TABLE vcon.lease ENABLE ROW LEVEL SECURITY;
+ALTER TABLE vcon.lease FORCE ROW LEVEL SECURITY;
+CREATE POLICY registry_rows ON vcon.lease
+    USING (vcon.in_registry() = (name IS NOT NULL)) WITH CHECK (vcon.in_registry());
+GRANT SELECT, INSERT, UPDATE, DELETE ON vcon.lease TO vcon_app;

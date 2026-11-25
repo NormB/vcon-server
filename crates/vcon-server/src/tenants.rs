@@ -14,7 +14,7 @@ use crate::audit::{self, Action, Actor, Entry};
 use crate::backend::local::LocalConn;
 use crate::backend::local::{LocalRegistry, LocalTenantSpace};
 use crate::backend::{
-    Catalogs, CommitError, ObjectPlace, Registry, RegistryTx, TenantRow, TenantSpace,
+    Catalogs, CommitError, Job, ObjectPlace, Registry, RegistryTx, TenantRow, TenantSpace,
 };
 use crate::clock::{Clock, from_nanos, nanos};
 use crate::envelope::{self, Key, WrapLimit};
@@ -487,6 +487,33 @@ impl Tenants {
     #[cfg(all(test, feature = "postgres", feature = "backend-tests"))]
     pub(crate) fn between_create(&self, hook: tests::CreateHook) {
         *self.hooks.between.lock().expect("hook") = Some(hook);
+    }
+
+    /// Takes or renews the lease of `job` for `ttl` ([`Registry::lead`]):
+    /// true when this process holds it now. The catalogs' clock decides,
+    /// never this process's.
+    #[cfg_attr(
+        not(all(test, feature = "postgres", feature = "backend-tests")),
+        expect(
+            dead_code,
+            reason = "a server takes the leases from the next step; the live tests do now"
+        )
+    )]
+    pub(crate) fn lead(&self, job: Job, ttl: std::time::Duration) -> Result<bool, TenantError> {
+        self.registry.lead(job, ttl)
+    }
+
+    /// Gives up the lease of `job` when this process holds it
+    /// ([`Registry::step_down`]).
+    #[cfg_attr(
+        not(all(test, feature = "postgres", feature = "backend-tests")),
+        expect(
+            dead_code,
+            reason = "a server takes the leases from the next step; the live tests do now"
+        )
+    )]
+    pub(crate) fn step_down(&self, job: Job) -> Result<(), TenantError> {
+        self.registry.step_down(job)
     }
 
     /// Removes each tenant space with no row: a create cut off before its

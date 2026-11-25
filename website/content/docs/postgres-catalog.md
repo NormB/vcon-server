@@ -663,6 +663,18 @@ for the next run. The rows are the tenant's, under the policy of
 no `UPDATE`. The file id and the time are in the clear, and the table
 starts empty.
 
+Version 15 also makes the table `lease`, where the registry records
+which server does a job that one server does for all: the purge sweep
+and the pack run. A row holds the job's name, its holder, the time it
+was taken and the time it ends. Both times are by the database's clock
+(`now()` in the one statement that takes or renews a lease), and no
+server's own clock is read, so servers whose clocks disagree still agree
+on the holder. The holder is 128 random bits made at each start, then
+the host name and process id: a server that starts again is a new
+holder and waits for its earlier lease to end. The rows are the
+registry's; `vcon_app` reads, adds, changes and deletes them. The table
+starts empty.
+
 The audit key does not rotate with the tenant key: a rotation seals the
 same audit key under the new catalog key and changes no audit record.
 The statements of that rotation move a tenant's catalog to the new key

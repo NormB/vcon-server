@@ -94,6 +94,7 @@ pub(super) mod live {
         "admin_audit",
         "admin_audit_key",
         "api_key",
+        "lease",
         "master_key_use",
         "membership",
         "pending_tenant",
@@ -396,6 +397,7 @@ pub(super) mod live {
             "admin_audit_key" => "INSERT INTO vcon.admin_audit_key (key_id, ordinal, wrapped) VALUES ('\\x01', 1, '\\x02')".to_owned(),
             "storage_claim" => "INSERT INTO vcon.storage_claim (claim_id) VALUES ('0123456789abcdef0123456789abcdef')".to_owned(),
             "pending_tenant" => "INSERT INTO vcon.pending_tenant (id, started_at) VALUES ('\\x01', 1)".to_owned(),
+            "lease" => "INSERT INTO vcon.lease (name, holder, taken_at, expires_at) VALUES ('sweep', 'h', now(), now())".to_owned(),
             other => panic!("no insert for {other}"),
         }
     }

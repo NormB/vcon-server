@@ -13,6 +13,7 @@ mod catalog_tests;
 mod claim_tests;
 mod edge;
 mod failure;
+mod lease_tests;
 mod lock_tests;
 mod place_tests;
 mod read_tests;

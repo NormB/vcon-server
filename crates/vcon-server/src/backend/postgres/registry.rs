@@ -33,9 +33,10 @@ use super::catalog::{
     AuditKey, Begin, Database, PgTx, all_changed, audit_key_id, new_audit_key, open_audit_keys,
     reseal_audit_keys,
 };
+use super::lease;
 use crate::audit::{Action, Actor, AuditError, Entry};
 use crate::backend::{
-    CommitError, KeyRow, MembershipRow, Registry, RegistryTx, SessionRow, TenantRow, UserRow,
+    CommitError, Job, KeyRow, MembershipRow, Registry, RegistryTx, SessionRow, TenantRow, UserRow,
 };
 use crate::clock::nanos;
 use crate::envelope::{self as column, ColumnKeys, Key, REGISTRY};
@@ -583,6 +584,41 @@ impl Registry for PgRegistry {
     /// how-to covers. Nothing is written at `to`.
     fn backup_into(&self, _to: &Path) -> Result<Vec<TenantId>, TenantError> {
         Err(TenantError::NoFileBackup)
+    }
+
+    /// One registry write: [`lease::TAKE`], under this connection's holder
+    /// ([`Database::holder`]). A commit with no answer is an error: the
+    /// caller does not know it holds the lease, and works as if it did not.
+    fn lead(&self, job: Job, ttl: std::time::Duration) -> Result<bool, TenantError> {
+        let tx = self.begin(Begin::Write)?;
+        let holder = self.database.holder();
+        let held =
+            tx.0.query(
+                lease::TAKE,
+                &[
+                    (&lease::name(job), Type::TEXT),
+                    (&holder, Type::TEXT),
+                    (&lease::seconds(ttl), Type::FLOAT8),
+                ],
+            )
+            .map_err(io)?
+            .len()
+                == 1;
+        tx.0.finish().map_err(io)?;
+        Ok(held)
+    }
+
+    fn step_down(&self, job: Job) -> Result<(), TenantError> {
+        let tx = self.begin(Begin::Write)?;
+        tx.0.execute(
+            lease::GIVE_UP,
+            &[
+                (&lease::name(job), Type::TEXT),
+                (&self.database.holder(), Type::TEXT),
+            ],
+        )
+        .map_err(io)?;
+        tx.0.finish().map_err(io)
     }
 
     #[cfg(test)]

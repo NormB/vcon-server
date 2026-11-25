@@ -26,9 +26,8 @@ All notable changes to this project are recorded here. The format follows
     Transit, OpenBao, PKCS#11 and AWS KMS.
   - Docs: [1.0 checklist](https://vcon-server.com/docs/production-checklist/)
 - **A PostgreSQL catalog moves to schema version 15.**
-  - Effect: Each tenant create, and each new Parquet pack file, is
-    recorded under way until its row is added, so another server's
-    recovery keeps them.
+  - Effect: Tenant creates and new pack files are recorded under way; a
+    new table holds the leases of the purge sweep and pack run.
   - Do: Run `vcon-server migrate` with the new binary before any server
     starts; a server refuses a database at version 14.
   - Docs: [Schema

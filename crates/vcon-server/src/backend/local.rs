@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::{
-    Catalog, CatalogTx, CommitError, ExaminedRow, ExportedRow, HiddenRow, KeptRow, KeyRow,
+    Catalog, CatalogTx, CommitError, ExaminedRow, ExportedRow, HiddenRow, Job, KeptRow, KeyRow,
     ListedRow, MembershipRow, NewPackFile, NewVersion, ObjectError, ObjectPlace, Objects,
     PackFileRow, Packed, PageQuery, Registry, RegistryTx, SessionRow, TenantRow, TenantSpace,
     Under, UnpackedRow, UserRow, VconRow, VersionRow, WrappedRow,
@@ -1518,6 +1518,17 @@ impl Registry for LocalRegistry {
             .map_err(tenant_io)?
             .map(|row| row.map(TenantId).map_err(tenant_io))
             .collect()
+    }
+
+    /// Always held: the data directory's lock (datadir.rs) lets one
+    /// process serve it, so no other server shares the work.
+    fn lead(&self, _job: Job, _ttl: std::time::Duration) -> Result<bool, TenantError> {
+        Ok(true)
+    }
+
+    /// Nothing to give up: no other process waits for the work.
+    fn step_down(&self, _job: Job) -> Result<(), TenantError> {
+        Ok(())
     }
 
     #[cfg(test)]

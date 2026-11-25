@@ -1,6 +1,8 @@
 //! Schema version 15: the registry records its tenant creates under way,
 //! in the table `pending_tenant`, so recovery keeps the space of a create
-//! that has not yet added its tenant's row (store/pending.rs). Each live
+//! that has not yet added its tenant's row (store/pending.rs); each tenant
+//! its pack files under way, in `pending_file`; and the registry the
+//! leases of the work one server does for all, in `lease`. Each live
 //! test of the migration starts from a database at version 14.
 
 use super::super::super::schema::{MIGRATIONS, SCHEMA_VERSION, version_refusal};
@@ -155,6 +157,53 @@ fn the_migration_says_why_pack_files_under_way_are_recorded() {
     let comment = comment();
     assert!(
         comment.contains("vcon.pending_file") && comment.contains("before it puts the file"),
+        "the reason, in the migration's comment: {comment}"
+    );
+}
+
+// The leases of the work one server does for every server (lease.rs).
+
+#[test]
+fn version_15_makes_the_lease_table_once() {
+    assert_eq!(
+        text().matches("CREATE TABLE vcon.lease (").count(),
+        1,
+        "the fifteenth makes lease once"
+    );
+}
+
+#[test]
+fn a_lease_row_is_a_job_its_holder_and_two_times_of_the_database() {
+    assert!(
+        one_line().contains(
+            "CREATE TABLE vcon.lease ( name text PRIMARY KEY, holder text NOT NULL, taken_at \
+             timestamptz NOT NULL, expires_at timestamptz NOT NULL );"
+        ),
+        "{}",
+        one_line()
+    );
+}
+
+#[test]
+fn the_lease_table_has_the_policy_of_the_registry_s_rows() {
+    for statement in [
+        "ALTER TABLE vcon.lease ENABLE ROW LEVEL SECURITY;",
+        "ALTER TABLE vcon.lease FORCE ROW LEVEL SECURITY;",
+        "CREATE POLICY registry_rows ON vcon.lease USING (vcon.in_registry() = (name IS NOT \
+         NULL)) WITH CHECK (vcon.in_registry());",
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON vcon.lease TO vcon_app;",
+    ] {
+        assert!(one_line().contains(statement), "{statement}");
+    }
+}
+
+#[test]
+fn the_migration_says_a_lease_s_times_are_the_database_s() {
+    let comment = comment();
+    assert!(
+        comment.contains("vcon.lease")
+            && comment.contains("by the database's clock")
+            && comment.contains("no server's own clock"),
         "the reason, in the migration's comment: {comment}"
     );
 }
@@ -374,6 +423,99 @@ mod on_a_server {
                 "{sql}: {why}"
             );
         }
+    }
+
+    /// The lease rows the registry reads: each job and its holder.
+    const LEASES: &str = "SELECT coalesce(string_agg(name || ':' || holder, ',' ORDER BY name), \
+                          '') FROM vcon.lease";
+
+    fn lease(name: &str, holder: &str) -> String {
+        format!(
+            "INSERT INTO vcon.lease (name, holder, taken_at, expires_at) \
+             VALUES ('{name}', '{holder}', now(), now() + interval '1 minute')"
+        )
+    }
+
+    #[tokio::test]
+    async fn the_application_role_takes_renews_and_gives_up_lease_rows() {
+        let db = Db::migrated().await;
+        let app = db.app().await;
+        run(&app, "registry", &lease("sweep", "a")).await;
+        run(&app, "registry", &lease("pack", "b")).await;
+        assert_eq!(
+            one(&app, "registry", LEASES).await,
+            "pack:b,sweep:a",
+            "both"
+        );
+        run(
+            &app,
+            "registry",
+            "UPDATE vcon.lease SET holder = 'c' WHERE name = 'sweep'",
+        )
+        .await;
+        run(
+            &app,
+            "registry",
+            "DELETE FROM vcon.lease WHERE name = 'pack'",
+        )
+        .await;
+        assert_eq!(
+            one(&app, "registry", LEASES).await,
+            "sweep:c",
+            "one, renamed"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_application_role_cannot_empty_the_lease_table_at_once() {
+        let db = Db::migrated().await;
+        let app = db.app().await;
+        run(&app, "registry", &lease("sweep", "a")).await;
+        assert_eq!(
+            refused(&app, "registry", "TRUNCATE vcon.lease").await,
+            "permission denied for table lease",
+            "no TRUNCATE"
+        );
+        assert_eq!(one(&app, "registry", LEASES).await, "sweep:a", "kept");
+    }
+
+    #[tokio::test]
+    async fn a_tenant_s_transaction_reads_and_writes_no_lease_row() {
+        let db = Db::migrated().await;
+        run(&owner(&db).await, "registry", &lease("sweep", "a")).await;
+        let app = db.app().await;
+        for sql in [
+            LEASES.to_owned(),
+            lease("pack", "b"),
+            "UPDATE vcon.lease SET holder = 'c'".to_owned(),
+            "DELETE FROM vcon.lease".to_owned(),
+        ] {
+            assert_eq!(
+                refused(&app, TENANT_A, &sql).await,
+                "this transaction is a tenant's, not the registry's",
+                "{sql}"
+            );
+        }
+        assert_eq!(one(&app, "registry", LEASES).await, "sweep:a", "kept");
+    }
+
+    #[tokio::test]
+    async fn a_lease_statement_with_no_scope_is_refused() {
+        let db = Db::migrated().await;
+        let app = db.app().await;
+        run(&app, "registry", &lease("sweep", "a")).await;
+        for sql in [
+            "UPDATE vcon.lease SET holder = 'c'".to_owned(),
+            "DELETE FROM vcon.lease".to_owned(),
+            lease("pack", "b"),
+        ] {
+            let why = no_scope(&app, &sql).await.expect_err("refused");
+            assert!(
+                why.contains("no tenant set for this transaction"),
+                "{sql}: {why}"
+            );
+        }
+        assert_eq!(one(&app, "registry", LEASES).await, "sweep:a", "kept");
     }
 
     #[tokio::test]

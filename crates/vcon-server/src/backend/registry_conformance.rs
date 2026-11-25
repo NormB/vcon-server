@@ -18,7 +18,7 @@ use time::OffsetDateTime;
 
 use crate::audit::{Action, Actor, Entry, NO_ANSWER};
 use crate::backend::{
-    CommitError, KeyRow, MembershipRow, Registry, RegistryTx, SessionRow, TenantRow, UserRow,
+    CommitError, Job, KeyRow, MembershipRow, Registry, RegistryTx, SessionRow, TenantRow, UserRow,
 };
 use crate::ids::{KeyId, TenantId, UserId};
 use crate::tenants::TenantError;
@@ -118,6 +118,11 @@ macro_rules! registry_conformance {
             no_second_creating_row_takes_an_id,
             edge_a_creating_row_beside_its_tenants_row,
             edge_creating_times_at_the_ends_of_the_range_read_back,
+            ok_a_free_lease_is_taken,
+            ok_the_holder_renews_its_lease,
+            ok_a_lease_given_up_is_taken_again,
+            edge_the_two_jobs_are_held_apart,
+            edge_giving_up_a_lease_not_held_does_nothing,
         );
     };
     (@each $fresh:path; $($name:ident),* $(,)?) => {
@@ -1841,6 +1846,45 @@ pub(crate) fn edge_creating_times_at_the_ends_of_the_range_read_back(r: &dyn Reg
         ],
         "every time an i64 holds reads back as written"
     );
+}
+
+/// A lease's ttl in the checks: one minute.
+const LEASE: std::time::Duration = std::time::Duration::from_secs(60);
+
+pub(crate) fn ok_a_free_lease_is_taken(r: &dyn Registry) {
+    assert_eq!(r.lead(Job::Sweep, LEASE), Ok(true), "a free lease is taken");
+}
+
+pub(crate) fn ok_the_holder_renews_its_lease(r: &dyn Registry) {
+    assert_eq!(r.lead(Job::Pack, LEASE), Ok(true), "taken");
+    assert_eq!(r.lead(Job::Pack, LEASE), Ok(true), "renewed");
+    assert_eq!(
+        r.lead(Job::Pack, LEASE * 60),
+        Ok(true),
+        "renewed for longer"
+    );
+}
+
+pub(crate) fn ok_a_lease_given_up_is_taken_again(r: &dyn Registry) {
+    assert_eq!(r.lead(Job::Sweep, LEASE), Ok(true), "taken");
+    assert_eq!(r.step_down(Job::Sweep), Ok(()), "given up");
+    assert_eq!(r.lead(Job::Sweep, LEASE), Ok(true), "taken again");
+}
+
+pub(crate) fn edge_the_two_jobs_are_held_apart(r: &dyn Registry) {
+    assert_eq!(r.lead(Job::Sweep, LEASE), Ok(true), "the sweep");
+    assert_eq!(r.lead(Job::Pack, LEASE), Ok(true), "the pack run");
+    assert_eq!(r.step_down(Job::Sweep), Ok(()), "the sweep given up");
+    assert_eq!(
+        r.lead(Job::Pack, LEASE),
+        Ok(true),
+        "the pack run is still held"
+    );
+}
+
+pub(crate) fn edge_giving_up_a_lease_not_held_does_nothing(r: &dyn Registry) {
+    assert_eq!(r.step_down(Job::Pack), Ok(()), "nothing to give up");
+    assert_eq!(r.lead(Job::Pack, LEASE), Ok(true), "and it is taken after");
 }
 
 /// The traits' own shape, read from the source.

@@ -155,6 +155,7 @@ mod on_a_server {
                 "membership" => "roles_sealed",
                 "tenant_setting" => "value_sealed",
                 "session" => "scopes_sealed",
+                "lease" => "holder",
                 other => panic!("{other}"),
             };
             let result = no_scope(

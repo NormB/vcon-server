@@ -55,7 +55,7 @@ mod on_a_server {
     use crate::audit::Actor;
     use crate::backend::conformance::{self, TestClock};
     use crate::backend::s3::remote::{bucket, secret_file};
-    use crate::backend::{Catalogs, ObjectPlace, catalog_for, objects_for};
+    use crate::backend::{Catalogs, Job, ObjectPlace, catalog_for, objects_for};
     use crate::config::{CatalogStore, ObjectStore, Storage};
     use crate::datadir::Sharing;
     use crate::envelope::Key;
@@ -158,12 +158,17 @@ mod on_a_server {
 
         /// The registry as a command beside a server opens it.
         fn beside(&self) -> (Catalogs, Tenants) {
+            self.beside_at(conformance::START)
+        }
+
+        /// `beside`, with the process's clock at `now`.
+        fn beside_at(&self, now: time::OffsetDateTime) -> (Catalogs, Tenants) {
             let (catalogs, objects) = self.places(Sharing::Beside);
             let tenants = Tenants::open_beside_in(
                 &self.data(),
                 self.master("master.key"),
                 Arc::new(OsFs),
-                TestClock::at(conformance::START),
+                TestClock::at(now),
                 objects,
                 &catalogs,
             )
@@ -173,17 +178,21 @@ mod on_a_server {
 
         /// How many rows a table of the registry holds.
         fn registry_rows(&self, table: &str) -> i64 {
-            let sql = format!("SELECT count(*) FROM vcon.{table}");
-            wait(async { in_scope(&self.db.app().await, "registry", &sql).await })
+            self.registry_value(&format!("SELECT count(*) FROM vcon.{table}"))
+                .parse()
+                .expect("a number")
+        }
+
+        /// The one value `sql` reads in a registry transaction.
+        fn registry_value(&self, sql: &str) -> String {
+            wait(async { in_scope(&self.db.app().await, "registry", sql).await })
                 .unwrap_or_else(|e| panic!("{sql}: {e}"))
                 .iter()
                 .find_map(|m| match m {
-                    tokio_postgres::SimpleQueryMessage::Row(row) => row.get(0),
+                    tokio_postgres::SimpleQueryMessage::Row(row) => row.get(0).map(str::to_owned),
                     _ => None,
                 })
-                .expect("a count")
-                .parse()
-                .expect("a number")
+                .unwrap_or_else(|| panic!("{sql}: no value"))
         }
 
         /// How many rows of `tenant` a table of the catalogs holds.
@@ -669,6 +678,42 @@ mod on_a_server {
             );
             stop(opened);
         }
+    }
+
+    /// The two processes' clocks disagree by more than a year, and both
+    /// are far from the database's: the first's is a month behind it
+    /// (conformance::START), the second's a year ahead of that. The lease
+    /// is held by the database's clock alone.
+    #[test]
+    fn a_lease_is_held_by_the_database_s_clock_whatever_each_host_s_clock_says() {
+        let w = world();
+        let (_serving, first) = w.serve();
+        let (_beside, ahead) = w.beside_at(conformance::START + time::Duration::days(400));
+        let minute = std::time::Duration::from_secs(60);
+        assert_eq!(
+            first.lead(Job::Sweep, minute),
+            Ok(true),
+            "the first takes it"
+        );
+        assert_eq!(
+            ahead.lead(Job::Sweep, minute),
+            Ok(false),
+            "a clock a year ahead does not end the first's lease"
+        );
+        assert_eq!(
+            w.registry_value(
+                "SELECT expires_at BETWEEN now() + interval '50 seconds' AND now() + interval \
+                 '60 seconds' FROM vcon.lease WHERE name = 'sweep'"
+            ),
+            "t",
+            "the end is a minute past the database's now, not the first's clock"
+        );
+        assert_eq!(first.step_down(Job::Sweep), Ok(()), "given up");
+        assert_eq!(
+            ahead.lead(Job::Sweep, minute),
+            Ok(true),
+            "the second takes it once it is free"
+        );
     }
 
     /// A stopped process's lock goes when PostgreSQL sees its session

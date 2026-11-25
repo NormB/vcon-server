@@ -1873,6 +1873,7 @@ const LATER_TABLES: &[(i64, &str)] = &[
     (14, "pending_write"),
     (15, "pending_tenant"),
     (15, "pending_file"),
+    (15, "lease"),
 ];
 
 /// The tables of [`LATER_TABLES`] a migration past `release_schema` makes.
@@ -1896,12 +1897,12 @@ fn last_migration_table(build_schema: i64) -> Option<&'static str> {
 fn the_tables_made_after_a_schema_are_the_later_migrations_tables() {
     assert_eq!(
         tables_made_after(13),
-        ["pending_write", "pending_tenant", "pending_file"],
+        ["pending_write", "pending_tenant", "pending_file", "lease"],
         "a release at 13 lacks both"
     );
     assert_eq!(
         tables_made_after(14),
-        ["pending_tenant", "pending_file"],
+        ["pending_tenant", "pending_file", "lease"],
         "one at 14 lacks the newer"
     );
 }

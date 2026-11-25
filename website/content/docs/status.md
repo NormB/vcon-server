@@ -274,7 +274,9 @@ once, for every entry here:
   is added. Version 15 adds the table `pending_tenant`, where each tenant
   create records itself under way until the tenant's row is added, and
   the table `pending_file`, where each pack run and purge rewrite records
-  its new Parquet file under way until the file's row is added. See
+  its new Parquet file under way until the file's row is added, and the
+  table `lease`, which names the server that holds the purge sweep or
+  the pack run, until a time by the database's clock. See
   [after an upgrade from 0.4.5](@/docs/postgres-catalog.md#after-an-upgrade-from-0-4-5).
 - **A server and the commands on a PostgreSQL catalog.** With
   `catalog.backend = "postgres"`, `serve` and every command keep the

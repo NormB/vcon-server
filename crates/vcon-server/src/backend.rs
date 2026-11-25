@@ -577,6 +577,23 @@ pub struct SessionRow {
     pub csrf_hash: Vec<u8>,
 }
 
+/// The work one server does for every server of its catalogs, under a
+/// lease ([`Registry::lead`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "a server takes the leases from the next step; the tests do now"
+    )
+)]
+pub enum Job {
+    /// The purge sweep, with the recovery that runs before it.
+    Sweep,
+    /// The pack run.
+    Pack,
+}
+
 /// The registry: tenants, access keys, users, their memberships and
 /// sessions, master-key use and the admin log.
 pub trait Registry: Send + Sync {
@@ -591,6 +608,29 @@ pub trait Registry: Send + Sync {
     /// registry file at `to` under the same key, and returns the tenants
     /// that copy lists, by id.
     fn backup_into(&self, to: &Path) -> Result<Vec<TenantId>, TenantError>;
+    /// Takes the lease of `job` for `ttl`, or renews it when this process
+    /// holds it already; true when this process holds it now, until `ttl`
+    /// from now by the catalogs' clock. A registry in a data directory has
+    /// one process, which always holds it; in a database, one server of
+    /// those that serve it does.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "a server takes the leases from the next step; the tests do now"
+        )
+    )]
+    fn lead(&self, job: Job, ttl: std::time::Duration) -> Result<bool, TenantError>;
+    /// Gives up the lease of `job` when this process holds it, so another
+    /// server may take it at once; another's lease is left as it is.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "a server takes the leases from the next step; the tests do now"
+        )
+    )]
+    fn step_down(&self, job: Job) -> Result<(), TenantError>;
     /// Makes the `nth` commit from now fail as `how` says.
     #[cfg(test)]
     fn fail_commit(&self, nth: usize, how: CommitError);

@@ -74,6 +74,10 @@ pub(crate) struct Database {
     runtime: OwnRuntime,
     /// The server the lock's connection reached, as a log line names it.
     server: String,
+    /// The name this connection to the database holds its leases under
+    /// (lease.rs): new at each connect, so a server that starts again
+    /// never holds its earlier run's lease.
+    holder: String,
     /// In tests, how many times a call waited on the database: the round
     /// trips, since each wait sends one batch and reads its answer.
     #[cfg(test)]
@@ -163,6 +167,7 @@ impl Database {
             pool,
             runtime,
             server,
+            holder: super::lease::new_holder(),
             #[cfg(test)]
             trips: std::sync::atomic::AtomicUsize::new(0),
         }))
@@ -172,6 +177,12 @@ impl Database {
     /// 18.6 at db1.example.com:5432 as vcon_app over TLS`.
     pub(crate) fn server(&self) -> &str {
         &self.server
+    }
+
+    /// The name this process's leases are held under
+    /// ([`super::lease::new_holder`]).
+    pub(crate) fn holder(&self) -> &str {
+        &self.holder
     }
 
     /// Waits for `call` on the pool's runtime. The calling thread must not

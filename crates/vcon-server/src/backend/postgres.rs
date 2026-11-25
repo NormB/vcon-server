@@ -29,6 +29,7 @@
 mod catalog;
 mod claim;
 mod connect;
+mod lease;
 mod pool;
 mod registry;
 mod schema;
