@@ -282,19 +282,30 @@ pub trait CatalogTx {
     /// Wraps counted against a tenant key.
     fn wraps(&mut self, key: KeyId) -> Result<u64, StoreError>;
     fn add_wrap(&mut self, key: KeyId) -> Result<(), StoreError>;
-    /// Records that a write of `version` began at `at`, before its object
-    /// is written: until the row that names the object is added, this
-    /// pending row tells recovery the object is a write under way.
+    /// Records that a write of `version` began, before its object is
+    /// written: until the row that names the object is added, this
+    /// pending row tells recovery the object is a write under way. `at` is
+    /// this process's clock, which a data directory's catalog records; a
+    /// database records the time by its own clock instead
+    /// ([`CatalogTx::clock_now`]).
     fn add_pending(&mut self, version: VersionId, at: i64) -> Result<(), StoreError>;
+    /// The time, in nanoseconds since the epoch, by the clock that this
+    /// catalog's pending rows record and that recovery judges them by: on
+    /// a data directory, `host`, this process's clock (one process holds a
+    /// data directory, so one clock wrote every row); on a database, the
+    /// database's `now()`, so that servers whose host clocks differ agree
+    /// on which write is under way.
+    fn clock_now(&mut self, host: i64) -> Result<i64, StoreError>;
     /// Deletes the pending row of `version`, and says whether there was
     /// one.
     fn drop_pending(&mut self, version: VersionId) -> Result<bool, StoreError>;
     /// Every pending row: the version and when its write began, by
     /// version id.
     fn pending(&mut self) -> Result<Vec<(VersionId, i64)>, StoreError>;
-    /// Records that the writing of pack file `file` began at `at`, before
-    /// the file is put: until the file's row is added, this pending row
-    /// tells recovery the file is a write under way.
+    /// Records that the writing of pack file `file` began, before the file
+    /// is put: until the file's row is added, this pending row tells
+    /// recovery the file is a write under way. `at` is as in
+    /// [`CatalogTx::add_pending`].
     fn add_pending_file(&mut self, file: FileId, at: i64) -> Result<(), StoreError>;
     /// Deletes the pending row of pack file `file`, and says whether there
     /// was one.
@@ -643,10 +654,17 @@ pub trait RegistryTx {
     /// Wraps counted against a master key.
     fn master_wraps(&mut self, key: KeyId) -> Result<u64, TenantError>;
     fn add_master_wrap(&mut self, key: KeyId, at: i64) -> Result<(), TenantError>;
-    /// Records that a create of tenant `id` began at `at`, before its space
-    /// is made: until the tenant's row is added, this creating row tells
-    /// recovery the space is a create under way (store/pending.rs).
+    /// Records that a create of tenant `id` began, before its space is
+    /// made: until the tenant's row is added, this creating row tells
+    /// recovery the space is a create under way (store/pending.rs). `at`
+    /// is this process's clock, which a data directory's registry records;
+    /// a database records the time by its own clock instead
+    /// ([`RegistryTx::clock_now`]).
     fn add_creating(&mut self, id: TenantId, at: i64) -> Result<(), TenantError>;
+    /// The time by the clock that the creating rows record and that
+    /// recovery judges them by, as [`CatalogTx::clock_now`] is for a
+    /// catalog's pending rows.
+    fn clock_now(&mut self, host: i64) -> Result<i64, TenantError>;
     /// Deletes the creating row of `id`, and says whether there was one.
     fn drop_creating(&mut self, id: TenantId) -> Result<bool, TenantError>;
     /// Every creating row: the tenant and when its create began, by id.

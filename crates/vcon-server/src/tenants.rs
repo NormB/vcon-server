@@ -542,9 +542,10 @@ impl Tenants {
     /// a create adds its creating row before it makes its space, so every
     /// space listed has its creating row or its tenant's row in that read.
     pub(crate) fn recover(&self, writers: Writers) -> Result<(), TenantError> {
-        let now = nanos(self.clock.now());
+        let host = nanos(self.clock.now());
         {
             let mut tx = self.registry.immediate()?;
+            let now = tx.clock_now(host)?;
             for (id, started_at) in tx.creating()? {
                 if !pending::under_way(writers, started_at, now) {
                     tx.drop_creating(id)?;
@@ -555,6 +556,7 @@ impl Tenants {
         let present = self.space.present()?;
         let (tenants, creating) = {
             let mut tx = self.registry.snapshot()?;
+            let now = tx.clock_now(host)?;
             let tenants: std::collections::HashSet<TenantId> =
                 tx.tenants()?.into_iter().map(|row| row.id).collect();
             let creating: std::collections::HashSet<TenantId> = tx

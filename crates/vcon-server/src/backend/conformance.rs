@@ -75,6 +75,11 @@ pub(crate) struct Fresh {
     pub(crate) alter: Touch,
     /// Plants an object around the Store.
     pub(crate) plant: Plant,
+    /// Makes the catalog's pending rows this many nanoseconds older: what
+    /// that much time passing does on a catalog that keeps its own clock
+    /// (a database). A catalog on the process's clock (a data directory)
+    /// needs nothing: the test clock's move is that time passing.
+    pub(crate) age: Box<dyn Fn(i64)>,
     /// The same Store opened again, without start-up recovery, on objects
     /// it cannot read: every read fails, and not as an absent object
     /// (local: files the process may not read; S3: a service that does not
@@ -224,6 +229,16 @@ fn others(held: &Held, kept: &[VersionId]) -> Vec<String> {
     held().into_iter().filter(|n| !kept.contains(n)).collect()
 }
 
+/// Lets `nanos` pass for the Store and its catalog: the test clock moves
+/// on, and the catalog's pending rows age by as much.
+fn later(f: &Fresh, clock: &TestClock, nanos: i64) {
+    clock.set(plus(clock.now(), nanos));
+    (f.age)(nanos);
+}
+
+/// A minute, in nanoseconds.
+const MINUTE: i64 = 60 * 1_000_000_000;
+
 /// A nanosecond count as the time it is.
 fn plus(at: OffsetDateTime, nanos: i64) -> OffsetDateTime {
     at + time::Duration::nanoseconds(nanos)
@@ -238,7 +253,9 @@ fn a_create_under_way_keeps_its_object_through_recovery(h: &dyn Harness) {
         &f.store,
         |store| store.create(&who, &found, &body),
         || {
-            clock.set(plus(START, WRITE_LEASE - 1));
+            // A minute inside the lease: on a database, the time the test
+            // takes passes on its clock too.
+            later(&f, &clock, WRITE_LEASE - MINUTE);
             f.store.recover(Writers::Maybe).expect("recovers");
             assert_eq!(
                 others(&f.held, &[]).len(),
@@ -312,7 +329,7 @@ fn a_create_past_its_lease_is_refused_and_leaves_nothing(h: &dyn Harness) {
         &f.store,
         |store| store.create(&who, &found, &body),
         || {
-            clock.set(plus(START, WRITE_LEASE));
+            later(&f, &clock, WRITE_LEASE);
             f.store.recover(Writers::Maybe).expect("recovers");
             assert_eq!(
                 (f.held)(),
@@ -349,7 +366,7 @@ fn a_replace_past_its_lease_is_refused_and_keeps_the_old_version(h: &dyn Harness
         &f.store,
         |store| store.replace(&who, first, &found, &body),
         || {
-            clock.set(plus(START, 2 * WRITE_LEASE));
+            later(&f, &clock, 2 * WRITE_LEASE);
             f.store.recover(Writers::Maybe).expect("recovers");
         },
     );
@@ -436,7 +453,7 @@ fn a_write_that_ended_leaves_no_pending_row(h: &dyn Harness) {
         "a_write_that_ended_leaves_no_pending_row: no row is left by a created, a refused or a \
          lost write"
     );
-    clock.set(plus(START, 3 * WRITE_LEASE));
+    later(&f, &clock, 3 * WRITE_LEASE);
     f.store.recover(Writers::Maybe).expect("recovers");
     assert_eq!(
         others(&f.held, &[first]).len(),
@@ -1197,6 +1214,8 @@ mod local {
                 held,
                 lose,
                 alter,
+                // The catalog is on the test clock.
+                age: Box::new(|_| ()),
                 plant: Box::new(move |name, bytes| plant(name, bytes)),
             }
         }
@@ -1300,6 +1319,8 @@ mod packed_local {
                 held,
                 lose,
                 alter,
+                // The catalog is on the test clock.
+                age: Box::new(|_| ()),
                 plant: Box::new(move |name, bytes| plant(name, bytes)),
             }
         }

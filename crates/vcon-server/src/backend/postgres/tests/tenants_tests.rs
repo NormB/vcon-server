@@ -193,6 +193,75 @@ mod on_a_server {
             (catalogs, tenants)
         }
 
+        /// `serve`, with the process's clock at `now`: a host whose clock
+        /// is not another's.
+        fn serve_at(&self, now: time::OffsetDateTime) -> (Catalogs, Tenants) {
+            let (catalogs, objects) = self.places(Sharing::Serve);
+            let tenants = Tenants::open_in(
+                &self.data(),
+                self.master("master.key"),
+                Arc::new(OsFs),
+                TestClock::at(now),
+                objects,
+                &catalogs,
+            )
+            .expect("the registry opens");
+            (catalogs, tenants)
+        }
+
+        /// The one value `sql` reads in a transaction of `scope` (a
+        /// tenant id, or `registry`).
+        fn value_in(&self, scope: &str, sql: &str) -> String {
+            wait(async { in_scope(&self.db.app().await, scope, sql).await })
+                .unwrap_or_else(|e| panic!("{sql}: {e}"))
+                .iter()
+                .find_map(|m| match m {
+                    tokio_postgres::SimpleQueryMessage::Row(row) => row.get(0).map(str::to_owned),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{sql}: no value"))
+        }
+
+        /// How many of the rows of `table` in `scope` say they began
+        /// within a minute of the database's now, of how many: `1/1` when
+        /// the one row there took its time from the database.
+        fn begun_by_the_database(&self, scope: &str, table: &str) -> String {
+            self.value_in(
+                scope,
+                &format!(
+                    "SELECT (count(*) FILTER (WHERE abs(started_at - (extract(epoch FROM now()) \
+                     * 1000000000)::bigint) < 60000000000)) || '/' || count(*) FROM vcon.{table}"
+                ),
+            )
+        }
+
+        /// Makes every row of `table` in `scope` `by` older, as the
+        /// schema's owner: what that much time passing on the database's
+        /// clock does to a pending row.
+        fn age(&self, scope: &str, table: &str, by: time::Duration) {
+            let sql = format!(
+                "UPDATE vcon.{table} SET started_at = started_at - {}",
+                by.whole_nanoseconds()
+            );
+            wait(async {
+                let owner = self.db.admin().await;
+                owner
+                    .batch_execute("SET ROLE vcon_owner")
+                    .await
+                    .expect("the owner role");
+                in_scope(&owner, scope, &sql)
+                    .await
+                    .unwrap_or_else(|e| panic!("{sql}: {e}"));
+            });
+        }
+
+        /// Adds a row through the application role in `scope`, as a
+        /// damaged or foreign row would be there.
+        fn plant(&self, scope: &str, sql: &str) {
+            wait(async { in_scope(&self.db.app().await, scope, sql).await })
+                .unwrap_or_else(|e| panic!("{sql}: {e}"));
+        }
+
         /// How many rows a table of the registry holds.
         fn registry_rows(&self, table: &str) -> i64 {
             self.registry_value(&format!("SELECT count(*) FROM vcon.{table}"))
@@ -591,8 +660,21 @@ mod on_a_server {
         Vec<(uuid::Uuid, Vec<u8>)>,
         crate::store::packer::Written,
     ) {
+        a_file_under_way_beside(w, conformance::START)
+    }
+
+    /// `a_file_under_way`, the second process's clock at `at`; the
+    /// first's is conformance::START.
+    fn a_file_under_way_beside(
+        w: &World,
+        at: time::OffsetDateTime,
+    ) -> (
+        TwoServers,
+        Vec<(uuid::Uuid, Vec<u8>)>,
+        crate::store::packer::Written,
+    ) {
         let serving = w.serve();
-        let beside = w.beside();
+        let beside = w.beside_at(at);
         let id = serving
             .1
             .create(Actor::Cli, "acme", None)
@@ -1094,5 +1176,489 @@ mod on_a_server {
             "the next command that runs alone has the database: {next:?}"
         );
         drop(catalogs);
+    }
+
+    // A pending row's time and recovery's judgment of it come from the
+    // database's clock: servers whose host clocks differ by more than the
+    // write lease (an hour) still agree on what is under way. Every first
+    // server below runs on conformance::START, a month behind the
+    // database's clock.
+
+    /// Twice the write lease.
+    const TWO_HOURS: time::Duration = time::Duration::hours(2);
+
+    /// What a write of a first server did while `during` ran: the first
+    /// server, the tenant, the caller, the vCon's uuid and the answer.
+    type WriteAround = (
+        (Catalogs, Tenants),
+        TenantId,
+        Caller,
+        uuid::Uuid,
+        Result<crate::store::Created, crate::store::StoreError>,
+    );
+
+    /// Stops a write of a first server between its pending row and its
+    /// version's row, runs `during` with the tenant, then lets the write
+    /// go on.
+    fn a_write_around(w: &World, during: impl FnOnce(TenantId)) -> WriteAround {
+        let first = w.serve();
+        let id = first.1.create(Actor::Cli, "acme", None).expect("a tenant");
+        let store = first.1.store(id).expect("the first's store");
+        let (hook, pause) = pause();
+        store.on_between(Box::new(hook));
+        let who = Caller {
+            key: Key::generate().expect("a key").id(),
+        };
+        let (found, body) = conformance::vcon("01a07da8-c2bb-83e5-b9a2-279e0d16bcf3", "under way");
+        let written = std::thread::scope(|s| {
+            let writing = s.spawn(|| store.create(&who, &found, &body));
+            pause.wait();
+            during(id);
+            pause.release();
+            writing.join().expect("joins")
+        });
+        (first, id, who, found.uuid, written)
+    }
+
+    /// The recovery of a server whose clock is at `at`, of tenant `id`'s
+    /// store, with other writers at work.
+    fn recover_at(w: &World, at: time::OffsetDateTime, id: TenantId) {
+        let other = w.serve_at(at);
+        other
+            .1
+            .store(id)
+            .expect("the other's store")
+            .recover(Writers::Maybe)
+            .expect("the other's recovery runs");
+        stop(other);
+    }
+
+    /// Asserts that the write of `around` committed and reads back.
+    fn kept_write(((_serving, first), id, who, uuid, written): WriteAround) {
+        assert!(
+            matches!(written, Ok(crate::store::Created::New(_))),
+            "the write commits: {written:?}"
+        );
+        first
+            .store(id)
+            .expect("the first's store")
+            .get(&who, uuid)
+            .expect("read back: its object was kept");
+    }
+
+    /// Asserts that the write of `around` was taken for a leftover.
+    fn taken_write(w: &World, ((_serving, first), id, who, uuid, written): WriteAround) {
+        assert_eq!(
+            written.err(),
+            Some(crate::store::StoreError::Io),
+            "recovery took the write for a leftover, so it adds no row"
+        );
+        assert!(
+            matches!(
+                first.store(id).expect("the store").get(&who, uuid),
+                Err(crate::store::StoreError::NotFound)
+            ),
+            "no row names the vCon"
+        );
+        assert_eq!(w.rows(id, "pending_write"), 0, "no pending row is left");
+    }
+
+    #[test]
+    fn a_write_records_its_start_by_the_database_s_clock() {
+        let w = world();
+        let around = a_write_around(&w, |id| {
+            assert_eq!(
+                w.begun_by_the_database(&id.to_string(), "pending_write"),
+                "1/1",
+                "the pending row's time is the database's, not the first's clock"
+            );
+        });
+        kept_write(around);
+    }
+
+    #[test]
+    fn a_write_under_way_survives_a_server_whose_clock_is_hours_ahead() {
+        let w = world();
+        let around = a_write_around(&w, |id| recover_at(&w, conformance::START + TWO_HOURS, id));
+        kept_write(around);
+    }
+
+    #[test]
+    fn a_write_under_way_survives_a_server_whose_clock_is_hours_behind() {
+        let w = world();
+        let around = a_write_around(&w, |id| recover_at(&w, conformance::START - TWO_HOURS, id));
+        kept_write(around);
+    }
+
+    /// The row is two hours old on the database's clock; the recovering
+    /// server's clock is two hours behind the first's, so by host clocks
+    /// the write would have begun just now.
+    #[test]
+    fn a_write_hours_old_on_the_database_s_clock_is_a_leftover_to_a_clock_behind() {
+        let w = world();
+        let around = a_write_around(&w, |id| {
+            w.age(&id.to_string(), "pending_write", TWO_HOURS);
+            recover_at(&w, conformance::START - TWO_HOURS, id);
+        });
+        taken_write(&w, around);
+    }
+
+    /// Stops a create of a first server between its creating row and its
+    /// tenant's row, runs `during`, then lets the create go on.
+    fn a_create_around(
+        w: &World,
+        during: impl FnOnce(),
+    ) -> ((Catalogs, Tenants), Result<TenantId, TenantError>) {
+        let first = w.serve();
+        let (hook, pause) = pause();
+        first.1.between_create(Box::new(move |_| hook()));
+        let created = std::thread::scope(|s| {
+            let creating = s.spawn(|| first.1.create(Actor::Cli, "acme", None));
+            pause.wait();
+            during();
+            pause.release();
+            creating.join().expect("joins")
+        });
+        (first, created)
+    }
+
+    /// The registry's recovery of a server whose clock is at `at`, with
+    /// other writers at work.
+    fn recover_registry_at(w: &World, at: time::OffsetDateTime) {
+        let other = w.serve_at(at);
+        other
+            .1
+            .recover(Writers::Maybe)
+            .expect("the other's recovery runs");
+        stop(other);
+    }
+
+    #[test]
+    fn a_create_records_its_start_by_the_database_s_clock() {
+        let w = world();
+        let (_first, created) = a_create_around(&w, || {
+            assert_eq!(
+                w.begun_by_the_database("registry", "pending_tenant"),
+                "1/1",
+                "the creating row's time is the database's, not the first's clock"
+            );
+        });
+        created.expect("the create commits");
+    }
+
+    #[test]
+    fn a_create_under_way_survives_a_server_whose_clock_is_hours_ahead() {
+        let w = world();
+        let ((_c, first), created) = a_create_around(&w, || {
+            recover_registry_at(&w, conformance::START + TWO_HOURS)
+        });
+        let id = created.expect("the create commits");
+        assert_eq!(w.rows(id, "tenant_catalog"), 1, "its catalog is kept");
+        store_one(&first, id, 1);
+    }
+
+    #[test]
+    fn a_create_under_way_survives_a_server_whose_clock_is_hours_behind() {
+        let w = world();
+        let ((_c, first), created) = a_create_around(&w, || {
+            recover_registry_at(&w, conformance::START - TWO_HOURS)
+        });
+        let id = created.expect("the create commits");
+        assert_eq!(w.rows(id, "tenant_catalog"), 1, "its catalog is kept");
+        store_one(&first, id, 1);
+    }
+
+    #[test]
+    fn a_create_hours_old_on_the_database_s_clock_is_a_leftover_to_a_clock_behind() {
+        let w = world();
+        let ((_c, first), created) = a_create_around(&w, || {
+            w.age("registry", "pending_tenant", TWO_HOURS);
+            recover_registry_at(&w, conformance::START - TWO_HOURS);
+        });
+        assert_eq!(
+            created,
+            Err(TenantError::Io),
+            "recovery took the create for a leftover, so it adds no tenant"
+        );
+        assert_eq!(names(&first), Vec::<String>::new(), "no tenant");
+        assert_eq!(w.registry_rows("pending_tenant"), 0, "and no creating row");
+    }
+
+    #[test]
+    fn a_pack_file_records_its_start_by_the_database_s_clock() {
+        let w = packed_world();
+        let ((serving, _beside), _kept, _written) = a_file_under_way(&w);
+        let id = names_to_ids(&serving.1);
+        assert_eq!(
+            w.begun_by_the_database(&id.to_string(), "pending_file"),
+            "1/1",
+            "the pending row's time is the database's, not the first's clock"
+        );
+    }
+
+    /// The pack file of `a_file_under_way_beside(at)` after the second
+    /// process's recovery: whether the first server records it.
+    fn record_after_recovery_at(w: &World, at: time::OffsetDateTime, aged: bool) -> bool {
+        let ((serving, beside), _kept, written) = a_file_under_way_beside(w, at);
+        let id = names_to_ids(&serving.1);
+        if aged {
+            w.age(&id.to_string(), "pending_file", TWO_HOURS);
+        }
+        beside
+            .1
+            .store(id)
+            .expect("the other's store")
+            .recover(Writers::Maybe)
+            .expect("the other's recovery runs");
+        serving
+            .1
+            .store(id)
+            .expect("the first's store")
+            .record_file(&written)
+            .expect("the record runs")
+    }
+
+    #[test]
+    fn a_pack_file_under_way_survives_a_server_whose_clock_is_hours_ahead() {
+        let w = packed_world();
+        assert!(
+            record_after_recovery_at(&w, conformance::START + TWO_HOURS, false),
+            "the first server records its file"
+        );
+    }
+
+    #[test]
+    fn a_pack_file_under_way_survives_a_server_whose_clock_is_hours_behind() {
+        let w = packed_world();
+        assert!(
+            record_after_recovery_at(&w, conformance::START - TWO_HOURS, false),
+            "the first server records its file"
+        );
+    }
+
+    #[test]
+    fn a_pack_file_hours_old_on_the_database_s_clock_is_a_leftover_to_a_clock_behind() {
+        let w = packed_world();
+        assert!(
+            !record_after_recovery_at(&w, conformance::START - TWO_HOURS, true),
+            "recovery took the file for a leftover, so it is not recorded"
+        );
+    }
+
+    // A failure of the database during the jobs one server does for all:
+    // the job is not done, nothing is removed, and the lease ends by the
+    // database's clock.
+
+    /// Takes from the application role what it needs to take or renew a
+    /// lease.
+    fn refuse_leases(w: &World) {
+        w.as_owner("REVOKE INSERT, UPDATE ON vcon.lease FROM vcon_app");
+    }
+
+    /// A tenant of each name, each with one vCon deleted under a day's
+    /// retention at the first server's clock's start; the clock is then
+    /// set three days on, so a sweep purges every one of them.
+    fn due<const N: usize>(
+        tenants: &Tenants,
+        clock: &TestClock,
+        names: [&str; N],
+    ) -> [TenantId; N] {
+        let ids = names.map(|name| {
+            let id = tenants
+                .create(Actor::Cli, name, Some(Retention::Days(1)))
+                .expect("a tenant");
+            let uuid = store_one(tenants, id, 1);
+            let who = Caller {
+                key: Key::generate().expect("a key").id(),
+            };
+            tenants
+                .store(id)
+                .expect("the store")
+                .delete(&who, uuid, Retention::Days(1))
+                .expect("deleted");
+            id
+        });
+        clock.set(conformance::START + time::Duration::days(3));
+        ids
+    }
+
+    #[test]
+    fn a_sweep_whose_lease_the_database_refuses_at_its_start_does_not_run() {
+        let w = world();
+        let (_one, first, clock) = w.serve_clocked();
+        let [id] = due(&first, &clock, ["acme"]);
+        refuse_leases(&w);
+        let ttl = crate::serve::lease_for(std::time::Duration::from_secs(3_600));
+        assert_eq!(
+            crate::serve::lead_sweep(&first, Retention::Days(1), ttl),
+            None,
+            "a lease that cannot be taken is not held"
+        );
+        assert_eq!(w.rows(id, "version"), 1, "nothing was purged");
+        w.as_owner("GRANT INSERT, UPDATE ON vcon.lease TO vcon_app");
+        assert_eq!(
+            crate::serve::lead_sweep(&first, Retention::Days(1), ttl),
+            Some(crate::serve::SweepReport {
+                purged: 1,
+                failed: 0
+            }),
+            "granted again, the sweep runs"
+        );
+        assert_eq!(w.rows(id, "version"), 0, "and purges the vCon's row");
+    }
+
+    #[test]
+    fn a_sweep_stops_at_the_tenant_where_the_database_refused_to_renew_its_lease() {
+        let w = world();
+        let (_one, first, clock) = w.serve_clocked();
+        let [a, b] = due(&first, &clock, ["a-first", "b-second"]);
+        let ttl = crate::serve::lease_for(std::time::Duration::from_secs(3_600));
+        let mut asked = 0;
+        let report = crate::serve::sweep_while(&first, Retention::Days(1), &mut || {
+            asked += 1;
+            if asked == 2 {
+                refuse_leases(&w);
+            }
+            crate::serve::holds(&first, Job::Sweep, ttl)
+        });
+        assert_eq!(report.purged, 1, "the first tenant only: {report:?}");
+        assert_eq!(
+            w.rows(a, "version") + w.rows(b, "version"),
+            1,
+            "the other waits for a sweep that holds the lease"
+        );
+    }
+
+    #[test]
+    fn a_pack_run_whose_lease_the_database_refuses_does_not_run() {
+        let w = world();
+        let (_one, first, _) = w.serve_clocked();
+        refuse_leases(&w);
+        let settings = crate::config::ParquetSettings {
+            pack_interval: crate::config::PACK_INTERVAL,
+            pack_limit: crate::config::PACK_LIMIT,
+            reader_grace: crate::config::READER_GRACE,
+        };
+        assert_eq!(
+            crate::serve::lead_pack(&first, &settings, crate::serve::lease_for(MINUTE)),
+            None,
+            "a lease that cannot be taken is not held"
+        );
+    }
+
+    #[test]
+    fn a_server_that_cannot_give_up_its_lease_leaves_it_to_end_by_the_database_s_clock() {
+        let w = world();
+        let (_one, first) = w.serve();
+        let (_two, second) = w.serve();
+        assert_eq!(first.lead(Job::Sweep, MINUTE), Ok(true), "the first's");
+        w.as_owner("REVOKE DELETE ON vcon.lease FROM vcon_app");
+        crate::serve::give_up_leases(&first);
+        assert_eq!(w.registry_rows("lease"), 1, "the lease is still there");
+        assert_eq!(
+            second.lead(Job::Sweep, MINUTE),
+            Ok(false),
+            "still the first's until it ends"
+        );
+        w.as_owner(
+            "ALTER TABLE vcon.lease DISABLE ROW LEVEL SECURITY; UPDATE vcon.lease SET \
+             expires_at = now() - interval '1 second'; ALTER TABLE vcon.lease ENABLE ROW LEVEL \
+             SECURITY",
+        );
+        assert_eq!(
+            second.lead(Job::Sweep, MINUTE),
+            Ok(true),
+            "the next takes it once the database's clock ends it"
+        );
+    }
+
+    #[test]
+    fn a_creating_row_that_does_not_read_back_fails_the_sweep_s_recovery_and_removes_no_space() {
+        let w = world();
+        let (_serving, first) = w.serve();
+        let id = first.create(Actor::Cli, "acme", None).expect("a tenant");
+        w.without_the_tenant_rows();
+        w.plant(
+            "registry",
+            "INSERT INTO vcon.pending_tenant (id, started_at) VALUES ('\\x01', 0)",
+        );
+        let ttl = crate::serve::lease_for(MINUTE);
+        assert_eq!(
+            crate::serve::lead_sweep(&first, Retention::Days(1), ttl),
+            Some(crate::serve::SweepReport {
+                purged: 0,
+                failed: 1
+            }),
+            "the recovery's failure is counted"
+        );
+        assert_eq!(
+            w.rows(id, "tenant_catalog"),
+            1,
+            "a recovery that cannot read its rows removes nothing"
+        );
+    }
+
+    #[test]
+    fn a_pending_write_that_does_not_read_back_fails_that_tenant_s_recovery_alone() {
+        let w = world();
+        let (_serving, first) = w.serve();
+        let damaged = first.create(Actor::Cli, "a-first", None).expect("a tenant");
+        let whole = first
+            .create(Actor::Cli, "b-second", None)
+            .expect("a tenant");
+        w.plant(
+            &damaged.to_string(),
+            &format!(
+                "INSERT INTO vcon.pending_write (tenant, version, started_at) VALUES ('\\x{}', \
+                 '\\x01', 0)",
+                hex(&damaged.0)
+            ),
+        );
+        assert_eq!(
+            first.recover_all(),
+            Ok(1),
+            "one tenant's recovery failed, the other's ran"
+        );
+        store_one(&first, whole, 1);
+    }
+
+    /// Lower-case hexadecimal of `bytes`.
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn a_database_that_cannot_be_reached_at_the_sweep_s_start_runs_no_sweep() {
+        let w = world();
+        let (_one, first, clock) = w.serve_clocked();
+        let [id] = due(&first, &clock, ["acme"]);
+        let name = w.db.name.clone();
+        wait(async {
+            let tester = w.db.admin().await;
+            tester
+                .batch_execute(&format!(
+                    "REVOKE CONNECT ON DATABASE \"{name}\" FROM PUBLIC, vcon_app; SELECT \
+                     pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = \
+                     current_database() AND usename = 'vcon_app'"
+                ))
+                .await
+                .expect("the application role is shut out");
+        });
+        let ttl = crate::serve::lease_for(MINUTE);
+        assert_eq!(
+            crate::serve::lead_sweep(&first, Retention::Days(1), ttl),
+            None,
+            "a lease that cannot be read is not held"
+        );
+        wait(async {
+            w.db.admin()
+                .await
+                .batch_execute(&format!(
+                    "GRANT CONNECT ON DATABASE \"{name}\" TO PUBLIC, vcon_app"
+                ))
+                .await
+                .expect("the application role is let in again");
+        });
+        assert_eq!(w.rows(id, "version"), 1, "nothing was purged");
     }
 }

@@ -1707,12 +1707,21 @@ pub(crate) fn edge_an_empty_registry_lists_nothing(r: &dyn Registry) {
     assert_eq!(tx.commit(), Ok(()), "a write of nothing commits");
 }
 
+/// Adds the creating row of `id`, the process's clock at `at`, and
+/// answers the time the row records: the registry's clock in the same
+/// transaction (`RegistryTx::clock_now`), `at` itself on a data directory.
+fn added(tx: &mut dyn RegistryTx, id: TenantId, at: i64) -> i64 {
+    let recorded = tx.clock_now(at).expect("the registry's clock");
+    tx.add_creating(id, at).expect("adds");
+    recorded
+}
+
 pub(crate) fn ok_a_creating_row_reads_back_with_its_time(r: &dyn Registry) {
-    write(r, |tx| tx.add_creating(tenant_id(7), T0 + 3).expect("adds"));
+    let at = write(r, |tx| added(tx, tenant_id(7), T0 + 3));
     let rows = read(r, |tx| tx.creating().expect("lists"));
     assert_eq!(
         rows,
-        vec![(tenant_id(7), T0 + 3)],
+        vec![(tenant_id(7), at)],
         "the create under way, with the time it began"
     );
 }
@@ -1736,9 +1745,9 @@ pub(crate) fn ok_creating_rows_are_listed_by_id(r: &dyn Registry) {
 }
 
 pub(crate) fn ok_a_creating_row_is_dropped_once(r: &dyn Registry) {
-    write(r, |tx| {
-        tx.add_creating(tenant_id(1), T0).expect("adds");
-        tx.add_creating(tenant_id(2), T0).expect("adds");
+    let kept = write(r, |tx| {
+        added(tx, tenant_id(1), T0);
+        added(tx, tenant_id(2), T0)
     });
     let first = write(r, |tx| tx.drop_creating(tenant_id(1)).expect("drops"));
     let second = write(r, |tx| tx.drop_creating(tenant_id(1)).expect("drops"));
@@ -1746,7 +1755,7 @@ pub(crate) fn ok_a_creating_row_is_dropped_once(r: &dyn Registry) {
     assert!(!second, "and is gone after the first drop");
     assert_eq!(
         read(r, |tx| tx.creating().expect("lists")),
-        vec![(tenant_id(2), T0)],
+        vec![(tenant_id(2), kept)],
         "the other row is kept"
     );
 }
@@ -1790,7 +1799,7 @@ pub(crate) fn no_creating_row_is_a_tenant(r: &dyn Registry) {
 }
 
 pub(crate) fn no_second_creating_row_takes_an_id(r: &dyn Registry) {
-    write(r, |tx| tx.add_creating(tenant_id(3), T0).expect("adds"));
+    let at = write(r, |tx| added(tx, tenant_id(3), T0));
     {
         let mut tx = r.immediate().expect("a write begins");
         assert_eq!(
@@ -1801,15 +1810,16 @@ pub(crate) fn no_second_creating_row_takes_an_id(r: &dyn Registry) {
     }
     assert_eq!(
         read(r, |tx| tx.creating().expect("lists")),
-        vec![(tenant_id(3), T0)],
+        vec![(tenant_id(3), at)],
         "the first row and its time are kept"
     );
 }
 
 pub(crate) fn edge_a_creating_row_beside_its_tenants_row(r: &dyn Registry) {
-    write(r, |tx| {
-        tx.add_creating(tenant_id(1), T0).expect("adds");
+    let at = write(r, |tx| {
+        let at = added(tx, tenant_id(1), T0);
         tx.insert_tenant(&tenant(1, "alpha")).expect("inserts");
+        at
     });
     let (creating, row) = read(r, |tx| {
         (
@@ -1817,7 +1827,7 @@ pub(crate) fn edge_a_creating_row_beside_its_tenants_row(r: &dyn Registry) {
             tx.tenant(tenant_id(1)).expect("reads"),
         )
     });
-    assert_eq!(creating, vec![(tenant_id(1), T0)], "the two rows are apart");
+    assert_eq!(creating, vec![(tenant_id(1), at)], "the two rows are apart");
     assert_eq!(row, Some(tenant(1, "alpha")), "and the tenant reads back");
     write(r, |tx| {
         assert!(
@@ -1832,19 +1842,21 @@ pub(crate) fn edge_a_creating_row_beside_its_tenants_row(r: &dyn Registry) {
 }
 
 pub(crate) fn edge_creating_times_at_the_ends_of_the_range_read_back(r: &dyn Registry) {
-    write(r, |tx| {
-        tx.add_creating(tenant_id(1), i64::MIN).expect("adds");
-        tx.add_creating(tenant_id(2), i64::MAX).expect("adds");
-        tx.add_creating(tenant_id(3), 0).expect("adds");
+    let [low, high, zero] = write(r, |tx| {
+        [
+            added(tx, tenant_id(1), i64::MIN),
+            added(tx, tenant_id(2), i64::MAX),
+            added(tx, tenant_id(3), 0),
+        ]
     });
     assert_eq!(
         read(r, |tx| tx.creating().expect("lists")),
         vec![
-            (tenant_id(1), i64::MIN),
-            (tenant_id(2), i64::MAX),
-            (tenant_id(3), 0)
+            (tenant_id(1), low),
+            (tenant_id(2), high),
+            (tenant_id(3), zero)
         ],
-        "every time an i64 holds reads back as written"
+        "every time an i64 holds reads back as the registry's clock gave it"
     );
 }
 

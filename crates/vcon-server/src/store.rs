@@ -320,9 +320,10 @@ impl Store {
     /// listed has its pending row or its own row in that read.
     pub(crate) fn recover(&self, writers: Writers) -> Result<(), StoreError> {
         self.catalog.recover()?;
-        let now = nanos(self.clock.now());
+        let host = nanos(self.clock.now());
         {
             let mut tx = self.catalog.immediate()?;
+            let now = tx.clock_now(host)?;
             for (version, started_at) in tx.pending()? {
                 if !pending::under_way(writers, started_at, now) {
                     tx.drop_pending(version)?;
@@ -342,6 +343,7 @@ impl Store {
         };
         // Nothing is removed on what the read saw until it is durable.
         let (places, files, writing, putting) = self.read(|tx| {
+            let now = tx.clock_now(host)?;
             let places: std::collections::HashMap<VersionId, bool> = tx
                 .places()?
                 .into_iter()

@@ -601,7 +601,7 @@ pub fn sweep(tenants: &Tenants, default: Retention, stopping: &dyn Fn() -> bool)
 
 /// Whether this server holds the lease of `job` for `ttl` now, taking or
 /// renewing it. A lease that cannot be read is not held.
-fn holds(tenants: &Tenants, job: Job, ttl: Duration) -> bool {
+pub(crate) fn holds(tenants: &Tenants, job: Job, ttl: Duration) -> bool {
     tenants.lead(job, ttl) == Ok(true)
 }
 

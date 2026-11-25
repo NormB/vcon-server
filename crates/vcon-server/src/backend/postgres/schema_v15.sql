@@ -64,6 +64,15 @@ CREATE POLICY tenant_rows ON vcon.pending_file
     USING (tenant = vcon.tenant()) WITH CHECK (tenant = vcon.tenant());
 GRANT SELECT, INSERT, DELETE ON vcon.pending_file TO vcon_app;
 
+-- From this version the time of a row of vcon.pending_write,
+-- vcon.pending_tenant and vcon.pending_file is the database's now(), in
+-- nanoseconds, written by the statement that adds the row, and recovery
+-- compares it with the database's now(): servers whose host clocks differ
+-- by more than the write lease agree on which write is under way. No
+-- statement here changes a row: a row a release before this one wrote
+-- has the time of its server's clock, and is a leftover once that time
+-- is the write lease or more from the database's now().
+
 -- Several servers on one database share two jobs that one of them does
 -- for all: the purge sweep, with the recovery that runs before it, and
 -- the pack run. From this version vcon.lease holds a row per job while a

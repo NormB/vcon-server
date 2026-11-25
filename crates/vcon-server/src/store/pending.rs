@@ -16,6 +16,12 @@
 //! removed, and the write's own last transaction refuses to add the
 //! version's row when its pending row is gone, so no row can name an
 //! object recovery removed.
+//!
+//! A pending row's time and the `now` recovery compares it with come from
+//! one clock, the catalog's (`CatalogTx::clock_now`, `RegistryTx::clock_now`):
+//! on a database, the database's `now()`, so servers on hosts whose clocks
+//! differ by more than the lease still agree on which write is under way;
+//! on a data directory, which one process holds, that process's clock.
 
 /// How long a write's pending row keeps its object from recovery, in
 /// nanoseconds: one hour, far above the time a write takes between its
@@ -38,9 +44,9 @@ pub(crate) enum Writers {
 /// Whether a write whose pending row says it began at `started_at` may
 /// still be under way at `now`, both in nanoseconds since the epoch: with
 /// other writers, when the two times are less than [`WRITE_LEASE`] apart.
-/// A start after `now` is another process's clock running ahead, and is
-/// under way within the same distance; one further ahead is no write that
-/// a clock can explain.
+/// Both times are the catalog's clock's. A start after `now` is that
+/// clock set back since, and is under way within the same distance; one
+/// further ahead is no write that a clock can explain.
 pub(crate) fn under_way(writers: Writers, started_at: i64, now: i64) -> bool {
     match writers {
         Writers::None => false,

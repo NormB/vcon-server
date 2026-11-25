@@ -620,6 +620,12 @@ impl CatalogTx for LocalTx<'_> {
             .map_err(io)
     }
 
+    /// This process's clock: one process holds a data directory (its
+    /// lock), so the clock that wrote every pending row is this one.
+    fn clock_now(&mut self, host: i64) -> Result<i64, StoreError> {
+        Ok(host)
+    }
+
     fn drop_pending(&mut self, version: VersionId) -> Result<bool, StoreError> {
         self.conn
             .execute("DELETE FROM pending_write WHERE version = ?1", [version.0])
@@ -1811,6 +1817,11 @@ impl RegistryTx for LocalRegistryTx<'_> {
             )
             .map(drop)
             .map_err(tenant_io)
+    }
+
+    /// This process's clock, as for a catalog's pending rows.
+    fn clock_now(&mut self, host: i64) -> Result<i64, TenantError> {
+        Ok(host)
     }
 
     fn drop_creating(&mut self, id: TenantId) -> Result<bool, TenantError> {

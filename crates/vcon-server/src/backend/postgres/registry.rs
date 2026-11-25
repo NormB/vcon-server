@@ -30,8 +30,8 @@ use tokio_postgres::Row;
 use tokio_postgres::types::{FromSql, Type};
 
 use super::catalog::{
-    AuditKey, Begin, Database, PgTx, all_changed, audit_key_id, new_audit_key, open_audit_keys,
-    reseal_audit_keys,
+    AuditKey, Begin, CLOCK_NOW, Database, PgTx, all_changed, audit_key_id, new_audit_key,
+    now_nanos, open_audit_keys, reseal_audit_keys,
 };
 use super::lease;
 use crate::audit::{Action, Actor, AuditError, Entry};
@@ -992,6 +992,14 @@ impl PgRegistryTx<'_> {
     }
 }
 
+/// A create's creating row (tenant `$1`), begun at the database's time
+/// ([`now_nanos`]).
+const PENDING_TENANT: &str = concat!(
+    "INSERT INTO vcon.pending_tenant (id, started_at) VALUES ($1, ",
+    now_nanos!(),
+    ")"
+);
+
 impl RegistryTx for PgRegistryTx<'_> {
     fn tenant(&mut self, id: TenantId) -> Result<Option<TenantRow>, TenantError> {
         let rows = self
@@ -1127,11 +1135,16 @@ impl RegistryTx for PgRegistryTx<'_> {
         )
     }
 
-    fn add_creating(&mut self, id: TenantId, at: i64) -> Result<(), TenantError> {
-        self.run(
-            "INSERT INTO vcon.pending_tenant (id, started_at) VALUES ($1, $2)",
-            &[(&id.0.as_slice(), Type::BYTEA), (&at, Type::INT8)],
-        )
+    /// The time is the database's ([`PENDING_TENANT`]); the process's
+    /// clock, `_at`, is not read.
+    fn add_creating(&mut self, id: TenantId, _at: i64) -> Result<(), TenantError> {
+        self.run(PENDING_TENANT, &[(&id.0.as_slice(), Type::BYTEA)])
+    }
+
+    /// The database's `now()`: the host's clock, `_host`, is not read.
+    fn clock_now(&mut self, _host: i64) -> Result<i64, TenantError> {
+        let rows = self.0.query(CLOCK_NOW, &[]).map_err(io)?;
+        col(rows.first().ok_or(TenantError::Io)?, 0)
     }
 
     fn drop_creating(&mut self, id: TenantId) -> Result<bool, TenantError> {

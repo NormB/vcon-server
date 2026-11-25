@@ -368,7 +368,7 @@ pub(super) mod on_a_server {
     use super::super::schema_tests::live::{Db, in_scope, waiters};
     use crate::audit::{Action, Actor, AuditError, Entry};
     use crate::backend::conformance::{self, Harness, TestClock};
-    use crate::backend::s3::remote::{CatalogAndS3, CatalogFor, bucket};
+    use crate::backend::s3::remote::{AgeFor, CatalogAndS3, CatalogFor, bucket, on_the_test_clock};
     use crate::backend::{Catalog, CommitError, NewVersion, PageQuery};
     use crate::config::StorageError;
     use crate::envelope::Key;
@@ -422,25 +422,49 @@ pub(super) mod on_a_server {
         })
     }
 
+    /// `Fresh::age` on a database: each pending row of the tenant is made
+    /// older, as the schema's owner, since the catalog judges the rows by
+    /// the database's clock, which the test clock does not move.
+    fn aging(db: Arc<Db>) -> AgeFor {
+        Arc::new(move |tenant: TenantId, by: i64| {
+            let sql = format!(
+                "UPDATE vcon.pending_write SET started_at = started_at - {by}; UPDATE \
+                 vcon.pending_file SET started_at = started_at - {by}"
+            );
+            wait(async {
+                let owner = db.admin().await;
+                owner
+                    .batch_execute("SET ROLE vcon_owner")
+                    .await
+                    .expect("the owner role");
+                in_scope(&owner, &tenant.to_string(), &sql)
+                    .await
+                    .unwrap_or_else(|e| panic!("{sql}: {e}"));
+            });
+        })
+    }
+
     #[test]
     fn a_postgres_catalog_with_s3_objects_conforms() {
-        let (_db, database) = database();
+        let (db, database) = database();
         let (s3, _) = bucket(false);
         conformance::run(&CatalogAndS3 {
             catalog: postgres_catalogs(&database),
             s3,
             packed: false,
+            age: aging(Arc::new(db)),
         });
     }
 
     #[test]
     fn a_postgres_catalog_with_parquet_storage_in_the_bucket_conforms() {
-        let (_db, database) = database();
+        let (db, database) = database();
         let (s3, _) = bucket(false);
         conformance::run(&CatalogAndS3 {
             catalog: postgres_catalogs(&database),
             s3,
             packed: true,
+            age: aging(Arc::new(db)),
         });
     }
 
@@ -2040,6 +2064,7 @@ pub(super) mod on_a_server {
             catalog: postgres_catalogs(&database),
             s3,
             packed: false,
+            age: on_the_test_clock(),
         };
         let fresh = harness.fresh(TestClock::at(conformance::START));
         let who = Caller {
@@ -2083,6 +2108,7 @@ pub(super) mod on_a_server {
             catalog: postgres_catalogs(&database),
             s3,
             packed: false,
+            age: on_the_test_clock(),
         };
         let fresh = harness.fresh(TestClock::at(conformance::START));
         let who = Caller {

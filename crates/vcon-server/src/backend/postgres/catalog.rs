@@ -1787,6 +1787,38 @@ impl<'a> PgTx<'a> {
     }
 }
 
+/// The database's `now()` in nanoseconds since the epoch, as SQL: the
+/// time of a pending row, and the time recovery judges one by. `now()` is
+/// the time the transaction began, so a statement that reads it reads no
+/// host's clock, and servers whose host clocks differ write and judge
+/// pending rows by one clock. A macro, so each statement below holds it
+/// as one literal.
+macro_rules! now_nanos {
+    () => {
+        "(extract(epoch FROM now()) * 1000000000)::bigint"
+    };
+}
+pub(super) use now_nanos;
+
+/// The database's time in nanoseconds ([`now_nanos`]), as a query.
+pub(super) const CLOCK_NOW: &str = concat!("SELECT ", now_nanos!());
+
+/// A write's pending row (tenant `$1`, version `$2`), begun at the
+/// database's time.
+const PENDING_WRITE: &str = concat!(
+    "INSERT INTO vcon.pending_write (tenant, version, started_at) VALUES ($1, $2, ",
+    now_nanos!(),
+    ")"
+);
+
+/// A pack file's pending row (tenant `$1`, file `$2`), begun at the
+/// database's time.
+const PENDING_FILE: &str = concat!(
+    "INSERT INTO vcon.pending_file (tenant, file_id, started_at) VALUES ($1, $2, ",
+    now_nanos!(),
+    ")"
+);
+
 impl CatalogTx for PgTx<'_> {
     fn tombstoned(&mut self, uuid: Uuid) -> Result<bool, StoreError> {
         let mac = self.uuid_mac(uuid)?;
@@ -1978,16 +2010,23 @@ impl CatalogTx for PgTx<'_> {
         .map(drop)
     }
 
-    fn add_pending(&mut self, version: VersionId, at: i64) -> Result<(), StoreError> {
+    /// The time is the database's ([`PENDING_WRITE`]); the process's
+    /// clock, `_at`, is not read.
+    fn add_pending(&mut self, version: VersionId, _at: i64) -> Result<(), StoreError> {
         self.execute(
-            "INSERT INTO vcon.pending_write (tenant, version, started_at) VALUES ($1, $2, $3)",
+            PENDING_WRITE,
             &[
                 (&self.tenant.0.as_slice(), Type::BYTEA),
                 (&version.0.as_slice(), Type::BYTEA),
-                (&at, Type::INT8),
             ],
         )
         .map(drop)
+    }
+
+    /// The database's `now()`: the host's clock, `_host`, is not read.
+    fn clock_now(&mut self, _host: i64) -> Result<i64, StoreError> {
+        let rows = self.query(CLOCK_NOW, &[])?;
+        rows.first().ok_or(StoreError::Io)?.try_get(0).map_err(io)
     }
 
     fn drop_pending(&mut self, version: VersionId) -> Result<bool, StoreError> {
@@ -2015,13 +2054,13 @@ impl CatalogTx for PgTx<'_> {
             .collect()
     }
 
-    fn add_pending_file(&mut self, file: FileId, at: i64) -> Result<(), StoreError> {
+    /// The database's time, as in `add_pending` ([`PENDING_FILE`]).
+    fn add_pending_file(&mut self, file: FileId, _at: i64) -> Result<(), StoreError> {
         self.execute(
-            "INSERT INTO vcon.pending_file (tenant, file_id, started_at) VALUES ($1, $2, $3)",
+            PENDING_FILE,
             &[
                 (&self.tenant.0.as_slice(), Type::BYTEA),
                 (&file.0.as_slice(), Type::BYTEA),
-                (&at, Type::INT8),
             ],
         )
         .map(drop)

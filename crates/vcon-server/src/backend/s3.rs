@@ -1546,6 +1546,17 @@ pub(crate) mod remote {
         pub(crate) catalog: CatalogFor,
         pub(crate) s3: Arc<S3>,
         pub(crate) packed: bool,
+        /// `Fresh::age` for a tenant's catalog.
+        pub(crate) age: AgeFor,
+    }
+
+    /// How a harness ages a tenant's pending rows (`Fresh::age`).
+    pub(crate) type AgeFor = Arc<dyn Fn(TenantId, i64)>;
+
+    /// `AgeFor` of catalogs on the test clock (a data directory's): the
+    /// clock's move is the time passing.
+    pub(crate) fn on_the_test_clock() -> AgeFor {
+        Arc::new(|_, _| ())
     }
 
     /// Local catalogs, each in a directory of its tenant under `dir`.
@@ -1643,6 +1654,10 @@ pub(crate) mod remote {
                 lose,
                 alter,
                 plant: Box::new(move |name, bytes| plant(name, bytes)),
+                age: {
+                    let age = self.age.clone();
+                    Box::new(move |by| age(tenant, by))
+                },
             }
         }
     }
@@ -1655,6 +1670,7 @@ pub(crate) mod remote {
             catalog: local_catalogs(&dir),
             s3,
             packed: false,
+            age: on_the_test_clock(),
         });
     }
 
@@ -1668,6 +1684,7 @@ pub(crate) mod remote {
             catalog: local_catalogs(&dir),
             s3,
             packed: true,
+            age: on_the_test_clock(),
         });
     }
 
@@ -1753,6 +1770,7 @@ pub(crate) mod remote {
             catalog: local_catalogs(&dir),
             s3: s3.clone(),
             packed: false,
+            age: on_the_test_clock(),
         };
         let fresh = harness.fresh(TestClock::at(conformance::START));
         let who = Caller {
@@ -1841,6 +1859,7 @@ pub(crate) mod remote {
             catalog: local_catalogs(&dir),
             s3: s3.clone(),
             packed: false,
+            age: on_the_test_clock(),
         };
         let fresh = harness.fresh(TestClock::at(conformance::START));
         let caller = Caller {
@@ -2634,6 +2653,7 @@ pub(crate) mod remote {
             catalog: local_catalogs(&dir),
             s3: s3.clone(),
             packed: false,
+            age: on_the_test_clock(),
         };
         let fresh = harness.fresh(TestClock::at(conformance::START));
         let who = Caller {
