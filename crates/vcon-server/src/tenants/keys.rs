@@ -103,6 +103,10 @@ pub(crate) struct StoredKey {
     pub(crate) revoked: bool,
     pub(crate) expires_at: Option<i64>,
     pub(crate) last_used_at: Option<i64>,
+    /// The registry's clock in the read of the key ([`Tenants::now_in`]):
+    /// the time its expiry is judged by and its use is noted at, so that
+    /// every server judges a key by the clock its expiry was counted on.
+    pub(crate) read_at: i64,
 }
 
 impl Tenants {
@@ -195,7 +199,11 @@ impl Tenants {
     /// counts from the next request. Nothing is recorded here; `access`
     /// records the outcome.
     pub(crate) fn stored_key(&self, id: KeyId) -> Result<Option<StoredKey>, TenantError> {
-        let row = self.registry.snapshot()?.key(id)?;
+        let (row, read_at) = {
+            let mut tx = self.registry.snapshot()?;
+            let read_at = self.now_in(tx.as_mut())?;
+            (tx.key(id)?, read_at)
+        };
         row.map(|row| {
             Ok(StoredKey {
                 hash: row.token_hash,
@@ -205,6 +213,7 @@ impl Tenants {
                 revoked: row.revoked_at.is_some(),
                 expires_at: row.expires_at,
                 last_used_at: row.last_used_at,
+                read_at,
             })
         })
         .transpose()
@@ -287,7 +296,9 @@ impl Tenants {
         label: &str,
         life: KeyLife,
     ) -> Result<NewKey, TenantError> {
-        let now = nanos(self.clock.now());
+        // The expiry is judged at each request, on whichever server takes
+        // it, by the registry's clock: it is counted from that clock.
+        let now = self.now_in(tx.as_mut())?;
         let expires_at = life.expires_at(now, self.no_expiry_allowed())?;
         let (id, token) = access::new_token();
         tx.insert_key(&KeyRow {

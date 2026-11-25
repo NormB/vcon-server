@@ -290,11 +290,13 @@ pub trait CatalogTx {
     /// ([`CatalogTx::clock_now`]).
     fn add_pending(&mut self, version: VersionId, at: i64) -> Result<(), StoreError>;
     /// The time, in nanoseconds since the epoch, by the clock that this
-    /// catalog's pending rows record and that recovery judges them by: on
-    /// a data directory, `host`, this process's clock (one process holds a
-    /// data directory, so one clock wrote every row); on a database, the
-    /// database's `now()`, so that servers whose host clocks differ agree
-    /// on which write is under way.
+    /// catalog keeps every time by and judges every time by: pending rows,
+    /// store times, unnamed pack files, written manifests and audit
+    /// records. On a data directory it is `host`, this process's clock
+    /// (one process holds a data directory, so one clock wrote every
+    /// row); on a database, the database's clock, read once as the
+    /// transaction begins, so that servers whose host clocks differ agree
+    /// on each time. Each call in one transaction answers the same time.
     fn clock_now(&mut self, host: i64) -> Result<i64, StoreError>;
     /// Deletes the pending row of `version`, and says whether there was
     /// one.
@@ -661,9 +663,10 @@ pub trait RegistryTx {
     /// a database records the time by its own clock instead
     /// ([`RegistryTx::clock_now`]).
     fn add_creating(&mut self, id: TenantId, at: i64) -> Result<(), TenantError>;
-    /// The time by the clock that the creating rows record and that
-    /// recovery judges them by, as [`CatalogTx::clock_now`] is for a
-    /// catalog's pending rows.
+    /// The time by the clock that the registry keeps every time by that
+    /// one server writes and another judges (creating rows, sessions,
+    /// access keys' expiry and last use, the start of a key's use, audit
+    /// records), as [`CatalogTx::clock_now`] is for a catalog.
     fn clock_now(&mut self, host: i64) -> Result<i64, TenantError>;
     /// Deletes the creating row of `id`, and says whether there was one.
     fn drop_creating(&mut self, id: TenantId) -> Result<bool, TenantError>;

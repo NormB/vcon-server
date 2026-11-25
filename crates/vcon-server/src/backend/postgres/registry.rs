@@ -30,15 +30,14 @@ use tokio_postgres::Row;
 use tokio_postgres::types::{FromSql, Type};
 
 use super::catalog::{
-    AuditKey, Begin, CLOCK_NOW, Database, PgTx, all_changed, audit_key_id, new_audit_key,
-    now_nanos, open_audit_keys, reseal_audit_keys,
+    AuditKey, Begin, Database, PgTx, all_changed, audit_key_id, new_audit_key, open_audit_keys,
+    reseal_audit_keys,
 };
 use super::lease;
 use crate::audit::{Action, Actor, AuditError, Entry};
 use crate::backend::{
     CommitError, Job, KeyRow, MembershipRow, Registry, RegistryTx, SessionRow, TenantRow, UserRow,
 };
-use crate::clock::nanos;
 use crate::envelope::{self as column, ColumnKeys, Key, REGISTRY};
 use crate::ids::{KeyId, TenantId, UserId};
 use crate::tenants::TenantError;
@@ -449,7 +448,8 @@ impl PgRegistry {
     /// again with the keys of `new`'s catalog key; each key of the
     /// registry's audit log is sealed again; the rows of the master
     /// keys' use give way to one for `new`, which counts the tenant keys
-    /// wrapped and is in use since `now`; the database then names `new`'s
+    /// wrapped and is in use since the database's clock in that
+    /// transaction; the database then names `new`'s
     /// catalog key, and the rotation is recorded in the registry's log.
     /// It reads and writes at most `batch` rows of a table in one
     /// statement.
@@ -475,7 +475,6 @@ impl PgRegistry {
         database: &Arc<Database>,
         old: &Key,
         new: &Key,
-        now: OffsetDateTime,
         batch: i64,
     ) -> Result<(), TenantError> {
         if batch < 1 {
@@ -483,7 +482,7 @@ impl PgRegistry {
         }
         let old_catalog = column::catalog_key(old).map_err(io)?;
         match PgRegistry::open(database.clone(), &old_catalog) {
-            Ok(registry) => registry.rotate(old, new, now, batch),
+            Ok(registry) => registry.rotate(old, new, batch),
             Err(TenantError::WrongKey) => {
                 // Under the new key, a rotation was made already.
                 let new_catalog = column::catalog_key(new).map_err(io)?;
@@ -497,13 +496,7 @@ impl PgRegistry {
     /// registry, which was opened under `old`'s catalog key. The id the
     /// database names is compared again with the registry's lock held:
     /// another run may have made the rotation since the open.
-    pub(super) fn rotate(
-        &self,
-        old: &Key,
-        new: &Key,
-        now: OffsetDateTime,
-        batch: i64,
-    ) -> Result<(), TenantError> {
+    pub(super) fn rotate(&self, old: &Key, new: &Key, batch: i64) -> Result<(), TenantError> {
         if batch < 1 {
             return Err(TenantError::Io);
         }
@@ -522,13 +515,17 @@ impl PgRegistry {
         for table in &REMADE {
             wraps += tx.remake(table, &to, old, new, batch)?;
         }
+        // The time of the rotation is the database's, as every time
+        // a server judges the removals and purges after it by is.
+        let since = tx.0.clock().map_err(io)?;
+        let now = crate::clock::from_nanos(since).ok_or(TenantError::Io)?;
         tx.run("DELETE FROM vcon.master_key_use", &[])?;
         tx.run(
             "INSERT INTO vcon.master_key_use (master_key_id, wraps, since) VALUES ($1, $2, $3)",
             &[
                 (&new.id().0.as_slice(), Type::BYTEA),
                 (&wraps, Type::INT8),
-                (&nanos(now), Type::INT8),
+                (&since, Type::INT8),
             ],
         )?;
         let named =
@@ -992,14 +989,6 @@ impl PgRegistryTx<'_> {
     }
 }
 
-/// A create's creating row (tenant `$1`), begun at the database's time
-/// ([`now_nanos`]).
-const PENDING_TENANT: &str = concat!(
-    "INSERT INTO vcon.pending_tenant (id, started_at) VALUES ($1, ",
-    now_nanos!(),
-    ")"
-);
-
 impl RegistryTx for PgRegistryTx<'_> {
     fn tenant(&mut self, id: TenantId) -> Result<Option<TenantRow>, TenantError> {
         let rows = self
@@ -1135,16 +1124,20 @@ impl RegistryTx for PgRegistryTx<'_> {
         )
     }
 
-    /// The time is the database's ([`PENDING_TENANT`]); the process's
-    /// clock, `_at`, is not read.
+    /// The time is the transaction's reading of the database's clock
+    /// ([`PgTx::clock`]); the process's clock, `_at`, is not read.
     fn add_creating(&mut self, id: TenantId, _at: i64) -> Result<(), TenantError> {
-        self.run(PENDING_TENANT, &[(&id.0.as_slice(), Type::BYTEA)])
+        let at = self.0.clock().map_err(io)?;
+        self.run(
+            "INSERT INTO vcon.pending_tenant (id, started_at) VALUES ($1, $2)",
+            &[(&id.0.as_slice(), Type::BYTEA), (&at, Type::INT8)],
+        )
     }
 
-    /// The database's `now()`: the host's clock, `_host`, is not read.
+    /// The transaction's reading of the database's clock
+    /// ([`PgTx::clock`]): the host's clock, `_host`, is not read.
     fn clock_now(&mut self, _host: i64) -> Result<i64, TenantError> {
-        let rows = self.0.query(CLOCK_NOW, &[]).map_err(io)?;
-        col(rows.first().ok_or(TenantError::Io)?, 0)
+        self.0.clock().map_err(io)
     }
 
     fn drop_creating(&mut self, id: TenantId) -> Result<bool, TenantError> {

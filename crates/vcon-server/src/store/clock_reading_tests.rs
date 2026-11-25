@@ -40,7 +40,7 @@ fn recovery_judges_every_pending_row_by_one_reading_of_the_clock() {
             .expect("the write stops between its object and its row");
         f.clock
             .set(start + time::Duration::nanoseconds(WRITE_LEASE - MINUTE));
-        *f.store.hooks.clock_steps.lock().expect("hook") = vec![0, 2 * MINUTE];
+        f.store.step_clock(vec![0, 2 * MINUTE]);
         f.store.recover(Writers::Maybe).expect("recovery runs");
         go.send(()).expect("the write waits");
         writing.join().expect("the write ends")

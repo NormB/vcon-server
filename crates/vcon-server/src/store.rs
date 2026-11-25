@@ -324,6 +324,14 @@ impl Store {
         Ok(now)
     }
 
+    /// The time in `tx` by the catalog's clock: what the transaction
+    /// writes as a time, and judges a time another server wrote by. On a
+    /// database it is the database's clock, so the host clocks of the
+    /// servers on it do not matter; on a data directory, this process's.
+    pub(crate) fn now_in(&self, tx: &mut dyn CatalogTx) -> Result<i64, StoreError> {
+        self.catalog_now(tx, nanos(self.clock.now()))
+    }
+
     /// Start-up recovery: the catalog recovers itself, and temporary
     /// objects, objects with no row and pack files with no row are
     /// removed, unless a write is under way for them (store/pending.rs),
@@ -521,7 +529,7 @@ impl Store {
             }
             // The version's time, and the uuid's first: the list keeps
             // its place by it through replace, delete and restore.
-            let stored_at = nanos(self.clock.now());
+            let stored_at = self.now_in(tx.as_mut())?;
             tx.insert_version(&NewVersion {
                 version,
                 uuid,
@@ -715,7 +723,7 @@ impl Store {
                 commit(tx)?;
                 return Err(StoreError::Io);
             }
-            let now = nanos(self.clock.now());
+            let now = self.now_in(tx.as_mut())?;
             tx.insert_version(&NewVersion {
                 version,
                 uuid,
@@ -1086,9 +1094,16 @@ impl Store {
     }
 
     /// Writes an audit record in `tx`; if it cannot, nothing is done.
+    /// The record's time is the transaction's, by the catalog's clock
+    /// ([`Store::now_in`]): a purge's record is judged against the time
+    /// the tenant's key was rotated, which another server may have
+    /// written.
     fn record(&self, tx: &mut Tx, entry: &Entry) -> Result<(), StoreError> {
-        tx.record(entry, self.clock.now())
-            .map_err(|_| StoreError::AuditFailed)
+        let at = self
+            .now_in(tx.as_mut())
+            .map_err(|_| StoreError::AuditFailed)?;
+        let at = crate::clock::from_nanos(at).ok_or(StoreError::AuditFailed)?;
+        tx.record(entry, at).map_err(|_| StoreError::AuditFailed)
     }
 
     /// The local catalog's connection, for tests.
@@ -1335,10 +1350,19 @@ pub(crate) mod tests {
         /// Runs once, in recovery, after it reads the catalog's rows and
         /// before it removes anything.
         pub(super) after_snapshot: Mutex<Option<StoreHook>>,
-        /// Nanoseconds added to each reading of the catalog's clock in
-        /// recovery, one per reading, in order: time passing between two
-        /// readings, which no test can make a database's clock do.
+        /// Nanoseconds added to the next readings of the catalog's clock
+        /// ([`Store::now_in`], recovery's too), one per reading, in order:
+        /// time passing on the clock, which no test can make a database's
+        /// clock do.
         pub(super) clock_steps: Mutex<Vec<i64>>,
+    }
+
+    impl Store {
+        /// Adds `steps` to the next readings of the catalog's clock, one
+        /// per reading, in order ([`Hooks::clock_steps`]).
+        pub(crate) fn step_clock(&self, steps: Vec<i64>) {
+            *self.hooks.clock_steps.lock().expect("hook") = steps;
+        }
     }
 
     pub(crate) struct Fixture {

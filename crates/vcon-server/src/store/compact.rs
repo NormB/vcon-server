@@ -13,7 +13,6 @@ use std::collections::{BTreeMap, HashSet};
 
 use super::packer::PackPlan;
 use super::{Store, StoreError};
-use crate::clock::nanos;
 use crate::ids::FileId;
 
 impl Store {
@@ -64,10 +63,12 @@ impl Store {
         let Some(packs) = self.packs.as_deref() else {
             return Ok(());
         };
-        let now = nanos(self.clock.now());
         let grace = i64::try_from(plan.grace.as_nanos()).unwrap_or(i64::MAX);
         // Expired files are removed only once what was read is durable.
-        let (unnamed, pending) = self.read(|tx| {
+        let (unnamed, pending, now) = self.read(|tx| {
+            // The unnamed times were written by the catalog's clock, by
+            // whichever server swapped the files: judged by it too.
+            let now = self.now_in(tx.as_mut())?;
             let pending: HashSet<FileId> = tx.purge_pending()?.into_iter().collect();
             let mut unnamed = Vec::new();
             for file in tx.unnamed_files()? {
@@ -75,7 +76,7 @@ impl Store {
                     unnamed.push((file, info.unnamed_at));
                 }
             }
-            Ok((unnamed, pending))
+            Ok((unnamed, pending, now))
         })?;
         for (file, at) in unnamed {
             let expired = at.is_some_and(|at| now.saturating_sub(at) >= grace);

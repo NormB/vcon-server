@@ -805,17 +805,11 @@ fn rekey_master(
         // other command has the database.
         #[cfg(feature = "postgres")]
         backend::Catalogs::Postgres(database) => {
-            backend::postgres::PgRegistry::rekey_master(
-                database,
-                master,
-                &new,
-                SystemClock.now(),
-                REKEY_MASTER_BATCH,
-            )
-            .map_err(|e| match e {
-                TenantError::WrongKey => CommandError::WrongDatabaseKey,
-                other => CommandError::Tenant(other),
-            })?;
+            backend::postgres::PgRegistry::rekey_master(database, master, &new, REKEY_MASTER_BATCH)
+                .map_err(|e| match e {
+                    TenantError::WrongKey => CommandError::WrongDatabaseKey,
+                    other => CommandError::Tenant(other),
+                })?;
         }
     }
     line(

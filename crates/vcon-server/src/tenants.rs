@@ -545,6 +545,15 @@ impl Tenants {
         Ok(now)
     }
 
+    /// The time in `tx` by the registry's clock: what the transaction
+    /// writes as a time another server judges, and judges such a time by.
+    /// On a database it is the database's clock, so the host clocks of
+    /// the servers on it do not matter; on a data directory, this
+    /// process's.
+    pub(crate) fn now_in(&self, tx: &mut dyn RegistryTx) -> Result<i64, TenantError> {
+        self.registry_now(tx, nanos(self.clock.now()))
+    }
+
     /// Removes each tenant space with no row: a create cut off before its
     /// commit. A name that is not a tenant id is not ours and is left
     /// alone. A removal a crash undoes is made again at the next start, so
@@ -629,7 +638,7 @@ impl Tenants {
             }
             // The wrap is counted before it is made, so every wrap is
             // counted once whether this create wins or loses.
-            let now = nanos(self.clock.now());
+            let now = self.now_in(tx.as_mut())?;
             tx.add_master_wrap(master_id, now)?;
             // Before the space is made: until the row, recovery on another
             // server keeps the space of a create under way.
@@ -668,7 +677,7 @@ impl Tenants {
                 commit(tx)?;
                 return Err(TenantError::NameTaken);
             }
-            let now = nanos(self.clock.now());
+            let now = self.now_in(tx.as_mut())?;
             tx.insert_tenant(&TenantRow {
                 id,
                 name: name.to_owned(),
@@ -1127,9 +1136,16 @@ impl Tenants {
         self.clock.now()
     }
 
+    /// The record's time is the transaction's, by the registry's clock
+    /// ([`Tenants::now_in`]): a removal's record is judged against the
+    /// time the master key's use began, which another server may have
+    /// written.
     fn record(&self, tx: &mut RTx, entry: &Entry) -> Result<(), TenantError> {
-        tx.record(entry, self.clock.now())
-            .map_err(|_| TenantError::AuditFailed)
+        let at = self
+            .now_in(tx.as_mut())
+            .map_err(|_| TenantError::AuditFailed)?;
+        let at = from_nanos(at).ok_or(TenantError::AuditFailed)?;
+        tx.record(entry, at).map_err(|_| TenantError::AuditFailed)
     }
 
     /// The local registry's connection, for tests.
@@ -1213,14 +1229,23 @@ mod tests {
         pub(super) registry_copied: Mutex<Option<RegistryHook>>,
         /// Runs as a background job begins its step for a tenant.
         pub(super) job_step: Mutex<Option<JobHook>>,
-        /// Nanoseconds added to each reading of the registry's clock in
-        /// recovery, one per reading, in order, as for a Store.
+        /// Nanoseconds added to the next readings of the registry's clock
+        /// ([`Tenants::now_in`], recovery's too), one per reading, in
+        /// order, as for a Store.
         pub(super) clock_steps: Mutex<Vec<i64>>,
     }
 
     /// What a background job runs as it begins its step for a tenant, with
     /// the job's name.
     pub(crate) type JobHook = std::sync::Arc<dyn Fn(&'static str) + Send + Sync>;
+
+    impl Tenants {
+        /// Adds `steps` to the next readings of the registry's clock, one
+        /// per reading, in order ([`Hooks::clock_steps`]).
+        pub(crate) fn step_clock(&self, steps: Vec<i64>) {
+            *self.hooks.clock_steps.lock().expect("hook") = steps;
+        }
+    }
 
     /// A master key kept wrapped, so a test can have it more than once.
     struct Master {
@@ -2057,8 +2082,16 @@ mod tests {
     fn recovery_judges_every_creating_row_by_one_reading_of_the_clock() {
         let f = fixture();
         let minute = 60 * 1_000_000_000;
-        *f.tenants.hooks.clock_steps.lock().expect("hook") = vec![0, 2 * minute];
-        f.recover_between(start_plus(pending::WRITE_LEASE - minute), Writers::Maybe);
+        let clock = f.clock.clone();
+        let to = start_plus(pending::WRITE_LEASE - minute);
+        // The steps are set in the create's pause, so that recovery's are
+        // the next readings: the create reads the clock before it too.
+        *f.tenants.hooks.between.lock().expect("hook") =
+            Some(Box::new(move |tenants: &Tenants| {
+                clock.set(to);
+                tenants.step_clock(vec![0, 2 * minute]);
+                tenants.recover(Writers::Maybe).expect("recovery runs");
+            }));
         let id = f
             .tenants
             .create(Actor::Cli, "acme", None)

@@ -75,10 +75,12 @@ pub(crate) struct Fresh {
     pub(crate) alter: Touch,
     /// Plants an object around the Store.
     pub(crate) plant: Plant,
-    /// Makes the catalog's pending rows this many nanoseconds older: what
-    /// that much time passing does on a catalog that keeps its own clock
-    /// (a database). A catalog on the process's clock (a data directory)
-    /// needs nothing: the test clock's move is that time passing.
+    /// Makes the times the catalog keeps (its pending rows, store times,
+    /// unnamed pack files and written manifests) this many nanoseconds
+    /// older: what that much time passing does on a catalog that keeps
+    /// its own clock (a database). A catalog on the process's clock (a
+    /// data directory) needs nothing: the test clock's move is that time
+    /// passing.
     pub(crate) age: Box<dyn Fn(i64)>,
     /// The same Store opened again, without start-up recovery, on objects
     /// it cannot read: every read fails, and not as an absent object
@@ -230,10 +232,17 @@ fn others(held: &Held, kept: &[VersionId]) -> Vec<String> {
 }
 
 /// Lets `nanos` pass for the Store and its catalog: the test clock moves
-/// on, and the catalog's pending rows age by as much.
+/// on, and the catalog's times age by as much.
 fn later(f: &Fresh, clock: &TestClock, nanos: i64) {
     clock.set(plus(clock.now(), nanos));
     (f.age)(nanos);
+}
+
+/// Lets time pass for the Store and its catalog until the test clock
+/// reads `at` ([`later`]).
+fn to(f: &Fresh, clock: &TestClock, at: OffsetDateTime) {
+    let by = i64::try_from((at - clock.now()).whole_nanoseconds()).expect("a span that fits");
+    later(f, clock, by);
 }
 
 /// A minute, in nanoseconds.
@@ -624,14 +633,20 @@ fn purge_timing_and_hold(h: &dyn Harness) {
     let (version, _) = new_version(&f.store, &who, &uuid(1), "first");
     let id = Uuid::parse_str(&uuid(1)).expect("uuid");
     f.store.delete(&who, id, days).expect("deletes");
-    clock.set(START + time::Duration::days(1) - time::Duration::seconds(1));
+    // A minute short: on a database the clock the purge reads runs on
+    // while the check runs, and the second is purge.rs's own test.
+    to(
+        &f,
+        &clock,
+        START + time::Duration::days(1) - time::Duration::minutes(1),
+    );
     assert_eq!(
         f.store.purge_due(days).expect("sweeps").purged,
         0,
         "purge_timing_and_hold: f.store.purge_due(days).expect(\"sweeps\").purged"
     );
     f.store.set_hold(&who, id, true).expect("holds");
-    clock.set(START + time::Duration::days(2));
+    to(&f, &clock, START + time::Duration::days(2));
     assert_eq!(f.store.purge_due(days).expect("sweeps").purged, 0, "held");
     f.store.set_hold(&who, id, false).expect("releases");
     assert_eq!(
@@ -982,7 +997,7 @@ fn purge_removes_the_object(h: &dyn Harness) {
     assert_eq!((f.held)(), all, "purge_removes_the_object: one object each");
     let first = Uuid::parse_str(&uuid(1)).expect("uuid");
     f.store.delete(&who, first, days).expect("deletes");
-    clock.set(START + time::Duration::days(2));
+    to(&f, &clock, START + time::Duration::days(2));
     assert_eq!(
         f.store.purge_due(days).expect("sweeps").purged,
         1,
@@ -1046,7 +1061,7 @@ fn purge_of_a_lost_object_finishes(h: &dyn Harness) {
         f.store.delete(&who, id, days).expect("deletes");
     }
     (f.lose)(lost);
-    clock.set(START + time::Duration::days(2));
+    to(&f, &clock, START + time::Duration::days(2));
     assert_eq!(
         f.store.purge_due(days).map(|r| r.purged),
         Ok(2),

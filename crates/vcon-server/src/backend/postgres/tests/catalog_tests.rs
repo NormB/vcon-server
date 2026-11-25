@@ -422,14 +422,22 @@ pub(super) mod on_a_server {
         })
     }
 
-    /// `Fresh::age` on a database: each pending row of the tenant is made
-    /// older, as the schema's owner, since the catalog judges the rows by
-    /// the database's clock, which the test clock does not move.
+    /// `Fresh::age` on a database: every time the tenant's catalog keeps
+    /// and judges (pending rows, store times, unnamed pack files, written
+    /// manifests) is made older, as the schema's owner, since the catalog
+    /// keeps and judges them by the database's clock, which the test
+    /// clock does not move.
     fn aging(db: Arc<Db>) -> AgeFor {
         Arc::new(move |tenant: TenantId, by: i64| {
             let sql = format!(
-                "UPDATE vcon.pending_write SET started_at = started_at - {by}; UPDATE \
-                 vcon.pending_file SET started_at = started_at - {by}"
+                "UPDATE vcon.pending_write SET started_at = started_at - {by}; \
+                 UPDATE vcon.pending_file SET started_at = started_at - {by}; \
+                 UPDATE vcon.version SET stored_at = stored_at - {by}; \
+                 UPDATE vcon.vcon SET stored_at = stored_at - {by}; \
+                 UPDATE vcon.parquet_file SET unnamed_at = unnamed_at - {by} \
+                 WHERE unnamed_at IS NOT NULL; \
+                 UPDATE vcon.manifest SET published_at = published_at - {by} \
+                 WHERE published_at IS NOT NULL"
             );
             wait(async {
                 let owner = db.admin().await;

@@ -13,7 +13,6 @@
 use std::sync::atomic::Ordering;
 
 use super::{TenantError, Tenants, commit};
-use crate::clock::nanos;
 use crate::ids::KeyId;
 
 /// The days a new key lives when its maker names none.
@@ -134,13 +133,14 @@ impl Tenants {
         self.no_expiry.store(allowed, Ordering::Relaxed);
     }
 
-    /// Notes that a request by the key `id` was accepted now, given the
-    /// last-used time read with the key: writes the minute of now when it
-    /// is later than the one stored, and nothing otherwise. Whether a row
+    /// Notes that a request by the key `id` was accepted at `now`, the
+    /// registry's clock in the read of the key, given the last-used time
+    /// read with it: writes the minute of `now` when it is later than the
+    /// one stored, and nothing otherwise. Whether a row
     /// was changed. A failure to write is not an error of the request: the
     /// time is written by a later request.
-    pub(crate) fn key_used(&self, id: KeyId, stored: Option<i64>) -> bool {
-        let Some(due) = last_used_due(stored, nanos(self.now())) else {
+    pub(crate) fn key_used(&self, id: KeyId, stored: Option<i64>, now: i64) -> bool {
+        let Some(due) = last_used_due(stored, now) else {
             return false;
         };
         let written = || {
@@ -162,7 +162,7 @@ mod tests {
     use crate::access::{self, AuthError, Scope, Scopes};
     use crate::audit::Actor;
     use crate::backend::{CommitError, KeyRow};
-    use crate::clock::from_nanos;
+    use crate::clock::{from_nanos, nanos};
     use crate::ids::TenantId;
     use crate::tenants::NewKey;
     use crate::tenants::tests::{Fixture, fixture};
@@ -875,12 +875,17 @@ mod tests {
     fn requests_in_one_minute_write_once() {
         let f = fixture();
         let made = key(&f, KeyLife::Default);
-        assert!(f.tenants.key_used(made.id, None), "the first writes");
+        assert!(
+            f.tenants
+                .key_used(made.id, None, crate::clock::nanos(f.tenants.now())),
+            "the first writes"
+        );
         let stored = row(&f, made.id).last_used_at;
         assert_eq!(stored, Some(start()), "the minute");
         f.clock.set(START + Duration::seconds(59));
         assert!(
-            !f.tenants.key_used(made.id, stored),
+            !f.tenants
+                .key_used(made.id, stored, crate::clock::nanos(f.tenants.now())),
             "a request 59 s later writes nothing"
         );
         assert!(auth(&f, &made).is_ok(), "and is accepted");
@@ -896,11 +901,13 @@ mod tests {
         let f = fixture();
         let made = key(&f, KeyLife::Default);
         assert!(
-            f.tenants.key_used(made.id, None),
+            f.tenants
+                .key_used(made.id, None, crate::clock::nanos(f.tenants.now())),
             "the first changes the row"
         );
         assert!(
-            !f.tenants.key_used(made.id, None),
+            !f.tenants
+                .key_used(made.id, None, crate::clock::nanos(f.tenants.now())),
             "the second read the row before the first wrote, and changes nothing"
         );
     }
@@ -914,7 +921,8 @@ mod tests {
         f.clock.set(START + Duration::minutes(2));
         assert!(auth(&f, &made).is_ok(), "used at an earlier time");
         assert!(
-            !f.tenants.key_used(made.id, None),
+            !f.tenants
+                .key_used(made.id, None, crate::clock::nanos(f.tenants.now())),
             "even a writer that read no time changes nothing"
         );
         assert_eq!(
@@ -946,7 +954,8 @@ mod tests {
         let made = key(&f, KeyLife::Default);
         f.tenants.registry.fail_commit(1, CommitError::RolledBack);
         assert!(
-            !f.tenants.key_used(made.id, None),
+            !f.tenants
+                .key_used(made.id, None, crate::clock::nanos(f.tenants.now())),
             "the commit failed, so no row was changed"
         );
     }
@@ -973,7 +982,8 @@ mod tests {
     fn using_a_key_nobody_has_writes_nothing() {
         let f = fixture();
         assert!(
-            !f.tenants.key_used(KeyId([7; 8]), None),
+            !f.tenants
+                .key_used(KeyId([7; 8]), None, crate::clock::nanos(f.tenants.now())),
             "no row has the id"
         );
     }

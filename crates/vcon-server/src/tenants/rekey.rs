@@ -135,7 +135,8 @@ impl Tenants {
         // transaction with its record.
         {
             let mut tx = self.registry.immediate()?;
-            tx.promote_pending(id, new.id(), nanos(self.clock.now()))?;
+            let now = self.now_in(tx.as_mut())?;
+            tx.promote_pending(id, new.id(), now)?;
             self.record(&mut tx, &entry(200))?;
             commit(tx)?;
         }

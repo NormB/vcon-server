@@ -7,7 +7,6 @@ use aws_lc_rs::digest::{SHA256, digest};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
-use crate::clock::nanos;
 use crate::ids::{KeyId, TenantId};
 use crate::tenants::{Tenants, key_life};
 
@@ -272,9 +271,9 @@ impl std::error::Error for AuthError {}
 /// [`AuthError::Io`] when the key table cannot be read.
 pub fn authenticate(keys: &Tenants, authorization: Option<&str>) -> Result<Caller, AuthError> {
     match check(keys, authorization) {
-        Ok((caller, last_used)) => {
+        Ok((caller, (last_used, read_at))) => {
             // A failure to write the time does not refuse the request.
-            let _ = keys.key_used(caller.key, last_used);
+            let _ = keys.key_used(caller.key, last_used, read_at);
             Ok(caller)
         }
         Err((error, known)) => {
@@ -289,8 +288,12 @@ pub fn authenticate(keys: &Tenants, authorization: Option<&str>) -> Result<Calle
 /// A failed check, with the key it named if that key is known.
 type Failure = (AuthError, Option<(KeyId, Option<TenantId>)>);
 
-/// The caller a header names, with the last-used time stored for its key.
-fn check(keys: &Tenants, authorization: Option<&str>) -> Result<(Caller, Option<i64>), Failure> {
+/// The caller a header names, with the last-used time stored for its key
+/// and the registry's clock in the read of the key.
+fn check(
+    keys: &Tenants,
+    authorization: Option<&str>,
+) -> Result<(Caller, (Option<i64>, i64)), Failure> {
     let unknown = |error| (error, None);
     let header = authorization.ok_or(unknown(AuthError::Missing))?;
     let token = bearer(header).ok_or(unknown(AuthError::Malformed))?;
@@ -308,7 +311,9 @@ fn check(keys: &Tenants, authorization: Option<&str>) -> Result<(Caller, Option<
     if key.revoked {
         return Err(known(AuthError::Revoked));
     }
-    if key_life::expired(key.expires_at, nanos(keys.now())) {
+    // The expiry was counted from the registry's clock where the key
+    // was made, and is judged by the same clock here.
+    if key_life::expired(key.expires_at, key.read_at) {
         return Err(known(AuthError::Expired));
     }
     let caller = Caller {
@@ -316,7 +321,7 @@ fn check(keys: &Tenants, authorization: Option<&str>) -> Result<(Caller, Option<
         tenant: key.tenant,
         scopes: key.scopes,
     };
-    Ok((caller, key.last_used_at))
+    Ok((caller, (key.last_used_at, key.read_at)))
 }
 
 /// Refuses a caller whose key does not hold `scope`. Admin belongs only to

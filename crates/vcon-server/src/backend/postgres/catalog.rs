@@ -1218,6 +1218,10 @@ pub(super) struct PgTx<'a> {
     /// A statement failed in a way that says the connection cannot be
     /// used again ([`must_drop`]): it is closed when the transaction ends.
     broken: Cell<bool>,
+    /// The database's clock as the transaction began its work
+    /// ([`TX_CLOCK`]), read in the begin's batch: every time the
+    /// transaction writes or judges, on whichever server runs it.
+    clock: Cell<Option<i64>>,
 }
 
 impl Drop for PgTx<'_> {
@@ -1268,6 +1272,7 @@ impl<'a> PgTx<'a> {
             refused: Cell::new(false),
             aborted: Cell::new(false),
             broken: Cell::new(false),
+            clock: Cell::new(None),
         }
     }
 
@@ -1301,23 +1306,42 @@ impl<'a> PgTx<'a> {
         let Some(how) = self.pending.take() else {
             return self.database.wait(call);
         };
-        let text = if self.tenant == REGISTRY {
+        let begin = if self.tenant == REGISTRY {
             registry_begin_text(how)
         } else {
             begin_text(how, self.tenant)
         };
+        let text = format!("{begin}; {TX_CLOCK}");
         let client = self.lease.client();
         self.open.set(true);
         let (began, done) = self
             .database
-            .wait(async { tokio::join!(biased; client.batch_execute(&text), call) });
+            .wait(async { tokio::join!(biased; client.simple_query(&text), call) });
         match began {
-            Ok(()) => done,
+            Ok(answers) => {
+                self.clock.set(clock_reading(&answers));
+                done
+            }
             Err(e) => {
                 self.refused.set(true);
                 Err(e)
             }
         }
+    }
+
+    /// The database's clock for this transaction, in nanoseconds: the
+    /// reading its begin's batch took ([`TX_CLOCK`]), or, when that batch
+    /// answered none, one read now and kept. A transaction not begun yet
+    /// begins here. Each call answers the same time.
+    pub(super) fn clock(&self) -> Result<i64, StoreError> {
+        if let Some(at) = self.clock.get() {
+            return Ok(at);
+        }
+        let rows = self.query(TX_CLOCK, &[])?;
+        let at = rows.first().ok_or(StoreError::Io)?.try_get(0).map_err(io)?;
+        let at = self.clock.get().unwrap_or(at);
+        self.clock.set(Some(at));
+        Ok(at)
     }
 
     /// Notes a statement's failure: whether the connection may be kept.
@@ -1787,37 +1811,25 @@ impl<'a> PgTx<'a> {
     }
 }
 
-/// The database's `now()` in nanoseconds since the epoch, as SQL: the
-/// time of a pending row, and the time recovery judges one by. `now()` is
-/// the time the transaction began, so a statement that reads it reads no
-/// host's clock, and servers whose host clocks differ write and judge
-/// pending rows by one clock. A macro, so each statement below holds it
-/// as one literal.
-macro_rules! now_nanos {
-    () => {
-        "(extract(epoch FROM now()) * 1000000000)::bigint"
-    };
+/// The reading of the database's clock that a transaction's begin batch
+/// ends with, in nanoseconds: `clock_timestamp()`, the time the statement
+/// runs, so a write reads it after the lock its begin waits for, and two
+/// writes of one tenant, which that lock puts in order, read times in the
+/// same order. One reading serves the whole transaction ([`PgTx::clock`]):
+/// the times it writes, and the times it judges others' rows by, so
+/// servers whose host clocks differ agree on every one.
+pub(super) const TX_CLOCK: &str =
+    "SELECT (extract(epoch FROM clock_timestamp()) * 1000000000)::bigint";
+
+/// The clock reading a begin batch answered: the value of its last row,
+/// the batch's last statement being [`TX_CLOCK`]. None when the answer
+/// holds no such value, and the transaction then reads its clock alone.
+fn clock_reading(answers: &[tokio_postgres::SimpleQueryMessage]) -> Option<i64> {
+    answers.iter().rev().find_map(|answer| match answer {
+        tokio_postgres::SimpleQueryMessage::Row(row) => row.get(0)?.parse().ok(),
+        _ => None,
+    })
 }
-pub(super) use now_nanos;
-
-/// The database's time in nanoseconds ([`now_nanos`]), as a query.
-pub(super) const CLOCK_NOW: &str = concat!("SELECT ", now_nanos!());
-
-/// A write's pending row (tenant `$1`, version `$2`), begun at the
-/// database's time.
-const PENDING_WRITE: &str = concat!(
-    "INSERT INTO vcon.pending_write (tenant, version, started_at) VALUES ($1, $2, ",
-    now_nanos!(),
-    ")"
-);
-
-/// A pack file's pending row (tenant `$1`, file `$2`), begun at the
-/// database's time.
-const PENDING_FILE: &str = concat!(
-    "INSERT INTO vcon.pending_file (tenant, file_id, started_at) VALUES ($1, $2, ",
-    now_nanos!(),
-    ")"
-);
 
 impl CatalogTx for PgTx<'_> {
     fn tombstoned(&mut self, uuid: Uuid) -> Result<bool, StoreError> {
@@ -2010,23 +2022,25 @@ impl CatalogTx for PgTx<'_> {
         .map(drop)
     }
 
-    /// The time is the database's ([`PENDING_WRITE`]); the process's
-    /// clock, `_at`, is not read.
+    /// The time is the transaction's reading of the database's clock
+    /// ([`PgTx::clock`]); the process's clock, `_at`, is not read.
     fn add_pending(&mut self, version: VersionId, _at: i64) -> Result<(), StoreError> {
+        let at = self.clock()?;
         self.execute(
-            PENDING_WRITE,
+            "INSERT INTO vcon.pending_write (tenant, version, started_at) VALUES ($1, $2, $3)",
             &[
                 (&self.tenant.0.as_slice(), Type::BYTEA),
                 (&version.0.as_slice(), Type::BYTEA),
+                (&at, Type::INT8),
             ],
         )
         .map(drop)
     }
 
-    /// The database's `now()`: the host's clock, `_host`, is not read.
+    /// The transaction's reading of the database's clock
+    /// ([`PgTx::clock`]): the host's clock, `_host`, is not read.
     fn clock_now(&mut self, _host: i64) -> Result<i64, StoreError> {
-        let rows = self.query(CLOCK_NOW, &[])?;
-        rows.first().ok_or(StoreError::Io)?.try_get(0).map_err(io)
+        self.clock()
     }
 
     fn drop_pending(&mut self, version: VersionId) -> Result<bool, StoreError> {
@@ -2054,13 +2068,15 @@ impl CatalogTx for PgTx<'_> {
             .collect()
     }
 
-    /// The database's time, as in `add_pending` ([`PENDING_FILE`]).
+    /// The database's time, as in `add_pending`.
     fn add_pending_file(&mut self, file: FileId, _at: i64) -> Result<(), StoreError> {
+        let at = self.clock()?;
         self.execute(
-            PENDING_FILE,
+            "INSERT INTO vcon.pending_file (tenant, file_id, started_at) VALUES ($1, $2, $3)",
             &[
                 (&self.tenant.0.as_slice(), Type::BYTEA),
                 (&file.0.as_slice(), Type::BYTEA),
+                (&at, Type::INT8),
             ],
         )
         .map(drop)

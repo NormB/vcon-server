@@ -96,7 +96,10 @@ impl Store {
         let Some(row) = tx.hidden_row(version)? else {
             return Ok(false);
         };
-        let now = self.clock.now();
+        // The version's store time was written by the catalog's clock in
+        // its write's transaction, on whichever server took the write: it
+        // is judged by the same clock here.
+        let now = from_nanos(self.now_in(tx.as_mut())?).ok_or(StoreError::Damaged)?;
         let kept = Kept {
             stored_at: from_nanos(row.stored_at).ok_or(StoreError::Damaged)?,
             hidden: true,

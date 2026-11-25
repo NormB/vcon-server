@@ -19,7 +19,7 @@ use super::{RTx, TenantError, Tenants, commit};
 use crate::access::Scopes;
 use crate::audit::{Action, Actor, Entry};
 use crate::backend::SessionRow;
-use crate::clock::{from_nanos, nanos};
+use crate::clock::from_nanos;
 use crate::ids::{TenantId, UserId};
 use crate::roles::Roles;
 use crate::session::{amr_text, csrf_token, hash, new_secret, same, well_formed};
@@ -214,7 +214,7 @@ impl Tenants {
                 return Err(refused);
             }
         };
-        let now = nanos(self.clock.now());
+        let now = self.now_in(tx.as_mut())?;
         let id = new_secret();
         let csrf = csrf_token(&id);
         let idle_seconds = limit(&settings, Name::SessionIdle);
@@ -253,7 +253,7 @@ impl Tenants {
     /// when no live session has the id, under the user for a token.
     pub fn session(&self, id: &str, proof: Proof<'_>) -> Result<SessionInfo, SessionError> {
         let mut tx = self.registry.immediate()?;
-        let now = nanos(self.clock.now());
+        let now = self.now_in(tx.as_mut())?;
         let Some(row) = live(&mut tx, id, now)? else {
             commit(tx)?;
             self.count_session(Action::AuthFailed, 401, None);
@@ -283,7 +283,8 @@ impl Tenants {
     /// the tenant's log too.
     pub fn end_session(&self, id: &str) -> Result<SessionInfo, SessionError> {
         let mut tx = self.registry.immediate()?;
-        let Some(row) = live(&mut tx, id, nanos(self.clock.now()))? else {
+        let now = self.now_in(tx.as_mut())?;
+        let Some(row) = live(&mut tx, id, now)? else {
             commit(tx)?;
             return Err(SessionError::NoSession);
         };
@@ -313,7 +314,7 @@ impl Tenants {
     pub fn step_up_session(&self, id: &str, amr: &[&str]) -> Result<Started, SessionError> {
         let amr = amr_text(amr).ok_or(SessionError::BadAmr)?;
         let mut tx = self.registry.immediate()?;
-        let now = nanos(self.clock.now());
+        let now = self.now_in(tx.as_mut())?;
         let Some(row) = live(&mut tx, id, now)? else {
             commit(tx)?;
             return Err(SessionError::NoSession);

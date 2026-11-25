@@ -667,13 +667,19 @@ for the next run. The rows are the tenant's, under the policy of
 no `UPDATE`. The file id and the time are in the clear, and the table
 starts empty.
 
-From version 15 the time of a row of `pending_write`, `pending_tenant`
-and `pending_file` is the database's `now()`, written by the statement
-that adds the row, and recovery reads a row's age by the database's
-clock too. So servers whose clocks differ by more than an hour still
-agree on which write is under way. A row an earlier release wrote has
-its server's time, and recovery takes it for a leftover once that time
-is an hour or more from the database's.
+From version 15 every time that one server writes and another judges is
+the database's clock: each transaction reads `clock_timestamp()` once,
+in the batch that begins it and after the tenant's lock, and writes and
+judges by that one reading. That covers the rows of `pending_write`,
+`pending_tenant` and `pending_file`, a version's and a vCon's store
+time, the time a pack file is unnamed, the time a manifest is written, a
+session's times, an access key's expiry and last use, the start of a
+tenant key's and of the master key's use, and the time of an audit
+record. So servers whose clocks differ still agree on which write is
+under way, which version is due for purge, when a session or a key has
+ended, and when a reader's grace is over. A time an earlier release
+wrote keeps its server's clock, and is judged by the database's from
+version 15 on.
 
 Version 15 also makes the table `lease`, where the registry records
 which server does a job that one server does for all: the purge sweep
@@ -858,9 +864,25 @@ What each server needs:
   holds the servers' lock on a connection of its own for as long as it
   runs.
 
-The hosts' clocks need not agree: who does each job and until when, and
-which write is still under way, are decided by the database's clock
-alone.
+The hosts' clocks need not agree. Every time one server writes and
+another judges is read from the database's clock, so with hosts' clocks
+hours or days apart:
+
+- a version is purged when its retention has passed, whichever server
+  stored it and whichever server sweeps;
+- a session or an access key ends at its limit on every server, and a
+  key's last use is the database's minute;
+- a pack file that a compaction stopped naming, and an older manifest,
+  stay for `storage.parquet.reader_grace` (15 minutes by default) by the
+  database's clock;
+- the vCons list in the order they were stored, and the versions of a
+  vCon in the order they were written;
+- who does each job and until when, and which write is still under way,
+  are decided by the database's clock alone.
+
+A host's clock still sets the minute of a counted audit record (such as
+a refused request) and the times only shown, such as when a key was
+revoked or a user deactivated.
 
 On the second host, with the files copied, start the server as on the
 first (see [start the server](#start-the-server)):
@@ -903,6 +925,11 @@ If it does not work:
   that was killed, or lost its connection, keeps them until they end: two
   intervals of the job (`purge_interval`, `storage.parquet.pack_interval`),
   at least a minute.
+- **A session, a key or a retention period ends early or late, by the
+  hosts' clocks.** It ends by the database's clock, which a superuser
+  reads with `SELECT now()`. A time that release 0.4.16 or earlier wrote
+  keeps that server's clock, and is judged by the database's: a host
+  clock that was off then moves that one time by as much.
 - **A command that runs alone is refused** while any server runs: stop
   every server first (see
   [commands beside a server, and alone](#commands-beside-a-server-and-alone)).

@@ -26,8 +26,10 @@ All notable changes to this project are recorded here. The format follows
     Transit, OpenBao, PKCS#11 and AWS KMS.
   - Docs: [1.0 checklist](https://vcon-server.com/docs/production-checklist/)
 - **Several servers can serve one PostgreSQL catalog database.**
-  - Effect: Servers share the database's lock; one of them, under a lease,
-    runs the purge sweep and the pack run for all.
+  - Effect: Servers share the database's lock and clock; one of them, under
+    a lease, runs the purge sweep and the pack run for all.
+  - Limit: A time written by release 0.4.16 or earlier keeps its server's
+    clock and is judged by the database's.
   - Do: Stop every server of 0.4.16 or earlier and run `vcon-server
     migrate` before a server of this release starts.
   - Docs: [Several servers on one

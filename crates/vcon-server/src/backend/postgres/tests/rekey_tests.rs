@@ -327,7 +327,7 @@ mod on_a_server {
     }
 
     fn rotate(w: &World) -> Result<(), TenantError> {
-        PgRegistry::rekey_master(&w.database, &w.old, &w.new, now(), BATCH)
+        PgRegistry::rekey_master(&w.database, &w.old, &w.new, BATCH)
     }
 
     fn tenant_id(n: u8) -> TenantId {
@@ -622,11 +622,14 @@ mod on_a_server {
 
     /// The rows of the master keys' use: the key's id in hex, its wraps
     /// and the time it has been in use since.
+    /// Each master key's use: its id, its wraps and its start, `db` for a
+    /// start within a minute of the database's clock.
     fn uses(db: &Db) -> Vec<String> {
         as_owner(
             db,
-            "SELECT encode(master_key_id, 'hex'), wraps, since FROM vcon.master_key_use \
-             ORDER BY master_key_id",
+            "SELECT encode(master_key_id, 'hex'), wraps, CASE WHEN abs(since - \
+             (extract(epoch FROM clock_timestamp()) * 1000000000)::bigint) < 60000000000 \
+             THEN 'db' ELSE since::text END FROM vcon.master_key_use ORDER BY master_key_id",
         )
     }
 
@@ -760,16 +763,24 @@ mod on_a_server {
         assert_eq!(rotate(&w), Ok(()), "the rotation is made");
         assert_eq!(
             uses(&w.db),
-            [format!("{} 4 {}", hex(&w.new.id().0), nanos(now()))],
+            [format!("{} 4 {}", hex(&w.new.id().0), "db")],
             "three tenant keys and one pending, since the rotation"
         );
         let registry = open(&w, &w.new).expect("opens under the new key");
         let mut tx = registry.snapshot().expect("a read begins");
         assert_eq!(tx.master_wraps(w.new.id()), Ok(4), "as the registry reads");
+        let since = tx
+            .master_since(w.new.id())
+            .expect("reads")
+            .expect("a start");
+        drop(tx);
         assert_eq!(
-            tx.master_since(w.new.id()),
-            Ok(Some(nanos(now()))),
-            "the new key is in use since the rotation"
+            as_owner(
+                &w.db,
+                &format!("SELECT since = {since} FROM vcon.master_key_use")
+            ),
+            ["t"],
+            "the new key is in use since the rotation, as the registry reads"
         );
     }
 
@@ -888,7 +899,7 @@ mod on_a_server {
         assert_eq!(rotate(&w), Ok(()), "the first rotation is made");
         let third = Key::generate().expect("a key");
         assert_eq!(
-            PgRegistry::rekey_master(&w.database, &w.new, &third, now(), BATCH),
+            PgRegistry::rekey_master(&w.database, &w.new, &third, BATCH),
             Ok(()),
             "and the second"
         );
@@ -913,7 +924,7 @@ mod on_a_server {
         fill(&w);
         let before = filled(&w);
         assert_eq!(
-            PgRegistry::rekey_master(&w.database, &w.old, &w.new, now(), 1),
+            PgRegistry::rekey_master(&w.database, &w.old, &w.new, 1),
             Ok(()),
             "a rotation that reads one row at a time"
         );
@@ -921,7 +932,7 @@ mod on_a_server {
         assert_eq!(read(&registry), before, "every row was moved");
         assert_eq!(
             uses(&w.db),
-            [format!("{} 4 {}", hex(&w.new.id().0), nanos(now()))],
+            [format!("{} 4 {}", hex(&w.new.id().0), "db")],
             "and every tenant key counted"
         );
     }
@@ -1068,19 +1079,21 @@ mod on_a_server {
     }
 
     #[test]
-    fn the_time_of_the_rotation_is_the_one_given() {
+    /// The command's host clock may not be the servers': the time of the
+    /// rotation, which the removals after it are judged against, is the
+    /// database's.
+    fn the_time_of_the_rotation_is_the_database_s() {
         let w = world();
         fill(&w);
-        let at = OffsetDateTime::from_unix_timestamp(T0 + 86_400).expect("a time");
         assert_eq!(
-            PgRegistry::rekey_master(&w.database, &w.old, &w.new, at, BATCH),
+            PgRegistry::rekey_master(&w.database, &w.old, &w.new, BATCH),
             Ok(()),
-            "a rotation a day later"
+            "the rotation is made"
         );
         assert_eq!(
             uses(&w.db),
-            [format!("{} 4 {}", hex(&w.new.id().0), nanos(at))],
-            "the new key is in use since the time given, not the clock's"
+            [format!("{} 4 db", hex(&w.new.id().0))],
+            "the new key is in use since the database's clock"
         );
     }
 
@@ -1093,7 +1106,7 @@ mod on_a_server {
         let before = state(&w.db);
         let stranger = Key::generate().expect("a key");
         assert_eq!(
-            PgRegistry::rekey_master(&w.database, &stranger, &w.new, now(), BATCH),
+            PgRegistry::rekey_master(&w.database, &stranger, &w.new, BATCH),
             Err(TenantError::WrongKey),
             "the registry is under neither key"
         );
@@ -1111,7 +1124,7 @@ mod on_a_server {
         fill(&w);
         let before = state(&w.db);
         assert_eq!(
-            PgRegistry::rekey_master(&w.database, &w.old, &w.new, now(), 0),
+            PgRegistry::rekey_master(&w.database, &w.old, &w.new, 0),
             Err(TenantError::Io),
             "a statement must read a row"
         );
@@ -1130,7 +1143,7 @@ mod on_a_server {
         let before = state(&w.db);
         for batch in [-1, i64::MIN] {
             assert_eq!(
-                PgRegistry::rekey_master(&w.database, &w.old, &w.new, now(), batch),
+                PgRegistry::rekey_master(&w.database, &w.old, &w.new, batch),
                 Err(TenantError::Io),
                 "a batch of {batch} rows"
             );
@@ -1147,7 +1160,7 @@ mod on_a_server {
     fn a_batch_of_no_row_is_refused_before_a_database_is_opened_for_the_first_time() {
         let w = world();
         assert_eq!(
-            PgRegistry::rekey_master(&w.database, &w.old, &w.new, now(), 0),
+            PgRegistry::rekey_master(&w.database, &w.old, &w.new, 0),
             Err(TenantError::Io),
             "a statement must read a row"
         );
@@ -1170,7 +1183,7 @@ mod on_a_server {
         let registry = open(&w, &w.old).expect("the registry opens");
         let before = state(&w.db);
         assert_eq!(
-            registry.rotate(&w.old, &w.new, now(), 0),
+            registry.rotate(&w.old, &w.new, 0),
             Err(TenantError::Io),
             "a cursor that reads no row would move the key's id and no value"
         );
@@ -1391,7 +1404,7 @@ mod on_a_server {
         let before = state(&w.db);
         registry.fail_commit(1, CommitError::RolledBack);
         assert_eq!(
-            registry.rotate(&w.old, &w.new, now(), BATCH),
+            registry.rotate(&w.old, &w.new, BATCH),
             Err(TenantError::Io),
             "the commit failed"
         );
@@ -1401,7 +1414,7 @@ mod on_a_server {
             "the one transaction kept nothing"
         );
         assert_eq!(
-            registry.rotate(&w.old, &w.new, now(), BATCH),
+            registry.rotate(&w.old, &w.new, BATCH),
             Ok(()),
             "the next commit is kept"
         );
@@ -1475,7 +1488,7 @@ mod on_a_server {
         );
         let before = state(&w.db);
         assert_eq!(
-            registry.rotate(&w.old, &w.new, now(), BATCH),
+            registry.rotate(&w.old, &w.new, BATCH),
             Err(TenantError::WrongKey),
             "the id is compared again with the lock held"
         );
@@ -1500,7 +1513,7 @@ mod on_a_server {
         );
         assert_eq!(
             uses(&w.db),
-            [format!("{} 0 {}", hex(&w.new.id().0), nanos(now()))],
+            [format!("{} 0 {}", hex(&w.new.id().0), "db")],
             "the new master key has wrapped no key yet"
         );
         assert_eq!(records(&w.db).len(), 1, "the rotation is recorded");
@@ -1589,7 +1602,7 @@ mod on_a_server {
         assert_eq!(nulls(&w.db), ["t t t t"], "and has none after");
         assert_eq!(
             uses(&w.db),
-            [format!("{} 4 {}", hex(&w.new.id().0), nanos(now()))],
+            [format!("{} 4 {}", hex(&w.new.id().0), "db")],
             "a pending key that is not there is not counted"
         );
     }
@@ -1682,7 +1695,7 @@ mod on_a_server {
         fill(&w);
         let before = filled(&w);
         assert_eq!(
-            PgRegistry::rekey_master(&w.database, &w.old, &w.new, now(), 3),
+            PgRegistry::rekey_master(&w.database, &w.old, &w.new, 3),
             Ok(()),
             "three tenants, three users, three memberships, three settings"
         );
@@ -1699,7 +1712,7 @@ mod on_a_server {
         fill(&w);
         let before = filled(&w);
         assert_eq!(
-            PgRegistry::rekey_master(&w.database, &w.old, &w.new, now(), 2),
+            PgRegistry::rekey_master(&w.database, &w.old, &w.new, 2),
             Ok(()),
             "the third row is in a second batch, and a table of two rows in one"
         );
@@ -1710,7 +1723,7 @@ mod on_a_server {
         );
         assert_eq!(
             uses(&w.db),
-            [format!("{} 4 {}", hex(&w.new.id().0), nanos(now()))],
+            [format!("{} 4 {}", hex(&w.new.id().0), "db")],
             "the keys of both batches are counted"
         );
     }
@@ -1729,7 +1742,7 @@ mod on_a_server {
         assert_eq!(rotate(&w), Ok(()), "the rotation is made");
         assert_eq!(
             uses(&w.db),
-            [format!("{} 4 {}", hex(&w.new.id().0), nanos(now()))],
+            [format!("{} 4 {}", hex(&w.new.id().0), "db")],
             "the new master key alone is in use"
         );
     }
@@ -1762,12 +1775,12 @@ mod on_a_server {
         fill(&w);
         let before = state(&w.db);
         assert_eq!(
-            PgRegistry::rekey_master(&w.database, &w.old, &w.old, now(), BATCH),
+            PgRegistry::rekey_master(&w.database, &w.old, &w.old, BATCH),
             Ok(()),
             "the registry is under the new key already"
         );
         assert_eq!(
-            PgRegistry::rekey_master(&w.database, &w.new, &w.old, now(), BATCH),
+            PgRegistry::rekey_master(&w.database, &w.new, &w.old, BATCH),
             Ok(()),
             "whatever the old key is said to be"
         );
@@ -1875,7 +1888,7 @@ mod on_a_server {
         let registry = open(&w, &w.old).expect("the registry opens");
         registry.fail_commit(1, CommitError::Unknown);
         assert_eq!(
-            registry.rotate(&w.old, &w.new, now(), BATCH),
+            registry.rotate(&w.old, &w.new, BATCH),
             Err(TenantError::Io),
             "the commit got no answer"
         );
@@ -1957,7 +1970,7 @@ mod on_a_server {
         assert_eq!(rotate(&w), Ok(()), "another run makes the rotation");
         let before = state(&w.db);
         assert_eq!(
-            registry.rotate(&w.old, &w.new, now(), BATCH),
+            registry.rotate(&w.old, &w.new, BATCH),
             Ok(()),
             "the id, compared with the lock held, is the new key's"
         );

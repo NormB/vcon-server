@@ -64,14 +64,19 @@ CREATE POLICY tenant_rows ON vcon.pending_file
     USING (tenant = vcon.tenant()) WITH CHECK (tenant = vcon.tenant());
 GRANT SELECT, INSERT, DELETE ON vcon.pending_file TO vcon_app;
 
--- From this version the time of a row of vcon.pending_write,
--- vcon.pending_tenant and vcon.pending_file is the database's now(), in
--- nanoseconds, written by the statement that adds the row, and recovery
--- compares it with the database's now(): servers whose host clocks differ
--- by more than the write lease agree on which write is under way. No
+-- From this version every time one server writes and another judges is
+-- the database's clock: the reading a transaction takes in the batch that
+-- begins it (clock_timestamp(), after the tenant's lock), in nanoseconds,
+-- one reading for all the transaction writes and judges. That is the time
+-- of a row of vcon.pending_write, vcon.pending_tenant and
+-- vcon.pending_file; a version's and a vCon's store time; the time a pack
+-- file is unnamed; the time a manifest is written; a session's start,
+-- last sight and limits; an access key's expiry and last use; the start
+-- of a tenant key's and of the master key's use; and the time of an audit
+-- record. Servers whose host clocks differ agree on each of them. No
 -- statement here changes a row: a row a release before this one wrote
--- has the time of its server's clock, and is a leftover once that time
--- is the write lease or more from the database's now().
+-- keeps the time of its server's clock, and is judged by the database's
+-- clock from this version on.
 
 -- Several servers on one database share two jobs that one of them does
 -- for all: the purge sweep, with the recovery that runs before it, and

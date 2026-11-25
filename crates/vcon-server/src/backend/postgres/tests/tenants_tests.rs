@@ -296,6 +296,27 @@ mod on_a_server {
             );
         }
 
+        /// Makes the store times of `tenant`'s versions and vCons `by`
+        /// older, as the schema's owner: what that much time passing on
+        /// the database's clock, which a purge judges them by, does.
+        fn stored_earlier(&self, tenant: TenantId, by: time::Duration) {
+            let by = by.whole_nanoseconds();
+            let sql = format!(
+                "UPDATE vcon.version SET stored_at = stored_at - {by}; \
+                 UPDATE vcon.vcon SET stored_at = stored_at - {by}"
+            );
+            wait(async {
+                let owner = self.db.admin().await;
+                owner
+                    .batch_execute("SET ROLE vcon_owner")
+                    .await
+                    .expect("the owner role");
+                in_scope(&owner, &tenant.to_string(), &sql)
+                    .await
+                    .unwrap_or_else(|e| panic!("{sql}: {e}"));
+            });
+        }
+
         /// Runs `sql` as the schema's owner.
         fn as_owner(&self, sql: &str) {
             wait(async {
@@ -895,6 +916,7 @@ mod on_a_server {
             .delete(&who, uuid, Retention::Days(1))
             .expect("deleted");
         clock.set(conformance::START + time::Duration::days(3));
+        w.stored_earlier(id, time::Duration::days(3));
         let ttl = crate::serve::lease_for(std::time::Duration::from_secs(3_600));
         assert_eq!(
             crate::serve::lead_sweep(&first, Retention::Days(1), ttl, &|| false),
@@ -1457,8 +1479,10 @@ mod on_a_server {
 
     /// A tenant of each name, each with one vCon deleted under a day's
     /// retention at the first server's clock's start; the clock is then
-    /// set three days on, so a sweep purges every one of them.
+    /// set three days on, and the store times made three days older on
+    /// the database's clock, so a sweep purges every one of them.
     fn due<const N: usize>(
+        w: &World,
         tenants: &Tenants,
         clock: &TestClock,
         names: [&str; N],
@@ -1479,6 +1503,9 @@ mod on_a_server {
             id
         });
         clock.set(conformance::START + time::Duration::days(3));
+        for id in ids {
+            w.stored_earlier(id, time::Duration::days(3));
+        }
         ids
     }
 
@@ -1486,7 +1513,7 @@ mod on_a_server {
     fn a_sweep_whose_lease_the_database_refuses_at_its_start_does_not_run() {
         let w = world();
         let (_one, first, clock) = w.serve_clocked();
-        let [id] = due(&first, &clock, ["acme"]);
+        let [id] = due(&w, &first, &clock, ["acme"]);
         refuse_leases(&w);
         let ttl = crate::serve::lease_for(std::time::Duration::from_secs(3_600));
         assert_eq!(
@@ -1511,7 +1538,7 @@ mod on_a_server {
     fn a_sweep_stops_at_the_tenant_where_the_database_refused_to_renew_its_lease() {
         let w = world();
         let (_one, first, clock) = w.serve_clocked();
-        let [a, b] = due(&first, &clock, ["a-first", "b-second"]);
+        let [a, b] = due(&w, &first, &clock, ["a-first", "b-second"]);
         let ttl = crate::serve::lease_for(std::time::Duration::from_secs(3_600));
         let mut asked = 0;
         let report = crate::serve::sweep_while(&first, Retention::Days(1), &mut || {
@@ -1631,7 +1658,7 @@ mod on_a_server {
     fn a_database_that_cannot_be_reached_at_the_sweep_s_start_runs_no_sweep() {
         let w = world();
         let (_one, first, clock) = w.serve_clocked();
-        let [id] = due(&first, &clock, ["acme"]);
+        let [id] = due(&w, &first, &clock, ["acme"]);
         let name = w.db.name.clone();
         wait(async {
             let tester = w.db.admin().await;
@@ -1661,4 +1688,6 @@ mod on_a_server {
         });
         assert_eq!(w.rows(id, "version"), 1, "nothing was purged");
     }
+
+    mod clocks;
 }

@@ -240,8 +240,12 @@ impl Store {
                 tx.set_place(*version, to.file, *place)?;
             }
         }
+        // The pack lease's holder, which may be another server, removes
+        // each file once the grace has passed since this time: both read
+        // the catalog's clock.
+        let unnamed_at = self.now_in(tx.as_mut())?;
         for &file in &copied.from {
-            tx.unname_pack_file(file, nanos(self.clock.now()))?;
+            tx.unname_pack_file(file, unnamed_at)?;
         }
         tx.allocate_manifest()?;
         match tx.commit() {

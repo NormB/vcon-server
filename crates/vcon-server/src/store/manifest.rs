@@ -19,7 +19,7 @@ use std::time::Duration;
 use time::format_description::well_known::Rfc3339;
 
 use super::{Store, StoreError, commit, io, read_failed};
-use crate::clock::nanos;
+use crate::clock::{from_nanos, nanos};
 
 /// The format written in each manifest.
 pub(crate) const FORMAT: &str = "vcon-server.parquet-storage/1";
@@ -41,8 +41,14 @@ impl Store {
         // not at the end of the loop, whose body takes the catalog again.
         let unpublished = self.read(|tx| tx.unpublished_manifests())?;
         for seq in unpublished {
-            let (files, live) = self.read(|tx| Ok((tx.named_files()?, tx.live_versions()?)))?;
-            let now = self.clock.now();
+            // The time a manifest is marked written by is the catalog's
+            // clock, which the server that prunes manifests, perhaps
+            // another one, judges it by.
+            let (files, live, now) = self.read(|tx| {
+                let now = self.now_in(tx.as_mut())?;
+                Ok((tx.named_files()?, tx.live_versions()?, now))
+            })?;
+            let now = from_nanos(now).ok_or(StoreError::Damaged)?;
             let listed: Vec<serde_json::Value> = files
                 .iter()
                 .map(|(file, info, rows)| {
@@ -142,8 +148,10 @@ impl Store {
             return Ok(());
         };
         // A manifest is removed only once the rows read are durable.
-        let written = self.read(|tx| tx.published_manifests())?;
-        let now = nanos(self.clock.now());
+        let (written, now) = self.read(|tx| {
+            let now = self.now_in(tx.as_mut())?;
+            Ok((tx.published_manifests()?, now))
+        })?;
         let grace = grace.map(|g| i64::try_from(g.as_nanos()).unwrap_or(i64::MAX));
         for pair in written.windows(2) {
             let ((seq, _), (_, next_at)) = (pair[0], pair[1]);
