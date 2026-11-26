@@ -88,8 +88,12 @@ impl Tenants {
         let rows = self.registry.snapshot()?.tenants()?;
         let mut order = KeyOrder::default();
         for row in rows {
-            let (id, wrapped, pending) = (row.id, row.wrapped, row.pending.is_some());
-            if self.wrap.unwrap(id, &wrapped).is_err() {
+            let (id, pending) = (row.id, row.pending.is_some());
+            if self
+                .wrap
+                .unwrap(id, &row.wrapped, row.kek.as_ref())
+                .is_err()
+            {
                 order.wrapped_elsewhere += 1;
                 continue;
             }

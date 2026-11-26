@@ -17,9 +17,10 @@ fn mlock_a_key_is_refused_when_its_memory_cannot_be_locked() {
     let backend = FileWrap::new(Key::generate().expect("master key"));
     let backend_wrapped = backend
         .wrap(tenant, &Key::generate().expect("key"))
-        .expect("wraps");
+        .expect("wraps")
+        .key;
     assert!(
-        backend.unwrap(tenant, &backend_wrapped).is_ok(),
+        backend.unwrap(tenant, &backend_wrapped, None).is_ok(),
         "the backend unwraps before"
     );
 
@@ -40,7 +41,7 @@ fn mlock_a_key_is_refused_when_its_memory_cannot_be_locked() {
     );
     assert!(
         matches!(
-            backend.unwrap(tenant, &backend_wrapped),
+            backend.unwrap(tenant, &backend_wrapped, None),
             Err(WrapError::Memory(_))
         ),
         "unwrapped by the backend into memory that is not locked"

@@ -99,10 +99,15 @@ impl Tenants {
                 commit(tx)?;
                 return Err(TenantError::NotFound);
             };
-            let (wrapped, pending) = (row.wrapped, row.pending);
-            let old = self.wrap.unwrap(id, &wrapped).map_err(io)?;
-            let new = match pending {
-                Some(pending) => self.wrap.unwrap(id, &pending).map_err(io)?,
+            let old = self
+                .wrap
+                .unwrap(id, &row.wrapped, row.kek.as_ref())
+                .map_err(io)?;
+            let new = match row.pending {
+                Some(pending) => self
+                    .wrap
+                    .unwrap(id, &pending, row.pending_kek.as_ref())
+                    .map_err(io)?,
                 None => {
                     let master_id = self.wrap.key_id();
                     if envelope::wrap_limit(tx.master_wraps(master_id)?) == WrapLimit::Refuse {
@@ -115,7 +120,7 @@ impl Tenants {
                     // A wrap that fails drops the transaction, and with it
                     // the count above: nothing is pending, nothing counted.
                     let pending = self.wrap.wrap(id, &new).map_err(io)?;
-                    tx.set_pending(id, &pending, None)?;
+                    tx.set_pending(id, &pending.key, pending.kek.as_ref())?;
                     new
                 }
             };

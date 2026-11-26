@@ -8,6 +8,10 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- **Library: a `Backend` trait lets a key backend wrap the root key.**
+  - Effect: `BackendWrap` wraps each tenant key under a key of its own,
+    which the backend wraps; a start refuses a registry under a backend.
+  - Limit: No key backend ships yet.
 - **On-disk format `key-wrap` version 1 records a key a key backend wrapped.**
   - Effect: A reader knows which backend and key opens a wrapped key before
     it asks any backend.
@@ -17,6 +21,11 @@ All notable changes to this project are recorded here. The format follows
 
 ### Changed
 
+- **Library: `KeyWrap::wrap` returns `Wrapped`; `unwrap` takes a key's KEK.**
+  - Effect: `Wrapped` holds the wrapped key and its key-encryption key,
+    `None` from `FileWrap`; `unwrap` takes the row's key-encryption key.
+  - Do: An implementation of `KeyWrap` from 0.4.18 returns `Wrapped` and
+    takes the new argument; `FileWrap` callers pass `None`.
 - **The catalogs move to schema version 11, PostgreSQL to schema version 16.**
   - Effect: A tenant can record a key that a key backend wrapped; every
     tenant there is stays under the master key file.

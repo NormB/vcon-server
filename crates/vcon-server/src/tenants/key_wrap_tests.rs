@@ -20,7 +20,7 @@ use crate::clock::{ManualClock, nanos};
 use crate::envelope::{self, Context, Key};
 use crate::fs::CrashFs;
 use crate::ids::{KeyId, TenantId};
-use crate::key_wrap::{FileWrap, KeyWrap, WrapError};
+use crate::key_wrap::{FileWrap, KeyWrap, WrapError, Wrapped, WrappedKek};
 use crate::store::Caller;
 use crate::store::testing::vcon;
 
@@ -97,7 +97,7 @@ impl KeyWrap for Shared {
         self.0.root.as_ref().unwrap_or_else(|| self.0.inner.root())
     }
 
-    fn wrap(&self, tenant: TenantId, key: &Key) -> Result<Vec<u8>, WrapError> {
+    fn wrap(&self, tenant: TenantId, key: &Key) -> Result<Wrapped, WrapError> {
         self.0.calls.lock().expect("calls").push(Call::Wrap(tenant));
         match self.0.wraps.lock().expect("wraps").pop_front().flatten() {
             Some(fail) => Err(fail.error()),
@@ -105,7 +105,12 @@ impl KeyWrap for Shared {
         }
     }
 
-    fn unwrap(&self, tenant: TenantId, wrapped: &[u8]) -> Result<Key, WrapError> {
+    fn unwrap(
+        &self,
+        tenant: TenantId,
+        wrapped: &[u8],
+        kek: Option<&WrappedKek>,
+    ) -> Result<Key, WrapError> {
         self.0
             .calls
             .lock()
@@ -120,7 +125,7 @@ impl KeyWrap for Shared {
             .flatten()
         {
             Some(fail) => Err(fail.error()),
-            None => self.0.inner.unwrap(tenant, wrapped),
+            None => self.0.inner.unwrap(tenant, wrapped, kek),
         }
     }
 }

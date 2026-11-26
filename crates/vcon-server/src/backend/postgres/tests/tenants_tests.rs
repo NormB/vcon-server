@@ -528,6 +528,73 @@ mod on_a_server {
         );
     }
 
+    /// Names a registry root a key backend wraps in the database, as a
+    /// registry over that backend would have.
+    fn root_wrapped_by_a_backend(w: &World) {
+        use crate::key_wrap::blob::{BackendKind, Blob, WrapRef};
+        let reference = WrapRef::new(BackendKind::Pkcs11, "vcon-1").expect("a reference");
+        let blob = Blob::new(reference, vec![1, 2, 3])
+            .expect("a blob")
+            .encode();
+        let hex: String = blob.iter().map(|b| format!("{b:02x}")).collect();
+        // The table is behind the registry's row security: written in its
+        // scope.
+        super::super::registry_tests::on_a_server::as_owner(
+            &w.db,
+            &format!(
+                "INSERT INTO vcon.registry_key (catalog_key_id, wrapped_root) \
+                 VALUES ('\\x0102030405060708', '\\x{hex}')"
+            ),
+        );
+    }
+
+    #[test]
+    fn the_master_key_file_refuses_a_database_whose_root_a_backend_wraps() {
+        let w = world();
+        root_wrapped_by_a_backend(&w);
+        let catalogs = catalog_for(&w.catalog, Sharing::Serve).expect("connects");
+        let refused = Tenants::open_in(
+            &w.data(),
+            w.master("master.key"),
+            Arc::new(OsFs),
+            TestClock::at(conformance::START),
+            ObjectPlace::Local,
+            &catalogs,
+        )
+        .err();
+        assert!(
+            matches!(
+                refused,
+                Some(RegistryError::RootWrapped(
+                    Some(crate::key_wrap::blob::BackendKind::Pkcs11),
+                    "vcon.registry_key"
+                ))
+            ),
+            "the backend that wraps the root is named: {refused:?}"
+        );
+        assert_eq!(w.registry_rows("admin_audit_key"), 0, "nothing was written");
+    }
+
+    #[test]
+    fn a_command_beside_refuses_a_database_whose_root_a_backend_wraps() {
+        let w = world();
+        root_wrapped_by_a_backend(&w);
+        let catalogs = catalog_for(&w.catalog, Sharing::Beside).expect("connects");
+        let refused = Tenants::open_beside_in(
+            &w.data(),
+            w.master("master.key"),
+            Arc::new(OsFs),
+            TestClock::at(conformance::START),
+            ObjectPlace::Local,
+            &catalogs,
+        )
+        .err();
+        assert!(
+            matches!(refused, Some(RegistryError::RootWrapped(Some(_), _))),
+            "refused beside a server too: {refused:?}"
+        );
+    }
+
     #[test]
     fn a_registry_that_cannot_be_read_is_an_error_of_the_database() {
         let w = world();

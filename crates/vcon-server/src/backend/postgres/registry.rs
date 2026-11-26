@@ -631,6 +631,25 @@ impl Registry for PgRegistry {
     }
 }
 
+impl PgRegistry {
+    /// The `key-wrap` blob of the registry root in `database`, when a key
+    /// backend wraps the root; None when the master key is the root. It is
+    /// read before the registry opens, under no key: the registry's keys
+    /// derive from the root.
+    pub(crate) fn wrapped_root(database: &Database) -> Result<Option<Vec<u8>>, TenantError> {
+        let lease = database.lease().map_err(io)?;
+        let tx = PgTx::begin(database, lease, REGISTRY, None, Begin::Read);
+        let rows = tx
+            .query("SELECT wrapped_root FROM vcon.registry_key", &[])
+            .map_err(io)?;
+        Ok(rows
+            .first()
+            .map(|row| col::<Option<Vec<u8>>>(row, 0))
+            .transpose()?
+            .flatten())
+    }
+}
+
 /// A transaction on the registry, rolled back when dropped without a
 /// commit.
 struct PgRegistryTx<'a>(PgTx<'a>);

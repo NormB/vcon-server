@@ -321,6 +321,9 @@ once, for every entry here:
 The site is built from the `main` branch, so a page can describe what no
 release holds yet. Release 0.4.18 does not have these:
 
+- **The `Backend` trait.** `BackendWrap` puts a key backend (a KMS or an
+  HSM) at the root of the key hierarchy and wraps each tenant key under a
+  key of its own. No key backend ships yet.
 - **The `key-wrap` format.** Version 1 of the on-disk format that records
   a key a key backend wrapped, with the backend and its key named. No
   release writes it yet.

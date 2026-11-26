@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use super::{FileWrap, KeyWrap, WrapError};
+use super::{FileWrap, KeyWrap, WrapError, WrappedKek};
 use crate::envelope::{self, Context, FORMAT, Key, SEALED_OVERHEAD};
 use crate::ids::{TenantId, VersionId};
 
@@ -63,7 +63,7 @@ fn a_wrapped_key_opens_with_the_envelope_as_before() {
     let (_dir, path) = master_file();
     let (backend, master) = backend_and_master(&path);
     let tenant_key = key();
-    let wrapped = backend.wrap(TENANT, &tenant_key).expect("wraps");
+    let wrapped = backend.wrap(TENANT, &tenant_key).expect("wraps").key;
     let opened = envelope::unwrap(&master, &tenant_ctx(TENANT), &wrapped)
         .expect("the envelope opens what the backend wrapped");
     assert_eq!(opened.id(), tenant_key.id(), "the same tenant key");
@@ -77,7 +77,7 @@ fn a_key_the_envelope_wrapped_unwraps_through_the_backend() {
     // What every release before the trait wrote into a tenant's row.
     let wrapped = envelope::wrap(&master, &tenant_ctx(TENANT), &tenant_key);
     let opened = backend
-        .unwrap(TENANT, &wrapped)
+        .unwrap(TENANT, &wrapped, None)
         .expect("the backend opens what the envelope wrapped");
     assert_eq!(opened.id(), tenant_key.id(), "the same tenant key");
 }
@@ -87,8 +87,8 @@ fn a_wrapped_key_unwraps_to_the_same_key() {
     let (_dir, path) = master_file();
     let backend = FileWrap::new(load(&path));
     let tenant_key = key();
-    let wrapped = backend.wrap(TENANT, &tenant_key).expect("wraps");
-    let opened = backend.unwrap(TENANT, &wrapped).expect("unwraps");
+    let wrapped = backend.wrap(TENANT, &tenant_key).expect("wraps").key;
+    let opened = backend.unwrap(TENANT, &wrapped, None).expect("unwraps");
     assert_eq!(opened.id(), tenant_key.id(), "the same tenant key");
 }
 
@@ -132,11 +132,11 @@ fn two_wraps_of_one_key_differ_and_both_unwrap() {
     let (_dir, path) = master_file();
     let backend = FileWrap::new(load(&path));
     let tenant_key = key();
-    let first = backend.wrap(TENANT, &tenant_key).expect("wraps");
-    let second = backend.wrap(TENANT, &tenant_key).expect("wraps");
+    let first = backend.wrap(TENANT, &tenant_key).expect("wraps").key;
+    let second = backend.wrap(TENANT, &tenant_key).expect("wraps").key;
     assert_ne!(first, second, "each wrap draws its own nonce");
     for wrapped in [&first, &second] {
-        let opened = backend.unwrap(TENANT, wrapped).expect("unwraps");
+        let opened = backend.unwrap(TENANT, wrapped, None).expect("unwraps");
         assert_eq!(opened.id(), tenant_key.id(), "the same tenant key");
     }
 }
@@ -145,7 +145,7 @@ fn two_wraps_of_one_key_differ_and_both_unwrap() {
 fn a_wrapped_key_has_the_envelopes_layout() {
     let (_dir, path) = master_file();
     let backend = FileWrap::new(load(&path));
-    let wrapped = backend.wrap(TENANT, &key()).expect("wraps");
+    let wrapped = backend.wrap(TENANT, &key()).expect("wraps").key;
     assert_eq!(
         wrapped.len(),
         32 + SEALED_OVERHEAD,
@@ -164,8 +164,8 @@ fn the_backend_wraps_and_unwraps_from_several_threads() {
             std::thread::spawn(move || {
                 let tenant = TenantId([n; 16]);
                 let tenant_key = key();
-                let wrapped = backend.wrap(tenant, &tenant_key).expect("wraps");
-                let opened = backend.unwrap(tenant, &wrapped).expect("unwraps");
+                let wrapped = backend.wrap(tenant, &tenant_key).expect("wraps").key;
+                let opened = backend.unwrap(tenant, &wrapped, None).expect("unwraps");
                 opened.id() == tenant_key.id()
             })
         })
@@ -200,9 +200,10 @@ fn a_key_wrapped_under_another_master_is_damaged() {
     let backend = FileWrap::new(load(&path));
     let wrapped = FileWrap::new(load(&other_path))
         .wrap(TENANT, &key())
-        .expect("wraps");
+        .expect("wraps")
+        .key;
     assert!(
-        is_damaged(backend.unwrap(TENANT, &wrapped)),
+        is_damaged(backend.unwrap(TENANT, &wrapped, None)),
         "another master key's wrap"
     );
 }
@@ -211,9 +212,9 @@ fn a_key_wrapped_under_another_master_is_damaged() {
 fn a_key_wrapped_for_another_tenant_is_damaged() {
     let (_dir, path) = master_file();
     let backend = FileWrap::new(load(&path));
-    let wrapped = backend.wrap(TENANT, &key()).expect("wraps");
+    let wrapped = backend.wrap(TENANT, &key()).expect("wraps").key;
     assert!(
-        is_damaged(backend.unwrap(TenantId([8; 16]), &wrapped)),
+        is_damaged(backend.unwrap(TenantId([8; 16]), &wrapped, None)),
         "a row's key moved to another tenant does not open"
     );
 }
@@ -222,17 +223,20 @@ fn a_key_wrapped_for_another_tenant_is_damaged() {
 fn an_empty_blob_is_damaged() {
     let (_dir, path) = master_file();
     let backend = FileWrap::new(load(&path));
-    assert!(is_damaged(backend.unwrap(TENANT, &[])), "an empty blob");
+    assert!(
+        is_damaged(backend.unwrap(TENANT, &[], None)),
+        "an empty blob"
+    );
 }
 
 #[test]
 fn every_shorter_blob_is_damaged() {
     let (_dir, path) = master_file();
     let backend = FileWrap::new(load(&path));
-    let wrapped = backend.wrap(TENANT, &key()).expect("wraps");
+    let wrapped = backend.wrap(TENANT, &key()).expect("wraps").key;
     for len in 0..wrapped.len() {
         assert!(
-            is_damaged(backend.unwrap(TENANT, &wrapped[..len])),
+            is_damaged(backend.unwrap(TENANT, &wrapped[..len], None)),
             "a blob cut to {len} bytes"
         );
     }
@@ -242,12 +246,12 @@ fn every_shorter_blob_is_damaged() {
 fn changing_any_byte_is_damaged() {
     let (_dir, path) = master_file();
     let backend = FileWrap::new(load(&path));
-    let wrapped = backend.wrap(TENANT, &key()).expect("wraps");
+    let wrapped = backend.wrap(TENANT, &key()).expect("wraps").key;
     for i in 0..wrapped.len() {
         let mut changed = wrapped.clone();
         changed[i] ^= 0x01;
         assert!(
-            is_damaged(backend.unwrap(TENANT, &changed)),
+            is_damaged(backend.unwrap(TENANT, &changed, None)),
             "byte {i} changed"
         );
     }
@@ -260,7 +264,7 @@ fn a_blob_holding_other_than_32_bytes_is_damaged() {
     for len in [0, 16, 31, 33, 64] {
         let sealed = envelope::seal(&master, &tenant_ctx(TENANT), &vec![5; len]);
         assert!(
-            is_damaged(backend.unwrap(TENANT, &sealed)),
+            is_damaged(backend.unwrap(TENANT, &sealed, None)),
             "a sealed value of {len} bytes is not a key"
         );
     }
@@ -270,11 +274,11 @@ fn a_blob_holding_other_than_32_bytes_is_damaged() {
 fn a_blob_of_another_format_is_damaged() {
     let (_dir, path) = master_file();
     let backend = FileWrap::new(load(&path));
-    let mut wrapped = backend.wrap(TENANT, &key()).expect("wraps");
+    let mut wrapped = backend.wrap(TENANT, &key()).expect("wraps").key;
     for format in [0, 2, 0xff] {
         wrapped[0] = format;
         assert!(
-            is_damaged(backend.unwrap(TENANT, &wrapped)),
+            is_damaged(backend.unwrap(TENANT, &wrapped, None)),
             "format byte {format}"
         );
     }
@@ -291,7 +295,7 @@ fn a_data_key_wrapped_for_a_version_is_damaged() {
     };
     let wrapped = envelope::wrap(&master, &version, &key());
     assert!(
-        is_damaged(backend.unwrap(TENANT, &wrapped)),
+        is_damaged(backend.unwrap(TENANT, &wrapped, None)),
         "a version's context is not a tenant's"
     );
 }
@@ -345,15 +349,15 @@ fn the_all_zero_tenant_id_is_bound_like_any_other() {
     let (_dir, path) = master_file();
     let backend = FileWrap::new(load(&path));
     let zero = TenantId([0; 16]);
-    let wrapped = backend.wrap(zero, &key()).expect("wraps");
+    let wrapped = backend.wrap(zero, &key()).expect("wraps").key;
     assert!(
-        backend.unwrap(zero, &wrapped).is_ok(),
+        backend.unwrap(zero, &wrapped, None).is_ok(),
         "opens for its own tenant"
     );
     let mut one = [0; 16];
     one[15] = 1;
     assert!(
-        is_damaged(backend.unwrap(TenantId(one), &wrapped)),
+        is_damaged(backend.unwrap(TenantId(one), &wrapped, None)),
         "not for a tenant one bit away"
     );
 }
@@ -364,10 +368,11 @@ fn a_key_wrapped_before_a_restart_unwraps_after_it() {
     let tenant_key = key();
     let wrapped = FileWrap::new(load(&path))
         .wrap(TENANT, &tenant_key)
-        .expect("wraps");
+        .expect("wraps")
+        .key;
     // The master key read again from its file, as the next start does.
     let opened = FileWrap::new(load(&path))
-        .unwrap(TENANT, &wrapped)
+        .unwrap(TENANT, &wrapped, None)
         .expect("unwraps after a restart");
     assert_eq!(opened.id(), tenant_key.id(), "the same tenant key");
 }
@@ -392,9 +397,9 @@ fn a_tenant_ids_byte_order_is_bound() {
     }
     let mut reversed = bytes;
     reversed.reverse();
-    let wrapped = backend.wrap(TenantId(bytes), &key()).expect("wraps");
+    let wrapped = backend.wrap(TenantId(bytes), &key()).expect("wraps").key;
     assert!(
-        is_damaged(backend.unwrap(TenantId(reversed), &wrapped)),
+        is_damaged(backend.unwrap(TenantId(reversed), &wrapped, None)),
         "the same bytes in another order are another tenant"
     );
 }
@@ -403,10 +408,10 @@ fn a_tenant_ids_byte_order_is_bound() {
 fn a_blob_with_bytes_appended_is_damaged() {
     let (_dir, path) = master_file();
     let backend = FileWrap::new(load(&path));
-    let mut wrapped = backend.wrap(TENANT, &key()).expect("wraps");
+    let mut wrapped = backend.wrap(TENANT, &key()).expect("wraps").key;
     wrapped.push(0);
     assert!(
-        is_damaged(backend.unwrap(TENANT, &wrapped)),
+        is_damaged(backend.unwrap(TENANT, &wrapped, None)),
         "one byte more"
     );
 }
@@ -416,11 +421,96 @@ fn an_unwrapped_key_outlives_its_backend() {
     let (_dir, path) = master_file();
     let backend = FileWrap::new(load(&path));
     let tenant_key = key();
-    let wrapped = backend.wrap(TENANT, &tenant_key).expect("wraps");
-    let opened = backend.unwrap(TENANT, &wrapped).expect("unwraps");
+    let wrapped = backend.wrap(TENANT, &tenant_key).expect("wraps").key;
+    let opened = backend.unwrap(TENANT, &wrapped, None).expect("unwraps");
     drop(backend);
     // The key is in a page of its own: it still wraps and unwraps.
     let inner = envelope::wrap(&opened, &tenant_ctx(TENANT), &tenant_key);
     let again = envelope::unwrap(&opened, &tenant_ctx(TENANT), &inner).expect("still works");
     assert_eq!(again.id(), tenant_key.id(), "the unwrapped key is whole");
+}
+
+/// A key-encryption key as a key backend would have recorded it.
+fn backend_kek() -> WrappedKek {
+    WrappedKek {
+        wrap_ref: "pkcs11:vcon-1".to_owned(),
+        blob: vec![1, 6, 0, 7],
+    }
+}
+
+#[test]
+fn the_file_backend_records_no_key_encryption_key() {
+    let (_dir, path) = master_file();
+    let wrapped = FileWrap::new(load(&path))
+        .wrap(TENANT, &key())
+        .expect("wraps");
+    assert_eq!(
+        wrapped.kek, None,
+        "the master key file wraps the key itself"
+    );
+}
+
+#[test]
+fn a_key_under_a_key_backend_is_elsewhere_for_the_file_backend() {
+    let (_dir, path) = master_file();
+    let backend = FileWrap::new(load(&path));
+    let result = backend.unwrap(TENANT, &[1, 2, 3], Some(&backend_kek()));
+    assert!(
+        matches!(
+            &result,
+            Err(WrapError::Elsewhere { wrap_ref: Some(r) }) if r == "pkcs11:vcon-1"
+        ),
+        "the key is under the backend's key: {result:?}"
+    );
+}
+
+#[test]
+fn a_key_that_would_open_is_still_elsewhere_when_a_kek_is_named() {
+    // The row names a key-encryption key, so the file backend opens
+    // nothing, even bytes its master key would open.
+    let (_dir, path) = master_file();
+    let backend = FileWrap::new(load(&path));
+    let wrapped = backend.wrap(TENANT, &key()).expect("wraps").key;
+    let result = backend.unwrap(TENANT, &wrapped, Some(&backend_kek()));
+    assert!(
+        matches!(result, Err(WrapError::Elsewhere { wrap_ref: Some(_) })),
+        "a row that names a key-encryption key is not opened under the master key: {result:?}"
+    );
+}
+
+#[test]
+fn elsewhere_names_the_key_and_no_bytes() {
+    let error = WrapError::Elsewhere {
+        wrap_ref: Some("pkcs11:vcon-1".to_owned()),
+    };
+    assert_eq!(
+        error.to_string(),
+        "the key is wrapped under the key backend key pkcs11:vcon-1, not under this backend's key",
+        "the key it is under"
+    );
+    assert!(
+        std::error::Error::source(&error).is_none(),
+        "nothing underneath"
+    );
+    let file = WrapError::Elsewhere { wrap_ref: None };
+    assert_eq!(
+        file.to_string(),
+        "the key is wrapped under the master key file, not under the key backend's key",
+        "the master key file"
+    );
+}
+
+#[test]
+fn a_blob_error_is_the_source_not_the_text() {
+    let error = WrapError::Blob(super::blob::BlobError::UnknownFormat(9));
+    assert_eq!(
+        error.to_string(),
+        "a key-wrap blob could not be read or made",
+        "the error's own text"
+    );
+    assert_eq!(
+        std::error::Error::source(&error).map(ToString::to_string),
+        Some("key-wrap format 9 is not one this build knows".to_owned()),
+        "the format is named underneath"
+    );
 }

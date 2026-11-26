@@ -21,11 +21,14 @@ use crate::envelope::{self, Key, WrapLimit};
 use crate::export::Metadata;
 use crate::fs::Fs;
 use crate::ids::TenantId;
+use crate::key_wrap::blob::{BackendKind, Blob};
 use crate::key_wrap::{FileWrap, KeyWrap};
 use crate::retention::Retention;
 use crate::store::pending::{self, Writers};
 use crate::store::{OpenError, Store};
 
+#[cfg(test)]
+mod backend_wrap_tests;
 mod backup;
 mod examine;
 pub(crate) mod key_life;
@@ -131,9 +134,19 @@ pub enum RegistryError {
     WrongDatabaseKey,
     /// The registry in the catalog database could not be opened, and why.
     Database(String),
+    /// The registry's root key is wrapped by a key backend, of the kind
+    /// its `key-wrap` blob names (None when the blob does not name one this
+    /// build knows), where the second names it is kept, and the master key
+    /// file was given to open it.
+    RootWrapped(Option<BackendKind>, &'static str),
 }
 
 /// What a start says when the catalog database names another master key.
+/// The file of a data directory that holds the registry root's `key-wrap`
+/// blob when a key backend wraps the root. With the master key file as the
+/// root there is none.
+pub(crate) const ROOT_FILE: &str = "registry.key";
+
 pub(crate) const WRONG_DATABASE_KEY: &str = "the master key is not the one the registry in the \
                                              catalog database was made under";
 
@@ -149,6 +162,8 @@ pub enum OpenStep {
     MakeTenantsDir,
     /// Syncing the data directory.
     SyncDataDir,
+    /// Reading the registry root's `key-wrap` blob, registry.key.
+    RootKey,
 }
 
 impl RegistryError {
@@ -177,6 +192,7 @@ impl std::fmt::Display for RegistryError {
                     OpenStep::OpenCatalog => "opening",
                     OpenStep::MakeTenantsDir => "making",
                     OpenStep::SyncDataDir => "syncing",
+                    OpenStep::RootKey => "reading",
                 };
                 write!(f, "{doing} {} failed", path.display())
             }
@@ -185,6 +201,16 @@ impl std::fmt::Display for RegistryError {
             RegistryError::Database(why) => write!(
                 f,
                 "the registry in the PostgreSQL database cannot be opened: {why}"
+            ),
+            RegistryError::RootWrapped(Some(kind), place) => write!(
+                f,
+                "the registry's root key is wrapped by the key backend {kind} ({place}), not \
+                 by the master key file"
+            ),
+            RegistryError::RootWrapped(None, place) => write!(
+                f,
+                "the registry's root key is wrapped by a key backend this build does not know \
+                 ({place}), not by the master key file"
             ),
         }
     }
@@ -197,7 +223,8 @@ impl std::error::Error for RegistryError {
             RegistryError::WrongKey
             | RegistryError::Recovery(_)
             | RegistryError::WrongDatabaseKey
-            | RegistryError::Database(_) => None,
+            | RegistryError::Database(_)
+            | RegistryError::RootWrapped(..) => None,
         }
     }
 }
@@ -215,11 +242,51 @@ pub(crate) fn with_causes(error: &dyn std::error::Error) -> String {
     text
 }
 
+/// The master key file's backend over `master`, for a registry whose root
+/// no key backend wraps. A registry whose root a key backend wraps is
+/// refused, naming the backend, before anything is opened or made.
+fn file_wrap(
+    dir: &Path,
+    master: Key,
+    catalogs: &Catalogs,
+) -> Result<Box<dyn KeyWrap>, RegistryError> {
+    if let Some((blob, place)) = stored_root(dir, catalogs)? {
+        let kind = Blob::decode(&blob).ok().map(|b| b.reference().kind());
+        return Err(RegistryError::RootWrapped(kind, place));
+    }
+    Ok(Box::new(FileWrap::new(master)))
+}
+
+/// The registry root's `key-wrap` blob and where it is kept, when a key
+/// backend wraps the root: registry.key in `dir` for a local registry,
+/// the row of `vcon.registry_key` in the database. A file that is there is
+/// a blob, even an empty one.
+fn stored_root(
+    dir: &Path,
+    catalogs: &Catalogs,
+) -> Result<Option<(Vec<u8>, &'static str)>, RegistryError> {
+    match catalogs {
+        Catalogs::Local => {
+            let path = dir.join(ROOT_FILE);
+            match std::fs::read(&path) {
+                Ok(blob) => Ok(Some((blob, ROOT_FILE))),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(RegistryError::failed(OpenStep::RootKey, path, e)),
+            }
+        }
+        #[cfg(feature = "postgres")]
+        Catalogs::Postgres(database) => Ok(crate::backend::postgres::wrapped_root(database)?
+            .map(|blob| (blob, "vcon.registry_key"))),
+    }
+}
+
 /// Every caller but the two that report it sees what TenantError can say.
 impl From<RegistryError> for TenantError {
     fn from(e: RegistryError) -> TenantError {
         match e {
-            RegistryError::WrongKey | RegistryError::WrongDatabaseKey => TenantError::WrongKey,
+            RegistryError::WrongKey
+            | RegistryError::WrongDatabaseKey
+            | RegistryError::RootWrapped(..) => TenantError::WrongKey,
             RegistryError::Failed { .. } | RegistryError::Database(_) => TenantError::Io,
             RegistryError::Recovery(e) => e,
         }
@@ -372,7 +439,7 @@ impl Tenants {
     ) -> Result<Tenants, RegistryError> {
         let registry = Tenants::opened(
             dir,
-            Box::new(FileWrap::new(master)),
+            file_wrap(dir, master, catalogs)?,
             fs,
             clock,
             false,
@@ -401,7 +468,7 @@ impl Tenants {
     ) -> Result<Tenants, RegistryError> {
         Tenants::opened(
             dir,
-            Box::new(FileWrap::new(master)),
+            file_wrap(dir, master, &Catalogs::Local)?,
             fs,
             clock,
             true,
@@ -422,7 +489,7 @@ impl Tenants {
     ) -> Result<Tenants, RegistryError> {
         Tenants::opened(
             dir,
-            Box::new(FileWrap::new(master)),
+            file_wrap(dir, master, catalogs)?,
             fs,
             clock,
             true,
@@ -686,10 +753,10 @@ impl Tenants {
                 role_cap: None,
                 created_at: now,
                 tenant_key_id: key_id,
-                wrapped: wrapped.clone(),
+                wrapped: wrapped.key.clone(),
                 pending: None,
                 key_since: now,
-                kek: None,
+                kek: wrapped.kek.clone(),
                 pending_kek: None,
             })?;
             self.record(&mut tx, &entry(201, Some(id)))?;
@@ -932,13 +999,15 @@ impl Tenants {
     /// make sure no other Store of the tenant is open: `store` holds the
     /// lock, and `remove` has drained the tenant.
     fn open_store(&self, id: TenantId) -> Result<Store, OpenFailure> {
-        let wrapped = self
+        let row = self
             .registry
             .snapshot()?
             .tenant(id)?
-            .ok_or(TenantError::NotFound)?
-            .wrapped;
-        let tenant_key = self.wrap.unwrap(id, &wrapped).map_err(io)?;
+            .ok_or(TenantError::NotFound)?;
+        let tenant_key = self
+            .wrap
+            .unwrap(id, &row.wrapped, row.kek.as_ref())
+            .map_err(io)?;
         #[cfg(test)]
         {
             let hook = self.hooks.opening.lock().expect("hook").take();

@@ -83,6 +83,20 @@ pub(crate) fn open(
     Ok((Box::new(registry), Box::new(space)))
 }
 
+/// The `key-wrap` blob of the registry root in `database`, when a key
+/// backend wraps the root, read before the registry opens.
+///
+/// # Errors
+///
+/// [`RegistryError::Database`] when `vcon.registry_key` cannot be read.
+pub(crate) fn wrapped_root(
+    database: &std::sync::Arc<Database>,
+) -> Result<Option<Vec<u8>>, RegistryError> {
+    PgRegistry::wrapped_root(database).map_err(|_| {
+        RegistryError::Database("the table vcon.registry_key could not be read".to_owned())
+    })
+}
+
 /// `vcon-server migrate`: applies the migrations this database has not
 /// yet, and says what it did.
 ///

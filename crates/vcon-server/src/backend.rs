@@ -528,14 +528,7 @@ pub struct TenantRow {
     pub pending_kek: Option<WrappedKek>,
 }
 
-/// A tenant's key-encryption key as a key backend wrapped it: the
-/// backend's key as [`crate::key_wrap::blob::WrapRef`] writes it, and the
-/// `key-wrap` blob. A registry keeps both or neither.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WrappedKek {
-    pub wrap_ref: String,
-    pub blob: Vec<u8>,
-}
+pub use crate::key_wrap::WrappedKek;
 
 /// The wrapped key-encryption key of a registry row from its two columns:
 /// None when both are NULL, an error when only one is (a row no build
