@@ -658,10 +658,36 @@ pub fn lead_pack(
 /// Gives up this server's leases, as a server that stops does, so the
 /// next server takes the jobs at once. A lease not given up ends by
 /// itself.
-pub(crate) fn give_up_leases(tenants: &Tenants) {
+///
+/// A give-up that fails (the database refused it, or its commit did not
+/// go through) is made again, up to [`GIVE_UP_TRIES`] times; one still
+/// not made is logged as a warning naming the job, since the next server
+/// then waits for the lease to end by the database's clock. Answers how
+/// many leases were not given up.
+pub(crate) fn give_up_leases(tenants: &Tenants) -> usize {
+    let mut kept = 0;
     for job in [Job::Sweep, Job::Pack] {
-        // Not given up: the lease ends at its time.
-        let _ended = tenants.step_down(job);
+        let given_up = (0..GIVE_UP_TRIES).any(|_| tenants.step_down(job).is_ok());
+        if !given_up {
+            kept += 1;
+            tracing::warn!(
+                job = job_name(job),
+                tries = GIVE_UP_TRIES,
+                "the lease could not be given up: another server takes the job when it ends"
+            );
+        }
+    }
+    kept
+}
+
+/// How many times a stopping server tries to give up each lease.
+pub(crate) const GIVE_UP_TRIES: usize = 3;
+
+/// A job's name in a log line.
+fn job_name(job: Job) -> &'static str {
+    match job {
+        Job::Sweep => "purge sweep",
+        Job::Pack => "pack run",
     }
 }
 

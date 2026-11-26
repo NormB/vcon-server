@@ -936,7 +936,7 @@ mod tests {
     fn a_last_used_write_that_fails_does_not_refuse_the_request() {
         let f = fixture();
         let made = key(&f, KeyLife::Default);
-        f.tenants.registry.fail_commit(1, CommitError::RolledBack);
+        f.tenants.fail_registry_commit(1, CommitError::RolledBack);
         assert!(auth(&f, &made).is_ok(), "accepted all the same");
         assert_eq!(row(&f, made.id).last_used_at, None, "nothing was written");
         f.clock.set(START + Duration::seconds(5));
@@ -952,7 +952,7 @@ mod tests {
     fn a_write_that_fails_is_reported_as_no_write() {
         let f = fixture();
         let made = key(&f, KeyLife::Default);
-        f.tenants.registry.fail_commit(1, CommitError::RolledBack);
+        f.tenants.fail_registry_commit(1, CommitError::RolledBack);
         assert!(
             !f.tenants
                 .key_used(made.id, None, crate::clock::nanos(f.tenants.now())),
@@ -967,7 +967,7 @@ mod tests {
         let t = row(&f, made.id).tenant.expect("a tenant key");
         assert!(auth(&f, &made).is_ok(), "the first request writes the time");
         // The next commit on the registry fails, whichever it is.
-        f.tenants.registry.fail_commit(1, CommitError::RolledBack);
+        f.tenants.fail_registry_commit(1, CommitError::RolledBack);
         f.clock.set(START + Duration::seconds(30));
         assert!(auth(&f, &made).is_ok(), "the second request is accepted");
         assert!(

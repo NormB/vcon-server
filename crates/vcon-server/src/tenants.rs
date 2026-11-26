@@ -1242,6 +1242,12 @@ mod tests {
         pub(crate) fn step_clock(&self, steps: Vec<i64>) {
             *self.hooks.clock_steps.lock().expect("hook") = steps;
         }
+
+        /// Makes the registry's `nth` commit from now (1: the next) fail as
+        /// `how`.
+        pub(crate) fn fail_registry_commit(&self, nth: usize, how: CommitError) {
+            self.registry.fail_commit(nth, how);
+        }
     }
 
     /// A master key kept wrapped, so a test can have it more than once.
@@ -1875,7 +1881,7 @@ mod tests {
         // The wrap count commits first; the second commit, which adds the
         // row, is kept and then reported as failed, as a lost connection
         // reports a commit the database made.
-        f.tenants.registry.fail_commit(2, CommitError::Unknown);
+        f.tenants.fail_registry_commit(2, CommitError::Unknown);
         assert_eq!(
             f.tenants.create(Actor::Cli, "acme", None),
             Err(TenantError::Io),
@@ -1900,7 +1906,7 @@ mod tests {
     #[test]
     fn a_create_whose_commit_rolls_back_leaves_nothing() {
         let f = fixture();
-        f.tenants.registry.fail_commit(2, CommitError::RolledBack);
+        f.tenants.fail_registry_commit(2, CommitError::RolledBack);
         assert_eq!(
             f.tenants.create(Actor::Cli, "acme", None),
             Err(TenantError::Io),

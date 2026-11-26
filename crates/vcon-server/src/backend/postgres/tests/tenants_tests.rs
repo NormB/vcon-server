@@ -1580,7 +1580,11 @@ mod on_a_server {
         let (_two, second) = w.serve();
         assert_eq!(first.lead(Job::Sweep, MINUTE), Ok(true), "the first's");
         w.as_owner("REVOKE DELETE ON vcon.lease FROM vcon_app");
-        crate::serve::give_up_leases(&first);
+        assert_eq!(
+            crate::serve::give_up_leases(&first),
+            2,
+            "neither lease is given up after its tries, and each is logged"
+        );
         assert_eq!(w.registry_rows("lease"), 1, "the lease is still there");
         assert_eq!(
             second.lead(Job::Sweep, MINUTE),
@@ -1596,6 +1600,33 @@ mod on_a_server {
             second.lead(Job::Sweep, MINUTE),
             Ok(true),
             "the next takes it once the database's clock ends it"
+        );
+    }
+
+    /// A stopping server whose give-up does not commit the first time
+    /// tries again, so the next server takes the job at once rather than
+    /// after the lease ends.
+    #[test]
+    fn a_give_up_whose_commit_fails_once_is_made_again() {
+        let w = world();
+        let (_one, first) = w.serve();
+        let (_two, second) = w.serve();
+        assert_eq!(first.lead(Job::Sweep, MINUTE), Ok(true), "the first's");
+        first.fail_registry_commit(1, crate::backend::CommitError::RolledBack);
+        assert_eq!(
+            crate::serve::give_up_leases(&first),
+            0,
+            "every lease is given up"
+        );
+        assert_eq!(
+            w.registry_rows("lease"),
+            0,
+            "the lease is given up at the second try"
+        );
+        assert_eq!(
+            second.lead(Job::Sweep, MINUTE),
+            Ok(true),
+            "and the next server takes it at once"
         );
     }
 
