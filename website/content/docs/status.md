@@ -296,6 +296,16 @@ once, for every entry here:
   changes no audit record. The command holds the database's locks, so it
   runs with every server stopped.
 
+## On `main` only
+
+The site is built from the `main` branch, so a page can describe what no
+release holds yet. Release 0.4.17 does not have these:
+
+- **The `KeyWrap` trait.** The library's `vcon_server::key_wrap` module
+  holds `KeyWrap`, the interface of the backend that holds the root key and
+  wraps tenant keys, and `FileWrap`, the master key file backend the server
+  uses. Stored data is unchanged.
+
 ## Being built
 
 - **A PostgreSQL catalog**, a preview behind the `postgres` cargo feature:

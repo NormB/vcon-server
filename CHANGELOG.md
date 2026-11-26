@@ -6,6 +6,14 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Library: a `KeyWrap` trait for the backend that wraps tenant keys.**
+  - Effect: `vcon_server::key_wrap` holds `KeyWrap` and `FileWrap`, the
+    master key file backend the server uses; stored data is unchanged.
+  - Limit: It has one backend, the master key file; the roadmap plans the
+    others.
+
 ### Changed
 
 - **The roadmap gives each milestone a target month and lists what is not
