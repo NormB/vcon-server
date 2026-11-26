@@ -496,15 +496,12 @@ mod on_a_server {
         // Dropped with its lock held, as a process that is killed leaves
         // it: PostgreSQL frees the locks when it sees the session closed.
         drop(connect(&db, Holds::Alone).expect("alone"));
-        let mut freed = false;
-        for _ in 0..100 {
-            if held(&db).is_empty() {
-                freed = true;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        assert!(freed, "within five seconds of the session's end");
+        let freed = crate::live_deadline::poll(
+            crate::live_deadline::LIVE_DEADLINE,
+            std::time::Duration::from_millis(50),
+            || held(&db).is_empty(),
+        );
+        assert!(freed, "within the live-test deadline of the session's end");
         connect(&db, Holds::Alone).expect("the next command runs");
     }
 

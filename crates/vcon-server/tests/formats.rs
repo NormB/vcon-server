@@ -3002,13 +3002,14 @@ mod live {
     use std::process::{Child, Stdio};
     use std::time::{Duration, Instant};
 
-    /// How long a server may take to say where it listens, or to stop.
-    const DEADLINE: Duration = Duration::from_secs(30);
+    // How long a server may take to say where it listens, or to stop, and
+    // each curl request: the live-test deadline.
+    use crate::live_deadline::{LIVE_DEADLINE, curl};
 
     /// curl, signing its request for S3 with the test service's keys, with
     /// `extra` before the URL.
     fn s3(method: &str, path: &str, extra: &[&OsStr]) -> Output {
-        Command::new("curl")
+        curl(LIVE_DEADLINE)
             .args(["-sS", "--fail-with-body", "-X", method])
             .args(["--aws-sigv4", "aws:amz:us-east-1:s3", "--user"])
             .arg(format!(
@@ -3245,7 +3246,7 @@ mod live {
                     }
                 }
             });
-            let deadline = Instant::now() + DEADLINE;
+            let deadline = Instant::now() + LIVE_DEADLINE;
             let mut early = Vec::new();
             let port = loop {
                 match lines.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
@@ -3285,7 +3286,7 @@ mod live {
                 .stderr(Stdio::piped())
                 .spawn()
                 .expect("serve starts");
-            let deadline = Instant::now() + DEADLINE;
+            let deadline = Instant::now() + LIVE_DEADLINE;
             let status = loop {
                 if let Some(status) = child.try_wait().expect("wait") {
                     break status;
@@ -3421,8 +3422,8 @@ mod live {
         /// the body.
         fn get(&self, path: &str, key: &Path) -> (u16, Vec<u8>) {
             let _ = std::fs::remove_file(&self.out);
-            let out = Command::new("curl")
-                .args(["-sS", "--max-time", "20", "--cacert"])
+            let out = curl(LIVE_DEADLINE)
+                .args(["-sS", "--cacert"])
                 .arg(&self.cert)
                 .arg("--resolve")
                 .arg(format!("localhost:{}:127.0.0.1", self.port))
@@ -3452,8 +3453,8 @@ mod live {
         /// POST `body` as a vCon to /vcons: the status.
         fn post(&self, body: &[u8], key: &Path) -> u16 {
             std::fs::write(&self.out, body).expect("write");
-            let out = Command::new("curl")
-                .args(["-sS", "--max-time", "20", "-o", "/dev/null", "--cacert"])
+            let out = curl(LIVE_DEADLINE)
+                .args(["-sS", "-o", "/dev/null", "--cacert"])
                 .arg(&self.cert)
                 .arg("--resolve")
                 .arg(format!("localhost:{}:127.0.0.1", self.port))
@@ -3477,7 +3478,7 @@ mod live {
             // SAFETY: the pid is our running child's.
             let sent = unsafe { libc::kill(pid, libc::SIGTERM) };
             assert_eq!(sent, 0, "SIGTERM is sent to the server");
-            let deadline = Instant::now() + DEADLINE;
+            let deadline = Instant::now() + LIVE_DEADLINE;
             loop {
                 if let Some(status) = self.child.try_wait().expect("wait") {
                     return status;
@@ -4032,7 +4033,7 @@ mod live {
             ("tenant-b", r.key("tenant-b", &["legal"])),
         ];
         let server = r.serve();
-        let deadline = Instant::now() + DEADLINE;
+        let deadline = Instant::now() + LIVE_DEADLINE;
         while !r.objects().is_empty() {
             assert!(
                 Instant::now() < deadline,

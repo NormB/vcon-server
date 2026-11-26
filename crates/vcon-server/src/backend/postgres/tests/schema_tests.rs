@@ -195,7 +195,7 @@ pub(super) mod live {
 
     /// How long the drop of a test's database may take before the test
     /// goes on without it; the next sweep removes what is left.
-    const DROP_WITHIN: std::time::Duration = std::time::Duration::from_secs(20);
+    const DROP_WITHIN: std::time::Duration = crate::live_deadline::LIVE_DEADLINE;
 
     /// The statement that drops a test database with the connections
     /// still open to it.

@@ -112,9 +112,10 @@ mod on_a_server {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::super::super::super::connect::Purpose;
-    use super::super::super::live::{as_user, value};
+    use super::super::super::live::{as_user, value, within_of};
     use super::super::live::{Db, connect, waiters};
     use super::super::names::{STALE_AFTER, name_at};
+    use crate::live_deadline::LIVE_DEADLINE;
 
     /// The tester's connection to the server's own database.
     async fn tester() -> tokio_postgres::Client {
@@ -261,22 +262,6 @@ mod on_a_server {
         );
     }
 
-    /// Asks `sql` up to fifty times, a tenth of a second apart, until its
-    /// value is `want`.
-    async fn within_five_seconds_of(
-        client: &tokio_postgres::Client,
-        sql: &str,
-        want: &str,
-    ) -> bool {
-        for _ in 0..50 {
-            if value(client, sql).await == want {
-                return true;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-        false
-    }
-
     // A test that waits until its one session waits for a lock counts the
     // sessions that wait. The tests of a run share a server: on
     // 2026-11-14 two such tests of the registry ran at the same moment,
@@ -308,7 +293,7 @@ mod on_a_server {
                 .await
         });
         assert!(
-            within_five_seconds_of(&holder, &waiters(Some("advisory")), "1").await,
+            within_of(&holder, &waiters(Some("advisory")), "1", LIVE_DEADLINE).await,
             "the session that came after the transaction's first count"
         );
         holder.batch_execute("COMMIT").await.expect("commits");
@@ -337,7 +322,7 @@ mod on_a_server {
             );
         let counting = here.admin().await;
         assert!(
-            within_five_seconds_of(&counting, &waiters(None), "1").await,
+            within_of(&counting, &waiters(None), "1", LIVE_DEADLINE).await,
             "the session that waits for the row"
         );
         assert_eq!(
@@ -370,7 +355,7 @@ mod on_a_server {
             tokio::spawn(async move { waiter.batch_execute("SELECT pg_advisory_lock(7)").await });
         for kind in [Some("advisory"), None] {
             assert!(
-                within_five_seconds_of(&holder, &waiters(kind), "1").await,
+                within_of(&holder, &waiters(kind), "1", LIVE_DEADLINE).await,
                 "the one session that waits, by {kind:?}"
             );
         }
@@ -406,7 +391,7 @@ mod on_a_server {
         let waiting =
             tokio::spawn(async move { waiter.batch_execute("SELECT pg_advisory_lock(7)").await });
         assert!(
-            within_five_seconds_of(&holder, &waiters(Some("advisory")), "1").await,
+            within_of(&holder, &waiters(Some("advisory")), "1", LIVE_DEADLINE).await,
             "the other database has its one waiting session"
         );
         let mine = here.admin().await;

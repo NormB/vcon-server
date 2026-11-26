@@ -359,7 +359,7 @@ mod postgres {
     use std::io::BufRead;
     use std::net::SocketAddr;
     use std::process::{Child, Stdio};
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     use super::joined::Joined;
     use super::*;
@@ -373,7 +373,7 @@ mod postgres {
     /// curl, signing its request for S3 with the test service's keys; the
     /// answer's body, and whether the service answered with success.
     fn signed(method: &str, path: &str) -> (bool, Vec<u8>) {
-        let out = Command::new("curl")
+        let out = crate::live_deadline::curl(crate::live_deadline::LIVE_DEADLINE)
             .args(["-sS", "--fail", "-X", method])
             .args(["--aws-sigv4", "aws:amz:us-east-1:s3", "--user"])
             .arg(format!(
@@ -531,7 +531,7 @@ mod postgres {
                 pem: self.pem.clone(),
                 _reader: reader,
             };
-            let deadline = Instant::now() + Duration::from_secs(20);
+            let deadline = Instant::now() + crate::live_deadline::LIVE_DEADLINE;
             let mut said = Vec::new();
             while server.addr.is_none() {
                 match lines.recv_timeout(deadline.saturating_duration_since(Instant::now())) {

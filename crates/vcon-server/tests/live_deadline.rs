@@ -643,7 +643,6 @@ mod edge {
         let allowed = [
             "src/lib.rs",
             "src/backend/postgres/tests.rs",
-            "src/backend/postgres/tests/deadline_tests.rs",
             "src/backend/s3.rs",
         ];
         let mut found = Vec::new();
@@ -663,14 +662,24 @@ mod edge {
             }
         }
         let base = Path::new(env!("CARGO_MANIFEST_DIR"));
+        // The modules under src/backend/postgres/tests/ are the PostgreSQL
+        // catalog's tests (tests.rs declares them under #[cfg(test)] in
+        // backend/postgres.rs).
+        let test_dir = Path::new("src/backend/postgres/tests");
         for path in &found {
             let relative = path.strip_prefix(base).expect("under the crate");
             assert!(
-                allowed.iter().any(|a| Path::new(a) == relative),
+                allowed.iter().any(|a| Path::new(a) == relative) || relative.starts_with(test_dir),
                 "{} names the live deadline: only the test modules listed may",
                 relative.display()
             );
         }
+        let postgres = source("src/backend/postgres.rs");
+        assert!(
+            postgres.contains("#[cfg(test)]\nmod tests;"),
+            "the directory's modules are test modules: backend/postgres.rs declares tests under \
+             #[cfg(test)]"
+        );
         let s3 = source("src/backend/s3.rs");
         let tests_start = s3
             .find("#[cfg(test)]\nmod tests {")
@@ -694,5 +703,380 @@ mod edge {
             Duration::from_secs(30),
             "the production S3 timeout"
         );
+    }
+}
+
+/// The live waits of tests/support/live_deadline.rs: `poll`,
+/// `poll_async` and `curl`.
+mod waits {
+    use std::cell::Cell;
+    use std::io::Read;
+    use std::net::{TcpListener, TcpStream};
+    use std::time::Instant;
+
+    use super::live_deadline::{curl, poll, poll_async};
+    use super::*;
+
+    /// The arguments of `command`, as text.
+    fn args(command: &std::process::Command) -> Vec<String> {
+        command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// The value curl's `--max-time` is given in `command`.
+    fn max_time(command: &std::process::Command) -> Option<String> {
+        let all = args(command);
+        let at = all.iter().position(|a| a == "--max-time")?;
+        all.get(at + 1).cloned()
+    }
+
+    /// A server on 127.0.0.1 that takes one connection and never answers,
+    /// its thread, and its address as a URL. `ended` wakes it if no
+    /// client came.
+    struct Silent {
+        url: String,
+        port: u16,
+        thread: std::thread::JoinHandle<()>,
+    }
+
+    impl Silent {
+        fn new() -> Silent {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("binds");
+            let port = listener.local_addr().expect("an address").port();
+            let thread = std::thread::spawn(move || {
+                if let Ok((mut socket, _)) = listener.accept() {
+                    let mut rest = Vec::new();
+                    let _read = socket.read_to_end(&mut rest);
+                }
+            });
+            Silent {
+                url: format!("http://127.0.0.1:{port}/"),
+                port,
+                thread,
+            }
+        }
+
+        /// Ends the server's thread.
+        fn ended(self) {
+            drop(TcpStream::connect(("127.0.0.1", self.port)));
+            self.thread.join().expect("the server's thread ends");
+        }
+    }
+
+    /// Runs `command`, ending it after `outer` if it has not ended: its
+    /// status if it ended by itself, and how long it ran.
+    fn run_within(
+        mut command: std::process::Command,
+        outer: Duration,
+    ) -> (Option<std::process::ExitStatus>, Duration) {
+        let started = Instant::now();
+        let mut child = command
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("runs curl");
+        while started.elapsed() < outer {
+            if let Some(status) = child.try_wait().expect("waits") {
+                return (Some(status), started.elapsed());
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let _killed = child.kill();
+        let _reaped = child.wait();
+        (None, started.elapsed())
+    }
+
+    mod success {
+        use super::*;
+
+        #[test]
+        fn a_poll_that_holds_at_once_asks_once() {
+            let asked = Cell::new(0);
+            let held = poll(Duration::from_secs(5), Duration::from_millis(10), || {
+                asked.set(asked.get() + 1);
+                true
+            });
+            assert!(held, "it held");
+            assert_eq!(asked.get(), 1, "asked once");
+        }
+
+        #[test]
+        fn a_poll_that_holds_on_the_third_ask_stops_there() {
+            let asked = Cell::new(0);
+            let held = poll(Duration::from_secs(5), Duration::from_millis(10), || {
+                asked.set(asked.get() + 1);
+                asked.get() == 3
+            });
+            assert!(held, "it held");
+            assert_eq!(asked.get(), 3, "no ask after it held");
+        }
+
+        #[test]
+        fn a_poll_returns_soon_after_its_state_is_reached() {
+            let started = Instant::now();
+            let held = poll(Duration::from_secs(30), Duration::from_millis(10), || {
+                started.elapsed() >= Duration::from_millis(100)
+            });
+            assert!(held, "it held");
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "not the whole deadline: {:?}",
+                started.elapsed()
+            );
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn an_async_poll_that_holds_at_once_asks_once() {
+            let asked = Cell::new(0);
+            let held = poll_async(Duration::from_secs(5), Duration::from_millis(10), || {
+                asked.set(asked.get() + 1);
+                async { true }
+            })
+            .await;
+            assert!(held, "it held");
+            assert_eq!(asked.get(), 1, "asked once");
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn an_async_poll_that_holds_later_stops_there() {
+            let asked = Cell::new(0);
+            let held = poll_async(Duration::from_secs(5), Duration::from_millis(100), || {
+                asked.set(asked.get() + 1);
+                let n = asked.get();
+                async move { n == 4 }
+            })
+            .await;
+            assert!(held, "it held");
+            assert_eq!(asked.get(), 4, "no ask after it held");
+        }
+
+        #[test]
+        fn a_curl_from_the_helper_runs_curl() {
+            assert_eq!(curl(LIVE_DEADLINE).get_program(), "curl", "the program");
+        }
+
+        #[test]
+        fn a_curl_from_the_helper_is_given_the_live_deadline() {
+            assert_eq!(
+                max_time(&curl(LIVE_DEADLINE)).as_deref(),
+                Some("30"),
+                "the live deadline in whole seconds"
+            );
+        }
+
+        #[test]
+        fn a_curl_from_the_helper_is_given_the_deadline_asked_for() {
+            assert_eq!(
+                max_time(&curl(Duration::from_secs(7))).as_deref(),
+                Some("7"),
+                "the deadline passed"
+            );
+        }
+    }
+
+    mod failure {
+        use super::*;
+
+        #[test]
+        fn a_poll_that_never_holds_says_so() {
+            assert!(
+                !poll(
+                    Duration::from_millis(200),
+                    Duration::from_millis(20),
+                    || false
+                ),
+                "it never held"
+            );
+        }
+
+        #[test]
+        fn a_poll_that_never_holds_waits_the_whole_deadline() {
+            let started = Instant::now();
+            let _held = poll(
+                Duration::from_millis(300),
+                Duration::from_millis(20),
+                || false,
+            );
+            assert!(
+                started.elapsed() >= Duration::from_millis(300),
+                "the whole deadline: {:?}",
+                started.elapsed()
+            );
+        }
+
+        #[test]
+        fn a_poll_that_never_holds_ends_soon_after_the_deadline() {
+            let started = Instant::now();
+            let _held = poll(
+                Duration::from_millis(300),
+                Duration::from_millis(20),
+                || false,
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(3),
+                "its deadline ended it, not a count of pauses: {:?}",
+                started.elapsed()
+            );
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn an_async_poll_on_the_live_deadline_waits_exactly_that_long() {
+            let started = tokio::time::Instant::now();
+            let held = poll_async(LIVE_DEADLINE, Duration::from_millis(100), || async {
+                false
+            })
+            .await;
+            assert!(!held, "it never held");
+            assert_eq!(
+                started.elapsed(),
+                LIVE_DEADLINE,
+                "the live deadline on the runtime's clock, not fifty pauses"
+            );
+        }
+
+        #[test]
+        fn a_curl_to_a_service_that_never_answers_ends_by_itself() {
+            let silent = Silent::new();
+            let mut command = curl(Duration::from_secs(1));
+            command.args(["-sS"]).arg(&silent.url);
+            let (status, took) = run_within(command, Duration::from_secs(15));
+            silent.ended();
+            let status = status.unwrap_or_else(|| panic!("curl was still running after {took:?}"));
+            assert!(!status.success(), "it failed: {status:?}");
+        }
+
+        #[test]
+        fn a_curl_to_a_service_that_never_answers_ends_at_its_max_time() {
+            let silent = Silent::new();
+            let mut command = curl(Duration::from_secs(1));
+            command.args(["-sS"]).arg(&silent.url);
+            let (status, took) = run_within(command, Duration::from_secs(15));
+            silent.ended();
+            assert_eq!(
+                status.and_then(|s| s.code()),
+                Some(28),
+                "curl's code for a transfer that passed --max-time, after {took:?}"
+            );
+        }
+
+        #[test]
+        fn a_curl_to_a_service_that_never_answers_ends_soon_after_its_max_time() {
+            let silent = Silent::new();
+            let mut command = curl(Duration::from_secs(1));
+            command.args(["-sS"]).arg(&silent.url);
+            let (status, took) = run_within(command, Duration::from_secs(15));
+            silent.ended();
+            assert!(
+                status.is_some() && took < Duration::from_secs(8),
+                "ended near its one second: {status:?} after {took:?}"
+            );
+        }
+    }
+
+    mod edge {
+        use super::*;
+
+        #[test]
+        fn a_zero_deadline_poll_asks_once() {
+            let asked = Cell::new(0);
+            let held = poll(Duration::ZERO, Duration::from_millis(10), || {
+                asked.set(asked.get() + 1);
+                false
+            });
+            assert!(!held, "it did not hold");
+            assert_eq!(asked.get(), 1, "one ask, at the deadline");
+        }
+
+        #[test]
+        fn a_pause_longer_than_the_deadline_is_cut_to_the_deadline() {
+            let asked = Cell::new(0);
+            let started = Instant::now();
+            let held = poll(Duration::from_millis(200), Duration::from_secs(60), || {
+                asked.set(asked.get() + 1);
+                false
+            });
+            assert!(!held, "it did not hold");
+            assert_eq!(asked.get(), 2, "at the start and at the deadline");
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "not the 60 s pause: {:?}",
+                started.elapsed()
+            );
+        }
+
+        #[test]
+        fn a_state_reached_in_the_last_pause_is_seen() {
+            let started = Instant::now();
+            let held = poll(Duration::from_millis(200), Duration::from_secs(60), || {
+                started.elapsed() >= Duration::from_millis(150)
+            });
+            assert!(held, "the ask at the deadline sees it");
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn a_zero_deadline_async_poll_asks_once() {
+            let asked = Cell::new(0);
+            let held = poll_async(Duration::ZERO, Duration::from_millis(10), || {
+                asked.set(asked.get() + 1);
+                async { false }
+            })
+            .await;
+            assert!(!held, "it did not hold");
+            assert_eq!(asked.get(), 1, "one ask, at the deadline");
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn an_async_pause_longer_than_the_deadline_is_cut_to_it() {
+            let started = tokio::time::Instant::now();
+            let held = poll_async(Duration::from_secs(2), Duration::from_secs(60), || async {
+                false
+            })
+            .await;
+            assert!(!held, "it did not hold");
+            assert_eq!(
+                started.elapsed(),
+                Duration::from_secs(2),
+                "the deadline, not the pause"
+            );
+        }
+
+        #[test]
+        fn a_curl_with_a_millisecond_deadline_is_given_one_second() {
+            assert_eq!(
+                max_time(&curl(Duration::from_millis(1))).as_deref(),
+                Some("1"),
+                "curl takes whole seconds here, at least 1"
+            );
+        }
+
+        #[test]
+        fn a_curl_with_a_zero_deadline_is_given_one_second() {
+            assert_eq!(
+                max_time(&curl(Duration::ZERO)).as_deref(),
+                Some("1"),
+                "never 0, which curl reads as no limit"
+            );
+        }
+
+        #[test]
+        fn a_curl_with_a_fractional_deadline_is_rounded_up() {
+            assert_eq!(
+                max_time(&curl(Duration::from_millis(1500))).as_deref(),
+                Some("2"),
+                "never shorter than asked"
+            );
+        }
+
+        #[test]
+        fn a_curl_from_the_helper_has_its_bound_first() {
+            let all = args(&curl(LIVE_DEADLINE));
+            assert_eq!(
+                all.len(),
+                2,
+                "only the bound, the caller adds the rest: {all:?}"
+            );
+        }
     }
 }

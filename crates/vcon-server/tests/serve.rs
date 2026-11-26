@@ -2406,7 +2406,7 @@ mod s3 {
 
     /// curl, signing its request for S3 with the test service's keys.
     pub(super) fn signed(method: &str, path: &str) -> String {
-        let output = Command::new("curl")
+        let output = crate::live_deadline::curl(crate::live_deadline::LIVE_DEADLINE)
             .args(["-sS", "--fail-with-body", "-X", method])
             .args(["--aws-sigv4", "aws:amz:us-east-1:s3", "--user"])
             .arg(format!(
@@ -2608,11 +2608,11 @@ mod s3 {
         // shows its work.
         let mut logged: Vec<String> = started.early.drain(..).collect();
         let packed_line = |l: &String| l.contains("pack run") && l.contains("versions=1");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + crate::live_deadline::LIVE_DEADLINE;
         while !logged.iter().any(packed_line) && std::time::Instant::now() < deadline {
             if let Ok(line) = started
                 .lines
-                .recv_timeout(std::time::Duration::from_millis(200))
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
             {
                 logged.push(line);
             }
@@ -2624,22 +2624,25 @@ mod s3 {
     }
 
     /// Waits until the tenant's objects are all packed into Parquet files
-    /// in `bucket`, for at most 30 seconds.
+    /// in `bucket`, for at most the live-test deadline.
     fn wait_until_packed(s: &Setup, bucket: &str) {
         let objects = format!("tenants/{}/objects/", s.tenant);
         let files = format!("tenants/{}/parquet/date=", s.tenant);
-        let packed = (0..60).any(|_| {
-            let kept = names(bucket);
-            let done = kept
-                .iter()
-                .any(|k| k.starts_with(&files) && k.ends_with(".parquet"))
-                && !kept.iter().any(|k| k.starts_with(&objects));
-            if !done {
-                std::thread::sleep(std::time::Duration::from_millis(500));
-            }
-            done
-        });
-        assert!(packed, "packed within 30 seconds: {:?}", names(bucket));
+        let packed = crate::live_deadline::poll(
+            crate::live_deadline::LIVE_DEADLINE,
+            std::time::Duration::from_millis(500),
+            || {
+                let kept = names(bucket);
+                kept.iter()
+                    .any(|k| k.starts_with(&files) && k.ends_with(".parquet"))
+                    && !kept.iter().any(|k| k.starts_with(&objects))
+            },
+        );
+        assert!(
+            packed,
+            "packed within the live-test deadline: {:?}",
+            names(bucket)
+        );
     }
 
     /// Once a version is packed, a start whose configuration no longer has
@@ -2749,7 +2752,10 @@ mod s3 {
         assert!(names(&bucket).contains(&orphan), "the leftover is planted");
         let mut started = start(serve_with_keys(&s));
         let line = started
-            .line_with("start-up recovery removed", Duration::from_secs(20))
+            .line_with(
+                "start-up recovery removed",
+                crate::live_deadline::LIVE_DEADLINE,
+            )
             .expect("serve logged no start-up recovery removal");
         assert!(
             line.contains("removed=1"),
@@ -2940,7 +2946,7 @@ mod postgres {
         // SAFETY: the pid is our running child's.
         let sent = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
         assert_eq!(sent, 0, "SIGTERM is sent to the server");
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = Instant::now() + crate::live_deadline::LIVE_DEADLINE;
         loop {
             if let Some(status) = started.running.0.try_wait().expect("wait") {
                 return status;
@@ -3031,7 +3037,7 @@ mod postgres {
 
     /// Waits until `db` holds `count` advisory locks.
     fn until_locks_held(db: &pg::Db, count: &str) {
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = Instant::now() + crate::live_deadline::LIVE_DEADLINE;
         while locks_held(db) != count {
             assert!(
                 Instant::now() < deadline,
@@ -3105,7 +3111,9 @@ mod postgres {
         let w = world();
         let mut server = started(&w.s);
         let reached = server
-            .line_with("the catalogs are in PostgreSQL", Duration::from_secs(1))
+            // Printed before the listen line, so `started` holds it already:
+            // no wait at all.
+            .line_with("the catalogs are in PostgreSQL", Duration::ZERO)
             .expect("the start names the database server before the serving line");
         assert!(
             reached.contains(&format!("PostgreSQL {}.", var("VCON_TEST_PG_MAJOR")))
@@ -3365,7 +3373,7 @@ mod postgres {
     /// Waits up to 20 seconds for the sweep's holder to be the process
     /// `pid`; the holder then.
     fn until_sweep_held_by(db: &pg::Db, pid: u32) -> String {
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = Instant::now() + crate::live_deadline::LIVE_DEADLINE;
         loop {
             let holder = sweep_holder(db);
             if holder != "none" && holder_pid(&holder) == pid {
@@ -3382,7 +3390,7 @@ mod postgres {
     /// Waits up to 20 seconds for either server to hold the sweep; the
     /// holder.
     fn until_sweep_held(db: &pg::Db) -> String {
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = Instant::now() + crate::live_deadline::LIVE_DEADLINE;
         loop {
             let holder = sweep_holder(db);
             if holder != "none" {
@@ -3432,7 +3440,7 @@ mod postgres {
         } else {
             (second, first)
         };
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = Instant::now() + crate::live_deadline::LIVE_DEADLINE;
         let mut lines = Vec::new();
         while !lines
             .iter()

@@ -868,7 +868,9 @@ mod on_a_server {
         go: std::sync::mpsc::Sender<()>,
     }
 
-    const MINUTE: std::time::Duration = std::time::Duration::from_secs(60);
+    /// How long a paused step and the test wait for each other: two live
+    /// deadlines, the 60 s it had before.
+    const MINUTE: std::time::Duration = crate::live_deadline::LIVE_DEADLINE.saturating_mul(2);
 
     fn pause() -> (impl FnOnce() + Send + 'static, Pause) {
         let (arrive, arrived) = std::sync::mpsc::channel();

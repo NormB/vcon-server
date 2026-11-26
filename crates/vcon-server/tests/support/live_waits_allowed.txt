@@ -1,0 +1,23 @@
+# Fixed waits in live test code (built with the backend-tests feature) that
+# are fixed on purpose, for tests/live_waits.rs. One per line:
+#   path relative to crates/vcon-server | a fragment of the line | why
+# Every other live wait takes its bound from tests/support/live_deadline.rs.
+# An entry that matches nothing is refused.
+
+# Checks that something does NOT happen: a longer bound makes them slower,
+# never safer, and a loaded host cannot make them fail.
+src/backend/postgres/tests/registry_tests.rs | second_done.recv_timeout(Duration::from_millis(400)) | an absence check: the second write has not read while the first holds the lock
+src/backend/postgres/tests/rekey_tests.rs | rotated.recv_timeout(Duration::from_millis(400)) | an absence check: the rotation has not been made while the write runs
+tests/serve.rs | while watched.elapsed() < Duration::from_secs(3) | a watch: the sweep holder is checked to stay the same for 3 s, an absence of change
+
+# Durations the code under test takes as input, not waits.
+src/backend/postgres/tests/lease_tests.rs | const MINUTE: Duration = Duration::from_secs(60) | a lease length passed to lead(), on the test clock
+src/backend/postgres/tests/tenants_tests.rs | const TWO_HOURS: time::Duration = time::Duration::hours(2) | twice the write lease, a clock offset for the code under test
+
+# The wait helpers themselves and their own tests.
+src/backend/postgres/tests.rs | crate::live_deadline::poll_async(deadline, | within_of passes on the deadline its caller gives, which the gate checks at each call
+src/backend/postgres/tests/deadline_tests.rs | within_of(&admin, "SELECT 1", "2", Duration::from_secs(1)) | a test of within_of with a short deadline of its own
+src/backend/postgres/tests/deadline_tests.rs | within_of(&admin, "SELECT 1", "1", Duration::from_millis(200)) | a test of within_of with a short deadline of its own
+
+# Shared with tests that need no server.
+tests/support/joined.rs | pub const JOIN_WAIT: Duration = Duration::from_secs(30) | the wait for a reader thread to end after a local process's pipe closes, in offline tests too; no server answers it

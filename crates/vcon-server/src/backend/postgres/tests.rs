@@ -296,14 +296,28 @@ pub(super) mod live {
             .unwrap_or_else(|| panic!("{sql}: no row"))
     }
 
-    /// Waits up to five seconds for `done`.
-    pub(crate) async fn within_five_seconds(mut done: impl FnMut() -> bool) -> bool {
-        for _ in 0..50 {
-            if done() {
-                return true;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        done()
+    /// Asks `sql` on `client`, a tenth of a second apart, until its value
+    /// is `want` or `deadline` has passed: whether it was.
+    pub(crate) async fn within_of(
+        client: &tokio_postgres::Client,
+        sql: &str,
+        want: &str,
+        deadline: Duration,
+    ) -> bool {
+        crate::live_deadline::poll_async(deadline, Duration::from_millis(100), || async {
+            value(client, sql).await == want
+        })
+        .await
     }
+}
+
+/// Asks `done` a tenth of a second apart until it holds or the live-test
+/// deadline has passed: whether it held.
+pub(super) async fn within_the_live_deadline(mut done: impl FnMut() -> bool) -> bool {
+    crate::live_deadline::poll_async(
+        crate::live_deadline::LIVE_DEADLINE,
+        std::time::Duration::from_millis(100),
+        || std::future::ready(done()),
+    )
+    .await
 }

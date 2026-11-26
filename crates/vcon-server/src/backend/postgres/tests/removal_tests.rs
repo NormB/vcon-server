@@ -8,7 +8,6 @@ mod on_a_server {
     use std::sync::Arc;
     use std::sync::atomic::Ordering::SeqCst;
     use std::sync::atomic::{AtomicBool, AtomicUsize};
-    use std::time::Duration;
 
     use uuid::Uuid;
 
@@ -25,8 +24,8 @@ mod on_a_server {
 
     const A: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bca1";
 
-    /// How long a step a test waits for may take.
-    const PATIENCE: Duration = Duration::from_secs(20);
+    /// How long a step a test waits for may take: the live-test deadline.
+    use crate::live_deadline::LIVE_DEADLINE;
 
     /// How many reads each racing reader makes at least.
     const RACE_READS: usize = 40;
@@ -116,7 +115,9 @@ mod on_a_server {
             .map(|_| {
                 let (t, done, gate, check) = (t.clone(), done.clone(), gate.clone(), check.clone());
                 std::thread::spawn(move || {
-                    let deadline = std::time::Instant::now() + PATIENCE * 6;
+                    // A race of many reads: four live deadlines (120 s),
+                    // under the test runner's 180 s.
+                    let deadline = std::time::Instant::now() + LIVE_DEADLINE * 4;
                     let mut made = 0;
                     while made < RACE_READS || !done.load(SeqCst) {
                         assert!(
@@ -169,7 +170,7 @@ mod on_a_server {
                 Err(e) => assert_ne!(e, StoreError::Damaged, "refused, not as damaged"),
             },
         );
-        let deadline = std::time::Instant::now() + PATIENCE;
+        let deadline = std::time::Instant::now() + LIVE_DEADLINE;
         while answered_reads.load(SeqCst) < 8 {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -332,7 +333,7 @@ mod on_a_server {
             let _ = ended.send(());
             removed
         });
-        let deadline = std::time::Instant::now() + PATIENCE;
+        let deadline = std::time::Instant::now() + LIVE_DEADLINE;
         while owner_reads(&db, tenant, &waiters(None)) != ["1"] {
             assert!(
                 std::time::Instant::now() < deadline,

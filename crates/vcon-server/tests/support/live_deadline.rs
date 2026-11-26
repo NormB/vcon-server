@@ -78,3 +78,48 @@ pub fn s3_tables(endpoint: &str, bucket: &str, deadline: Duration) -> String {
         whole_seconds(deadline)
     )
 }
+
+/// Asks `done` every `every` until it holds or `deadline` has passed since
+/// the first ask, and says whether it held. It asks once more at the
+/// deadline, so a state reached during the last pause is seen.
+pub fn poll(deadline: Duration, every: Duration, mut done: impl FnMut() -> bool) -> bool {
+    let started = std::time::Instant::now();
+    loop {
+        if done() {
+            return true;
+        }
+        let left = deadline.saturating_sub(started.elapsed());
+        if left.is_zero() {
+            return false;
+        }
+        std::thread::sleep(every.min(left));
+    }
+}
+
+/// `poll` for a check that awaits, pausing on the runtime's clock.
+pub async fn poll_async<F, Fut>(deadline: Duration, every: Duration, mut done: F) -> bool
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let started = tokio::time::Instant::now();
+    loop {
+        if done().await {
+            return true;
+        }
+        let left = deadline.saturating_sub(started.elapsed());
+        if left.is_zero() {
+            return false;
+        }
+        tokio::time::sleep(every.min(left)).await;
+    }
+}
+
+/// A curl command that gives up after `deadline`, rounded up to whole
+/// seconds: `--max-time` bounds the whole transfer, so a service that
+/// never answers fails the test by name.
+pub fn curl(deadline: Duration) -> std::process::Command {
+    let mut command = std::process::Command::new("curl");
+    command.args(["--max-time", &whole_seconds(deadline).to_string()]);
+    command
+}

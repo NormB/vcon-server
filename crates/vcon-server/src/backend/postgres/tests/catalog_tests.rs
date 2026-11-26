@@ -366,7 +366,7 @@ pub(super) mod on_a_server {
         Begin, CatalogError, Database, PgCatalog, PgTx, pool_refusal,
     };
     use super::super::super::schema::{COMMANDS_LOCK, MIGRATIONS, SERVER_LOCK_HELD, SERVERS_LOCK};
-    use super::super::live::value;
+    use super::super::live::{value, within_of};
     use super::super::schema_tests::live::{Db, in_scope, waiters};
     use crate::audit::{Action, Actor, AuditError, Entry};
     use crate::backend::conformance::{self, Harness, TestClock};
@@ -375,6 +375,7 @@ pub(super) mod on_a_server {
     use crate::config::StorageError;
     use crate::envelope::Key;
     use crate::ids::{KeyId, TenantId, VersionId};
+    use crate::live_deadline::LIVE_DEADLINE;
     use crate::store::{Caller, ListQuery, StoreError};
 
     /// The round trips to the database of one `Store::create`, one
@@ -869,7 +870,7 @@ pub(super) mod on_a_server {
         });
         let waiting = wait(async {
             let admin = db.admin().await;
-            within_five_seconds_of(&admin, &waiters(None), "1").await
+            within_of(&admin, &waiters(None), "1", LIVE_DEADLINE).await
         });
         assert!(waiting, "the second write waits for the tenant's lock row");
         assert!(
@@ -882,22 +883,6 @@ pub(super) mod on_a_server {
             Ok(()),
             "then the second begins"
         );
-    }
-
-    /// Asks `sql` up to fifty times, a tenth of a second apart, until its
-    /// value is `want`.
-    async fn within_five_seconds_of(
-        client: &tokio_postgres::Client,
-        sql: &str,
-        want: &str,
-    ) -> bool {
-        for _ in 0..50 {
-            if value(client, sql).await == want {
-                return true;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-        false
     }
 
     #[test]
@@ -1198,12 +1183,13 @@ pub(super) mod on_a_server {
         }) == "t";
         let vacuumed = wait(async {
             let admin = db.admin().await;
-            within_five_seconds_of(
+            within_of(
                 &admin,
                 "SELECT count(*) FROM pg_stat_all_tables \
                  WHERE schemaname = 'vcon' AND relname IN ('version', 'vcon', 'tombstone') \
                    AND vacuum_count > 0",
                 "3",
+                LIVE_DEADLINE,
             )
             .await
         });

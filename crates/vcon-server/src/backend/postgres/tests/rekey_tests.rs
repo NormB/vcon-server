@@ -1932,7 +1932,7 @@ mod on_a_server {
             );
             first.commit().expect("the write commits");
             assert_eq!(
-                rotated.recv_timeout(Duration::from_secs(30)),
+                rotated.recv_timeout(crate::live_deadline::LIVE_DEADLINE),
                 Ok(Ok(())),
                 "the rotation is made once the write has ended"
             );

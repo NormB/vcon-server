@@ -132,8 +132,8 @@ async fn each_host_is_tried_in_order_and_each_refusal_named() {
 /// Against the containers of `scripts/pg-test-server.sh`.
 #[cfg(feature = "backend-tests")]
 mod live {
-    use super::super::live::{self, as_user, value, within_five_seconds};
-    use super::super::pool;
+    use super::super::live::{self, as_user, value};
+    use super::super::{pool, within_the_live_deadline};
     use super::*;
 
     #[tokio::test]
@@ -274,7 +274,7 @@ mod live {
             "the server ended the kept connection"
         );
         assert!(
-            within_five_seconds(|| pool.idle_closed() == 1).await,
+            within_the_live_deadline(|| pool.idle_closed() == 1).await,
             "the kept connection sees its socket closed"
         );
         let next = pool.get().await.expect("a connection");

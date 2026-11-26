@@ -357,3 +357,112 @@ mod on_a_server {
         );
     }
 }
+
+/// The waits for a state: `within_the_live_deadline`, here, and
+/// `live::within_of` and `within_the_live_deadline_of` on the servers.
+mod waits {
+    use std::cell::Cell;
+
+    use super::super::within_the_live_deadline;
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn a_state_never_reached_is_waited_for_the_live_deadline() {
+        let started = tokio::time::Instant::now();
+        let held = within_the_live_deadline(|| false).await;
+        assert!(!held, "it never held");
+        assert_eq!(
+            started.elapsed(),
+            LIVE_DEADLINE,
+            "the live deadline on the runtime's clock, not five seconds"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_state_reached_at_once_is_asked_once() {
+        let asked = Cell::new(0);
+        let held = within_the_live_deadline(|| {
+            asked.set(asked.get() + 1);
+            true
+        })
+        .await;
+        assert!(held, "it held");
+        assert_eq!(asked.get(), 1, "asked once");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_state_reached_later_ends_the_wait_there() {
+        let started = tokio::time::Instant::now();
+        let asked = Cell::new(0);
+        let held = within_the_live_deadline(|| {
+            asked.set(asked.get() + 1);
+            asked.get() == 5
+        })
+        .await;
+        assert!(held, "it held");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "four pauses of a tenth of a second: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_wait_is_longer_than_the_old_five_seconds() {
+        let started = tokio::time::Instant::now();
+        let _held = within_the_live_deadline(|| false).await;
+        assert!(
+            started.elapsed() > Duration::from_secs(5),
+            "a loaded host gets more than the old fixed 5 s: {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// On the servers `scripts/pg-test-server.sh` starts.
+    #[cfg(feature = "backend-tests")]
+    mod on_a_server {
+        use super::super::super::live::within_of;
+        use super::super::super::schema_tests::live::Db;
+        use super::*;
+
+        #[tokio::test]
+        async fn a_value_already_there_is_seen_at_once() {
+            let db = Db::fresh().await;
+            let admin = db.admin().await;
+            let started = Instant::now();
+            assert!(
+                within_of(&admin, "SELECT 1", "1", LIVE_DEADLINE).await,
+                "the value is there"
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "at once: {:?}",
+                started.elapsed()
+            );
+        }
+
+        #[tokio::test]
+        async fn a_value_never_there_is_given_up_at_the_deadline_passed() {
+            let db = Db::fresh().await;
+            let admin = db.admin().await;
+            let started = Instant::now();
+            let seen = within_of(&admin, "SELECT 1", "2", Duration::from_secs(1)).await;
+            let took = started.elapsed();
+            assert!(!seen, "the value never comes");
+            assert!(
+                took >= Duration::from_secs(1) && took < Duration::from_secs(4),
+                "given up at the one-second deadline passed, not a fixed count: {took:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_value_there_is_seen_within_a_short_deadline() {
+            let db = Db::fresh().await;
+            let admin = db.admin().await;
+            assert!(
+                within_of(&admin, "SELECT 1", "1", Duration::from_millis(200)).await,
+                "seen at the first ask"
+            );
+        }
+    }
+}

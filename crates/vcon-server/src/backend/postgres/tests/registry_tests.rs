@@ -525,7 +525,7 @@ pub(super) mod on_a_server {
         );
         first.commit().expect("the first commits");
         let seen = second_done
-            .recv_timeout(Duration::from_secs(30))
+            .recv_timeout(crate::live_deadline::LIVE_DEADLINE)
             .expect("the second write ends once the first has");
         second.join().expect("the second thread");
         assert_eq!(seen, 1, "and it read the first write's row");
@@ -916,16 +916,17 @@ pub(super) mod on_a_server {
                 let open = scope.spawn(move || PgRegistry::open(database, key).map(drop));
                 // The open has read no id and now waits for the lock.
                 let mut waiting = 0_i64;
-                for _ in 0..1500 {
-                    waiting = runtime
-                        .block_on(holder.query_one(&waiters(Some("advisory")), &[]))
-                        .expect("reads the locks")
-                        .get(0);
-                    if waiting == 1 {
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(20));
-                }
+                crate::live_deadline::poll(
+                    crate::live_deadline::LIVE_DEADLINE,
+                    Duration::from_millis(20),
+                    || {
+                        waiting = runtime
+                            .block_on(holder.query_one(&waiters(Some("advisory")), &[]))
+                            .expect("reads the locks")
+                            .get(0);
+                        waiting == 1
+                    },
+                );
                 // What the other first open writes, then its commit.
                 let keys = crate::envelope::ColumnKeys::derive(key).expect("derives");
                 let (log_key, wrapped) = new_audit_key(REGISTRY, &keys).expect("a key");
@@ -983,16 +984,17 @@ pub(super) mod on_a_server {
             let (database, key) = (database.clone(), &key);
             std::thread::scope(|scope| {
                 let open = scope.spawn(move || PgRegistry::open(database, key).map(drop));
-                for _ in 0..1500 {
-                    let waiting: i64 = runtime
-                        .block_on(holder.query_one(&waiters(Some("advisory")), &[]))
-                        .expect("reads the locks")
-                        .get(0);
-                    if waiting == 1 {
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(20));
-                }
+                crate::live_deadline::poll(
+                    crate::live_deadline::LIVE_DEADLINE,
+                    Duration::from_millis(20),
+                    || {
+                        let waiting: i64 = runtime
+                            .block_on(holder.query_one(&waiters(Some("advisory")), &[]))
+                            .expect("reads the locks")
+                            .get(0);
+                        waiting == 1
+                    },
+                );
                 runtime
                     .block_on(holder.batch_execute(
                         "INSERT INTO vcon.registry_key (catalog_key_id) VALUES ('\\x0102030405060708'); \

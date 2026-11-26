@@ -9,13 +9,12 @@
 #[cfg(feature = "backend-tests")]
 mod on_a_server {
     use std::sync::{Arc, Mutex, mpsc};
-    use std::time::Duration;
 
     use uuid::Uuid;
 
     use super::super::super::catalog::{Database, PgCatalog};
     use super::super::catalog_tests::on_a_server::database;
-    use super::super::live::value;
+    use super::super::live::within_of;
     use super::super::schema_tests::live::{Db, count, waiters};
     use crate::backend::conformance::{START, TestClock, vcon};
     use crate::backend::local::LocalObjects;
@@ -30,8 +29,8 @@ mod on_a_server {
     const A: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bca1";
     const B: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bcb2";
 
-    /// How long a step a test waits for may take.
-    const PATIENCE: Duration = Duration::from_secs(20);
+    /// How long a step a test waits for may take: the live-test deadline.
+    use crate::live_deadline::LIVE_DEADLINE;
 
     /// A tenant's Store on a database of the test's own, its objects in a
     /// directory.
@@ -157,7 +156,7 @@ mod on_a_server {
     }
 
     /// Whether some session of the test's database waits for a lock,
-    /// asked up to fifty times a tenth of a second apart.
+    /// asked a tenth of a second apart within the live-test deadline.
     fn a_session_waits(db: &Db) -> bool {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -165,13 +164,7 @@ mod on_a_server {
             .expect("a runtime");
         runtime.block_on(async {
             let admin = db.admin().await;
-            for _ in 0..50 {
-                if value(&admin, &waiters(None)).await == "1" {
-                    return true;
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            false
+            within_of(&admin, &waiters(None), "1", LIVE_DEADLINE).await
         })
     }
 
@@ -194,7 +187,7 @@ mod on_a_server {
         let reached = at_last_step(t);
         let reading = read(t, uuid);
         assert!(
-            reached.recv_timeout(PATIENCE).is_ok(),
+            reached.recv_timeout(LIVE_DEADLINE).is_ok(),
             "the read's first step ended while another catalog held the tenant's lock"
         );
         assert!(a_session_waits(db), "its last step waits for the lock");
@@ -213,8 +206,8 @@ mod on_a_server {
     fn answer(reading: Reading) -> Result<Vec<u8>, StoreError> {
         let got = reading
             .answered
-            .recv_timeout(PATIENCE)
-            .unwrap_or_else(|_| panic!("the read had no answer within {PATIENCE:?}"));
+            .recv_timeout(LIVE_DEADLINE)
+            .unwrap_or_else(|_| panic!("the read had no answer within {LIVE_DEADLINE:?}"));
         reading.thread.join().expect("the reading thread ends");
         got
     }
@@ -543,7 +536,9 @@ mod on_a_server {
             .map(|_| {
                 let (t, done, gate, check) = (t.clone(), done.clone(), gate.clone(), check.clone());
                 std::thread::spawn(move || {
-                    let deadline = std::time::Instant::now() + PATIENCE * 6;
+                    // A race of many reads: four live deadlines (120 s),
+                    // under the test runner's 180 s.
+                    let deadline = std::time::Instant::now() + LIVE_DEADLINE * 4;
                     let mut made = 0;
                     while made < RACE_READS || !done.load(SeqCst) {
                         assert!(
@@ -636,7 +631,7 @@ mod on_a_server {
                 Err(e) => assert_eq!(e, StoreError::Gone, "refused as gone, not {e:?}"),
             },
         );
-        let deadline = std::time::Instant::now() + PATIENCE;
+        let deadline = std::time::Instant::now() + LIVE_DEADLINE;
         while answered_reads.load(SeqCst) < 8 {
             assert!(
                 std::time::Instant::now() < deadline,
