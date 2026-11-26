@@ -2329,7 +2329,7 @@ impl TenantSpace for LocalTenantSpace {
             #[cfg(feature = "s3")]
             ObjectPlace::S3(s3) => {
                 let catalog_key = envelope::catalog_key(&key).map_err(|_| StoreError::Io)?;
-                let durability = if recover {
+                let durability = if recover.is_some() {
                     Durability::Group
                 } else {
                     Durability::Beside
@@ -2785,7 +2785,8 @@ mod tests {
         );
         drop(conn);
         drop(catalog);
-        let catalog = LocalCatalog::open(&path, under(&key)).expect("opens again");
+        let catalog =
+            LocalCatalog::open(&path, under(&key), &OsFs, Durability::Group).expect("opens again");
         let mut tx = catalog.snapshot().expect("a snapshot");
         assert_eq!(
             tx.pending_files().expect("reads"),

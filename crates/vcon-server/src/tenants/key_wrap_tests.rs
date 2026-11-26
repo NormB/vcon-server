@@ -203,7 +203,9 @@ impl World {
             &Catalogs::Local,
         )?;
         if !beside {
-            tenants.recover().map_err(RegistryError::Recovery)?;
+            tenants
+                .recover(crate::store::pending::Writers::None)
+                .map_err(RegistryError::Recovery)?;
         }
         Ok(tenants)
     }

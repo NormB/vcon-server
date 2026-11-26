@@ -1162,7 +1162,12 @@ mod tests {
                 reader_grace: crate::config::READER_GRACE,
             };
             assert_eq!(
-                lead_pack(&f.tenants, &settings, lease_for(settings.pack_interval), &|| false),
+                lead_pack(
+                    &f.tenants,
+                    &settings,
+                    lease_for(settings.pack_interval),
+                    &|| false
+                ),
                 Some(PackRunReport::default()),
                 "no tenant, nothing packed, and the run was this server's"
             );

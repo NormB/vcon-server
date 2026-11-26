@@ -992,7 +992,8 @@ mod on_a_server {
         std::thread::scope(|s| {
             let writing = s.spawn(|| store.create(&who, &found, &body));
             pause.wait();
-            crate::serve::lead_sweep(&first, Retention::Days(1), ttl, &|| false).expect("the first leads");
+            crate::serve::lead_sweep(&first, Retention::Days(1), ttl, &|| false)
+                .expect("the first leads");
             pause.release();
             writing.join().expect("joins").expect("the write commits");
         });
@@ -1010,7 +1011,8 @@ mod on_a_server {
         let id = std::thread::scope(|s| {
             let creating = s.spawn(|| second.create(Actor::Cli, "acme", None));
             pause.wait();
-            crate::serve::lead_sweep(&first, Retention::Days(1), ttl, &|| false).expect("the first leads");
+            crate::serve::lead_sweep(&first, Retention::Days(1), ttl, &|| false)
+                .expect("the first leads");
             pause.release();
             creating.join().expect("joins")
         })
@@ -1517,14 +1519,14 @@ mod on_a_server {
         refuse_leases(&w);
         let ttl = crate::serve::lease_for(std::time::Duration::from_secs(3_600));
         assert_eq!(
-            crate::serve::lead_sweep(&first, Retention::Days(1), ttl),
+            crate::serve::lead_sweep(&first, Retention::Days(1), ttl, &|| false),
             None,
             "a lease that cannot be taken is not held"
         );
         assert_eq!(w.rows(id, "version"), 1, "nothing was purged");
         w.as_owner("GRANT INSERT, UPDATE ON vcon.lease TO vcon_app");
         assert_eq!(
-            crate::serve::lead_sweep(&first, Retention::Days(1), ttl),
+            crate::serve::lead_sweep(&first, Retention::Days(1), ttl, &|| false),
             Some(crate::serve::SweepReport {
                 purged: 1,
                 failed: 0
@@ -1567,7 +1569,9 @@ mod on_a_server {
             reader_grace: crate::config::READER_GRACE,
         };
         assert_eq!(
-            crate::serve::lead_pack(&first, &settings, crate::serve::lease_for(MINUTE)),
+            crate::serve::lead_pack(&first, &settings, crate::serve::lease_for(MINUTE), &|| {
+                false
+            }),
             None,
             "a lease that cannot be taken is not held"
         );
@@ -1600,6 +1604,45 @@ mod on_a_server {
             second.lead(Job::Sweep, MINUTE),
             Ok(true),
             "the next takes it once the database's clock ends it"
+        );
+    }
+
+    /// A run that begins while the server stops takes no lease: one given
+    /// up at the stop stays given up, and the next server takes the job at
+    /// once.
+    #[test]
+    fn a_run_of_a_stopping_server_takes_no_lease_again() {
+        let w = world();
+        let (_one, first) = w.serve();
+        let (_two, second) = w.serve();
+        let ttl = crate::serve::lease_for(MINUTE);
+        assert_eq!(
+            first.lead(Job::Sweep, MINUTE),
+            Ok(true),
+            "the first's sweep"
+        );
+        assert_eq!(first.lead(Job::Pack, MINUTE), Ok(true), "and its pack run");
+        assert_eq!(crate::serve::give_up_leases(&first), 0, "both given up");
+        let settings = crate::config::ParquetSettings {
+            pack_interval: crate::config::PACK_INTERVAL,
+            pack_limit: crate::config::PACK_LIMIT,
+            reader_grace: crate::config::READER_GRACE,
+        };
+        assert_eq!(
+            crate::serve::lead_sweep(&first, Retention::Days(1), ttl, &|| true),
+            None,
+            "a sweep of a stopping server does not run"
+        );
+        assert_eq!(
+            crate::serve::lead_pack(&first, &settings, ttl, &|| true),
+            None,
+            "nor its pack run"
+        );
+        assert_eq!(w.registry_rows("lease"), 0, "no lease is taken again");
+        assert_eq!(
+            second.lead(Job::Sweep, MINUTE),
+            Ok(true),
+            "the next server takes the sweep at once"
         );
     }
 
@@ -1642,7 +1685,7 @@ mod on_a_server {
         );
         let ttl = crate::serve::lease_for(MINUTE);
         assert_eq!(
-            crate::serve::lead_sweep(&first, Retention::Days(1), ttl),
+            crate::serve::lead_sweep(&first, Retention::Days(1), ttl, &|| false),
             Some(crate::serve::SweepReport {
                 purged: 0,
                 failed: 1
@@ -1704,7 +1747,7 @@ mod on_a_server {
         });
         let ttl = crate::serve::lease_for(MINUTE);
         assert_eq!(
-            crate::serve::lead_sweep(&first, Retention::Days(1), ttl),
+            crate::serve::lead_sweep(&first, Retention::Days(1), ttl, &|| false),
             None,
             "a lease that cannot be read is not held"
         );

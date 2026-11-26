@@ -176,10 +176,10 @@ const KEY_CHECK_TRIPS: usize = 2;
 const SESSION_TRIPS: (usize, usize, usize, usize) = (10, 3, 4, 6);
 
 /// A tenant's create (not the first), then its rekey.
-const CREATE_AND_REKEY_TRIPS: (usize, usize) = (35, 72);
+const CREATE_AND_REKEY_TRIPS: (usize, usize) = (33, 68);
 
 /// A delete under no retention, which purges the version at once.
-const DELETE_AND_PURGE_TRIPS: usize = 23;
+const DELETE_AND_PURGE_TRIPS: usize = 21;
 
 /// A publish of one manifest, a removal that finds the files inside the
 /// grace, and a pruning that keeps the older manifest.
