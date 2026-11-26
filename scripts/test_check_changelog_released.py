@@ -474,7 +474,10 @@ class Repository(unittest.TestCase):
         self.git("checkout", "-q", "-b", "side")
         side = self.commit(log(released="## [0.3.0] - 2026-11-20\n\n### Fixed\n\n" + ENTRY_C + "\n" + RELEASED_2))
         self.git("checkout", "-q", "main")
-        self.git("update-ref", "MERGE_HEAD", side)
+        # A real merge that stops before its commit: git 2.45 and later
+        # refuse `git update-ref MERGE_HEAD`, a pseudoref.
+        self.git("merge", "-q", "--no-ff", "--no-commit", "side")
+        self.assertEqual(self.git("rev-parse", "-q", "--verify", "MERGE_HEAD"), side)
         self.write(log())
         run = self.run_script("index")
         self.assertEqual(run.returncode, 1, run.stdout)
