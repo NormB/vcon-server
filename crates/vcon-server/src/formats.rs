@@ -19,7 +19,7 @@ pub struct Format {
 
 /// The version of the PostgreSQL catalog's schema this build makes and
 /// reads; the migrations' count, which a test of that module holds equal.
-pub const POSTGRES_SCHEMA: i32 = 15;
+pub const POSTGRES_SCHEMA: i32 = 16;
 
 /// The digits of a small number, at compile time, for [`FORMATS`].
 const fn digits(n: i64) -> &'static str {

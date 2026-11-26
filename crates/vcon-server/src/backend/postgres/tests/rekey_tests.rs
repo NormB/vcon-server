@@ -415,6 +415,8 @@ mod on_a_server {
             wrapped: envelope::wrap(master, &ctx, &key),
             pending: next.as_ref().map(|k| envelope::wrap(master, &ctx, k)),
             key_since: T0,
+            kek: None,
+            pending_kek: None,
         };
         (row, key.id(), next.map(|k| k.id()))
     }
@@ -1805,11 +1807,17 @@ mod on_a_server {
              ORDER BY 1",
         );
         // The log's records are never written again, and the rotation
-        // seals the log's keys with the function a tenant's log has.
+        // seals the log's keys with the function a tenant's log has. The
+        // blobs a key backend wrapped (schema version 16) are not under
+        // the master key, so its rotation leaves them as they are.
         let apart = [
             "admin_audit.target_mac",
             "admin_audit.target_sealed",
             "admin_audit_key.wrapped",
+            "registry_key.pending_wrapped_root",
+            "registry_key.wrapped_root",
+            "tenant.pending_wrapped_kek",
+            "tenant.wrapped_kek",
         ];
         for name in apart {
             assert!(

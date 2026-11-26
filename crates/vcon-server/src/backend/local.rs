@@ -15,7 +15,7 @@ use super::{
     Catalog, CatalogTx, CommitError, ExaminedRow, ExportedRow, HiddenRow, Job, KeptRow, KeyRow,
     ListedRow, MembershipRow, NewPackFile, NewVersion, ObjectError, ObjectPlace, Objects,
     PackFileRow, Packed, PageQuery, Registry, RegistryTx, SessionRow, TenantRow, TenantSpace,
-    Under, UnpackedRow, UserRow, VconRow, VersionRow, WrappedRow,
+    Under, UnpackedRow, UserRow, VconRow, VersionRow, WrappedKek, WrappedRow, kek_of,
 };
 use crate::audit::{self, Action, Actor, AuditError, Entry};
 use crate::catalog::{self, Cached};
@@ -1420,7 +1420,10 @@ fn io<E>(_: E) -> StoreError {
 /// metadata level is written as `Metadata` writes it; NULL means `none`.
 /// A role cap is written as `Roles` writes it; NULL means no cap. Its column
 /// is declared after the closing line break of `metadata` because that is
-/// the text SQLite keeps for a column an upgrade adds to a table.
+/// the text SQLite keeps for a column an upgrade adds to a table. The
+/// four columns of a key-encryption key (schema version 11) follow it for
+/// the same reason; NULL in both of a pair means the key is under the
+/// master key file.
 pub(crate) const REGISTRY_TABLES: &str = "
 CREATE TABLE tenant (
     id BLOB PRIMARY KEY NOT NULL,
@@ -1432,7 +1435,7 @@ CREATE TABLE tenant (
     pending_wrapped_tenant_key BLOB,
     key_since INTEGER NOT NULL,
     metadata TEXT
-, role_cap TEXT);
+, role_cap TEXT, wrap_ref TEXT, wrapped_kek BLOB CHECK ((wrap_ref IS NULL) = (wrapped_kek IS NULL)), pending_wrap_ref TEXT, pending_wrapped_kek BLOB CHECK ((pending_wrap_ref IS NULL) = (pending_wrapped_kek IS NULL)));
 CREATE TABLE master_key_use (
     master_key_id BLOB PRIMARY KEY NOT NULL,
     wraps INTEGER NOT NULL,
@@ -1575,10 +1578,19 @@ impl Drop for LocalRegistryTx<'_> {
 }
 
 const TENANT_COLUMNS: &str = "id, name, retention, created_at, tenant_key_id,
-    wrapped_tenant_key, pending_wrapped_tenant_key, key_since, metadata, role_cap";
+    wrapped_tenant_key, pending_wrapped_tenant_key, key_since, metadata, role_cap,
+    wrap_ref, wrapped_kek, pending_wrap_ref, pending_wrapped_kek";
 
-fn tenant_row(r: &rusqlite::Row) -> rusqlite::Result<TenantRow> {
-    Ok(TenantRow {
+/// A tenant's row; the outer error is the read's, the inner one a row no
+/// build writes (half a key-encryption key).
+fn tenant_row(r: &rusqlite::Row) -> rusqlite::Result<Result<TenantRow, TenantError>> {
+    let kek = kek_of(r.get(10)?, r.get(11)?);
+    let pending_kek = kek_of(r.get(12)?, r.get(13)?);
+    let (kek, pending_kek) = match (kek, pending_kek) {
+        (Ok(kek), Ok(pending_kek)) => (kek, pending_kek),
+        (Err(e), _) | (_, Err(e)) => return Ok(Err(e)),
+    };
+    Ok(Ok(TenantRow {
         id: TenantId(r.get(0)?),
         name: r.get(1)?,
         retention: r.get(2)?,
@@ -1589,7 +1601,9 @@ fn tenant_row(r: &rusqlite::Row) -> rusqlite::Result<TenantRow> {
         key_since: r.get(7)?,
         metadata: r.get(8)?,
         role_cap: r.get(9)?,
-    })
+        kek,
+        pending_kek,
+    }))
 }
 
 const KEY_COLUMNS: &str =
@@ -1663,7 +1677,8 @@ impl RegistryTx for LocalRegistryTx<'_> {
                 tenant_row,
             )
             .optional()
-            .map_err(tenant_io)
+            .map_err(tenant_io)?
+            .transpose()
     }
 
     fn tenants(&mut self) -> Result<Vec<TenantRow>, TenantError> {
@@ -1675,7 +1690,7 @@ impl RegistryTx for LocalRegistryTx<'_> {
             .map_err(tenant_io)?;
         rows.query_map([], tenant_row)
             .map_err(tenant_io)?
-            .map(|row| row.map_err(tenant_io))
+            .map(|row| row.map_err(tenant_io)?)
             .collect()
     }
 
@@ -1693,8 +1708,8 @@ impl RegistryTx for LocalRegistryTx<'_> {
             .cached_run(
                 "INSERT INTO tenant (id, name, retention, created_at, tenant_key_id,
                      wrapped_tenant_key, pending_wrapped_tenant_key, key_since, metadata,
-                     role_cap)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                     role_cap, wrap_ref, wrapped_kek, pending_wrap_ref, pending_wrapped_kek)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                 params![
                     row.id.0,
                     row.name,
@@ -1706,6 +1721,10 @@ impl RegistryTx for LocalRegistryTx<'_> {
                     row.key_since,
                     row.metadata,
                     row.role_cap,
+                    row.kek.as_ref().map(|k| &k.wrap_ref),
+                    row.kek.as_ref().map(|k| &k.blob),
+                    row.pending_kek.as_ref().map(|k| &k.wrap_ref),
+                    row.pending_kek.as_ref().map(|k| &k.blob),
                 ],
             )
             .map_err(tenant_io)?;
@@ -1762,11 +1781,22 @@ impl RegistryTx for LocalRegistryTx<'_> {
         Ok(())
     }
 
-    fn set_pending(&mut self, id: TenantId, pending: &[u8]) -> Result<(), TenantError> {
+    fn set_pending(
+        &mut self,
+        id: TenantId,
+        pending: &[u8],
+        kek: Option<&WrappedKek>,
+    ) -> Result<(), TenantError> {
         self.conn
             .cached_run(
-                "UPDATE tenant SET pending_wrapped_tenant_key = ?1 WHERE id = ?2",
-                params![pending, id.0],
+                "UPDATE tenant SET pending_wrapped_tenant_key = ?1, pending_wrap_ref = ?2,
+                    pending_wrapped_kek = ?3 WHERE id = ?4",
+                params![
+                    pending,
+                    kek.map(|k| &k.wrap_ref),
+                    kek.map(|k| &k.blob),
+                    id.0
+                ],
             )
             .map_err(tenant_io)?;
         Ok(())
@@ -1777,7 +1807,9 @@ impl RegistryTx for LocalRegistryTx<'_> {
             .cached_run(
                 "UPDATE tenant SET tenant_key_id = ?1,
                     wrapped_tenant_key = pending_wrapped_tenant_key,
-                    pending_wrapped_tenant_key = NULL, key_since = ?2
+                    pending_wrapped_tenant_key = NULL, key_since = ?2,
+                    wrap_ref = pending_wrap_ref, wrapped_kek = pending_wrapped_kek,
+                    pending_wrap_ref = NULL, pending_wrapped_kek = NULL
                  WHERE id = ?3",
                 params![key.bytes(), at, id.0],
             )
@@ -2662,8 +2694,8 @@ mod tests {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .expect("the version");
-        assert_eq!(version, 10, "the catalog's schema version is unchanged");
-        assert_eq!(catalog::SCHEMA_VERSION, 10, "and this build's");
+        assert_eq!(version, 11, "the catalog's schema version is unchanged");
+        assert_eq!(catalog::SCHEMA_VERSION, 11, "and this build's");
     }
 
     #[test]

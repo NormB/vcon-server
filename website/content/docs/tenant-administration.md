@@ -391,7 +391,7 @@ See [audit log records](@/docs/audit-log-records.md) for every action.
   JSON, or a key's body lacks `scopes` or `label`.
 - **`key create` refuses `--scope tenant_admin`:** the binary
   is release 0.4.3 or older.
-- **`the registry cannot be opened: … schema version 10 is not one this
+- **`the registry cannot be opened: … schema version 11 is not one this
   build knows`:** an older binary is reading a data directory that a newer
   one has opened; the number is the schema version the newer one wrote. See
   [go back to the old version](@/docs/upgrading.md#go-back-to-the-old-version).

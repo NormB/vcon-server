@@ -15,6 +15,18 @@ All notable changes to this project are recorded here. The format follows
     releases.
   - Docs: [On-disk formats](https://vcon-server.com/docs/on-disk-format/)
 
+### Changed
+
+- **The catalogs move to schema version 11, PostgreSQL to schema version 16.**
+  - Effect: A tenant can record a key that a key backend wrapped; every
+    tenant there is stays under the master key file.
+  - Do: On PostgreSQL, run `vcon-server migrate` with the new binary
+    before any server starts.
+  - Limit: Release 0.4.18 and earlier refuse data this build has opened, so
+    copy it before the upgrade.
+  - Docs: [Schema
+    versions](https://vcon-server.com/docs/postgres-catalog/#schema-versions)
+
 ## [0.4.18] - 2026-11-26
 
 ### Added

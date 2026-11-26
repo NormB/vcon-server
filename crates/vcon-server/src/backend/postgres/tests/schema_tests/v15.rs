@@ -220,6 +220,7 @@ fn the_application_role_is_granted_no_update_on_pending_file() {
 /// Live, against the servers of scripts/pg-test-server.sh.
 #[cfg(feature = "backend-tests")]
 mod on_a_server {
+    use super::super::super::super::connect::Purpose;
     use super::super::super::super::schema::{MIGRATIONS, Migrated};
     use super::super::live::{Db, TENANT_A, TENANT_B, in_scope, no_scope};
     use super::super::v8::on_a_server::{one, owner, refused};
@@ -252,7 +253,15 @@ mod on_a_server {
             Migrated { from: 14, to: 15 },
             "the fifteenth migration alone"
         );
-        assert_eq!(one(&db.app().await, "registry", ROWS).await, "", "empty");
+        // At version 15 a later binary's server is refused (the version
+        // check of Purpose::Serve), so the application role reads the new
+        // table on a connection that checks no version.
+        let app = db
+            .connect("vcon_app", Purpose::Connect)
+            .await
+            .expect("the application role connects")
+            .client;
+        assert_eq!(one(&app, "registry", ROWS).await, "", "empty");
     }
 
     #[test]

@@ -141,8 +141,8 @@ fn the_how_to_says_what_version_14_changes_under_schema_versions() {
         versions.contains("Version 14 makes the table `pending_write`"),
         "version 14, in the section of the schema's versions"
     );
-    // The line migrate prints names the binary's version, 15 from schema
-    // version 15 on (schema_tests::v9).
+    // The line migrate prints names the binary's version, 16 from schema
+    // version 16 on (schema_tests::v16).
 }
 
 #[test]

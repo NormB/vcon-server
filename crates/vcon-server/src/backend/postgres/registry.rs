@@ -37,6 +37,7 @@ use super::lease;
 use crate::audit::{Action, Actor, AuditError, Entry};
 use crate::backend::{
     CommitError, Job, KeyRow, MembershipRow, Registry, RegistryTx, SessionRow, TenantRow, UserRow,
+    WrappedKek, kek_of,
 };
 use crate::envelope::{self as column, ColumnKeys, Key, REGISTRY};
 use crate::ids::{KeyId, TenantId, UserId};
@@ -111,7 +112,8 @@ pub(crate) fn setting_key(tenant: TenantId, name: &str) -> Vec<u8> {
 
 const TENANT_COLUMNS: &str = "id, name_sealed, retention_sealed, metadata_sealed, \
      role_cap_sealed, created_at, tenant_key_id, wrapped_tenant_key, \
-     pending_wrapped_tenant_key, key_since";
+     pending_wrapped_tenant_key, key_since, wrap_ref, wrapped_kek, pending_wrap_ref, \
+     pending_wrapped_kek";
 const KEY_COLUMNS: &str = "id, tenant, token_hash, scopes_sealed, label_sealed, created_at, \
      revoked_at, expires_at, last_used_at";
 const USER_COLUMNS: &str = "id, label_sealed, identity_sealed, created_at, deactivated_at";
@@ -749,6 +751,8 @@ impl PgRegistryTx<'_> {
             wrapped: col(row, 7)?,
             pending: col(row, 8)?,
             key_since: col(row, 9)?,
+            kek: kek_of(col(row, 10)?, col(row, 11)?)?,
+            pending_kek: kek_of(col(row, 12)?, col(row, 13)?)?,
         })
     }
 
@@ -1034,11 +1038,13 @@ impl RegistryTx for PgRegistryTx<'_> {
             self.seal_some("tenant", "retention_sealed", id, row.retention.as_deref())?;
         let metadata = self.seal_some("tenant", "metadata_sealed", id, row.metadata.as_deref())?;
         let role_cap = self.seal_some("tenant", "role_cap_sealed", id, row.role_cap.as_deref())?;
+        let (kek, pending_kek) = (row.kek.as_ref(), row.pending_kek.as_ref());
         self.run(
             "INSERT INTO vcon.tenant (id, name_mac, name_sealed, retention_sealed, \
              metadata_sealed, role_cap_sealed, created_at, tenant_key_id, wrapped_tenant_key, \
-             pending_wrapped_tenant_key, key_since)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+             pending_wrapped_tenant_key, key_since, wrap_ref, wrapped_kek, pending_wrap_ref, \
+             pending_wrapped_kek)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
             &[
                 (&id, Type::BYTEA),
                 (&mac.as_slice(), Type::BYTEA),
@@ -1051,6 +1057,10 @@ impl RegistryTx for PgRegistryTx<'_> {
                 (&row.wrapped, Type::BYTEA),
                 (&row.pending, Type::BYTEA),
                 (&row.key_since, Type::INT8),
+                (&kek.map(|k| &k.wrap_ref), Type::TEXT),
+                (&kek.map(|k| &k.blob), Type::BYTEA),
+                (&pending_kek.map(|k| &k.wrap_ref), Type::TEXT),
+                (&pending_kek.map(|k| &k.blob), Type::BYTEA),
             ],
         )
     }
@@ -1082,10 +1092,21 @@ impl RegistryTx for PgRegistryTx<'_> {
         )
     }
 
-    fn set_pending(&mut self, id: TenantId, pending: &[u8]) -> Result<(), TenantError> {
+    fn set_pending(
+        &mut self,
+        id: TenantId,
+        pending: &[u8],
+        kek: Option<&WrappedKek>,
+    ) -> Result<(), TenantError> {
         self.run(
-            "UPDATE vcon.tenant SET pending_wrapped_tenant_key = $1 WHERE id = $2",
-            &[(&pending, Type::BYTEA), (&id.0.as_slice(), Type::BYTEA)],
+            "UPDATE vcon.tenant SET pending_wrapped_tenant_key = $1, pending_wrap_ref = $2, \
+             pending_wrapped_kek = $3 WHERE id = $4",
+            &[
+                (&pending, Type::BYTEA),
+                (&kek.map(|k| &k.wrap_ref), Type::TEXT),
+                (&kek.map(|k| &k.blob), Type::BYTEA),
+                (&id.0.as_slice(), Type::BYTEA),
+            ],
         )
     }
 
@@ -1097,7 +1118,9 @@ impl RegistryTx for PgRegistryTx<'_> {
             &format!(
                 "UPDATE vcon.tenant SET tenant_key_id = $1, \
                  wrapped_tenant_key = pending_wrapped_tenant_key, \
-                 pending_wrapped_tenant_key = NULL, key_since = {CLOCK_NANOS} WHERE id = $2"
+                 pending_wrapped_tenant_key = NULL, key_since = {CLOCK_NANOS}, \
+                 wrap_ref = pending_wrap_ref, wrapped_kek = pending_wrapped_kek, \
+                 pending_wrap_ref = NULL, pending_wrapped_kek = NULL WHERE id = $2"
             ),
             &[
                 (&key.0.as_slice(), Type::BYTEA),

@@ -2,7 +2,7 @@
   "formats": {
     "catalog": {
       "read_back": true,
-      "version": "10"
+      "version": "11"
     },
     "envelope": {
       "read_back": true,
@@ -26,7 +26,7 @@
     },
     "postgres": {
       "read_back": true,
-      "version": "15"
+      "version": "16"
     }
   },
   "releases": {

@@ -19,6 +19,7 @@ use time::OffsetDateTime;
 use crate::audit::{Action, Actor, Entry, NO_ANSWER};
 use crate::backend::{
     CommitError, Job, KeyRow, MembershipRow, Registry, RegistryTx, SessionRow, TenantRow, UserRow,
+    WrappedKek,
 };
 use crate::ids::{KeyId, TenantId, UserId};
 use crate::tenants::TenantError;
@@ -39,6 +40,9 @@ macro_rules! registry_conformance {
             ok_a_name_is_taken_once_inserted,
             ok_retention_metadata_and_role_cap_are_set_and_cleared,
             ok_a_pending_key_is_set_and_promoted,
+            ok_a_tenant_s_backend_keys_read_back,
+            ok_a_pending_backend_key_is_set_and_promoted,
+            ok_a_pending_file_key_is_promoted_over_a_backend_key,
             ok_master_wraps_are_counted_from_the_first,
             ok_a_key_reads_back,
             ok_keys_are_listed_by_creation_then_id,
@@ -96,6 +100,8 @@ macro_rules! registry_conformance {
             edge_a_second_deactivation_keeps_the_first_time,
             edge_an_identity_is_free_again_after_deactivation,
             edge_a_tenant_with_nothing_optional_reads_back,
+            edge_a_second_pending_key_replaces_the_first_s_kek,
+            edge_a_kek_at_the_format_s_limits_reads_back,
             edge_long_and_non_ascii_text_reads_back,
             edge_empty_text_reads_back,
             edge_a_count_of_nothing_makes_no_record,
@@ -174,6 +180,17 @@ fn tenant(n: u8, name: &str) -> TenantRow {
         wrapped: vec![n; 48],
         pending: Some(vec![n ^ 0xff; 48]),
         key_since: T0 + 5,
+        kek: Some(kek(n, "current")),
+        pending_kek: Some(kek(n, "pending")),
+    }
+}
+
+/// A key-encryption key as a backend wrapped it, told from others by `n`
+/// and `which`.
+fn kek(n: u8, which: &str) -> WrappedKek {
+    WrappedKek {
+        wrap_ref: format!("openbao-transit:tenants-{which}-{n}"),
+        blob: [&[1, 5][..], which.as_bytes(), &[n; 40]].concat(),
     }
 }
 
@@ -334,7 +351,9 @@ pub(crate) fn ok_a_pending_key_is_set_and_promoted(r: &dyn Registry) {
     let mut row = tenant(1, "alpha");
     row.pending = None;
     write(r, |tx| tx.insert_tenant(&row).expect("inserts"));
-    write(r, |tx| tx.set_pending(row.id, &[7; 48]).expect("sets"));
+    write(r, |tx| {
+        tx.set_pending(row.id, &[7; 48], None).expect("sets")
+    });
     let found = read(r, |tx| tx.tenant(row.id).expect("reads")).expect("the tenant");
     assert_eq!(found.pending, Some(vec![7; 48]), "the pending key is held");
     assert_eq!(found.wrapped, row.wrapped, "the current key is unchanged");
@@ -356,6 +375,60 @@ pub(crate) fn ok_a_pending_key_is_set_and_promoted(r: &dyn Registry) {
         found.key_since, since,
         "since the registry's clock in the transaction: the time given on a data directory"
     );
+}
+
+pub(crate) fn ok_a_tenant_s_backend_keys_read_back(r: &dyn Registry) {
+    let row = tenant(1, "alpha");
+    write(r, |tx| tx.insert_tenant(&row).expect("inserts"));
+    let found = read(r, |tx| tx.tenant(row.id).expect("reads")).expect("the tenant");
+    assert_eq!(found.kek, Some(kek(1, "current")), "the current key's KEK");
+    assert_eq!(
+        found.pending_kek,
+        Some(kek(1, "pending")),
+        "the pending key's KEK"
+    );
+    let listed = read(r, |tx| tx.tenants().expect("lists"));
+    assert_eq!(listed, [row], "the list reads both KEKs too");
+}
+
+pub(crate) fn ok_a_pending_backend_key_is_set_and_promoted(r: &dyn Registry) {
+    let mut row = tenant(1, "alpha");
+    (row.pending, row.kek, row.pending_kek) = (None, None, None);
+    write(r, |tx| tx.insert_tenant(&row).expect("inserts"));
+    let next = kek(2, "next");
+    write(r, |tx| {
+        tx.set_pending(row.id, &[7; 48], Some(&next)).expect("sets")
+    });
+    let found = read(r, |tx| tx.tenant(row.id).expect("reads")).expect("the tenant");
+    assert_eq!(found.pending_kek, Some(next.clone()), "the pending KEK");
+    assert_eq!(found.kek, None, "the current key is still under the file");
+    write(r, |tx| {
+        tx.promote_pending(row.id, KeyId([9; 8]), T0 + 77)
+            .expect("promotes")
+    });
+    let found = read(r, |tx| tx.tenant(row.id).expect("reads")).expect("the tenant");
+    assert_eq!(found.kek, Some(next), "the pending KEK is the current one");
+    assert_eq!(found.pending_kek, None, "no KEK is pending");
+    assert_eq!(found.wrapped, vec![7; 48], "with its key");
+}
+
+pub(crate) fn ok_a_pending_file_key_is_promoted_over_a_backend_key(r: &dyn Registry) {
+    let mut row = tenant(1, "alpha");
+    (row.pending, row.pending_kek) = (None, None);
+    write(r, |tx| tx.insert_tenant(&row).expect("inserts"));
+    write(r, |tx| {
+        tx.set_pending(row.id, &[7; 48], None).expect("sets")
+    });
+    let found = read(r, |tx| tx.tenant(row.id).expect("reads")).expect("the tenant");
+    assert_eq!(found.pending_kek, None, "the pending key is under the file");
+    assert_eq!(found.kek, row.kek, "the current KEK is unchanged");
+    write(r, |tx| {
+        tx.promote_pending(row.id, KeyId([9; 8]), T0 + 77)
+            .expect("promotes")
+    });
+    let found = read(r, |tx| tx.tenant(row.id).expect("reads")).expect("the tenant");
+    assert_eq!(found.kek, None, "the current key is under the file now");
+    assert_eq!(found.wrapped, vec![7; 48], "with its key");
 }
 
 pub(crate) fn ok_master_wraps_are_counted_from_the_first(r: &dyn Registry) {
@@ -1365,9 +1438,59 @@ pub(crate) fn edge_a_tenant_with_nothing_optional_reads_back(r: &dyn Registry) {
     row.metadata = None;
     row.role_cap = None;
     row.pending = None;
+    row.kek = None;
+    row.pending_kek = None;
     write(r, |tx| tx.insert_tenant(&row).expect("inserts"));
     let found = read(r, |tx| tx.tenant(row.id).expect("reads"));
     assert_eq!(found, Some(row), "each absent column reads back absent");
+}
+
+pub(crate) fn edge_a_second_pending_key_replaces_the_first_s_kek(r: &dyn Registry) {
+    let mut row = tenant(1, "alpha");
+    (row.pending, row.pending_kek) = (None, None);
+    write(r, |tx| tx.insert_tenant(&row).expect("inserts"));
+    let pending = |r: &dyn Registry| {
+        read(r, |tx| tx.tenant(row.id).expect("reads"))
+            .expect("the tenant")
+            .pending_kek
+    };
+    write(r, |tx| {
+        tx.set_pending(row.id, &[7; 48], Some(&kek(3, "a")))
+            .expect("sets")
+    });
+    write(r, |tx| {
+        tx.set_pending(row.id, &[8; 48], None).expect("sets")
+    });
+    assert_eq!(pending(r), None, "a file key replaces a backend one");
+    write(r, |tx| {
+        tx.set_pending(row.id, &[9; 48], Some(&kek(4, "b")))
+            .expect("sets")
+    });
+    assert_eq!(
+        pending(r),
+        Some(kek(4, "b")),
+        "and a backend key a file one"
+    );
+}
+
+pub(crate) fn edge_a_kek_at_the_format_s_limits_reads_back(r: &dyn Registry) {
+    use crate::key_wrap::blob::{MAX_CIPHERTEXT, MAX_KEY_REF};
+    let mut row = tenant(1, "alpha");
+    let long = WrappedKek {
+        wrap_ref: format!("pkcs11:{}", "k".repeat(MAX_KEY_REF)),
+        blob: (0..MAX_CIPHERTEXT + MAX_KEY_REF + 8)
+            .map(|i| (i % 251) as u8)
+            .collect(),
+    };
+    row.kek = Some(long.clone());
+    row.pending_kek = Some(WrappedKek {
+        wrap_ref: "pkcs11:k".to_owned(),
+        blob: vec![0],
+    });
+    write(r, |tx| tx.insert_tenant(&row).expect("inserts"));
+    let found = read(r, |tx| tx.tenant(row.id).expect("reads")).expect("the tenant");
+    assert_eq!(found.kek, Some(long), "the longest reference and blob");
+    assert_eq!(found.pending_kek, row.pending_kek, "a one-byte blob");
 }
 
 pub(crate) fn edge_long_and_non_ascii_text_reads_back(r: &dyn Registry) {

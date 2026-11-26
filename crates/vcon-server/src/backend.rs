@@ -520,6 +520,35 @@ pub struct TenantRow {
     pub wrapped: Vec<u8>,
     pub pending: Option<Vec<u8>>,
     pub key_since: i64,
+    /// The key-encryption key `wrapped` is wrapped under, as a key backend
+    /// wrapped it; None when `wrapped` is under the master key file, as in
+    /// every row a release before schema version 11 wrote.
+    pub kek: Option<WrappedKek>,
+    /// The same for `pending`.
+    pub pending_kek: Option<WrappedKek>,
+}
+
+/// A tenant's key-encryption key as a key backend wrapped it: the
+/// backend's key as [`crate::key_wrap::blob::WrapRef`] writes it, and the
+/// `key-wrap` blob. A registry keeps both or neither.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrappedKek {
+    pub wrap_ref: String,
+    pub blob: Vec<u8>,
+}
+
+/// The wrapped key-encryption key of a registry row from its two columns:
+/// None when both are NULL, an error when only one is (a row no build
+/// writes).
+pub(crate) fn kek_of(
+    wrap_ref: Option<String>,
+    blob: Option<Vec<u8>>,
+) -> Result<Option<WrappedKek>, TenantError> {
+    match (wrap_ref, blob) {
+        (Some(wrap_ref), Some(blob)) => Ok(Some(WrappedKek { wrap_ref, blob })),
+        (None, None) => Ok(None),
+        _ => Err(TenantError::Io),
+    }
 }
 
 /// An access key's row in the registry, as stored.
@@ -650,8 +679,16 @@ pub trait RegistryTx {
     fn set_role_cap(&mut self, id: TenantId, cap: Option<&str>) -> Result<bool, TenantError>;
     /// Removes a tenant's row and revokes its access keys at `at`.
     fn delete_tenant(&mut self, id: TenantId, at: i64) -> Result<(), TenantError>;
-    fn set_pending(&mut self, id: TenantId, pending: &[u8]) -> Result<(), TenantError>;
-    /// Makes the pending key current, as `key` since `at`.
+    /// Sets a tenant's pending key, wrapped under the master key file when
+    /// `kek` is None and under `kek` otherwise.
+    fn set_pending(
+        &mut self,
+        id: TenantId,
+        pending: &[u8],
+        kek: Option<&WrappedKek>,
+    ) -> Result<(), TenantError>;
+    /// Makes the pending key current, with its key-encryption key, as
+    /// `key` since `at`.
     fn promote_pending(&mut self, id: TenantId, key: KeyId, at: i64) -> Result<(), TenantError>;
     /// Wraps counted against a master key.
     fn master_wraps(&mut self, key: KeyId) -> Result<u64, TenantError>;
@@ -980,6 +1017,58 @@ pub(crate) fn migrate_for_command(
              feature postgres)"
                 .to_owned(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod kek_tests {
+    use super::{TenantError, WrappedKek, kek_of};
+
+    #[test]
+    fn both_columns_make_the_kek() {
+        assert_eq!(
+            kek_of(Some("pkcs11:k".to_owned()), Some(vec![1, 6, 2])),
+            Ok(Some(WrappedKek {
+                wrap_ref: "pkcs11:k".to_owned(),
+                blob: vec![1, 6, 2],
+            })),
+            "the reference and the blob"
+        );
+    }
+
+    #[test]
+    fn neither_column_is_the_file_key() {
+        assert_eq!(kek_of(None, None), Ok(None), "under the master key file");
+    }
+
+    #[test]
+    fn a_reference_without_a_blob_is_refused() {
+        assert_eq!(
+            kek_of(Some("pkcs11:k".to_owned()), None),
+            Err(TenantError::Io),
+            "half a KEK"
+        );
+    }
+
+    #[test]
+    fn a_blob_without_a_reference_is_refused() {
+        assert_eq!(
+            kek_of(None, Some(vec![1])),
+            Err(TenantError::Io),
+            "half a KEK"
+        );
+    }
+
+    #[test]
+    fn empty_columns_are_not_null_ones() {
+        assert_eq!(
+            kek_of(Some(String::new()), Some(Vec::new())),
+            Ok(Some(WrappedKek {
+                wrap_ref: String::new(),
+                blob: Vec::new(),
+            })),
+            "an empty value is a value; its blob is checked where it is opened"
+        );
     }
 }
 

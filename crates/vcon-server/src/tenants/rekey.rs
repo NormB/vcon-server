@@ -115,7 +115,7 @@ impl Tenants {
                     // A wrap that fails drops the transaction, and with it
                     // the count above: nothing is pending, nothing counted.
                     let pending = self.wrap.wrap(id, &new).map_err(io)?;
-                    tx.set_pending(id, &pending)?;
+                    tx.set_pending(id, &pending, None)?;
                     new
                 }
             };

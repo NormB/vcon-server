@@ -254,10 +254,11 @@ once, for every entry here:
   `cargo install` and a build from source get it with
   `--features postgres`. A deployment with its catalogs in the data
   directory is unchanged by it.
-- **Schema version 15 of the PostgreSQL preview.** `vcon-server migrate`
-  of this release leaves the database at version 15; releases 0.4.15
-  to 0.4.17 leave it at 14, releases 0.4.6 to 0.4.14 at 13 and release 0.4.5 at
-  6, and their servers refuse a database at 15. Version 7 adds the
+- **Schema version 16 of the PostgreSQL preview.** `vcon-server migrate`
+  of this release leaves the database at version 16; release 0.4.18
+  leaves it at 15, releases 0.4.15 to 0.4.17 at 14, releases 0.4.6 to
+  0.4.14 at 13 and release 0.4.5 at 6, and their servers refuse a database
+  at 16. Version 7 adds the
   column `seq` to the `version` table and, on PostgreSQL 17 and later,
   grants `vcon_app` `MAINTAIN` on three tables. Version 8 adds triggers:
   the tables `audit` and `admin_audit` take new records and a larger
@@ -280,7 +281,9 @@ once, for every entry here:
   the table `pending_file`, where each pack run and purge rewrite records
   its new Parquet file under way until the file's row is added, and the
   table `lease`, which names the server that holds the purge sweep or
-  the pack run, until a time by the database's clock. See
+  the pack run, until a time by the database's clock. Version 16 adds the
+  columns of a key backend to `tenant` and `registry_key`, NULL in every
+  row there is. See
   [after an upgrade from 0.4.5](@/docs/postgres-catalog.md#after-an-upgrade-from-0-4-5).
 - **A server and the commands on a PostgreSQL catalog.** With
   `catalog.backend = "postgres"`, `serve` and every command keep the
@@ -321,6 +324,10 @@ release holds yet. Release 0.4.18 does not have these:
 - **The `key-wrap` format.** Version 1 of the on-disk format that records
   a key a key backend wrapped, with the backend and its key named. No
   release writes it yet.
+- **Catalog schema version 11.** `server.sqlite` gains, for each tenant,
+  the columns of the key-encryption key a key backend wrapped its tenant
+  key under, NULL for every tenant there is. A release up to 0.4.18
+  refuses a data directory this build has opened.
 
 ## Being built
 

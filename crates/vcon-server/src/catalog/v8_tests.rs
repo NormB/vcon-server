@@ -13,7 +13,7 @@ use super::v5_tests::{
     AUDIT_READ, KEYS_V4, Old, REGISTRY_ROWS, REGISTRY_V4, TENANT_V4, declared, number, rows,
     tables, version,
 };
-use super::v6_tests::{AUDIT_V5, ROWS_V5, USERS_V5, columns};
+use super::v6_tests::{AUDIT_V5, ROWS_V5, TENANT_READ_V6, USERS_V5, columns};
 use super::v10_tests::with_mark;
 use super::{CatalogError, SCHEMA_VERSION, open};
 use crate::backend::local::LocalRegistry;
@@ -134,7 +134,7 @@ fn a_version_7_registry_keeps_every_row_it_had() {
     let old = registry();
     let read = |conn: &Connection| {
         [
-            rows(conn, "SELECT * FROM tenant ORDER BY id"),
+            rows(conn, TENANT_READ_V6),
             rows(conn, "SELECT * FROM user_account ORDER BY id"),
             rows(conn, "SELECT * FROM membership ORDER BY user"),
             rows(conn, KEYS_V4),

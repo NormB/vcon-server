@@ -83,6 +83,12 @@ fn registry() -> Old {
 const TENANT_READ: &str = "SELECT id, name, retention, created_at, tenant_key_id, \
      wrapped_tenant_key, pending_wrapped_tenant_key, key_since, metadata FROM tenant ORDER BY id";
 
+/// A registry's tenants by the columns of versions 6 to 10, which every
+/// later upgrade keeps as they were.
+pub(super) const TENANT_READ_V6: &str = "SELECT id, name, retention, created_at, tenant_key_id, \
+     wrapped_tenant_key, pending_wrapped_tenant_key, key_since, metadata, role_cap FROM tenant \
+     ORDER BY id";
+
 /// The columns of a table, in order.
 pub(super) fn columns(conn: &Connection, table: &str) -> Vec<String> {
     rows(
@@ -102,9 +108,9 @@ fn a_version_5_registry_gains_the_role_cap_column() {
         "the upgraded registry's version"
     );
     assert_eq!(
-        columns(&conn, "tenant").last().map(String::as_str),
+        columns(&conn, "tenant").get(9).map(String::as_str),
         Some("role_cap"),
-        "the new column, after the others"
+        "the new column, after the others, before those of version 11"
     );
 }
 

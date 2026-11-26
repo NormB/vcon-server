@@ -1547,13 +1547,16 @@ fn a_failed_migration_leaves_the_releases_version_whole(release: &str) {
     );
     // A step of the migration adds a column: a column of that name already
     // there makes it fail, and with it the whole transaction. A registry
-    // before version 9 gains the access keys' expiry; one at 9 gains only
-    // the audit log's mark (a log before version 5 is made again, so a
-    // column put in it would not be in the way).
+    // before version 9 gains the access keys' expiry; one at 9 gains the
+    // audit log's mark (a log before version 5 is made again, so a column
+    // put in it would not be in the way); one at 10 gains only the tenants'
+    // key-encryption keys.
     let (table, column) = if old < 9 {
         ("api_key", "expires_at")
-    } else {
+    } else if old < 10 {
         ("audit", "counted")
+    } else {
+        ("tenant", "wrap_ref")
     };
     case.raw_registry()
         .execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} INTEGER;"))
@@ -1773,8 +1776,8 @@ release!(release_0_4_13, "0.4.13", older);
 release!(release_0_4_14, "0.4.14", older);
 release!(release_0_4_15, "0.4.15", older);
 release!(release_0_4_16, "0.4.16", older);
-release!(release_0_4_17, "0.4.17");
-release!(release_0_4_18, "0.4.18");
+release!(release_0_4_17, "0.4.17", older);
+release!(release_0_4_18, "0.4.18", older);
 
 #[test]
 fn the_older_tests_cover_exactly_the_releases_that_wrote_an_older_version() {
@@ -1977,7 +1980,8 @@ fn pg_schema(release: &str) -> i64 {
 /// version that makes it, oldest first: a release's restored rows are
 /// compared without the tables made after its schema, each such table
 /// must be there and empty after `migrate`, and the first table the
-/// build's last migration makes is the one a planted table breaks.
+/// build's last migration makes, if it makes one, is the one a planted
+/// table breaks (`last_migration_plant`).
 const LATER_TABLES: &[(i64, &str)] = &[
     (14, "pending_write"),
     (15, "pending_tenant"),
@@ -1994,12 +1998,37 @@ fn tables_made_after(release_schema: i64) -> Vec<&'static str> {
         .collect()
 }
 
-/// The first table the migration to `build_schema` makes, if it makes one.
-fn last_migration_table(build_schema: i64) -> Option<&'static str> {
-    LATER_TABLES
+/// The columns a migration added to a table that releases already had,
+/// each with the schema version that added it: a release's rows are
+/// compared without the columns added after its schema, which its
+/// rows did not have, and with every other column.
+const ADDED_COLUMNS: &[(&str, &str, i64)] = &[
+    ("tenant_lock", "removing", 14),
+    ("tenant", "wrap_ref", 16),
+    ("tenant", "wrapped_kek", 16),
+    ("tenant", "pending_wrap_ref", 16),
+    ("tenant", "pending_wrapped_kek", 16),
+    ("registry_key", "wrapped_root", 16),
+    ("registry_key", "pending_wrapped_root", 16),
+];
+
+/// What a test puts in the way of the migration to `build_schema` so that
+/// it fails, and what takes it away again, as two statements: a table of
+/// the name of the first table that migration makes, or else a column of
+/// the name of the first column it adds. None when no migration of
+/// [`LATER_TABLES`] or [`ADDED_COLUMNS`] is at `build_schema`.
+fn last_migration_plant(build_schema: i64) -> Option<(String, String)> {
+    let table = LATER_TABLES
         .iter()
         .find(|(version, _)| *version == build_schema)
-        .map(|(_, table)| *table)
+        .map(|(_, table)| table_plant(table));
+    let column = || {
+        ADDED_COLUMNS
+            .iter()
+            .find(|(_, _, version)| *version == build_schema)
+            .map(|(table, column, _)| column_plant(table, column))
+    };
+    table.or_else(column).flatten()
 }
 
 #[test]
@@ -2024,31 +2053,70 @@ fn a_release_at_the_build_s_schema_lacks_no_later_table() {
     );
 }
 
+/// The statements `last_migration_plant` gives for a table.
+fn table_plant(table: &str) -> Option<(String, String)> {
+    Some((
+        format!("CREATE TABLE vcon.{table} (planted int)"),
+        format!("DROP TABLE vcon.{table}"),
+    ))
+}
+
+/// The statements `last_migration_plant` gives for a column.
+fn column_plant(table: &str, column: &str) -> Option<(String, String)> {
+    Some((
+        format!("ALTER TABLE vcon.{table} ADD COLUMN {column} int"),
+        format!("ALTER TABLE vcon.{table} DROP COLUMN {column}"),
+    ))
+}
+
 #[test]
-fn the_build_s_last_migration_makes_a_table_a_planted_one_breaks() {
+fn the_build_s_last_migration_adds_a_column_a_planted_one_breaks() {
     assert_eq!(
-        last_migration_table(i64::from(vcon_server::formats::POSTGRES_SCHEMA)),
-        Some("pending_tenant"),
-        "the first table of the build's last migration"
+        last_migration_plant(i64::from(vcon_server::formats::POSTGRES_SCHEMA)),
+        column_plant("tenant", "wrap_ref"),
+        "the first column of the build's last migration"
     );
 }
 
 #[test]
-fn a_schema_no_later_migration_reached_has_no_last_table() {
-    assert_eq!(last_migration_table(13), None, "13 is before the list");
-    assert_eq!(last_migration_table(99), None, "and 99 after it");
+fn a_migration_that_makes_a_table_is_broken_by_a_planted_table() {
+    assert_eq!(
+        last_migration_plant(15),
+        table_plant("pending_tenant"),
+        "version 15's first table"
+    );
+    assert_eq!(
+        last_migration_plant(14),
+        table_plant("pending_write"),
+        "version 14 makes a table and adds a column: the table is planted"
+    );
 }
 
 #[test]
-fn the_later_tables_are_in_order_and_end_at_the_build_s_schema() {
+fn a_schema_no_later_migration_reached_has_no_plant() {
+    assert_eq!(last_migration_plant(13), None, "13 is before the lists");
+    assert_eq!(last_migration_plant(99), None, "and 99 after them");
+}
+
+#[test]
+fn the_later_migrations_are_in_order_and_end_at_the_build_s_schema() {
     assert!(
         LATER_TABLES.windows(2).all(|w| w[0].0 <= w[1].0),
         "oldest first: {LATER_TABLES:?}"
     );
+    assert!(
+        ADDED_COLUMNS.windows(2).all(|w| w[0].2 <= w[1].2),
+        "oldest first: {ADDED_COLUMNS:?}"
+    );
+    let newest = LATER_TABLES
+        .iter()
+        .map(|(version, _)| *version)
+        .chain(ADDED_COLUMNS.iter().map(|(_, _, version)| *version))
+        .max();
     assert_eq!(
-        LATER_TABLES.last().map(|(version, _)| *version),
+        newest,
         Some(i64::from(vcon_server::formats::POSTGRES_SCHEMA)),
-        "a new migration's table is added here"
+        "a new migration's table or column is added to one of the lists"
     );
 }
 
@@ -2960,11 +3028,7 @@ mod live {
         String::from_utf8(out.stdout).expect("UTF-8")
     }
 
-    /// The columns a migration added to a table that releases already had,
-    /// each with the schema version that added it: a release's rows are
-    /// compared without the columns added after its schema, which its
-    /// rows did not have, and with every other column.
-    const ADDED_COLUMNS: &[(&str, &str, i64)] = &[("tenant_lock", "removing", 14)];
+    use super::ADDED_COLUMNS;
 
     /// A release's deployment restored: its dump in a database of the
     /// test's own, its bucket's objects in a bucket of the test's own, its
@@ -3691,17 +3755,19 @@ mod live {
                 .expect("the version")
                 .concat()
         };
-        // A table in the way of the last migration's CREATE TABLE, so that
-        // migration fails. Each migration runs in a transaction of its own
-        // (backend/postgres/schema.rs), so the ones before it are kept and
-        // the database is whole at the version before the build's.
-        let planted = super::last_migration_table(build)
-            .unwrap_or_else(|| panic!("schema {build}'s migration makes a table (LATER_TABLES)"));
-        r.db.as_owner(&format!("CREATE TABLE vcon.{planted} (planted int)"));
+        // A table or a column in the way of the last migration's first new
+        // one, so that migration fails. Each migration runs in a
+        // transaction of its own (backend/postgres/schema.rs), so the ones
+        // before it are kept and the database is whole at the version
+        // before the build's.
+        let (plant, unplant) = super::last_migration_plant(build).unwrap_or_else(|| {
+            panic!("schema {build}'s migration makes a table or adds a column (LATER_TABLES, ADDED_COLUMNS)")
+        });
+        r.db.as_owner(&plant);
         let out = r.migrate();
         assert!(
             !out.status.success(),
-            "{release}: migrate fails on the planted table: {}",
+            "{release}: migrate fails on the planted object: {}",
             String::from_utf8_lossy(&out.stdout)
         );
         assert_eq!(
@@ -3709,7 +3775,7 @@ mod live {
             (build - 1).to_string(),
             "{release}: the schema's version is the one before the failed migration"
         );
-        r.db.as_owner(&format!("DROP TABLE vcon.{planted}"));
+        r.db.as_owner(&unplant);
         let (rows, listing, files) = r.state();
         assert_eq!(
             (rows_but_new(&rows, release), listing.clone(), files.clone()),

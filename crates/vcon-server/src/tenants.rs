@@ -689,6 +689,8 @@ impl Tenants {
                 wrapped: wrapped.clone(),
                 pending: None,
                 key_since: now,
+                kek: None,
+                pending_kek: None,
             })?;
             self.record(&mut tx, &entry(201, Some(id)))?;
             tx.commit().map_err(|e| {
@@ -2825,7 +2827,11 @@ mod tests {
             let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
             f.conn()
                 .execute_batch(&format!(
-                    "ALTER TABLE tenant DROP COLUMN role_cap;
+                    "ALTER TABLE tenant DROP COLUMN pending_wrapped_kek;
+                     ALTER TABLE tenant DROP COLUMN pending_wrap_ref;
+                     ALTER TABLE tenant DROP COLUMN wrapped_kek;
+                     ALTER TABLE tenant DROP COLUMN wrap_ref;
+                     ALTER TABLE tenant DROP COLUMN role_cap;
                      ALTER TABLE tenant DROP COLUMN metadata; DROP TABLE membership;
                      DROP TABLE user_account; DROP TABLE tenant_setting;
                      DROP TABLE session;

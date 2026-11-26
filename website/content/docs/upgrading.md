@@ -880,7 +880,7 @@ CI runs this page with the objects in the data directory only.
   a secret file that other users may read, that its group may change, or
   that another user owns stops the server; see
   [from 0.4.0 to 0.4.1](#from-0-4-0-to-0-4-1-the-secret-file-rule).
-- **The old binary stops with `schema version 10 is not one this build knows`,
+- **The old binary stops with `schema version 11 is not one this build knows`,
   or the same with a lower number:** a newer binary has opened the data
   directory, and the number is the schema version it wrote. The old one
   reads only the copy taken before the upgrade; see

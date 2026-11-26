@@ -202,6 +202,8 @@ pub(super) mod on_a_server {
             wrapped: vec![n; 48],
             pending: None,
             key_since: T0,
+            kek: None,
+            pending_kek: None,
         }
     }
 

@@ -19,10 +19,24 @@ use crate::envelope::Key;
 /// added the table of the sessions of users who signed in; version 9 added
 /// each access key's expiry and last-used time to server.sqlite; version
 /// 10 added to every audit log the mark of the records a count made, the
-/// only ones a count adds to.
+/// only ones a count adds to; version 11 added to server.sqlite the
+/// key-encryption key a key backend wrapped each tenant key under.
 /// A build refuses every version it does not know, so a catalog this
-/// build has opened is refused by release 0.4.16 and earlier.
-pub const SCHEMA_VERSION: i64 = 10;
+/// build has opened is refused by release 0.4.18 and earlier.
+pub const SCHEMA_VERSION: i64 = 11;
+
+/// Brings server.sqlite from version 10 to 11: for each tenant, the
+/// key-encryption key its tenant key is wrapped under, as a key backend
+/// wrapped it (the backend's key reference and the `key-wrap` blob), and
+/// the same for its pending key. All four are NULL for every tenant
+/// there is: its keys are under the master key file. Each CHECK keeps a
+/// pair whole. One line per column, as SQLite keeps the text.
+const TENANT_KEY_WRAP: &str = "
+ALTER TABLE tenant ADD COLUMN wrap_ref TEXT;
+ALTER TABLE tenant ADD COLUMN wrapped_kek BLOB CHECK ((wrap_ref IS NULL) = (wrapped_kek IS NULL));
+ALTER TABLE tenant ADD COLUMN pending_wrap_ref TEXT;
+ALTER TABLE tenant ADD COLUMN pending_wrapped_kek BLOB CHECK ((pending_wrap_ref IS NULL) = (pending_wrapped_kek IS NULL));
+";
 
 /// Brings server.sqlite from version 8 to 9: each access key's expiry and
 /// its last-used time, both NULL for every key there is. A key made
@@ -327,7 +341,7 @@ pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogE
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
         }
-        from @ 1..=9 => {
+        from @ 1..=10 => {
             // One transaction, so a failed upgrade leaves the old version
             // whole. A tenant catalog has a vcon table, server.sqlite a
             // tenant table, and both an audit log.
@@ -374,6 +388,9 @@ pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogE
                     tx.execute_batch(crate::audit::COUNTED_COLUMN)?;
                 }
                 tx.execute_batch(crate::audit::COUNTED_BEFORE_10)?;
+            }
+            if from < 11 && has("tenant")? {
+                tx.execute_batch(TENANT_KEY_WRAP)?;
             }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
@@ -582,6 +599,9 @@ mod v9_tests;
 
 #[cfg(test)]
 mod v10_tests;
+
+#[cfg(test)]
+mod v11_tests;
 
 #[cfg(test)]
 pub(crate) mod testing {
