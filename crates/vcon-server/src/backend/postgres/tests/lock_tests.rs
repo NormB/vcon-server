@@ -58,7 +58,7 @@ fn a_server_is_told_what_may_hold_the_database() {
     let why = lock_refusal(Holds::Serve, false, true).expect("refused");
     assert_eq!(
         why,
-        "a command that runs alone, a migration, or a server of release 0.4.16 or earlier \
+        "a command that runs alone, a migration, or a server of release 0.4.17 or earlier \
          holds this database's lock for itself; start this server when that command has \
          ended, or stop the earlier release's server: every server of one database runs the \
          same release",
@@ -141,7 +141,7 @@ mod on_a_server {
             .block_on(call)
     }
 
-    /// A server of release 0.4.15 or 0.4.16 on `db`, as far as the lock
+    /// A server of release 0.4.15 to 0.4.17 on `db`, as far as the lock
     /// goes: a session that holds the servers' lock for itself, as such a
     /// server takes it. It holds it while the runtime and the client are
     /// kept.
@@ -184,7 +184,7 @@ mod on_a_server {
     }
 
     const SERVER_REFUSED: &str = "catalog.postgres: a command that runs alone, a migration, or \
-                                  a server of release 0.4.16 or earlier holds this database's \
+                                  a server of release 0.4.17 or earlier holds this database's \
                                   lock for itself";
     const BESIDE_REFUSED: &str =
         "catalog.postgres: a command that runs alone, or a migration, holds this database's lock";
@@ -291,7 +291,7 @@ mod on_a_server {
         );
     }
 
-    /// A server of 0.4.15 or 0.4.16 tries the servers' lock for itself:
+    /// A server of 0.4.15 to 0.4.17 tries the servers' lock for itself:
     /// `pg_try_advisory_lock`, held here by a session of the test's own.
     #[test]
     fn a_server_is_refused_while_a_server_of_an_earlier_release_holds_the_database_alone() {
@@ -300,7 +300,7 @@ mod on_a_server {
         let why = connect(&db, Holds::Serve).expect_err("refused");
         assert!(why.starts_with(SERVER_REFUSED), "names it: {why}");
         assert!(
-            why.contains("server of release 0.4.16 or earlier")
+            why.contains("server of release 0.4.17 or earlier")
                 && why.contains("every server of one database runs the same release"),
             "says what to do: {why}"
         );

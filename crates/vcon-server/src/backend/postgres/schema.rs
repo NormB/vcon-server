@@ -73,7 +73,7 @@ impl From<crate::datadir::Sharing> for Holds {
 /// true when the lock was given or is not taken for this work.
 ///
 /// - A server shares the servers' lock with the other servers: several
-///   serve one database. A server of release 0.4.16 or earlier took it
+///   serve one database. A server of release 0.4.17 or earlier took it
 ///   for itself, so neither starts while the other serves.
 /// - A command beside a server shares the commands' lock with other such
 ///   commands and takes nothing a server holds.
@@ -355,11 +355,11 @@ async fn take_locks(client: &Client) -> Result<(), String> {
 
 /// What a server is told when the servers' lock is held for one process
 /// alone: by `migrate` or a command that runs alone, or by a server of
-/// release 0.4.16 or earlier, which served a database alone. Such a
+/// release 0.4.17 or earlier, which served a database alone. Such a
 /// server's database is at an older schema version, which a server of
 /// this release refuses first, and `migrate` refuses while it serves.
 pub(crate) const SERVER_LOCK_HELD: &str = "a command that runs alone, a migration, or a server \
-                                           of release 0.4.16 or earlier holds this database's \
+                                           of release 0.4.17 or earlier holds this database's \
                                            lock for itself; start this server when that command \
                                            has ended, or stop the earlier release's server: \
                                            every server of one database runs the same release";

@@ -252,7 +252,7 @@ once, for every entry here:
   directory is unchanged by it.
 - **Schema version 15 of the PostgreSQL preview.** `vcon-server migrate`
   of this release leaves the database at version 15; releases 0.4.15
-  and 0.4.16 leave it at 14, releases 0.4.6 to 0.4.14 at 13 and release 0.4.5 at
+  to 0.4.17 leave it at 14, releases 0.4.6 to 0.4.14 at 13 and release 0.4.5 at
   6, and their servers refuse a database at 15. Version 7 adds the
   column `seq` to the `version` table and, on PostgreSQL 17 and later,
   grants `vcon_app` `MAINTAIN` on three tables. Version 8 adds triggers:

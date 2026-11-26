@@ -10,6 +10,7 @@ mod edge;
 mod failure;
 mod guard;
 mod line;
+mod releases;
 mod success;
 mod v10;
 mod v11;

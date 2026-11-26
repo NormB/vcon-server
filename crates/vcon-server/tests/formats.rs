@@ -973,6 +973,114 @@ fn release_order(release: &str) -> Vec<u32> {
         .collect()
 }
 
+// ---- The release the catalog's documentation names. ----
+//
+// `SCHEMA_VERSION`'s documentation names the newest release that refuses a
+// catalog this build has opened. That number was written by hand; it is
+// read here from the page's release table, which the fixtures hold.
+
+/// The newest release of `releases` whose `column` is a number below
+/// `version`; a cell that is not a number (`none`) is not.
+fn newest_below(
+    releases: &BTreeMap<String, BTreeMap<String, String>>,
+    column: &str,
+    version: i64,
+) -> Option<String> {
+    releases
+        .iter()
+        .filter(|(_, wrote)| {
+            wrote
+                .get(column)
+                .and_then(|c| c.parse::<i64>().ok())
+                .is_some_and(|v| v < version)
+        })
+        .map(|(release, _)| release.clone())
+        .max_by_key(|r| release_order(r))
+}
+
+fn wrote(rows: &[(&str, &str)]) -> BTreeMap<String, BTreeMap<String, String>> {
+    rows.iter()
+        .map(|(release, catalog)| {
+            (
+                (*release).to_owned(),
+                BTreeMap::from([("catalog".to_owned(), (*catalog).to_owned())]),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn the_catalogs_documentation_names_the_newest_release_that_refuses_it() {
+    let releases = page_releases(&page()).expect("the release table reads");
+    let newest = newest_below(&releases, "catalog", SCHEMA_VERSION)
+        .expect("a release before this build's schema version");
+    let source = std::fs::read_to_string(root().join("crates/vcon-server/src/catalog.rs"))
+        .expect("catalog.rs is there");
+    let flat = source
+        .lines()
+        .map(|l| l.trim_start().trim_start_matches("///").trim())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        flat.contains(&format!("is refused by release {newest} and earlier.")),
+        "SCHEMA_VERSION's documentation names {newest}, the newest release at a catalog before {SCHEMA_VERSION}"
+    );
+}
+
+#[test]
+fn the_newest_release_below_a_version_is_picked() {
+    let releases = wrote(&[("0.4.15", "9"), ("0.4.16", "9"), ("0.4.17", "10")]);
+    assert_eq!(
+        newest_below(&releases, "catalog", 10).as_deref(),
+        Some("0.4.16"),
+        "the newest at 9"
+    );
+}
+
+#[test]
+fn releases_are_ordered_by_number_when_picking_the_newest() {
+    let releases = wrote(&[("0.4.9", "8"), ("0.4.10", "8"), ("0.4.2", "4")]);
+    assert_eq!(
+        newest_below(&releases, "catalog", 9).as_deref(),
+        Some("0.4.10"),
+        "0.4.10 is after 0.4.9, though it sorts before it as text"
+    );
+}
+
+#[test]
+fn a_release_at_the_version_itself_is_not_below_it() {
+    let releases = wrote(&[("0.4.17", "10")]);
+    assert_eq!(
+        newest_below(&releases, "catalog", 10),
+        None,
+        "10 is not below 10"
+    );
+}
+
+#[test]
+fn a_cell_that_is_not_a_number_is_skipped() {
+    let releases = wrote(&[("0.4.5", "none"), ("0.4.4", "6")]);
+    assert_eq!(
+        newest_below(&releases, "catalog", 10).as_deref(),
+        Some("0.4.4"),
+        "none is no version"
+    );
+}
+
+#[test]
+fn a_missing_column_or_table_has_no_newest() {
+    assert_eq!(
+        newest_below(&wrote(&[("0.4.4", "6")]), "postgres", 10),
+        None,
+        "no such column"
+    );
+    assert_eq!(
+        newest_below(&BTreeMap::new(), "catalog", 10),
+        None,
+        "no rows"
+    );
+}
+
 /// One kept version, as the manifest names it.
 struct Row {
     tenant: String,

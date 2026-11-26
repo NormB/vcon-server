@@ -52,7 +52,7 @@ The other pages link here for these and do not repeat them.
 - **Every server of a database runs the same release.** Several servers
   serve one database (see
   [several servers on one database](#several-servers-on-one-database)),
-  but a server of 0.4.16 or earlier serves a database alone, so a server
+  but a server of 0.4.17 or earlier serves a database alone, so a server
   of a later release beside it is refused at start, and it is refused
   beside one.
 - **A database starts with no tenant, and no command moves tenants.** No
@@ -88,7 +88,7 @@ The other pages link here for these and do not repeat them.
 - **Run `migrate` first after an upgrade.** A new binary refuses a
   database of an older schema version. A database that release 0.4.5
   migrated is at version 6, one that releases 0.4.6 to 0.4.14 migrated is
-  at version 13, one that releases 0.4.15 and 0.4.16 migrated is at
+  at version 13, one that releases 0.4.15 to 0.4.17 migrated is at
   version 14, and
   this release needs version 15 (see
   [after an upgrade from 0.4.5](#after-an-upgrade-from-0-4-5)).
@@ -488,7 +488,7 @@ binary's.
 ### After an upgrade from 0.4.5
 
 Release 0.4.5 and the releases before it leave the schema at version 6.
-Releases 0.4.6 to 0.4.14 make version 13, releases 0.4.15 and 0.4.16
+Releases 0.4.6 to 0.4.14 make version 13, releases 0.4.15 to 0.4.17
 make version 14, and
 this release makes version 15, so a database that any of them migrated
 needs the command once more, with the new binary and before any server
@@ -850,7 +850,7 @@ pack run, for all of them.
 
 What each server needs:
 
-- **The same release.** A server of release 0.4.16 or earlier serves a
+- **The same release.** A server of release 0.4.17 or earlier serves a
   database alone and refuses to start beside another; stop every such
   server and run `migrate` with the new binary first (see
   [another process holds the database](#another-process-holds-the-database)).
@@ -918,7 +918,7 @@ was cut off.
 If it does not work:
 
 - **A server is refused at start** with a message naming a server of
-  release 0.4.16 or earlier: an older server still runs; see
+  release 0.4.17 or earlier: an older server still runs; see
   [another process holds the database](#another-process-holds-the-database).
 - **No server sweeps after the holder stopped.** A server that stops gives
   its leases up, and another takes them at its next interval. A server
@@ -927,7 +927,7 @@ If it does not work:
   at least a minute.
 - **A session, a key or a retention period ends early or late, by the
   hosts' clocks.** It ends by the database's clock, which a superuser
-  reads with `SELECT now()`. A time that release 0.4.16 or earlier wrote
+  reads with `SELECT now()`. A time that release 0.4.17 or earlier wrote
   keeps that server's clock, and is judged by the database's: a host
   clock that was off then moves that one time by as much.
 - **A command that runs alone is refused** while any server runs: stop
@@ -943,7 +943,7 @@ the process runs. The database's locks are what stop a second host.
 
 | Work | Runs | Refused while |
 |---|---|---|
-| `serve` | beside other servers and the commands beside a server | a command that runs alone, `migrate`, or a server of release 0.4.16 or earlier holds the database |
+| `serve` | beside other servers and the commands beside a server | a command that runs alone, `migrate`, or a server of release 0.4.17 or earlier holds the database |
 | `tenant list`, the `tenant set-` commands, `tenant role-cap`, `key create`, `key list`, `key revoke`, the `user` and `membership` commands, `audit export`, `export parquet` | beside a server and beside each other | a command that runs alone, or `migrate`, holds the database |
 | `tenant create`, `tenant remove`, `rekey tenant`, `rekey master`, `check` | alone | a server or any other command holds the database |
 | `migrate` | alone | a server or any command holds the database |
@@ -1224,7 +1224,7 @@ catalog.postgres.connect_timeout`.
 ### Another process holds the database
 
 ```text
-vcon-server: the storage cannot be used: catalog.postgres: a command that runs alone, a migration, or a server of release 0.4.16 or earlier holds this database's lock for itself; start this server when that command has ended, or stop the earlier release's server: every server of one database runs the same release
+vcon-server: the storage cannot be used: catalog.postgres: a command that runs alone, a migration, or a server of release 0.4.17 or earlier holds this database's lock for itself; start this server when that command has ended, or stop the earlier release's server: every server of one database runs the same release
 vcon-server: the storage cannot be used: catalog.postgres: a server or another command holds this database's locks; this command runs alone: stop every server, wait for the other commands to end, and run it again
 vcon-server: the storage cannot be used: catalog.postgres: a command that runs alone, or a migration, holds this database's lock; run this command again when it has ended
 vcon-server: the storage cannot be used: catalog.postgres: another server or command holds the database's locks; stop every server and command and run migrate again
@@ -1237,7 +1237,7 @@ To see which connection holds a lock, as a superuser on the database host:
 `SELECT a.pid, a.client_addr, a.backend_start FROM pg_locks l JOIN
 pg_stat_activity a USING (pid) WHERE l.locktype = 'advisory'`.
 
-A server of release 0.4.15 or 0.4.16 serves its database alone: it holds
+A server of release 0.4.15 to 0.4.17 serves its database alone: it holds
 the servers' lock for itself, and a server of a later release, which
 shares that lock with the other servers, is refused with the first
 message. In practice the version is checked first: that database is at

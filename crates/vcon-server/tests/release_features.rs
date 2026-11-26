@@ -949,7 +949,7 @@ fn a_manifest_comment_is_the_lines_directly_above_its_key() {
 const LIMITS: [(&str, &[&str]); 9] = [
     (
         "one release per database",
-        &["the same release", "0.4.16 or earlier", "refused at start"],
+        &["the same release", "0.4.17 or earlier", "refused at start"],
     ),
     (
         "no tenant, and none moved",

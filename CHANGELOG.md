@@ -28,9 +28,9 @@ All notable changes to this project are recorded here. The format follows
 - **Several servers can serve one PostgreSQL catalog database.**
   - Effect: Servers share the database's lock and clock; one of them, under
     a lease, runs the purge sweep and the pack run for all.
-  - Limit: A time written by release 0.4.16 or earlier keeps its server's
+  - Limit: A time written by release 0.4.17 or earlier keeps its server's
     clock and is judged by the database's.
-  - Do: Stop every server of 0.4.16 or earlier and run `vcon-server
+  - Do: Stop every server of 0.4.17 or earlier and run `vcon-server
     migrate` before a server of this release starts.
   - Docs: [Several servers on one
     database](https://vcon-server.com/docs/postgres-catalog/#several-servers-on-one-database)
