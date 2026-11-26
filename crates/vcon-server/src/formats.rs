@@ -59,6 +59,10 @@ pub const FORMATS: &[Format] = &[
         version: digits(crate::envelope::FORMAT as i64),
     },
     Format {
+        id: "key-wrap",
+        version: digits(crate::key_wrap::blob::FORMAT as i64),
+    },
+    Format {
         id: "parquet-storage",
         version: crate::store::manifest::FORMAT,
     },
@@ -112,6 +116,29 @@ mod tests {
             "export columns"
         );
         assert_eq!(version("postgres"), POSTGRES_SCHEMA.to_string(), "postgres");
+        assert_eq!(
+            version("key-wrap"),
+            crate::key_wrap::blob::FORMAT.to_string(),
+            "key-wrap"
+        );
+    }
+
+    #[test]
+    fn key_wrap_follows_envelope_among_the_formats_read_back() {
+        let ids: Vec<&str> = FORMATS.iter().map(|f| f.id).collect();
+        assert_eq!(
+            ids,
+            [
+                "catalog",
+                "postgres",
+                "envelope",
+                "key-wrap",
+                "parquet-storage",
+                "export-manifest",
+                "export-columns"
+            ],
+            "the page's order: the five read back, then the two exports"
+        );
     }
 
     #[test]

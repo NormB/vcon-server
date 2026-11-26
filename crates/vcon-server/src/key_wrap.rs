@@ -14,6 +14,8 @@ use std::{fmt, io};
 use crate::envelope::{self, Context, Key, KeyError};
 use crate::ids::{KeyId, TenantId};
 
+pub mod blob;
+
 /// Why a backend could not wrap or unwrap a key.
 #[derive(Debug)]
 #[non_exhaustive]

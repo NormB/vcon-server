@@ -313,6 +313,15 @@ once, for every entry here:
   changes no audit record. The command holds the database's locks, so it
   runs with every server stopped.
 
+## On `main` only
+
+The site is built from the `main` branch, so a page can describe what no
+release holds yet. Release 0.4.18 does not have these:
+
+- **The `key-wrap` format.** Version 1 of the on-disk format that records
+  a key a key backend wrapped, with the backend and its key named. No
+  release writes it yet.
+
 ## Being built
 
 - **A PostgreSQL catalog**, a preview behind the `postgres` cargo feature:

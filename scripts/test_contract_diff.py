@@ -1881,9 +1881,9 @@ class FormatsPasses(unittest.TestCase):
         d = json.loads(FORMATS_SNAPSHOT.read_text(encoding="utf-8"))
         self.assertEqual(cd.formats_changes(d, copy.deepcopy(d)), [], "contract/formats.json with itself")
 
-    def test_the_snapshot_in_the_tree_holds_six_formats_and_the_releases_since_0_4_0(self):
+    def test_the_snapshot_in_the_tree_holds_seven_formats_and_the_releases_since_0_4_0(self):
         d = json.loads(FORMATS_SNAPSHOT.read_text(encoding="utf-8"))
-        self.assertEqual(len(d["formats"]), 6, "on-disk-format.md lists six formats")
+        self.assertEqual(len(d["formats"]), 7, "on-disk-format.md lists seven formats")
         self.assertIn("0.4.0", d["releases"], "the first release with a fixture")
         self.assertEqual([f for f, v in d["formats"].items() if not v["read_back"]],
                          ["export-columns", "export-manifest"], "the server reads back all but the export formats")

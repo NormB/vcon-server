@@ -6,6 +6,15 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **On-disk format `key-wrap` version 1 records a key a key backend wrapped.**
+  - Effect: A reader knows which backend and key opens a wrapped key before
+    it asks any backend.
+  - Limit: This release writes none; the other backends come in later
+    releases.
+  - Docs: [On-disk formats](https://vcon-server.com/docs/on-disk-format/)
+
 ## [0.4.18] - 2026-11-26
 
 ### Added

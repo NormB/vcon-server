@@ -38,11 +38,12 @@ The rule covers 0.4.0 and later. Release 0.3.0 and earlier are not tested.
 | `catalog` | The SQLite catalogs, encrypted with SQLCipher: `server.sqlite` (tenants, keys, users, sessions and its audit log) and each tenant's `catalog.sqlite` (its vCons, versions, tombstones and audit log). The version is SQLite's `user_version`. | 10 | the data directory |
 | `postgres` | The schema of the [PostgreSQL catalog](@/docs/postgres-catalog.md), a preview, in place of the catalogs above. | 15 | the database |
 | `envelope` | The first byte of every sealed blob (an object, a wrapped key, and in PostgreSQL a sealed column): AES-256-GCM with a 12-byte nonce and a 16-byte tag. | 1 | objects and catalogs |
+| `key-wrap` | The first byte of a key that a key backend other than the master key file wrapped: the backend's kind, the reference of its key, and the backend's ciphertext. This release writes none: the command line moves keys to a master key file only, and the other backends come in later releases. | 1 | none yet |
 | `parquet-storage` | The `format` of each manifest of [Parquet storage](@/docs/parquet-storage.md) in a bucket. | vcon-server.parquet-storage/1 | the bucket |
 | `export-manifest` | The `format` of the manifest that [`export parquet`](@/docs/export-parquet.md) writes. | 1 | the export directory |
 | `export-columns` | The `vcon-server.schema` value in the key-value metadata of each Parquet file `export parquet` writes: the columns. | 1 | the export directory |
 
-The server reads back the first four. The two export formats are written
+The server reads back the first five. The two export formats are written
 for other programs, such as DuckDB, and the server never reads them.
 
 The key of each catalog is HKDF-SHA256 of its parent key, with no salt and
@@ -52,29 +53,30 @@ describes the key hierarchy.
 
 ## What each release wrote
 
-| Release | `catalog` | `postgres` | `envelope` | `parquet-storage` | `export-manifest` | `export-columns` |
-|---|---|---|---|---|---|---|
-| 0.4.0 | 4 | none | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
-| 0.4.1 | 4 | none | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
-| 0.4.2 | 4 | none | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
-| 0.4.3 | 4 | none | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
-| 0.4.4 | 9 | none | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
-| 0.4.5 | 9 | none | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
-| 0.4.6 | 9 | 13 | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
-| 0.4.7 | 9 | 13 | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
-| 0.4.8 | 9 | 13 | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
-| 0.4.9 | 9 | 13 | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
-| 0.4.10 | 9 | 13 | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
-| 0.4.11 | 9 | 13 | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
-| 0.4.12 | 9 | 13 | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
-| 0.4.13 | 9 | 13 | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
-| 0.4.14 | 9 | 13 | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
-| 0.4.15 | 9 | 14 | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
-| 0.4.16 | 9 | 14 | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
-| 0.4.17 | 10 | 14 | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
-| 0.4.18 | 10 | 15 | 1 | vcon-server.parquet-storage/1 | 1 | 1 |
+| Release | `catalog` | `postgres` | `envelope` | `key-wrap` | `parquet-storage` | `export-manifest` | `export-columns` |
+|---|---|---|---|---|---|---|---|
+| 0.4.0 | 4 | none | 1 | none | vcon-server.parquet-storage/1 | 1 | 1 |
+| 0.4.1 | 4 | none | 1 | none | vcon-server.parquet-storage/1 | 1 | 1 |
+| 0.4.2 | 4 | none | 1 | none | vcon-server.parquet-storage/1 | 1 | 1 |
+| 0.4.3 | 4 | none | 1 | none | vcon-server.parquet-storage/1 | 1 | 1 |
+| 0.4.4 | 9 | none | 1 | none | vcon-server.parquet-storage/1 | 1 | 1 |
+| 0.4.5 | 9 | none | 1 | none | vcon-server.parquet-storage/1 | 1 | 1 |
+| 0.4.6 | 9 | 13 | 1 | none | vcon-server.parquet-storage/1 | 1 | 1 |
+| 0.4.7 | 9 | 13 | 1 | none | vcon-server.parquet-storage/1 | 1 | 1 |
+| 0.4.8 | 9 | 13 | 1 | none | vcon-server.parquet-storage/1 | 1 | 1 |
+| 0.4.9 | 9 | 13 | 1 | none | vcon-server.parquet-storage/1 | 1 | 1 |
+| 0.4.10 | 9 | 13 | 1 | none | vcon-server.parquet-storage/1 | 1 | 1 |
+| 0.4.11 | 9 | 13 | 1 | none | vcon-server.parquet-storage/1 | 1 | 1 |
+| 0.4.12 | 9 | 13 | 1 | none | vcon-server.parquet-storage/1 | 1 | 1 |
+| 0.4.13 | 9 | 13 | 1 | none | vcon-server.parquet-storage/1 | 1 | 1 |
+| 0.4.14 | 9 | 13 | 1 | none | vcon-server.parquet-storage/1 | 1 | 1 |
+| 0.4.15 | 9 | 14 | 1 | none | vcon-server.parquet-storage/1 | 1 | 1 |
+| 0.4.16 | 9 | 14 | 1 | none | vcon-server.parquet-storage/1 | 1 | 1 |
+| 0.4.17 | 10 | 14 | 1 | none | vcon-server.parquet-storage/1 | 1 | 1 |
+| 0.4.18 | 10 | 15 | 1 | none | vcon-server.parquet-storage/1 | 1 | 1 |
 
-`none`: the release binary has no PostgreSQL catalog. The `postgres`
+`none` under `key-wrap`: the release has no such format. `none` under
+`postgres`: the release binary has no PostgreSQL catalog. The `postgres`
 feature, a preview, is in the release binaries from 0.4.6 on. A build from
 source with that feature made schema version 1 at 0.4.2 and 0.4.3, and 6 at
 0.4.4 and 0.4.5.
