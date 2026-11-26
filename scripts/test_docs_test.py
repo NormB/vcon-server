@@ -3686,6 +3686,7 @@ def range_check(git, refs, stamps, env=None, ci=no_ci, scenarios=FAKES):
         git=git,
         ci=ci,
         out=out,
+        stamped=lambda: list(stamps),
     )
     return code, out.getvalue()
 
@@ -4369,7 +4370,7 @@ class RealGit(unittest.TestCase):
         out = io.StringIO()
         code = dt.check(
             [self.ref("c3", "c0")], remote="origin", env={}, scenarios=FAKES, steps=fake_steps,
-            read=lambda sha: stamps.get(sha), git=self.git, ci=no_ci, out=out,
+            read=lambda sha: stamps.get(sha), git=self.git, ci=no_ci, out=out, stamped=lambda: list(stamps),
         )
         return code, out.getvalue()
 
@@ -5067,6 +5068,646 @@ class PushCarries(unittest.TestCase):
         run = FakeRun({"git rev-parse": (0, "fff999\n")})
         code, out, _ = push_of([PAGE_C], run, stamps={"abc123": {"pages-only"}})
         self.assertEqual(code, 0, "nothing is built, so the checkout does not matter")
+
+
+# ---------------------------------------------------------------------------
+# A stamp survives a rebase (DOCS-STAMP-LOST-ON-REBASE). On 2026-11-26 #291's
+# tip held a stamp of 10 scenarios; after a clean rebase onto a commit that
+# changed only .githooks, ci.yml, README.md and scripts/, pre-push refused
+# the new tip for all 10, because the stamp was keyed by a commit no longer
+# in the pushed range. A stamp of any commit now holds for the tip when the
+# trees differ in nothing the scenario runs, by the rule `needed` applies.
+# ---------------------------------------------------------------------------
+
+PAGE_A = "website/content/docs/a.md"
+SRC2 = "crates/vcon/src/read.rs"
+OTHER_SCRIPT = "scripts/check_changelog_released.py"
+BASE_TREE = {
+    SRC: "0", SRC2: "0", "Cargo.lock": "0", "rust-toolchain.toml": "0", PAGE_A: "0", PAGE_B: "0", PAGE_C: "0",
+    "website/content/docs/development.md": "0", "scripts/docs_test.py": "0", OTHER_SCRIPT: "0", "README.md": "0",
+    ".githooks/pre-push": "0", ".github/workflows/ci.yml": "0", "crates/vcon-server/tests/serve.rs": "0",
+}
+B1 = "b1" * 20  # the stamped branch tip before the rebase
+R1 = "r1" * 20  # the same change, rebased
+
+
+class TreeGit:
+    """Stands in for docs_test.Git over whole trees, so a rebase can be
+    shown: `trees` maps each commit to {path: text}; a push sends `pushed`
+    (newest first), which change `changed`. A commit not in `trees` is one
+    git does not know (pruned, or of another clone). Records each diff."""
+
+    def __init__(self, trees, pushed, changed, fail_commits=None):
+        self.trees, self.pushed, self.changed_paths = trees, pushed, changed
+        self.fail_commits = fail_commits
+        self.diffs = []
+
+    def commits(self, ref, remote):
+        if self.fail_commits:
+            raise dt.PageError(self.fail_commits)
+        return list(self.pushed[ref.local_sha] if isinstance(self.pushed, dict) else self.pushed)
+
+    def changed(self, ref, remote):
+        paths = self.changed_paths
+        return list(paths[ref.local_sha] if isinstance(paths, dict) else paths)
+
+    def diff(self, a, b):
+        self.diffs.append((a, b))
+        for sha in (a, b):
+            if sha not in self.trees:
+                raise dt.PageError(f"fatal: bad object {sha}")
+        ta, tb = self.trees[a], self.trees[b]
+        return sorted(p for p in set(ta) | set(tb) if ta.get(p) != tb.get(p))
+
+    def show(self, sha, path):
+        return None
+
+    def includes(self, sha):
+        return None
+
+    def is_ancestor(self, a, b):
+        return False
+
+
+def rebase_world(branch, onto, extra=None):
+    """b1 changes `branch` on main's m0; main then moves to m1, which changes
+    `onto`; r1 is b1 rebased onto m1 (its own change wins). `extra` adds
+    commits by tree."""
+    m0 = dict(BASE_TREE)
+    b1 = {**m0, **{p: "branch" for p in branch}}
+    m1 = {**m0, **{p: "main" for p in onto}}
+    r1 = {**m1, **{p: "branch" for p in branch}}
+    return {"m0": m0, B1: b1, "m1": m1, R1: r1, **(extra or {})}
+
+
+def fake_read(stamps):
+    """`read` over `stamps`: a value that is an exception is raised, as
+    read_stamp raises StampError for a corrupt file."""
+
+    def read(sha):
+        got = stamps.get(sha)
+        if isinstance(got, Exception):
+            raise got
+        return got
+
+    return read
+
+
+def stamped_check(git, refs, stamps, *, listed=None, env=None, ci=no_ci, scenarios=FAKES):
+    """check with the stamp files listed as `listed` (default: every key of
+    `stamps`, in order)."""
+    out = io.StringIO()
+    code = dt.check(
+        list(refs), remote="origin", env=env or {}, scenarios=scenarios, steps=fake_steps, read=fake_read(stamps),
+        git=git, ci=ci, out=out, stamped=lambda: list(stamps if listed is None else listed),
+    )
+    return code, out.getvalue()
+
+
+def rebase_check(branch, onto, stamps, *, listed=None, env=None, ci=no_ci, extra=None):
+    """A force push of r1 over b1: the push sends r1 alone, which changes
+    `branch` against m1."""
+    git = TreeGit(rebase_world(branch, onto, extra), [R1], branch)
+    code, out = stamped_check(git, [ref_of(R1, remote=B1)], stamps, listed=listed, env=env, ci=ci)
+    return code, out, git
+
+
+class StampAfterRebase(unittest.TestCase):
+    # Success.
+    def test_a_rebase_onto_a_scripts_only_change_keeps_the_stamp(self):
+        code, out, _ = rebase_check([SRC], [OTHER_SCRIPT], {B1: {"one", "two"}})
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"docs scenario one: passed on {B1}, whose tree is the tip's in everything it runs", out, out)
+        self.assertIn(f"docs scenario two: passed on {B1}, whose tree is the tip's in everything it runs", out, out)
+
+    def test_the_291_rebase_keeps_the_stamp(self):
+        # 53b586c changed .githooks, ci.yml, README.md, scripts/ and development.md.
+        onto = [".githooks/pre-push", ".github/workflows/ci.yml", "README.md", OTHER_SCRIPT,
+                "website/content/docs/development.md"]
+        code, out, _ = rebase_check([SRC, PAGE_C], onto, {B1: {"one", "two", "pages-only"}})
+        self.assertEqual(code, 0, out)
+
+    def test_a_rebase_onto_a_page_no_scenario_runs_keeps_the_stamp(self):
+        code, out, _ = rebase_check([SRC], ["website/content/docs/development.md"], {B1: {"one", "two"}})
+        self.assertEqual(code, 0, out)
+
+    def test_a_rebase_onto_a_crate_test_change_keeps_the_stamp(self):
+        code, out, _ = rebase_check([SRC], ["crates/vcon-server/tests/serve.rs"], {B1: {"one", "two"}})
+        self.assertEqual(code, 0, "a crate's tests are not the server")
+
+    def test_a_rebase_onto_another_scenarios_page_keeps_the_stamp(self):
+        code, out, _ = rebase_check([SRC], [PAGE_C], {B1: {"one", "two"}})
+        self.assertEqual(code, 0, "c.md is pages-only's alone, and this push needs only one and two")
+
+    def test_a_stamp_of_an_unrelated_commit_with_the_same_inputs_holds(self):
+        twin = "77" * 20
+        extra = {twin: {**BASE_TREE, SRC: "branch", "README.md": "elsewhere"}}
+        code, out, _ = rebase_check([SRC], [], {twin: {"one", "two"}}, extra=extra)
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"passed on {twin}, whose tree is the tip's", out, out)
+
+    def test_ci_is_not_asked_when_an_old_stamp_holds_everything(self):
+        code, out, _ = rebase_check([SRC], [OTHER_SCRIPT], {B1: {"one", "two"}}, ci=ci_must_not_be_asked)
+        self.assertEqual(code, 0, out)
+
+    def test_two_old_stamps_together_hold_the_push(self):
+        other = "55" * 20
+        extra = {other: {**BASE_TREE, PAGE_C: "branch"}}
+        code, out, _ = rebase_check([SRC, PAGE_C], [], {B1: {"one", "two"}, other: {"pages-only"}}, extra=extra)
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"docs scenario pages-only: passed on {other}", out, out)
+
+    def test_the_tips_own_stamp_comes_first(self):
+        code, out, git = rebase_check([SRC], [OTHER_SCRIPT], {R1: {"one", "two"}, B1: {"one", "two"}})
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"docs scenario one: passed on {R1} before this push", out, out)
+        self.assertEqual(git.diffs, [], "the old stamp is never compared")
+
+    def test_a_branch_of_two_commits_keeps_its_old_tips_stamp(self):
+        b2, r2 = "b2" * 20, "r2" * 20
+        world = rebase_world([SRC], [OTHER_SCRIPT])
+        world[b2] = {**world[B1], PAGE_C: "branch"}
+        world[r2] = {**world[R1], PAGE_C: "branch"}
+        git = TreeGit(world, [r2, R1], [SRC, PAGE_C])
+        code, out = stamped_check(git, [ref_of(r2, remote=b2)], {b2: {"one", "two", "pages-only"}})
+        self.assertEqual(code, 0, out)
+
+    def test_a_stamp_from_two_rebases_ago_holds(self):
+        q1 = "a1" * 20
+        world = rebase_world([SRC], [OTHER_SCRIPT])
+        world[q1] = {**world[R1], "README.md": "again"}
+        git = TreeGit(world, [q1], [SRC])
+        code, out = stamped_check(git, [ref_of(q1, remote=R1)], {B1: {"one", "two"}})
+        self.assertEqual(code, 0, out)
+
+    def test_the_release_an_old_stamp_ran_is_repeated(self):
+        code, out, _ = rebase_check([PAGE_C], [OTHER_SCRIPT], {B1: {"pages-only": "VERSION=0.4.6"}})
+        self.assertEqual(code, 0, out)
+        self.assertIn("whose tree is the tip's in everything it runs; it ran VERSION=0.4.6 in place of", out, out)
+
+    def test_a_new_branch_push_keeps_the_stamp(self):
+        git = TreeGit(rebase_world([SRC], [OTHER_SCRIPT]), [R1], [SRC])
+        code, out = stamped_check(git, [ref_of(R1, remote=dt.ZERO_SHA)], {B1: {"one", "two"}})
+        self.assertEqual(code, 0, out)
+
+    # Failure.
+    def test_a_rebase_onto_a_crate_source_change_refuses_the_scenarios_it_feeds(self):
+        code, out, _ = rebase_check([SRC], [SRC2], {B1: {"one", "two"}})
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"one, two have not passed on {R1}", out, out)
+        self.assertIn(
+            f"docs scenario one: no stamp holds it for {R1}: the stamp of {B1} names it, but {R1} differs from it in "
+            f"{SRC2}, which the server under test is built from", out, out,
+        )
+
+    def test_a_rebase_onto_a_lock_file_change_refuses(self):
+        code, out, _ = rebase_check([SRC], ["Cargo.lock"], {B1: {"one", "two"}})
+        self.assertEqual(code, 1, out)
+
+    def test_a_rebase_onto_a_toolchain_change_refuses(self):
+        code, out, _ = rebase_check([SRC], ["rust-toolchain.toml"], {B1: {"one", "two"}})
+        self.assertEqual(code, 1, out)
+
+    def test_a_rebase_onto_a_runner_change_refuses_every_scenario(self):
+        code, out, _ = rebase_check([SRC, PAGE_C], ["scripts/docs_test.py"], {B1: {"one", "two", "pages-only"}})
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"one, two, pages-only have not passed on {R1}", out, out)
+        self.assertIn("in scripts/docs_test.py, which runs every scenario", out, out)
+
+    def test_inputs_that_differ_for_one_scenario_refuse_that_one_alone(self):
+        # main edited c.md elsewhere; the rebase merged both edits into it.
+        world = rebase_world([PAGE_A, PAGE_C], [])
+        world[R1][PAGE_C] = "branch and main"
+        git = TreeGit(world, [R1], [PAGE_A, PAGE_C])
+        code, out = stamped_check(git, [ref_of(R1, remote=B1)], {B1: {"one", "pages-only"}})
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"docs scenarios: pages-only have not passed on {R1}", out, out)
+        self.assertIn(f"docs scenario one: passed on {B1}, whose tree is the tip's", out, out)
+        self.assertIn("in docs/c.md, which it runs", out, out)
+
+    def test_the_other_scenario_alone_is_refused_when_its_page_differs(self):
+        code, out, _ = rebase_check([PAGE_A, PAGE_C], [PAGE_B], {B1: {"one", "pages-only"}})
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"docs scenarios: one have not passed on {R1}", out, out)
+        self.assertIn(f"docs scenario pages-only: passed on {B1}", out, out)
+
+    def test_a_stamp_of_a_commit_git_does_not_know_is_refused_and_says_so(self):
+        gone = "99" * 20
+        code, out, _ = rebase_check([SRC], [], {gone: {"one", "two"}})
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"the stamp of {gone} names it, but git cannot compare {gone} with {R1}: fatal: bad object", out, out)
+
+    def test_a_corrupt_stamp_is_refused_with_a_clear_message(self):
+        broken = dt.StampError("docs-scenarios-b1.pass is not UTF-8 text")
+        code, out, _ = rebase_check([SRC], [OTHER_SCRIPT], {B1: broken})
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"no stamp holds it for {R1}: the stamp of {B1} cannot be read: docs-scenarios-b1.pass is not UTF-8 text",
+                      out, out)
+
+    def test_no_stamp_at_all_is_refused_with_a_clear_message(self):
+        code, out, _ = rebase_check([SRC], [OTHER_SCRIPT], {})
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"docs scenario one: no stamp holds it for {R1}: no stamp names it", out, out)
+        self.assertIn(f"python3 -I scripts/docs_test.py push {R1} --since origin/main", out, "what to run")
+
+    def test_an_old_stamp_without_the_scenario_is_refused(self):
+        code, out, _ = rebase_check([SRC], [OTHER_SCRIPT], {B1: {"one"}})
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"docs scenario two: no stamp holds it for {R1}: no stamp names it", out, out)
+
+    def test_an_old_stamp_whose_page_differs_is_refused(self):
+        code, out, _ = rebase_check([SRC], [PAGE_B], {B1: {"one", "two"}})
+        self.assertEqual(code, 1, "b.md is run by both")
+        self.assertIn(f"in docs/b.md, which it runs", out, out)
+
+    def test_a_listed_stamp_file_that_has_gone_is_refused(self):
+        code, out, _ = rebase_check([SRC], [OTHER_SCRIPT], {}, listed=[B1])
+        self.assertEqual(code, 1, "a stamp deleted after the listing holds nothing")
+        self.assertIn("no stamp names it", out, out)
+
+    def test_ci_still_counts_when_no_stamp_holds(self):
+        def ci(tip, names, *, pull_requests_ok):
+            return {n: f"CI's job passed on {tip}" for n in names}, {}
+
+        code, out, _ = rebase_check([SRC], [SRC2], {B1: {"one", "two"}}, ci=ci)
+        self.assertEqual(code, 0, out)
+
+    # Edge cases.
+    def test_the_listing_is_not_read_when_nothing_is_needed(self):
+        git = TreeGit(rebase_world(["README.md"], []), [R1], ["README.md"])
+        out = io.StringIO()
+        code = dt.check([ref_of(R1, remote=B1)], env={}, scenarios=FAKES, steps=fake_steps, read=fake_read({}), git=git,
+                        ci=no_ci, out=out, stamped=lambda: (_ for _ in ()).throw(AssertionError("listed")))
+        self.assertEqual(code, 0, out.getvalue())
+
+    def test_a_corrupt_stamp_does_not_hide_a_good_one(self):
+        good = "66" * 20
+        extra = {good: {**BASE_TREE, SRC: "branch"}}
+        stamps = {B1: dt.StampError("cut short"), good: {"one", "two"}}
+        code, out, _ = rebase_check([SRC], [OTHER_SCRIPT], stamps, extra=extra)
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"passed on {good}", out, out)
+
+    def test_an_unknown_commits_stamp_does_not_hide_a_good_one(self):
+        code, out, _ = rebase_check([SRC], [OTHER_SCRIPT], {"99" * 20: {"one", "two"}, B1: {"one", "two"}})
+        self.assertEqual(code, 0, out)
+
+    def test_a_range_commit_git_cannot_compare_still_refuses_the_ref(self):
+        world = rebase_world([SRC], [])
+        git = TreeGit(world, [R1, "lost"], [SRC])
+        code, out = stamped_check(git, [ref_of(R1, remote=B1)], {"lost": {"one", "two"}}, listed=[])
+        self.assertEqual(code, 1, out)
+        self.assertIn("cannot compare the commits pushed to refs/heads/topic", out, out)
+
+    def test_a_listed_stamp_of_a_range_commit_is_compared_once(self):
+        world = rebase_world([SRC], [OTHER_SCRIPT])
+        r0 = "r0" * 20
+        world[r0] = dict(world[R1])
+        git = TreeGit(world, [R1, r0], [SRC])
+        code, out = stamped_check(git, [ref_of(R1, remote=B1)], {r0: {"one", "two"}})
+        self.assertEqual(code, 0, out)
+        self.assertEqual(git.diffs, [(r0, R1)], "once, as a commit of the range")
+        self.assertIn(f"passed on {r0}, and the commits after it change nothing it runs", out, out)
+
+    def test_an_old_stamp_naming_nothing_needed_costs_no_diff(self):
+        code, out, git = rebase_check([SRC], [OTHER_SCRIPT], {B1: {"pages-only"}})
+        self.assertEqual(git.diffs, [], "pages-only is not needed by a server change")
+
+    def test_a_stamp_listed_twice_is_compared_once(self):
+        code, out, git = rebase_check([SRC], [SRC2], {B1: {"one", "two"}}, listed=[B1, B1])
+        self.assertEqual((code, git.diffs), (1, [(B1, R1)]), out)
+
+    def test_the_tip_in_the_listing_is_not_compared_with_itself(self):
+        code, out, git = rebase_check([SRC], [OTHER_SCRIPT], {R1: {"one", "two"}}, listed=[R1, R1])
+        self.assertEqual((code, git.diffs), (0, []), out)
+
+    def test_a_skipped_scenario_is_not_asked_of_an_old_stamp(self):
+        code, out, _ = rebase_check([SRC, "website/content/docs/d.md"], [OTHER_SCRIPT], {B1: {"one", "two"}})
+        self.assertEqual(code, 0, "tokened needs GH_TOKEN, so it is skipped here")
+        self.assertIn("docs scenarios: skipped tokened", out, out)
+
+    def test_with_a_token_an_old_stamp_holds_the_gh_scenario(self):
+        code, out, _ = rebase_check(["website/content/docs/d.md"], [OTHER_SCRIPT], {B1: {"tokened"}}, env={"GH_TOKEN": "x"})
+        self.assertEqual(code, 0, out)
+
+    def test_the_newest_listed_reason_is_named(self):
+        old = "44" * 20
+        extra = {old: {**BASE_TREE, SRC: "branch", "Cargo.lock": "old"}}
+        code, out, _ = rebase_check([SRC], [SRC2], {B1: {"one", "two"}, old: {"one", "two"}}, extra=extra)
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"docs scenario one: no stamp holds it for {R1}: the stamp of {B1} names it", out, out)
+
+    def test_a_change_main_made_and_undid_keeps_the_stamp(self):
+        world = rebase_world([SRC], [])
+        git = TreeGit(world, [R1], [SRC])
+        code, out = stamped_check(git, [ref_of(R1, remote=B1)], {B1: {"one", "two"}})
+        self.assertEqual(code, 0, "the same tree")
+
+    def test_two_branches_each_use_their_own_old_stamp(self):
+        world = rebase_world([SRC], [OTHER_SCRIPT])
+        c1, d1 = "c1" * 20, "d1" * 20
+        world[c1] = {**world["m0"], PAGE_C: "branch"}
+        world[d1] = {**world["m1"], PAGE_C: "branch"}
+        git = TreeGit(world, {R1: [R1], d1: [d1]}, {R1: [SRC], d1: [PAGE_C]})
+        refs = [ref_of(R1, remote=B1, name="refs/heads/x"), ref_of(d1, remote=c1, name="refs/heads/y")]
+        code, out = stamped_check(git, refs, {B1: {"one", "two"}, c1: {"pages-only"}})
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"docs scenario pages-only: passed on {c1}", out, out)
+        self.assertIn(f"docs scenario one: passed on {B1}", out, out)
+
+
+class StampFiles(unittest.TestCase):
+    """The stamp files in the git dir: listed, read strictly, written whole."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="docs-stamp-test-")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def put(self, name, data, when=None):
+        path = os.path.join(self.dir, name)
+        with open(path, "wb") as f:
+            f.write(data)
+        if when is not None:
+            os.utime(path, (when, when))
+        return path
+
+    # Success.
+    def test_the_stamps_are_listed_newest_first(self):
+        a, b = "a" * 40, "b" * 40
+        self.put(f"docs-scenarios-{a}.pass", b"one\n", when=1000)
+        self.put(f"docs-scenarios-{b}.pass", b"one\n", when=2000)
+        self.assertEqual(dt.stamp_shas(git_dir=self.dir), [b, a], "b was written last")
+
+    def test_a_sha256_repositorys_stamp_is_listed(self):
+        sha = "c" * 64
+        self.put(f"docs-scenarios-{sha}.pass", b"one\n")
+        self.assertEqual(dt.stamp_shas(git_dir=self.dir), [sha], "64 hex digits")
+
+    def test_a_written_stamp_is_listed_and_read_back(self):
+        sha = "d" * 40
+        dt.write_stamp(sha, {"one": "", "two": "VERSION=0.4.6"}, git_dir=self.dir)
+        self.assertEqual(dt.stamp_shas(git_dir=self.dir), [sha], "listed")
+        self.assertEqual(dt.read_stamp(sha, git_dir=self.dir), {"one": "", "two": "VERSION=0.4.6"}, "read back")
+
+    def test_writing_leaves_no_partial_file(self):
+        dt.write_stamp("e" * 40, ["one"], git_dir=self.dir)
+        self.assertEqual(os.listdir(self.dir), [f"docs-scenarios-{'e' * 40}.pass"], "the stamp alone")
+
+    def test_a_stamp_is_written_in_one_rename(self):
+        with unittest.mock.patch.object(dt.os, "replace", wraps=os.replace) as replace:
+            dt.write_stamp("f" * 40, ["one"], git_dir=self.dir)
+        self.assertEqual(replace.call_count, 1, "a reader never sees half a stamp")
+
+    def test_a_note_of_two_releases_is_read(self):
+        self.put("docs-scenarios-abc.pass", b"upgrade VERSION=0.4.6,NEW_VERSION=0.4.7\n")
+        self.assertEqual(dt.read_stamp("abc", git_dir=self.dir), {"upgrade": "VERSION=0.4.6,NEW_VERSION=0.4.7"}, "both")
+
+    # Failure.
+    def test_a_stamp_that_is_not_utf8_is_refused(self):
+        self.put("docs-scenarios-abc.pass", b"one\n\xff\xfe\n")
+        with self.assertRaisesRegex(dt.StampError, r"docs-scenarios-abc\.pass is not UTF-8 text"):
+            dt.read_stamp("abc", git_dir=self.dir)
+
+    def test_an_empty_stamp_is_refused(self):
+        self.put("docs-scenarios-abc.pass", b"")
+        with self.assertRaisesRegex(dt.StampError, r"docs-scenarios-abc\.pass names no scenario"):
+            dt.read_stamp("abc", git_dir=self.dir)
+
+    def test_a_stamp_of_blank_lines_is_refused(self):
+        self.put("docs-scenarios-abc.pass", b"\n\n")
+        with self.assertRaisesRegex(dt.StampError, "names no scenario"):
+            dt.read_stamp("abc", git_dir=self.dir)
+
+    def test_a_stamp_cut_short_is_refused(self):
+        self.put("docs-scenarios-abc.pass", b"one\ntw")
+        with self.assertRaisesRegex(dt.StampError, r"docs-scenarios-abc\.pass ends without a newline, so its writing was cut short"):
+            dt.read_stamp("abc", git_dir=self.dir)
+
+    def test_a_line_with_a_nul_is_refused_with_its_number(self):
+        self.put("docs-scenarios-abc.pass", b"one\ntwo\x00\n")
+        with self.assertRaisesRegex(dt.StampError, r"line 2 is not `<scenario> \[<release note>\]`"):
+            dt.read_stamp("abc", git_dir=self.dir)
+
+    def test_a_line_that_is_no_scenario_name_is_refused(self):
+        self.put("docs-scenarios-abc.pass", b"<<<<<<< HEAD\n")
+        with self.assertRaisesRegex(dt.StampError, "line 1 is not"):
+            dt.read_stamp("abc", git_dir=self.dir)
+
+    def test_a_line_of_three_words_is_refused(self):
+        self.put("docs-scenarios-abc.pass", b"one VERSION=0.4.6 more\n")
+        with self.assertRaisesRegex(dt.StampError, "line 1 is not"):
+            dt.read_stamp("abc", git_dir=self.dir)
+
+    def test_a_directory_in_place_of_a_stamp_is_refused(self):
+        os.mkdir(os.path.join(self.dir, "docs-scenarios-abc.pass"))
+        with self.assertRaisesRegex(dt.StampError, r"docs-scenarios-abc\.pass cannot be read"):
+            dt.read_stamp("abc", git_dir=self.dir)
+
+    def test_a_corrupt_stamp_is_a_page_error(self):
+        self.assertTrue(issubclass(dt.StampError, dt.PageError), "the callers' error handling covers it")
+
+    # Edge cases.
+    def test_other_files_are_not_listed(self):
+        for name in (f"docs-scenarios-{'a' * 40}.pass.tmp", "docs-scenarios-abc.pass", f"docs-scenarios-{'A' * 40}.pass",
+                     f"docs-scenarios-{'a' * 41}.pass", "sipnab-pre-commit-1.log", f"x-docs-scenarios-{'a' * 40}.pass"):
+            self.put(name, b"one\n")
+        self.assertEqual(dt.stamp_shas(git_dir=self.dir), [], "only a stamp named by a whole sha")
+
+    def test_a_missing_git_dir_lists_nothing(self):
+        self.assertEqual(dt.stamp_shas(git_dir=os.path.join(self.dir, "none")), [], "no stamps")
+
+    def test_an_empty_git_dir_lists_nothing(self):
+        self.assertEqual(dt.stamp_shas(git_dir=self.dir), [], "no stamps")
+
+    def test_stamps_of_the_same_time_are_listed_by_sha(self):
+        for sha in ("b" * 40, "a" * 40):
+            self.put(f"docs-scenarios-{sha}.pass", b"one\n", when=1000)
+        self.assertEqual(dt.stamp_shas(git_dir=self.dir), ["a" * 40, "b" * 40], "a stable order")
+
+    def test_a_stamp_that_goes_while_listing_is_left_out(self):
+        sha = "a" * 40
+        self.put(f"docs-scenarios-{sha}.pass", b"one\n")
+
+        def gone(path):
+            raise FileNotFoundError(path)
+
+        self.assertEqual(dt.stamp_shas(git_dir=self.dir, mtime=gone), [], "deleted after the listing")
+
+    def test_a_missing_stamp_reads_as_none(self):
+        self.assertIsNone(dt.read_stamp("abc", git_dir=self.dir), "no stamp is not a corrupt stamp")
+
+    def test_a_blank_line_between_scenarios_is_kept_readable(self):
+        self.put("docs-scenarios-abc.pass", b"one\n\ntwo\n")
+        self.assertEqual(dt.read_stamp("abc", git_dir=self.dir), {"one": "", "two": ""}, "as written before")
+
+    def test_a_crlf_stamp_is_read(self):
+        self.put("docs-scenarios-abc.pass", b"one\r\ntwo\r\n")
+        self.assertEqual(dt.read_stamp("abc", git_dir=self.dir), {"one": "", "two": ""}, "line ends are not names")
+
+    def test_check_lists_the_stamps_of_the_git_dir_by_default(self):
+        import inspect
+
+        self.assertIs(inspect.signature(dt.check).parameters["stamped"].default, dt.stamp_shas, "the git dir's stamps")
+
+
+def push_after_rebase(changed, run, stamps, *, delta, others, stamped=None, read=None):
+    out = io.StringIO()
+    stamped = stamped if stamped is not None else []
+    code = dt.push(
+        [R1], changed, run=run, env={}, scenarios=FAKES, steps=fake_steps, copy=lambda a, b: open(b, "w").close(),
+        tempdir=lambda: tempfile.mkdtemp(prefix="docs-push-test-"), out=out, clock=iter(range(0, 1000, 7)).__next__,
+        stamp=lambda sha, entries: stamped.append((sha, dict(entries))), read=read or fake_read(stamps),
+        commits=[R1], delta=delta, others=others,
+    )
+    return code, out.getvalue()
+
+
+class PushAfterRebase(unittest.TestCase):
+    def setUp(self):
+        self.world = rebase_world([SRC], [OTHER_SCRIPT])
+        self.git = TreeGit(self.world, [R1], [SRC])
+
+    def delta(self, sha):
+        return self.git.diff(sha, R1)
+
+    # Success.
+    def test_a_rebased_push_runs_nothing(self):
+        run = FakeRun({"git rev-parse": (0, R1 + "\n")})
+        code, out = push_after_rebase([SRC], run, {B1: {"one", "two"}}, delta=self.delta, others=[B1])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(run.calls, [], "nothing built, nothing run")
+        self.assertIn(f"docs scenario one: passed on {B1}, whose tree is the tip's in everything it runs; not run again", out, out)
+
+    def test_a_rebased_push_runs_only_what_the_old_stamp_lacks(self):
+        run = FakeRun({"git rev-parse": (0, R1 + "\n")})
+        code, out = push_after_rebase([SRC], run, {B1: {"one"}}, delta=self.delta, others=[B1])
+        self.assertEqual(code, 0, out)
+        self.assertEqual([c[4] for c in run.names(sys.executable)], ["two"], "two alone")
+
+    # Failure.
+    def test_a_rebase_onto_a_crate_change_runs_the_scenarios_it_feeds(self):
+        git = TreeGit(rebase_world([SRC], [SRC2]), [R1], [SRC])
+        run = FakeRun({"git rev-parse": (0, R1 + "\n")})
+        code, out = push_after_rebase([SRC], run, {B1: {"one", "two"}}, delta=lambda sha: git.diff(sha, R1), others=[B1])
+        self.assertEqual(code, 0, out)
+        self.assertEqual([c[4] for c in run.names(sys.executable)], ["one", "two"], "both run again")
+
+    def test_an_old_stamp_of_an_unknown_commit_runs_the_scenarios(self):
+        run = FakeRun({"git rev-parse": (0, R1 + "\n")})
+        gone = "99" * 20
+        code, out = push_after_rebase([SRC], run, {gone: {"one", "two"}}, delta=self.delta, others=[gone])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(run.names(sys.executable)), 2, "nothing holds, both run")
+
+    # Edge cases.
+    def test_old_stamps_without_a_delta_are_not_read(self):
+        run = FakeRun({"git rev-parse": (0, R1 + "\n")})
+        code, out = push_after_rebase([SRC], run, {B1: {"one", "two"}}, delta=None, others=[B1])
+        self.assertEqual(len(run.names(sys.executable)), 2, "with nothing to compare, an old stamp proves nothing")
+
+    def test_a_corrupt_tip_stamp_is_written_again_whole(self):
+        run = FakeRun({"git rev-parse": (0, R1 + "\n")})
+        stamped = []
+        code, out = push_after_rebase([SRC], run, {R1: dt.StampError("cut short")}, delta=self.delta, others=[],
+                                      stamped=stamped)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(stamped, [(R1, {"one": "", "two": ""})], "the scenarios that ran, not the broken file's")
+
+    def test_push_since_passes_the_listed_stamps(self):
+        with unittest.mock.patch.object(dt, "push", return_value=0) as push, \
+                unittest.mock.patch.object(dt, "changed_since", return_value=["Cargo.lock"]), \
+                unittest.mock.patch.object(dt, "range_commits", return_value=["abc123"]), \
+                unittest.mock.patch.object(dt, "stamp_shas", return_value=[B1]):
+            self.assertEqual(dt.main(["push", "abc123", "--since", "origin/main"]), 0, "its code")
+        self.assertEqual(push.call_args.kwargs["others"], [B1], "the git dir's stamps")
+
+    def test_push_from_stdin_passes_the_listed_stamps_and_a_delta(self):
+        with unittest.mock.patch.object(dt, "push", return_value=0) as push, \
+                unittest.mock.patch.object(dt, "stamp_shas", return_value=[B1]), \
+                unittest.mock.patch("sys.stdin", stdin_of("Cargo.lock\n")):
+            self.assertEqual(dt.main(["push", "abc123"]), 0, "its code")
+        self.assertEqual(push.call_args.kwargs["others"], [B1], "the git dir's stamps")
+        self.assertTrue(callable(push.call_args.kwargs["delta"]), "old stamps are compared, never taken on trust")
+
+
+class RealRebase(unittest.TestCase):
+    """The whole path against a throwaway repository and real stamp files:
+    a branch stamped, main moved, the branch rebased, the tip checked."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="docs-rebase-test-")
+        self.stamps = os.path.join(self.dir, "stamps")
+        self.repo = os.path.join(self.dir, "repo")
+        os.makedirs(self.stamps)
+        os.makedirs(self.repo)
+        self.env = clean_git_env()
+        self.sh("init", "-q", "-b", "main")
+        self.commit({SRC: "fn a() {}\n", OTHER_SCRIPT: "0\n", PAGE_C: "c\n"}, "m0")
+        self.sh("checkout", "-q", "-b", "topic")
+        self.b1 = self.commit({SRC: "fn a() { 1 }\n"}, "b1")
+        dt.write_stamp(self.b1, {"one": "", "two": ""}, git_dir=self.stamps)
+        self.sh("checkout", "-q", "main")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def sh(self, *args):
+        return subprocess.run(
+            ["git", "-c", "user.name=T", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", *args],
+            cwd=self.repo, env=self.env, capture_output=True, text=True, check=True, timeout=60,
+        ).stdout
+
+    def commit(self, files, message):
+        for path, text in files.items():
+            os.makedirs(os.path.dirname(os.path.join(self.repo, path)), exist_ok=True)
+            with open(os.path.join(self.repo, path), "w", encoding="utf-8") as f:
+                f.write(text)
+            self.sh("add", path)
+        self.sh("commit", "-q", "-m", message)
+        return self.sh("rev-parse", "HEAD").strip()
+
+    def rebase_and_check(self, onto):
+        self.commit(onto, "m1")
+        self.sh("checkout", "-q", "topic")
+        self.sh("rebase", "-q", "main")
+        tip = self.sh("rev-parse", "HEAD").strip()
+        out = io.StringIO()
+        code = dt.check(
+            [dt.Ref("refs/heads/topic", tip, "refs/heads/topic", self.b1)], env={}, scenarios=FAKES, steps=fake_steps,
+            read=lambda sha: dt.read_stamp(sha, git_dir=self.stamps), git=dt.Git(cwd=self.repo, env=self.env),
+            ci=no_ci, out=out, stamped=lambda: dt.stamp_shas(git_dir=self.stamps),
+        )
+        return tip, code, out.getvalue()
+
+    # Success.
+    def test_a_real_rebase_onto_a_scripts_change_keeps_the_stamp(self):
+        tip, code, out = self.rebase_and_check({OTHER_SCRIPT: "1\n"})
+        self.assertNotEqual(tip, self.b1, "the rebase made a new commit")
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"docs scenario one: passed on {self.b1}, whose tree is the tip's", out, out)
+
+    # Failure.
+    def test_a_real_rebase_onto_a_crate_change_refuses(self):
+        tip, code, out = self.rebase_and_check({SRC2: "pub fn r() {}\n"})
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"the stamp of {self.b1} names it, but {tip} differs from it in {SRC2}", out, out)
+
+    def test_a_real_corrupt_stamp_is_refused_by_name(self):
+        with open(os.path.join(self.stamps, f"docs-scenarios-{self.b1}.pass"), "wb") as f:
+            f.write(b"one\ntw")
+        tip, code, out = self.rebase_and_check({OTHER_SCRIPT: "1\n"})
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"docs-scenarios-{self.b1}.pass ends without a newline, so its writing was cut short", out, out)
+
+    # Edge cases.
+    def test_a_real_stamp_of_a_commit_this_clone_lacks_is_passed_over(self):
+        dt.write_stamp("f" * 40, ["one", "two"], git_dir=self.stamps)
+        os.utime(os.path.join(self.stamps, f"docs-scenarios-{'f' * 40}.pass"), (4e9, 4e9))
+        tip, code, out = self.rebase_and_check({OTHER_SCRIPT: "1\n"})
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"passed on {self.b1}", out, out)
 
 
 if __name__ == "__main__":

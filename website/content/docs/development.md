@@ -475,6 +475,16 @@ below), and accepts each scenario on one of these:
   run: stamp the tip once with `--since origin/main`. After a run on one
   commit, a later commit that changes one page needs only that page's
   scenarios, and `push` runs only those;
+- a stamp of any other commit in the git directory that names it, by the
+  same rule: `git diff` of that commit and the tip changes nothing the
+  scenario runs. After a rebase onto a `main` that changed only files no
+  scenario reads (for example `.githooks/`, `README.md` or a script other
+  than the runner), the stamp of the branch's old tip still holds, so the
+  rebased branch needs no new run. A rebase onto a change to a page, to a
+  file the server is built from or to the runner needs a new run of the
+  scenarios that read it. A stamp of a commit that git no longer has, or a
+  stamp file that cannot be read (not UTF-8, empty, cut short, or a line
+  that is not `<scenario> [<release note>]`), holds nothing;
 - CI's job `how-to <scenario> against a live server` on the tip itself,
   read with `gh api` (its login, or `GH_TOKEN`): a completed, successful job
   of the CI workflow's newest run on that commit that has the job. A run
@@ -524,7 +534,9 @@ VERSION=<release> in place of the release its page names, not yet
 published with pins`,
 the stamp keeps that after the scenario's name
 (`container VERSION=0.4.6`), and the hook repeats it. The hook prints, for each
-scenario, the stamp or CI job it accepted or why CI's did not count, and
+scenario, the stamp or CI job it accepted, or why no stamp holds it (`no
+stamp holds it for <commit>: ...`, naming the stamp and the file that
+differs) and why CI's did not count, and
 refuses with `pre-push: refused: the how-to scenarios this push needs have
 not passed on its commit`, naming the scenarios still missing and the
 command above. Both skip, and name, a scenario that may take longer than 15 minutes (the

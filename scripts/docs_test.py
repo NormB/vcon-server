@@ -2092,6 +2092,9 @@ PUSH_SCENARIO_SECONDS = 900
 # --version read nothing.
 GH_NEEDS_TOKEN = re.compile(r"\bgh\s+(?:attestation\s+verify|api|release)\b")
 DOCS_PREFIX = "website/content/docs/"
+# How each reason `needed` gives begins; `affected` takes it off to name
+# what a scenario reads.
+CHANGES = "the push changes "
 
 
 _MOD = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
@@ -2242,11 +2245,11 @@ def needed(changed, scenarios, token: bool, steps=_scenario_steps, test_only=Non
     for s in scenarios:
         page = next((p for p in pages if p in s.pages), None)
         if page is not None:
-            why = f"the push changes docs/{page}, which it runs"
+            why = f"{CHANGES}docs/{page}, which it runs"
         elif source is not None and s.binary:
-            why = f"the push changes {source}, which the server under test is built from"
+            why = f"{CHANGES}{source}, which the server under test is built from"
         elif runner is not None:
-            why = f"the push changes {runner}, which runs every scenario"
+            why = f"{CHANGES}{runner}, which runs every scenario"
         else:
             continue
         if s.timeout > PUSH_SCENARIO_SECONDS:
@@ -2279,19 +2282,94 @@ def _stamp_entries(entries) -> dict:
 def write_stamp(sha: str, entries, git_dir: str | None = None) -> None:
     """Records that the scenarios of `entries` ran as their pages say on
     commit `sha`: one a line, with the releases it ran in place of a page's
-    unpublished one after it ("container VERSION=0.4.6")."""
-    with open(_stamp_path(sha, git_dir), "w", encoding="utf-8") as f:
+    unpublished one after it ("container VERSION=0.4.6"). The file is
+    written beside its place and renamed in, so a reader never sees half."""
+    path = _stamp_path(sha, git_dir)
+    with open(f"{path}.tmp", "w", encoding="utf-8") as f:
         f.write("".join(f"{n} {note}\n" if note else f"{n}\n" for n, note in _stamp_entries(entries).items()))
+    os.replace(f"{path}.tmp", path)
+
+
+class StampError(PageError):
+    """A stamp file that is there but cannot be read as one: it proves
+    nothing, and the message says why."""
+
+
+# A stamp file's name, by a whole commit sha (SHA-1 or SHA-256), and a line:
+# a scenario's name, then the releases it ran in place of its page's, as
+# write_stamp writes them.
+STAMP_FILE = re.compile(r"^docs-scenarios-([0-9a-f]{40}|[0-9a-f]{64})\.pass$")
+STAMP_LINE = re.compile(r"^([a-z0-9][a-z0-9-]*)(?:[ \t]+([!-~]+))?$")
+
+
+def parse_stamp(data: bytes, where: str) -> dict:
+    """The scenarios of a stamp file's bytes, each with its release note
+    ("" for none); a StampError naming `where` for bytes write_stamp never
+    writes: not UTF-8, nothing named, no newline at the end (the write was
+    cut short) or a line that is not `<scenario> [<release note>]`."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise StampError(f"{where} is not UTF-8 text") from None
+    if text.strip() and not text.endswith("\n"):
+        raise StampError(f"{where} ends without a newline, so its writing was cut short")
+    found = {}
+    for number, line in enumerate(text.splitlines(), 1):
+        line = line.strip(" \t\r")
+        if not line:
+            continue
+        m = STAMP_LINE.match(line)
+        if not m:
+            raise StampError(f"{where}: line {number} is not `<scenario> [<release note>]`: {line!r}")
+        found[m.group(1)] = m.group(2) or ""
+    if not found:
+        raise StampError(f"{where} names no scenario")
+    return found
 
 
 def read_stamp(sha: str, git_dir: str | None = None) -> dict | None:
     """The scenarios that passed on `sha`, each with its release note ("" for
-    none), or None when none were recorded."""
+    none), or None when none were recorded. A file that is there and cannot
+    be read as a stamp is a StampError (parse_stamp)."""
+    path = _stamp_path(sha, git_dir)
     try:
-        with open(_stamp_path(sha, git_dir), encoding="utf-8") as f:
-            return {name: note.strip() for name, _, note in (l.strip().partition(" ") for l in f) if name}
+        with open(path, "rb") as f:
+            data = f.read()
     except FileNotFoundError:
         return None
+    except OSError as e:
+        raise StampError(f"{path} cannot be read: {e.strerror or e}") from None
+    return parse_stamp(data, path)
+
+
+def stamp_shas(git_dir: str | None = None, listdir=os.listdir, mtime=os.path.getmtime) -> list[str]:
+    """The commits with a stamp file in the git dir, the newest stamp first
+    (ties by sha). A file that goes while it is listed is left out, and a
+    git dir that cannot be listed has none."""
+    try:
+        where = git_dir or _git_dir()
+        names = listdir(where)
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    found = []
+    for name in names:
+        m = STAMP_FILE.match(name)
+        if not m:
+            continue
+        try:
+            found.append((-mtime(os.path.join(where, name)), m.group(1)))
+        except OSError:
+            continue
+    return [sha for _, sha in sorted(found)]
+
+
+def _notes(read, sha: str) -> dict:
+    """The stamp of `sha` as {name: note}; nothing for no stamp or one that
+    cannot be read."""
+    try:
+        return _stamp_entries(read(sha) or {})
+    except StampError:
+        return {}
 
 
 def changed_since(base: str, sha: str) -> list[str]:
@@ -2403,11 +2481,12 @@ def range_commits(base: str, sha: str) -> list[str]:
     return Git().rev_list(sha, "--not", base)
 
 
-def affected(paths, scenarios, steps=_scenario_steps, test_only=None) -> set:
-    """The scenarios a change of `paths` would need. With a token, `needed`
+def affected(paths, scenarios, steps=_scenario_steps, test_only=None) -> dict:
+    """The scenarios a change of `paths` would need, each with what of it
+    the scenario reads ("docs/b.md, which it runs"). With a token, `needed`
     skips only a scenario longer than a push waits for, and a push never
     needs one of those, so the ones it runs are all that can be affected."""
-    return {n for n, _ in needed(paths, scenarios, True, steps, test_only)[0]}
+    return {n: why.removeprefix(CHANGES) for n, why in needed(paths, scenarios, True, steps, test_only)[0]}
 
 
 def test_only_at(sha: str, show, includes=None) -> "callable":
@@ -2432,27 +2511,71 @@ def test_only_at(sha: str, show, includes=None) -> "callable":
     return lambda path: test_only(path, read) or crate_readme(path, read, lines)
 
 
-def carried(names, tip: str, commits, read, delta, scenarios, steps=_scenario_steps, test_only=None) -> dict:
-    """Which of `names` hold for `tip` on a stamp, and the commit of that
-    stamp: one of `commits` (newest first, the tip among them) whose stamp
-    names the scenario, when what differs between that commit's tree and
-    the tip's (`delta(sha)`) is nothing the scenario runs. A scenario reads
-    only its pages, the server it is given and the runner, so its result on
-    that commit is its result on the tip."""
+def stamps_holding(
+    names, tip: str, commits, read, delta, scenarios, steps=_scenario_steps, test_only=None, others=()
+) -> tuple[dict, dict]:
+    """Which of `names` hold for `tip` on a stamp, with the commit of that
+    stamp, and why each other one does not. A stamp holds a scenario it
+    names when what differs between its commit's tree and the tip's
+    (`delta(sha)`) is nothing the scenario runs, by the rule `needed` uses
+    to choose the scenarios of a push (`affected`): a scenario reads only
+    its pages, the server it is given and the runner, so its result on that
+    commit is its result on the tip. The stamps of `commits` (the pushed
+    range, newest first, the tip among them) are read first, then those of
+    `others` (any other commit with a stamp, such as the branch's tip
+    before a rebase). A stamp that cannot be read holds nothing; so does
+    one of `others` whose commit git cannot compare with the tip, while
+    such a failure for a commit of the range is the caller's PageError."""
     found: dict = {}
-    for sha in commits:
+    why: dict = {}
+    order = list(commits)
+    for sha in others:
+        if sha not in order:
+            order.append(sha)
+    for sha in order:
         left = [n for n in names if n not in found]
         if not left:
             break
-        stamp = read(sha) or set()
+        try:
+            stamp = read(sha) or set()
+        except StampError as e:
+            for n in left:
+                why.setdefault(n, f"the stamp of {sha} cannot be read: {e}")
+            continue
         here = [n for n in left if n in stamp]
         if not here:
             continue
-        voided = set() if sha == tip else affected(delta(sha), scenarios, steps, test_only)
+        if sha == tip:
+            voided = {}
+        else:
+            try:
+                voided = affected(delta(sha), scenarios, steps, test_only)
+            except PageError as e:
+                if sha in commits:
+                    raise
+                for n in here:
+                    why.setdefault(n, f"the stamp of {sha} names it, but git cannot compare {sha} with {tip}: {e}")
+                continue
         for n in here:
-            if n not in voided:
+            if n in voided:
+                why.setdefault(n, f"the stamp of {sha} names it, but {tip} differs from it in {voided[n]}")
+            else:
                 found[n] = sha
-    return found
+    return found, {n: why.get(n, "no stamp names it") for n in names if n not in found}
+
+
+def carried(names, tip: str, commits, read, delta, scenarios, steps=_scenario_steps, test_only=None, others=()) -> dict:
+    """Which of `names` hold for `tip` on a stamp, and the commit of that
+    stamp (`stamps_holding`)."""
+    return stamps_holding(names, tip, commits, read, delta, scenarios, steps, test_only, others)[0]
+
+
+def held_words(sha: str, commits) -> str:
+    """How a stamp of `sha`, not the tip's, holds: as a commit of the pushed
+    range, or as another commit whose tree matches where the scenario reads."""
+    if sha in commits:
+        return f"passed on {sha}, and the commits after it change nothing it runs"
+    return f"passed on {sha}, whose tree is the tip's in everything it runs"
 
 
 CI_WORKFLOW = ".github/workflows/ci.yml"
@@ -2555,15 +2678,19 @@ def check(
     git=None,
     ci=ci_results,
     out=sys.stdout,
+    stamped=stamp_shas,
 ) -> int:
     """What .githooks/pre-push asks of each pushed ref: 0 when every
     scenario the ref's commits need (or none) has passed on its tip: on a
-    stamp of the tip, on a stamp of a commit of the range that holds for the
-    tip (`carried`), or in CI's how-to job on the tip itself (`ci_results`);
-    1 otherwise, naming what is missing and the command that runs it. It
+    stamp of the tip, on a stamp of a commit of the range or of any other
+    commit with a stamp in the git dir (`stamped()`, such as the branch's
+    tip before a rebase) that holds for the tip (`stamps_holding`), or in
+    CI's how-to job on the tip itself (`ci_results`); 1 otherwise, naming
+    what is missing, why no stamp holds it, and the command that runs it. It
     builds and runs nothing: the connection `git push` holds to GitHub
     would not wait for the scenarios."""
     git = git or Git()
+    listed = None  # the git dir's stamps (`stamped()`), read once and only when a scenario is needed
 
     def say(line: str) -> None:
         print(line, file=out, flush=True)
@@ -2592,8 +2719,12 @@ def check(
                 )
             continue
         names = [n for n, _ in todo]
+        if listed is None:
+            listed = list(stamped())
         try:
-            held = carried(names, tip, commits, read, lambda sha: git.diff(sha, tip), scenarios, steps, at_tip)
+            held, unheld = stamps_holding(
+                names, tip, commits, read, lambda sha: git.diff(sha, tip), scenarios, steps, at_tip, listed
+            )
             missing = [n for n in names if n not in held]
             pull_requests_ok = (
                 bool(missing)
@@ -2608,16 +2739,15 @@ def check(
         for n in names:
             if n not in held:
                 continue
-            ran = release_words(_stamp_entries(read(held[n]) or {}).get(n, ""))
+            ran = release_words(_notes(read, held[n]).get(n, ""))
             ran = f"; {ran}" if ran else ""
-            if held[n] == tip:
-                say(f"docs scenario {n}: passed on {tip} before this push{ran}")
-            else:
-                say(f"docs scenario {n}: passed on {held[n]}, and the commits after it change nothing it runs{ran}")
+            where = f"passed on {tip} before this push" if held[n] == tip else held_words(held[n], commits)
+            say(f"docs scenario {n}: {where}{ran}")
         if not missing:
             continue
         passed, problems = ci(tip, missing, pull_requests_ok=pull_requests_ok)
         for n in missing:
+            say(f"docs scenario {n}: no stamp holds it for {tip}: {unheld[n]}")
             say(f"docs scenario {n}: {passed[n] if n in passed else problems.get(n, 'not passed')}")
         still = [n for n in missing if n not in passed]
         if still:
@@ -2646,15 +2776,18 @@ def push(
     commits=None,
     delta=None,
     test_only=None,
+    others=None,
 ) -> int:
     """Runs the scenarios a push of `shas` that changes `changed` needs,
     with the server built from the checkout, which must be that commit,
     and stamps the commit when each ran as its pages say (`check` reads
     the stamp), with the release each ran in place of a page's unpublished
     one. A scenario a stamp already holds for the commit is not run again
-    (`carried`): one of the commit's own, or of one of `commits` (the
+    (`carried`): one of the commit's own, of one of `commits` (the
     range's, newest first; `delta(sha)` names what differs between that
-    commit and this one). `test_only` is `needed`'s, for the commit's tree.
+    commit and this one), or of one of `others` (the git dir's other
+    stamps, such as the branch's tip before a rebase), which are read only
+    when `delta` is given. `test_only` is `needed`'s, for the commit's tree.
     0 when each ran so (or none was needed), 1 otherwise."""
 
     def say(line: str) -> None:
@@ -2675,19 +2808,21 @@ def push(
         say(f"docs scenarios: refused: the push holds {len(pushed)} commits that need them; push one branch at a time")
         return 1
     tip = pushed[0]
+    # Another commit's stamp is only ever taken on a comparison with the tip.
+    range_ = commits or [tip]
     held = carried(
-        [n for n, _ in todo], tip, commits or [tip], read, delta or (lambda sha: []), scenarios, steps, test_only
+        [n for n, _ in todo], tip, range_, read, delta or (lambda sha: []), scenarios, steps, test_only,
+        others if delta is not None and others else (),
     )
     for name, _ in todo:
         if name not in held:
             continue
-        ran = release_words(_stamp_entries(read(held[name]) or {}).get(name, ""))
+        ran = release_words(_notes(read, held[name]).get(name, ""))
         ran = f"; {ran}" if ran else ""
         if held[name] == tip:
             say(f"docs scenario {name}: passed on {tip} before{ran}; not run again")
         else:
-            say(f"docs scenario {name}: passed on {held[name]}, and the commits after it change nothing it runs"
-                f"{ran}; not run again")
+            say(f"docs scenario {name}: {held_words(held[name], range_)}{ran}; not run again")
     todo = [(n, why) for n, why in todo if n not in held]
     if not todo:
         say("docs scenarios: each one this push needs has passed already")
@@ -2754,7 +2889,7 @@ def push(
         say(f"docs scenarios: {passed} of {len(todo)} ran as their pages say")
         if passed != len(todo):
             return 1
-        merged = {**_stamp_entries(read(tip) or {}), **ran}
+        merged = {**_notes(read, tip), **ran}
         stamp(tip, dict(sorted(merged.items())))
         return 0
     finally:
@@ -2792,8 +2927,12 @@ def main(argv: list[str]) -> int:
                 commits=range_commits(base, sha),
                 delta=lambda other: Git().diff(other, sha),
                 test_only=test_only_at(sha, Git().show, Git().includes),
+                others=stamp_shas(),
             )
-        return push(rest, stdin_lines(), test_only=test_only_at(rest[0], Git().show, Git().includes))
+        return push(
+            rest, stdin_lines(), test_only=test_only_at(rest[0], Git().show, Git().includes),
+            delta=lambda other: Git().diff(other, rest[0]), others=stamp_shas(),
+        )
     if command == "check":
         usage = "docs-test: check reads the pushed refs, as pre-push gets them, on stdin: docs_test.py check [--remote <name>]"
         if rest and not (len(rest) == 2 and rest[0] == "--remote"):
