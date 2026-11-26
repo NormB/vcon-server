@@ -2915,6 +2915,14 @@ fn the_manifest_names_packed_versions_and_one_object_per_object_version(release:
 mod pg;
 
 #[cfg(all(feature = "backend-tests", feature = "postgres"))]
+#[path = "support/live_deadline.rs"]
+#[allow(
+    dead_code,
+    reason = "this module is part of several test crates; each uses part of it"
+)]
+mod live_deadline;
+
+#[cfg(all(feature = "backend-tests", feature = "postgres"))]
 #[path = "support/joined.rs"]
 mod joined;
 
@@ -3044,27 +3052,25 @@ mod live {
             let text = |user: &str| {
                 let mut text = format!(
                     "listen = \"127.0.0.1:0\"\ndata_dir = {:?}\nmaster_key = {:?}\n\n[tls]\ncert = \
-                     {:?}\nkey = {:?}\n\n[storage]\nobjects = \"s3\"\n\n[storage.s3]\nendpoint = \
-                     \"{}\"\nregion = \"us-east-1\"\nbucket = \"{}\"\npath_style = true\nallow_http = \
-                     true\n",
+                     {:?}\nkey = {:?}\n",
                     self.path("data"),
                     self.path("master.key"),
                     self.path("cert.pem"),
                     self.path("key.pem"),
-                    pg::var("VCON_TEST_S3_ENDPOINT"),
-                    self.bucket
                 );
+                text.push_str(&crate::live_deadline::s3_tables(
+                    &pg::var("VCON_TEST_S3_ENDPOINT"),
+                    &self.bucket,
+                    crate::live_deadline::LIVE_DEADLINE,
+                ));
                 if parquet {
                     text.push_str("\n[storage.parquet]\npack_interval = 3600\n");
                 }
-                text.push_str(&format!(
-                    "\n[catalog]\nbackend = \"postgres\"\n\n[catalog.postgres]\nhosts = \
-                     [\"localhost\"]\nport = {}\ndbname = \"{}\"\nuser = \"{user}\"\nca_file = \
-                     {:?}\npassword_file = {:?}\n",
-                    pg::var("VCON_TEST_PG_PORT"),
-                    self.db.name,
-                    pg::dir().join("ca.pem"),
-                    self.path("pg.password")
+                text.push_str(&pg::catalog_tables(
+                    &self.db.name,
+                    user,
+                    &pg::dir().join("ca.pem"),
+                    &self.path("pg.password"),
                 ));
                 text
             };
@@ -3419,6 +3425,30 @@ mod live {
     }
 
     // Success.
+
+    pub(super) fn both_configurations_give_the_servers_the_live_deadline(release: &str) {
+        let r = Restored::new(release);
+        for file in ["vcon-server.toml", "vcon-migrate.toml"] {
+            let config = vcon_server::config::load(&r.path(file))
+                .unwrap_or_else(|e| panic!("{release}: {file}: {e}"));
+            let vcon_server::config::CatalogStore::Postgres(pg) = &config.catalog else {
+                panic!("{release}: {file}: the catalogs are in PostgreSQL");
+            };
+            assert_eq!(
+                pg.connect_timeout,
+                crate::live_deadline::LIVE_DEADLINE,
+                "{release}: {file}: each connection waits the live deadline"
+            );
+            let vcon_server::config::ObjectStore::S3(s3) = &config.storage.objects else {
+                panic!("{release}: {file}: the objects are in S3");
+            };
+            assert_eq!(
+                s3.timeout,
+                crate::live_deadline::LIVE_DEADLINE,
+                "{release}: {file}: each S3 request waits the live deadline"
+            );
+        }
+    }
 
     pub(super) fn check_passes_and_counts_every_kept_version(release: &str) {
         let r = Restored::new(release);
@@ -4066,6 +4096,10 @@ macro_rules! pg_release {
             #[cfg(all(feature = "backend-tests", feature = "postgres"))]
             mod postgres {
                 use super::super::live;
+                #[test]
+                fn both_configurations_give_the_servers_the_live_deadline() {
+                    live::both_configurations_give_the_servers_the_live_deadline($release);
+                }
                 #[test]
                 fn check_passes_and_counts_every_kept_version() {
                     live::check_passes_and_counts_every_kept_version($release);

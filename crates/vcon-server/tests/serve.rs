@@ -30,6 +30,14 @@ mod joined;
 #[cfg(all(feature = "backend-tests", feature = "postgres"))]
 mod pg;
 
+#[cfg(feature = "backend-tests")]
+#[path = "support/live_deadline.rs"]
+#[allow(
+    dead_code,
+    reason = "this module is part of several test crates; each uses part of it"
+)]
+mod live_deadline;
+
 const UUID: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bc46";
 
 /// A data directory with one tenant and a key for it, a certificate and a
@@ -2422,15 +2430,31 @@ mod s3 {
             .collect()
     }
 
-    /// `s`'s configuration with its objects in `bucket`, and no keys.
+    /// `s`'s configuration with its objects in `bucket`, and no keys, each
+    /// request given the live-test deadline.
     pub(super) fn in_bucket(s: &Setup, bucket: &str) {
         let mut text = std::fs::read_to_string(&s.config).expect("reads");
-        text.push_str(&format!(
-            "\n[storage]\nobjects = \"s3\"\n\n[storage.s3]\nendpoint = \"{}\"\nregion = \
-             \"us-east-1\"\nbucket = \"{bucket}\"\npath_style = true\nallow_http = true\n",
-            var("VCON_TEST_S3_ENDPOINT")
+        text.push_str(&crate::live_deadline::s3_tables(
+            &var("VCON_TEST_S3_ENDPOINT"),
+            bucket,
+            crate::live_deadline::LIVE_DEADLINE,
         ));
         std::fs::write(&s.config, text).expect("writes");
+    }
+
+    #[test]
+    fn a_configuration_in_a_bucket_gives_each_request_the_live_deadline() {
+        let s = setup();
+        in_bucket(&s, "vcon-deadline-test");
+        let config = vcon_server::config::load(&s.config).expect("reads the configuration");
+        let vcon_server::config::ObjectStore::S3(s3) = &config.storage.objects else {
+            panic!("the objects are in S3: {config:?}");
+        };
+        assert_eq!(
+            s3.timeout,
+            crate::live_deadline::LIVE_DEADLINE,
+            "the binary waits the live deadline for each S3 request"
+        );
     }
 
     /// `serve`, with the test service's keys in the environment only.
@@ -2775,13 +2799,11 @@ mod postgres {
         std::fs::copy(pg::dir().join("password"), &password).expect("copies the password");
         std::fs::set_permissions(&password, std::fs::Permissions::from_mode(0o600)).expect("mode");
         let mut text = std::fs::read_to_string(&s.config).expect("reads");
-        text.push_str(&format!(
-            "\n[catalog]\nbackend = \"postgres\"\n\n[catalog.postgres]\nhosts = \
-             [\"localhost\"]\nport = {}\ndbname = \"{dbname}\"\nuser = \"vcon_app\"\n\
-             ca_file = \"{}\"\npassword_file = \"{}\"\n",
-            var("VCON_TEST_PG_PORT"),
-            pg::dir().join(ca).display(),
-            password.display()
+        text.push_str(&pg::catalog_tables(
+            dbname,
+            "vcon_app",
+            &pg::dir().join(ca),
+            &password,
         ));
         std::fs::write(&s.config, text).expect("writes");
     }
@@ -2789,6 +2811,29 @@ mod postgres {
     /// `on_database` for a new bucket and the shared database `vcon`.
     fn on_postgres(s: &Setup, ca: &str) {
         on_database(s, ca, "vcon", &new_bucket());
+    }
+
+    #[test]
+    fn a_configuration_on_the_database_gives_the_servers_the_live_deadline() {
+        let s = setup();
+        on_postgres(&s, "ca.pem");
+        let config = vcon_server::config::load(&s.config).expect("reads the configuration");
+        let vcon_server::config::CatalogStore::Postgres(pg) = &config.catalog else {
+            panic!("the catalogs are in PostgreSQL: {config:?}");
+        };
+        assert_eq!(
+            pg.connect_timeout,
+            crate::live_deadline::LIVE_DEADLINE,
+            "the binary waits the live deadline for each connection"
+        );
+        let vcon_server::config::ObjectStore::S3(s3) = &config.storage.objects else {
+            panic!("the objects are in S3: {config:?}");
+        };
+        assert_eq!(
+            s3.timeout,
+            crate::live_deadline::LIVE_DEADLINE,
+            "the binary waits the live deadline for each S3 request"
+        );
     }
 
     /// A deployment: a migrated database and a bucket of the test's own,

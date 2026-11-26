@@ -1449,6 +1449,102 @@ mod tests {
             assert!(why.contains("\"vcon\""), "names the bucket: {why}");
         }
     }
+
+    /// The live tests' settings for `bucket` on the service at `endpoint`
+    /// with the access key id `access_key`, each request given `deadline`:
+    /// `remote`'s settings, with what they read from the environment
+    /// passed in.
+    pub(super) fn live_settings(
+        endpoint: String,
+        access_key: String,
+        bucket: &str,
+        deadline: Duration,
+    ) -> S3Settings {
+        S3Settings {
+            endpoint: Some(endpoint),
+            region: "us-east-1".to_owned(),
+            bucket: bucket.to_owned(),
+            prefix: "test/".to_owned(),
+            path_style: true,
+            access_key_id: Some(access_key),
+            secret_access_key_file: None,
+            allow_http: true,
+            ca_file: None,
+            allow_versioning: false,
+            timeout: deadline,
+        }
+    }
+
+    /// `live_settings` for a service on the loopback address.
+    fn live(deadline: Duration) -> S3Settings {
+        live_settings(
+            "http://127.0.0.1:9000".to_owned(),
+            "vcon-test".to_owned(),
+            "vcon-test-bucket",
+            deadline,
+        )
+    }
+
+    #[test]
+    fn the_live_settings_give_each_request_the_deadline_passed() {
+        assert_eq!(
+            live(Duration::from_secs(7)).timeout,
+            Duration::from_secs(7),
+            "the deadline passed, not a fixed value"
+        );
+    }
+
+    #[test]
+    fn the_live_settings_give_each_request_the_live_deadline() {
+        assert_eq!(
+            live(crate::live_deadline::LIVE_DEADLINE).timeout,
+            crate::live_deadline::LIVE_DEADLINE,
+            "the shared live deadline"
+        );
+    }
+
+    #[test]
+    fn the_live_settings_name_the_service_the_key_and_the_bucket() {
+        let s = live(crate::live_deadline::LIVE_DEADLINE);
+        assert_eq!(
+            s.endpoint.as_deref(),
+            Some("http://127.0.0.1:9000"),
+            "endpoint"
+        );
+        assert_eq!(
+            s.access_key_id.as_deref(),
+            Some("vcon-test"),
+            "access key id"
+        );
+        assert_eq!(s.bucket, "vcon-test-bucket", "bucket");
+        assert_eq!(s.prefix, "test/", "the test prefix");
+    }
+
+    #[test]
+    fn a_live_request_to_a_service_that_never_answers_is_given_up_at_the_deadline() {
+        let service = http_service(None);
+        let settings = S3Settings {
+            endpoint: Some(format!("http://{}", service.address())),
+            ..live(Duration::from_secs(1))
+        };
+        let s3 = S3::connect(&settings, Some("test-secret"), None).expect("a client");
+        let started = std::time::Instant::now();
+        let refused = s3.versioning().expect_err("no answer");
+        let took = started.elapsed();
+        assert!(
+            took >= Duration::from_secs(1) && took < Duration::from_secs(10),
+            "given up at the one-second deadline passed: {took:?} ({refused})"
+        );
+    }
+
+    #[test]
+    fn the_servers_s3_timeout_default_is_unchanged() {
+        assert_eq!(
+            crate::config::S3_TIMEOUT,
+            Duration::from_secs(30),
+            "the production S3 timeout"
+        );
+    }
 }
 
 /// Against a real S3-compatible service, whose address and keys come from
@@ -1473,21 +1569,24 @@ pub(crate) mod remote {
         })
     }
 
-    /// The settings for a new bucket on the test service.
+    /// The settings for a new bucket on the test service, each request
+    /// given the live-test deadline (tests/support/live_deadline.rs).
     fn settings(bucket: &str) -> S3Settings {
-        S3Settings {
-            endpoint: Some(var("VCON_TEST_S3_ENDPOINT")),
-            region: "us-east-1".to_owned(),
-            bucket: bucket.to_owned(),
-            prefix: "test/".to_owned(),
-            path_style: true,
-            access_key_id: Some(var("VCON_TEST_S3_ACCESS_KEY")),
-            secret_access_key_file: None,
-            allow_http: true,
-            ca_file: None,
-            allow_versioning: false,
-            timeout: Duration::from_secs(30),
-        }
+        super::tests::live_settings(
+            var("VCON_TEST_S3_ENDPOINT"),
+            var("VCON_TEST_S3_ACCESS_KEY"),
+            bucket,
+            crate::live_deadline::LIVE_DEADLINE,
+        )
+    }
+
+    #[test]
+    fn the_test_services_settings_give_each_request_the_live_deadline() {
+        assert_eq!(
+            settings("vcon-test-deadline").timeout,
+            crate::live_deadline::LIVE_DEADLINE,
+            "the live helper reads the shared value"
+        );
     }
 
     /// A new bucket, versioned or not, and the client for it.

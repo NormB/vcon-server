@@ -61,6 +61,14 @@ pub mod formats;
 pub mod fs;
 pub mod ids;
 pub mod key_wrap;
+#[allow(
+    dead_code,
+    reason = "the library's live helpers read the deadline, and the configuration tables are \
+              the integration tests'"
+)]
+#[cfg(test)]
+#[path = "../tests/support/live_deadline.rs"]
+pub(crate) mod live_deadline;
 pub mod masked;
 pub mod mcp;
 pub mod query;

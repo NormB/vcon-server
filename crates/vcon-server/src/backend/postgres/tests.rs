@@ -11,6 +11,7 @@
 
 mod catalog_tests;
 mod claim_tests;
+mod deadline_tests;
 mod edge;
 mod failure;
 mod lease_tests;
@@ -102,6 +103,24 @@ pub(super) fn settings(
         statement_timeout: crate::config::POSTGRES_STATEMENT_TIMEOUT,
         lock_timeout: crate::config::POSTGRES_LOCK_TIMEOUT,
     }
+}
+
+/// A temporary directory holding a copy of the password in `dir`, mode
+/// 0600, and settings for `port` on localhost as `user` with it, trusting
+/// the CA in `dir`, each connection given `deadline`. The live helpers'
+/// settings, with what they read from the environment passed in.
+pub(super) fn live_settings(
+    dir: &Path,
+    port: u16,
+    user: &str,
+    deadline: std::time::Duration,
+) -> (tempfile::TempDir, PostgresSettings) {
+    let password = std::fs::read(dir.join("password")).expect("the test password");
+    let tmp = tempfile::tempdir().expect("a temporary directory");
+    let path = file(tmp.path(), "pg.password", &password, 0o600);
+    let mut s = settings("localhost", port, user, &dir.join("ca.pem"), Some(&path));
+    s.connect_timeout = deadline;
+    (tmp, s)
 }
 
 /// A connector for `settings`, its secrets read from their files.
@@ -221,19 +240,12 @@ pub(super) mod live {
     }
 
     /// A temporary directory holding a copy of the test password, mode
-    /// 0600, and settings for the primary as `user` with it.
+    /// 0600, and settings for the primary as `user` with it, each
+    /// connection given the live-test deadline
+    /// (tests/support/live_deadline.rs), not the server's fail-fast
+    /// default.
     pub(crate) fn as_user(user: &str) -> (tempfile::TempDir, PostgresSettings) {
-        let password = std::fs::read(dir().join("password")).expect("the test password");
-        let tmp = tempfile::tempdir().expect("a temporary directory");
-        let path = file(tmp.path(), "pg.password", &password, 0o600);
-        let s = settings(
-            "localhost",
-            primary(),
-            user,
-            &dir().join("ca.pem"),
-            Some(&path),
-        );
-        (tmp, s)
+        live_settings(&dir(), primary(), user, crate::live_deadline::LIVE_DEADLINE)
     }
 
     /// How a test with a client certificate logs in.

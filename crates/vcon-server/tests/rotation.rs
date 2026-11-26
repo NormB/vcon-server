@@ -337,6 +337,14 @@ fn a_vcon_purged_before_a_rotation_cannot_be_recovered_from_an_old_copy() {
 mod pg;
 
 #[cfg(all(feature = "backend-tests", feature = "postgres"))]
+#[path = "support/live_deadline.rs"]
+#[allow(
+    dead_code,
+    reason = "this module is part of several test crates; each uses part of it"
+)]
+mod live_deadline;
+
+#[cfg(all(feature = "backend-tests", feature = "postgres"))]
 #[path = "support/joined.rs"]
 mod joined;
 
@@ -354,7 +362,6 @@ mod postgres {
     use std::time::{Duration, Instant};
 
     use super::joined::Joined;
-    use super::pg::{self, var};
     use super::*;
 
     fn s3_var(name: &str) -> String {
@@ -444,28 +451,26 @@ mod postgres {
         /// and the database login `user`.
         fn configure(&self, master: &str, user: &str, file: &str) {
             let at = |name: &str| self.dir.path().join(name);
-            std::fs::write(
-                at(file),
-                format!(
-                    "listen = \"127.0.0.1:0\"\ndata_dir = {:?}\nmaster_key = {:?}\n\n[tls]\ncert \
-                     = {:?}\nkey = {:?}\n\n[storage]\nobjects = \"s3\"\n\n[storage.s3]\nendpoint \
-                     = {:?}\nregion = \"us-east-1\"\nbucket = {:?}\npath_style = \
-                     true\nallow_http = true\n\n[catalog]\nbackend = \
-                     \"postgres\"\n\n[catalog.postgres]\nhosts = [\"localhost\"]\nport = \
-                     {}\ndbname = {:?}\nuser = {user:?}\nca_file = {:?}\npassword_file = {:?}\n",
-                    at("data"),
-                    at(master),
-                    at("cert.pem"),
-                    at("key.pem"),
-                    s3_var("VCON_TEST_S3_ENDPOINT"),
-                    self.bucket,
-                    var("VCON_TEST_PG_PORT"),
-                    self.db.name,
-                    pg::dir().join("ca.pem"),
-                    at("pg.password"),
-                ),
-            )
-            .expect("configuration");
+            let mut text = format!(
+                "listen = \"127.0.0.1:0\"\ndata_dir = {:?}\nmaster_key = {:?}\n\n[tls]\ncert = \
+                 {:?}\nkey = {:?}\n",
+                at("data"),
+                at(master),
+                at("cert.pem"),
+                at("key.pem"),
+            );
+            text.push_str(&crate::live_deadline::s3_tables(
+                &s3_var("VCON_TEST_S3_ENDPOINT"),
+                &self.bucket,
+                crate::live_deadline::LIVE_DEADLINE,
+            ));
+            text.push_str(&pg::catalog_tables(
+                &self.db.name,
+                user,
+                &pg::dir().join("ca.pem"),
+                &at("pg.password"),
+            ));
+            std::fs::write(at(file), text).expect("configuration");
         }
 
         fn command(&self, args: &[&str], config: &str) -> Command {
@@ -621,6 +626,31 @@ mod postgres {
         (0..text.len() / 2)
             .map(|i| u8::from_str_radix(&text[2 * i..2 * i + 2], 16).expect("hexadecimal"))
             .collect()
+    }
+
+    #[test]
+    fn both_configurations_give_the_servers_the_live_deadline() {
+        let w = World::new();
+        for file in ["vcon-server.toml", "vcon-migrate.toml"] {
+            let config = vcon_server::config::load(&w.dir.path().join(file))
+                .unwrap_or_else(|e| panic!("{file}: {e}"));
+            let vcon_server::config::CatalogStore::Postgres(pg) = &config.catalog else {
+                panic!("{file}: the catalogs are in PostgreSQL");
+            };
+            assert_eq!(
+                pg.connect_timeout,
+                crate::live_deadline::LIVE_DEADLINE,
+                "{file}: each connection waits the live deadline"
+            );
+            let vcon_server::config::ObjectStore::S3(s3) = &config.storage.objects else {
+                panic!("{file}: the objects are in S3");
+            };
+            assert_eq!(
+                s3.timeout,
+                crate::live_deadline::LIVE_DEADLINE,
+                "{file}: each S3 request waits the live deadline"
+            );
+        }
     }
 
     #[test]
