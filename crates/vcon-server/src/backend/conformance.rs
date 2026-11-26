@@ -100,7 +100,7 @@ type Check = (&'static str, fn(&dyn Harness));
 
 /// Every check, in order; each panics with its name on failure.
 pub(crate) fn run(harness: &dyn Harness) {
-    let checks: [Check; 24] = [
+    let checks: [Check; 26] = [
         ("create_then_get", create_then_get),
         (
             "reads_at_once_are_each_answered_and_recorded",
@@ -157,6 +157,14 @@ pub(crate) fn run(harness: &dyn Harness) {
         (
             "a_write_that_ended_leaves_no_pending_row",
             a_write_that_ended_leaves_no_pending_row,
+        ),
+        (
+            "a_create_cut_off_with_its_pending_row_lost_leaves_nothing",
+            a_create_cut_off_with_its_pending_row_lost_leaves_nothing,
+        ),
+        (
+            "a_replace_cut_off_with_its_pending_row_lost_keeps_the_old_version",
+            a_replace_cut_off_with_its_pending_row_lost_keeps_the_old_version,
         ),
     ];
     for (name, check) in checks {
@@ -425,6 +433,94 @@ fn recovery_with_no_other_writer_takes_a_stopped_write_for_a_leftover(h: &dyn Ha
             Err(StoreError::NotFound)
         ),
         "recovery_with_no_other_writer_takes_a_stopped_write_for_a_leftover: no row"
+    );
+}
+
+/// A create cut off after its object is put and before its version's
+/// commit, in a catalog that has also lost its pending row: the restart's
+/// recovery finds the object by listing the storage, not by the row, and
+/// removes it. Nothing of the unanswered write is left. This holds the
+/// pending row to its one purpose, keeping a write under way from a
+/// recovery that runs meanwhile.
+fn a_create_cut_off_with_its_pending_row_lost_leaves_nothing(h: &dyn Harness) {
+    let f = h.fresh(TestClock::at(START));
+    let who = caller();
+    let (found, body) = vcon(&uuid(1), "first");
+    let name = "a_create_cut_off_with_its_pending_row_lost_leaves_nothing";
+    let created = stopped(
+        &f.store,
+        |store| store.create(&who, &found, &body),
+        || {
+            assert_eq!((f.held)().len(), 1, "{name}: the write's object is put");
+            f.store.forget_pending_writes().expect("forgets");
+            // The restart: a Store opened again runs start-up recovery.
+            let restarted = (f.reopen)();
+            assert_eq!(
+                (f.held)(),
+                Vec::<String>::new(),
+                "{name}: no object of the unanswered write"
+            );
+            assert!(
+                matches!(restarted.get(&who, found.uuid), Err(StoreError::NotFound)),
+                "{name}: no vCon"
+            );
+            assert_eq!(restarted.check(), Ok(vec![]), "{name}: check is clean");
+        },
+    );
+    // The process that the cut stopped never goes on; this one does, and
+    // its last transaction refuses a row for an object recovery removed.
+    assert!(
+        matches!(created, Err(StoreError::Io)),
+        "{name}: refused, got {created:?}"
+    );
+    assert_eq!(
+        (f.held)(),
+        Vec::<String>::new(),
+        "{name}: nothing left after the write ends"
+    );
+}
+
+/// The same for a replace: the old version reads back whole, and only its
+/// object is left.
+fn a_replace_cut_off_with_its_pending_row_lost_keeps_the_old_version(h: &dyn Harness) {
+    let f = h.fresh(TestClock::at(START));
+    let who = caller();
+    let (first, old) = new_version(&f.store, &who, &uuid(1), "first");
+    let (found, body) = vcon(&uuid(1), "second");
+    let name = "a_replace_cut_off_with_its_pending_row_lost_keeps_the_old_version";
+    let replaced = stopped(
+        &f.store,
+        |store| store.replace(&who, first, &found, &body),
+        || {
+            assert_eq!(
+                others(&f.held, &[first]).len(),
+                1,
+                "{name}: the write's object is put"
+            );
+            f.store.forget_pending_writes().expect("forgets");
+            let restarted = (f.reopen)();
+            assert_eq!(
+                (f.held)(),
+                vec![first.to_string()],
+                "{name}: the old version's object alone"
+            );
+            let stored = restarted.get(&who, found.uuid).expect("reads");
+            assert_eq!(
+                (stored.version, stored.body),
+                (first, old.clone()),
+                "{name}: the old version, whole"
+            );
+            assert_eq!(restarted.check(), Ok(vec![]), "{name}: check is clean");
+        },
+    );
+    assert!(
+        matches!(replaced, Err(StoreError::Io)),
+        "{name}: refused, got {replaced:?}"
+    );
+    assert_eq!(
+        (f.held)(),
+        vec![first.to_string()],
+        "{name}: nothing left of the new version after the write ends"
     );
 }
 

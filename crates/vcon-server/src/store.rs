@@ -1068,6 +1068,17 @@ impl Store {
         self.read(|tx| tx.pending())
     }
 
+    /// In tests, deletes every pending row, as a power cut that lost the
+    /// commits that added them would leave the catalog.
+    #[cfg(test)]
+    pub(crate) fn forget_pending_writes(&self) -> Result<(), StoreError> {
+        let mut tx = self.catalog.immediate()?;
+        for (version, _) in tx.pending()? {
+            tx.drop_pending(version)?;
+        }
+        commit(tx)
+    }
+
     #[cfg(test)]
     pub(crate) fn on_backup_copied(&self, hook: tests::BackupHook) {
         *self.hooks.copied.lock().expect("hook") = Some(hook);
@@ -3236,6 +3247,90 @@ pub(crate) mod tests {
             Err(StoreError::NotFound)
         );
         assert_whole(&f, WRITE_STEPS);
+    }
+
+    /// A crash between a write's object and its version's commit that
+    /// also lost the pending row (the commit that added it): the synced
+    /// object outlives the crash, and the restart's recovery, which lists
+    /// the objects directory, removes it with no row to go by.
+    fn cut_with_its_pending_row_lost(f: &mut Fixture) {
+        f.fs.crash();
+        f.store
+            .conn()
+            .execute_batch("DROP TRIGGER IF EXISTS dead; DELETE FROM pending_write;")
+            .expect("the pending row lost");
+        f.reopen();
+    }
+
+    /// The objects in the store's objects directory, by name.
+    fn object_names(f: &Fixture) -> Vec<String> {
+        let mut names: Vec<String> =
+            f.fs.list(&f.store.objects_dir)
+                .expect("list")
+                .into_iter()
+                .map(|n| n.to_string_lossy().into_owned())
+                .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_create_cut_off_with_its_pending_row_lost_leaves_no_object() {
+        let mut f = fixture();
+        let (found, body) = vcon(UUID, "first");
+        die_before_commit(&f);
+        assert!(
+            f.store.create(&f.caller, &found, &body).is_err(),
+            "the process died before the version's commit"
+        );
+        f.fs.crash();
+        assert_eq!(
+            object_names(&f).len(),
+            1,
+            "the synced object outlives the crash"
+        );
+        cut_with_its_pending_row_lost(&mut f);
+        assert_eq!(
+            object_names(&f),
+            Vec::<String>::new(),
+            "recovery removed the object with no pending row"
+        );
+        assert_eq!(
+            f.store.get(&f.caller, found.uuid),
+            Err(StoreError::NotFound),
+            "no vCon"
+        );
+        assert_whole(&f, WRITE_STEPS);
+    }
+
+    #[test]
+    fn a_replace_cut_off_with_its_pending_row_lost_leaves_only_the_old_object() {
+        let mut f = fixture();
+        let (found, old) = stored(&f, "first");
+        let (_, newer) = vcon(UUID, "second");
+        die_before_commit(&f);
+        assert!(
+            f.store.replace(&f.caller, old, &found, &newer).is_err(),
+            "the process died before the version's commit"
+        );
+        f.fs.crash();
+        assert_eq!(
+            object_names(&f).len(),
+            2,
+            "the new synced object outlives the crash"
+        );
+        cut_with_its_pending_row_lost(&mut f);
+        assert_eq!(
+            object_names(&f),
+            vec![old.to_string()],
+            "recovery removed the new object with no pending row"
+        );
+        assert_eq!(
+            f.store.get(&f.caller, found.uuid).map(|s| s.version),
+            Ok(old),
+            "the old version is current"
+        );
+        assert_whole(&f, REPLACE_STEPS);
     }
 
     #[test]
