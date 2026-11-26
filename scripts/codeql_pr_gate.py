@@ -47,6 +47,9 @@ import sys
 import time
 import urllib.parse
 
+# No bytecode beside the scripts for the module loaded by path
+# (scripts/test_no_bytecode.py).
+sys.dont_write_bytecode = True
 _spec = importlib.util.spec_from_file_location("gh_rate_limit", pathlib.Path(__file__).resolve().parent / "gh_rate_limit.py")
 gh_rate_limit = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(gh_rate_limit)

@@ -27,6 +27,9 @@ import pathlib
 import re
 import sys
 
+# No bytecode beside the scripts for the module loaded by path
+# (scripts/test_no_bytecode.py).
+sys.dont_write_bytecode = True
 HERE = pathlib.Path(__file__).resolve().parent
 RELEASE = re.compile(r"v(\d+)\.(\d+)\.(\d+)")
 
