@@ -36,6 +36,8 @@ pub(crate) mod key_life;
 mod key_wrap_tests;
 mod keys;
 mod rekey;
+#[cfg(test)]
+mod rekey_root_tests;
 mod role_cap;
 mod sessions;
 #[cfg(test)]
@@ -47,8 +49,8 @@ pub use backup::{Backup, BackupError, NO_FILE_BACKUP};
 pub use examine::{KeyOrder, RegistryExamination, RotationBacklog, TenantExamination, Unexamined};
 pub use key_life::KeyLife;
 pub use keys::{KeyInfo, NewKey};
-pub(crate) use rekey::MasterStep;
 pub use rekey::rekey_master;
+pub(crate) use rekey::{MasterStep, Moved, rekey_root};
 pub use sessions::{Proof, SessionError, SessionInfo, Started};
 pub use tenant_admin::MemberInfo;
 #[cfg(test)]
@@ -250,11 +252,20 @@ fn file_wrap(
     master: Key,
     catalogs: &Catalogs,
 ) -> Result<Box<dyn KeyWrap>, RegistryError> {
-    if let Some((blob, place)) = stored_root(dir, catalogs)? {
-        let kind = Blob::decode(&blob).ok().map(|b| b.reference().kind());
-        return Err(RegistryError::RootWrapped(kind, place));
-    }
+    refuse_wrapped_root(dir, catalogs)?;
     Ok(Box::new(FileWrap::new(master)))
+}
+
+/// Refuses a registry whose root a key backend wraps, naming the backend
+/// and where the root is kept: the master key file does not open it.
+pub(crate) fn refuse_wrapped_root(dir: &Path, catalogs: &Catalogs) -> Result<(), RegistryError> {
+    match stored_root(dir, catalogs)? {
+        Some((blob, place)) => {
+            let kind = Blob::decode(&blob).ok().map(|b| b.reference().kind());
+            Err(RegistryError::RootWrapped(kind, place))
+        }
+        None => Ok(()),
+    }
 }
 
 /// The registry root's `key-wrap` blob and where it is kept, when a key

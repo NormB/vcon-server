@@ -20,7 +20,7 @@ use super::{
 use crate::audit::{self, Action, Actor, AuditError, Entry};
 use crate::catalog::{self, Cached};
 use crate::clock::{Clock, nanos};
-use crate::envelope::{self, Context, Key};
+use crate::envelope::{self, Key};
 use crate::fs::Fs;
 use crate::ids::{FileId, KeyId, TenantId, UserId, VersionId};
 use crate::store::{OpenError, Store, StoreError};
@@ -2443,59 +2443,103 @@ fn tenant_io<E>(_: E) -> TenantError {
     TenantError::Io
 }
 
-/// Rotates the master key of the local registry in `dir`, as
-/// `tenants::rekey_master` describes.
-pub(crate) fn rekey_master(
+/// Moves the root of the local registry in `dir`, as
+/// `tenants::rekey_root` describes.
+pub(crate) fn rekey_root(
     dir: &Path,
-    old: &Key,
-    new: &Key,
+    from: &dyn crate::key_wrap::KeyWrap,
+    to: &dyn crate::key_wrap::KeyWrap,
+    to_root: Option<&[u8]>,
     now: OffsetDateTime,
     stop: Option<crate::tenants::MasterStep>,
-) -> Result<(), TenantError> {
+) -> Result<crate::tenants::Moved, TenantError> {
+    use crate::tenants::{MasterStep, Moved};
     let stop_after = |step| match stop == Some(step) {
         true => Err(TenantError::Io),
         false => Ok(()),
     };
     let path = dir.join("server.sqlite");
-    let old_catalog = envelope::catalog_key(old).map_err(tenant_io)?;
-    let new_catalog = envelope::catalog_key(new).map_err(tenant_io)?;
+    let next = dir.join(NEXT_ROOT_FILE);
+    let old_catalog = envelope::catalog_key(from.root()).map_err(tenant_io)?;
+    let new_catalog = envelope::catalog_key(to.root()).map_err(tenant_io)?;
     match catalog::open(&path, &old_catalog, "") {
         Ok(conn) => drop(conn),
         // A run stopped after its rename left server.sqlite under the new
-        // key: nothing is left to do.
+        // root: at most the root file is left to put in place.
         Err(catalog::CatalogError::WrongKey) => {
             return match catalog::open(&path, &new_catalog, "") {
-                Ok(_) => Ok(()),
+                Ok(conn) => {
+                    drop(conn);
+                    place_root(dir, to_root.is_some())?;
+                    Ok(Moved::Already)
+                }
                 Err(catalog::CatalogError::WrongKey) => Err(TenantError::WrongKey),
                 Err(e) => Err(tenant_io(e)),
             };
         }
         Err(e) => return Err(tenant_io(e)),
     }
+    if let Some(root) = to_root {
+        write_synced(&next, root).map_err(tenant_io)?;
+    }
     let copy = catalog::copy_under(&path, &old_catalog, &new_catalog).map_err(tenant_io)?;
-    stop_after(crate::tenants::MasterStep::Copied)?;
-    {
+    stop_after(MasterStep::Copied)?;
+    let moved = {
         let mut conn = catalog::open(&copy, &new_catalog, "").map_err(tenant_io)?;
         let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(tenant_io)?;
-        let rows: Vec<(TenantId, Vec<u8>, Option<Vec<u8>>)> = tx
-            .prepare_cached("SELECT id, wrapped_tenant_key, pending_wrapped_tenant_key FROM tenant")
+        let rows: Vec<MovedRow> = tx
+            .prepare_cached(
+                "SELECT id, wrapped_tenant_key, wrap_ref, wrapped_kek, \
+                 pending_wrapped_tenant_key, pending_wrap_ref, pending_wrapped_kek FROM tenant",
+            )
             .map_err(tenant_io)?
-            .query_map([], |r| Ok((TenantId(r.get(0)?), r.get(1)?, r.get(2)?)))
+            .query_map([], |r| {
+                Ok(MovedRow {
+                    id: TenantId(r.get(0)?),
+                    wrapped: r.get(1)?,
+                    kek: (r.get(2)?, r.get(3)?),
+                    pending: r.get(4)?,
+                    pending_kek: (r.get(5)?, r.get(6)?),
+                })
+            })
             .map_err(tenant_io)?
             .collect::<Result<_, _>>()
             .map_err(tenant_io)?;
         let mut wraps = 0_i64;
-        for (id, wrapped, pending) in rows {
-            let ctx = Context::Tenant { tenant: id };
-            let rewrap = |w: &[u8]| envelope::rewrap(old, new, &ctx, w).map_err(tenant_io);
-            let pending = pending.as_deref().map(rewrap).transpose()?;
+        let tenants = u64::try_from(rows.len()).map_err(tenant_io)?;
+        for row in rows {
+            let id = row.id;
+            let again = |wrapped: &[u8], kek: (Option<String>, Option<Vec<u8>>)| {
+                let kek = super::kek_of(kek.0, kek.1)?;
+                let key = from.unwrap(id, wrapped, kek.as_ref()).map_err(tenant_io)?;
+                to.wrap(id, &key).map_err(tenant_io)
+            };
+            let current = again(&row.wrapped, row.kek)?;
+            let pending = row
+                .pending
+                .as_deref()
+                .map(|p| again(p, row.pending_kek))
+                .transpose()?;
             wraps += 1 + i64::from(pending.is_some());
+            let (pending_key, pending_kek) = match pending {
+                Some(p) => (Some(p.key), p.kek),
+                None => (None, None),
+            };
             tx.cached_run(
-                "UPDATE tenant SET wrapped_tenant_key = ?1, pending_wrapped_tenant_key = ?2
-                 WHERE id = ?3",
-                params![rewrap(&wrapped)?, pending, id.0],
+                "UPDATE tenant SET wrapped_tenant_key = ?1, wrap_ref = ?2, wrapped_kek = ?3,
+                 pending_wrapped_tenant_key = ?4, pending_wrap_ref = ?5, pending_wrapped_kek = ?6
+                 WHERE id = ?7",
+                params![
+                    current.key,
+                    current.kek.as_ref().map(|k| &k.wrap_ref),
+                    current.kek.as_ref().map(|k| &k.blob),
+                    pending_key,
+                    pending_kek.as_ref().map(|k| &k.wrap_ref),
+                    pending_kek.as_ref().map(|k| &k.blob),
+                    id.0
+                ],
             )
             .map_err(tenant_io)?;
         }
@@ -2503,7 +2547,7 @@ pub(crate) fn rekey_master(
             .map_err(tenant_io)?;
         tx.cached_run(
             "INSERT INTO master_key_use (master_key_id, wraps, since) VALUES (?1, ?2, ?3)",
-            params![new.id().bytes(), wraps, nanos(now)],
+            params![to.key_id().bytes(), wraps, nanos(now)],
         )
         .map_err(tenant_io)?;
         let entry = Entry {
@@ -2515,10 +2559,72 @@ pub(crate) fn rekey_master(
         };
         audit::record(&tx, &entry, now).map_err(|_| TenantError::AuditFailed)?;
         tx.commit().map_err(tenant_io)?;
-    }
-    stop_after(crate::tenants::MasterStep::Rewrapped)?;
+        tenants
+    };
+    stop_after(MasterStep::Rewrapped)?;
     catalog::replace(&path, &copy).map_err(tenant_io)?;
-    stop_after(crate::tenants::MasterStep::Renamed)
+    stop_after(MasterStep::Renamed)?;
+    place_root(dir, to_root.is_some())?;
+    Ok(Moved::Tenants(moved))
+}
+
+/// The root file a move writes before its copy of server.sqlite, and
+/// renames over registry.key once the copy has replaced server.sqlite.
+const NEXT_ROOT_FILE: &str = "registry.key.next";
+
+/// A tenant's row as a move of the root reads it.
+struct MovedRow {
+    id: TenantId,
+    wrapped: Vec<u8>,
+    kek: (Option<String>, Option<Vec<u8>>),
+    pending: Option<Vec<u8>>,
+    pending_kek: (Option<String>, Option<Vec<u8>>),
+}
+
+/// Puts the root file of a finished move in place: registry.key.next over
+/// registry.key when a key backend wraps the new root (`wrapped`), else
+/// registry.key removed, with any registry.key.next a stopped move to a
+/// key backend left. Each is synced with the directory; one already
+/// done is done.
+fn place_root(dir: &Path, wrapped: bool) -> Result<(), TenantError> {
+    let root = dir.join(crate::tenants::ROOT_FILE);
+    let next = dir.join(NEXT_ROOT_FILE);
+    let changed = if wrapped {
+        match std::fs::rename(&next, &root) {
+            Ok(()) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && root.exists() => false,
+            Err(e) => return Err(tenant_io(e)),
+        }
+    } else {
+        let mut changed = false;
+        for file in [&root, &next] {
+            match std::fs::remove_file(file) {
+                Ok(()) => changed = true,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(tenant_io(e)),
+            }
+        }
+        changed
+    };
+    if changed {
+        std::fs::File::open(dir)
+            .and_then(|d| d.sync_all())
+            .map_err(tenant_io)?;
+    }
+    Ok(())
+}
+
+/// Writes `bytes` to `path`, replacing what is there, mode 0600, synced.
+fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
 }
 
 /// Commits the transaction open on `conn`. A COMMIT that fails while the

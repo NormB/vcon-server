@@ -17,6 +17,8 @@ use crate::datadir::{self, LockError, Sharing, Work};
 use crate::envelope::{Key, KeyError};
 use crate::fs::OsFs;
 use crate::ids::{KeyId, TenantId, UserId};
+use crate::key_wrap::FileWrap;
+use crate::key_wrap::blob::BackendKind;
 use crate::retention::Retention;
 use crate::roles::{Role, Roles};
 use crate::store::ExamineError;
@@ -114,9 +116,12 @@ pub enum Command {
     RekeyTenant {
         id: String,
     },
-    /// Rotates the master key to the one in `new_master`.
+    /// Rotates the master key to the one in `new_master`; with
+    /// `to_backend`, moves the registry root to the backend it names, which
+    /// in this release is `file`, the master key file `new_master`.
     RekeyMaster {
         new_master: std::path::PathBuf,
+        to_backend: Option<String>,
     },
     /// Examines every tenant and reports what needs attention.
     Check,
@@ -203,6 +208,11 @@ pub enum CommandError {
     Output(io::Error),
     /// The new master key is the one already in use.
     SameMasterKey,
+    /// `--to-backend` names a key backend this release does not move keys
+    /// to.
+    BackendLater(BackendKind),
+    /// `--to-backend` names no key backend.
+    NoSuchBackend(String),
     /// `check` found this many problems; its report says which.
     CheckFound(usize),
     Backup(BackupError),
@@ -275,6 +285,16 @@ impl fmt::Display for CommandError {
             CommandError::SameMasterKey => {
                 f.write_str("the new master key is the one already in use")
             }
+            CommandError::BackendLater(kind) => write!(
+                f,
+                "--to-backend {kind}: this release moves the keys only to a master key file \
+                 (--to-backend file)"
+            ),
+            CommandError::NoSuchBackend(name) => write!(
+                f,
+                "--to-backend {name} is not a key backend: file, aws-kms, gcp-kms, \
+                 azure-key-vault, vault-transit, openbao-transit or pkcs11"
+            ),
             CommandError::CheckFound(n) => write!(f, "check found {n} problem(s); see its report"),
             CommandError::Storage(e) => write!(f, "the storage cannot be used: {e}"),
             CommandError::BadLevel(text) => write!(
@@ -396,8 +416,19 @@ fn run_on(
     let sharing = command.work().sharing();
     // A master rotation renames over server.sqlite, so nothing may hold it
     // open: it runs before the registry is opened.
-    if let Command::RekeyMaster { new_master } = command {
-        return rekey_master(config, &master, new_master, catalogs, out);
+    if let Command::RekeyMaster {
+        new_master,
+        to_backend,
+    } = command
+    {
+        return rekey_master(
+            config,
+            &master,
+            new_master,
+            to_backend.as_deref(),
+            catalogs,
+            out,
+        );
     }
     // Refused before anything is opened or claimed: a PostgreSQL catalog
     // has no objects in a data directory to move.
@@ -778,28 +809,58 @@ fn nothing_to_move_on_a_database() -> CommandError {
     ))
 }
 
-/// Rotates the master key and says what the operator does next.
+/// What the operator does after `rekey master`.
+const AFTER_REKEY_MASTER: &str = "point master_key in the configuration at the new key file, \
+                                  start the server, then destroy every copy of the old master key";
+
+/// The key backend `--to-backend` names, when this release moves keys to
+/// it: the master key file only.
+fn to_backend(name: &str) -> Result<(), CommandError> {
+    if name == "file" {
+        return Ok(());
+    }
+    Err(match BackendKind::from_name(name) {
+        Some(kind) => CommandError::BackendLater(kind),
+        None => CommandError::NoSuchBackend(name.to_owned()),
+    })
+}
+
+/// Rotates the master key, or with `to_backend` moves the registry root to
+/// that backend (in this release the master key file `new_master`), and
+/// says what the operator does next.
 fn rekey_master(
     config: &Config,
     master: &Key,
     new_master: &std::path::Path,
+    to_backend: Option<&str>,
     catalogs: &backend::Catalogs,
     out: &mut dyn Write,
 ) -> Result<(), CommandError> {
+    if let Some(name) = to_backend {
+        self::to_backend(name)?;
+    }
     let new =
         Key::load_master_named(new_master, "--new-master").map_err(CommandError::MasterKey)?;
     if new.id() == master.id() {
         return Err(CommandError::SameMasterKey);
     }
-    match catalogs {
-        backend::Catalogs::Local => {
-            tenants::rekey_master(&config.data_dir, master, &new, SystemClock.now()).map_err(
-                |e| match e {
-                    TenantError::WrongKey => CommandError::WrongMasterKey,
-                    other => CommandError::Tenant(other),
-                },
-            )?;
-        }
+    // The master key file is the source: a registry whose root a key
+    // backend wraps is not under it.
+    tenants::refuse_wrapped_root(&config.data_dir, catalogs).map_err(CommandError::Open)?;
+    let moved = match catalogs {
+        backend::Catalogs::Local => Some(
+            tenants::rekey_root(
+                &config.data_dir,
+                &FileWrap::borrowing(master),
+                &FileWrap::borrowing(&new),
+                None,
+                SystemClock.now(),
+            )
+            .map_err(|e| match e {
+                TenantError::WrongKey => CommandError::WrongMasterKey,
+                other => CommandError::Tenant(other),
+            })?,
+        ),
         // The registry's rows are made again under the new key in one
         // transaction, with this command's locks held: no server and no
         // other command has the database.
@@ -810,15 +871,35 @@ fn rekey_master(
                     TenantError::WrongKey => CommandError::WrongDatabaseKey,
                     other => CommandError::Tenant(other),
                 })?;
+            None
         }
+    };
+    let master_key_id = new.id().to_string();
+    if to_backend.is_none() {
+        return line(
+            out,
+            &serde_json::json!({
+                "master_key_id": master_key_id,
+                "next": AFTER_REKEY_MASTER,
+            }),
+        );
     }
-    line(
-        out,
-        &serde_json::json!({
-            "master_key_id": new.id().to_string(),
-            "next": "point master_key in the configuration at the new key file, start the server, then destroy every copy of the old master key",
-        }),
-    )
+    let mut report = serde_json::json!({
+        "backend": "file",
+        "master_key_id": master_key_id,
+        "next": AFTER_REKEY_MASTER,
+    });
+    // A PostgreSQL registry moves in one transaction, which does not say
+    // whether a run before had moved it.
+    match moved {
+        Some(tenants::Moved::Tenants(n)) => {
+            report["moved"] = true.into();
+            report["tenants"] = n.into();
+        }
+        Some(tenants::Moved::Already) => report["moved"] = false.into(),
+        None => {}
+    }
+    line(out, &report)
 }
 
 /// Examines every tenant, prints a line for each and a summary, and fails
@@ -1578,14 +1659,16 @@ mod tests {
         chmod(&new_file, 0o600);
         assert!(matches!(
             s.run(Command::RekeyMaster {
-                new_master: s.config.master_key.clone()
+                new_master: s.config.master_key.clone(),
+                to_backend: None,
             }),
             Err(CommandError::SameMasterKey)
         ));
         let server = datadir::lock(&s.config.data_dir, Sharing::Serve).expect("a server");
         assert!(matches!(
             s.run(Command::RekeyMaster {
-                new_master: new_file.clone()
+                new_master: new_file.clone(),
+                to_backend: None,
             }),
             Err(CommandError::DataDir(LockError::InUse(Sharing::Alone)))
         ));
@@ -1593,6 +1676,7 @@ mod tests {
         let out = s
             .run(Command::RekeyMaster {
                 new_master: new_file.clone(),
+                to_backend: None,
             })
             .expect("rotated");
         let new_id = Key::load_master(&new_file).expect("key").id().to_string();
@@ -1969,6 +2053,7 @@ mod tests {
         let error = s
             .run(Command::RekeyMaster {
                 new_master: new_file.clone(),
+                to_backend: None,
             })
             .expect_err("refused");
         assert!(
@@ -1976,6 +2061,188 @@ mod tests {
                 .to_string()
                 .contains(&format!("--new-master {}: other users", new_file.display())),
             "{error}"
+        );
+    }
+
+    /// A second master key file beside the configuration's, mode 0600.
+    fn new_master_file(s: &Setup) -> std::path::PathBuf {
+        let new_file = s.config.master_key.with_file_name("new.key");
+        std::fs::write(&new_file, [0x5d; 32]).expect("new key");
+        chmod(&new_file, 0o600);
+        new_file
+    }
+
+    fn to_file(new_master: &std::path::Path) -> Command {
+        Command::RekeyMaster {
+            new_master: new_master.to_path_buf(),
+            to_backend: Some("file".to_owned()),
+        }
+    }
+
+    #[test]
+    fn rekey_master_to_backend_file_moves_the_data_to_the_new_master_key() {
+        let mut s = setup();
+        s.create("acme");
+        let new_file = new_master_file(&s);
+        let out = s.run(to_file(&new_file)).expect("moved");
+        let new_id = Key::load_master(&new_file).expect("key").id().to_string();
+        assert_eq!(out.len(), 1, "one line: {out:?}");
+        assert_eq!(out[0]["backend"], "file", "the target backend");
+        assert_eq!(out[0]["master_key_id"], new_id.as_str(), "the new key");
+        assert_eq!(out[0]["moved"], true, "server.sqlite moved");
+        assert_eq!(out[0]["tenants"], 1, "one tenant");
+        assert!(
+            out[0]["next"]
+                .as_str()
+                .is_some_and(|n| n.contains("destroy every copy of the old master key")),
+            "what comes next: {out:?}"
+        );
+        s.config.master_key = new_file;
+        assert_eq!(
+            s.run(Command::TenantList).expect("listed").len(),
+            1,
+            "the tenant opens under the new key"
+        );
+    }
+
+    #[test]
+    fn rekey_master_to_backend_file_run_again_says_nothing_was_left() {
+        let s = setup();
+        s.create("acme");
+        let new_file = new_master_file(&s);
+        s.run(to_file(&new_file)).expect("moved");
+        let out = s.run(to_file(&new_file));
+        // The configuration still names the old key: the data is under the
+        // new one, so nothing is left to move.
+        let out = out.expect("a run after completion succeeds");
+        assert_eq!(out[0]["moved"], false, "nothing moved: {out:?}");
+        assert!(out[0].get("tenants").is_none(), "no count: {out:?}");
+    }
+
+    #[test]
+    fn rekey_master_to_a_backend_this_release_lacks_is_refused_by_name() {
+        let s = setup();
+        s.create("acme");
+        let new_file = new_master_file(&s);
+        let before = std::fs::read(s.config.data_dir.join("server.sqlite")).expect("read");
+        let error = s
+            .run(Command::RekeyMaster {
+                new_master: new_file,
+                to_backend: Some("vault-transit".to_owned()),
+            })
+            .expect_err("refused");
+        assert!(
+            matches!(error, CommandError::BackendLater(BackendKind::VaultTransit)),
+            "{error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "--to-backend vault-transit: this release moves the keys only to a master key file \
+             (--to-backend file)",
+            "the text"
+        );
+        assert_eq!(
+            std::fs::read(s.config.data_dir.join("server.sqlite")).expect("read"),
+            before,
+            "nothing changed"
+        );
+    }
+
+    #[test]
+    fn rekey_master_to_an_unknown_backend_is_refused() {
+        let s = setup();
+        let new_file = new_master_file(&s);
+        let error = s
+            .run(Command::RekeyMaster {
+                new_master: new_file,
+                to_backend: Some("filez".to_owned()),
+            })
+            .expect_err("refused");
+        assert!(
+            matches!(&error, CommandError::NoSuchBackend(name) if name == "filez"),
+            "{error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "--to-backend filez is not a key backend: file, aws-kms, gcp-kms, azure-key-vault, \
+             vault-transit, openbao-transit or pkcs11",
+            "the text names every backend"
+        );
+    }
+
+    #[test]
+    fn rekey_master_to_backend_file_with_the_same_key_is_refused() {
+        let s = setup();
+        assert!(
+            matches!(
+                s.run(to_file(&s.config.master_key.clone())),
+                Err(CommandError::SameMasterKey)
+            ),
+            "the key in use"
+        );
+    }
+
+    #[test]
+    fn rekey_master_to_backend_file_is_refused_while_a_server_runs() {
+        let s = setup();
+        let new_file = new_master_file(&s);
+        let server = datadir::lock(&s.config.data_dir, Sharing::Serve).expect("a server");
+        assert!(
+            matches!(
+                s.run(to_file(&new_file)),
+                Err(CommandError::DataDir(LockError::InUse(Sharing::Alone)))
+            ),
+            "the data directory is in use"
+        );
+        drop(server);
+    }
+
+    #[test]
+    fn rekey_master_refuses_a_registry_whose_root_a_backend_wraps() {
+        for to_backend in [None, Some("file".to_owned())] {
+            let s = setup();
+            s.create("acme");
+            let new_file = new_master_file(&s);
+            let reference = crate::key_wrap::blob::WrapRef::new(BackendKind::Pkcs11, "vcon-1")
+                .expect("a reference");
+            let blob = crate::key_wrap::blob::Blob::new(reference, vec![1])
+                .expect("a blob")
+                .encode();
+            std::fs::write(s.config.data_dir.join(tenants::ROOT_FILE), blob).expect("write");
+            let before = std::fs::read(s.config.data_dir.join("server.sqlite")).expect("read");
+            let error = s
+                .run(Command::RekeyMaster {
+                    new_master: new_file,
+                    to_backend: to_backend.clone(),
+                })
+                .expect_err("refused");
+            assert!(
+                matches!(
+                    error,
+                    CommandError::Open(RegistryError::RootWrapped(Some(BackendKind::Pkcs11), _))
+                ),
+                "{to_backend:?}: {error:?}"
+            );
+            assert_eq!(
+                std::fs::read(s.config.data_dir.join("server.sqlite")).expect("read"),
+                before,
+                "{to_backend:?}: nothing changed"
+            );
+        }
+    }
+
+    #[test]
+    fn rekey_master_to_backend_file_with_no_tenants_moves_the_empty_registry() {
+        let mut s = setup();
+        s.run(Command::TenantList).expect("makes the registry");
+        let new_file = new_master_file(&s);
+        let out = s.run(to_file(&new_file)).expect("moved");
+        assert_eq!(out[0]["tenants"], 0, "no tenant: {out:?}");
+        s.config.master_key = new_file;
+        assert_eq!(
+            s.run(Command::TenantList).expect("listed").len(),
+            0,
+            "opens under the new key"
         );
     }
 
@@ -2123,6 +2390,8 @@ mod tests {
             },
             CommandError::Output(_) => "the output could not be written",
             CommandError::SameMasterKey => "already in use",
+            CommandError::BackendLater(_) => "only to a master key file",
+            CommandError::NoSuchBackend(_) => "is not a key backend",
             CommandError::CheckFound(_) => "check found 2 problem(s)",
             CommandError::Storage(_) => "the storage cannot be used: bucket \"vcon\"",
             CommandError::BadLevel(_) => "\"most\" is not a metadata level",
@@ -2458,6 +2727,8 @@ mod tests {
             CommandError::UnknownKey,
             CommandError::Output(io::Error::other("closed")),
             CommandError::SameMasterKey,
+            CommandError::BackendLater(BackendKind::Pkcs11),
+            CommandError::NoSuchBackend("hsm".to_owned()),
             CommandError::CheckFound(2),
             CommandError::Storage(StorageError(
                 "bucket \"vcon\" cannot be reached or read".to_owned(),

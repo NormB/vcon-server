@@ -535,6 +535,14 @@
           "short": null,
           "value": "<NEW_MASTER>",
           "values": null
+        },
+        "--to-backend": {
+          "default": null,
+          "repeated": false,
+          "required": false,
+          "short": null,
+          "value": "<BACKEND>",
+          "values": null
         }
       }
     },

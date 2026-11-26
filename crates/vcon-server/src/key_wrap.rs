@@ -16,6 +16,7 @@
 //! with the same AES-256-GCM binding to the tenant id, and the backend
 //! wraps that key-encryption key.
 
+use std::borrow::Borrow;
 use std::{fmt, io};
 
 use crate::envelope::{self, Context, Key, KeyError};
@@ -158,10 +159,12 @@ pub trait KeyWrap: Send + Sync + fmt::Debug {
 }
 
 /// The master key file's backend: the master key is the root, and tenant
-/// keys are wrapped under it locally. Debug shows only the key's id.
+/// keys are wrapped under it locally. It holds the key, or borrows it
+/// (`K` is `&Key`) for a rotation that has the key already. Debug shows
+/// only the key's id.
 #[derive(Debug)]
-pub struct FileWrap {
-    master: Key,
+pub struct FileWrap<K = Key> {
+    master: K,
 }
 
 impl FileWrap {
@@ -172,18 +175,26 @@ impl FileWrap {
     }
 }
 
-impl KeyWrap for FileWrap {
+impl<'a> FileWrap<&'a Key> {
+    /// The backend over a master key the caller keeps.
+    #[must_use]
+    pub fn borrowing(master: &'a Key) -> FileWrap<&'a Key> {
+        FileWrap { master }
+    }
+}
+
+impl<K: Borrow<Key> + Send + Sync + fmt::Debug> KeyWrap for FileWrap<K> {
     fn key_id(&self) -> KeyId {
-        self.master.id()
+        self.master.borrow().id()
     }
 
     fn root(&self) -> &Key {
-        &self.master
+        self.master.borrow()
     }
 
     fn wrap(&self, tenant: TenantId, key: &Key) -> Result<Wrapped, WrapError> {
         Ok(Wrapped {
-            key: envelope::wrap(&self.master, &Context::Tenant { tenant }, key),
+            key: envelope::wrap(self.master.borrow(), &Context::Tenant { tenant }, key),
             kek: None,
         })
     }
@@ -199,7 +210,8 @@ impl KeyWrap for FileWrap {
                 wrap_ref: Some(kek.wrap_ref.clone()),
             });
         }
-        envelope::unwrap(&self.master, &Context::Tenant { tenant }, wrapped).map_err(from_key_error)
+        envelope::unwrap(self.master.borrow(), &Context::Tenant { tenant }, wrapped)
+            .map_err(from_key_error)
     }
 }
 

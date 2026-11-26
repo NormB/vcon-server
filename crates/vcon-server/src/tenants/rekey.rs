@@ -13,6 +13,7 @@ use crate::backend::Under;
 use crate::clock::nanos;
 use crate::envelope::{self, Key, WrapLimit};
 use crate::ids::TenantId;
+use crate::key_wrap::{FileWrap, KeyWrap};
 use crate::store::StoreError;
 use crate::store::pending::Writers;
 
@@ -66,7 +67,58 @@ pub(crate) fn rekey_master_stopping(
     now: OffsetDateTime,
     stop: Option<MasterStep>,
 ) -> Result<(), TenantError> {
-    crate::backend::local::rekey_master(dir, old, new, now, stop)
+    rekey_root_stopping(
+        dir,
+        &FileWrap::borrowing(old),
+        &FileWrap::borrowing(new),
+        None,
+        now,
+        stop,
+    )
+    .map(|_| ())
+}
+
+/// What a move of the registry root did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Moved {
+    /// server.sqlite moved, with this many tenants.
+    Tenants(u64),
+    /// A run before had moved server.sqlite already; at most the root
+    /// file was left to put in place.
+    Already,
+}
+
+/// Moves the registry root of the data directory `dir` from the backend
+/// `from` to the backend `to`, as [`rekey_master`] rotates a master key:
+/// server.sqlite is copied under `to`'s catalog key, every tenant key in
+/// the copy, pending ones too, is unwrapped by `from` and wrapped by `to`,
+/// and the copy replaces server.sqlite. `to_root` is the `key-wrap` blob
+/// of `to`'s root when a key backend wraps it: it is written as
+/// registry.key.next before the copy and renamed over registry.key after
+/// it. With None, `to` is the master key file and registry.key is removed
+/// after the copy. A run stopped at any step is finished by running it
+/// again with the same `to` (a run stopped after the copy replaced
+/// server.sqlite opens `to` from registry.key.next). Only the command
+/// line does this, with the server stopped.
+pub(crate) fn rekey_root(
+    dir: &Path,
+    from: &dyn KeyWrap,
+    to: &dyn KeyWrap,
+    to_root: Option<&[u8]>,
+    now: OffsetDateTime,
+) -> Result<Moved, TenantError> {
+    rekey_root_stopping(dir, from, to, to_root, now, None)
+}
+
+pub(crate) fn rekey_root_stopping(
+    dir: &Path,
+    from: &dyn KeyWrap,
+    to: &dyn KeyWrap,
+    to_root: Option<&[u8]>,
+    now: OffsetDateTime,
+    stop: Option<MasterStep>,
+) -> Result<Moved, TenantError> {
+    crate::backend::local::rekey_root(dir, from, to, to_root, now, stop)
 }
 
 impl Tenants {

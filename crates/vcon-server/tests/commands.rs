@@ -436,6 +436,54 @@ fn rekey_master_rotates_and_says_what_comes_next() {
     usage_error(&["rekey", "master", "--config", "c"]);
 }
 
+#[test]
+fn rekey_master_to_backend_file_moves_the_root_and_refuses_other_backends() {
+    let s = setup();
+    s.ok(&["tenant", "create", "acme"]);
+    let new_key = s.data.with_file_name("new.key");
+    std::fs::write(&new_key, [0x44; 32]).expect("new key");
+    std::fs::set_permissions(
+        &new_key,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+    )
+    .expect("chmod 0600");
+    let new_key = new_key.to_str().expect("path");
+    let refused = s.refused(&[
+        "rekey",
+        "master",
+        "--to-backend",
+        "aws-kms",
+        "--new-master",
+        new_key,
+    ]);
+    assert!(
+        refused.contains(
+            "--to-backend aws-kms: this release moves the keys only to a master key file"
+        ),
+        "named: {refused}"
+    );
+    assert_eq!(
+        s.ok(&["tenant", "list"]).len(),
+        1,
+        "the refusal changed nothing"
+    );
+    let out = s.ok(&[
+        "rekey",
+        "master",
+        "--to-backend",
+        "file",
+        "--new-master",
+        new_key,
+    ]);
+    assert_eq!(out[0]["backend"], "file", "the target: {out:?}");
+    assert_eq!(out[0]["moved"], true, "moved: {out:?}");
+    assert_eq!(out[0]["tenants"], 1, "one tenant: {out:?}");
+    assert!(
+        s.refused(&["tenant", "list"]).contains("master key"),
+        "the old key opens nothing"
+    );
+}
+
 /// `check` is the one command that prints its report and still exits 1:
 /// the report is how it says what is wrong.
 #[test]

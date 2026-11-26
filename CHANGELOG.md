@@ -12,6 +12,13 @@ All notable changes to this project are recorded here. The format follows
   - Effect: `BackendWrap` wraps each tenant key under a key of its own,
     which the backend wraps; a start refuses a registry under a backend.
   - Limit: No key backend ships yet.
+- **`rekey master --to-backend file` moves the registry root to a key file.**
+  - Effect: Every tenant key, a pending one too, moves under the new file,
+    and the line says whether this run moved them.
+  - Limit: This release moves keys only to a master key file; it refuses the
+    other backend names before it reads anything.
+  - Docs: [Command
+    line](https://vcon-server.com/docs/command-line/#key-rotation)
 - **On-disk format `key-wrap` version 1 records a key a key backend wrapped.**
   - Effect: A reader knows which backend and key opens a wrapped key before
     it asks any backend.

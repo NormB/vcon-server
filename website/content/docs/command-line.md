@@ -141,6 +141,7 @@ Records are written oldest first, after `--since` if given; keep the last
 |---|---|---|
 | `rekey tenant <id>` | nothing | no |
 | `rekey master --new-master <file>` | `{"master_key_id", "next"}` | no |
+| `rekey master --to-backend file --new-master <file>` | `{"backend", "master_key_id", "moved", "tenants", "next"}` | no |
 
 `rekey tenant` gives the tenant a new key: every stored version's data key is
 rewrapped under it, in batches, and the tenant's catalog is re-encrypted under
@@ -156,6 +157,14 @@ run stopped before the rename starts again; one stopped after it has nothing
 left to do. Afterwards, point `master_key` in the configuration at the new
 file; the old key no longer opens anything. The full procedure is in
 [operations](@/docs/operations.md#key-rotation).
+
+`rekey master --to-backend file` moves the registry root to the master key
+file in `--new-master` in the same way. Its line says whether this run moved
+`server.sqlite` (`"moved": true`, with `tenants`, how many it moved) or a run
+before it had (`"moved": false`); on PostgreSQL, which moves in one
+transaction, the line has neither. This release moves keys only to a master
+key file: any other name after `--to-backend` is refused before anything is
+read or written.
 
 ## Checking
 

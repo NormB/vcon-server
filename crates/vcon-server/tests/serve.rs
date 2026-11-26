@@ -3209,6 +3209,36 @@ mod postgres {
     }
 
     #[test]
+    fn rekey_master_to_backend_file_on_postgresql_moves_the_registry_to_the_new_key() {
+        let w = world();
+        let server = started(&w.s);
+        store_example(&server, &w.s);
+        assert!(stop(server).success(), "the server stops for the move");
+        let new = new_master(&w.s);
+        let done = ok(
+            &w.s,
+            &[
+                "rekey",
+                "master",
+                "--to-backend",
+                "file",
+                "--new-master",
+                &new,
+            ],
+        );
+        assert_eq!(done[0]["backend"], "file", "the target: {done:?}");
+        assert!(
+            done[0].get("moved").is_none() && done[0].get("tenants").is_none(),
+            "one transaction says no count: {done:?}"
+        );
+        with_master(&w.s, &new);
+        let server = started(&w.s);
+        let (status, body) = read_example(&server, &w.s);
+        assert_eq!(status, 200, "under the new key the vCon reads");
+        assert_eq!(body, example(), "byte for byte");
+    }
+
+    #[test]
     fn check_on_postgresql_examines_the_tenant_and_exits_0() {
         let w = world();
         let server = started(&w.s);

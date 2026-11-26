@@ -146,6 +146,10 @@ enum RekeyCommand {
         /// The file holding the new 32-byte master key.
         #[arg(long)]
         new_master: PathBuf,
+        /// Moves the registry root to this key backend. This release moves
+        /// it only to a master key file: `file`, with --new-master.
+        #[arg(long, value_name = "BACKEND")]
+        to_backend: Option<String>,
     },
 }
 
@@ -465,9 +469,17 @@ fn run() -> ExitCode {
         Command::Rekey(RekeyCommand::Tenant { config, id }) => {
             (config, commands::Command::RekeyTenant { id })
         }
-        Command::Rekey(RekeyCommand::Master { config, new_master }) => {
-            (config, commands::Command::RekeyMaster { new_master })
-        }
+        Command::Rekey(RekeyCommand::Master {
+            config,
+            new_master,
+            to_backend,
+        }) => (
+            config,
+            commands::Command::RekeyMaster {
+                new_master,
+                to_backend,
+            },
+        ),
         Command::Check { config } => (config, commands::Command::Check),
         Command::Storage(StorageCommand::MoveObjects { config }) => {
             (config, commands::Command::StorageMoveObjects)
