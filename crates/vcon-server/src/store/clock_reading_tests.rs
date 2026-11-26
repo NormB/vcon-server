@@ -47,7 +47,9 @@ fn recovery_judges_every_pending_row_by_one_reading_of_the_clock() {
     });
     assert!(
         matches!(created, Ok(Created::New(_))),
-        "the write commits: {created:?}"
+        // The outcome is not printed: it travels with the caller's key id,
+        // and a test's message is a log like any other.
+        "the write commits as a new vCon"
     );
     assert_eq!(
         f.store.get(&f.caller, found.uuid).map(|s| s.body),

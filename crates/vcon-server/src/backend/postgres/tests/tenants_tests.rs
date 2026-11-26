@@ -1259,9 +1259,11 @@ mod on_a_server {
 
     /// Asserts that the write of `around` committed and reads back.
     fn kept_write(((_serving, first), id, who, uuid, written): WriteAround) {
+        // The outcome is not printed: it travels with the caller's key id,
+        // and a test's message is a log like any other.
         assert!(
             matches!(written, Ok(crate::store::Created::New(_))),
-            "the write commits: {written:?}"
+            "the write commits"
         );
         first
             .store(id)

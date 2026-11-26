@@ -462,7 +462,9 @@ fn a_version_stored_later_on_a_server_whose_clock_is_behind_is_the_later_one() {
         .create(&caller, &found, &body)
         .expect("stored");
     let crate::store::Created::New(first) = first else {
-        panic!("a new vCon: {first:?}")
+        // The outcome is not printed, as in kept_write: it travels with the
+        // caller's key id. `Same` is the only other outcome.
+        panic!("a new vCon, not the same bytes again")
     };
     let behind = w.serve_at(conformance::START - SKEW);
     let store = behind.1.store(id).expect("the store");
@@ -1254,7 +1256,9 @@ fn a_write_that_waits_for_its_tenant_s_lock_reads_the_clock_after_it() {
         let written = writing.join().expect("the write ends");
         assert!(waited, "the write waited for the lock");
         given_up.expect("the lock is given up");
-        assert!(written.is_ok(), "the write commits: {written:?}");
+        // Not printed, as in kept_write: the outcome travels with the
+        // caller's key id.
+        assert!(written.is_ok(), "the write commits");
         released.expect("the clock")
     });
     let stored = number(
