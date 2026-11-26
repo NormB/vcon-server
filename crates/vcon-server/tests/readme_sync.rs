@@ -1551,3 +1551,248 @@ fn the_squeeze_joins_any_whitespace() {
 fn the_squeeze_of_nothing_is_empty() {
     assert_eq!(squeeze(" \n "), "", "no words");
 }
+
+// ---- Each place a release names its own version. ----
+//
+// A release commit moves these to the new version by hand. On 2026-11-26,
+// putting each back to the previous version one at a time while the crate
+// said the new one failed no test for these: they are held here, each to
+// the crate's version (and the lists to the changelog's releases).
+
+/// A file and the words around the version it names, `{v}` where the
+/// version stands.
+const PINS: [(&str, &str); 5] = [
+    (
+        "website/content/docs/library.md",
+        "This page describes vcon {v}.",
+    ),
+    (
+        "website/content/docs/tui.md",
+        "The screens on this page are those of releases 0.4.7 to {v}.",
+    ),
+    (
+        "website/content/docs/development.md",
+        "python3 -I scripts/release_notes.py {v} --repo NormB/vcon-server",
+    ),
+    ("website/content/_index.md", "The {v} binaries need glibc"),
+    (
+        ".bestpractices.json",
+        "the current version is {v} (Cargo.toml)",
+    ),
+];
+
+/// The `.bestpractices.json` answers that list every release.
+const RELEASE_LISTS: [&str; 3] = [
+    "version_unique_justification",
+    "version_tags_justification",
+    "release_notes_justification",
+];
+
+/// What is wrong with `text` (of `file`) for the pin `template` and the
+/// release `version`: it never says the words, or says them with another
+/// version.
+fn pin_findings(file: &str, text: &str, template: &str, version: &str) -> Vec<String> {
+    let text = squeeze(text);
+    let (before, after) = template.split_once("{v}").expect("a template has {v}");
+    let mut found = Vec::new();
+    let mut seen = false;
+    let mut rest = text.as_str();
+    while let Some(at) = rest.find(before) {
+        let tail = &rest[at + before.len()..];
+        rest = tail;
+        // The version is the run of digits and dots there, less a dot
+        // that ends a sentence, and the template's words follow it.
+        let run = tail.len() - tail.trim_start_matches(is_number_char).len();
+        let named = tail[..run].trim_end_matches('.');
+        if release_numbers(named) != [named.to_owned()] || !tail[named.len()..].starts_with(after) {
+            continue;
+        }
+        seen = true;
+        if named != version {
+            found.push(format!(
+                "{file} says {:?}; the release is {version}",
+                template.replace("{v}", named)
+            ));
+        }
+    }
+    if !seen {
+        found.push(format!(
+            "{file} never says {:?}",
+            template.replace("{v}", version)
+        ));
+    }
+    found
+}
+
+/// The released versions the changelog has a section for, oldest first.
+fn released_versions(changelog: &str) -> Vec<String> {
+    let mut versions: Vec<String> = changelog
+        .lines()
+        .filter_map(|line| line.strip_prefix("## ["))
+        .filter_map(|rest| rest.split_once(']'))
+        .map(|(name, _)| name.to_owned())
+        .filter(|name| release_numbers(name) == [name.clone()])
+        .collect();
+    versions.sort_by_key(|v| {
+        v.split('.')
+            .map(|p| p.parse::<u32>().expect("a number"))
+            .collect::<Vec<_>>()
+    });
+    versions
+}
+
+/// The `info.version` of an OpenAPI description.
+fn openapi_version(text: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    value["info"]["version"].as_str().map(str::to_owned)
+}
+
+#[test]
+fn every_page_pin_names_this_release() {
+    let version = env!("CARGO_PKG_VERSION");
+    let mut findings = Vec::new();
+    for (file, template) in PINS {
+        findings.extend(pin_findings(file, &read(file), template, version));
+    }
+    assert!(findings.is_empty(), "{findings:#?}");
+}
+
+#[test]
+fn both_openapi_descriptions_name_this_release() {
+    let version = env!("CARGO_PKG_VERSION");
+    for file in [
+        "crates/vcon-server/openapi.json",
+        "website/static/openapi.json",
+    ] {
+        assert_eq!(
+            openapi_version(&read(file)).as_deref(),
+            Some(version),
+            "{file}'s info.version is the crate's"
+        );
+    }
+}
+
+#[test]
+fn the_best_practices_lists_name_every_released_version() {
+    let released = released_versions(&read("CHANGELOG.md"));
+    assert!(
+        released.last().map(String::as_str) == Some(env!("CARGO_PKG_VERSION")),
+        "the changelog's newest release is the crate's: {:?}",
+        released.last()
+    );
+    let answers: serde_json::Value =
+        serde_json::from_str(&read(".bestpractices.json")).expect("valid JSON");
+    for key in RELEASE_LISTS {
+        let text = answers[key]
+            .as_str()
+            .unwrap_or_else(|| panic!("{key} is text"));
+        assert_eq!(
+            release_numbers(text),
+            released,
+            "{key} lists the changelog's releases, oldest first"
+        );
+    }
+}
+
+#[test]
+fn a_pin_with_this_version_passes() {
+    assert!(
+        pin_findings(
+            "p",
+            "This page describes vcon 0.4.18. In",
+            PINS[0].1,
+            "0.4.18"
+        )
+        .is_empty(),
+        "the version stands where the template has it"
+    );
+}
+
+#[test]
+fn a_pin_across_a_line_break_passes() {
+    assert!(
+        pin_findings(
+            "p",
+            "those of releases\n0.4.7 to 0.4.18.",
+            "those of releases 0.4.7 to {v}.",
+            "0.4.18"
+        )
+        .is_empty(),
+        "line breaks are spaces"
+    );
+}
+
+#[test]
+fn a_pin_with_another_version_is_named() {
+    let found = pin_findings("p", "This page describes vcon 0.4.17.", PINS[0].1, "0.4.18");
+    assert_eq!(
+        found,
+        ["p says \"This page describes vcon 0.4.17.\"; the release is 0.4.18"],
+        "the stale words and the release"
+    );
+}
+
+#[test]
+fn a_missing_pin_is_named() {
+    let found = pin_findings("p", "no such words", PINS[0].1, "0.4.18");
+    assert_eq!(
+        found,
+        ["p never says \"This page describes vcon 0.4.18.\""],
+        "the words it should say"
+    );
+}
+
+#[test]
+fn two_pins_one_stale_name_the_stale_one() {
+    let found = pin_findings(
+        "p",
+        "The 0.4.18 binaries need glibc. The 0.4.17 binaries need glibc.",
+        "The {v} binaries need glibc",
+        "0.4.18",
+    );
+    assert_eq!(found.len(), 1, "one is stale: {found:?}");
+    assert!(found[0].contains("0.4.17"), "names it: {found:?}");
+}
+
+#[test]
+fn words_with_no_version_between_are_not_a_pin() {
+    let found = pin_findings(
+        "p",
+        "The new binaries need glibc",
+        "The {v} binaries need glibc",
+        "0.4.18",
+    );
+    assert_eq!(
+        found,
+        ["p never says \"The 0.4.18 binaries need glibc\""],
+        "a word is not a version"
+    );
+}
+
+#[test]
+fn released_versions_are_the_headings_oldest_first() {
+    let changelog = "# Changelog\n\n## [Unreleased]\n\n## [0.4.10] - x\n\n## [0.4.9] - x\n\n## [0.1.0] - x\n\n[0.4.9]: https://example.com\n";
+    assert_eq!(
+        released_versions(changelog),
+        ["0.1.0", "0.4.9", "0.4.10"],
+        "by number, and not the link lines or [Unreleased]"
+    );
+}
+
+#[test]
+fn an_openapi_version_is_read_from_info() {
+    assert_eq!(
+        openapi_version(r#"{"info": {"version": "0.4.18"}}"#).as_deref(),
+        Some("0.4.18"),
+        "info.version"
+    );
+    assert_eq!(openapi_version(r#"{"info": {}}"#), None, "none there");
+    assert_eq!(openapi_version("not json"), None, "not JSON");
+}
+
+#[test]
+fn every_pin_template_has_one_version_place() {
+    for (file, template) in PINS {
+        assert_eq!(template.matches("{v}").count(), 1, "{file}: one {{v}}");
+    }
+}

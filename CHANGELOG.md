@@ -6,6 +6,8 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.18] - 2026-11-26
+
 ### Added
 
 - **Library: a `KeyWrap` trait for the backend that wraps tenant keys.**
@@ -16,6 +18,17 @@ All notable changes to this project are recorded here. The format follows
 
 ### Changed
 
+- **Upgrading from 0.4.17: a PostgreSQL catalog needs `vcon-server
+  migrate`; a data directory does not.**
+  - Effect: The SQLite catalogs stay at schema version 10, and 0.4.17
+    opens a data directory that 0.4.18 has served.
+  - Do: With `catalog.backend = "postgres"`, stop every server, back up the
+    database, and run `vcon-server migrate` with 0.4.18 before any server
+    starts.
+  - Limit: 0.4.17 refuses a database at schema version 15; the backup is
+    the way back.
+  - Docs: [From 0.4.17 to
+    0.4.18](https://vcon-server.com/docs/upgrading/#from-0-4-17-to-0-4-18)
 - **The roadmap gives each milestone a target month and lists what is not
   planned.**
   - Effect: The plan runs through December 2027, and each month is a target,
@@ -1354,7 +1367,8 @@ All notable changes to this project are recorded here. The format follows
   - Limit: `vcon::MAX_SIGNED_LAYERS`, `vcon::MAX_JSON_DEPTH` and
     `vcon::Rejection::TooDeep` name the limits.
 
-[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.17...HEAD
+[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.18...HEAD
+[0.4.18]: https://github.com/NormB/vcon-server/releases/tag/v0.4.18
 [0.4.17]: https://github.com/NormB/vcon-server/releases/tag/v0.4.17
 [0.4.16]: https://github.com/NormB/vcon-server/releases/tag/v0.4.16
 [0.4.15]: https://github.com/NormB/vcon-server/releases/tag/v0.4.15

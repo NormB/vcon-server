@@ -18,6 +18,70 @@ CI runs every command on this page on each change. It installs the previous
 release, sets it up as [getting started](@/docs/getting-started.md) does,
 upgrades it to the server built from the change, and goes back again.
 
+## From 0.4.17 to 0.4.18
+
+For a deployment with its catalogs in the data directory, the upgrade is
+the binary alone. No stored data, configuration or schema changes there:
+the catalogs keep schema version 10. A downgrade is possible: 0.4.17 opens
+a data directory that 0.4.18 has served. Copy the data directory before
+the upgrade all the same, as in
+[copy the data directory](#copy-the-data-directory).
+
+A deployment with `catalog.backend = "postgres"` moves its database from
+schema version 14 to 15, and 0.4.17 refuses a database at version 15.
+Version 15 adds the tables `pending_tenant`, `pending_file` and `lease`,
+each empty (see
+[schema versions](@/docs/postgres-catalog.md#schema-versions)). In this
+order:
+
+1. **Stop every server.** `migrate` is refused while a server or a command
+   holds the database's locks.
+2. **Back up the database**, with the bucket and the master key file, as
+   [back it up](@/docs/postgres-catalog.md#back-it-up) says. That backup
+   is the only way back.
+3. **Install 0.4.18**, then run `vcon-server migrate` with it, as
+   [after an upgrade from 0.4.5](@/docs/postgres-catalog.md#after-an-upgrade-from-0-4-5)
+   shows. Its line says `"from":14` and `"to":15`. Until then a 0.4.18
+   server stops with `the database schema is version 14, older than this
+   binary's 15: run vcon-server migrate`. A `migrate` that fails part way
+   stops at the last version it finished, and running `migrate` again
+   continues from there; the backup is still the way back.
+4. **Start the server.**
+
+To go back, stop every server, restore the database from the backup taken
+before `migrate`, install 0.4.17 again and start it. Everything stored
+since that backup is lost. A 0.4.17 server on a database at version 15
+stops with `the database schema is newer than this binary (version 15,
+this binary 14): upgrade this server`.
+
+Four other things are different in 0.4.18:
+
+- **Several servers can serve one PostgreSQL database.** Each runs 0.4.18
+  on a host of its own, with a data directory of its own and the same
+  master key file, `[catalog.postgres]` and bucket; one of them at a time
+  runs the purge sweep, and one the pack run, for all. A server of 0.4.17
+  or earlier serves a database alone, so it is refused beside a server of
+  0.4.18 and a server of 0.4.18 is refused beside it: upgrade every server
+  of a database together, as above. Every time one server writes and
+  another judges is the database's clock; a time that 0.4.17 or earlier
+  wrote keeps that server's clock. See
+  [several servers on one database](@/docs/postgres-catalog.md#several-servers-on-one-database).
+- **A stop waits for a running purge sweep or pack run.** The run ends
+  after the tenant it is on, then the server releases the data directory
+  and logs `stopped`, so a stop can take as long as one tenant's purge or
+  pack step. Under systemd, add `TimeoutStopSec=10min` to the unit, as
+  [the unit in getting started](@/docs/getting-started.md#start-it-with-systemd)
+  does, so that systemd does not kill the server after its default 90
+  seconds; then run `systemctl daemon-reload`. See
+  [stopping](@/docs/operations.md#stopping).
+- **An older Parquet manifest stays for the reader grace.** A start-up, a
+  delete or a sweep no longer removes it inside
+  `storage.parquet.reader_grace`, unless a purge rewrites a pack file it
+  names. See [Parquet storage](@/docs/parquet-storage.md).
+- **The library has a `KeyWrap` trait.** `vcon_server::key_wrap` holds
+  `KeyWrap` and `FileWrap`, the master key file backend the server uses.
+  Stored data is unchanged.
+
 ## From 0.4.16 to 0.4.17
 
 There is no downgrade from 0.4.17 for a data directory: release 0.4.16
@@ -591,7 +655,7 @@ but do not install it yet. The commands use their own variable names, so
 they do not change the ones from install:
 
 ```sh
-NEW_VERSION=0.4.17
+NEW_VERSION=0.4.18
 NEW_ARCHIVE=vcon-server-$NEW_VERSION-$(uname -m)-unknown-linux-gnu.tar.gz
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/$NEW_ARCHIVE
 curl -fsSL -o SHA256SUMS-$NEW_VERSION.txt https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/SHA256SUMS.txt

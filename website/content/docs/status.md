@@ -7,7 +7,7 @@ weight = 60
 group = "project"
 +++
 
-vcon-server 0.4.17 is released: the `vcon` and `vcon-server` crates are on
+vcon-server 0.4.18 is released: the `vcon` and `vcon-server` crates are on
 crates.io, and the server for Linux on x86_64 and aarch64 is on
 [GitHub](https://github.com/NormB/vcon-server/releases). It is not yet for
 production: [the 1.0 checklist](@/docs/production-checklist.md) says what
@@ -235,6 +235,10 @@ otherwise.
   a crate of the repository that no release ships, and CI runs it at
   100,000 vCons. The server of 0.4.13 sets TCP_NODELAY on each connection;
   that of 0.4.12 does not.
+- **The `KeyWrap` trait**, from 0.4.18: the library's
+  `vcon_server::key_wrap` module holds `KeyWrap`, the interface of the
+  backend that holds the root key and wraps tenant keys, and `FileWrap`,
+  the master key file backend the server uses. Stored data is unchanged.
 
 ## The PostgreSQL catalog preview
 
@@ -288,6 +292,14 @@ once, for every entry here:
   conformance suite passes on
   PostgreSQL 16 and 18, and CI starts a server on each, stores and reads
   through it, restarts it, and runs the key rotation with the binary.
+- **Several servers on one database**, from 0.4.18. Servers of one release,
+  each with a data directory of its own, share the servers' lock and serve
+  the same tenants; one of them at a time, under a lease in the table
+  `lease`, runs the purge sweep, and one the pack run, for all, and every
+  time one server writes and another judges is read from the database's
+  clock. A server of 0.4.17 or earlier serves a database alone. Tests run
+  two server processes on one database. See
+  [several servers on one database](@/docs/postgres-catalog.md#several-servers-on-one-database).
 - **Removing a tenant, and rotating a tenant key, in PostgreSQL.** A
   removal deletes the tenant's objects in the bucket and its rows, and
   keeps its audit records and the key of its audit log. A tenant's catalog
@@ -300,16 +312,6 @@ once, for every entry here:
   key, moves the id in `registry_key` and records `rekey_master`; it
   changes no audit record. The command holds the database's locks, so it
   runs with every server stopped.
-
-## On `main` only
-
-The site is built from the `main` branch, so a page can describe what no
-release holds yet. Release 0.4.17 does not have these:
-
-- **The `KeyWrap` trait.** The library's `vcon_server::key_wrap` module
-  holds `KeyWrap`, the interface of the backend that holds the root key and
-  wraps tenant keys, and `FileWrap`, the master key file backend the server
-  uses. Stored data is unchanged.
 
 ## Being built
 

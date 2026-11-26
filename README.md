@@ -20,7 +20,7 @@ audit log, is not the vCon Conserver. The Conserver, a pipeline that runs
 vCons through chains of processing steps, is at
 [github.com/vcon-dev/vcon-server](https://github.com/vcon-dev/vcon-server).
 
-**Status: 0.4.17 released, not yet for production.** The `vcon` and
+**Status: 0.4.18 released, not yet for production.** The `vcon` and
 `vcon-server` crates are on crates.io, and the server for Linux on x86_64 and
 aarch64 is on [GitHub](https://github.com/NormB/vcon-server/releases).
 [What is built](https://vcon-server.com/docs/status/) says what works today,
@@ -105,6 +105,9 @@ where each item is described in full:
   and a comparison of two releases.
 - **The scale harness and its numbers:** measured ingest rates and read
   latencies, and a CI run at 100,000 vCons.
+- **The `KeyWrap` trait:** the library's interface of the backend that
+  holds the root key and wraps tenant keys, with the master key file
+  backend the server uses.
 
 ## Install
 
@@ -155,7 +158,9 @@ The `postgres` cargo feature adds a preview of the
 [PostgreSQL catalog](https://vcon-server.com/docs/postgres-catalog/):
 `vcon-server migrate` makes the schema, and a server keeps its registry
 and every tenant's catalog in PostgreSQL, reached over TLS, with the
-objects in an S3 bucket. The release binaries have the `postgres` feature.
+objects in an S3 bucket. From 0.4.18, several servers of one release can
+serve one database, each with a data directory of its own. The release
+binaries have the `postgres` feature.
 `cargo install` and a build from source get it with
 `--features postgres`. It does nothing
 until `catalog.backend` is `"postgres"`. Read
