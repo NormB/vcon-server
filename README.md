@@ -217,6 +217,8 @@ how-to runner's own tests, which read the how-to pages
 `cargo clippy --workspace --all-targets --locked --quiet -- -D warnings`,
 the same lint for each feature set CI lints, read from
 `.github/clippy-feature-sets.txt` (`scripts/clippy_features.py run --quiet`),
+builds the libraries and binaries with no test target, as the release build
+makes them (`scripts/check_release_build.py`),
 builds the documentation with rustdoc's warnings denied
 (`cargo doc --workspace --no-deps --locked --quiet`), and runs the
 tests with `scripts/nextest.sh run --workspace --locked`, the server's tests with

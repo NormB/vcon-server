@@ -388,6 +388,12 @@ git config core.hooksPath .githooks
   the same lint for each feature set CI lints
   (`scripts/clippy_features.py run --quiet`, see
   [Feature sets clippy lints](#feature-sets-clippy-lints)),
+  a build of the libraries and binaries with no test target
+  (`scripts/check_release_build.py`: cargo check of the libraries and
+  binaries for the workspace, for the server without default features and
+  for each server feature that is off by default; a build with a test
+  target turns on the features of `[dev-dependencies]`, so code that needs
+  one of them passes every other step and fails the release build),
   the documentation with rustdoc's warnings denied
   (`cargo doc --workspace --no-deps --locked --quiet`),
   the tests with `scripts/nextest.sh run --workspace --locked` (each test
