@@ -274,7 +274,9 @@ and scope.
 
 On a host with systemd, save this unit as
 `/etc/systemd/system/vcon-server.service`. `LimitMEMLOCK=infinity` allows
-the server to lock its memory:
+the server to lock its memory. `TimeoutStopSec=10min` gives a stop time to
+let a purge sweep or pack run finish the tenant it is on, in place of
+systemd's 90 seconds; see [stopping](@/docs/operations.md#stopping):
 
 <!-- docs-test: only systemd; file /etc/systemd/system/vcon-server.service -->
 ```ini
@@ -287,6 +289,7 @@ User=vcon
 Group=vcon
 ExecStart=/usr/local/bin/vcon-server serve --config /etc/vcon-server/vcon-server.toml
 LimitMEMLOCK=infinity
+TimeoutStopSec=10min
 Restart=on-failure
 
 [Install]
@@ -411,7 +414,9 @@ and what to do.
 
 ## Stop it and start it again
 
-SIGTERM or SIGINT stops the server. It logs `stopped` and exits. Under
+SIGTERM or SIGINT stops the server. It logs `stopped` and exits. A purge
+sweep that is going finishes the tenant it is on first; see
+[stopping](@/docs/operations.md#stopping) for how long that can take. Under
 systemd:
 
 <!-- docs-test: only systemd -->

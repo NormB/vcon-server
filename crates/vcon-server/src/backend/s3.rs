@@ -2072,6 +2072,7 @@ pub(crate) mod remote {
                 pack_limit: 1 << 20,
                 reader_grace: crate::config::READER_GRACE,
             },
+            &|| false,
         );
         assert_eq!(
             report,

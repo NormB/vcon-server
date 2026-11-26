@@ -284,7 +284,11 @@ writes the volume to standard output as a tar archive. See
 
 ## Stop it and start it
 
-`docker stop` sends SIGTERM. The server logs `stopped` and exits:
+`docker stop` sends SIGTERM. A purge sweep or pack run that is going
+finishes the tenant it is on first, and `docker stop -t <seconds>` sets how
+long Docker waits for that before it kills the container; see
+[stopping](@/docs/operations.md#stopping). The server logs `stopped` and
+exits:
 
 ```sh
 docker stop vcon-server >/dev/null

@@ -126,13 +126,13 @@ fn certificate(dir: &Path, name: &str) -> (PathBuf, PathBuf) {
 }
 
 /// A data directory with an opened registry, and a configuration for it.
-struct World {
-    dir: tempfile::TempDir,
-    config: Config,
+pub(super) struct World {
+    pub(super) dir: tempfile::TempDir,
+    pub(super) config: Config,
 }
 
 /// The configuration, with `extra` after the `[tls]` table.
-fn world(extra: &str) -> World {
+pub(super) fn world(extra: &str) -> World {
     let dir = tempfile::tempdir().expect("temp dir");
     let (cert, key) = certificate(dir.path(), "tenant");
     let text = format!(
@@ -169,7 +169,7 @@ fn world_with_operator() -> World {
 
 /// The registry of `w`'s data directory, under its master key file; a
 /// second one opened beside a running start reads what that start did.
-fn tenants(w: &World) -> Tenants {
+pub(super) fn tenants(w: &World) -> Tenants {
     let master = w.dir.path().join("master.key");
     if !master.exists() {
         let mut bytes = [0u8; 32];
@@ -198,7 +198,7 @@ fn tenants(w: &World) -> Tenants {
 /// it: without start-up recovery, which would race the server's own purge
 /// sweep over the same objects (`tenants` opened here while the server
 /// swept failed 25 of 200 runs with `its store: Io`).
-fn beside(w: &World) -> Tenants {
+pub(super) fn beside(w: &World) -> Tenants {
     Tenants::open_beside(
         w.dir.path(),
         Key::load_master(&w.dir.path().join("master.key")).expect("the master key"),

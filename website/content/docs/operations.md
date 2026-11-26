@@ -219,6 +219,23 @@ key and status, not one record each.
 ## Stopping
 
 SIGTERM or SIGINT stops the server, which logs `stopped` and exits.
+It first stops taking requests. A purge sweep or pack run that is going
+when the signal comes finishes the tenant it is on and starts no other;
+the server waits for it, and only then releases the data directory, so
+no next server or command can start while that work still writes. The
+stop logs `stopping: waiting for a background job's run to end`, with
+the job's name, and logs a warning each 30 seconds it goes on waiting.
+
+A stop can therefore take as long as one tenant's purge or pack step. No
+setting bounds that step: a tenant's step purges every version due, or
+packs every object waiting, so a large backlog takes longer. systemd kills
+a unit that has not stopped after `TimeoutStopSec` (90 seconds by
+default); the unit in [getting started](@/docs/getting-started.md#start-it-with-systemd)
+sets 10 minutes for this reason. `docker stop -t` sets how many seconds
+Docker waits. A kill in the middle of a step is a crash, and start-up
+recovery handles it as it handles any other crash, so raise the timeout
+only to let a stop finish its work.
+
 Every write is crash-safe, so a kill or a power cut loses at most the requests
 not yet answered; start-up recovery removes what they left.
 [Durability](@/docs/durability.md) says why, and how to run the crash test.

@@ -617,7 +617,9 @@ vcon-server <version>
 
 ## Stop the server
 
-Under systemd:
+A stop waits for a purge sweep or pack run that is going to finish the
+tenant it is on, so it can take longer than a few seconds; see
+[stopping](@/docs/operations.md#stopping). Under systemd:
 
 <!-- docs-test: only systemd -->
 ```sh

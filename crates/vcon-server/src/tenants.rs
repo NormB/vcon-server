@@ -866,6 +866,24 @@ impl Tenants {
             .expect("trigger");
     }
 
+    /// Runs `hook`, with the job's name, as each of the server's background
+    /// jobs (the purge sweep, the pack run) begins its step for a tenant,
+    /// for tests that hold a job inside that step.
+    #[cfg(test)]
+    pub(crate) fn when_a_job_steps_for_test(&self, hook: tests::JobHook) {
+        *self.hooks.job_step.lock().expect("hook") = Some(hook);
+    }
+
+    /// Where a background job begins its step for a tenant: runs the hook
+    /// a test set with `when_a_job_steps_for_test`.
+    #[cfg(test)]
+    pub(crate) fn job_steps_for_test(&self, job: &'static str) {
+        let hook = self.hooks.job_step.lock().expect("hook").clone();
+        if let Some(hook) = hook {
+            hook(job);
+        }
+    }
+
     /// server.sqlite's connection, for tests that damage it.
     #[cfg(test)]
     pub(crate) fn conn_for_test(&self) -> MutexGuard<'_, LocalConn> {
@@ -1068,7 +1086,13 @@ mod tests {
         /// Runs at each try of a backup, after server.sqlite is copied and
         /// before the tenants it lists are.
         pub(super) registry_copied: Mutex<Option<RegistryHook>>,
+        /// Runs as a background job begins its step for a tenant.
+        pub(super) job_step: Mutex<Option<JobHook>>,
     }
+
+    /// What a background job runs as it begins its step for a tenant, with
+    /// the job's name.
+    pub(crate) type JobHook = std::sync::Arc<dyn Fn(&'static str) + Send + Sync>;
 
     /// A master key kept wrapped, so a test can have it more than once.
     struct Master {

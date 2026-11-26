@@ -2,6 +2,7 @@
 
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use std::{fmt, io};
 
@@ -290,57 +291,32 @@ async fn serve_opened(
         tracing::info!(operator_listen = %operator_bound, "the operator listener is bound");
     }
     tracing::info!(listen = %bound, "serving");
-    // The purge sweep: at start, then purge_interval after each sweep ends,
-    // until the server stops.
-    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    // The background jobs, each at start and then its interval after each
+    // run ends, until the server stops: the purge sweep, the pack run with
+    // Parquet storage, and the rotation warning.
     let (swept, default) = (tenants.clone(), config.retention_default);
-    let sweeper = tokio::spawn(every(
+    let mut jobs = vec![Background::start(
+        "purge sweep",
         config.purge_interval,
-        async {
-            let _ = stopped.await;
+        move |stopping| {
+            sweep(&swept, default, stopping);
         },
-        move || {
-            let tenants = swept.clone();
-            async move {
-                let _ = tokio::task::spawn_blocking(move || sweep(&tenants, default)).await;
-            }
-        },
-    ));
-    // The pack run, with Parquet storage: at start, then pack_interval
-    // after each run ends, until the server stops.
-    let (stop_packing, packing_stopped) = tokio::sync::oneshot::channel::<()>();
-    let packer = config.storage.parquet.map(|parquet| {
+    )];
+    if let Some(parquet) = config.storage.parquet {
         let packed = tenants.clone();
-        tokio::spawn(every(
+        jobs.push(Background::start(
+            "pack run",
             parquet.pack_interval,
-            async {
-                let _ = packing_stopped.await;
+            move |stopping| {
+                pack_all(&packed, &parquet, stopping);
             },
-            move || {
-                let tenants = packed.clone();
-                async move {
-                    let _ = tokio::task::spawn_blocking(move || pack_all(&tenants, &parquet)).await;
-                }
-            },
-        ))
-    });
-    // The rotation warning: at start, then each day.
-    let (stop_warning, warning_stopped) = tokio::sync::oneshot::channel::<()>();
+        ));
+    }
     let (watched, rotation_warn) = (tenants.clone(), config.rotation_warn);
-    let warner = tokio::spawn(every(
+    jobs.push(Background::start(
+        "rotation warning",
         ROTATION_CHECK,
-        async {
-            let _ = warning_stopped.await;
-        },
-        move || {
-            let tenants = watched.clone();
-            async move {
-                let _ = tokio::task::spawn_blocking(move || {
-                    warn_if_rotation_overdue(&tenants, rotation_warn);
-                })
-                .await;
-            }
-        },
+        move |_| warn_if_rotation_overdue(&watched, rotation_warn),
     ));
     // With an operator listener each listener serves one kind of key;
     // without one, the one listener serves both.
@@ -405,15 +381,126 @@ async fn serve_opened(
             both.await
         }
     };
-    let _ = stop.send(());
-    let _ = stop_warning.send(());
-    let _ = stop_packing.send(());
-    let _ = sweeper.await;
-    let _ = warner.await;
-    if let Some(packer) = packer {
-        let _ = packer.await;
-    }
+    Background::stop_all(jobs).await;
     served.map_err(ServeError::Serve)
+}
+
+/// How long a stop waits for a background job's run before it logs that it
+/// still waits; it logs again each time this passes, and goes on waiting.
+const STOP_WARN: Duration = Duration::from_secs(30);
+
+/// One of the server's background jobs: runs of its work on the blocking
+/// pool, its interval apart, until it is stopped.
+struct Background {
+    /// The job's name in the stop's lines.
+    name: &'static str,
+    /// Set as the stop is asked: the work reads it before each step.
+    stopping: Arc<AtomicBool>,
+    /// Whether a run is on the blocking pool now.
+    running: Arc<AtomicBool>,
+    /// Tells [`every`] to start no further run.
+    tell: Option<tokio::sync::oneshot::Sender<()>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Background {
+    /// Runs `work` at once, then `interval` after each run ends. `work` is
+    /// given a test of whether the server is stopping, which it makes
+    /// before each step (a tenant) and ends its run on.
+    fn start(
+        name: &'static str,
+        interval: Duration,
+        work: impl Fn(&dyn Fn() -> bool) + Send + Sync + 'static,
+    ) -> Background {
+        let stopping = Arc::new(AtomicBool::new(false));
+        let running = Arc::new(AtomicBool::new(false));
+        let (tell, told) = tokio::sync::oneshot::channel::<()>();
+        let work = Arc::new(work);
+        let (asked, busy) = (stopping.clone(), running.clone());
+        let task = tokio::spawn(every(
+            interval,
+            async {
+                let _ = told.await;
+            },
+            move || {
+                let (work, asked, busy) = (work.clone(), asked.clone(), busy.clone());
+                async move {
+                    busy.store(true, Ordering::SeqCst);
+                    let ran = tokio::task::spawn_blocking(move || {
+                        work(&|| asked.load(Ordering::SeqCst));
+                    })
+                    .await;
+                    busy.store(false, Ordering::SeqCst);
+                    if let Err(error) = ran {
+                        tracing::error!(job = name, error = %error, "a background job's run failed");
+                    }
+                }
+            },
+        ));
+        Background {
+            name,
+            stopping,
+            running,
+            tell: Some(tell),
+            task,
+        }
+    }
+
+    /// Asks the job to stop: a run going ends at its next step, and no
+    /// run begins after it. The flag is set before [`every`] is told, so a
+    /// run that begins in between ends before its first step.
+    fn ask(&mut self) {
+        self.stopping.store(true, Ordering::SeqCst);
+        if let Some(tell) = self.tell.take() {
+            let _ = tell.send(());
+        }
+    }
+
+    /// Waits for the job to end, after [`Background::ask`], however long
+    /// the run going takes: the data directory stays locked until then.
+    /// Logs that it waits, and again each [`STOP_WARN`].
+    async fn join(self) {
+        let Background {
+            name,
+            running,
+            mut task,
+            ..
+        } = self;
+        if running.load(Ordering::SeqCst) {
+            tracing::info!(
+                job = name,
+                "stopping: waiting for a background job's run to end"
+            );
+        }
+        let mut waited = Duration::ZERO;
+        loop {
+            match tokio::time::timeout(STOP_WARN, &mut task).await {
+                Ok(Ok(())) => return,
+                Ok(Err(error)) => {
+                    tracing::error!(job = name, error = %error, "a background job's run failed");
+                    return;
+                }
+                Err(_) => {
+                    waited += STOP_WARN;
+                    tracing::warn!(
+                        job = name,
+                        waited_secs = waited.as_secs(),
+                        "stopping: a background job's run has not ended; the stop goes on waiting"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Asks every job to stop, then waits for each to end.
+    async fn stop_all(mut jobs: Vec<Background>) {
+        for job in &mut jobs {
+            job.ask();
+        }
+        for job in jobs {
+            job.join().await;
+        }
+    }
 }
 
 /// What one pack run over every tenant did.
@@ -429,9 +516,14 @@ pub struct PackRunReport {
 
 /// One pack run over every tenant, as `Store::pack` does for one, with the
 /// configured limit and reader grace. A tenant whose run fails is
-/// counted and left for the next run. Logged with counts only, never a
-/// tenant.
-pub fn pack_all(tenants: &Tenants, settings: &ParquetSettings) -> PackRunReport {
+/// counted and left for the next run. `stopping` is asked before each
+/// tenant's step: once it answers true, the run ends there, and the rest
+/// wait for the next run. Logged with counts only, never a tenant.
+pub fn pack_all(
+    tenants: &Tenants,
+    settings: &ParquetSettings,
+    stopping: &dyn Fn() -> bool,
+) -> PackRunReport {
     let mut report = PackRunReport::default();
     let plan = crate::store::packer::PackPlan {
         grace: settings.reader_grace,
@@ -440,6 +532,11 @@ pub fn pack_all(tenants: &Tenants, settings: &ParquetSettings) -> PackRunReport 
     match tenants.ids() {
         Ok(ids) => {
             for id in ids {
+                if stopping() {
+                    break;
+                }
+                #[cfg(test)]
+                tenants.job_steps_for_test("pack run");
                 match tenants.store(id).map(|store| store.pack(&plan)) {
                     Ok(Ok(done)) => {
                         report.files += done.files;
@@ -472,12 +569,19 @@ pub struct SweepReport {
 /// One purge sweep: each tenant purges what is due under its own retention
 /// period, else `default`. A tenant that cannot be swept, such as one whose
 /// period does not read back or that is being removed, is counted and left
-/// for the next sweep. The sweep is logged with counts only, never a tenant.
-pub fn sweep(tenants: &Tenants, default: Retention) -> SweepReport {
+/// for the next sweep. `stopping` is asked before each tenant's step: once
+/// it answers true, the sweep ends there, and the rest wait for the next
+/// sweep. The sweep is logged with counts only, never a tenant.
+pub fn sweep(tenants: &Tenants, default: Retention, stopping: &dyn Fn() -> bool) -> SweepReport {
     let mut report = SweepReport::default();
     match tenants.ids() {
         Ok(ids) => {
             for id in ids {
+                if stopping() {
+                    break;
+                }
+                #[cfg(test)]
+                tenants.job_steps_for_test("purge sweep");
                 let purged = tenants.retention(id).and_then(|own| {
                     let store = tenants.store(id)?;
                     Ok(store.purge_due(crate::tenants::kept_for(own, default)))
@@ -499,7 +603,8 @@ pub fn sweep(tenants: &Tenants, default: Retention) -> SweepReport {
 }
 
 /// Runs `job` at once, then again `interval` after each run ends, until
-/// `shutdown` completes; a run still going when it does is not awaited.
+/// `shutdown` completes. A run going when it does is awaited to its end,
+/// so whoever awaits `every` waits for the run; no run begins after it.
 pub async fn every<F, Fut>(interval: Duration, shutdown: impl Future<Output = ()>, mut job: F)
 where
     F: FnMut() -> Fut,
@@ -510,8 +615,9 @@ where
         tokio::select! {
             biased;
             () = &mut shutdown => return,
-            () = job() => {}
+            () = std::future::ready(()) => {}
         }
+        job().await;
         tokio::select! {
             biased;
             () = &mut shutdown => return,
@@ -598,6 +704,9 @@ fn warn_if_rotation_overdue(tenants: &Tenants, rotation_warn: Duration) {
 
 #[cfg(test)]
 mod start_tests;
+
+#[cfg(test)]
+mod stop_tests;
 
 #[cfg(test)]
 mod tests {
@@ -859,7 +968,7 @@ mod tests {
             deleted(&f.tenants, long, "0199e5c6-0d7a-7c11-8000-000000000003");
             f.clock.set(datetime!(2026-10-25 13:00 UTC));
 
-            let report = sweep(&f.tenants, Retention::Days(1));
+            let report = sweep(&f.tenants, Retention::Days(1), &|| false);
 
             assert_eq!(
                 report,
@@ -889,7 +998,7 @@ mod tests {
                 .expect("damaged");
             f.clock.set(datetime!(2026-10-25 13:00 UTC));
 
-            let report = sweep(&f.tenants, Retention::Days(1));
+            let report = sweep(&f.tenants, Retention::Days(1), &|| false);
 
             assert_eq!(
                 report,
@@ -936,6 +1045,50 @@ mod tests {
             task.await.expect("ends on shutdown");
             tokio::time::advance(Duration::from_secs(600)).await;
             assert_eq!(runs.load(Ordering::SeqCst), 2, "none after shutdown");
+        }
+
+        /// A run that is going when shutdown comes is awaited, so whoever
+        /// awaits `every` waits for the run.
+        #[tokio::test(start_paused = true)]
+        async fn every_returns_only_after_a_run_going_at_shutdown_has_ended() {
+            let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+            let (release, released) = tokio::sync::oneshot::channel::<()>();
+            let released = Arc::new(tokio::sync::Mutex::new(Some(released)));
+            let ended = Arc::new(AtomicUsize::new(0));
+            let (held, done) = (released.clone(), ended.clone());
+            let task = tokio::spawn(every(
+                Duration::from_secs(60),
+                async move {
+                    let _ = stopped.await;
+                },
+                move || {
+                    let (held, done) = (held.clone(), done.clone());
+                    async move {
+                        if let Some(released) = held.lock().await.take() {
+                            let _ = released.await;
+                        }
+                        done.fetch_add(1, Ordering::SeqCst);
+                    }
+                },
+            ));
+            for _ in 0..10 {
+                tokio::task::yield_now().await;
+            }
+            stop.send(()).expect("still running");
+            for _ in 0..10 {
+                tokio::task::yield_now().await;
+            }
+            assert!(
+                !task.is_finished(),
+                "every waits for the run going at shutdown"
+            );
+            release.send(()).expect("the run waits");
+            task.await.expect("ends once the run has");
+            assert_eq!(
+                ended.load(Ordering::SeqCst),
+                1,
+                "the run ended, and no other began"
+            );
         }
     }
 }

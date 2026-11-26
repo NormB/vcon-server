@@ -34,6 +34,15 @@ All notable changes to this project are recorded here. The format follows
   - Effect: An older manifest stays for the reader grace unless a purge
     rewrites a pack file it names.
   - Docs: [Parquet storage](https://vcon-server.com/docs/parquet-storage/)
+- **Stopping the server waits for a running sweep or pack run first.**
+  - Was: The stop released the data directory while a purge sweep or pack
+    run went on writing, so a next start could remove that work.
+  - Effect: The run ends after the tenant it is on, then the server releases
+    the data directory and logs `stopped`.
+  - Do: Add `TimeoutStopSec=10min` to the systemd unit, so systemd waits
+    for that step before it kills the server.
+  - Limit: A stop can take as long as one tenant's purge or pack step.
+  - Docs: [Stopping](https://vcon-server.com/docs/operations/#stopping)
 
 ## [0.4.17] - 2026-11-25
 
