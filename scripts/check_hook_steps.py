@@ -59,6 +59,7 @@ CI_ONLY = {
     "scripts/check_required_checks.py": "reads the main branch's ruleset from the GitHub API",
     "scripts/contract_job.py": "compares with the newest release tag through git, and the commit hook runs in a copy of the index without .git or tags; scripts/test_contract_job.py, which the hook runs, tests it",
     "scripts/codeql_pr_gate.py check": "reads code scanning's processing status and alerts for the SARIF an Analyze job uploaded, from the GitHub API",
+    "scripts/codeql_extraction.py check": "reads the CodeQL database the Analyze step of the CodeQL job made; the hook runs scripts/test_codeql_extraction.py",
     "scripts/codeql_pin.py behind": "reads github/codeql-action's releases from the GitHub API; the hook runs scripts/test_codeql_pin.py, which runs `check` on codeql.yml",
     "scripts/test-check-package.sh": "packages the crates in two more copies of the tree; the hook runs scripts/check_package.py once",
     "scripts/run-clients.sh": "runs each client example against a live server; needs go and node besides the build",

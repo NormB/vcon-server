@@ -87,6 +87,7 @@ python3 -I scripts/test_advertised_release.py
 python3 -I scripts/test_hook_tests.py
 python3 -I scripts/test_codeql_pr_gate.py
 python3 -I scripts/test_codeql_pin.py
+python3 -I scripts/test_codeql_extraction.py
 # No script writes scripts/__pycache__ (a stale .pyc can run in place of a
 # mutated script).
 python3 -I scripts/test_no_bytecode.py

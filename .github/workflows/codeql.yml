@@ -78,6 +78,7 @@ jobs:
           url: https://github.com/github/codeql-action/releases/download/codeql-bundle-v${{ env.CODEQL_VERSION }}/codeql-bundle-${{ matrix.bundle }}-linux64.tar.zst
           file: codeql-bundle-${{ matrix.bundle }}-linux64.tar.zst
       - name: Initialize CodeQL
+        id: init
         uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           languages: ${{ matrix.language }}
@@ -90,6 +91,17 @@ jobs:
           category: "/language:${{ matrix.language }}"
           # The findings go up as SARIF; the database is not needed.
           upload-database: false
+      # A Rust file the extractor cannot read whole is analyzed in part,
+      # and the analysis passes: from 2026-11-25 api/listen.rs was
+      # "extracted with errors" on every run and no step read it. This
+      # step fails the job unless the summary query of the database counts
+      # the files recorded in scripts/codeql_extraction.py (0).
+      - name: No Rust file is extracted with errors
+        if: matrix.language == 'rust'
+        env:
+          CODEQL: ${{ steps.init.outputs.codeql-path }}
+          DATABASE: ${{ runner.temp }}/codeql_databases/rust
+        run: python3 -I scripts/codeql_extraction.py check --codeql "$CODEQL" --database "$DATABASE"
       # The analyze step waits about 2.5 min for code scanning to process
       # the SARIF and then passes anyway. On #224 the processing never
       # finished, the pull request's `CodeQL` check concluded neutral and a

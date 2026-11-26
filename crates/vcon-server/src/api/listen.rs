@@ -20,7 +20,7 @@ use hyper_util::service::TowerToHyperService;
 use rustls::ServerConfig;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 use tokio_rustls::TlsAcceptor;
 
@@ -183,12 +183,7 @@ pub async fn serve_observed(
                     "the listener is full: it holds limits.connections connections and takes no more until one ends"
                 );
             }
-            let place = tokio::select! {
-                place = places.clone().acquire_owned() => place,
-                () = &mut shutdown => return Ok(()),
-            };
-            // An error is the places closed, which nothing here does.
-            let Ok(place) = place else {
+            let Some(place) = next_place(&places, shutdown.as_mut()).await else {
                 return Ok(());
             };
             place
@@ -222,6 +217,24 @@ pub async fn serve_observed(
 
 /// One connection, from its handshake to its end. Its own errors end only
 /// the connection.
+/// The next of `places` to come free, or None once `shutdown` completes
+/// first (or the places are closed, which nothing here does). A function
+/// of its own: inside the accept loop's `else` block, CodeQL's Rust
+/// extractor (2.27.6) failed to expand this `select!` ("macro expansion
+/// failed for '$crate::select_priv_declare_output_enum'") and analyzed
+/// listen.rs in part, while it expands the two `select!`s that are
+/// statements of the loop. The cause in the extractor is not known.
+async fn next_place(
+    places: &Arc<Semaphore>,
+    shutdown: Pin<&mut impl Future<Output = ()>>,
+) -> Option<OwnedSemaphorePermit> {
+    let place = tokio::select! {
+        place = places.clone().acquire_owned() => place,
+        () = shutdown => return None,
+    };
+    place.ok()
+}
+
 async fn connection(tcp: TcpStream, acceptor: TlsAcceptor, app: Router, limits: ConnectionLimits) {
     let peer = tcp.peer_addr().ok().map(|peer| peer.ip());
     // Handshake records and answers are written in more than one part.
