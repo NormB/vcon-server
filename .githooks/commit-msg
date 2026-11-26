@@ -18,7 +18,11 @@
 # included: an address belongs only in the author and committer fields
 # (CONTRIBUTING.md, "Personal data in commit messages").
 #
-# Both checks run, so one commit names every reason it is refused.
+# A commit that moves the pin of the released part of CHANGELOG.md
+# (.config/changelog-released.sha256), a deliberate edit of released text,
+# names that file in its message (scripts/check_changelog_released.py).
+#
+# Every check runs, so one commit names every reason it is refused.
 set -euo pipefail
 root="$(git rev-parse --show-toplevel)"
 refused=0
@@ -26,6 +30,7 @@ if ! python3 -I "$root/scripts/scan_forbidden.py" --commit-message "$1"; then
   echo "commit-msg: refused (see the findings above)" >&2
   refused=1
 fi
+python3 -I "$root/scripts/check_changelog_released.py" message "$1" || refused=1
 if [ "$(git config --type=bool --default=false dco.exempt)" != true ]; then
   python3 -I "$root/scripts/check_dco.py" --local "$1" "$(git var GIT_AUTHOR_IDENT)" || refused=1
 fi

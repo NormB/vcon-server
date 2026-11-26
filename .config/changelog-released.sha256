@@ -1,0 +1,8 @@
+# The sha256 of the released part of CHANGELOG.md (from the first
+# `## [x.y.z]` heading down, with the link definitions of released
+# versions) as the last commit that edited released text on purpose left
+# it. scripts/check_changelog_released.py refuses a commit whose released
+# part is not the end of its base's, unless the commit moves this pin to
+# the sha256 the refusal prints and its message names this file. A
+# release adds a section on top and does not move the pin.
+559a6ba12a49c1f881a95792fcc464727230db56ca8a9f0f2d023b9c0a2ea05b

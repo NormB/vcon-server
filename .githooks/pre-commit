@@ -33,6 +33,13 @@ done < <(git diff --cached --name-only -z --diff-filter=ACMR)
 
 scripts/check-ignored-exports.sh >/dev/null
 
+# The released part of CHANGELOG.md, from the first `## [x.y.z]` heading
+# down, is the one of HEAD and of the merge base with origin/main: on
+# 2026-11-26 a rebase put an [Unreleased] entry under the released 0.4.18
+# heading with no conflict. It reads the index and git's commits, so it
+# runs here, before the copy of the staged files, which has no .git.
+python3 -I scripts/check_changelog_released.py index
+
 # fmt, clippy and tests on exactly what is staged.
 staged="$(mktemp -d)"
 trap 'rm -rf "$staged"' EXIT
@@ -73,6 +80,7 @@ python3 -I scripts/test_check_hook_steps.py
 python3 -I scripts/test_tree_files.py
 python3 -I scripts/test_check_runner_images.py
 python3 -I scripts/test_check_changelog.py
+python3 -I scripts/test_check_changelog_released.py
 python3 -I scripts/test_advertised_release.py
 python3 -I scripts/test_hook_tests.py
 python3 -I scripts/test_codeql_pr_gate.py

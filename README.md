@@ -186,7 +186,9 @@ attribution in the staged changes (`scripts/scan_forbidden.py`) and checks
 that git ignores every export of the private design documents and every
 private spec or plan file (a name ending in .local.md), and that none is staged,
 that git ignores the Python bytecode directories the script tests write, and that
-the project's own files stay visible (`scripts/check-ignored-exports.sh`). Then, on a copy of exactly what is
+the project's own files stay visible (`scripts/check-ignored-exports.sh`), and
+that the staged CHANGELOG.md keeps the released sections of HEAD and of the
+merge base with origin/main (`scripts/check_changelog_released.py index`). Then, on a copy of exactly what is
 staged, it checks that every GitHub Action is pinned by commit
 (`scripts/check_action_pins.py`) and that every exception to the 14-day rule
 for dependency versions names its advisory
@@ -218,7 +220,9 @@ it has no DCO sign-off
 [Signing off commits](CONTRIBUTING.md#signing-off-commits)). Before each push, `.githooks/pre-push` refuses any outgoing commit
 that has no good signature from an allowed signer, whose author or committer
 is not the pusher's configured name and email, or whose message
-`scripts/scan-commit-messages.sh` refuses. The
+`scripts/scan-commit-messages.sh` refuses, and any that changes the released
+sections of CHANGELOG.md against its parents
+(`scripts/check_changelog_released.py`). The
 [development page](https://vcon-server.com/docs/development/#gates) describes
 each gate.
 

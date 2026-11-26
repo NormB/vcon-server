@@ -8,7 +8,8 @@
 # noreply address passes, and the same address elsewhere in a message does
 # not. Then .githooks/commit-msg itself: it refuses what the scan refuses,
 # and refuses a message with no DCO sign-off the required `DCO` job would
-# accept, unless `dco.exempt` is set.
+# accept, unless `dco.exempt` is set, and refuses a message for a commit
+# that moves the pin of CHANGELOG.md's released part and does not name it.
 # Forbidden samples are assembled at run time, so this file holds none.
 set -euo pipefail
 src="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -103,7 +104,7 @@ expect 0 "a reserved address in the body" "" "$reserved_body"
 # sign-off the required DCO job would accept. It runs against the scripts
 # of the repository it is in, so they are copied in.
 mkdir -p scripts
-cp "$src/scan_forbidden.py" "$src/check_dco.py" scripts/
+cp "$src/scan_forbidden.py" "$src/check_dco.py" "$src/check_changelog_released.py" scripts/
 # hook <0|1> <description> <text the output must hold, or "" for none> <message>
 hook() {
   local want="$1" what="$2" holds="$3" rc=0
@@ -144,5 +145,19 @@ Signed-off-by: Test User <test@example.com>"
 hook 1 "the same message is also refused for the address in its trailer" "<commit message>: email address in a trailer:" "Change it
 
 Signed-off-by: Test User <test@example.com>"
+# A commit that moves the pin of the released part of CHANGELOG.md, a
+# deliberate edit of released text, names the pin file in its message
+# (scripts/check_changelog_released.py).
+git config dco.exempt true
+mkdir -p .config
+printf '%s\n' 0123 > .config/changelog-released.sha256
+git add .config/changelog-released.sha256
+hook 1 "the hook refuses a moved pin the message does not name" "does not name .config/changelog-released.sha256" "Reword 0.1.0"
+hook 0 "the hook is silent on a moved pin the message names" "" "Reword 0.1.0
+
+Moves .config/changelog-released.sha256."
+git rm -q --cached .config/changelog-released.sha256
+hook 0 "the hook is silent when the pin does not move" "" "Reword nothing"
+git config --unset dco.exempt
 echo "test-scan-commit-messages: $pass of $((pass + fail)) passed"
 [ "$fail" -eq 0 ]

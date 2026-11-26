@@ -3,7 +3,8 @@
 # allowed signer (git verify-commit), its author and committer both match
 # the pusher's configured user.name and user.email, and its whole message
 # passes scripts/scan-commit-messages.sh: a commit made with --no-verify or
-# by another tool never ran the commit-msg hook.
+# by another tool never ran the commit-msg hook. Each outgoing commit also
+# keeps the released part of CHANGELOG.md of its parents.
 set -euo pipefail
 remote="$1"
 root="$(git rev-parse --show-toplevel)"
@@ -49,6 +50,17 @@ while read -r local_ref local_sha remote_ref remote_sha; do
       bad=1
     fi
   done <<< "$commits"
+  # Each outgoing commit keeps the released part of CHANGELOG.md of its
+  # parents (scripts/check_changelog_released.py): a rebase runs no commit
+  # hook, and on 2026-11-26 one put an [Unreleased] entry under the
+  # released 0.4.18 heading with no conflict.
+  if [ -n "$commits" ]; then
+    mapfile -t listed <<< "$commits"
+    if ! python3 -I "$root/scripts/check_changelog_released.py" commits "${listed[@]}" >/dev/null; then
+      echo "pre-push: refused: a commit going to $remote_ref changes a released section of CHANGELOG.md" >&2
+      bad=1
+    fi
+  fi
   changed+="$(git log --name-only --format= "${range[@]}")"$'\n'
   [ -n "$commits" ] && refs+="$local_ref $local_sha $remote_ref $remote_sha"$'\n'
 done

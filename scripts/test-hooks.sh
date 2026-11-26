@@ -233,6 +233,10 @@ expect accept "clean change" notes.txt "plain words"
 # The hook that accepted it ran each stand-in once: no script test was left
 # out of the hook's run, and none ran twice.
 python3 -I "$src/scripts/hook_fixture.py" check "$repo" "$work/calls" 1 || { echo "FAIL: the hook did not run each script test once for the clean change"; exit 1; }
+# An entry put under the first released heading, as a rebase did with no
+# conflict on 2026-11-26 (scripts/check_changelog_released.py).
+moved="$(awk '{ print } /^## \[[0-9]/ && !done { print ""; print "- **Moved.**"; print "  - Effect: x."; done = 1 }' CHANGELOG.md)"
+why='check_changelog_released: refused:' expect refuse "an entry moved under a released heading" CHANGELOG.md "$moved"
 why='notes.txt: AI tool name:' expect refuse "AI tool named" notes.txt "written by ${ai_word^}"
 why='notes.txt: AI company name:' expect refuse "AI company named" notes.txt "see ${ai_co}.com"
 why='notes.txt: robot emoji:' expect refuse "robot emoji" notes.txt "done $robot"

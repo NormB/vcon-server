@@ -28,7 +28,8 @@ repo="$work/repo"
 mkdir -p "$repo/hooks"
 cp "$src/.githooks/pre-push" "$repo/hooks/"
 mkdir -p "$repo/scripts"
-cp "$src/scripts/scan-commit-messages.sh" "$src/scripts/scan_forbidden.py" "$src/scripts/hook_tests.py" "$repo/scripts/"
+cp "$src/scripts/scan-commit-messages.sh" "$src/scripts/scan_forbidden.py" "$src/scripts/hook_tests.py" \
+  "$src/scripts/check_changelog_released.py" "$repo/scripts/"
 # Stand-ins for the two hook tests the hook runs (scripts/hook_tests.py):
 # each records its name in $work/calls and passes, or fails when
 # HOOK_TESTS_FAIL is set. Each names the paths watched and watched-dir in
@@ -122,6 +123,18 @@ git reset -q --hard origin/main
 
 commit -S -m "Finish P""0.3"
 why='has a message the commit rules refuse' expect refuse "plan task id in a message" origin main
+git reset -q --hard origin/main
+
+# An [Unreleased] entry moved under a released heading, as a rebase did
+# with no conflict on 2026-11-26 (scripts/check_changelog_released.py).
+printf '# Changelog\n\n## [Unreleased]\n\n- **New.**\n  - Effect: x.\n\n## [0.1.0] - 2026-10-26\n\n- **Old.**\n  - Effect: y.\n' > CHANGELOG.md
+git add CHANGELOG.md
+git commit -q -S -m "Start the changelog"
+expect accept "a changelog with an entry under [Unreleased]" origin main
+printf '# Changelog\n\n## [Unreleased]\n\n## [0.1.0] - 2026-10-26\n\n- **New.**\n  - Effect: x.\n- **Old.**\n  - Effect: y.\n' > CHANGELOG.md
+git add CHANGELOG.md
+git commit -q -S -m "Move the entry"
+why='changes a released section of CHANGELOG.md' expect refuse "an unreleased entry moved under a released heading" origin main
 git reset -q --hard origin/main
 
 git branch copy main

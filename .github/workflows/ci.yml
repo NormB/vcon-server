@@ -727,11 +727,15 @@ jobs:
           python3 -I scripts/check_runner_images.py
       # A changelog entry is a bold lead and labeled sub-bullets, for every
       # section down to the script's marker (scripts/check_changelog.py).
+      # The rule that a commit keeps the released sections
+      # (scripts/check_changelog_released.py) is tested here; it judges the
+      # commits in the messages job, whose clone holds their parents.
       - name: Every changelog entry has the outline form
         run: |
           set -euo pipefail
           python3 -I scripts/test_check_changelog.py
           python3 -I scripts/check_changelog.py
+          python3 -I scripts/test_check_changelog_released.py
       # The rule for the release the website names, and when a deploy is
       # held (scripts/advertised_release.py).
       - name: The site names only a published release
@@ -823,6 +827,10 @@ jobs:
           # the range is wrong, not that there is nothing to check.
           [ "${#commits[@]}" -gt 0 ] || { echo "::error::no commits in ${range[*]}"; exit 1; }
           scripts/scan-commit-messages.sh "${commits[@]}"
+          # Each commit keeps the released part of CHANGELOG.md of its
+          # parents, and one that moves the pin names it in its message: a
+          # rebase runs no commit hook (scripts/check_changelog_released.py).
+          python3 -I scripts/check_changelog_released.py commits "${commits[@]}"
 
   deny:
     name: cargo-deny (licences, bans, sources)

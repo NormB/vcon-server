@@ -354,7 +354,11 @@ git config core.hooksPath .githooks
   export of the private design documents and every private spec or plan
   file (`*.local.md`), and that none is staged, that git ignores the
   Python bytecode directories the script tests write, and that the project's
-  own files stay visible (`scripts/check-ignored-exports.sh`). On a copy of exactly what is staged,
+  own files stay visible (`scripts/check-ignored-exports.sh`). It checks
+  that the staged `CHANGELOG.md` keeps the released sections of HEAD and
+  of the merge base with `origin/main`
+  (`scripts/check_changelog_released.py index`, see
+  [Changelog entries](#changelog-entries)). On a copy of exactly what is staged,
   it checks that every action is pinned by commit
   (`scripts/check_action_pins.py`, see
   [adding a GitHub Action](#adding-a-github-action)) and that every
@@ -418,12 +422,18 @@ git config core.hooksPath .githooks
   sign-off that the required `DCO` check would accept
   (`scripts/check_dco.py`; see
   [Signing off commits](https://github.com/NormB/vcon-server/blob/main/CONTRIBUTING.md#signing-off-commits)).
+  It refuses a message that does not name
+  `.config/changelog-released.sha256` when the commit moves that pin
+  (`scripts/check_changelog_released.py`).
 - **pre-push** refuses any outgoing commit that is not signed by an allowed
   signer, whose author and committer are not the pusher's configured
   identity, or whose whole message the same scan refuses
   (`scripts/scan-commit-messages.sh`), so a commit made with `--no-verify`
-  is still caught. CI scans every commit message of a push or pull
-  request the same way.
+  is still caught. It refuses an outgoing commit that changes the released
+  sections of `CHANGELOG.md` against its parents
+  (`scripts/check_changelog_released.py`): a rebase runs no
+  commit hook. CI checks every commit of a push or pull request the same
+  way.
 
 `scripts/test-hooks.sh` and `scripts/test-pre-push.sh` test the hooks
 themselves, in throwaway repositories made from files of the tree. CI's
@@ -1341,6 +1351,49 @@ script prints the section, the entry's lead and the rule for each problem:
 | `line <n>: <heading>: a heading needs a blank line before it` | Add a blank line before the heading. |
 
 `scripts/test_check_changelog.py` tests the script.
+
+#### Released sections stay as released
+
+A merge or a rebase of `CHANGELOG.md` can move an `[Unreleased]` entry
+under a released heading with no conflict: git merges the file line by
+line. On 2026-11-26 a rebase of a branch onto the 0.4.18 release put the
+branch's entry under `## [0.4.18] - 2026-11-26`, and
+`scripts/check_changelog.py` passed the file.
+
+The released part is the text from the first `## [x.y.z]` heading down to
+the link definitions at the end of the file, with the definitions of
+released versions. `scripts/check_changelog_released.py` refuses a commit
+whose released part is not the end of its base's, byte for byte. Two
+changes pass:
+
+- A release, which turns `[Unreleased]` into a new section on top and adds
+  that version's link definition.
+- A deliberate edit of released text. The commit writes the sha256 the
+  refusal prints to `.config/changelog-released.sha256` and names
+  `.config/changelog-released.sha256` in its message. A pin that moves is
+  always the sha256 of the released part beside it; a pin that does not
+  move excuses nothing.
+
+The script runs in three places:
+
+| Where | Command | The base |
+|---|---|---|
+| pre-commit | `index` | HEAD, MERGE_HEAD during a merge, and the merge base of HEAD and `origin/main` |
+| commit-msg | `message <file>` | HEAD's pin: a moved pin is named in the message |
+| pre-push and CI's commit messages job | `commits <sha>...` | each parent of each commit |
+
+A refusal names each line of the released part that differs, with its
+line number and the release heading it is under:
+
+```text
+check_changelog_released: refused: the released part of CHANGELOG.md (from the first `## [x.y.z]` heading down) is not the end of the one of 9dc303b39285 (the merge base of HEAD and origin/main):
+  line 18, under `## [0.4.18] - 2026-11-26`: `- **On-disk format `key-wrap` version 1 records a key a key backend wrapped.**`
+```
+
+To fix it, move the entry back to `[Unreleased]`, under its `###`
+heading, until the released part is the base's byte for byte. A release
+made after a deliberate edit, before that edit reaches `main`, writes the
+pin again. `scripts/test_check_changelog_released.py` tests the script.
 
 ## Pinned tool downloads
 
