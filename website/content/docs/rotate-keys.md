@@ -319,6 +319,139 @@ holds the database. The copies that a rotation makes unreadable are then
 the dumps and base backups of the database and the copies of the bucket.
 The test suite plays the procedure on PostgreSQL too, in the same file.
 
+## Move the registry root to a master key file
+
+The registry root is the key at the top of the key hierarchy: every tenant
+key is wrapped under it. `rekey master --to-backend <backend>` moves the root,
+and every tenant key under it, a pending one too, to the backend it names.
+
+This release moves keys only to a master key file, `--to-backend file`. Key
+backends, a KMS or an HSM whose key never leaves it, come in later releases,
+and this release refuses their names before it reads anything. Until then the
+root is always in a master key file, so the move does what `rekey master`
+does, and its line also says which backend holds the root, whether this run
+moved the keys and how many tenants it moved.
+
+Before you start:
+
+- The steps of [rotate the tenant key and the master key](#rotate-the-tenant-key-and-the-master-key),
+  done: `NEW_MASTER` names the master key file in use.
+- No change on any other system: the master key file is on this host.
+- A backup of the data directory and the master key file, as in
+  [back up and restore](@/docs/backup-and-restore.md).
+
+The move runs only with the server stopped. Stop it, under systemd:
+
+<!-- docs-test: only systemd -->
+```sh
+sudo systemctl stop vcon-server
+```
+
+Or, without systemd:
+
+<!-- docs-test: only no-systemd -->
+```sh
+sudo kill -TERM "$(pidof vcon-server)"
+while pidof vcon-server >/dev/null; do sleep 0.2; done
+```
+
+The name of a key backend that this release lacks is refused, and nothing
+changes:
+
+<!-- docs-test: exit 1 -->
+```sh
+sudo -u vcon vcon-server rekey master --to-backend vault-transit --new-master "$NEW_MASTER" --config $CONFIG
+```
+
+```text
+vcon-server: --to-backend vault-transit: this release moves the keys only to a master key file (--to-backend file)
+```
+
+Make a new master key file, under a name not used before, and move the root
+to it:
+
+```sh
+MOVED_MASTER=/etc/vcon-server/master-$(date -u +%Y%m%dT%H%M%SZ)-moved.key
+head -c 32 /dev/urandom | sudo -u vcon tee "$MOVED_MASTER" >/dev/null
+sudo chmod 0400 "$MOVED_MASTER"
+sudo -u vcon vcon-server rekey master --to-backend file --new-master "$MOVED_MASTER" --config $CONFIG \
+  | jq -c '{backend, moved, tenants}'
+```
+
+```text
+{"backend":"file","moved":true,"tenants":<the number of tenants>}
+```
+
+A run that stopped part way is finished by running the same command again.
+A run after the move is complete changes nothing and says so:
+
+```sh
+sudo -u vcon vcon-server rekey master --to-backend file --new-master "$MOVED_MASTER" --config $CONFIG \
+  | jq -c '{backend, moved}'
+```
+
+```text
+{"backend":"file","moved":false}
+```
+
+Point `master_key` at the new file, and check that every tenant opens under
+it:
+
+```sh
+sudo sed -i "s|^master_key = .*|master_key = \"$MOVED_MASTER\"|" $CONFIG
+sudo -u vcon vcon-server check --config $CONFIG | jq -c 'select(.name == null) | {problems}'
+```
+
+```text
+{"problems":0}
+```
+
+Start the server, under systemd:
+
+<!-- docs-test: only systemd -->
+```sh
+sudo systemctl start vcon-server
+timeout 30 sh -c 'until curl -s -o /dev/null --cacert /usr/local/share/vcon-server/ca.pem https://vcon.example.com:8443/health; do sleep 1; done' && echo answering
+```
+
+```text
+answering
+```
+
+Or, without systemd:
+
+<!-- docs-test: only no-systemd; background serving -->
+```sh
+sudo -u vcon vcon-server serve --config /etc/vcon-server/vcon-server.toml
+```
+
+```text
+<time>  INFO vcon_server::serve: serving listen=0.0.0.0:8443
+…
+```
+
+Verify that the vCon stored before the move reads back the same:
+
+```sh
+curl -sS --cacert /usr/local/share/vcon-server/ca.pem "$URL/vcons/$UUID" -H "Authorization: Bearer $WRITER" -o moved.vcon
+cmp moved.vcon rotate.vcon && echo "the same bytes"
+```
+
+```text
+the same bytes
+```
+
+Then back up the new master key file and destroy every copy of the one
+before it, backups included:
+
+```sh
+sudo rm "$NEW_MASTER"
+```
+
+The test suite plays the move with the binary
+(`crates/vcon-server/tests/commands.rs`) and on PostgreSQL
+(`crates/vcon-server/tests/serve.rs`).
+
 ## When a step fails
 
 - **A `curl` error, or `401`, `403` or `503` where this page shows another
@@ -335,6 +468,16 @@ The test suite plays the procedure on PostgreSQL too, in the same file.
 - **A rotation command was interrupted:** run the same command again; it
   finishes the rotation. Until then the server refuses to start, and
   `vcon-server check` names the tenants whose rotation is part way.
+- **`--to-backend <name>: this release moves the keys only to a master key file (--to-backend file)`:**
+  the name is a key backend that a later release brings. Nothing changed.
+  Move the root with `--to-backend file`.
+- **`--to-backend <name> is not a key backend`:** the name is misspelled.
+  The message lists the names; this release takes only `file`.
+- **`the registry's root key is wrapped by the key backend <kind> (registry.key), not by the master key file`:**
+  the data directory, or the PostgreSQL registry (`vcon.registry_key`), was
+  moved to a key backend by a later release. This release opens only a root
+  in a master key file. Run the release that made the move, and move the
+  root back with `--to-backend file`.
 - **The old key still works after its replacement was made:** making a key
   revokes no other key. Revoke the old one, as in
   [replace a key without a gap](#replace-a-key-without-a-gap).

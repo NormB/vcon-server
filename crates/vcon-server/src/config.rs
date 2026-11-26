@@ -80,7 +80,7 @@ pub struct Config {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct KeyWrapSettings {
-    /// How many tenant keys a start, and `check`, unwraps at once
+    /// How many tenant keys a start unwraps at once
     /// (`key_wrap.start_parallel`, 1 to 64, 8 unless configured).
     pub start_parallel: usize,
 }

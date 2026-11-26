@@ -62,7 +62,7 @@ allowed a group to write them. To check a host before an upgrade, see
 | `rotation_warn` | Seconds the oldest work may wait for key rotation before a warning is logged | `2592000` (30 days) |
 | `keys.no_expiry` | Whether a key may be made with no expiry (`"no_expiry": true`, or `key create --no-expiry`). With `false`, such a request is refused with [`bad-expiry`](@/problems/bad-expiry.md), and every new key expires within 365 days. Keys made earlier are not changed | `true` |
 | `key_wrap.backend` | The backend that holds the root key. This release has one, `file`: the master key file `master_key`. Any other name is refused at start, and a key backend's name says it is not in this release | `file` |
-| `key_wrap.start_parallel` | How many tenant keys a start, and `check`, unwraps at once, from 1 to 64 | `8` |
+| `key_wrap.start_parallel` | How many tenant keys a start unwraps at once, from 1 to 64 | `8` |
 | `limits.body` | Largest request body, in bytes | `16777216` (16 MiB) |
 | `limits.inflated` | Most bytes gzip inflation may produce while one body is checked | `67108864` (64 MiB) |
 | `limits.connections` | Most connections a listener holds at once, from 1 to 65536. At that number the listener takes no more until one ends | `512` |

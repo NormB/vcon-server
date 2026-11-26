@@ -322,6 +322,9 @@ fn a_row_under_another_backend_key_is_counted_elsewhere_without_a_call() {
     let w = World::new();
     let tenants = w.open();
     let id = tenants.create(Actor::Cli, "acme", None).expect("made");
+    // A second tenant stays under this backend's key: its row's
+    // key-encryption key reaches the backend, and its key opens.
+    let ours = tenants.create(Actor::Cli, "globex", None).expect("made");
     let other = Scripted::new(BackendKind::Pkcs11, "vcon-2");
     let (theirs, _) = BackendWrap::create(other).expect("a root");
     let wrapped = theirs
@@ -330,14 +333,23 @@ fn a_row_under_another_backend_key_is_counted_elsewhere_without_a_call() {
     let kek = wrapped.kek.expect("a kek");
     w.registry(&tenants)
         .execute(
-            "UPDATE tenant SET wrapped_tenant_key = ?1, wrap_ref = ?2, wrapped_kek = ?3",
-            rusqlite::params![wrapped.key, kek.wrap_ref, kek.blob],
+            "UPDATE tenant SET wrapped_tenant_key = ?1, wrap_ref = ?2, wrapped_kek = ?3 \
+             WHERE id = ?4",
+            rusqlite::params![wrapped.key, kek.wrap_ref, kek.blob, id.0],
         )
         .expect("moves the row under the other key");
     w.backend.clear_calls();
     let order = tenants.key_order().expect("reads");
-    assert_eq!(order.wrapped_elsewhere, 1, "{order:?}");
-    assert_eq!(w.backend.calls(), Vec::new(), "the backend was not asked");
+    assert_eq!(order.wrapped_elsewhere, 1, "only acme: {order:?}");
+    let calls = w.backend.calls();
+    assert!(
+        calls.contains(&Call::Unwrap(WrapContext::Tenant(ours))),
+        "the backend was asked for globex's key: {calls:?}"
+    );
+    assert!(
+        !calls.contains(&Call::Unwrap(WrapContext::Tenant(id))),
+        "and not for acme's: {calls:?}"
+    );
 }
 
 #[test]

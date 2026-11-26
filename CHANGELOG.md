@@ -20,8 +20,8 @@ All notable changes to this project are recorded here. The format follows
   - Docs: [Command
     line](https://vcon-server.com/docs/command-line/#key-rotation)
 - **A `[key_wrap]` table names the root key's backend and the unwraps at once.**
-  - Effect: A start and `check` unwrap the tenant keys
-    `key_wrap.start_parallel` at a time, 8 unless configured.
+  - Effect: A start unwraps the tenant keys `key_wrap.start_parallel` at a
+    time, 8 unless configured.
   - Limit: `key_wrap.backend` takes only `file`, the master key file; a start
     refuses any other name.
   - Docs:
@@ -40,6 +40,12 @@ All notable changes to this project are recorded here. The format follows
     `None` from `FileWrap`; `unwrap` takes the row's key-encryption key.
   - Do: An implementation of `KeyWrap` from 0.4.18 returns `Wrapped` and
     takes the new argument; `FileWrap` callers pass `None`.
+- **Library: `Command::RekeyMaster` has a new field, `to_backend`.**
+  - Effect: Code that builds or matches the variant names `to_backend`,
+    and a match on `CommandError` handles `BackendLater` and
+    `NoSuchBackend`.
+  - Do: Write `to_backend: None` where code builds `Command::RekeyMaster`
+    for a master key rotation.
 - **The catalogs move to schema version 11, PostgreSQL to schema version 16.**
   - Effect: A tenant can record a key that a key backend wrapped; every
     tenant there is stays under the master key file.

@@ -529,9 +529,12 @@ mod on_a_server {
     }
 
     /// Names a registry root a key backend wraps in the database, as a
-    /// registry over that backend would have.
+    /// registry over that backend would have. The registry is made under
+    /// the master key file first, so the database names its catalog key:
+    /// without the refusal, it opens again.
     fn root_wrapped_by_a_backend(w: &World) {
         use crate::key_wrap::blob::{BackendKind, Blob, WrapRef};
+        stop(w.serve());
         let reference = WrapRef::new(BackendKind::Pkcs11, "vcon-1").expect("a reference");
         let blob = Blob::new(reference, vec![1, 2, 3])
             .expect("a blob")
@@ -541,10 +544,7 @@ mod on_a_server {
         // scope.
         super::super::registry_tests::on_a_server::as_owner(
             &w.db,
-            &format!(
-                "INSERT INTO vcon.registry_key (catalog_key_id, wrapped_root) \
-                 VALUES ('\\x0102030405060708', '\\x{hex}')"
-            ),
+            &format!("UPDATE vcon.registry_key SET wrapped_root = '\\x{hex}'"),
         );
     }
 
@@ -552,16 +552,9 @@ mod on_a_server {
     fn the_master_key_file_refuses_a_database_whose_root_a_backend_wraps() {
         let w = world();
         root_wrapped_by_a_backend(&w);
-        let catalogs = catalog_for(&w.catalog, Sharing::Serve).expect("connects");
-        let refused = Tenants::open_in(
-            &w.data(),
-            w.master("master.key"),
-            Arc::new(OsFs),
-            TestClock::at(conformance::START),
-            ObjectPlace::Local,
-            &catalogs,
-        )
-        .err();
+        // The world's own catalogs and bucket: without the refusal, this
+        // registry opens.
+        let refused = w.serve_under("master.key").err();
         assert!(
             matches!(
                 refused,
@@ -572,20 +565,21 @@ mod on_a_server {
             ),
             "the backend that wraps the root is named: {refused:?}"
         );
-        assert_eq!(w.registry_rows("admin_audit_key"), 0, "nothing was written");
     }
 
     #[test]
     fn a_command_beside_refuses_a_database_whose_root_a_backend_wraps() {
         let w = world();
         root_wrapped_by_a_backend(&w);
-        let catalogs = catalog_for(&w.catalog, Sharing::Beside).expect("connects");
+        // The world's own catalogs and bucket: without the refusal, this
+        // registry opens.
+        let (catalogs, objects) = w.places(Sharing::Beside);
         let refused = Tenants::open_beside_in(
             &w.data(),
             w.master("master.key"),
             Arc::new(OsFs),
             TestClock::at(conformance::START),
-            ObjectPlace::Local,
+            objects,
             &catalogs,
         )
         .err();
