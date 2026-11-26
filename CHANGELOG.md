@@ -6,6 +6,14 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **An audit count past the largest number a record holds is refused.**
+  - Was: In the data directory's catalogs the count became a
+    floating-point number, and `audit export` then failed on that record.
+  - Effect: The count is refused and the record keeps the count it had, as
+    with the PostgreSQL catalog.
+
 ## [0.4.19] - 2026-11-27
 
 ### Added

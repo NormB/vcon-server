@@ -266,6 +266,24 @@ pub enum AuditError {
     /// text says why.
     Database(String),
     Write(io::Error),
+    /// A count would pass the largest number a record's count holds
+    /// (i64::MAX); the record keeps the count it had.
+    CountTooLarge,
+}
+
+impl std::fmt::Display for AuditError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AuditError::Sqlite(e) => write!(f, "sqlite failed: {e}"),
+            AuditError::Database(why) => f.write_str(why),
+            AuditError::Write(e) => write!(f, "the records could not be written: {e}"),
+            AuditError::CountTooLarge => write!(
+                f,
+                "the record's count is at most {}, so the count was not added",
+                i64::MAX
+            ),
+        }
+    }
 }
 
 impl From<rusqlite::Error> for AuditError {
@@ -354,13 +372,34 @@ pub fn count_many(
     ];
     // Only a record a count made is added to: a record of one request at
     // the start of a minute has the same time and fields, and keeps its 1.
+    // SQLite's `+` gives a REAL past i64::MAX instead of failing, so the
+    // UPDATE adds only to a record with room for the sum (?7 is at least
+    // 1, so the bound does not overflow), and a record without room is
+    // refused, unchanged, as PostgreSQL refuses the sum.
     let added = tx.cached_run(
         "UPDATE audit SET count = count + ?7
          WHERE counted = 1 AND at = ?1 AND actor = ?2 AND action = ?3 AND target IS ?4
-           AND version IS ?5 AND status IS ?6",
+           AND version IS ?5 AND status IS ?6 AND count <= 9223372036854775807 - ?7",
         fields,
     )?;
     if added == 0 {
+        let full = tx.cached_row(
+            "SELECT EXISTS (SELECT 1 FROM audit
+             WHERE counted = 1 AND at = ?1 AND actor = ?2 AND action = ?3 AND target IS ?4
+               AND version IS ?5 AND status IS ?6)",
+            params![
+                rfc3339(minute),
+                entry.actor.name(),
+                entry.action.as_str(),
+                entry.target,
+                entry.version.map(|v| v.to_string()),
+                stored(entry.status),
+            ],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if full {
+            return Err(AuditError::CountTooLarge);
+        }
         tx.cached_run(
             "INSERT INTO audit (at, actor, action, target, version, status, count, counted)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1)",
@@ -471,6 +510,8 @@ pub(crate) mod testing {
 
 #[cfg(test)]
 mod counted_tests;
+#[cfg(test)]
+mod overflow_tests;
 
 #[cfg(test)]
 mod tests {

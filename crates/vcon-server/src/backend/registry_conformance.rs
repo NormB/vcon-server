@@ -93,6 +93,8 @@ macro_rules! registry_conformance {
             no_unknown_key_is_touched,
             no_use_is_recorded_for_an_unused_master_key,
             no_count_many_changes_a_plain_record,
+            no_count_passes_the_largest_count,
+            no_sum_past_the_largest_count_changes_the_record,
             edge_a_commit_of_unknown_outcome_may_have_kept_the_write,
             edge_a_commit_fault_counts_commits,
             edge_a_touch_to_the_same_or_an_earlier_time_changes_nothing,
@@ -105,6 +107,8 @@ macro_rules! registry_conformance {
             edge_long_and_non_ascii_text_reads_back,
             edge_empty_text_reads_back,
             edge_a_count_of_nothing_makes_no_record,
+            edge_a_count_that_reaches_the_largest_exactly_is_kept,
+            edge_a_full_record_leaves_the_next_minute_free,
             edge_counts_in_two_minutes_are_two_records,
             edge_a_plain_record_between_two_counts_keeps_its_one,
             edge_a_record_with_no_target_and_no_answer_is_exported,
@@ -1574,6 +1578,65 @@ fn counts_of(r: &dyn Registry) -> Vec<i64> {
         .iter()
         .map(|rec| rec["count"].as_i64().expect("a count"))
         .collect()
+}
+
+/// `count_many` of `times` in a write of its own: committed when it
+/// answers Ok, dropped when it does not. Returns whether it answered Ok.
+fn counted(r: &dyn Registry, entry: &Entry, now: OffsetDateTime, times: u64) -> bool {
+    let mut tx = r.immediate().expect("a write begins");
+    let answered = tx.count_many(entry, now, times).is_ok();
+    if answered {
+        tx.commit().expect("the write commits");
+    }
+    answered
+}
+
+pub(crate) fn no_count_passes_the_largest_count(r: &dyn Registry) {
+    let refused = entry(Action::Read, None, 429);
+    assert!(
+        counted(r, &refused, at(0), u64::MAX),
+        "a first count of the largest number"
+    );
+    assert!(
+        !counted(r, &refused, at(1), 1),
+        "no count is larger than i64::MAX"
+    );
+    assert_eq!(
+        counts_of(r),
+        [i64::MAX],
+        "the record keeps the largest count"
+    );
+}
+
+pub(crate) fn no_sum_past_the_largest_count_changes_the_record(r: &dyn Registry) {
+    let refused = entry(Action::Read, None, 429);
+    assert!(counted(r, &refused, at(0), 7), "seven");
+    assert!(
+        !counted(r, &refused, at(1), u64::MAX),
+        "seven and the largest number"
+    );
+    assert_eq!(counts_of(r), [7], "as it was");
+}
+
+pub(crate) fn edge_a_count_that_reaches_the_largest_exactly_is_kept(r: &dyn Registry) {
+    let refused = entry(Action::Read, None, 429);
+    assert!(
+        counted(r, &refused, at(0), i64::MAX as u64 - 1),
+        "one below the largest"
+    );
+    assert!(counted(r, &refused, at(1), 1), "exactly the largest");
+    assert_eq!(counts_of(r), [i64::MAX], "i64::MAX is a count");
+}
+
+pub(crate) fn edge_a_full_record_leaves_the_next_minute_free(r: &dyn Registry) {
+    let refused = entry(Action::Read, None, 429);
+    assert!(counted(r, &refused, at(0), u64::MAX), "a full record");
+    assert!(!counted(r, &refused, at(1), 1), "refused in its minute");
+    assert!(
+        counted(r, &refused, at(60), 1),
+        "the next minute has its own record"
+    );
+    assert_eq!(counts_of(r), [i64::MAX, 1], "two records");
 }
 
 pub(crate) fn ok_a_count_adds_to_no_plain_record_at_a_minute_start(r: &dyn Registry) {

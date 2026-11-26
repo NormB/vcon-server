@@ -648,7 +648,8 @@ fn run_on(
             };
             exported.map_err(|e| match e {
                 AuditError::Write(e) => CommandError::Output(e),
-                AuditError::Sqlite(_) | AuditError::Database(_) => {
+                // An export adds no count, so CountTooLarge is not its answer.
+                AuditError::Sqlite(_) | AuditError::Database(_) | AuditError::CountTooLarge => {
                     CommandError::Tenant(TenantError::Io)
                 }
             })
