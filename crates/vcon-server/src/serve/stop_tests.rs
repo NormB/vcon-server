@@ -644,6 +644,15 @@ mod background {
         });
         let job = Background::start("test job", HOUR, work);
         gate.began().await;
+        // The run's answer is recorded before it counts its end: wait for
+        // the end, not the beginning, so the stop comes after the answer.
+        tokio::time::timeout(PATIENCE, async {
+            while gate.ended.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the run ends");
         let stop = tokio::spawn(Background::stop_all(vec![job]));
         stop.await.expect("the stop ends");
         assert_eq!(
