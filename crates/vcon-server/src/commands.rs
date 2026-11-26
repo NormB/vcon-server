@@ -465,6 +465,7 @@ fn run_on(
         other => CommandError::Open(other),
     })?;
     tenants.allow_no_expiry(config.keys_no_expiry);
+    tenants.set_start_parallel(config.key_wrap.start_parallel);
     let who = Actor::Cli;
     match command {
         Command::TenantCreate { name, retention } => {

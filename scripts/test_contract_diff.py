@@ -1232,14 +1232,14 @@ class ConfigPasses(unittest.TestCase):
         d = json.loads(CONFIG_SNAPSHOT.read_text(encoding="utf-8"))
         self.assertEqual(cd.config_changes(d, copy.deepcopy(d)), [], "contract/config.json compared with itself")
 
-    def test_the_snapshot_in_the_tree_holds_the_64_keys_of_the_full_file(self):
+    def test_the_snapshot_in_the_tree_holds_the_66_keys_of_the_full_file(self):
         d = json.loads(CONFIG_SNAPSHOT.read_text(encoding="utf-8"))
-        self.assertEqual(len(d["keys"]), 64, "config.rs FULL sets 64 keys")
+        self.assertEqual(len(d["keys"]), 66, "config.rs FULL sets 66 keys")
 
     def test_the_snapshot_in_the_tree_reads_every_key(self):
         d = json.loads(CONFIG_SNAPSHOT.read_text(encoding="utf-8"))
         found = cd.config_changes(d, {"keys": {}})
-        self.assertEqual(len(found), 64, "each key's removal is one change")
+        self.assertEqual(len(found), 66, "each key's removal is one change")
         self.assertTrue(all(c.kind == "breaking" for c in found), found)
 
     def test_an_optional_key_added_is_additive(self):

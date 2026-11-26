@@ -33,6 +33,8 @@ mod backup;
 mod examine;
 pub(crate) mod key_life;
 #[cfg(test)]
+mod key_order_tests;
+#[cfg(test)]
 mod key_wrap_tests;
 mod keys;
 mod rekey;
@@ -418,6 +420,9 @@ pub struct Tenants {
     clock: Arc<dyn Clock>,
     /// Whether a key may be made with no expiry (`keys.no_expiry`).
     no_expiry: std::sync::atomic::AtomicBool,
+    /// How many tenant keys `key_order` unwraps at once
+    /// (`key_wrap.start_parallel`).
+    start_parallel: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
     hooks: tests::Hooks,
 }
@@ -560,6 +565,7 @@ impl Tenants {
             fs,
             clock,
             no_expiry: std::sync::atomic::AtomicBool::new(true),
+            start_parallel: std::sync::atomic::AtomicUsize::new(8),
             #[cfg(test)]
             hooks: tests::Hooks::default(),
         }

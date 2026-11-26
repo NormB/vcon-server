@@ -233,6 +233,7 @@ fn open_on(
         RegistryError::WrongDatabaseKey => ServeError::WrongDatabaseKey,
         other => ServeError::Open(other),
     })?;
+    tenants.set_start_parallel(config.key_wrap.start_parallel);
     let order = tenants.key_order().map_err(ServeError::Registry)?;
     if !order.is_sound() {
         return Err(ServeError::KeysOutOfOrder(order));
@@ -968,7 +969,24 @@ mod tests {
             operator: None,
             public_origin: None,
             keys_no_expiry: false,
+            key_wrap: crate::config::KeyWrapSettings::default(),
         };
+        let other = tempfile::tempdir().expect("temp dir");
+        let mut three = config.clone();
+        three.data_dir = other.path().to_owned();
+        three.key_wrap.start_parallel = 3;
+        let started = open_or_give_up(
+            &three,
+            Key::generate().expect("key"),
+            &crate::backend::Catalogs::Local,
+        )
+        .expect("a start opens a new registry");
+        assert_eq!(
+            started.start_parallel(),
+            3,
+            "key_wrap.start_parallel reaches the start's key check"
+        );
+        drop(started);
         assert!(
             tenants.no_expiry_allowed(),
             "before the configuration is applied a key may have no expiry"

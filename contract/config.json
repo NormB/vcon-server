@@ -110,6 +110,16 @@
       "required": "no",
       "type": "integer"
     },
+    "key_wrap.backend": {
+      "default": "`file`",
+      "required": "no",
+      "type": "string"
+    },
+    "key_wrap.start_parallel": {
+      "default": "`8`",
+      "required": "no",
+      "type": "integer"
+    },
     "keys.no_expiry": {
       "default": "`true`",
       "required": "no",

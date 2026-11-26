@@ -327,6 +327,9 @@ release holds yet. Release 0.4.18 does not have these:
 - **`rekey master --to-backend file`.** Moves the registry root, and every
   tenant key, to the master key file in `--new-master`. It is the only
   target in this release.
+- **The `[key_wrap]` table.** `key_wrap.backend` takes `file` only, and
+  `key_wrap.start_parallel` sets how many tenant keys a start unwraps at
+  once.
 - **The `key-wrap` format.** Version 1 of the on-disk format that records
   a key a key backend wrapped, with the backend and its key named. No
   release writes it yet.

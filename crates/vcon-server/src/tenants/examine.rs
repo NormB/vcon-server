@@ -83,17 +83,28 @@ pub struct RotationBacklog {
 }
 
 impl Tenants {
+    /// Sets how many tenant keys [`Tenants::key_order`] unwraps at once
+    /// (`key_wrap.start_parallel`); 0 is taken as 1.
+    pub fn set_start_parallel(&self, n: usize) {
+        self.start_parallel
+            .store(n.max(1), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// How many tenant keys [`Tenants::key_order`] unwraps at once.
+    #[must_use]
+    pub fn start_parallel(&self) -> usize {
+        self.start_parallel
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Counts the tenants whose data is not all under their current key.
     pub fn key_order(&self) -> Result<KeyOrder, TenantError> {
         let rows = self.registry.snapshot()?.tenants()?;
+        let opens = self.unwrap_all(&rows);
         let mut order = KeyOrder::default();
-        for row in rows {
+        for (row, opens) in rows.into_iter().zip(opens) {
             let (id, pending) = (row.id, row.pending.is_some());
-            if self
-                .wrap
-                .unwrap(id, &row.wrapped, row.kek.as_ref())
-                .is_err()
-            {
+            if !opens {
                 order.wrapped_elsewhere += 1;
                 continue;
             }
@@ -116,6 +127,35 @@ impl Tenants {
             }
         }
         Ok(order)
+    }
+
+    /// Whether each row's tenant key unwraps, in the rows' order, with at
+    /// most `start_parallel` unwraps in flight: each worker takes the next
+    /// row until none is left.
+    fn unwrap_all(&self, rows: &[crate::backend::TenantRow]) -> Vec<bool> {
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let opens: Vec<std::sync::atomic::AtomicBool> = rows
+            .iter()
+            .map(|_| std::sync::atomic::AtomicBool::new(false))
+            .collect();
+        let workers = self.start_parallel().min(rows.len());
+        let wrap = &*self.wrap;
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                scope.spawn(|| {
+                    loop {
+                        let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(row) = rows.get(at) else { break };
+                        let ok = wrap.unwrap(row.id, &row.wrapped, row.kek.as_ref()).is_ok();
+                        opens[at].store(ok, std::sync::atomic::Ordering::Relaxed);
+                    }
+                });
+            }
+        });
+        opens
+            .into_iter()
+            .map(std::sync::atomic::AtomicBool::into_inner)
+            .collect()
     }
 
     /// How many tenants have a version packed into a pack file: with any,

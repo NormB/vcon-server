@@ -19,6 +19,13 @@ All notable changes to this project are recorded here. The format follows
     other backend names before it reads anything.
   - Docs: [Command
     line](https://vcon-server.com/docs/command-line/#key-rotation)
+- **A `[key_wrap]` table names the root key's backend and the unwraps at once.**
+  - Effect: A start and `check` unwrap the tenant keys
+    `key_wrap.start_parallel` at a time, 8 unless configured.
+  - Limit: `key_wrap.backend` takes only `file`, the master key file; a start
+    refuses any other name.
+  - Docs:
+    [Configuration](https://vcon-server.com/docs/configuration/)
 - **On-disk format `key-wrap` version 1 records a key a key backend wrapped.**
   - Effect: A reader knows which backend and key opens a wrapped key before
     it asks any backend.

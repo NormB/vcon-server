@@ -70,6 +70,25 @@ pub struct Config {
     /// Whether a key may be made with no expiry (`keys.no_expiry`); true
     /// unless configured. Keys made earlier are not changed.
     pub keys_no_expiry: bool,
+    /// The `[key_wrap]` table: the backend that holds the root key.
+    pub key_wrap: KeyWrapSettings,
+}
+
+/// The `[key_wrap]` table. This release has one key-wrapping backend, the
+/// master key file `master_key` (`backend = "file"`); the others are
+/// refused by name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct KeyWrapSettings {
+    /// How many tenant keys a start, and `check`, unwraps at once
+    /// (`key_wrap.start_parallel`, 1 to 64, 8 unless configured).
+    pub start_parallel: usize,
+}
+
+impl Default for KeyWrapSettings {
+    fn default() -> KeyWrapSettings {
+        KeyWrapSettings { start_parallel: 8 }
+    }
 }
 
 /// The operator listener: the `[operator]` table. With it, `serve` listens
@@ -403,7 +422,36 @@ pub fn parse(text: &str) -> Result<Config, ConfigError> {
         operator: operator(raw.operator, raw.listen, &tls, public_origin.as_ref())?,
         public_origin,
         keys_no_expiry: raw.keys.no_expiry.unwrap_or(true),
+        key_wrap: key_wrap(raw.key_wrap)?,
     })
+}
+
+/// The `[key_wrap]` table, checked.
+fn key_wrap(raw: RawKeyWrap) -> Result<KeyWrapSettings, ConfigError> {
+    if let Some(name) = raw.backend.filter(|name| name != "file") {
+        return Err(ConfigError(
+            match crate::key_wrap::blob::BackendKind::from_name(&name) {
+                Some(_) => format!(
+                    "key_wrap.backend = \"{name}\": this release keeps the root key in the \
+                     master key file only (backend = \"file\", with master_key)"
+                ),
+                None => format!(
+                    "key_wrap.backend = \"{name}\" is not a key backend: file, aws-kms, \
+                     gcp-kms, azure-key-vault, vault-transit, openbao-transit or pkcs11"
+                ),
+            },
+        ));
+    }
+    let start_parallel = match raw.start_parallel {
+        None => KeyWrapSettings::default().start_parallel,
+        Some(n @ 1..=64) => usize::try_from(n).unwrap_or(1),
+        Some(n) => {
+            return Err(ConfigError(format!(
+                "key_wrap.start_parallel = {n}: a start unwraps 1 to 64 tenant keys at once"
+            )));
+        }
+    };
+    Ok(KeyWrapSettings { start_parallel })
 }
 
 /// A listener's public origin, if `key` is written.
@@ -997,6 +1045,15 @@ struct Raw {
     public_origin: Option<String>,
     #[serde(default)]
     keys: RawKeys,
+    #[serde(default)]
+    key_wrap: RawKeyWrap,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct RawKeyWrap {
+    backend: Option<String>,
+    start_parallel: Option<i64>,
 }
 
 /// The `[keys]` table: the rules for new access keys.
@@ -1161,6 +1218,10 @@ key = "/etc/vcon-server/operator-key.pem"
 [keys]
 no_expiry = false
 
+[key_wrap]
+backend = "file"
+start_parallel = 4
+
 [limits]
 body = 10485760
 inflated = 104857600
@@ -1320,6 +1381,7 @@ lock_timeout = 20
                 }),
                 public_origin: Origin::parse("https://vcon.example.com"),
                 keys_no_expiry: false,
+                key_wrap: KeyWrapSettings { start_parallel: 4 },
             }),
             "every key the file writes is read into its field"
         );
@@ -1587,6 +1649,137 @@ lock_timeout = 20
                 assert!(!same_socket(address(a), address(b)), "{a} and {b}");
                 assert!(!same_socket(address(b), address(a)), "{b} and {a}");
             }
+        }
+    }
+
+    /// `[key_wrap]`: the backend that holds the root key, which in this
+    /// release is the master key file only, and how many tenant keys a
+    /// start unwraps at once.
+    mod key_wrap {
+        use super::*;
+
+        fn with(table: &str) -> Result<Config, ConfigError> {
+            parse(&format!("{LEAST}\n{table}"))
+        }
+
+        #[test]
+        fn without_the_table_the_backend_is_the_file_and_eight_unwrap_at_once() {
+            let config = parse(LEAST).expect("parses");
+            assert_eq!(config.key_wrap.start_parallel, 8, "the default");
+        }
+
+        #[test]
+        fn the_file_backend_is_taken() {
+            let config = with("[key_wrap]\nbackend = \"file\"\n").expect("parses");
+            assert_eq!(config.key_wrap.start_parallel, 8, "the default");
+        }
+
+        #[test]
+        fn start_parallel_is_read_as_written() {
+            for n in [1, 8, 64] {
+                let config = with(&format!("[key_wrap]\nstart_parallel = {n}\n")).expect("parses");
+                assert_eq!(config.key_wrap.start_parallel, n, "start_parallel = {n}");
+            }
+        }
+
+        #[test]
+        fn a_backend_this_release_lacks_is_refused_naming_it_and_master_key() {
+            for name in [
+                "aws-kms",
+                "gcp-kms",
+                "azure-key-vault",
+                "vault-transit",
+                "openbao-transit",
+                "pkcs11",
+            ] {
+                let error = with(&format!("[key_wrap]\nbackend = \"{name}\"\n")).expect_err(name);
+                assert_eq!(
+                    error.0,
+                    format!(
+                        "key_wrap.backend = \"{name}\": this release keeps the root key in the \
+                         master key file only (backend = \"file\", with master_key)"
+                    ),
+                    "{name}"
+                );
+            }
+        }
+
+        #[test]
+        fn an_unknown_backend_is_refused_with_the_names() {
+            let error = with("[key_wrap]\nbackend = \"hsm\"\n").expect_err("unknown");
+            assert_eq!(
+                error.0,
+                "key_wrap.backend = \"hsm\" is not a key backend: file, aws-kms, gcp-kms, \
+                 azure-key-vault, vault-transit, openbao-transit or pkcs11",
+                "the text"
+            );
+        }
+
+        #[test]
+        fn start_parallel_out_of_range_is_refused() {
+            for n in ["0", "65", "-1", "1000000"] {
+                let error = with(&format!("[key_wrap]\nstart_parallel = {n}\n")).expect_err(n);
+                assert!(error.0.contains("key_wrap.start_parallel"), "{n}: {error}");
+            }
+        }
+
+        #[test]
+        fn a_value_of_another_type_is_refused() {
+            for table in [
+                "[key_wrap]\nbackend = 1\n",
+                "[key_wrap]\nbackend = [\"file\"]\n",
+                "[key_wrap]\nstart_parallel = \"8\"\n",
+                "[key_wrap]\nstart_parallel = 2.5\n",
+            ] {
+                assert!(with(table).is_err(), "{table}");
+            }
+        }
+
+        #[test]
+        fn another_key_in_the_table_is_refused() {
+            let error = with("[key_wrap]\ncall_timeout = 5\n").expect_err("an unknown key");
+            assert!(error.0.contains("call_timeout"), "{error}");
+        }
+
+        #[test]
+        fn a_backend_table_of_its_own_is_refused() {
+            assert!(
+                with("[key_wrap]\nbackend = \"file\"\n[key_wrap.vault-transit]\nkey = \"k\"\n")
+                    .is_err(),
+                "no backend has settings in this release"
+            );
+        }
+
+        #[test]
+        fn an_empty_table_leaves_the_defaults() {
+            assert_eq!(
+                with("[key_wrap]\n")
+                    .expect("parses")
+                    .key_wrap
+                    .start_parallel,
+                8,
+                "a table with no key"
+            );
+        }
+
+        #[test]
+        fn the_backend_name_is_case_sensitive() {
+            assert!(
+                with("[key_wrap]\nbackend = \"File\"\n").is_err(),
+                "File is not file"
+            );
+        }
+
+        #[test]
+        fn the_smallest_and_largest_start_parallel_are_taken() {
+            assert_eq!(
+                with("[key_wrap]\nstart_parallel = 1\nbackend = \"file\"\n")
+                    .expect("parses")
+                    .key_wrap
+                    .start_parallel,
+                1,
+                "one at a time"
+            );
         }
     }
 
@@ -3053,7 +3246,7 @@ key = "/etc/vcon-server/key.pem"
             let text = page("configuration.md");
             let mut all = Vec::new();
             keys(&FULL.parse::<toml::Table>().expect("toml"), "", &mut all);
-            assert_eq!(all.len(), 64, "{all:?}");
+            assert_eq!(all.len(), 66, "{all:?}");
             for key in all {
                 let default = default_text(&key)
                     .unwrap_or_else(|| panic!("a key this test does not know: {key}"));
@@ -3109,6 +3302,8 @@ key = "/etc/vcon-server/key.pem"
                 "limits.timeouts.head" => format!("`{}`", defaults.connection.head.as_secs()),
                 "limits.timeouts.idle" => format!("`{}`", defaults.connection.idle.as_secs()),
                 "keys.no_expiry" => format!("`{}`", defaults.keys_no_expiry),
+                "key_wrap.backend" => "`file`".to_owned(),
+                "key_wrap.start_parallel" => format!("`{}`", defaults.key_wrap.start_parallel),
                 "mcp.calls_per_second" => format!("`{}`", defaults.mcp.calls_per_second),
                 "mcp.concurrent" => format!("`{}`", defaults.mcp.concurrent),
                 "mcp.response_bytes" => format!("`{}`", defaults.mcp.response_bytes),
@@ -4020,7 +4215,7 @@ key = "/etc/vcon-server/key.pem"
         fn every_key_of_the_full_file_is_in_the_snapshot() {
             let d = snapshot_json();
             let keys = d["keys"].as_object().expect("a keys object");
-            assert_eq!(keys.len(), 64, "FULL sets 64 keys: {keys:?}");
+            assert_eq!(keys.len(), 66, "FULL sets 66 keys: {keys:?}");
             assert!(
                 keys.contains_key("catalog.postgres.lock_timeout"),
                 "a nested key is dotted"
