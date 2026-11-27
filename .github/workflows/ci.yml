@@ -717,6 +717,11 @@ jobs:
           python3 -I scripts/test_check_hook_steps.py
           python3 -I scripts/check_hook_steps.py
           python3 -I scripts/test_tree_files.py
+      # A gate that scans a whole directory names no file, so a search for
+      # the touched paths never finds it: scripts/tests_for_paths.py lists
+      # them by one rule, and its test holds the rule to a second census.
+      - name: The pre-commit test list finds every whole-tree gate
+        run: python3 -I scripts/test_tests_for_paths.py
       # A label that ends in -latest moves to a new operating system
       # release on a day GitHub chooses: every job names a fixed image
       # (scripts/check_runner_images.py).

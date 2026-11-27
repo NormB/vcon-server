@@ -78,6 +78,7 @@ python3 -I scripts/test_hook_fixture.py
 python3 -I scripts/test_clippy_features.py
 python3 -I scripts/test_check_hook_steps.py
 python3 -I scripts/test_tree_files.py
+python3 -I scripts/test_tests_for_paths.py
 python3 -I scripts/test_check_runner_images.py
 python3 -I scripts/test_check_changelog.py
 python3 -I scripts/test_check_changelog_released.py
