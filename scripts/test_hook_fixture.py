@@ -10,6 +10,7 @@ import importlib.util
 import io
 import os
 import pathlib
+import re
 import stat
 import subprocess
 import sys
@@ -567,11 +568,16 @@ class RealOnly(unittest.TestCase):
 
     def test_the_named_test_is_defined_once_and_is_the_cases_why(self):
         text = (HERE / "test-hooks.sh").read_text(encoding="utf-8")
-        line = next(line for line in text.splitlines() if 'hook_fixture.py" only ' in line)
-        name = line.split('"$src/scripts/test_docs_test.py" ', 1)[1].split()[0]
-        module = (HERE / "test_docs_test.py").read_text(encoding="utf-8")
-        self.assertEqual(module.count(f"def {name}("), 1, f"{name} is defined once")
-        self.assertIn(f"why='{name}'", text, "the case's refusal is that test's failure")
+        lines = [line for line in text.splitlines() if 'hook_fixture.py" only ' in line]
+        self.assertGreaterEqual(len(lines), 2, "test_docs_test.py's case and test_deny_config.py's")
+        for line in lines:
+            found = re.search(r'only "\$repo" "\$src/scripts/(test_\w+\.py)" (test_\w+)', line)
+            self.assertIsNotNone(found, line)
+            source, name = found.groups()
+            with self.subTest(source=source):
+                module = (HERE / source).read_text(encoding="utf-8")
+                self.assertEqual(module.count(f"def {name}("), 1, f"{name} is defined once in {source}")
+                self.assertIn(f"why='{name}'", text, "the case's refusal is that test's failure")
 
 
 class Main(unittest.TestCase):

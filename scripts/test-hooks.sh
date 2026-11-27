@@ -110,6 +110,9 @@ cp "$src/contract/cli.json" "$src/contract/config.json" "$src/contract/mcp.json"
   "$src/contract/env.json" "$src/contract/formats.json" "$src/contract/audit.json" contract/
 mkdir -p website/content/problems
 cp -R "$src/website/content/problems/." website/content/problems/
+# cargo-deny's rules and the OSV ignores, which scripts/test_deny_config.py
+# reads.
+cp "$src/deny.toml" "$src/osv-scanner.toml" .
 cat > crates/vcon-server/src/lib.rs <<'RS'
 /// Adds one.
 pub fn add_one(x: u32) -> u32 {
@@ -420,8 +423,11 @@ pub fn add_one(x: u32) -> u32 {
 }'
 
 # A deny.toml that no longer refuses yanked versions
-# (scripts/test_deny_config.py).
-why='no [advisories] table: a yanked version is not refused' expect refuse "deny.toml without the yanked check" deny.toml '[licenses]
+# (scripts/test_deny_config.py), with the real test in place of its
+# stand-in, limited to the one test the change fails.
+python3 -I "$src/scripts/hook_fixture.py" only "$repo" "$src/scripts/test_deny_config.py" test_success_a_yanked_version_is_denied >/dev/null || { echo "FAIL: the real test of deny.toml's advisories was not put in"; exit 1; }
+git add scripts/test_deny_config.py
+why='test_success_a_yanked_version_is_denied' expect refuse "deny.toml without the yanked check" deny.toml '[licenses]
 allow = ["MIT", "Apache-2.0"]'
 
 # What CI's script steps check, the hook checks first: on 2026-11-13 a how-to
