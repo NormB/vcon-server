@@ -198,11 +198,69 @@ class Syscalls(unittest.TestCase):
                   "clock_nanosleep": 1, "nanosleep": 1, "epoll_wait": 1, "pwrite64": 7, "fsync": 2}
         self.assertEqual(pg.steady_syscalls(counts), 9, "pwrite64 and fsync")
 
+    def test_the_steady_calls_leave_out_the_thread_lifecycle(self):
+        counts = {"clone": 2, "clone3": 3, "set_robust_list": 5, "rseq": 5, "sigaltstack": 10, "pwrite64": 7}
+        self.assertEqual(pg.steady_syscalls(counts), 7, "threads are their own metric")
+
+    def test_the_wake_writes_are_taken_off(self):
+        self.assertEqual(pg.steady_syscalls({"write": 10, "read": 3}, wake=8), 5, "13 less 8 wake-ups")
+
+    def test_threads_are_clone_and_clone3(self):
+        self.assertEqual(pg.threads({"clone": 2, "clone3": 3, "set_robust_list": 5}), 5, "each new thread once")
+
+    def test_threads_of_none_is_zero(self):
+        self.assertEqual(pg.threads({"write": 3}), 0, "no thread")
+
     def test_the_steady_calls_of_none_is_zero(self):
         self.assertEqual(pg.steady_syscalls({"futex": 3}), 0, "only waits")
 
     def test_fsyncs_of_none_is_zero(self):
         self.assertEqual(pg.fsyncs({"read": 3}), 0, "no sync at all")
+
+
+WAKER = """SYSCALL[9,1](19) sys_eventfd2 ( 0, 526336 )[sync] --> Success(0x5)
+SYSCALL[9,3](64) sys_write ( 5, 0x1f0, 8 ) --> [async] ...
+SYSCALL[9,3](64) ... [async] --> Success(0x8)
+SYSCALL[9,4](64) sys_write ( 7, 0x2f0, 120 ) --> [async] ...
+SYSCALL[9,4](64) ... [async] --> Success(0x78)
+SYSCALL[9,2](63) sys_read ( 5, 0x3f0, 8 ) --> [async] ...
+SYSCALL[9,2](63) ... [async] --> Success(0x8)
+SYSCALL[9,5](64) sys_write ( 5, 0x1f0, 8 )[sync] --> Success(0x8)
+"""
+
+
+class Waker(unittest.TestCase):
+    """tokio's waker is an eventfd: its 8-byte writes and reads follow the
+    scheduling, not the work (on 2026-11-27 every write that differed
+    between two runs of one workload was one of them: 3369 and 3451 in all,
+    1003 and 1003 the others)."""
+
+    def test_counts_the_reads_and_writes_on_an_eventfd(self):
+        self.assertEqual(pg.wake_io(WAKER), 3, "two writes and a read on fd 5")
+
+    def test_other_writes_are_work(self):
+        self.assertEqual(pg.wake_io(WAKER.replace("sys_eventfd2 ( 0, 526336 )[sync] --> Success(0x5)",
+                                                  "sys_eventfd2 ( 0, 526336 )[sync] --> Success(0x6)")),
+                         0, "fd 5 is then no eventfd")
+
+    def test_an_eventfd_closed_is_no_longer_one(self):
+        closed = WAKER + "SYSCALL[9,1](57) sys_close ( 5 )[sync] --> Success(0x0) \n" + \
+            "SYSCALL[9,3](64) sys_write ( 5, 0x1f0, 8 )[sync] --> Success(0x8) \n"
+        self.assertEqual(pg.wake_io(closed), 3, "a file opened on fd 5 later is work")
+
+    def test_an_eventfd_that_completes_later_is_read(self):
+        text = ("SYSCALL[9,1](19) sys_eventfd2 ( 0, 526336 ) --> [async] ... \n"
+                "SYSCALL[9,1](19) ... [async] --> Success(0xa) \n"
+                "SYSCALL[9,3](64) sys_write ( 10, 0x1f0, 8 )[sync] --> Success(0x8) \n")
+        self.assertEqual(pg.wake_io(text), 1, "fd 10")
+
+    def test_a_failed_eventfd_makes_no_fd(self):
+        text = ("SYSCALL[9,1](19) sys_eventfd2 ( 0, 526336 )[sync] --> Failure(0x18) \n"
+                "SYSCALL[9,3](64) sys_write ( 24, 0x1f0, 8 )[sync] --> Success(0x8) \n")
+        self.assertEqual(pg.wake_io(text), 0, "no eventfd")
+
+    def test_no_eventfd_no_wake_ups(self):
+        self.assertEqual(pg.wake_io(SYSCALLS), 0, "none")
 
 
 class Dhat(unittest.TestCase):
@@ -244,8 +302,8 @@ class PerOperation(unittest.TestCase):
 
 
 class Derive(unittest.TestCase):
-    def totals(self, ir, calls, syncs, blocks):
-        return {"instructions": ir, "syscalls": calls, "fsyncs": syncs, "allocations": blocks}
+    def totals(self, ir, calls, syncs, blocks, threads=4):
+        return {"instructions": ir, "syscalls": calls, "fsyncs": syncs, "allocations": blocks, "threads": threads}
 
     def test_each_operation_is_its_workload_less_the_base(self):
         runs = {
@@ -589,6 +647,12 @@ class Measure(unittest.TestCase):
                 calls_text = "".join(
                     f"SYSCALL[1,1](82) sys_fsync ( 5 ) --> [async] ... \n" for _ in range(fs)
                 ) + "SYSCALL[1,2](98) sys_futex ( 0x1 ) --> Success(0x0) \n" * len(calls)
+                # The waker: its wake-ups follow the run, not the work.
+                calls_text += "SYSCALL[1,1](19) sys_eventfd2 ( 0, 526336 )[sync] --> Success(0x9) \n"
+                calls_text += "SYSCALL[1,3](64) sys_write ( 9, 0x1, 8 )[sync] --> Success(0x8) \n" * len(calls)
+                spawned = 2 + per_op.get("rth", 0) * reads
+                calls_text += "SYSCALL[1,1](435) sys_clone3 ( 0x1, 88 )[sync] --> Success(0x10) \n" * spawned
+                calls_text += "SYSCALL[1,4](99) sys_set_robust_list ( 0x1, 24 )[sync] --> Success(0x0) \n" * len(calls)
                 files = {"cachegrind": text, "log": calls_text}
             else:
                 files = {"log": f"==1== Total: 9 bytes in {10 + count + reads + pages} blocks\n"}
@@ -609,7 +673,8 @@ class Measure(unittest.TestCase):
         self.assertEqual(got["metrics"]["create.instructions"], 5.0, "5 per create")
         self.assertEqual(got["metrics"]["create.fsyncs"], 1.0, "one sync per create")
         self.assertEqual(got["metrics"]["read.fsyncs"], 0.0, "none per read")
-        self.assertEqual(got["metrics"]["read.syscalls"], 0.0, "the futex calls are left out")
+        self.assertEqual(got["metrics"]["read.syscalls"], 0.0, "futex, waker and thread calls are left out")
+        self.assertEqual(got["metrics"]["read.threads"], 0.0, "no thread a read")
         self.assertEqual(got["metrics"]["list.allocations"], 1.0, "one block per page")
         self.assertEqual(got["arch"], "x86_64", "the arch")
         self.assertEqual(got["inputs"], INPUTS, "the inputs")
@@ -618,6 +683,24 @@ class Measure(unittest.TestCase):
         run, _ = self.fake_runner({"ir": 5, "fs": 1, "rfs": 1})
         got = pg.measure(run, INPUTS, "x86_64", "valgrind-3.22.0")
         self.assertEqual(got["metrics"]["read.fsyncs"], 1.0, "the mutation, measured")
+
+    def test_a_thread_spawned_per_read_shows_as_one(self):
+        run, _ = self.fake_runner({"ir": 5, "fs": 1, "rth": 1})
+        got = pg.measure(run, INPUTS, "x86_64", "valgrind-3.22.0")
+        self.assertEqual(got["metrics"]["read.threads"], 1.0, "one thread a read")
+        self.assertEqual(got["metrics"]["read.syscalls"], 0.0, "and no syscall more: the threads are apart")
+
+    def test_the_measured_file_keeps_each_workloads_calls(self):
+        run, _ = self.fake_runner({"ir": 5, "fs": 1})
+        got = pg.measure(run, INPUTS, "x86_64", "valgrind-3.22.0")
+        self.assertEqual(sorted(got["calls"]), ["base", "create", "list", "read"], "each workload")
+        self.assertEqual(got["calls"]["base"]["fsync"], 3 + INPUTS["count"], "by name, as traced")
+
+    def test_the_calls_are_no_metric_the_comparison_holds(self):
+        m = measured()
+        m["calls"] = {"base": {"write": 5}}
+        failures, _ = pg.compare(baseline(), m)
+        self.assertEqual(failures, [], "report only")
 
 
 class Cli(unittest.TestCase):

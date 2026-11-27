@@ -23,10 +23,15 @@ cancel out. The metrics, for each of create, read and list:
   instructions  every thread of the server, user space (cachegrind Ir),
                 aws-lc's jitter entropy source left out (is_jitter)
   syscalls      every call valgrind traced but the waits and the clock
-                (TIMING_CALLS)
+                (TIMING_CALLS), the waker's wake-ups (wake_io) and the
+                thread lifecycle (THREAD_CALLS)
   fsyncs        fsync, fdatasync, syncfs and sync_file_range, in a band
                 that never holds one more per operation
+  threads       threads started (clone and clone3)
   allocations   heap blocks allocated (DHAT's Total)
+
+The measured file also keeps each workload's calls by name (`calls`), to
+show which call moved; no comparison reads them.
 
 Wall time is not held here: it depends on the runner's CPU and on the
 other tenants of its host. CI's "scale" job reports it.
@@ -67,7 +72,7 @@ import sys
 import tempfile
 
 OPERATIONS = ("create", "read", "list")
-METRICS = ("instructions", "syscalls", "fsyncs", "allocations")
+METRICS = ("instructions", "syscalls", "fsyncs", "threads", "allocations")
 TOOLS = ("cachegrind", "dhat")
 # The band of a metric the baseline does not hold yet.
 DEFAULT_TOLERANCE = 0.02
@@ -92,6 +97,10 @@ TIMING_CALLS = frozenset(
     {"clock_gettime", "clock_nanosleep", "nanosleep", "gettimeofday", "futex", "epoll_wait",
      "epoll_pwait", "epoll_pwait2", "sched_yield"}
 )
+# A thread's start and end: how many threads tokio's blocking pool starts
+# follows the scheduling (on 2026-11-27, 10 and 5 in two runs of one
+# workload). They are the `threads` metric, not syscalls.
+THREAD_CALLS = frozenset({"clone", "clone3", "set_robust_list", "rseq", "sigaltstack"})
 
 _SYSCALL = re.compile(r"^SYSCALL\[\d+,\d+\]\(\d+\) sys_([a-z0-9_]+) ")
 _DHAT_TOTAL = re.compile(r"^==\d+== Total:\s+[\d,]+ bytes in ([\d,]+) blocks?\s*$")
@@ -153,10 +162,55 @@ def steady_instructions(text: str) -> int:
     return sum(n for name, n in function_instructions(text).items() if not is_jitter(name))
 
 
-def steady_syscalls(counts: dict[str, int]) -> int:
-    """The calls but those that wait or read the clock: how many there are
-    follows the time a run takes, not its work."""
-    return sum(n for name, n in counts.items() if name not in TIMING_CALLS)
+def steady_syscalls(counts: dict[str, int], wake: int = 0) -> int:
+    """The calls but those that wait, wake or read the clock, and the
+    thread lifecycle (a metric of its own): how many of them there are
+    follows the scheduling, not the work. `wake` is wake_io's count."""
+    return sum(n for name, n in counts.items() if name not in TIMING_CALLS | THREAD_CALLS) - wake
+
+
+def threads(counts: dict[str, int]) -> int:
+    """The threads started: one clone or clone3 each."""
+    return counts.get("clone", 0) + counts.get("clone3", 0)
+
+
+_FD_CALL = re.compile(r"^SYSCALL\[(\d+),(\d+)\]\((\d+)\) sys_([a-z0-9_]+) \( (\d+)")
+_EVENTFD = re.compile(r"^SYSCALL\[(\d+),(\d+)\]\((\d+)\) sys_eventfd2? \(")
+_DONE = re.compile(r"^SYSCALL\[(\d+),(\d+)\]\((\d+)\) .*--> Success\(0x([0-9a-f]+)\)")
+
+
+def wake_io(text: str) -> int:
+    """The reads and writes on an eventfd, tokio's waker: each is a wake-up
+    whose count follows the scheduling. An eventfd's fd is the one its
+    call answered, also when the answer comes on a later line ([async]);
+    a close ends it."""
+    fds: set[int] = set()
+    pending: set[tuple[str, str, str]] = set()
+    n = 0
+    for line in text.splitlines():
+        made = _EVENTFD.match(line)
+        if made:
+            done = _DONE.match(line)
+            if done:
+                fds.add(int(done.group(4), 16))
+            elif "[async]" in line:
+                pending.add(made.groups())
+            continue
+        if " ... [async] --> " in line:
+            done = _DONE.match(line)
+            if done and done.groups()[:3] in pending:
+                pending.discard(done.groups()[:3])
+                fds.add(int(done.group(4), 16))
+            continue
+        call = _FD_CALL.match(line)
+        if not call:
+            continue
+        name, fd = call.group(4), int(call.group(5))
+        if name in ("write", "read") and fd in fds:
+            n += 1
+        elif name == "close":
+            fds.discard(fd)
+    return n
 
 
 def parse_syscalls(text: str) -> dict[str, int]:
@@ -371,20 +425,26 @@ def measure(run, inputs: dict, arch: str, valgrind: str) -> dict:
     the metrics."""
     plan = workloads(inputs["count"], inputs["reads"], inputs["pages"])
     totals: dict[str, dict[str, int]] = {}
+    traced: dict[str, dict[str, int]] = {}
     results = {}
     for name, (count, reads, pages) in plan.items():
         files, result = run(name, "cachegrind", count, reads, pages)
         calls = parse_syscalls(files["log"])
         totals[name] = {
             "instructions": steady_instructions(files["cachegrind"]),
-            "syscalls": steady_syscalls(calls),
+            "syscalls": steady_syscalls(calls, wake_io(files["log"])),
             "fsyncs": fsyncs(calls),
+            "threads": threads(calls),
         }
+        traced[name] = dict(sorted(calls.items()))
         results[name] = result
         files, _ = run(name, "dhat", count, reads, pages)
         totals[name]["allocations"] = parse_dhat_blocks(files["log"])
     ops = {op: operations(results[REFERENCE[op]], results[op], op) for op in OPERATIONS}
-    return {"arch": arch, "inputs": dict(inputs), "valgrind": valgrind, "metrics": derive(totals, ops)}
+    # The calls by name are kept for the report (which call moved); no
+    # comparison reads them.
+    return {"arch": arch, "inputs": dict(inputs), "valgrind": valgrind, "metrics": derive(totals, ops),
+            "calls": traced}
 
 
 def _real_runner(server: str, scale: str, inputs: dict, root: pathlib.Path, work: pathlib.Path):

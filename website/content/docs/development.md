@@ -1151,7 +1151,8 @@ of the new version: fix the code, as for any other alert.
   `.github/workflows/ci.yml` fails a change that makes a create, a read or
   a list page cost more. It holds counts that do not depend on the
   runner's CPU speed or on its load: the server's instructions, its
-  syscalls, its fsyncs and its heap allocations, each per operation, in
+  syscalls, its fsyncs, the threads it starts and its heap allocations,
+  each per operation, in
   `scripts/perf-baseline.json`. Wall time depends on both, so no job
   fails on it; the `scale` job reports it.
 - **How it measures.** `scripts/perf_gate.py measure` runs
@@ -1174,7 +1175,13 @@ of the new version: fix the code, as for any other alert.
   calls that wait or read the clock (futex, epoll, clock_gettime, sleeps).
   On 2026-11-27, three runs of the base workload (20 stores) on thor-02
   ranged over 1.53 million instructions with the jitter source in and
-  over 0.02 million without it.
+  over 0.02 million without it. The syscalls leave out two more parts
+  that follow the scheduling: the reads and writes on tokio's waker, an
+  eventfd (3369 and 3451 of them in two runs of one workload, while the
+  other writes were 1003 in both), and the start of a thread (clone,
+  clone3, set_robust_list, rseq, sigaltstack). Threads are a count of
+  their own, `threads` (clone and clone3), so a change that starts a
+  thread per request fails the gate.
 - **Prerequisites.** valgrind, Python 3, `jq` and `openssl` (for
   scale-run.sh), and release builds of `vcon-server` and `vcon-scale`.
   The baseline holds x86_64 counts, which is what CI's runners are.
