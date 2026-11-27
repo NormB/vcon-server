@@ -6,6 +6,8 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.19] - 2026-11-27
+
 ### Added
 
 - **Library: a `Backend` trait lets a key backend wrap the root key.**
@@ -35,6 +37,17 @@ All notable changes to this project are recorded here. The format follows
 
 ### Changed
 
+- **Upgrading from 0.4.18: the catalogs move to schema version 11,
+  PostgreSQL to schema version 16.**
+  - Effect: A tenant can record a key that a key backend wrapped; every
+    tenant there is stays under the master key file.
+  - Do: Stop every server and back up the data directory, and on
+    PostgreSQL the database; there, run `vcon-server migrate` with 0.4.19
+    before any server starts.
+  - Limit: Release 0.4.18 and earlier refuse data 0.4.19 has opened; the
+    backup is the way back.
+  - Docs: [From 0.4.18 to
+    0.4.19](https://vcon-server.com/docs/upgrading/#from-0-4-18-to-0-4-19)
 - **Library: `KeyWrap::wrap` returns `Wrapped`; `unwrap` takes a key's KEK.**
   - Effect: `Wrapped` holds the wrapped key and its key-encryption key,
     `None` from `FileWrap`; `unwrap` takes the row's key-encryption key.
@@ -46,15 +59,6 @@ All notable changes to this project are recorded here. The format follows
     `NoSuchBackend`.
   - Do: Write `to_backend: None` where code builds `Command::RekeyMaster`
     for a master key rotation.
-- **The catalogs move to schema version 11, PostgreSQL to schema version 16.**
-  - Effect: A tenant can record a key that a key backend wrapped; every
-    tenant there is stays under the master key file.
-  - Do: On PostgreSQL, run `vcon-server migrate` with the new binary
-    before any server starts.
-  - Limit: Release 0.4.18 and earlier refuse data this build has opened, so
-    copy it before the upgrade.
-  - Docs: [Schema
-    versions](https://vcon-server.com/docs/postgres-catalog/#schema-versions)
 
 ### Fixed
 
@@ -1429,7 +1433,8 @@ All notable changes to this project are recorded here. The format follows
   - Limit: `vcon::MAX_SIGNED_LAYERS`, `vcon::MAX_JSON_DEPTH` and
     `vcon::Rejection::TooDeep` name the limits.
 
-[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.18...HEAD
+[Unreleased]: https://github.com/NormB/vcon-server/compare/v0.4.19...HEAD
+[0.4.19]: https://github.com/NormB/vcon-server/releases/tag/v0.4.19
 [0.4.18]: https://github.com/NormB/vcon-server/releases/tag/v0.4.18
 [0.4.17]: https://github.com/NormB/vcon-server/releases/tag/v0.4.17
 [0.4.16]: https://github.com/NormB/vcon-server/releases/tag/v0.4.16

@@ -18,6 +18,68 @@ CI runs every command on this page on each change. It installs the previous
 release, sets it up as [getting started](@/docs/getting-started.md) does,
 upgrades it to the server built from the change, and goes back again.
 
+## From 0.4.18 to 0.4.19
+
+The upgrade is not the binary alone: the catalogs move to schema version
+11, and a PostgreSQL database to schema version 16. Release 0.4.18 refuses
+data that 0.4.19 has opened, so there is no downgrade except by the backup
+taken before the upgrade. The configuration is read as it was. In this
+order:
+
+1. **Stop every server.** With `catalog.backend = "postgres"`, `migrate`
+   is refused while a server or a command holds the database's locks.
+2. **Back up.** Copy the data directory, as in
+   [copy the data directory](#copy-the-data-directory). With
+   `catalog.backend = "postgres"`, also back up the database, with the
+   bucket and the master key file, as
+   [back it up](@/docs/postgres-catalog.md#back-it-up) says. That backup
+   is the only way back.
+3. **Install 0.4.19.** It brings every catalog in the data directory from
+   schema version 10 to 11, each in one transaction: `server.sqlite` the
+   first time `serve`, `check` or any other command opens it, and each
+   tenant's catalog the first time that tenant's data is opened after it.
+   `server.sqlite` gains, for each tenant, the columns of a key that a key
+   backend wrapped, NULL for every tenant there is; every tenant stays
+   under the master key file.
+4. **On PostgreSQL, run `vcon-server migrate`** with the new binary before
+   any server starts, as
+   [after an upgrade from 0.4.5](@/docs/postgres-catalog.md#after-an-upgrade-from-0-4-5)
+   shows. Its line says `"from":15` and `"to":16`. Version 16 adds the
+   columns of a key backend to `tenant` and `registry_key`, NULL in every
+   row there is (see
+   [schema versions](@/docs/postgres-catalog.md#schema-versions)). Until
+   then a 0.4.19 server stops with `the database schema is version 15,
+   older than this binary's 16: run vcon-server migrate`.
+5. **Start the server.**
+
+To go back, stop every server, restore the data directory (and, on
+PostgreSQL, the database) from the backup taken before the upgrade,
+install 0.4.18 again and start it. Everything stored since that backup is
+lost. Release 0.4.18 on a data directory that 0.4.19 has opened stops with
+`the registry cannot be opened: … schema version 11 is not one this build
+knows`, and on a database at version 16 with `the database schema is newer
+than this binary (version 16, this binary 15): upgrade this server`. It
+also refuses a configuration with a `[key_wrap]` table, because an unknown
+key is an error there: remove the table before going back.
+
+Three other things are different in 0.4.19:
+
+- **A server with local object storage shares disk syncs again.** 0.4.18
+  servers on local object storage synced every tenant commit inside the
+  commit. 0.4.19 shares the syncs again. Measured on the development host,
+  8 clients: 3.1 to 4.0 times the stores a second, 1.7 to 2.4 times the
+  reads, 2.5 to 2.7 times the writes. Each answered request is on disk as
+  before. Servers with objects in a bucket, or on PostgreSQL, were not
+  affected. See [durability](@/docs/durability.md).
+- **A `[key_wrap]` table names the root key's backend.** It is optional.
+  `key_wrap.backend` takes only `file`, the master key file, and
+  `key_wrap.start_parallel` sets how many tenant keys a start unwraps at
+  once, 8 unless configured. See
+  [configuration](@/docs/configuration.md).
+- **`rekey master --to-backend file` moves the registry root to a key
+  file.** Every tenant key moves under the new master key file. See
+  [key rotation](@/docs/command-line.md#key-rotation).
+
 ## From 0.4.17 to 0.4.18
 
 For a deployment with its catalogs in the data directory, the upgrade is
@@ -655,7 +717,7 @@ but do not install it yet. The commands use their own variable names, so
 they do not change the ones from install:
 
 ```sh
-NEW_VERSION=0.4.18
+NEW_VERSION=0.4.19
 NEW_ARCHIVE=vcon-server-$NEW_VERSION-$(uname -m)-unknown-linux-gnu.tar.gz
 curl -fsSLO https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/$NEW_ARCHIVE
 curl -fsSL -o SHA256SUMS-$NEW_VERSION.txt https://github.com/NormB/vcon-server/releases/download/v$NEW_VERSION/SHA256SUMS.txt

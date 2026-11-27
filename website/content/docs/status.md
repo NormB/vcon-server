@@ -7,7 +7,7 @@ weight = 60
 group = "project"
 +++
 
-vcon-server 0.4.18 is released: the `vcon` and `vcon-server` crates are on
+vcon-server 0.4.19 is released: the `vcon` and `vcon-server` crates are on
 crates.io, and the server for Linux on x86_64 and aarch64 is on
 [GitHub](https://github.com/NormB/vcon-server/releases). It is not yet for
 production: [the 1.0 checklist](@/docs/production-checklist.md) says what
@@ -239,6 +239,22 @@ otherwise.
   `vcon_server::key_wrap` module holds `KeyWrap`, the interface of the
   backend that holds the root key and wraps tenant keys, and `FileWrap`,
   the master key file backend the server uses. Stored data is unchanged.
+- **The `Backend` trait**, from 0.4.19: `BackendWrap` puts a key backend (a
+  KMS or an HSM) at the root of the key hierarchy and wraps each tenant key
+  under a key of its own. No key backend ships yet.
+- **`rekey master --to-backend file`**, from 0.4.19: moves the registry
+  root, and every tenant key, to the master key file in `--new-master`. It
+  is the only target in this release.
+- **The `[key_wrap]` table**, from 0.4.19: `key_wrap.backend` takes `file`
+  only, and `key_wrap.start_parallel` sets how many tenant keys a start
+  unwraps at once.
+- **The `key-wrap` format**, from 0.4.19: version 1 of the on-disk format
+  that records a key a key backend wrapped, with the backend and its key
+  named. No release writes it yet.
+- **Catalog schema version 11**, from 0.4.19: `server.sqlite` gains, for
+  each tenant, the columns of the key-encryption key a key backend wrapped
+  its tenant key under, NULL for every tenant there is. Release 0.4.18 and
+  earlier refuse a data directory that 0.4.19 has opened.
 
 ## The PostgreSQL catalog preview
 
@@ -315,28 +331,6 @@ once, for every entry here:
   key, moves the id in `registry_key` and records `rekey_master`; it
   changes no audit record. The command holds the database's locks, so it
   runs with every server stopped.
-
-## On `main` only
-
-The site is built from the `main` branch, so a page can describe what no
-release holds yet. Release 0.4.18 does not have these:
-
-- **The `Backend` trait.** `BackendWrap` puts a key backend (a KMS or an
-  HSM) at the root of the key hierarchy and wraps each tenant key under a
-  key of its own. No key backend ships yet.
-- **`rekey master --to-backend file`.** Moves the registry root, and every
-  tenant key, to the master key file in `--new-master`. It is the only
-  target in this release.
-- **The `[key_wrap]` table.** `key_wrap.backend` takes `file` only, and
-  `key_wrap.start_parallel` sets how many tenant keys a start unwraps at
-  once.
-- **The `key-wrap` format.** Version 1 of the on-disk format that records
-  a key a key backend wrapped, with the backend and its key named. No
-  release writes it yet.
-- **Catalog schema version 11.** `server.sqlite` gains, for each tenant,
-  the columns of the key-encryption key a key backend wrapped its tenant
-  key under, NULL for every tenant there is. A release up to 0.4.18
-  refuses a data directory this build has opened.
 
 ## Being built
 
