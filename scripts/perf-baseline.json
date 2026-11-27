@@ -10,21 +10,21 @@
   },
   "metrics": {
     "create.allocations": {
-      "tolerance": 0.006,
-      "value": 316.746
+      "tolerance": 0.009,
+      "value": 316.979
     },
     "create.fsyncs": {
       "slack": 0.006,
       "tolerance": 0.0,
-      "value": 4.036
+      "value": 4.037
     },
     "create.instructions": {
-      "tolerance": 0.01,
-      "value": 1951727.316
+      "tolerance": 0.011,
+      "value": 1956222.374
     },
     "create.syscalls": {
-      "tolerance": 0.008,
-      "value": 69.312
+      "tolerance": 0.011,
+      "value": 69.423
     },
     "create.threads": {
       "slack": 0.006,
@@ -33,30 +33,29 @@
     },
     "list.allocations": {
       "tolerance": 0.005,
-      "value": 2704.485
+      "value": 2703.381
     },
     "list.fsyncs": {
-      "slack": 0.03,
+      "slack": 0.003,
       "tolerance": 0.0,
-      "value": 1.03
+      "value": 1.012
     },
     "list.instructions": {
-      "tolerance": 0.008,
-      "value": 3765973.055
+      "tolerance": 0.005,
+      "value": 3768468.563
     },
     "list.syscalls": {
-      "slack": 1.5,
-      "tolerance": 0.005,
-      "value": 19.885
+      "tolerance": 0.016,
+      "value": 18.666
     },
     "list.threads": {
-      "slack": 0.03,
+      "slack": 0.003,
       "tolerance": 0.0,
       "value": 0.0
     },
     "read.allocations": {
       "tolerance": 0.005,
-      "value": 152.986
+      "value": 152.915
     },
     "read.fsyncs": {
       "slack": 0.006,
@@ -64,12 +63,12 @@
       "value": 1.012
     },
     "read.instructions": {
-      "tolerance": 0.015,
-      "value": 673385.1
+      "tolerance": 0.008,
+      "value": 673879.786
     },
     "read.syscalls": {
-      "tolerance": 0.009,
-      "value": 26.69
+      "tolerance": 0.005,
+      "value": 26.701
     },
     "read.threads": {
       "slack": 0.006,
