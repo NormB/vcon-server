@@ -224,21 +224,38 @@ key and status, not one record each.
 
 SIGTERM or SIGINT stops the server, which logs `stopped` and exits.
 It first stops taking requests. A purge sweep or pack run that is going
-when the signal comes finishes the tenant it is on and starts no other;
+when the signal comes finishes the item it is on and starts no other;
 the server waits for it, and only then releases the data directory, so
 no next server or command can start while that work still writes. The
 stop logs `stopping: waiting for a background job's run to end`, with
 the job's name, and logs a warning each 30 seconds it goes on waiting.
 
-A stop can therefore take as long as one tenant's purge or pack step. No
-setting bounds that step: a tenant's step purges every version due, or
-packs every object waiting, so a large backlog takes longer. systemd kills
-a unit that has not stopped after `TimeoutStopSec` (90 seconds by
-default); the unit in [getting started](@/docs/getting-started.md#start-it-with-systemd)
-sets 10 minutes for this reason. `docker stop -t` sets how many seconds
-Docker waits. A kill in the middle of a step is a crash, and start-up
-recovery handles it as it handles any other crash, so raise the timeout
-only to let a stop finish its work.
+An item is one version's purge, one pack file's rewrite after a purge,
+one object read into a pack file, one packed object's removal, or one
+date's merge of small pack files. Each leaves nothing half done: a
+version not yet purged waits whole for the next sweep, a pack file whose
+objects were not all read is not written, and an object or a rewrite left
+over is finished by start-up recovery or the next run. After the stop the
+pack run still writes the manifest of the files it recorded.
+
+So a stop waits for one item and not for a tenant's whole backlog.
+Measured on 2026-11-26 with 5,000 deleted vCons in one tenant, on the
+machine and disk of the [scale numbers](@/docs/scale.md), at a 1-minute
+load between 19 and 27, in release mode: a purge took 3.2 ms a version on
+average and at most 26 ms, and a stopped purge returned 11 ms after its
+stop was seen; the tenant's whole purge took 16 s. A pack run into a local
+directory took at most 31 ms an item, and a stopped one returned 5 ms
+after the stop. On S3, an item that puts a pack file (up to 128 MiB) takes
+as long as that upload. The measurement is a test, run by hand
+(`stop_latency_is_measured` in `crates/vcon-server/src/store/stop_measure_tests.rs`);
+it was not run at the 10 million scale.
+
+systemd kills a unit that has not stopped after `TimeoutStopSec` (90
+seconds by default); the unit in [getting started](@/docs/getting-started.md#start-it-with-systemd)
+sets 10 minutes, for a pack file's upload to a slow bucket. `docker stop -t`
+sets how many seconds Docker waits. A kill in the middle of an item is a
+crash, and start-up recovery handles it as it handles any other crash, so
+raise the timeout only to let a stop finish its work.
 
 Every write is crash-safe, so a kill or a power cut loses at most the requests
 not yet answered; start-up recovery removes what they left.

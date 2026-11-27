@@ -275,8 +275,9 @@ and scope.
 On a host with systemd, save this unit as
 `/etc/systemd/system/vcon-server.service`. `LimitMEMLOCK=infinity` allows
 the server to lock its memory. `TimeoutStopSec=10min` gives a stop time to
-let a purge sweep or pack run finish the tenant it is on, in place of
-systemd's 90 seconds; see [stopping](@/docs/operations.md#stopping):
+let a purge sweep or pack run finish the item it is on, such as a pack
+file's upload to a slow bucket, in place of systemd's 90 seconds; see
+[stopping](@/docs/operations.md#stopping):
 
 <!-- docs-test: only systemd; file /etc/systemd/system/vcon-server.service -->
 ```ini

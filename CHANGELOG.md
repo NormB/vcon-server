@@ -19,6 +19,17 @@ All notable changes to this project are recorded here. The format follows
     floating-point number, and `audit export` then failed on that record.
   - Effect: The count is refused and the record keeps the count it had, as
     with the PostgreSQL catalog.
+- **A stop waits for one item of a purge sweep or pack run.**
+  - Was: A stop waited until the sweep or pack run had finished the whole
+    tenant it was on, however many versions or objects that held.
+  - Effect: The run ends after the version, pack file or object under way;
+    the rest waits for the next run.
+  - Docs: [Stopping](https://vcon-server.com/docs/operations/#stopping)
+- **A catalog that holds tables but reads schema version 0 is refused.**
+  - Was: It was taken for a new catalog, and opening it failed with `table
+    ... already exists`.
+  - Effect: The refusal names the file and its cause, and nothing is
+    written to the file.
 
 ## [0.4.19] - 2026-11-27
 

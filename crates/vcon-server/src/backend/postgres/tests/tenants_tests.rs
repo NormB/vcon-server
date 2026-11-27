@@ -1608,13 +1608,18 @@ mod on_a_server {
         let [a, b] = due(&w, &first, &clock, ["a-first", "b-second"]);
         let ttl = crate::serve::lease_for(std::time::Duration::from_secs(3_600));
         let mut asked = 0;
-        let report = crate::serve::sweep_while(&first, Retention::Days(1), &mut || {
-            asked += 1;
-            if asked == 2 {
-                refuse_leases(&w);
-            }
-            crate::serve::holds(&first, Job::Sweep, ttl)
-        });
+        let report = crate::serve::sweep_while(
+            &first,
+            Retention::Days(1),
+            &mut || {
+                asked += 1;
+                if asked == 2 {
+                    refuse_leases(&w);
+                }
+                crate::serve::holds(&first, Job::Sweep, ttl)
+            },
+            &|| false,
+        );
         assert_eq!(report.purged, 1, "the first tenant only: {report:?}");
         assert_eq!(
             w.rows(a, "version") + w.rows(b, "version"),

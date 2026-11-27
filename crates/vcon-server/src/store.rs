@@ -29,6 +29,7 @@ use crate::reveal::Part;
 use pending::Writers;
 
 mod backup;
+pub(crate) mod between;
 #[cfg(test)]
 mod clock_reading_tests;
 mod compact;
@@ -54,6 +55,10 @@ mod rekey;
 mod rewrite;
 #[cfg(test)]
 mod statement_tests;
+#[cfg(test)]
+mod stop_measure_tests;
+#[cfg(test)]
+mod stop_within_tests;
 #[cfg(test)]
 mod sync_tests;
 

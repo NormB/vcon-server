@@ -259,6 +259,12 @@ pub enum CatalogError {
         path: PathBuf,
         error: std::io::Error,
     },
+    /// The catalog at `path` holds `tables` (by name, in order) but reads
+    /// schema version 0, which only a new, empty catalog has: it is
+    /// damaged, or another program wrote it. SQLite keeps the version in
+    /// 32 bits, so a value outside them reads back as another: 2^32,
+    /// i64::MIN and i64::MAX all read back as 0.
+    Unversioned { path: PathBuf, tables: Vec<String> },
 }
 
 impl std::fmt::Display for CatalogError {
@@ -277,6 +283,12 @@ impl std::fmt::Display for CatalogError {
             CatalogError::Access { path, .. } => {
                 write!(f, "this process may not read and write {}", path.display())
             }
+            CatalogError::Unversioned { path, tables } => write!(
+                f,
+                "{} holds tables ({}) but no schema version: it is damaged, or another program wrote it",
+                path.display(),
+                tables.join(", ")
+            ),
         }
     }
 }
@@ -286,7 +298,9 @@ impl std::error::Error for CatalogError {
         match self {
             CatalogError::Sqlite(e) => Some(e),
             CatalogError::Io(e) | CatalogError::Access { error: e, .. } => Some(e),
-            CatalogError::WrongKey | CatalogError::UnknownSchema(_) => None,
+            CatalogError::WrongKey
+            | CatalogError::UnknownSchema(_)
+            | CatalogError::Unversioned { .. } => None,
         }
     }
 }
@@ -336,6 +350,17 @@ pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogE
     conn.pragma_update(None, "temp_store", "MEMORY")?;
     match conn.pragma_query_value(None, "user_version", |r| r.get(0))? {
         0 => {
+            // Only a new, empty catalog reads 0. One with tables at 0 is
+            // damaged, or another program wrote it (a version outside 32
+            // bits reads back as 0): making the tables in it would fail on
+            // the first that exists, and say neither the file nor why.
+            let found = schema_names(&conn)?;
+            if !found.is_empty() {
+                return Err(CatalogError::Unversioned {
+                    path: path.to_owned(),
+                    tables: found,
+                });
+            }
             let tx = conn.unchecked_transaction()?;
             tx.execute_batch(schema)?;
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -399,6 +424,20 @@ pub fn open(path: &Path, key: &Key, schema: &str) -> Result<Connection, CatalogE
         other => return Err(CatalogError::UnknownSchema(other)),
     }
     Ok(conn)
+}
+
+/// The names of the tables and views in the catalog's schema, in order,
+/// leaving out SQLite's own (`sqlite_` names): what a catalog that is not
+/// new holds.
+fn schema_names(conn: &Connection) -> Result<Vec<String>, CatalogError> {
+    let mut found = conn.prepare(
+        "SELECT name FROM sqlite_master WHERE type IN ('table', 'view') \
+         AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name",
+    )?;
+    let names = found
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    Ok(names)
 }
 
 /// Whether this process, by its effective ids, may use `path` as `how`
@@ -602,6 +641,11 @@ mod v10_tests;
 
 #[cfg(test)]
 mod v11_tests;
+
+#[cfg(test)]
+mod unversioned_more_tests;
+#[cfg(test)]
+mod unversioned_tests;
 
 #[cfg(test)]
 pub(crate) mod testing {

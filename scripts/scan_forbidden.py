@@ -103,6 +103,25 @@ DOC_NETS_V4 = [ipaddress.ip_network(n) for n in ("192.0.2.0/24", "198.51.100.0/2
 DOC_NET_V6 = ipaddress.ip_network("2001:db8::/32")
 
 
+# What comes before the `[` of an index or a slice: a name, or the `)` or
+# `]` that closes a call or another index. On 2026-11-26 the IPv6 rule took
+# `argv[1::2]` in a Python script for an address; an address in
+# brackets follows a `/`, a space, an `=` or a quote instead.
+INDEXED = re.compile(r"[0-9A-Za-z_)\]]")
+
+
+def is_slice(text, start, end):
+    """Whether the run text[start:end] fills the brackets of an index or a
+    slice: `[` right before it, `]` right after, and before the `[`
+    something that can be indexed."""
+    return (
+        start >= 2
+        and text[start - 1] == "["
+        and text[end : end + 1] == "]"
+        and INDEXED.fullmatch(text[start - 2]) is not None
+    )
+
+
 def reserved_domain(domain):
     d = domain.lower()
     return d in RESERVED_DOMAINS or d.endswith(RESERVED_TLDS) or any(d.endswith("." + r) for r in RESERVED_DOMAINS)
@@ -148,6 +167,8 @@ def personal_data(text, path=""):
     for m in IPV6.finditer(text):
         candidate = m.group(1)
         if candidate.count(":") < 2 or not re.search(r"[0-9]", candidate):
+            continue
+        if is_slice(text, m.start(1), m.end(1)):
             continue
         try:
             ip = ipaddress.IPv6Address(candidate)

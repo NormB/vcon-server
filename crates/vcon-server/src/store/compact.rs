@@ -11,14 +11,27 @@
 
 use std::collections::{BTreeMap, HashSet};
 
+use super::between::Between;
 use super::packer::PackPlan;
 use super::{Store, StoreError};
 use crate::ids::FileId;
 
 impl Store {
     /// Merges each date's small files, as the module describes; the number
-    /// of new files written.
+    /// of new files written. The pack run merges through `compact_until`;
+    /// tests call this.
+    #[cfg(test)]
     pub(crate) fn compact(&self, plan: &PackPlan) -> Result<u64, StoreError> {
+        self.compact_until(plan, &Between::new(&super::between::never))
+    }
+
+    /// `compact`, asking `between` before each date's merge: once it says
+    /// stop, the dates not merged wait for the next run.
+    pub(crate) fn compact_until(
+        &self,
+        plan: &PackPlan,
+        between: &Between<'_>,
+    ) -> Result<u64, StoreError> {
         if self.packs.is_none() || plan.merge_below == 0 {
             return Ok(0);
         }
@@ -47,6 +60,9 @@ impl Store {
             }
             if chosen.len() < 2 {
                 continue;
+            }
+            if between.stop() {
+                break;
             }
             if let Some(copied) = self.copy_files(&chosen)?
                 && self.swap(&copied)?

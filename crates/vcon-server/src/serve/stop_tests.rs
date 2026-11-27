@@ -368,6 +368,29 @@ mod sweep_stop {
     }
 
     #[test]
+    fn a_stop_during_a_tenant_s_step_waits_for_one_version_not_the_tenant() {
+        let w = world("");
+        let registry = tenants(&w);
+        let id = due(&registry, "acme", "8a3b4c5d-0000-4000-8000-000000000010");
+        let store = registry.store(id).expect("its store");
+        for n in 11..14 {
+            let (found, body) = vcon(&format!("8a3b4c5d-0000-4000-8000-0000000000{n}"), "due");
+            store.create(&CALLER, &found, &body).expect("stored");
+            store
+                .delete(&CALLER, found.uuid, Retention::Years(7))
+                .expect("deleted");
+        }
+        drop(store);
+        let held = held_stop(&w, &w.config, registry, "purge sweep");
+        assert_waited(&held, "purge sweep");
+        assert_eq!(
+            kept(&w, id),
+            3,
+            "the step purged the version under way at the stop, and left the other three"
+        );
+    }
+
+    #[test]
     fn a_sweep_stopped_in_one_tenant_s_step_begins_no_other() {
         let w = world("");
         let registry = tenants(&w);
@@ -1218,6 +1241,126 @@ mod steps {
             1,
             "the step under way, no other"
         );
+    }
+
+    // Inside a tenant's step: the stop is asked between its versions.
+
+    /// A fixture with one tenant whose `n` versions are due for purge at
+    /// the clock's time once it is moved on.
+    fn one_tenant_due(n: u8) -> (crate::tenants::Fixture, TenantId) {
+        let f = fixture();
+        let id = f
+            .tenants
+            .create(Actor::Cli, "acme", Some(Retention::Days(1)))
+            .expect("made");
+        let store = f.tenants.store(id).expect("its store");
+        for i in 0..n {
+            let (found, body) = vcon(&format!("0199e5c6-0d7a-7c11-8000-0000000002{i:02}"), "kept");
+            store.create(&CALLER, &found, &body).expect("stored");
+            store
+                .delete(&CALLER, found.uuid, Retention::Years(7))
+                .expect("deleted");
+        }
+        f.clock.set(datetime!(2026-10-25 13:00 UTC));
+        (f, id)
+    }
+
+    #[test]
+    fn a_sweep_stopped_inside_a_tenant_s_step_ends_after_the_version_under_way() {
+        let (f, id) = one_tenant_due(4);
+        // The tenant's step begins; the stop comes before its second
+        // version.
+        let (asked, stopping) = after(1);
+        let report = sweep(&f.tenants, Retention::Days(1), &stopping);
+        assert_eq!(
+            report,
+            SweepReport {
+                purged: 1,
+                failed: 0
+            },
+            "the version under way, no other"
+        );
+        assert_eq!(asked.load(Ordering::SeqCst), 2, "the step, then the stop");
+        assert_eq!(versions(&f, &[id]), 3, "three wait for the next sweep");
+    }
+
+    #[test]
+    fn a_sweep_not_stopping_asks_between_a_tenant_s_versions() {
+        let (f, id) = one_tenant_due(3);
+        let (asked, stopping) = after(usize::MAX);
+        let report = sweep(&f.tenants, Retention::Days(1), &stopping);
+        assert_eq!(report.purged, 3, "every version");
+        assert_eq!(
+            asked.load(Ordering::SeqCst),
+            3,
+            "before the step and before its second and third versions"
+        );
+        assert_eq!(versions(&f, &[id]), 0, "nothing left");
+    }
+
+    #[test]
+    fn a_sweep_renews_its_lease_per_tenant_and_asks_the_stop_per_version() {
+        let (f, _) = one_tenant_due(3);
+        let mut leased = 0;
+        let (stops, stopping) = after(usize::MAX);
+        let report = super::super::sweep_while(
+            &f.tenants,
+            Retention::Days(1),
+            &mut || {
+                leased += 1;
+                true
+            },
+            &stopping,
+        );
+        assert_eq!(report.purged, 3, "every version");
+        assert_eq!(leased, 1, "the lease is asked for once, before the tenant");
+        assert_eq!(
+            stops.load(Ordering::SeqCst),
+            2,
+            "the stop between the versions"
+        );
+    }
+
+    #[test]
+    fn a_led_sweep_is_stopped_inside_a_tenant_s_step() {
+        let (f, id) = one_tenant_due(3);
+        // Asked before the lease, before the tenant, then before its
+        // second version, where it answers true.
+        let (asked, stopping) = after(2);
+        let report = super::super::lead_sweep(
+            &f.tenants,
+            Retention::Days(1),
+            super::super::lease_for(Duration::from_secs(60)),
+            &stopping,
+        );
+        assert_eq!(
+            report,
+            Some(SweepReport {
+                purged: 1,
+                failed: 0
+            }),
+            "the version under way, no other"
+        );
+        assert_eq!(asked.load(Ordering::SeqCst), 3, "then no more");
+        assert_eq!(versions(&f, &[id]), 2, "two wait");
+    }
+
+    #[test]
+    fn a_sweep_s_second_tenant_is_not_begun_after_a_stop_inside_the_first() {
+        let (f, ids) = due_tenants(2);
+        let store = f.tenants.store(ids[0]).expect("its store");
+        let (found, body) = vcon("0199e5c6-0d7a-7c11-8000-000000000299", "kept");
+        store.create(&CALLER, &found, &body).expect("stored");
+        store
+            .delete(&CALLER, found.uuid, Retention::Years(7))
+            .expect("deleted");
+        f.clock.set(datetime!(2026-10-27 13:00 UTC));
+        // The first tenant's step begins, the stop comes before its second
+        // version, and the second tenant is not begun.
+        let (_, stopping) = after(1);
+        let report = sweep(&f.tenants, Retention::Days(1), &stopping);
+        assert_eq!(report.purged, 1, "one version: {report:?}");
+        assert_eq!(versions(&f, &ids), 2, "the rest wait");
     }
 
     #[test]

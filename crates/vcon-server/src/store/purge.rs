@@ -4,6 +4,7 @@
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use super::between::{self, Between};
 use super::{Store, StoreError, commit, io};
 use crate::audit::{Action, Actor, Entry};
 use crate::backend::ObjectError;
@@ -57,6 +58,20 @@ impl Store {
         self.purge_hidden(Actor::Sweep, retention, None)
     }
 
+    /// `purge_due`, as the server's purge sweep runs it: `stopping` is
+    /// asked between the items of the step (store/between.rs), each version
+    /// and then each pack file to rewrite. Once it answers true the step
+    /// ends after the item under way. A version not yet purged waits for
+    /// the next sweep, whole; a rewrite not yet made stays listed, and
+    /// start-up recovery or the next sweep makes it.
+    pub fn purge_due_until(
+        &self,
+        retention: Retention,
+        stopping: &dyn Fn() -> bool,
+    ) -> Result<PurgeReport, StoreError> {
+        self.purge_hidden_until(Actor::Sweep, retention, None, &Between::new(stopping))
+    }
+
     /// Purges, as `purge_due` does, the hidden versions that are due, with
     /// `who` as the actor of each record; with `uuid`, only that uuid's.
     pub(super) fn purge_hidden(
@@ -65,20 +80,34 @@ impl Store {
         retention: Retention,
         uuid: Option<Uuid>,
     ) -> Result<PurgeReport, StoreError> {
+        self.purge_hidden_until(who, retention, uuid, &Between::new(&between::never))
+    }
+
+    /// `purge_hidden`, ending between two items once `between` says so.
+    fn purge_hidden_until(
+        &self,
+        who: Actor,
+        retention: Retention,
+        uuid: Option<Uuid>,
+        between: &Between<'_>,
+    ) -> Result<PurgeReport, StoreError> {
         let hidden = self.read(|tx| tx.hidden_versions(uuid))?;
         // A restore, hold or read may commit here, between the listing and
         // each version's own transaction, which checks the rule again.
         self.pause();
         let mut report = PurgeReport::default();
         for version in hidden {
+            if between.stop() {
+                break;
+            }
             if self.purge(who, version, retention)? {
                 report.purged += 1;
             }
         }
         // Every pack file a purge listed, this one's or one cut off before,
         // is rewritten and the old file deleted and confirmed gone, before
-        // the sweep returns.
-        self.finish_purges()?;
+        // the sweep returns, unless the step is stopped first.
+        self.finish_purges_until(between)?;
         if report.purged > 0 {
             self.catalog.after_purge()?;
         }

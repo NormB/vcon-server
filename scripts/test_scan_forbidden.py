@@ -695,5 +695,157 @@ class OneNoreplyRuleWithDco(unittest.TestCase):
                 self.assertEqual(not scan_forbidden.trailer_names_an_address(trailer), check_dco.is_noreply(addr))
 
 
+# Addresses that are not for documentation, assembled at run time so this
+# file holds none whole: the commit hook scans it too.
+LINK_LOCAL = "fe80" + "::1"
+GLOBAL = "2600" + "::1"
+GLOBAL_LONG = "2606:4700:4700" + ":" + ":1111"
+# A run a slice holds, read alone as an address.
+ONE_TWO = "1" + ":" + ":2"
+
+
+def ipv6_findings(text, path="a.py"):
+    return [value for kind, value in scan_forbidden.personal_data(text, path) if kind == "IP address"]
+
+
+class IPv6Context(unittest.TestCase):
+    """On 2026-11-26 the IPv6 rule took `argv[1::2]` and `argv[2::2]` in a
+    Python script for two addresses and refused the commit. A
+    run of hex groups inside brackets that follow a name, a closing bracket
+    or a closing parenthesis is a slice or an index, not an address."""
+
+    # Success: code that is not an address passes.
+
+    def test_a_python_slice_with_a_start_and_a_step_is_not_an_address(self):
+        self.assertEqual(ipv6_findings("pairs = zip(argv[1::2], argv[2::2])"), [])
+
+    def test_a_python_slice_with_only_a_step_is_not_an_address(self):
+        self.assertEqual(ipv6_findings("evens = a[::2]"), [])
+
+    def test_a_python_slice_with_three_parts_is_not_an_address(self):
+        self.assertEqual(ipv6_findings("part = x[1:2:3]"), [])
+
+    def test_a_python_slice_with_only_a_start_is_not_an_address(self):
+        self.assertEqual(ipv6_findings("rest = a[1::]"), [])
+
+    def test_a_slice_after_a_call_is_not_an_address(self):
+        self.assertEqual(ipv6_findings("tail = f(x)[2::3]"), [])
+
+    def test_a_slice_after_an_index_is_not_an_address(self):
+        self.assertEqual(ipv6_findings("cell = grid[0][1::2]"), [])
+
+    def test_a_rust_path_is_not_an_address(self):
+        self.assertEqual(ipv6_findings("use std::io::Write;"), [])
+
+    def test_a_three_part_rust_path_is_not_an_address(self):
+        self.assertEqual(ipv6_findings("let x = a::b::c(1);"), [])
+
+    def test_a_cpp_scope_is_not_an_address(self):
+        self.assertEqual(ipv6_findings("std::vector<int> v; ns::f(2);"), [])
+
+    def test_a_time_of_day_is_not_an_address(self):
+        self.assertEqual(ipv6_findings("at 12:34:56 the job ended"), [])
+
+    def test_a_documentation_address_is_allowed(self):
+        self.assertEqual(ipv6_findings("listen on [2001:db8::1]:8443"), [])
+
+    def test_a_documentation_address_with_many_groups_is_allowed(self):
+        self.assertEqual(ipv6_findings("2001:db8:85a3:0:0:8a2e:370:7334"), [])
+
+    def test_the_loopback_address_is_allowed(self):
+        self.assertEqual(ipv6_findings("curl http://[::1]:8080/"), [])
+
+    def test_a_rust_slice_of_a_range_is_not_an_address(self):
+        self.assertEqual(ipv6_findings("let s = &v[1..2];"), [])
+
+    # Failure: real addresses are still refused, in brackets too.
+
+    def test_a_link_local_address_is_refused(self):
+        self.assertEqual(ipv6_findings(f"ping {LINK_LOCAL}"), [LINK_LOCAL])
+
+    def test_a_global_address_is_refused(self):
+        self.assertEqual(ipv6_findings(f"host {GLOBAL}"), [GLOBAL])
+
+    def test_a_long_global_address_is_refused(self):
+        self.assertEqual(ipv6_findings(f"dns {GLOBAL_LONG}"), [GLOBAL_LONG])
+
+    def test_an_address_in_a_url_s_brackets_is_refused(self):
+        self.assertEqual(ipv6_findings(f"curl http://[{GLOBAL}]:80/"), [GLOBAL])
+
+    def test_an_address_in_brackets_after_a_space_is_refused(self):
+        self.assertEqual(ipv6_findings(f"peer [{LINK_LOCAL}] answered"), [LINK_LOCAL])
+
+    def test_an_address_in_brackets_at_the_start_is_refused(self):
+        self.assertEqual(ipv6_findings(f"[{GLOBAL}]:443 is open"), [GLOBAL])
+
+    def test_an_address_in_brackets_after_an_equals_sign_is_refused(self):
+        self.assertEqual(ipv6_findings(f"addr=[{GLOBAL}]"), [GLOBAL])
+
+    def test_an_address_in_a_python_list_is_refused(self):
+        self.assertEqual(ipv6_findings(f'hosts = ["{GLOBAL}", "{LINK_LOCAL}"]'), [GLOBAL, LINK_LOCAL])
+
+    def test_an_address_in_brackets_after_a_name_that_is_not_closed_there_is_refused(self):
+        # Not a slice: the bracket does not close right after the run.
+        self.assertEqual(ipv6_findings(f"x[{GLOBAL}/64]"), [GLOBAL])
+
+    def test_an_address_after_a_word_and_a_space_before_a_bracket_is_refused(self):
+        # Only a `[` right before the run makes it a slice, never a space.
+        self.assertEqual(ipv6_findings(f"(see x {GLOBAL}]"), [GLOBAL])
+
+    def test_an_address_after_a_slice_on_one_line_is_still_refused(self):
+        self.assertEqual(ipv6_findings(f"a[1::2] then {GLOBAL}"), [GLOBAL])
+
+    def test_the_script_refuses_a_staged_line_with_an_address(self):
+        out = subprocess.run(
+            [sys.executable, "-I", str(HERE / "scan_forbidden.py")],
+            input=f"a.py\tpeer = '{GLOBAL}'\n",
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        self.assertEqual(out.returncode, 1, out.stdout + out.stderr)
+        self.assertIn("IP address", out.stdout + out.stderr)
+
+    # Edges.
+
+    def test_a_slice_whose_name_ends_in_a_digit_is_not_an_address(self):
+        self.assertEqual(ipv6_findings("b = row2[1::2]"), [])
+
+    def test_a_slice_after_an_underscore_is_not_an_address(self):
+        self.assertEqual(ipv6_findings("b = my_list_[3::4]"), [])
+
+    def test_a_bracket_run_with_no_name_before_it_is_read_as_an_address(self):
+        self.assertEqual(ipv6_findings(f"[{ONE_TWO}]"), [ONE_TWO])
+
+    def test_a_slice_with_spaces_inside_its_brackets_is_an_address_run_alone(self):
+        # Spaces end the run: the bracket does not touch it, so the slice
+        # rule does not apply, and the run alone is an address.
+        self.assertEqual(ipv6_findings(f"a[ {ONE_TWO} ]"), [ONE_TWO])
+
+    def test_the_script_passes_the_line_that_was_refused(self):
+        out = subprocess.run(
+            [sys.executable, "-I", str(HERE / "scan_forbidden.py")],
+            input="scripts/codeql_extraction.py\tfor k, v in zip(argv[1::2], argv[2::2]):\n",
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+
+    def test_a_slice_and_a_documentation_address_on_one_line_pass(self):
+        self.assertEqual(ipv6_findings("a[1::2] and 2001:db8::5"), [])
+
+    def test_two_slices_on_one_line_pass(self):
+        self.assertEqual(ipv6_findings("a[1::2] + b[3::4]"), [])
+
+    def test_a_closing_bracket_index_then_slice_passes(self):
+        self.assertEqual(ipv6_findings("m[i][::5]"), [])
+
+    def test_a_bare_run_of_colons_is_not_an_address(self):
+        self.assertEqual(ipv6_findings("a ::: b"), [])
+
+
 if __name__ == "__main__":
     unittest.main()

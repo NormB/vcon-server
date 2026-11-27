@@ -416,7 +416,8 @@ struct Background {
 impl Background {
     /// Runs `work` at once, then `interval` after each run ends. `work` is
     /// given a test of whether the server is stopping, which it makes
-    /// before each step (a tenant) and ends its run on.
+    /// before each step (a tenant) and between the step's items (a
+    /// version, an object, a pack file), and ends its run on.
     fn start(
         name: &'static str,
         interval: Duration,
@@ -456,7 +457,7 @@ impl Background {
         }
     }
 
-    /// Asks the job to stop: a run going ends at its next step, and no
+    /// Asks the job to stop: a run going ends after its item under way, and no
     /// run begins after it. The flag is set before [`every`] is told, so a
     /// run that begins in between ends before its first step.
     fn ask(&mut self) {
@@ -527,22 +528,25 @@ pub struct PackRunReport {
 /// One pack run over every tenant, as `Store::pack` does for one, with the
 /// configured limit and reader grace. A tenant whose run fails is
 /// counted and left for the next run. `stopping` is asked before each
-/// tenant's step: once it answers true, the run ends there, and the rest
-/// wait for the next run. Logged with counts only, never a tenant.
+/// tenant's step and between its items (`Store::pack_until`): once it
+/// answers true, the run ends after the item under way, and the rest wait
+/// for the next run. Logged with counts only, never a tenant.
 pub fn pack_all(
     tenants: &Tenants,
     settings: &ParquetSettings,
     stopping: &dyn Fn() -> bool,
 ) -> PackRunReport {
-    pack_while(tenants, settings, &mut || !stopping())
+    pack_while(tenants, settings, &mut || !stopping(), stopping)
 }
 
 /// [`pack_all`], asking `held` before each tenant, and stopping when it
-/// answers false, as [`sweep_while`] does.
+/// answers false, as [`sweep_while`] does; `stopping` is asked inside a
+/// tenant's step, between its items.
 fn pack_while(
     tenants: &Tenants,
     settings: &ParquetSettings,
     held: &mut dyn FnMut() -> bool,
+    stopping: &dyn Fn() -> bool,
 ) -> PackRunReport {
     let mut report = PackRunReport::default();
     let plan = crate::store::packer::PackPlan {
@@ -557,7 +561,10 @@ fn pack_while(
                 }
                 #[cfg(test)]
                 tenants.job_steps_for_test("pack run");
-                match tenants.store(id).map(|store| store.pack(&plan)) {
+                match tenants
+                    .store(id)
+                    .map(|store| store.pack_until(&plan, stopping))
+                {
                     Ok(Ok(done)) => {
                         report.files += done.files;
                         report.versions += done.versions;
@@ -593,11 +600,12 @@ pub fn lease_for(interval: Duration) -> Duration {
 /// One purge sweep: each tenant purges what is due under its own retention
 /// period, else `default`. A tenant that cannot be swept, such as one whose
 /// period does not read back or that is being removed, is counted and left
-/// for the next sweep. `stopping` is asked before each tenant's step: once
-/// it answers true, the sweep ends there, and the rest wait for the next
+/// for the next sweep. `stopping` is asked before each tenant's step and
+/// between its items (`Store::purge_due_until`): once it answers true, the
+/// sweep ends after the item under way, and the rest wait for the next
 /// sweep. The sweep is logged with counts only, never a tenant.
 pub fn sweep(tenants: &Tenants, default: Retention, stopping: &dyn Fn() -> bool) -> SweepReport {
-    sweep_while(tenants, default, &mut || !stopping())
+    sweep_while(tenants, default, &mut || !stopping(), stopping)
 }
 
 /// Whether this server holds the lease of `job` for `ttl` now, taking or
@@ -628,9 +636,12 @@ pub fn lead_sweep(
         return None;
     }
     let recovery_failed = tenants.recover_all().unwrap_or(1);
-    let mut report = sweep_while(tenants, default, &mut || {
-        !stopping() && holds(tenants, Job::Sweep, ttl)
-    });
+    let mut report = sweep_while(
+        tenants,
+        default,
+        &mut || !stopping() && holds(tenants, Job::Sweep, ttl),
+        stopping,
+    );
     report.failed += recovery_failed;
     Some(report)
 }
@@ -651,9 +662,12 @@ pub fn lead_pack(
         tracing::info!("pack run: another server holds it");
         return None;
     }
-    Some(pack_while(tenants, settings, &mut || {
-        !stopping() && holds(tenants, Job::Pack, ttl)
-    }))
+    Some(pack_while(
+        tenants,
+        settings,
+        &mut || !stopping() && holds(tenants, Job::Pack, ttl),
+        stopping,
+    ))
 }
 
 /// Gives up this server's leases, as a server that stops does, so the
@@ -694,11 +708,14 @@ fn job_name(job: Job) -> &'static str {
 
 /// [`sweep`], asking `held` before each tenant, and stopping when it
 /// answers false: the lease went to another server, which sweeps the
-/// rest, or the server is stopping.
+/// rest, or the server is stopping. `stopping` is asked inside a tenant's
+/// step, between the versions it purges: the lease is renewed only before
+/// each tenant, and a stop ends the step after the version under way.
 pub fn sweep_while(
     tenants: &Tenants,
     default: Retention,
     held: &mut dyn FnMut() -> bool,
+    stopping: &dyn Fn() -> bool,
 ) -> SweepReport {
     let mut report = SweepReport::default();
     match tenants.ids() {
@@ -711,7 +728,7 @@ pub fn sweep_while(
                 tenants.job_steps_for_test("purge sweep");
                 let purged = tenants.retention(id).and_then(|own| {
                     let store = tenants.store(id)?;
-                    Ok(store.purge_due(crate::tenants::kept_for(own, default)))
+                    Ok(store.purge_due_until(crate::tenants::kept_for(own, default), stopping))
                 });
                 match purged {
                     Ok(Ok(done)) => report.purged += done.purged,
@@ -1235,10 +1252,15 @@ mod tests {
             deleted(&f.tenants, second, "0199e5c6-0d7a-7c11-8000-000000000002");
             f.clock.set(datetime!(2026-10-25 13:00 UTC));
             let mut asked = 0;
-            let report = sweep_while(&f.tenants, Retention::Days(1), &mut || {
-                asked += 1;
-                asked == 1
-            });
+            let report = sweep_while(
+                &f.tenants,
+                Retention::Days(1),
+                &mut || {
+                    asked += 1;
+                    asked == 1
+                },
+                &|| false,
+            );
             assert_eq!(report.purged, 1, "the first tenant only: {report:?}");
             assert_eq!(asked, 2, "asked before each tenant");
             assert_eq!(
@@ -1257,7 +1279,7 @@ mod tests {
                 .expect("made");
             deleted(&f.tenants, own, "0199e5c6-0d7a-7c11-8000-000000000001");
             f.clock.set(datetime!(2026-10-25 13:00 UTC));
-            let report = sweep_while(&f.tenants, Retention::Days(1), &mut || false);
+            let report = sweep_while(&f.tenants, Retention::Days(1), &mut || false, &|| false);
             assert_eq!(report, SweepReport::default(), "nothing");
             assert_eq!(kept(&f.tenants, own), 1, "kept for the holder");
         }
@@ -1276,16 +1298,26 @@ mod tests {
             // The lease is asked for before each tenant: a run that lost it
             // at the first is asked no more.
             let mut asked = 0;
-            super::super::pack_while(&f.tenants, &settings, &mut || {
-                asked += 1;
-                true
-            });
+            super::super::pack_while(
+                &f.tenants,
+                &settings,
+                &mut || {
+                    asked += 1;
+                    true
+                },
+                &|| false,
+            );
             assert_eq!(asked, 2, "asked before each tenant");
             let mut asked = 0;
-            let none = super::super::pack_while(&f.tenants, &settings, &mut || {
-                asked += 1;
-                false
-            });
+            let none = super::super::pack_while(
+                &f.tenants,
+                &settings,
+                &mut || {
+                    asked += 1;
+                    false
+                },
+                &|| false,
+            );
             assert_eq!(asked, 1, "the run stopped at the first tenant");
             assert_eq!(none, PackRunReport::default(), "nothing done: {none:?}");
         }

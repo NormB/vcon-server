@@ -11,6 +11,7 @@
 //! names, or the object of a packed version. A name already taken stops
 //! the run with an error and is never tried under another name.
 
+use super::between::Between;
 use super::{Store, StoreError, io, read_failed};
 use crate::backend::pack::{self, Place};
 use crate::backend::{CommitError, NewPackFile, ObjectError, Packs};
@@ -77,27 +78,49 @@ pub(crate) struct Written {
 
 impl Store {
     /// One pack run, as the module describes. A Store with no pack storage
-    /// packs nothing.
+    /// packs nothing. The server runs `pack_until`; tests run this.
+    #[cfg(test)]
     pub(crate) fn pack(&self, plan: &PackPlan) -> Result<PackReport, StoreError> {
+        self.pack_until(plan, &super::between::never)
+    }
+
+    /// `pack`, as the server's pack run runs it: `stopping` is asked
+    /// between the items of the step (store/between.rs), each object read
+    /// into a file, each packed object's removal and each date's merge.
+    /// Once it answers true the step ends after the item under way: a file
+    /// whose objects were not all read is not written, and the objects of
+    /// a recorded file not yet removed are leftovers that recovery
+    /// removes. The run then writes the manifest of the files it recorded,
+    /// and leaves the merges and the removal of expired files and
+    /// manifests to the next run.
+    pub(crate) fn pack_until(
+        &self,
+        plan: &PackPlan,
+        stopping: &dyn Fn() -> bool,
+    ) -> Result<PackReport, StoreError> {
+        let between = Between::new(stopping);
         let mut report = PackReport::default();
         if self.packs.is_none() {
             return Ok(report);
         }
         for planned in self.plan_files(plan)? {
-            let Some(written) = self.write_file(&planned, plan)? else {
-                continue;
-            };
-            if self.record_file(&written)? {
-                self.release(&written)?;
+            if let Some(written) = self.write_file_until(&planned, plan, &between)?
+                && self.record_file(&written)?
+            {
+                self.release_until(&written, &between)?;
                 report.files += 1;
                 report.versions += written.rows.len() as u64;
             }
         }
-        report.merged = self.compact(plan)?;
+        // Once stopped, every later ask answers stop without asking: the
+        // files left are not written and no merge is begun.
+        report.merged = self.compact_until(plan, &between)?;
         self.refresh_manifest()?;
         self.publish()?;
-        self.remove_expired(plan)?;
-        self.prune_manifests(Some(plan.grace))?;
+        if !between.stopped() {
+            self.remove_expired(plan)?;
+            self.prune_manifests(Some(plan.grace))?;
+        }
         Ok(report)
     }
 
@@ -142,16 +165,32 @@ impl Store {
     /// Reads `planned`'s objects, writes its file and puts it under a new
     /// name. A version whose object is gone (purged since the plan) is
     /// left out; a file with no row left is not written. None: nothing
-    /// was written.
+    /// was written. The pack run reads through `write_file_until`; tests
+    /// call this.
+    #[cfg(test)]
     pub(crate) fn write_file(
         &self,
         planned: &Planned,
         plan: &PackPlan,
     ) -> Result<Option<Written>, StoreError> {
+        self.write_file_until(planned, plan, &Between::new(&super::between::never))
+    }
+
+    /// `write_file`, asking `between` before each object it reads: once it
+    /// says stop, nothing is written, and None is answered.
+    fn write_file_until(
+        &self,
+        planned: &Planned,
+        plan: &PackPlan,
+        between: &Between<'_>,
+    ) -> Result<Option<Written>, StoreError> {
         let packs = self.packs.as_deref().ok_or(StoreError::Io)?;
         let mut file = File::new(Metadata::None, plan.sizes).map_err(io)?;
         let mut rows = Vec::new();
         for &(version, stored_at) in &planned.versions {
+            if between.stop() {
+                return Ok(None);
+            }
             let sealed = match self.objects.get(version) {
                 Ok(sealed) => sealed,
                 Err(ObjectError::Missing) => continue,
@@ -263,9 +302,21 @@ impl Store {
         }
     }
 
-    /// Removes the objects of the versions `written` packed.
+    /// Removes the objects of the versions `written` packed. The pack run
+    /// removes through `release_until`; tests call this.
+    #[cfg(test)]
     pub(crate) fn release(&self, written: &Written) -> Result<(), StoreError> {
+        self.release_until(written, &Between::new(&super::between::never))
+    }
+
+    /// `release`, asking `between` before each removal: once it says
+    /// stop, the objects left are leftovers of packed versions, which
+    /// recovery removes.
+    fn release_until(&self, written: &Written, between: &Between<'_>) -> Result<(), StoreError> {
         for (version, _) in &written.rows {
+            if between.stop() {
+                return Ok(());
+            }
             match self.objects.remove(*version) {
                 Ok(()) | Err(ObjectError::Missing) => {}
                 Err(e) => return Err(read_failed(e)),

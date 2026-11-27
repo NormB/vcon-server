@@ -14,6 +14,7 @@
 
 use std::collections::BTreeSet;
 
+use super::between::{self, Between};
 use super::packed::Unread;
 use super::{Store, StoreError, io, read_failed};
 use crate::backend::pack::{self, Place};
@@ -56,32 +57,50 @@ impl Store {
     /// and older manifests then wait for the reader grace, which the pack
     /// run applies. A Store with no pack storage has neither.
     pub(crate) fn finish_purges(&self) -> Result<(), StoreError> {
+        self.finish_purges_until(&Between::new(&between::never))
+    }
+
+    /// `finish_purges`, as a purge sweep's step runs it: `between` is asked
+    /// before each file's rewrite, and once it says stop, the rewrites not
+    /// made stay listed for start-up recovery and the next sweep. The
+    /// manifests the rewrites made numbered are still written.
+    pub(crate) fn finish_purges_until(&self, between: &Between<'_>) -> Result<(), StoreError> {
         let Some(packs) = self.packs.as_deref() else {
             return Ok(());
         };
         // Whether this call found a purge listed, and so rewrote or
         // deleted its file before the list was empty.
         let mut rewrote = false;
+        // The manifests the rewrites numbered. Only after a rewrite are
+        // the older ones removed at once: those name the files just
+        // deleted. Otherwise a reader may still be on one, and it stays
+        // for the reader grace.
+        let published = |rewrote: bool| -> Result<(), StoreError> {
+            self.publish()?;
+            if rewrote {
+                self.prune_manifests(None)
+            } else {
+                Ok(())
+            }
+        };
+        if between.stopped() {
+            return published(false);
+        }
         for _ in 0..ROUNDS {
             let pending = self.read(|tx| tx.purge_pending())?;
             if pending.is_empty() {
-                // The manifests the rewrites numbered. Only after a
-                // rewrite are the older ones removed at once: those name
-                // the files just deleted. Otherwise a reader may still be
-                // on one, and it stays for the reader grace.
-                self.publish()?;
-                return if rewrote {
-                    self.prune_manifests(None)
-                } else {
-                    Ok(())
-                };
+                return published(rewrote);
             }
-            rewrote = true;
             let unnamed = self.read(|tx| tx.unnamed_files())?;
             for file in unnamed {
                 self.remove_unnamed(packs, file)?;
+                rewrote = true;
             }
             for file in pending {
+                if between.stop() {
+                    return published(rewrote);
+                }
+                rewrote = true;
                 let info = self.read(|tx| tx.pack_file(file))?;
                 match info {
                     // Rewritten, then cut off before its deletion: the

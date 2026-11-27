@@ -2209,6 +2209,70 @@ pub(crate) mod remote {
         }
     }
 
+    /// The server's pack run asks the stop between a tenant's objects: a
+    /// stop that comes while the tenant's file is read writes no file and
+    /// begins no other tenant, and every object stays in the bucket.
+    #[test]
+    fn the_servers_pack_run_stops_inside_a_tenant_s_step() {
+        let (s3, _) = bucket(false);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let tenants = tenants_in(dir.path(), &s3);
+        let who = Caller {
+            key: Key::generate().expect("key").id(),
+        };
+        let mut ids = Vec::new();
+        for (n, name) in ["acme", "globex"].into_iter().enumerate() {
+            let id = tenants
+                .create(crate::audit::Actor::Cli, name, None)
+                .expect("a tenant");
+            for m in 0..3 {
+                let (found, body) = conformance::vcon(
+                    &format!("01a07da8-c2bb-83e5-b9a2-279e0d16bc4{}", n * 3 + m),
+                    "kept",
+                );
+                tenants
+                    .store(id)
+                    .expect("its store")
+                    .create(&who, &found, &body)
+                    .expect("stored");
+            }
+            ids.push(id);
+        }
+        // Asked before the first tenant's step, where it goes, then before
+        // the step's second object, where it stops, and once more before
+        // the next tenant, where the run ends.
+        let asked = std::cell::Cell::new(0usize);
+        let report = crate::serve::pack_all(
+            &tenants,
+            &crate::config::ParquetSettings {
+                pack_interval: std::time::Duration::from_secs(300),
+                pack_limit: 1 << 20,
+                reader_grace: crate::config::READER_GRACE,
+            },
+            &|| {
+                asked.set(asked.get() + 1);
+                asked.get() > 1
+            },
+        );
+        assert_eq!(
+            report,
+            crate::serve::PackRunReport::default(),
+            "no file written, no tenant failed"
+        );
+        assert_eq!(
+            asked.get(),
+            3,
+            "the step ended at the stop, and the run before the next tenant"
+        );
+        for id in ids {
+            assert_eq!(
+                s3.tenant(id).list().expect("list").len(),
+                3,
+                "every object stays"
+            );
+        }
+    }
+
     /// 4.11: DuckDB, with httpfs on the test service, reading the files the
     /// newest manifest names and keeping the rows it lists as live, sees
     /// exactly the versions the Store serves, after a create, a replace, a
