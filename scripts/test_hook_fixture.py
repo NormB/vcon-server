@@ -574,8 +574,15 @@ class RealOnly(unittest.TestCase):
             found = re.search(r'only "\$repo" "\$src/scripts/(test_\w+\.py)" (test_\w+)', line)
             self.assertIsNotNone(found, line)
             source, name = found.groups()
+            # Each module by its own path, so scripts/tests_for_paths.py sees
+            # which files this test reads.
+            modules = {
+                "test_docs_test.py": HERE / "test_docs_test.py",
+                "test_deny_config.py": HERE / "test_deny_config.py",
+            }
             with self.subTest(source=source):
-                module = (HERE / source).read_text(encoding="utf-8")
+                self.assertIn(source, modules, "a case of a module this test knows")
+                module = modules[source].read_text(encoding="utf-8")
                 self.assertEqual(module.count(f"def {name}("), 1, f"{name} is defined once in {source}")
                 self.assertIn(f"why='{name}'", text, "the case's refusal is that test's failure")
 
