@@ -944,66 +944,63 @@ fn the_server_crate_readme_links_the_mcp_and_s3_pages() {
     }
 }
 
-/// The value of `NAME = <value>` in a Python script, quotes removed.
-fn python_constant(script: &str, name: &str) -> String {
-    let start = format!("{name} = ");
-    let line = script
-        .lines()
-        .find(|line| line.starts_with(&start))
-        .unwrap_or_else(|| panic!("the script has no line `{start}`"));
-    line[start.len()..].trim().trim_matches('"').to_owned()
-}
+/// The owner's rule (2026-11-24, "14-day cooldown --- do not wait at
+/// all"): a new version is taken when it is released and checked for its
+/// license, a yank and breakage, not for its age.
+const VERSION_CHECKS: &[&str] = &[
+    "taken as soon as it is released, with no\nwaiting period",
+    "`cargo-deny check licenses`",
+    "`cargo-deny check advisories`",
+    "`scripts/deny_yanked_probe.py`",
+    "`scripts/test_deny_config.py`",
+];
+
+/// Phrases of the retired age rule that no page may state again.
+const AGE_RULE: &[&str] = &[
+    "dependency-age-exception",
+    "check_dependency_age",
+    "at least 14 days",
+    "14-day rule",
+];
 
 #[test]
-fn contributing_states_the_dependency_age_exception_as_the_gate_reads_it() {
-    let script = read("scripts/check_dependency_age.py");
-    let form = python_constant(&script, "FORM");
-    let days = python_constant(&script, "MIN_AGE_DAYS");
-    assert!(
-        form.starts_with("# dependency-age-exception: <crate> "),
-        "the gate's form is not the line it reads: {form}"
-    );
+fn contributing_states_the_version_checks_and_no_age_wait() {
     let contributing = read("CONTRIBUTING.md");
     let rule = section(&contributing, "Dependency versions");
-    for needed in [
-        format!("```toml\n{form}\n```"),
-        format!("at least {days} days"),
-        "`scripts/check_dependency_age.py`".to_owned(),
-        "--registry --base origin/main".to_owned(),
-    ] {
+    for needed in VERSION_CHECKS {
         assert!(
-            rule.contains(&needed),
+            rule.contains(needed),
             "CONTRIBUTING.md's Dependency versions does not hold: {needed}"
         );
     }
-    let page = read("website/content/docs/development.md");
-    assert!(
-        section(&page, "Contributing").contains("`scripts/check_dependency_age.py`"),
-        "development.md's Contributing does not name the gate"
-    );
 }
 
 #[test]
-fn the_past_exceptions_are_written_in_the_form() {
-    // parquet 60.2.0, rmcp 3.9.0 and rusqlite 0.42.0 were taken inside the
-    // 14 days as security fixes; rmcp and rusqlite each with crates of its
-    // own that were as young.
-    let manifest = read("crates/vcon-server/Cargo.toml");
-    let lines: Vec<&str> = manifest
-        .lines()
-        .filter(|line| line.contains("dependency-age-exception"))
-        .collect();
-    assert_eq!(
-        lines,
-        [
-            "# dependency-age-exception: parquet 60.2.0 RUSTSEC-2026-0595 published 2026-11-21",
-            "# dependency-age-exception: rmcp 3.9.0 RUSTSEC-2026-0462 published 2026-11-05",
-            "# dependency-age-exception: rmcp-macros 3.9.0 RUSTSEC-2026-0462 published 2026-11-05",
-            "# dependency-age-exception: rusqlite 0.42.0 RUSTSEC-2026-0459 published 2026-11-11",
-            "# dependency-age-exception: libsqlite3-sys 0.40.0 RUSTSEC-2026-0459 published 2026-11-11",
-            "# dependency-age-exception: sqlite-wasm-rs 0.6.3 RUSTSEC-2026-0459 published 2026-11-10",
-        ],
-        "the exception lines of crates/vcon-server/Cargo.toml"
+fn no_page_or_manifest_states_the_retired_age_rule() {
+    for path in [
+        "CONTRIBUTING.md",
+        "README.md",
+        "website/content/docs/development.md",
+        "Cargo.toml",
+        "crates/vcon-server/Cargo.toml",
+        ".github/dependabot.yml",
+    ] {
+        let text = read(path);
+        for phrase in AGE_RULE {
+            assert!(
+                !text.contains(phrase),
+                "{path} still states the retired age rule: {phrase:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn development_names_the_version_checks() {
+    let page = read("website/content/docs/development.md");
+    assert!(
+        section(&page, "Contributing").contains("`scripts/test_deny_config.py`"),
+        "development.md's Contributing does not name the deny.toml test"
     );
 }
 

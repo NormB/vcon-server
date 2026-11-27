@@ -2,10 +2,9 @@
 # Each pull request runs CI like any other. scripts/check_dependabot.py,
 # run in CI, fails when a dependency file in the tree has no entry here.
 #
-# Every entry waits 14 days after a version is released before it proposes
-# it (cooldown; CONTRIBUTING.md, "Dependency versions"), and
-# check_dependabot.py fails on an entry with less. Security updates are not
-# delayed: Dependabot applies no cooldown to them.
+# No entry waits after a version is released (no `cooldown`; the owner,
+# 2026-11-24, CONTRIBUTING.md "Dependency versions"), and
+# check_dependabot.py fails on an entry that holds one.
 version: 2
 updates:
   # The Cargo workspace at the repository root (both crates, one Cargo.lock)
@@ -22,8 +21,6 @@ updates:
       - "/fuzz"
     schedule:
       interval: "weekly"
-    cooldown:
-      default-days: 14
     open-pull-requests-limit: 10
     groups:
       # Minor and patch bumps in one pull request; a major bump gets its own.
@@ -45,8 +42,6 @@ updates:
       - "/.github/actions/pinned-download"
     schedule:
       interval: "weekly"
-    cooldown:
-      default-days: 14
     open-pull-requests-limit: 5
     groups:
       # Every action bump in one pull request.
@@ -65,8 +60,6 @@ updates:
       - "/site-tests"
     schedule:
       interval: "weekly"
-    cooldown:
-      default-days: 14
     open-pull-requests-limit: 5
     ignore:
       # @types/node describes one Node major's API. The TypeScript client
@@ -90,8 +83,6 @@ updates:
     directory: "/scripts"
     schedule:
       interval: "weekly"
-    cooldown:
-      default-days: 14
     open-pull-requests-limit: 5
     groups:
       pip-minor-patch:
@@ -106,8 +97,6 @@ updates:
     directory: "/.clusterfuzzlite"
     schedule:
       interval: "weekly"
-    cooldown:
-      default-days: 14
     open-pull-requests-limit: 2
     commit-message:
       prefix: "ci"

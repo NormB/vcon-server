@@ -31,11 +31,11 @@ lockfiles. With an entry each, on 2026-11-07, #142 and #143 each bumped
 the server's =60.0.0 parquet pin and only their own lockfile, so the
 other lockfile no longer matched and every --locked build failed.
 
-Every entry must hold a cooldown of at least MIN_AGE_DAYS for every
-version (default-days, and each semver-*-days it sets), with no include
-or exclude list: a new version is proposed only once it is that old
-(CONTRIBUTING.md, "Dependency versions"). Dependabot's own default is 3
-days; #142 and #143 proposed parquet 60.1.0 ten days after its release.
+No entry may hold a `cooldown`: a new version is proposed as soon as it
+is released (the owner, 2026-11-24: "14-day cooldown --- do not wait at
+all"; CONTRIBUTING.md, "Dependency versions"). Each version is checked
+for its license (deny.toml), for a yank (cargo-deny's advisories check)
+and by the tests, not for its age.
 
 Run with: python3 -I scripts/check_dependabot.py [--walk]
 (from anywhere in the repository; needs PyYAML). Exits 1 naming each file
@@ -61,10 +61,6 @@ _spec.loader.exec_module(tree_files)
 
 # A file listed here needs no Dependabot entry; the reason says why.
 EXCEPTIONS = {}
-
-# The age in days a new version must reach before it is proposed; the rule
-# is in CONTRIBUTING.md, "Dependency versions".
-MIN_AGE_DAYS = 14
 
 REQUIRE = re.compile(r"^\s*require\b", re.MULTILINE)
 
@@ -214,33 +210,14 @@ def shared_problems(paths, config, read):
     return problems
 
 
-def is_days(value):
-    # A bool is an int in Python, but True and False are both under 14.
-    return isinstance(value, int) and value >= MIN_AGE_DAYS
-
-
 def cooldown_problems(config):
-    """One line per entry whose cooldown lets a version younger than
-    MIN_AGE_DAYS through: no cooldown, a default-days missing or under it,
-    a semver-*-days under it, or an include or exclude list, which leaves
-    some dependencies on no cooldown at all."""
+    """One line per entry that holds a `cooldown`, whatever its value: a
+    new version is proposed as soon as it is released."""
     problems = []
     for update in (config or {}).get("updates") or []:
-        label = f"{update.get('package-ecosystem')} entry for {', '.join(entry_directories(update))}"
-        cooldown = update.get("cooldown")
-        if not isinstance(cooldown, dict):
-            problems.append(f"{label}: no cooldown; a new version must wait {MIN_AGE_DAYS} days")
-            continue
-        for key in ("default-days", "semver-major-days", "semver-minor-days", "semver-patch-days"):
-            if key not in cooldown:
-                if key == "default-days":
-                    problems.append(f"{label}: cooldown default-days is missing, under {MIN_AGE_DAYS}")
-                continue
-            if not is_days(cooldown[key]):
-                problems.append(f"{label}: cooldown {key} is {cooldown[key]!r}, under {MIN_AGE_DAYS}")
-        for key in ("include", "exclude"):
-            if key in cooldown:
-                problems.append(f"{label}: cooldown {key} exempts some dependencies from the {MIN_AGE_DAYS} days")
+        if "cooldown" in update:
+            label = f"{update.get('package-ecosystem')} entry for {', '.join(entry_directories(update))}"
+            problems.append(f"{label}: a cooldown delays new versions; the owner's rule (2026-11-24) is no wait")
     return problems
 
 

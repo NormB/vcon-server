@@ -109,51 +109,28 @@ pull request, `CI success` and `DCO` are green.
 
 ## Dependency versions
 
-A new dependency, or a new version of one, is taken only once that version
-has been public for at least 14 days, so that a regression or a compromised
-release has time to come to light first. The rule covers every ecosystem the
-repository uses: crates, npm and pip packages, GitHub Actions and container
-images. Dependabot waits the same 14 days (`cooldown` in
-`.github/dependabot.yml`), and `scripts/check_dependabot.py` fails on an
-entry that waits less. Dependabot applies no cooldown to its security
-updates.
+A new version of a dependency is taken as soon as it is released, with no
+waiting period. Dependabot proposes it at once: no entry in
+`.github/dependabot.yml` holds a `cooldown`, and
+`scripts/check_dependabot.py` fails on an entry that does. Each new version
+is checked instead for these three things:
 
-There is one exception: a version that fixes a published security advisory
-against a dependency the repository already uses is taken as soon as it is
-out. The change that takes it writes one comment line in the `Cargo.toml`
-that requires the crate, above the requirement (in the workspace
-`Cargo.toml` for a crate that only a `Cargo.lock` names):
+- **Its license.** `cargo-deny check licenses` (CI job `deny`) refuses a
+  crate under a license that `deny.toml` does not allow. No GPL, LGPL or
+  AGPL license is on that list, and `scripts/test_deny_config.py` keeps it
+  so.
+- **A yank.** `cargo-deny check advisories` refuses a crate version that
+  crates.io lists as yanked (`yanked = "deny"` in `deny.toml`), in both
+  `Cargo.lock` files. In the same job, `scripts/deny_yanked_probe.py`
+  checks that a crate depending on a yanked version fails the check.
+- **Breakage.** The commit hook, the pre-push hook and CI build and test
+  the tree with the new version.
 
-```toml
-# dependency-age-exception: <crate> <fixed version> <advisory id> published <YYYY-MM-DD>
-```
-
-- `<fixed version>` is the version the change takes: the one the advisory
-  names as fixed.
-- `<advisory id>` is the advisory's RUSTSEC, GHSA or CVE id, for example
-  `RUSTSEC-2026-0459`.
-- `<YYYY-MM-DD>` is the UTC day crates.io published the fixed version.
-
-A crate that the fixed version requires, at a version that is itself under
-14 days old, gets a line of its own with the same advisory id, and its own
-version and day. The line stays while a `Cargo.lock` holds the crate.
-`scripts/check_dependency_age.py` reads these lines. In the commit hook it
-uses no network: it fails on a line that does not have this form, on a
-crate and version excepted twice, and on a line whose crate no `Cargo.lock`
-holds at the fixed version or later. In CI it runs with `--registry` and
-also asks crates.io for publish times: it fails on a line whose date is not
-the registry's, and on a crate version new to a `Cargo.lock` that has been
-public for less than the 14 days and that no line names. A lockfile does not
-record publish times, so only the CI run can tell a version's age. To run
-the same check before a push:
-
-```sh
-python3 -I scripts/check_dependency_age.py --registry --base origin/main
-```
-
-The check covers crates. For npm and pip packages, GitHub Actions and
-container images, a security fix inside the 14 days is stated in the pull
-request with the advisory's id.
+Known vulnerabilities are the OSV-Scanner job's (`osv-scanner.toml`).
+cargo-deny's advisories check reports them as well. An advisory that
+`osv-scanner.toml` ignores is ignored in `deny.toml` too, and
+`scripts/test_deny_config.py` fails on an ignore that is in `deny.toml`
+alone.
 
 ## Signing off commits
 

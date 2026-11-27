@@ -1,6 +1,5 @@
 # cargo-deny's rules for the workspace and for the fuzz package (CI runs
-# `cargo deny check licenses bans sources` on both). Known vulnerabilities
-# are osv-scanner.yml's job, so the advisories check is not run here.
+# `cargo deny check advisories licenses bans sources` on both).
 #
 # Every licence allowed below is one a crate in Cargo.lock or
 # fuzz/Cargo.lock is under today, with the reason it may be shipped in, or
@@ -10,6 +9,22 @@
 
 [graph]
 all-features = true
+
+# The advisories check is run for yanked versions: crates.io's yank is
+# reported by nothing else here (OSV-Scanner does not see it), and a
+# version taken with no wait (the owner, 2026-11-24) may be yanked days
+# later. scripts/deny_yanked_probe.py proves in CI that a yanked version
+# fails. Known vulnerabilities and unmaintained crates are
+# osv-scanner.yml's job: cargo-deny reports a RUSTSEC vulnerability too and
+# cannot be told not to, so a vulnerability osv-scanner.toml ignores is
+# ignored here as well, and nothing else (`ignore` below; every id in it
+# must be one osv-scanner.toml ignores, scripts/test_deny_config.py), and
+# unmaintained crates are left to OSV, whose one ignore today,
+# RUSTSEC-2026-0543 (chrono unmaintained), needs no entry here.
+[advisories]
+yanked = "deny"
+unmaintained = "none"
+ignore = []
 
 [licenses]
 allow = [

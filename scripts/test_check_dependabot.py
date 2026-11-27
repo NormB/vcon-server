@@ -335,78 +335,103 @@ def cooldown(**days):
     return {"updates": [{"package-ecosystem": "cargo", "directory": "/", "cooldown": days}]}
 
 
+REFUSED = ": a cooldown delays new versions; the owner's rule (2026-11-24) is no wait"
+
+
 class Cooldown(unittest.TestCase):
-    """A new version is proposed only once it is at least 14 days old
-    (CONTRIBUTING.md, "Dependency versions"); Dependabot's own default
-    cooldown is 3 days. #142 and #143 proposed parquet 60.1.0 on day 10."""
+    """No entry delays a new version (the owner, 2026-11-24: "14-day
+    cooldown --- do not wait at all"); a version is checked for GPL
+    licenses (deny.toml), yanks (cargo-deny's advisories check) and
+    breakage (the tests), not for its age."""
 
-    def test_the_rule_is_14_days(self):
-        self.assertEqual(check_dependabot.MIN_AGE_DAYS, 14)
-
-    def test_14_days_for_every_version_passes(self):
-        self.assertEqual(check_dependabot.cooldown_problems(cooldown(**{"default-days": 14})), [])
-
-    def test_a_longer_wait_for_some_updates_passes(self):
-        config = cooldown(**{"default-days": 14, "semver-major-days": 30})
-        self.assertEqual(check_dependabot.cooldown_problems(config), [])
-
-    def test_an_entry_without_a_cooldown_is_found(self):
+    def test_success_an_entry_without_a_cooldown_passes(self):
         config = {"updates": [{"package-ecosystem": "cargo", "directories": ["/", "/fuzz"]}]}
+        self.assertEqual(check_dependabot.cooldown_problems(config), [], "no cooldown")
+
+    def test_success_several_entries_without_a_cooldown_pass(self):
+        config = {
+            "updates": [
+                {"package-ecosystem": "cargo", "directory": "/"},
+                {"package-ecosystem": "npm", "directory": "/site-tests"},
+                {"package-ecosystem": "docker", "directory": "/.clusterfuzzlite"},
+            ]
+        }
+        self.assertEqual(check_dependabot.cooldown_problems(config), [], "three entries")
+
+    def test_success_the_repositorys_entries_have_no_cooldown(self):
+        import yaml
+
+        config = yaml.safe_load((HERE.parent / ".github/dependabot.yml").read_text(encoding="utf-8"))
+        self.assertEqual(check_dependabot.cooldown_problems(config), [], ".github/dependabot.yml")
+
+    def test_failure_a_14_day_cooldown_is_refused(self):
         self.assertEqual(
-            check_dependabot.cooldown_problems(config),
-            ["cargo entry for /, /fuzz: no cooldown; a new version must wait 14 days"],
+            check_dependabot.cooldown_problems(cooldown(**{"default-days": 14})),
+            ["cargo entry for /" + REFUSED],
+            "14 days",
         )
 
-    def test_a_short_default_is_found(self):
+    def test_failure_a_one_day_cooldown_is_refused(self):
         self.assertEqual(
-            check_dependabot.cooldown_problems(cooldown(**{"default-days": 13})),
-            ["cargo entry for /: cooldown default-days is 13, under 14"],
+            check_dependabot.cooldown_problems(cooldown(**{"default-days": 1})),
+            ["cargo entry for /" + REFUSED],
+            "1 day",
         )
 
-    def test_a_missing_default_is_found_even_with_every_semver_wait(self):
-        # Without default-days Dependabot waits 3 days for versions that are
-        # not SemVer, and Docker and GitHub Actions take no semver-*-days.
-        config = cooldown(**{"semver-major-days": 14, "semver-minor-days": 14, "semver-patch-days": 14})
-        self.assertEqual(
-            check_dependabot.cooldown_problems(config),
-            ["cargo entry for /: cooldown default-days is missing, under 14"],
-        )
-
-    def test_a_short_semver_wait_is_found(self):
+    def test_failure_a_semver_only_cooldown_is_refused(self):
         for key in ("semver-major-days", "semver-minor-days", "semver-patch-days"):
             with self.subTest(key=key):
                 self.assertEqual(
-                    check_dependabot.cooldown_problems(cooldown(**{"default-days": 14, key: 3})),
-                    [f"cargo entry for /: cooldown {key} is 3, under 14"],
+                    check_dependabot.cooldown_problems(cooldown(**{key: 3})),
+                    ["cargo entry for /" + REFUSED],
+                    key,
                 )
 
-    def test_a_wait_that_is_not_a_whole_number_is_found(self):
-        for value in ("14", 14.5, True, None):
-            with self.subTest(value=value):
-                self.assertEqual(
-                    check_dependabot.cooldown_problems(cooldown(**{"default-days": value})),
-                    [f"cargo entry for /: cooldown default-days is {value!r}, under 14"],
-                )
-
-    def test_limiting_the_cooldown_to_some_dependencies_is_found(self):
+    def test_failure_a_cooldown_for_some_dependencies_is_refused(self):
         for key in ("include", "exclude"):
             with self.subTest(key=key):
                 self.assertEqual(
                     check_dependabot.cooldown_problems(cooldown(**{"default-days": 14, key: ["parquet"]})),
-                    [f"cargo entry for /: cooldown {key} exempts some dependencies from the 14 days"],
+                    ["cargo entry for /" + REFUSED],
+                    key,
                 )
 
-    def test_every_entry_is_checked(self):
+    def test_failure_each_entry_with_a_cooldown_is_named(self):
         config = {
             "updates": [
                 {"package-ecosystem": "cargo", "directory": "/", "cooldown": {"default-days": 14}},
-                {"package-ecosystem": "docker", "directory": "/.clusterfuzzlite"},
+                {"package-ecosystem": "npm", "directory": "/site-tests"},
+                {"package-ecosystem": "docker", "directory": "/.clusterfuzzlite", "cooldown": {"default-days": 14}},
             ]
         }
         self.assertEqual(
             check_dependabot.cooldown_problems(config),
-            ["docker entry for /.clusterfuzzlite: no cooldown; a new version must wait 14 days"],
+            ["cargo entry for /" + REFUSED, "docker entry for /.clusterfuzzlite" + REFUSED],
+            "two of three",
         )
+
+    def test_edge_an_empty_cooldown_is_refused(self):
+        self.assertEqual(check_dependabot.cooldown_problems(cooldown()), ["cargo entry for /" + REFUSED], "{}")
+
+    def test_edge_a_cooldown_key_with_no_value_is_refused(self):
+        # `cooldown:` with nothing after it is a null in YAML.
+        config = {"updates": [{"package-ecosystem": "cargo", "directory": "/", "cooldown": None}]}
+        self.assertEqual(check_dependabot.cooldown_problems(config), ["cargo entry for /" + REFUSED], "null")
+
+    def test_edge_a_zero_day_cooldown_is_refused(self):
+        self.assertEqual(
+            check_dependabot.cooldown_problems(cooldown(**{"default-days": 0})),
+            ["cargo entry for /" + REFUSED],
+            "0 days is still a cooldown key",
+        )
+
+    def test_edge_no_updates(self):
+        for config in (None, {}, {"updates": None}, {"updates": []}):
+            with self.subTest(config=config):
+                self.assertEqual(check_dependabot.cooldown_problems(config), [], repr(config))
+
+    def test_edge_there_is_no_age_constant(self):
+        self.assertFalse(hasattr(check_dependabot, "MIN_AGE_DAYS"), "no age rule is left")
 
 
 
@@ -416,8 +441,8 @@ class Problems(unittest.TestCase):
     def test_each_rule_reaches_the_command(self):
         config = {
             "updates": [
-                {"package-ecosystem": "cargo", "directory": "/", "ignore": RUSQLITE, "cooldown": {"default-days": 14}},
-                {"package-ecosystem": "cargo", "directory": "/fuzz", "ignore": RUSQLITE},
+                {"package-ecosystem": "cargo", "directory": "/", "ignore": RUSQLITE},
+                {"package-ecosystem": "cargo", "directory": "/fuzz", "ignore": RUSQLITE, "cooldown": {"default-days": 14}},
             ]
         }
         paths = sorted(LOCKS) + ["clients/typescript/package-lock.json"]
@@ -428,12 +453,12 @@ class Problems(unittest.TestCase):
                 "clients/typescript/package-lock.json: no npm entry for /clients/typescript",
                 "fuzz/Cargo.lock: the cargo entry for /fuzz ignores rusqlite, which no lockfile it covers takes from git",
                 "Cargo.lock and fuzz/Cargo.lock both take vcon-server by path; one cargo entry must cover / and /fuzz",
-                "cargo entry for /fuzz: no cooldown; a new version must wait 14 days",
+                "cargo entry for /fuzz" + REFUSED,
             ],
         )
 
 
-    def test_the_command_fails_on_an_entry_without_a_cooldown(self):
+    def test_the_command_fails_on_an_entry_with_a_cooldown(self):
         # In a repository of its own, with git's variables cleared, so a
         # hook's GIT_DIR or GIT_INDEX_FILE cannot point git elsewhere.
         env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
@@ -442,7 +467,7 @@ class Problems(unittest.TestCase):
             (root / ".github").mkdir()
             (root / ".github/dependabot.yml").write_text(
                 'version: 2\nupdates:\n  - package-ecosystem: "cargo"\n    directory: "/"\n'
-                '    schedule:\n      interval: "weekly"\n',
+                '    schedule:\n      interval: "weekly"\n    cooldown:\n      default-days: 14\n',
                 encoding="utf-8",
             )
             (root / "Cargo.lock").write_text('version = 4\n\n[[package]]\nname = "x"\nversion = "0.1.0"\n', encoding="utf-8")
@@ -450,10 +475,11 @@ class Problems(unittest.TestCase):
             subprocess.run(["git", "add", "."], cwd=root, env=env, check=True)
             run = subprocess.run([sys.executable, "-I", str(HERE / "check_dependabot.py")], cwd=root, env=env, capture_output=True, text=True)
         self.assertEqual(run.returncode, 1, run.stderr)
-        self.assertEqual(run.stderr, "check_dependabot: cargo entry for /: no cooldown; a new version must wait 14 days\n")
+        self.assertEqual(run.stderr, "check_dependabot: cargo entry for /" + REFUSED + "\n")
 
 
-NO_COOLDOWN = 'version: 2\nupdates:\n  - package-ecosystem: "cargo"\n    directory: "/"\n    schedule:\n      interval: "weekly"\n'
+WITH_COOLDOWN = 'version: 2\nupdates:\n  - package-ecosystem: "cargo"\n    directory: "/"\n    schedule:\n      interval: "weekly"\n    cooldown:\n      default-days: 14\n'
+NO_COOLDOWN ='version: 2\nupdates:\n  - package-ecosystem: "cargo"\n    directory: "/"\n    schedule:\n      interval: "weekly"\n'
 NO_ENTRY = "version: 2\nupdates: []\n"
 LOCK = 'version = 4\n\n[[package]]\nname = "x"\nversion = "0.1.0"\n'
 
@@ -480,9 +506,13 @@ class Walk(unittest.TestCase):
         files = {".github/dependabot.yml": NO_ENTRY, "tools/package-lock.json": "{}\n"}
         self.assertEqual(self.run_in(files, "--walk"), (1, "", "check_dependabot: tools/package-lock.json: no npm entry for /tools\n"))
 
-    def test_failure_with_walk_an_entry_without_a_cooldown(self):
+    def test_failure_with_walk_an_entry_with_a_cooldown(self):
+        files = {".github/dependabot.yml": WITH_COOLDOWN, "Cargo.lock": LOCK}
+        self.assertEqual(self.run_in(files, "--walk"), (1, "", "check_dependabot: cargo entry for /" + REFUSED + "\n"))
+
+    def test_success_with_walk_an_entry_without_a_cooldown(self):
         files = {".github/dependabot.yml": NO_COOLDOWN, "Cargo.lock": LOCK}
-        self.assertEqual(self.run_in(files, "--walk"), (1, "", "check_dependabot: cargo entry for /: no cooldown; a new version must wait 14 days\n"))
+        self.assertEqual(self.run_in(files, "--walk"), (0, "check_dependabot: ok (1 dependency files covered)\n", ""))
 
     def test_failure_outside_a_repository_without_walk_the_command_says_so(self):
         self.assertEqual(

@@ -656,23 +656,8 @@ jobs:
           set -euo pipefail
           python3 -I scripts/test_check_dependabot.py
           python3 -I scripts/check_dependabot.py
-      # A lockfile does not record when a version was published, so this
-      # step asks crates.io. A pull request is compared with its base, a
-      # push with the commit before it; a run started by hand has no base
-      # and checks only the dates the exception lines record.
-      - name: A crate version under 14 days old names its advisory
-        env:
-          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          set -euo pipefail
-          python3 -I scripts/test_check_dependency_age.py
-          if [ -n "$BASE" ] && [ -z "${BASE//0/}" ]; then BASE=; fi
-          if [ -n "$BASE" ]; then
-            scripts/retry.sh git fetch --no-tags --depth=1 origin "$BASE"
-            python3 -I scripts/check_dependency_age.py --registry --base "$BASE"
-          else
-            python3 -I scripts/check_dependency_age.py --registry
-          fi
+      - name: deny.toml refuses yanked versions and GPL licenses
+        run: python3 -I scripts/test_deny_config.py
       - name: Every test run has the per-test deadline
         run: |
           set -euo pipefail
@@ -871,12 +856,17 @@ jobs:
           rm -f cargo-deny
           cargo-deny --version
       # deny.toml's rules, on the workspace and on the fuzz package, which
-      # has its own Cargo.lock. Advisories are osv-scanner.yml's job.
-      - name: Licences, bans and sources
+      # has its own Cargo.lock. The advisories check refuses a yanked
+      # version; known vulnerabilities are also osv-scanner.yml's job.
+      - name: Yanked versions, licenses, bans and sources
         run: |
           set -euo pipefail
-          cargo-deny check licenses bans sources
-          cargo-deny --manifest-path fuzz/Cargo.toml --config deny.toml check licenses bans sources
+          cargo-deny check advisories licenses bans sources
+          cargo-deny --manifest-path fuzz/Cargo.toml --config deny.toml check advisories licenses bans sources
+      # The advisories check refuses a yanked version with this cargo-deny
+      # and deny.toml: a crate that depends on one must fail it.
+      - name: A yanked version fails cargo-deny
+        run: python3 -I scripts/deny_yanked_probe.py
 
   site:
     name: website

@@ -202,9 +202,8 @@ the project's own files stay visible (`scripts/check-ignored-exports.sh`), and
 that the staged CHANGELOG.md keeps the released sections of HEAD and of the
 merge base with origin/main (`scripts/check_changelog_released.py index`). Then, on a copy of exactly what is
 staged, it checks that every GitHub Action is pinned by commit
-(`scripts/check_action_pins.py`) and that every exception to the 14-day rule
-for dependency versions names its advisory
-(`scripts/check_dependency_age.py --walk`), runs the checks of the tree
+(`scripts/check_action_pins.py`) and that `deny.toml` refuses yanked
+versions and GPL licenses (`scripts/test_deny_config.py`), runs the checks of the tree
 that CI's scan job runs (`scripts/check_hook_steps.py`,
 `scripts/check_runner_images.py`, `scripts/check_changelog.py`,
 `scripts/check_test_runner.py`, `scripts/ci_success.py check`,

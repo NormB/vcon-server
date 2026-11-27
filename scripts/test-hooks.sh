@@ -419,9 +419,10 @@ pub fn add_one(x: u32) -> u32 {
     x.add(1)
 }'
 
-# The exception to the 14-day rule for dependency versions
-# (scripts/check_dependency_age.py --walk): a line that names no advisory.
-why='crates/held/Cargo.toml:1: not of the form' expect refuse "dependency-age-exception line with no advisory id" crates/held/Cargo.toml '# dependency-age-exception: serde 1.0.228 published 2026-11-01'
+# A deny.toml that no longer refuses yanked versions
+# (scripts/test_deny_config.py).
+why='no [advisories] table: a yanked version is not refused' expect refuse "deny.toml without the yanked check" deny.toml '[licenses]
+allow = ["MIT", "Apache-2.0"]'
 
 # What CI's script steps check, the hook checks first: on 2026-11-13 a how-to
 # page lost a line of a step's expected output, the hook accepted the commit

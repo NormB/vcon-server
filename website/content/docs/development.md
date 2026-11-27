@@ -361,10 +361,9 @@ git config core.hooksPath .githooks
   [Changelog entries](#changelog-entries)). On a copy of exactly what is staged,
   it checks that every action is pinned by commit
   (`scripts/check_action_pins.py`, see
-  [adding a GitHub Action](#adding-a-github-action)) and that every
-  exception to the 14-day rule for dependency versions names its advisory
-  (`scripts/check_dependency_age.py --walk`, see
-  [Contributing](#contributing)). It runs the checks of the tree that CI's
+  [adding a GitHub Action](#adding-a-github-action)) and that `deny.toml`
+  refuses yanked versions and GPL licenses
+  (`scripts/test_deny_config.py`, see [Contributing](#contributing)). It runs the checks of the tree that CI's
   scan job runs: every script a workflow runs is run by a hook or listed
   with the reason it runs only in CI (`scripts/check_hook_steps.py`, see
   [Scripts only CI runs](#scripts-only-ci-runs)), every job names a fixed
@@ -1567,8 +1566,8 @@ block such as `run: |`.
 
 To add an action:
 
-1. Choose a release at least 14 days old (see
-   [Contributing](#contributing)) and find the commit its tag names:
+1. Choose a release (see [Contributing](#contributing)) and find the commit
+   its tag names:
 
    ```sh
    gh api repos/actions/checkout/commits/v7 --jq .sha
@@ -1620,15 +1619,14 @@ local path that does not exist or leaves the repository.
   project decides;
   [MAINTAINERS.md](https://github.com/NormB/vcon-server/blob/main/MAINTAINERS.md)
   lists the maintainers.
-- **A new dependency or version:** take it only once that version has been
-  public for 14 days. Dependabot waits the same 14 days (`cooldown` in
-  `.github/dependabot.yml`), and `scripts/check_dependabot.py` fails on an
-  entry that waits less. A version that fixes a published security advisory
-  is taken sooner, under a `# dependency-age-exception:` line in the
-  `Cargo.toml` that names the crate, the fixed version, the advisory's id
-  and the day the version was published; CONTRIBUTING.md gives the form,
-  and `scripts/check_dependency_age.py` fails on a crate version under 14
-  days old that no such line names.
+- **A new dependency or version:** take it as soon as it is released.
+  Dependabot proposes it at once (no `cooldown` in
+  `.github/dependabot.yml`; `scripts/check_dependabot.py` fails on one).
+  CI's `deny` job refuses a crate under a license `deny.toml` does not
+  allow, which holds no GPL license, and a crate version crates.io lists as
+  yanked (`cargo-deny check advisories`, proved by
+  `scripts/deny_yanked_probe.py`); `scripts/test_deny_config.py` holds
+  both settings. CONTRIBUTING.md, "Dependency versions", gives the rule.
 - **A security problem:** report it privately, never in an issue; see
   [reporting a vulnerability](@/docs/security.md#reporting-a-vulnerability).
 
