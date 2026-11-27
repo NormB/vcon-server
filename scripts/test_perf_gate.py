@@ -71,14 +71,16 @@ def measured(**metrics):
 
 
 def baseline(tolerance=0.02, exact=0.0, **metrics):
-    """A baseline: every metric 100.0 but those given; fsyncs held exactly."""
+    """A baseline: every metric 100.0 but those given; the event counts
+    (fsyncs, threads) held exactly, since a band of 100 would hold more
+    than one more each."""
     values = {name: 100.0 for name in pg.metric_names()}
     values.update(metrics)
     return {
         "arch": "x86_64",
         "inputs": dict(INPUTS),
         "metrics": {
-            name: {"value": value, "tolerance": exact if name.endswith(".fsyncs") else tolerance}
+            name: {"value": value, "tolerance": exact if name.endswith(pg.EVENT_METRICS) else tolerance}
             for name, value in values.items()
         },
     }
@@ -374,6 +376,51 @@ class Compare(unittest.TestCase):
         failures, _ = pg.compare(b, measured(**{"create.fsyncs": 5.036}))
         self.assertEqual(len(failures), 1, "4.036 with a 20% band holds 0.81 more, not 1")
 
+    def with_slack(self, name, value, slack, tolerance=0.02):
+        b = baseline(**{name: value})
+        b["metrics"][name].update(tolerance=tolerance, slack=slack)
+        return b
+
+    def test_a_zero_baseline_with_slack_holds_one_stray_thread_a_run(self):
+        # One thread more over a run of 500 reads is 0.002 a read.
+        failures, _ = pg.compare(self.with_slack("read.threads", 0.0, 3 / 500), measured(**{"read.threads": 0.002}))
+        self.assertEqual(failures, [], "a stray thread a run is not a regression")
+
+    def test_a_zero_baseline_with_slack_holds_a_stray_below_too(self):
+        failures, _ = pg.compare(self.with_slack("list.threads", 0.01, 3 / 100), measured(**{"list.threads": 0.0}))
+        self.assertEqual(failures, [], "one thread fewer a run is no improvement to ratchet")
+
+    def test_one_thread_more_per_operation_fails_at_every_workload_size(self):
+        for ops in (10, 100, 500, 5000):
+            for name in ("read.threads", "create.fsyncs"):
+                b = self.with_slack(name, 1.0, 3 / ops)
+                failures, _ = pg.compare(b, measured(**{name: 2.0}))
+                self.assertEqual(len(failures), 1, f"{name} with slack 3/{ops}: one more each fails")
+
+    def test_slack_widens_the_band_by_its_value(self):
+        failures, _ = pg.compare(self.with_slack("read.syscalls", 100.0, 1.0), measured(**{"read.syscalls": 102.9}))
+        self.assertEqual(failures, [], "2% and 1 more")
+        failures, _ = pg.compare(self.with_slack("read.syscalls", 100.0, 1.0), measured(**{"read.syscalls": 103.1}))
+        self.assertEqual(len(failures), 1, "past both")
+
+    def test_a_thread_band_that_holds_one_more_thread_is_refused_naming_it(self):
+        with self.assertRaises(pg.GateError) as refused:
+            pg.compare(self.with_slack("read.threads", 0.0, 1.0), measured())
+        self.assertIn("read.threads", str(refused.exception), "the metric named")
+
+    def test_an_fsync_band_whose_slack_holds_one_more_sync_is_refused(self):
+        with self.assertRaises(pg.GateError) as refused:
+            pg.compare(self.with_slack("create.fsyncs", 4.0, 0.95, tolerance=0.02), measured())
+        self.assertIn("create.fsyncs", str(refused.exception), "4 x 2% + 0.95 holds a fifth sync")
+
+    def test_a_negative_slack_is_refused(self):
+        with self.assertRaises(pg.GateError, msg="a band below its value"):
+            pg.compare(self.with_slack("read.syscalls", 100.0, -1.0), measured())
+
+    def test_a_slack_that_is_not_a_number_is_refused(self):
+        with self.assertRaises(pg.GateError, msg="not a number"):
+            pg.compare(self.with_slack("read.syscalls", 100.0, "some"), measured())
+
     def test_an_fsync_band_that_holds_one_more_sync_is_refused(self):
         b = baseline(**{"create.fsyncs": 4.0})
         b["metrics"]["create.fsyncs"]["tolerance"] = 0.25
@@ -477,6 +524,13 @@ class Update(unittest.TestCase):
         new = pg.updated_baseline(b, measured(**{"read.instructions": 120.0}))
         self.assertEqual(new["metrics"]["read.instructions"], {"value": 120.0, "tolerance": 0.03}, "kept")
         self.assertEqual(new["metrics"]["create.fsyncs"]["tolerance"], 0.0, "exact stays exact")
+
+    def test_keeps_each_slack(self):
+        b = baseline()
+        b["metrics"]["read.threads"]["slack"] = 0.006
+        new = pg.updated_baseline(b, measured(**{"read.threads": 0.002}))
+        self.assertEqual(new["metrics"]["read.threads"]["slack"], 0.006, "the slack is the reviewer's, kept")
+        self.assertNotIn("slack", new["metrics"]["read.syscalls"], "none where there was none")
 
     def test_takes_the_arch_inputs_and_valgrind(self):
         m = measured()

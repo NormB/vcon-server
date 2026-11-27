@@ -81,6 +81,11 @@ DEFAULT_TOLERANCE = 0.02
 # read in two runs). compare refuses a band that would hold one more sync
 # per operation.
 FSYNC_TOLERANCE = 0.01
+# Counts of whole events a run can have one or two more of: their bands
+# may carry `slack`, an absolute part (k events a run over the
+# operations), and compare refuses a band that holds one more per
+# operation.
+EVENT_METRICS = (".fsyncs", ".threads")
 # Per-operation numbers are rounded to three places; two equal counts
 # differ by less than half the last place.
 EPSILON = 0.0005
@@ -309,16 +314,20 @@ def compare(baseline: dict, measured: dict, other_arch_report_only: bool = False
         tolerance = _number(held[name].get("tolerance"), f"the tolerance of {name}")
         if not 0 <= tolerance < 1:
             raise GateError(f"the tolerance of {name} is {tolerance}: it must be at least 0 and under 1")
-        if name.endswith(".fsyncs") and base * tolerance >= 1:
+        slack = _number(held[name].get("slack", 0), f"the slack of {name}")
+        if slack < 0:
+            raise GateError(f"the slack of {name} is {slack}: it must be at least 0")
+        if name.endswith(EVENT_METRICS) and base * tolerance + slack >= 1:
             raise GateError(
-                f"the tolerance of {name} holds {base * tolerance} syncs more per operation: one more must fail"
+                f"the band of {name} holds {base * tolerance + slack} more per operation: one more must fail"
             )
         value = _number(got[name], f"the measured {name}")
         change = f"{(value - base) / base * 100:+.2f}%" if base else "from 0"
-        notes.append(f"{name}: {base} -> {value} ({change}, tolerance {tolerance * 100:.2f}%)")
-        if value > base * (1 + tolerance) + EPSILON:
-            failures.append(f"{name}: worse, {value} against {base} ({change}; tolerance {tolerance * 100:.2f}%)")
-        elif value < base * (1 - tolerance) - EPSILON:
+        band = f"tolerance {tolerance * 100:.2f}%" + (f", slack {slack}" if slack else "")
+        notes.append(f"{name}: {base} -> {value} ({change}, {band})")
+        if value > base * (1 + tolerance) + slack + EPSILON:
+            failures.append(f"{name}: worse, {value} against {base} ({change}; {band})")
+        elif value < base * (1 - tolerance) - slack - EPSILON:
             failures.append(
                 f"{name}: better, {value} against {base} ({change}): commit the baseline with {value}"
             )
@@ -341,6 +350,8 @@ def updated_baseline(baseline: dict, measured: dict) -> dict:
         else:
             tolerance = DEFAULT_TOLERANCE
         metrics[name] = {"value": value, "tolerance": tolerance}
+        if name in held and "slack" in held[name]:
+            metrics[name]["slack"] = held[name]["slack"]
     return {
         "arch": measured["arch"],
         "inputs": copy.deepcopy(measured["inputs"]),
@@ -511,7 +522,9 @@ def main(argv: list[str], out=sys.stdout, err=sys.stderr) -> int:
     m.add_argument("--out", required=True)
     m.add_argument("--count", type=int, default=500)
     m.add_argument("--reads", type=int, default=500)
-    m.add_argument("--pages", type=int, default=100)
+    # 1,000: the syscall noise of a run is a number of calls (on ten CI
+    # runs, up to 50 from the base's median), spread over the pages.
+    m.add_argument("--pages", type=int, default=1000)
     for name in ("compare", "update"):
         c = sub.add_parser(name)
         c.add_argument("baseline")

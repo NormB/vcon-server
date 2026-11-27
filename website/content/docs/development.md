@@ -1162,7 +1162,7 @@ of the new version: fix the code, as for any other alert.
   under valgrind: cachegrind (`--cache-sim=no`, `--trace-syscalls=yes`)
   for the instructions and the syscalls, DHAT for the allocations. The
   four workloads are 500 stores (the base), 1,000 stores, 500 stores then
-  500 reads, and 500 stores then 100 list pages of 100 (`vcon-scale`
+  500 reads, and 500 stores then 1,000 list pages of 100 (`vcon-scale`
   asks for the newest page again after the last). A count per operation
   is a workload's total less the base's, over the operations it added, so
   the start, the tenant's open and the shutdown cancel out. `fsyncs` counts fsync, fdatasync, syncfs and
@@ -1181,7 +1181,11 @@ of the new version: fix the code, as for any other alert.
   other writes were 1003 in both), and the start of a thread (clone,
   clone3, set_robust_list, rseq, sigaltstack). Threads are a count of
   their own, `threads` (clone and clone3), so a change that starts a
-  thread per request fails the gate.
+  thread per request fails the gate. A count of whole events (fsyncs,
+  threads) can be one or two more in a run, so its band may carry
+  `slack`, an absolute part per operation, beside the tolerance; `compare`
+  refuses a band of either that would let one more event per operation
+  pass.
 - **Prerequisites.** valgrind, Python 3, `jq` and `openssl` (for
   scale-run.sh), and release builds of `vcon-server` and `vcon-scale`.
   The baseline holds x86_64 counts, which is what CI's runners are.

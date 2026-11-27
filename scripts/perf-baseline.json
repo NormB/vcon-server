@@ -4,69 +4,76 @@
     "concurrency": 1,
     "count": 500,
     "mix": "1:2048",
-    "pages": 100,
+    "pages": 1000,
     "reads": 500,
     "seed": 7
   },
   "metrics": {
     "create.allocations": {
-      "tolerance": 0.02,
-      "value": 0.0
+      "tolerance": 0.006,
+      "value": 316.746
     },
     "create.fsyncs": {
-      "tolerance": 0.01,
-      "value": 0.0
+      "slack": 0.006,
+      "tolerance": 0.0,
+      "value": 4.036
     },
     "create.instructions": {
-      "tolerance": 0.02,
-      "value": 0.0
+      "tolerance": 0.01,
+      "value": 1951727.316
     },
     "create.syscalls": {
-      "tolerance": 0.02,
-      "value": 0.0
+      "tolerance": 0.008,
+      "value": 69.312
     },
     "create.threads": {
-      "tolerance": 0.02,
+      "slack": 0.006,
+      "tolerance": 0.0,
       "value": 0.0
     },
     "list.allocations": {
-      "tolerance": 0.02,
-      "value": 0.0
+      "tolerance": 0.005,
+      "value": 2704.485
     },
     "list.fsyncs": {
-      "tolerance": 0.01,
-      "value": 0.0
+      "slack": 0.03,
+      "tolerance": 0.0,
+      "value": 1.03
     },
     "list.instructions": {
-      "tolerance": 0.02,
-      "value": 0.0
+      "tolerance": 0.008,
+      "value": 3765973.055
     },
     "list.syscalls": {
-      "tolerance": 0.02,
-      "value": 0.0
+      "slack": 1.5,
+      "tolerance": 0.005,
+      "value": 19.885
     },
     "list.threads": {
-      "tolerance": 0.02,
+      "slack": 0.03,
+      "tolerance": 0.0,
       "value": 0.0
     },
     "read.allocations": {
-      "tolerance": 0.02,
-      "value": 0.0
+      "tolerance": 0.005,
+      "value": 152.986
     },
     "read.fsyncs": {
-      "tolerance": 0.01,
-      "value": 0.0
+      "slack": 0.006,
+      "tolerance": 0.0,
+      "value": 1.012
     },
     "read.instructions": {
-      "tolerance": 0.02,
-      "value": 0.0
+      "tolerance": 0.015,
+      "value": 673385.1
     },
     "read.syscalls": {
-      "tolerance": 0.02,
-      "value": 0.0
+      "tolerance": 0.009,
+      "value": 26.69
     },
     "read.threads": {
-      "tolerance": 0.02,
+      "slack": 0.006,
+      "tolerance": 0.0,
       "value": 0.0
     }
   },
