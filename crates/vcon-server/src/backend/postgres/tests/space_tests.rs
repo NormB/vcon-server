@@ -17,7 +17,7 @@ pub(super) mod on_a_server {
     use crate::envelope::{self, Key, REGISTRY};
     use crate::fs::OsFs;
     use crate::ids::{TenantId, VersionId};
-    use crate::store::{Caller, OpenError, Store, StoreError};
+    use crate::store::{Caller, OpenError, Store};
     use crate::tenants::TenantError;
 
     /// The tables that hold a tenant's rows and are emptied of them when
@@ -401,6 +401,12 @@ pub(super) mod on_a_server {
 
     // What must be refused.
 
+    /// The database has no catalog for the tenant, with that cause kept
+    /// for `check` and `serve` (tenants.rs, OpenFailure::cause).
+    fn no_catalog(e: &OpenError) -> bool {
+        matches!(e, OpenError::Catalog(cause) if cause.to_string() == "the database has no catalog for the tenant")
+    }
+
     #[test]
     fn a_tenant_that_was_never_made_does_not_open() {
         let (_db, _database, _s3, space) = space();
@@ -411,10 +417,7 @@ pub(super) mod on_a_server {
             Some(crate::store::pending::Writers::None),
             clock(),
         ));
-        assert!(
-            matches!(e, OpenError::Store(StoreError::Io)),
-            "no catalog: {e:?}"
-        );
+        assert!(no_catalog(&e), "no catalog: {e:?}");
         assert_eq!(space.present().expect("lists"), [], "and none was made");
     }
 
@@ -485,7 +488,7 @@ pub(super) mod on_a_server {
         let e = space
             .make(REGISTRY, keys.key(), clock())
             .expect_err("refused");
-        assert!(matches!(e, OpenError::Store(StoreError::Io)), "{e:?}");
+        assert!(no_catalog(&e), "{e:?}");
         assert_eq!(space.present().expect("lists"), [], "nothing was made");
     }
 
@@ -536,10 +539,7 @@ pub(super) mod on_a_server {
             Some(crate::store::pending::Writers::None),
             clock(),
         ));
-        assert!(
-            matches!(e, OpenError::Store(StoreError::Io)),
-            "no catalog: {e:?}"
-        );
+        assert!(no_catalog(&e), "no catalog: {e:?}");
     }
 
     #[test]
