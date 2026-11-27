@@ -169,7 +169,7 @@ fn the_refusal_s_text_names_the_file_the_tables_and_the_cause() {
     assert_eq!(
         text,
         format!(
-            "{} holds tables (note, tag) but no schema version: it is damaged, or another program wrote it",
+            "{} is damaged, or another program wrote it: it holds tables but no schema version (note, tag)",
             path(&dir).display()
         ),
         "the whole text"
@@ -271,7 +271,7 @@ fn a_server_sqlite_with_tables_at_version_0_is_refused_with_the_text() {
     };
     let text = crate::tenants::with_causes(&refused);
     assert!(
-        text.contains("server.sqlite holds tables (") && text.contains("but no schema version"),
+        text.contains("server.sqlite is damaged, or another program wrote it: it holds tables but no schema version ("),
         "the cause is shown: {text}"
     );
     assert!(text.contains("tenant"), "a table named: {text}");
@@ -361,7 +361,7 @@ fn one_table_is_named_alone() {
     conn.execute_batch("PRAGMA user_version = 0").expect("set");
     drop(conn);
     let text = refused(&dir, &key, "CREATE TABLE only (x);").to_string();
-    assert!(text.contains("holds tables (only) but"), "{text}");
+    assert!(text.ends_with("but no schema version (only)"), "{text}");
 }
 
 #[test]

@@ -285,7 +285,8 @@ impl std::fmt::Display for CatalogError {
             }
             CatalogError::Unversioned { path, tables } => write!(
                 f,
-                "{} holds tables ({}) but no schema version: it is damaged, or another program wrote it",
+                // The cause first: `check` shows the first 200 characters.
+                "{} is damaged, or another program wrote it: it holds tables but no schema version ({})",
                 path.display(),
                 tables.join(", ")
             ),

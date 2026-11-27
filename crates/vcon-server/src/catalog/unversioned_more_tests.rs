@@ -225,7 +225,7 @@ fn a_tenant_catalog_s_refusal_names_its_file() {
     };
     assert!(
         e.to_string().starts_with(&format!(
-            "{} holds tables (",
+            "{} is damaged, or another program wrote it: it holds tables",
             dir.path().join("catalog.sqlite").display()
         )),
         "{e}"
