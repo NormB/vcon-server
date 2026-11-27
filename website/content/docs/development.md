@@ -1145,6 +1145,67 @@ of the new version: fix the code, as for any other alert.
   `scripts/test_contract_job.py`, run by the commit hook and CI, tests the
   script and the workflow without the GitHub API.
 
+### The performance gate
+
+- **Purpose.** The `perf gate, counts per operation` job of
+  `.github/workflows/ci.yml` fails a change that makes a create, a read or
+  a list page cost more. It holds counts that do not depend on the
+  runner's CPU speed or on its load: the server's instructions, its
+  syscalls, its fsyncs and its heap allocations, each per operation, in
+  `scripts/perf-baseline.json`. Wall time depends on both, so no job
+  fails on it; the `scale` job reports it.
+- **How it measures.** `scripts/perf_gate.py measure` runs
+  `scripts/scale-run.sh` eight times, each with a fresh server built in
+  release mode and one client (`--concurrency 1`, `--seed 7`, `--mix
+  1:2048`). `SCALE_SERVE_WRAP=scripts/perf-serve.sh` runs the server
+  under valgrind: cachegrind (`--cache-sim=no`, `--trace-syscalls=yes`)
+  for the instructions and the syscalls, DHAT for the allocations. The
+  four workloads are 500 stores (the base), 1,000 stores, 500 stores then
+  500 reads, and 500 stores then 100 list pages of 100 (`vcon-scale`
+  asks for the newest page again after the last). A count per operation
+  is a workload's total less the base's, over the operations it added, so
+  the start, the tenant's open and the shutdown cancel out. `fsyncs` counts fsync, fdatasync, syncfs and
+  sync_file_range. It is not a whole number (on 2026-11-27, 4.036 a store,
+  and 1.014 and 1.012 a read in two runs), but `compare` refuses a
+  tolerance that would let one more sync per operation pass. Each count has the tolerance the baseline gives it.
+  Two parts of a run follow the clock, not the work, and are left out:
+  the instructions of aws-lc's CPU jitter entropy source (`jent_*` and
+  its helpers), which runs as many rounds as the clock asks, and the
+  calls that wait or read the clock (futex, epoll, clock_gettime, sleeps).
+  On 2026-11-27, three runs of the base workload (20 stores) on thor-02
+  ranged over 1.53 million instructions with the jitter source in and
+  over 0.02 million without it.
+- **Prerequisites.** valgrind, Python 3, `jq` and `openssl` (for
+  scale-run.sh), and release builds of `vcon-server` and `vcon-scale`.
+  The baseline holds x86_64 counts, which is what CI's runners are.
+- **Steps.** From the top of the clone:
+
+  ```sh
+  cargo build --locked --release -p vcon-server -p vcon-scale
+  python3 -I scripts/perf_gate.py measure --server target/release/vcon-server \
+    --scale target/release/vcon-scale --out perf-measured.json
+  python3 -I scripts/perf_gate.py compare scripts/perf-baseline.json perf-measured.json
+  ```
+
+  On another arch, add `--other-arch-report-only` to `compare`: it then
+  prints each change and fails nothing, because instruction counts of one
+  arch say nothing about another.
+- **Verify.** `compare` prints one line per count, the baseline's number,
+  the measured one and the change, then `every metric is inside its
+  tolerance`, and exits 0.
+- **Troubleshoot.** Exit 1 names each count that is `worse` or `better`
+  past its tolerance, measured with other inputs, or not held. A change
+  that costs more or less on purpose commits the new baseline. Take it
+  from the job's `perf-measured` artifact, or the baseline `compare`
+  prints on stdout, and write it with `python3 -I scripts/perf_gate.py
+  update scripts/perf-baseline.json perf-measured.json`. That command
+  keeps each tolerance. The commit says why the count moved; CI never
+  writes the baseline. `better` fails too, so the baseline follows an
+  improvement down and a later regression cannot hide in the gap. Exit 2:
+  a run failed or a file cannot be read, and the message says which.
+  `scripts/test_perf_gate.py`, run by the commit hook, tests every rule
+  without valgrind.
+
 ### Runner images
 
 Every job names a fixed runner image: `ubuntu-24.04`, or

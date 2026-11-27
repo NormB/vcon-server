@@ -65,6 +65,8 @@ CI_ONLY = {
     "scripts/test-check-package.sh": "packages the crates in two more copies of the tree; the hook runs scripts/check_package.py once",
     "scripts/run-clients.sh": "runs each client example against a live server; needs go and node besides the build",
     "scripts/scale-run.sh": "stores 100,000 vCons in a live server built in release mode (the three phases of the pilot of 10,000 took 35 s here on 2026-11-20); crates/vcon-scale/tests, which the hook runs, test the harness's rules",
+    "scripts/perf_gate.py measure": "runs eight release servers under valgrind (x86_64 counts; the baseline is CI's arch); the hook runs scripts/test_perf_gate.py, which tests every rule",
+    "scripts/perf_gate.py compare": "compares the counts `measure` wrote in the same job with the baseline; the hook runs scripts/test_perf_gate.py, which tests the comparison",
     "scripts/docs_test.py run": "runs a how-to scenario in a container, against a built server",
     "scripts/fuzz.sh run": "runs a fuzz target for a fixed time on the nightly toolchain",
     "scripts/fuzz.sh plant": "plants a panic and runs a fuzz target until it finds it",

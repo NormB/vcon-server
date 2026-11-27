@@ -1,0 +1,62 @@
+{
+  "arch": "x86_64",
+  "inputs": {
+    "concurrency": 1,
+    "count": 500,
+    "mix": "1:2048",
+    "pages": 100,
+    "reads": 500,
+    "seed": 7
+  },
+  "metrics": {
+    "create.allocations": {
+      "tolerance": 0.02,
+      "value": 0.0
+    },
+    "create.fsyncs": {
+      "tolerance": 0.01,
+      "value": 0.0
+    },
+    "create.instructions": {
+      "tolerance": 0.02,
+      "value": 0.0
+    },
+    "create.syscalls": {
+      "tolerance": 0.02,
+      "value": 0.0
+    },
+    "list.allocations": {
+      "tolerance": 0.02,
+      "value": 0.0
+    },
+    "list.fsyncs": {
+      "tolerance": 0.01,
+      "value": 0.0
+    },
+    "list.instructions": {
+      "tolerance": 0.02,
+      "value": 0.0
+    },
+    "list.syscalls": {
+      "tolerance": 0.02,
+      "value": 0.0
+    },
+    "read.allocations": {
+      "tolerance": 0.02,
+      "value": 0.0
+    },
+    "read.fsyncs": {
+      "tolerance": 0.01,
+      "value": 0.0
+    },
+    "read.instructions": {
+      "tolerance": 0.02,
+      "value": 0.0
+    },
+    "read.syscalls": {
+      "tolerance": 0.02,
+      "value": 0.0
+    }
+  },
+  "valgrind": "valgrind-3.22.0"
+}

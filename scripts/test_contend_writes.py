@@ -279,6 +279,8 @@ FAKE_SERVER = textwrap.dedent(
             f.write("server\\n")
         os._exit(0)
     threading.Thread(target=watch_parent, daemon=True).start()
+    # A server that takes this long to listen, as one under valgrind does.
+    time.sleep(float(os.environ.get("FAKE_START_DELAY", "0")))
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(value("cert"), value("key"))
@@ -393,7 +395,7 @@ class ScaleRun(unittest.TestCase):
 
     def start_script(self, **env):
         full = dict(os.environ, FAKE_DIR=str(self.rec), SCALE_DISK="test disk")
-        for name in ("SCALE_WRITERS", "SCALE_CATALOG"):
+        for name in ("SCALE_WRITERS", "SCALE_CATALOG", "SCALE_SERVE_WRAP", "SCALE_START_SECONDS"):
             full.pop(name, None)
         full.update(env)
         # A session of its own, so the deadline ends the script and every
@@ -562,6 +564,46 @@ class ScaleRun(unittest.TestCase):
         config = (self.rec / "config.toml").read_text()
         self.assertTrue(config.endswith('[catalog]\nbackend = "postgres"\n'), f"the section ends the configuration: {config}")
         self.assertIn("[tls]", config, f"the run's own sections are kept: {config}")
+
+    def wrapper(self):
+        """A SCALE_SERVE_WRAP that records its arguments, then runs them."""
+        path = self.dir / "wrap"
+        path.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "$FAKE_DIR/wrapped"\nexec "$@"\n')
+        path.chmod(0o755)
+        return path
+
+    def test_the_server_is_started_through_the_wrapper_with_its_arguments_whole(self):
+        done = self.run_script(SCALE_SERVE_WRAP=str(self.wrapper()), FAKE_PUTS="0")
+        self.assertEqual(done.returncode, 0, f"the run passes: {done.stderr}")
+        wrapped = (self.rec / "wrapped").read_text().splitlines()
+        self.assertEqual(wrapped[0], str((self.dir / "server").resolve()), f"the server first: {wrapped}")
+        self.assertEqual(wrapped[1:3], ["serve", "--config"], f"then serve and its configuration: {wrapped}")
+        self.assertTrue((self.rec / "config.toml").exists(), "the server ran")
+
+    def test_without_a_wrapper_the_server_is_started_itself(self):
+        done = self.run_script(FAKE_PUTS="0")
+        self.assertEqual(done.returncode, 0, f"the run passes: {done.stderr}")
+        self.assertFalse((self.rec / "wrapped").exists(), "no wrapper ran")
+
+    def test_a_wrapper_that_cannot_be_run_is_refused_before_anything_is_made(self):
+        done = self.run_script(SCALE_SERVE_WRAP=str(self.dir / "no-such-wrapper"), FAKE_PUTS="0")
+        self.assertEqual(done.returncode, 2, f"a usage error: {done.stderr}")
+        self.assertIn("SCALE_SERVE_WRAP", done.stderr, f"the message names the variable: {done.stderr}")
+        self.assertEqual(list(self.parent.iterdir()), [], "no work directory was made")
+
+    def test_a_slow_server_is_waited_for_as_long_as_the_start_allows(self):
+        done = self.run_script(SCALE_START_SECONDS="20", FAKE_START_DELAY="1.5", FAKE_PUTS="0")
+        self.assertEqual(done.returncode, 0, f"the run passes: {done.stderr}")
+
+    def test_a_server_slower_than_the_start_allows_fails_the_run(self):
+        done = self.run_script(SCALE_START_SECONDS="1", FAKE_START_DELAY="4", FAKE_PUTS="0")
+        self.assertEqual(done.returncode, 1, f"the run fails: {done.stderr}")
+        self.assertIn("never said where it listens", done.stderr, f"and says why: {done.stderr}")
+
+    def test_a_start_time_that_is_not_a_number_of_seconds_is_refused(self):
+        done = self.run_script(SCALE_START_SECONDS="ten", FAKE_PUTS="0")
+        self.assertEqual(done.returncode, 2, f"a usage error: {done.stderr}")
+        self.assertIn("SCALE_START_SECONDS", done.stderr, f"the message names the variable: {done.stderr}")
 
     def test_every_file_the_run_made_is_deleted(self):
         done = self.run_script(SCALE_WRITERS="1", FAKE_PUTS="2")

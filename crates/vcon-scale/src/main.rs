@@ -86,15 +86,14 @@ fn expect_status(
     }
 }
 
-/// The list pages: follows `next` from the newest page, `pages` times at
-/// most, one after another.
+/// The list pages: `pages` of them, one after another, following `next`
+/// from the newest page and from the newest again after the last
+/// (`pages::follow`).
 fn lists(http: &Client, o: &Options, bearer: &str, pages: u64) -> Phase {
     let started = Instant::now();
     let mut latencies = Vec::new();
-    let mut errors = 0;
-    let mut cursor: Option<String> = None;
-    while (latencies.len() as u64) < pages {
-        let path = match &cursor {
+    let followed = vcon_scale::pages::follow(pages, |cursor| {
+        let path = match cursor {
             Some(c) => format!("{}/vcons?limit=100&cursor={c}", o.url),
             None => format!("{}/vcons?limit=100", o.url),
         };
@@ -110,21 +109,14 @@ fn lists(http: &Client, o: &Options, bearer: &str, pages: u64) -> Phase {
                 .map_err(|e| format!("GET /vcons: {e}"))
         });
         latencies.push(u64::try_from(sent.elapsed().as_micros()).unwrap_or(u64::MAX));
-        match page {
-            Ok(page) => match page["next"].as_str() {
-                Some(next) => cursor = Some(next.to_owned()),
-                None => break,
-            },
-            Err(why) => {
-                stderr::line(&format!("vcon-scale: {why}"));
-                errors += 1;
-                break;
-            }
-        }
+        page.map(|page| page["next"].as_str().map(str::to_owned))
+    });
+    if let Some(why) = &followed.error {
+        stderr::line(&format!("vcon-scale: {why}"));
     }
     Phase {
-        requests: latencies.len() as u64,
-        errors,
+        requests: followed.asked,
+        errors: u64::from(followed.error.is_some()),
         micros: u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
         latency: stats::summarize(&mut latencies),
     }

@@ -91,7 +91,7 @@ Flags after `--` go to `vcon-scale run`:
 |---|---|---|
 | `--concurrency` | 8 | the clients that send at once (1 to 256) |
 | `--reads` | 1000 | the reads after the stores |
-| `--list-pages` | 10 | the list pages of 100 to follow |
+| `--list-pages` | 10 | the list pages of 100 to follow, from the newest page again after the last |
 | `--seed` | 1 | the generator's seed: the same seed makes the same vCons |
 | `--mix` | `70:2048,25:16384,5:262144` | the size mix, as `weight:bytes` parts |
 | `--max-load` | 28 | the highest 1-minute load at which a run starts |
@@ -119,6 +119,14 @@ is added to the end of the server's configuration, for example the
 [the PostgreSQL catalog](@/docs/postgres-catalog.md). The script does not
 make or migrate that database: give each run an empty, migrated database
 and a bucket prefix nothing else uses.
+
+To start the server through another program, set `SCALE_SERVE_WRAP` to
+an executable file: the script runs `FILE SERVER serve --config ...` in
+place of `SERVER serve --config ...`. The
+[performance gate](@/docs/development.md#the-performance-gate) sets it to
+`scripts/perf-serve.sh`, which runs the server under valgrind. A server
+run that way takes longer to start: `SCALE_START_SECONDS` is how long the
+script waits for it to say where it listens (default 10).
 
 Measured on 2026-11-24 on the Jetson AGX Thor of the first row, 2,000
 stores then 10,000 reads, 8 clients and 2 writers in one tenant, with
