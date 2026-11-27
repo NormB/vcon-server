@@ -329,6 +329,11 @@ impl fmt::Display for CommandError {
                 BackupError::AuditFailed => "the audit record could not be written",
                 BackupError::NoFileBackup => tenants::NO_FILE_BACKUP,
             }),
+            CommandError::Tenant(TenantError::UnknownSchema(version)) => write!(
+                f,
+                "the tenant's catalog is at schema version {version}, which this build does not \
+                 know: a newer build upgraded it; run that build or a newer one"
+            ),
             CommandError::Tenant(e) => f.write_str(match e {
                 TenantError::NotFound => "no tenant has this id",
                 TenantError::NameTaken => "another tenant has this name",
@@ -358,6 +363,7 @@ impl fmt::Display for CommandError {
                 TenantError::NoFileBackup => {
                     "the registry is kept in PostgreSQL, which this backend does not copy into a file; back up the catalog database with pg_dump"
                 }
+                TenantError::UnknownSchema(_) => unreachable!("matched above"),
                 TenantError::Io => "the data could not be read or written",
             }),
         }
@@ -1024,6 +1030,27 @@ fn check(config: &Config, tenants: &Tenants, out: &mut dyn Write) -> Result<(), 
     }
 }
 
+/// `check`'s line for a tenant whose Store did not open: a key that does
+/// not open its catalog is a key problem; anything else is named with its
+/// cause (the path and the system's error, the schema version, or the
+/// catalog's error), or, with none known, the refusal.
+pub(crate) fn open_problem(failure: &OpenFailure) -> String {
+    match failure {
+        OpenFailure::WrongKey => "its catalog does not open under its tenant key".to_owned(),
+        OpenFailure::Access { path, error } => {
+            format!("its catalog cannot be opened: {}: {error}", path.display())
+        }
+        OpenFailure::Refused(e) => match failure.cause() {
+            Some(cause) => format!("its catalog cannot be opened: {cause}"),
+            None => format!("its catalog cannot be opened: {e:?}"),
+        },
+        OpenFailure::Catalog(_) => format!(
+            "its catalog cannot be opened: {}",
+            failure.cause().unwrap_or_default()
+        ),
+    }
+}
+
 /// What in one tenant's examination needs the operator. A stalled sweep is
 /// one whose oldest due version has waited longer than `purge_interval`;
 /// a shorter wait is the next sweep's work. Packed versions are a problem
@@ -1041,18 +1068,7 @@ pub fn problems(
         found.push("a key rotation was stopped part way; run rekey tenant again".to_owned());
     }
     match &tenant.store {
-        Err(Unexamined::Open(OpenFailure::WrongKey)) => {
-            found.push("its catalog does not open under its tenant key".to_owned());
-        }
-        Err(Unexamined::Open(OpenFailure::Access { path, error })) => {
-            found.push(format!(
-                "its catalog cannot be opened: {}: {error}",
-                path.display()
-            ));
-        }
-        Err(Unexamined::Open(OpenFailure::Refused(e))) => {
-            found.push(format!("its catalog cannot be opened: {e:?}"));
-        }
+        Err(Unexamined::Open(failure)) => found.push(open_problem(failure)),
         Err(Unexamined::Examine(ExamineError::Objects { kind, os_error })) => {
             let number = os_error
                 .map(|n| format!(" (os error {n})"))
@@ -2526,6 +2542,7 @@ mod tests {
                 // into WrongMasterKey's message.
                 TenantError::WrongKey => "is not the one server.sqlite was made under",
                 TenantError::NoFileBackup => "back up the catalog database with pg_dump",
+                TenantError::UnknownSchema(_) => "schema version 11",
                 TenantError::Io => "could not be read or written",
             },
         }
@@ -2804,6 +2821,7 @@ mod tests {
             TenantError::BadSetting(crate::settings::SettingError::UnknownName),
             TenantError::WrongKey,
             TenantError::NoFileBackup,
+            TenantError::UnknownSchema(11),
             TenantError::Io,
         ]
         .map(CommandError::Tenant);

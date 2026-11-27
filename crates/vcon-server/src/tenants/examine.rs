@@ -116,8 +116,8 @@ impl Tenants {
                 Err(OpenFailure::WrongKey) => true,
                 Err(failure) => {
                     order.catalogs_unopened += 1;
-                    if let OpenFailure::Access { error, .. } = failure {
-                        order.unopened_error.get_or_insert(error.to_string());
+                    if let Some(cause) = failure.cause() {
+                        order.unopened_error.get_or_insert(cause);
                     }
                     false
                 }

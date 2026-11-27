@@ -57,7 +57,8 @@ impl PgTenantSpace {
 fn open_error(e: CatalogError) -> OpenError {
     match e {
         CatalogError::WrongKey => OpenError::WrongKey,
-        _ => OpenError::Store(StoreError::Io),
+        // The cause goes with it: `check` and `serve` print it.
+        other => OpenError::Catalog(Box::new(other)),
     }
 }
 
@@ -132,5 +133,54 @@ impl TenantSpace for PgTenantSpace {
     /// One transaction: see the module's last point.
     fn reseal(&self, id: TenantId, old: &Key, new: &Key) -> Result<(), TenantError> {
         PgCatalog::reseal(&self.database, id, old, new, RESEAL_BATCH).map_err(tenant_io)
+    }
+}
+
+/// A PostgreSQL catalog that does not open keeps its cause for `check` and
+/// `serve`, as a catalog in the data directory does. (Its schema version is
+/// the database's, refused when a server connects, not a tenant's.)
+#[cfg(test)]
+mod open_error_tests {
+    use super::{CatalogError, open_error};
+    use crate::store::OpenError;
+    use crate::tenants::{OpenFailure, TenantError};
+
+    fn cause(e: CatalogError) -> Option<String> {
+        OpenFailure::from(open_error(e)).cause()
+    }
+
+    #[test]
+    fn a_missing_catalog_keeps_its_cause() {
+        assert_eq!(
+            cause(CatalogError::NoTenant).as_deref(),
+            Some("the database has no catalog for the tenant"),
+            "check's text"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_database_keeps_its_cause() {
+        assert_eq!(
+            cause(CatalogError::Io).as_deref(),
+            Some("the database could not be read"),
+            "check's text"
+        );
+    }
+
+    #[test]
+    fn a_wrong_key_is_still_a_key_problem() {
+        assert!(
+            matches!(open_error(CatalogError::WrongKey), OpenError::WrongKey),
+            "a key problem"
+        );
+    }
+
+    #[test]
+    fn a_failure_with_its_cause_is_io_to_a_request() {
+        assert_eq!(
+            TenantError::from(OpenFailure::from(open_error(CatalogError::Io))),
+            TenantError::Io,
+            "a request sees Io"
+        );
     }
 }

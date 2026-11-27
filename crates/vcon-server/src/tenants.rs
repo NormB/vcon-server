@@ -41,6 +41,8 @@ mod rekey;
 #[cfg(test)]
 mod rekey_root_tests;
 mod role_cap;
+#[cfg(test)]
+mod schema_refusal_tests;
 mod sessions;
 #[cfg(test)]
 mod statement_tests;
@@ -111,6 +113,9 @@ pub enum TenantError {
     /// kept in PostgreSQL, which is backed up with the database's own
     /// tools (`pg_dump`).
     NoFileBackup,
+    /// The tenant's catalog is at this schema version, which this build
+    /// does not know: a newer build upgraded it.
+    UnknownSchema(i64),
     Io,
 }
 
@@ -318,13 +323,59 @@ pub enum OpenFailure {
         path: PathBuf,
         error: std::io::Error,
     },
+    /// The catalog did not open, and the error that says why.
+    Catalog(Box<dyn std::error::Error + Send + Sync>),
+}
+
+/// The most characters of a cause `check`, `serve` and a command show,
+/// after its first line is taken: SQLite's error for a catalog can quote
+/// the whole schema, about 2 KB on many lines.
+pub const CAUSE_LIMIT: usize = 200;
+
+/// What a cut cause ends with.
+pub const CUT_MARKER: &str = " (cut; the whole error is in the server's debug log)";
+
+impl OpenFailure {
+    /// What `check` and `serve` print as the cause of a catalog that did
+    /// not open: the system's error, the schema version, or the catalog's
+    /// error with each error under it. None for a key that does not open
+    /// it (a key problem, reported as that) and for a refusal with no
+    /// cause known.
+    pub fn cause(&self) -> Option<String> {
+        match self {
+            OpenFailure::Access { error, .. } => Some(error.to_string()),
+            OpenFailure::Refused(TenantError::UnknownSchema(version)) => {
+                Some(crate::store::schema_refusal(*version))
+            }
+            OpenFailure::Catalog(cause) => {
+                let whole = with_causes(cause.as_ref());
+                tracing::debug!(error = %whole, "a tenant's catalog did not open");
+                Some(bounded(&whole))
+            }
+            OpenFailure::WrongKey | OpenFailure::Refused(_) => None,
+        }
+    }
+}
+
+/// `text`'s first line, at most CAUSE_LIMIT characters; CUT_MARKER after
+/// it when anything was left out.
+fn bounded(text: &str) -> String {
+    let line = text.lines().next().unwrap_or_default();
+    let shown: String = line.chars().take(CAUSE_LIMIT).collect();
+    if shown.len() == text.len() {
+        shown
+    } else {
+        shown + CUT_MARKER
+    }
 }
 
 impl From<OpenFailure> for TenantError {
     fn from(f: OpenFailure) -> TenantError {
         match f {
             OpenFailure::Refused(e) => e,
-            OpenFailure::WrongKey | OpenFailure::Access { .. } => TenantError::Io,
+            OpenFailure::WrongKey | OpenFailure::Access { .. } | OpenFailure::Catalog(_) => {
+                TenantError::Io
+            }
         }
     }
 }
@@ -340,6 +391,10 @@ impl From<OpenError> for OpenFailure {
         match e {
             OpenError::WrongKey => OpenFailure::WrongKey,
             OpenError::Access { path, error } => OpenFailure::Access { path, error },
+            OpenError::UnknownSchema(version) => {
+                OpenFailure::Refused(TenantError::UnknownSchema(version))
+            }
+            OpenError::Catalog(cause) => OpenFailure::Catalog(cause),
             OpenError::Store(_) => OpenFailure::Refused(TenantError::Io),
         }
     }
@@ -993,8 +1048,21 @@ impl Tenants {
     }
 
     /// The tenant's Store, shared by every request to it.
+    /// A catalog at a schema version this build does not know is logged
+    /// here, for the callers that see only the TenantError (a request, a
+    /// command): `check` and `serve`'s start-up check, which call
+    /// `store_or_why`, print it themselves.
     pub fn store(&self, id: TenantId) -> Result<Arc<Store>, TenantError> {
-        self.store_or_why(id).map_err(TenantError::from)
+        let store = self.store_or_why(id).map_err(TenantError::from);
+        if let Err(TenantError::UnknownSchema(version)) = store {
+            // The version only, as the other open failures log no tenant:
+            // `check` names the tenant.
+            tracing::warn!(
+                schema_version = version,
+                "a tenant's catalog is at a schema version this build does not know; vcon-server check names the tenant"
+            );
+        }
+        store
     }
 
     /// `store`, saying why a Store that did not open did not.

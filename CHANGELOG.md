@@ -8,6 +8,12 @@ All notable changes to this project are recorded here. The format follows
 
 ### Fixed
 
+- **A tenant catalog from a newer release is named with its schema version.**
+  - Was: `check`, a refused start and a command on the tenant said only
+    `Io`, as 0.4.16's `check` did on a data directory 0.4.17 had upgraded.
+  - Effect: They say `schema version 11 is not one this build knows`, and
+    the server logs the version for a request to the tenant.
+  - Docs: [Upgrade](https://vcon-server.com/docs/upgrading/)
 - **An audit count past the largest number a record holds is refused.**
   - Was: In the data directory's catalogs the count became a
     floating-point number, and `audit export` then failed on that record.

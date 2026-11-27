@@ -11,8 +11,11 @@ An upgrade replaces the binary. The data directory, the configuration and
 the keys stay as they are. A newer binary opens the data of an older one,
 and brings its catalogs up to its own schema version the first time it
 opens them, each in one transaction. An older binary refuses a catalog with
-a newer schema version than its own. So the way back from an upgrade is the
-copy of the data directory taken just before it.
+a newer schema version than its own. Releases after 0.4.18 name that
+version in `check`, in the refused start and in a command on the tenant,
+for example `its catalog cannot be opened: schema version 11 is not one this
+build knows`; 0.4.18 and earlier print `Io` there. So the way back from an
+upgrade is the copy of the data directory taken just before it.
 
 CI runs every command on this page on each change. It installs the previous
 release, sets it up as [getting started](@/docs/getting-started.md) does,

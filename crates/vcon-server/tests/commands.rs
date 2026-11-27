@@ -706,6 +706,89 @@ fn a_tenant_catalog_that_may_not_be_opened_is_named_as_that_by_check_and_serve()
     );
 }
 
+/// Sets the schema version of `tenant`'s catalog to `version`, as a newer
+/// build leaves it, through the keys the library reads it with.
+fn set_catalog_schema(s: &Setup, tenant: &str, version: i64) {
+    use vcon_server::envelope::{self, Context, Key};
+    let master = Key::load_master(&s.data.with_file_name("master.key")).expect("master");
+    let id = vcon_server::ids::TenantId::parse(tenant).expect("id");
+    let registry = vcon_server::catalog::open(
+        &s.data.join("server.sqlite"),
+        &envelope::catalog_key(&master).expect("catalog key"),
+        "",
+    )
+    .expect("the registry opens");
+    let wrapped: Vec<u8> = registry
+        .query_row(
+            "SELECT wrapped_tenant_key FROM tenant WHERE id = ?1",
+            [id.0],
+            |r| r.get(0),
+        )
+        .expect("the tenant's row");
+    drop(registry);
+    let tenant_key =
+        envelope::unwrap(&master, &Context::Tenant { tenant: id }, &wrapped).expect("unwraps");
+    let catalog = vcon_server::catalog::open(
+        &s.data.join("tenants").join(tenant).join("catalog.sqlite"),
+        &envelope::catalog_key(&tenant_key).expect("catalog key"),
+        "",
+    )
+    .expect("the tenant's catalog opens");
+    catalog
+        .pragma_update(None, "user_version", version)
+        .expect("the version is set");
+}
+
+/// A tenant catalog a newer build upgraded, read by this build: `check`
+/// and `serve` name the schema version and why it is refused, not "Io".
+/// (0.4.16's `check` on a data directory 0.4.17 had upgraded printed
+/// "its catalog cannot be opened: Io".)
+#[test]
+fn a_tenant_catalog_of_a_newer_schema_is_named_with_its_version_by_check_and_serve() {
+    let s = setup();
+    let tenant = s.ok(&["tenant", "create", "acme"])[0]["id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let newer = vcon_server::catalog::SCHEMA_VERSION + 1;
+    set_catalog_schema(&s, &tenant, newer);
+    let check = s.run(&["check"]);
+    let serve = s.run(&["serve"]);
+    let removed = s.run(&["tenant", "remove", &tenant]);
+    assert_eq!(check.status.code(), Some(1), "{}", stderr(&check));
+    let report: Vec<Value> = String::from_utf8(check.stdout)
+        .expect("text")
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("a JSON line"))
+        .collect();
+    assert_eq!(
+        report[0]["problems"],
+        serde_json::json!([format!(
+            "its catalog cannot be opened: schema version {newer} is not one this build knows"
+        )]),
+        "check names the version and the refusal"
+    );
+    assert_eq!(serve.status.code(), Some(1), "{}", stderr(&serve));
+    assert_eq!(
+        stderr(&serve),
+        format!(
+            "vcon-server: 1 tenant catalog(s) cannot be opened: schema version {newer} is not one this build knows; vcon-server check names the tenants\n"
+        ),
+        "serve's refusal names the version"
+    );
+    assert_eq!(removed.status.code(), Some(1), "{}", stderr(&removed));
+    assert!(
+        stderr(&removed).contains(&format!("schema version {newer}")),
+        "a command on the tenant names the version: {}",
+        stderr(&removed)
+    );
+    assert_eq!(
+        s.ok(&["tenant", "list"]).len(),
+        1,
+        "the refused removal left the tenant"
+    );
+}
+
 /// A page of the site's documentation, by its file name.
 fn docs_page(name: &str) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

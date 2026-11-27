@@ -1662,9 +1662,10 @@ impl Problem {
                 TenantError::LimitReached | TenantError::AuditFailed | TenantError::Closing => {
                     StatusCode::SERVICE_UNAVAILABLE
                 }
-                TenantError::WrongKey | TenantError::NoFileBackup | TenantError::Io => {
-                    StatusCode::INTERNAL_SERVER_ERROR
-                }
+                TenantError::WrongKey
+                | TenantError::NoFileBackup
+                | TenantError::UnknownSchema(_)
+                | TenantError::Io => StatusCode::INTERNAL_SERVER_ERROR,
             },
         }
     }
@@ -1789,6 +1790,7 @@ impl Problem {
                 TenantError::BadName
                 | TenantError::WrongKey
                 | TenantError::NoFileBackup
+                | TenantError::UnknownSchema(_)
                 | TenantError::Io => ("internal", "The server failed"),
             },
         }
@@ -2549,6 +2551,8 @@ mod tests {
             ),
             (TenantError::WrongKey, 500, "internal"),
             (TenantError::NoFileBackup, 500, "internal"),
+            // The server's log names the version (tenants.rs, store_or_why).
+            (TenantError::UnknownSchema(11), 500, "internal"),
             (TenantError::Io, 500, "internal"),
         ];
         for (error, status, name) in cases {
@@ -5511,6 +5515,7 @@ mod site_pages {
             TenantError::BadSetting(crate::settings::SettingError::UnknownName),
             TenantError::WrongKey,
             TenantError::NoFileBackup,
+            TenantError::UnknownSchema(11),
             TenantError::Io,
         ];
         for error in tenant {
@@ -5529,6 +5534,7 @@ mod site_pages {
                 | TenantError::BadSetting(_)
                 | TenantError::WrongKey
                 | TenantError::NoFileBackup
+                | TenantError::UnknownSchema(_)
                 | TenantError::Io => all.push(Problem::Tenant(error)),
             }
         }

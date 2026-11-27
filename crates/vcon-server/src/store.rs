@@ -129,8 +129,20 @@ pub enum OpenError {
         path: PathBuf,
         error: std::io::Error,
     },
+    /// The catalog's schema version is not one this build knows, such as
+    /// one a newer build upgraded it to.
+    UnknownSchema(i64),
+    /// The catalog did not open for another reason, held as the error
+    /// that says it.
+    Catalog(Box<dyn std::error::Error + Send + Sync>),
     /// Anything else.
     Store(StoreError),
+}
+
+/// What a catalog at schema version `version`, which this build does not
+/// know, is refused with: the catalog's own text, for `check` and `serve`.
+pub(crate) fn schema_refusal(version: i64) -> String {
+    catalog::CatalogError::UnknownSchema(version).to_string()
 }
 
 impl From<OpenError> for StoreError {
@@ -151,7 +163,9 @@ impl From<catalog::CatalogError> for OpenError {
         match e {
             catalog::CatalogError::WrongKey => OpenError::WrongKey,
             catalog::CatalogError::Access { path, error } => OpenError::Access { path, error },
-            _ => OpenError::Store(StoreError::Io),
+            catalog::CatalogError::UnknownSchema(version) => OpenError::UnknownSchema(version),
+            // The cause goes with it: `check` and `serve` print it.
+            other => OpenError::Catalog(Box::new(other)),
         }
     }
 }
