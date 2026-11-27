@@ -2451,13 +2451,14 @@ class Git:
             raise PageError(done.stderr.strip() or f"git {args[0]} exited {done.returncode}")
         return [l for l in done.stdout.splitlines() if l.strip()]
 
-    @staticmethod
-    def _range(ref: Ref, remote: str) -> list[str]:
-        # As .githooks/pre-push reads it: a new ref holds the commits the
-        # remote has on no branch.
-        if ref.remote_sha == ZERO_SHA:
-            return [ref.local_sha, "--not", f"--remotes={remote}"]
-        return [f"{ref.remote_sha}..{ref.local_sha}"]
+    def _known(self, sha: str) -> bool:
+        return self._call("cat-file", "-e", f"{sha}^{{commit}}").returncode == 0
+
+    def _exists(self, ref: str) -> bool:
+        return self._call("rev-parse", "-q", "--verify", f"{ref}^{{commit}}").returncode == 0
+
+    def _range(self, ref: Ref, remote: str) -> list[str]:
+        return pushed_range(ref, remote, known=self._known, is_ancestor=self.is_ancestor, exists=self._exists)
 
     def commits(self, ref: Ref, remote: str) -> list[str]:
         """The commits the push of `ref` sends, newest first."""
@@ -2505,9 +2506,43 @@ class Git:
         raise PageError(done.stderr.strip() or f"git merge-base exited {done.returncode}")
 
 
+def since_range(base: str, sha: str) -> list[str]:
+    """The rev-list arguments for the commits from `base` to `sha`: what
+    `push <sha> --since <base>` reads."""
+    return [sha, "--not", base]
+
+
+def pushed_range(ref: Ref, remote: str, *, known, is_ancestor, exists) -> list[str]:
+    """The rev-list arguments for the commits a push of `ref` sends, as
+    `check` (pre-push) reads them. A new ref sends the commits no branch of
+    the remote has; a fast-forward, those after the remote's old head. A ref
+    whose old head is not an ancestor of the new one (a force push after a
+    rebase), or is not in this clone, sends what `push --since <remote>/main`
+    reads: from the old head, the commits main gained under the branch would
+    count as sent (DOCS-TEST-CHECK-RANGE-FORCE-PUSH), and the refusal's own
+    command would never stamp the scenarios they need. A clone without the
+    remote's main keeps the range from the old head when it holds it, and
+    otherwise takes what no branch of the remote has."""
+    if ref.remote_sha == ZERO_SHA:
+        return [ref.local_sha, "--not", f"--remotes={remote}"]
+    old_known = known(ref.remote_sha)
+    if old_known and is_ancestor(ref.remote_sha, ref.local_sha):
+        return [f"{ref.remote_sha}..{ref.local_sha}"]
+    if exists(f"{remote}/main"):
+        return since_range(f"{remote}/main", ref.local_sha)
+    if old_known:
+        return [f"{ref.remote_sha}..{ref.local_sha}"]
+    return [ref.local_sha, "--not", f"--remotes={remote}"]
+
+
+def suggested_push(tip: str, remote: str) -> str:
+    """The command a refusal names: it reads the range `pushed_range` gives a force push."""
+    return f"python3 -I scripts/docs_test.py push {tip} --since {remote}/main"
+
+
 def range_commits(base: str, sha: str) -> list[str]:
     """The commits from `base` to `sha`, newest first."""
-    return Git().rev_list(sha, "--not", base)
+    return Git().rev_list(*since_range(base, sha))
 
 
 def affected(paths, scenarios, steps=_scenario_steps, test_only=None) -> dict:
@@ -2783,7 +2818,7 @@ def check(
             refused = True
             say(
                 f"docs scenarios: {', '.join(still)} have not passed on {tip}; run them first, from a checkout of "
-                f"that commit: python3 -I scripts/docs_test.py push {tip} --since origin/main"
+                f"that commit: {suggested_push(tip, remote)}"
             )
     return 1 if refused else 0
 

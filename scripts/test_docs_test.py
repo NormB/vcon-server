@@ -4388,9 +4388,15 @@ class RealGit(unittest.TestCase):
         self.assertFalse(self.git.is_ancestor(self.shas["c3"], self.shas["c0"]), "c3 is not under c0")
 
     # Failure.
-    def test_an_unknown_commit_is_an_error(self):
+    def test_an_unknown_old_head_is_read_from_the_remotes_main(self):
+        # It was a PageError until DOCS-TEST-CHECK-RANGE-FORCE-PUSH: a branch
+        # whose old head this clone does not hold is pushed from main's range.
+        self.assertEqual(self.git.commits(self.ref("c3", "f" * 40), "origin"),
+                         self.git.rev_list(*dt.since_range("origin/main", self.shas["c3"])))
+
+    def test_an_unknown_new_head_is_an_error(self):
         with self.assertRaises(dt.PageError):
-            self.git.commits(self.ref("c3", "f" * 40), "origin")
+            self.git.commits(dt.Ref("refs/heads/main", "e" * 40, "refs/heads/main", self.shas["c0"]), "origin")
 
     def test_check_over_a_real_range_refuses_a_stamp_whose_server_changed_after_it(self):
         code, out = self.real_check({self.shas["c1"]: {"one", "two"}})
@@ -5712,6 +5718,189 @@ class RealRebase(unittest.TestCase):
         tip, code, out = self.rebase_and_check({OTHER_SCRIPT: "1\n"})
         self.assertEqual(code, 0, out)
         self.assertIn(f"passed on {self.b1}", out, out)
+
+
+# DOCS-TEST-CHECK-RANGE-FORCE-PUSH. In the merge train of 2026-11-27 a branch
+# was rebased onto a main that had gained a release commit (it changed the
+# container page) and force-pushed. `check` took the range from the remote's
+# OLD head, so the release commit counted as pushed and the container scenario
+# as needed; the command its refusal suggests, `push <sha> --since origin/main`,
+# measured from main and found it not needed, so the next push was refused the
+# same way. One rule now gives both the range.
+TRAIN_PAGE = "website/content/docs/container.md"
+
+
+def _git_env():
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.com", GIT_COMMITTER_NAME="t",
+               GIT_COMMITTER_EMAIL="t@example.com", GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1")
+    return env
+
+
+class TrainRepo:
+    """main, a branch on it, then main gains a commit that changes TRAIN_PAGE and the
+    branch is rebased onto it: the train's shape, with origin's refs set by hand."""
+
+    def __init__(self):
+        self.dir = tempfile.mkdtemp(prefix="docs-range-")
+        self.git("init", "-q", "-b", "main")
+        self.commit("crates/a.rs", "fn a() {}\n", "base")
+        self.base = self.rev("HEAD")
+        self.git("checkout", "-q", "-b", "topic")
+        self.commit("scripts/tool.py", "x = 1\n", "topic work")
+        self.old_head = self.rev("HEAD")
+        self.git("checkout", "-q", "main")
+        self.commit(TRAIN_PAGE, "VERSION=0.4.19\n", "release")
+        self.main = self.rev("HEAD")
+        self.git("checkout", "-q", "topic")
+        self.git("rebase", "-q", "main")
+        self.new_head = self.rev("HEAD")
+        self.git("update-ref", "refs/remotes/origin/main", self.main)
+        self.git("update-ref", "refs/remotes/origin/topic", self.old_head)
+
+    def git(self, *args):
+        return subprocess.run(["git", *args], cwd=self.dir, env=_git_env(), check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    def rev(self, name):
+        return self.git("rev-parse", name)
+
+    def commit(self, path, text, message):
+        p = pathlib.Path(self.dir, path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+        self.git("add", path)
+        self.git("commit", "-q", "-m", message)
+
+    def ref(self, remote_sha, local_sha=None):
+        return dt.Ref("refs/heads/topic", local_sha or self.new_head, "refs/heads/topic", remote_sha)
+
+    def gitobj(self):
+        return dt.Git(cwd=self.dir, env=_git_env())
+
+    def since(self, base, sha):
+        """What `push <sha> --since <base>` reads: its paths and its commits."""
+        paths = self.git("diff", "--name-only", f"{base}...{sha}").splitlines()
+        return set(paths), self.gitobj().rev_list(*dt.since_range(base, sha))
+
+    def close(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+
+class PushRangeRealGit(unittest.TestCase):
+    def setUp(self):
+        self.r = TrainRepo()
+        self.addCleanup(self.r.close)
+
+    def test_success_a_force_push_after_a_rebase_sends_only_the_branchs_commits(self):
+        self.assertEqual(self.r.gitobj().commits(self.r.ref(self.r.old_head), "origin"), [self.r.new_head])
+
+    def test_success_a_force_push_after_a_rebase_changes_only_the_branchs_paths(self):
+        self.assertEqual(self.r.gitobj().changed(self.r.ref(self.r.old_head), "origin"), ["scripts/tool.py"])
+
+    def test_success_check_and_push_since_main_agree_on_a_force_push(self):
+        g = self.r.gitobj()
+        ref = self.r.ref(self.r.old_head)
+        paths, commits = self.r.since("origin/main", self.r.new_head)
+        self.assertEqual((set(g.changed(ref, "origin")), g.commits(ref, "origin")), (paths, commits))
+
+    def test_success_a_fast_forward_push_sends_what_it_sent_before(self):
+        self.r.git("checkout", "-q", "-b", "ff", self.r.old_head)
+        self.r.commit("scripts/more.py", "y = 2\n", "more")
+        tip = self.r.rev("HEAD")
+        ref = self.r.ref(self.r.old_head, tip)
+        self.assertEqual(self.r.gitobj().commits(ref, "origin"), [tip])
+        self.assertEqual(self.r.gitobj().changed(ref, "origin"), ["scripts/more.py"])
+
+    def test_success_a_new_branch_sends_the_commits_no_remote_branch_has(self):
+        ref = self.r.ref(dt.ZERO_SHA)
+        self.assertEqual(self.r.gitobj().commits(ref, "origin"), [self.r.new_head])
+
+    def test_edge_an_old_head_this_clone_does_not_hold_is_read_as_a_force_push(self):
+        ref = self.r.ref("1" * 40)
+        self.assertEqual(self.r.gitobj().changed(ref, "origin"), ["scripts/tool.py"])
+
+    def test_edge_without_the_remotes_main_a_known_old_head_keeps_its_range(self):
+        self.r.git("update-ref", "-d", "refs/remotes/origin/main")
+        self.assertEqual(self.r.gitobj().commits(self.r.ref(self.r.old_head), "origin"), [self.r.new_head, self.r.main])
+
+    def test_edge_without_the_remotes_main_an_unknown_old_head_is_what_no_remote_branch_has(self):
+        self.r.git("update-ref", "-d", "refs/remotes/origin/main")
+        self.r.git("update-ref", "refs/remotes/origin/release", self.r.main)
+        self.assertEqual(self.r.gitobj().commits(self.r.ref("1" * 40), "origin"), [self.r.new_head])
+
+    def test_edge_a_push_of_main_itself_past_its_old_head_is_a_fast_forward(self):
+        ref = dt.Ref("refs/heads/main", self.r.new_head, "refs/heads/main", self.r.main)
+        self.assertEqual(self.r.gitobj().commits(ref, "origin"), [self.r.new_head])
+
+    def test_edge_an_unchanged_ref_sends_nothing(self):
+        ref = self.r.ref(self.r.new_head)
+        self.assertEqual(self.r.gitobj().commits(ref, "origin"), [])
+
+    def test_failure_the_old_rule_counted_mains_page_and_the_new_one_does_not(self):
+        # The train itself: the old range held the release commit and its page.
+        g = self.r.gitobj()
+        old = g._lines("log", "--name-only", "--format=", f"{self.r.old_head}..{self.r.new_head}")
+        self.assertIn(TRAIN_PAGE, old, "the fixture no longer has the train's shape")
+        self.assertNotIn(TRAIN_PAGE, g.changed(self.r.ref(self.r.old_head), "origin"))
+
+    def test_failure_a_force_push_onto_a_branch_that_also_changes_the_page_still_needs_it(self):
+        self.r.commit(TRAIN_PAGE, "VERSION=0.4.20\n", "page change on the branch")
+        tip = self.r.rev("HEAD")
+        self.assertIn(TRAIN_PAGE, self.r.gitobj().changed(self.r.ref(self.r.old_head, tip), "origin"))
+
+    def test_failure_a_git_error_is_still_a_page_error(self):
+        ref = self.r.ref(self.r.old_head, "2" * 40)
+        with self.assertRaises(dt.PageError):
+            self.r.gitobj().commits(ref, "origin")
+
+
+class PushRangeRule(unittest.TestCase):
+    """The rule alone, for both callers: `pushed_range` (check) and `since_range` (push --since)."""
+
+    def rng(self, remote_sha, *, known=True, ancestor=True, main=True, remote="origin"):
+        ref = dt.Ref("refs/heads/b", "L", "refs/heads/b", remote_sha)
+        return dt.pushed_range(ref, remote, known=lambda s: known, is_ancestor=lambda a, b: ancestor,
+                               exists=lambda r: main)
+
+    def test_success_a_new_ref_is_what_no_remote_branch_has(self):
+        self.assertEqual(self.rng(dt.ZERO_SHA), ["L", "--not", "--remotes=origin"])
+
+    def test_success_a_fast_forward_is_old_head_to_new_head(self):
+        self.assertEqual(self.rng("R"), ["R..L"])
+
+    def test_success_a_force_push_is_the_range_push_since_main_reads(self):
+        self.assertEqual(self.rng("R", ancestor=False), dt.since_range("origin/main", "L"))
+
+    def test_success_since_range_is_the_new_head_without_the_base(self):
+        self.assertEqual(dt.since_range("origin/main", "L"), ["L", "--not", "origin/main"])
+
+    def test_edge_an_unknown_old_head_is_a_force_push(self):
+        self.assertEqual(self.rng("R", known=False), ["L", "--not", "origin/main"])
+
+    def test_edge_another_remote_name_is_used_for_its_main(self):
+        self.assertEqual(self.rng("R", ancestor=False, remote="fork"), ["L", "--not", "fork/main"])
+
+    def test_edge_no_main_on_the_remote_keeps_the_range_from_a_known_old_head(self):
+        self.assertEqual(self.rng("R", ancestor=False, main=False), ["R..L"])
+
+    def test_edge_no_main_and_an_unknown_old_head_is_what_no_remote_branch_has(self):
+        self.assertEqual(self.rng("R", known=False, main=False), ["L", "--not", "--remotes=origin"])
+
+    def test_failure_an_unknown_old_head_is_never_asked_about_ancestry(self):
+        def ask(a, b):
+            raise AssertionError("asked is_ancestor of an object git does not hold")
+
+        ref = dt.Ref("refs/heads/b", "L", "refs/heads/b", "R")
+        self.assertEqual(dt.pushed_range(ref, "origin", known=lambda s: False, is_ancestor=ask, exists=lambda r: True),
+                         ["L", "--not", "origin/main"])
+
+    def test_failure_a_force_push_is_not_read_from_the_old_head(self):
+        self.assertNotIn("R..L", self.rng("R", ancestor=False))
+
+    def test_failure_the_refusal_names_the_base_the_range_used(self):
+        self.assertIn("--since origin/main", dt.suggested_push("L", "origin"))
+        self.assertIn("--since fork/main", dt.suggested_push("L", "fork"))
 
 
 if __name__ == "__main__":
