@@ -843,6 +843,34 @@ class IPv6Context(unittest.TestCase):
     def test_a_closing_bracket_index_then_slice_passes(self):
         self.assertEqual(ipv6_findings("m[i][::5]"), [])
 
+    # Docker's host-port form: an IPv4 address, an empty host port, and
+    # the container port. Found on 2026-11-26: 127.0.0.1::9000 was read as
+    # an IPv6 address.
+
+    def test_docker_s_loopback_host_port_form_is_not_an_address(self):
+        self.assertEqual(ipv6_findings("docker run -p 127.0.0.1::9000 rustfs"), [])
+
+    def test_docker_s_host_port_form_with_a_documentation_address_passes(self):
+        self.assertEqual(ipv6_findings("-p 192.0.2.10::5432"), [])
+
+    def test_docker_s_host_port_form_in_quotes_passes(self):
+        self.assertEqual(ipv6_findings('ports: ["127.0.0.1::8080"]'), [])
+
+    def test_an_address_after_an_ipv4_address_and_a_space_is_refused(self):
+        self.assertEqual(ipv6_findings(f"127.0.0.1 {GLOBAL}"), [GLOBAL])
+
+    def test_an_address_later_on_a_line_with_a_quad_and_a_colon_is_refused(self):
+        self.assertEqual(ipv6_findings(f"192.0.2.1: then {GLOBAL}"), [GLOBAL])
+
+    def test_an_address_right_after_a_quad_and_one_colon_is_refused(self):
+        # One colon is a port's, not Docker's empty host port: not passed.
+        self.assertNotEqual(ipv6_findings(f"192.0.2.1:{GLOBAL}"), [], "refused")
+
+    def test_an_address_after_a_dotted_word_and_a_colon_is_refused(self):
+        # Only a whole dotted quad before the colon is Docker's form.
+        found = ipv6_findings(f"v1.2:{GLOBAL}")
+        self.assertTrue(found and all(GLOBAL in f for f in found), f"refused: {found}")
+
     def test_a_bare_run_of_colons_is_not_an_address(self):
         self.assertEqual(ipv6_findings("a ::: b"), [])
 

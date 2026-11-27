@@ -122,6 +122,19 @@ def is_slice(text, start, end):
     )
 
 
+# Docker's host-port form `127.0.0.1::9000`: an IPv4 address, an empty
+# host port and the container port. On 2026-11-26 the IPv6 rule read its
+# tail as an address. The IPv4 part is checked by the IPv4 rule.
+DOTTED_QUAD_COLON = re.compile(r"(?<![\d.])\d{1,3}(?:\.\d{1,3}){3}:\Z")
+
+
+def is_docker_port(text, start):
+    """Whether the run at `start` begins at the last number of a dotted
+    quad followed by `::`, as in Docker's host-port form."""
+    end = text.find(":", start)
+    return end != -1 and text[end : end + 2] == "::" and DOTTED_QUAD_COLON.search(text[:end + 1]) is not None
+
+
 def reserved_domain(domain):
     d = domain.lower()
     return d in RESERVED_DOMAINS or d.endswith(RESERVED_TLDS) or any(d.endswith("." + r) for r in RESERVED_DOMAINS)
@@ -168,7 +181,7 @@ def personal_data(text, path=""):
         candidate = m.group(1)
         if candidate.count(":") < 2 or not re.search(r"[0-9]", candidate):
             continue
-        if is_slice(text, m.start(1), m.end(1)):
+        if is_slice(text, m.start(1), m.end(1)) or is_docker_port(text, m.start(1)):
             continue
         try:
             ip = ipaddress.IPv6Address(candidate)
