@@ -1007,6 +1007,35 @@ mod tests {
         assert_eq!(app.origin, None, "no public origin is configured");
     }
 
+    /// The registry a server's start opens serves each tenant on local
+    /// objects with the group sync of its commits (synchronous NORMAL), as
+    /// #280 made it; release 0.4.18 served them with FULL.
+    #[test]
+    fn a_start_serves_tenants_on_local_objects_with_the_group_sync() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut config = configured("", "");
+        config.data_dir = dir.path().to_owned();
+        let tenants = open_or_give_up(
+            &config,
+            Key::generate().expect("key"),
+            &crate::backend::Catalogs::Local,
+        )
+        .expect("a start opens a new registry");
+        let id = tenants
+            .create(crate::audit::Actor::Cli, "acme", None)
+            .expect("made");
+        let synchronous: i64 = tenants
+            .store(id)
+            .expect("its store")
+            .conn_for_test()
+            .pragma_query_value(None, "synchronous", |r| r.get(0))
+            .expect("reads synchronous");
+        assert_eq!(
+            synchronous, 1,
+            "NORMAL: the served tenant's commits share a group sync"
+        );
+    }
+
     /// A configuration with these lines before and after the least one.
     fn configured(first: &str, last: &str) -> Config {
         let text = format!(

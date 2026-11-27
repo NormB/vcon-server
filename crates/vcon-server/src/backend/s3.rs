@@ -2506,6 +2506,83 @@ pub(crate) mod remote {
         VersionId::generate().0[0]
     }
 
+    /// The `synchronous` setting of a tenant catalog's connection: 1 is
+    /// NORMAL (a group sync after COMMIT), 2 is FULL (COMMIT syncs).
+    fn synchronous(store: &Store) -> i64 {
+        store
+            .conn_for_test()
+            .pragma_query_value(None, "synchronous", |r| r.get(0))
+            .expect("reads synchronous")
+    }
+
+    /// With objects in a bucket, as with local objects, a served tenant's
+    /// catalog syncs in groups and one opened beside a server inside
+    /// COMMIT: one rule for both object places.
+    #[test]
+    fn a_served_tenant_with_s3_objects_syncs_in_groups_and_beside_inside_commit() {
+        let (s3, _) = bucket(false);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let tenants = tenants_in(dir.path(), &s3);
+        let id = tenants
+            .create(crate::audit::Actor::Cli, "acme", None)
+            .expect("a tenant");
+        assert_eq!(
+            synchronous(&tenants.store(id).expect("its store")),
+            1,
+            "NORMAL: a served tenant's commits share a group sync"
+        );
+        drop(tenants);
+        let master = Key::load_master(&dir.path().join("master.key")).expect("the master key");
+        let beside = crate::tenants::Tenants::open_beside_in(
+            &dir.path().join("data"),
+            master,
+            Arc::new(OsFs),
+            TestClock::at(conformance::START),
+            crate::backend::ObjectPlace::S3(s3.clone()),
+            &crate::backend::Catalogs::Local,
+        )
+        .expect("opens beside");
+        assert_eq!(
+            synchronous(&beside.store(id).expect("its store")),
+            2,
+            "FULL: a command beside a server syncs inside COMMIT"
+        );
+    }
+
+    /// The sweep's recovery opens an S3 tenant as the server does.
+    #[test]
+    fn the_sweep_keeps_a_served_tenant_with_s3_objects_on_group_sync() {
+        let (s3, _) = bucket(false);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let tenants = tenants_in(dir.path(), &s3);
+        let id = tenants
+            .create(crate::audit::Actor::Cli, "acme", None)
+            .expect("a tenant");
+        assert_eq!(tenants.recover_all(), Ok(0), "every tenant recovered");
+        assert_eq!(
+            synchronous(&tenants.store(id).expect("its store")),
+            1,
+            "NORMAL after the sweep"
+        );
+    }
+
+    /// A tenant made before a restart, its objects in the bucket, is
+    /// served with the group sync after the restart.
+    #[test]
+    fn a_tenant_with_s3_objects_is_served_for_group_sync_after_a_restart() {
+        let (s3, _) = bucket(false);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let id = tenants_in(dir.path(), &s3)
+            .create(crate::audit::Actor::Cli, "acme", None)
+            .expect("a tenant");
+        let restarted = tenants_in(dir.path(), &s3);
+        assert_eq!(
+            synchronous(&restarted.store(id).expect("its store")),
+            1,
+            "NORMAL after the start"
+        );
+    }
+
     #[test]
     fn a_tenant_keeps_its_objects_in_the_bucket_and_removal_empties_them() {
         let (s3, _) = bucket(false);

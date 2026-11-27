@@ -121,6 +121,17 @@ pub enum Durability {
     Beside,
 }
 
+/// The durability of a tenant catalog the tenant space opens, whatever
+/// holds its objects: an open that runs start-up recovery is the process
+/// that writes the data directory (`Group`); one without is a command
+/// beside a server (`Beside`).
+fn durability_of(recover: Option<crate::store::pending::Writers>) -> Durability {
+    match recover {
+        Some(_) => Durability::Group,
+        None => Durability::Beside,
+    }
+}
+
 /// A tenant catalog in a SQLCipher file.
 pub struct LocalCatalog {
     conn: Mutex<Connection>,
@@ -2350,9 +2361,11 @@ impl TenantSpace for LocalTenantSpace {
         recover: Option<crate::store::pending::Writers>,
         clock: Arc<dyn Clock>,
     ) -> Result<Store, OpenError> {
+        let durability = durability_of(recover);
         match &self.objects {
             ObjectPlace::Local => {
-                let store = Store::open_beside(&self.dir(id), id, key, self.fs.clone(), clock)?;
+                let store =
+                    Store::open_as(&self.dir(id), id, key, self.fs.clone(), clock, durability)?;
                 if let Some(writers) = recover {
                     store.recover(writers)?;
                 }
@@ -2361,11 +2374,6 @@ impl TenantSpace for LocalTenantSpace {
             #[cfg(feature = "s3")]
             ObjectPlace::S3(s3) => {
                 let catalog_key = envelope::catalog_key(&key).map_err(|_| StoreError::Io)?;
-                let durability = if recover.is_some() {
-                    Durability::Group
-                } else {
-                    Durability::Beside
-                };
                 let catalog =
                     LocalCatalog::open(&self.catalog(id), catalog_key, &*self.fs, durability)?;
                 Store::open_on(
@@ -3092,6 +3100,65 @@ mod tests {
             1,
             "NORMAL: COMMIT does not sync; the group sync does, after the connection is let go"
         );
+    }
+
+    #[test]
+    fn an_open_that_runs_recovery_syncs_in_groups() {
+        use crate::store::pending::Writers;
+        assert_eq!(
+            durability_of(Some(Writers::None)),
+            Durability::Group,
+            "a server or a command alone on the data directory"
+        );
+        assert_eq!(
+            durability_of(Some(Writers::Maybe)),
+            Durability::Group,
+            "a server among others on a database"
+        );
+    }
+
+    #[test]
+    fn an_open_without_recovery_is_beside_a_server() {
+        assert_eq!(
+            durability_of(None),
+            Durability::Beside,
+            "a command beside a server syncs inside COMMIT"
+        );
+    }
+
+    /// The one rule for every object place: a served tenant with local
+    /// objects is opened for group sync, and one opened beside a server is
+    /// not (the bucket's place is checked in backend::s3's live tests).
+    #[test]
+    fn the_tenant_space_opens_a_served_tenant_for_group_sync() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let fs: Arc<dyn Fs> = Arc::new(crate::fs::OsFs);
+        let space = LocalTenantSpace::open(dir.path(), fs, ObjectPlace::Local).expect("opens");
+        let id = TenantId::generate();
+        // A key cannot be copied: each open unwraps it again, as the
+        // registry does.
+        let master = Key::generate().expect("a master key");
+        let ctx = envelope::Context::Tenant { tenant: id };
+        let wrapped = envelope::wrap(&master, &ctx, &Key::generate().expect("a key"));
+        let key = || envelope::unwrap(&master, &ctx, &wrapped).expect("unwraps");
+        let clock: Arc<dyn Clock> = Arc::new(crate::clock::SystemClock);
+        space.make(id, key(), clock.clone()).expect("made");
+        let sync = |recover| {
+            let store = space
+                .open(id, key(), recover, clock.clone())
+                .expect("opens");
+            let value: i64 = store
+                .conn_for_test()
+                .pragma_query_value(None, "synchronous", |r| r.get(0))
+                .expect("reads synchronous");
+            value
+        };
+        assert_eq!(
+            sync(Some(crate::store::pending::Writers::None)),
+            1,
+            "served: NORMAL, a group sync"
+        );
+        assert_eq!(sync(None), 2, "beside a server: FULL");
     }
 
     #[test]

@@ -405,6 +405,18 @@ pub(crate) fn run_and_give_up(
     done
 }
 
+/// Whether `command` opens the registry and its tenants as a command
+/// beside a server does: without start-up recovery, and with each tenant
+/// catalog's commits synced inside COMMIT (Durability::Beside). A command
+/// beside a running server must not run recovery: it would take the
+/// server's work in progress for a crash's leftovers. Nor does `check`,
+/// which reports what recovery would remove. Every other command holds
+/// the data directory alone and opens as a server does, recovery and the
+/// group sync of each tenant's commits included.
+pub(crate) fn opens_beside(command: &Command) -> bool {
+    command.work().sharing() == Sharing::Beside || matches!(command, Command::Check)
+}
+
 /// [`run`], with the data directory locked and the catalogs reached.
 fn run_on(
     config: &Config,
@@ -413,7 +425,6 @@ fn run_on(
     catalogs: &backend::Catalogs,
     out: &mut dyn Write,
 ) -> Result<(), CommandError> {
-    let sharing = command.work().sharing();
     // A master rotation renames over server.sqlite, so nothing may hold it
     // open: it runs before the registry is opened.
     if let Command::RekeyMaster {
@@ -435,10 +446,7 @@ fn run_on(
     if matches!(command, Command::StorageMoveObjects) && catalogs.server().is_some() {
         return Err(nothing_to_move_on_a_database());
     }
-    // A command beside a running server must not run start-up recovery: it
-    // would take the server's work in progress for a crash's leftovers. Nor
-    // does `check`, which reports what recovery would remove.
-    let open = if sharing == Sharing::Beside || matches!(command, Command::Check) {
+    let open = if opens_beside(command) {
         Tenants::open_beside_in
     } else {
         Tenants::open_in
@@ -1102,6 +1110,99 @@ mod tests {
     use crate::store::testing::vcon;
 
     const UUID: &str = "01a07da8-c2bb-83e5-b9a2-279e0d16bc46";
+
+    // Which opener each command uses: a command alone on the data
+    // directory opens as a server does (recovery, group sync); one beside
+    // a server, and `check`, open beside.
+
+    #[test]
+    fn a_tenant_create_opens_as_the_directory_s_only_writer() {
+        let command = Command::TenantCreate {
+            name: "acme".to_owned(),
+            retention: None,
+        };
+        assert!(!opens_beside(&command), "alone: recovery and group sync");
+    }
+
+    #[test]
+    fn a_tenant_removal_opens_as_the_directory_s_only_writer() {
+        let command = Command::TenantRemove {
+            id: "t".to_owned(),
+            force: false,
+            override_holds: false,
+        };
+        assert!(!opens_beside(&command), "alone: recovery and group sync");
+    }
+
+    #[test]
+    fn a_tenant_rekey_opens_as_the_directory_s_only_writer() {
+        let command = Command::RekeyTenant { id: "t".to_owned() };
+        assert!(!opens_beside(&command), "alone: recovery and group sync");
+    }
+
+    #[test]
+    fn moving_objects_opens_as_the_directory_s_only_writer() {
+        assert!(
+            !opens_beside(&Command::StorageMoveObjects),
+            "alone: recovery and group sync"
+        );
+    }
+
+    #[test]
+    fn a_tenant_list_opens_beside_a_server() {
+        assert!(
+            opens_beside(&Command::TenantList),
+            "beside: no recovery, commits synced inside COMMIT"
+        );
+    }
+
+    #[test]
+    fn an_audit_export_opens_beside_a_server() {
+        let command = Command::AuditExport {
+            log: Log::Admin,
+            since: None,
+        };
+        assert!(
+            opens_beside(&command),
+            "beside: no recovery, commits synced inside COMMIT"
+        );
+    }
+
+    #[test]
+    fn a_key_create_opens_beside_a_server() {
+        let command = Command::KeyCreate {
+            owner: Owner::Operator,
+            label: "ops".to_owned(),
+            life: KeyLife::default(),
+        };
+        assert!(
+            opens_beside(&command),
+            "beside: no recovery, commits synced inside COMMIT"
+        );
+    }
+
+    #[test]
+    fn a_backup_opens_beside_a_server() {
+        let command = Command::Backup {
+            to: std::path::PathBuf::from("/nonexistent/backup"),
+        };
+        assert!(
+            opens_beside(&command),
+            "beside: no recovery, commits synced inside COMMIT"
+        );
+    }
+
+    /// `check` runs alone, but opens beside: it reports what recovery would
+    /// remove, so it must not run recovery.
+    #[test]
+    fn check_runs_alone_and_still_opens_beside() {
+        assert_eq!(
+            Command::Check.work().sharing(),
+            Sharing::Alone,
+            "check holds the directory alone"
+        );
+        assert!(opens_beside(&Command::Check), "and opens without recovery");
+    }
 
     struct Setup {
         _dir: tempfile::TempDir,

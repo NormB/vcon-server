@@ -2475,6 +2475,555 @@ mod tests {
         );
     }
 
+    /// The `synchronous` setting of a tenant catalog's connection: 1 is
+    /// NORMAL (a group sync after COMMIT), 2 is FULL (COMMIT syncs).
+    fn synchronous(store: &crate::store::Store) -> i64 {
+        store
+            .conn_for_test()
+            .pragma_query_value(None, "synchronous", |r| r.get(0))
+            .expect("reads synchronous")
+    }
+
+    /// A tenant served from a data directory with local objects, the
+    /// default, syncs its commits in groups: the serving open holds the
+    /// directory and runs recovery. (Release 0.4.18 opened it as a command
+    /// beside a server does, and every commit synced inside COMMIT.)
+    #[test]
+    fn a_served_tenant_with_local_objects_syncs_its_commits_in_groups() {
+        let f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        let store = f.tenants.store(id).expect("its store");
+        assert_eq!(
+            synchronous(&store),
+            1,
+            "NORMAL: the served tenant's commits share a group sync"
+        );
+    }
+
+    /// A tenant opened beside a server keeps synchronous FULL: its commits
+    /// are durable before the server can read them.
+    #[test]
+    fn a_tenant_opened_beside_a_server_syncs_inside_commit() {
+        let f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        drop(f.tenants);
+        let beside =
+            Tenants::open_beside(f.dir.path(), f.master.key(), f.fs.clone(), f.clock.clone())
+                .expect("opens beside");
+        let store = beside.store(id).expect("its store");
+        assert_eq!(
+            synchronous(&store),
+            2,
+            "FULL: a command beside a server syncs inside COMMIT"
+        );
+    }
+
+    /// A served tenant's create waits for the group sync of its WAL, which
+    /// the crash filesystem holds; under synchronous FULL no such sync is
+    /// made and nothing would be held.
+    #[test]
+    fn a_served_tenant_s_create_waits_for_the_group_sync() {
+        let f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        let store = f.tenants.store(id).expect("its store");
+        let caller = Caller {
+            key: Key::generate().expect("caller key").id(),
+        };
+        let (found, body) = vcon("01a07da8-c2bb-83e5-b9a2-279e0d16bc07", "first");
+        f.fs.hold_syncs();
+        std::thread::scope(|t| {
+            let creating = t.spawn(|| store.create(&caller, &found, &body));
+            f.fs.await_held(1);
+            assert!(!creating.is_finished(), "no answer while the sync is held");
+            f.fs.release_syncs();
+            assert!(
+                matches!(creating.join().expect("ends"), Ok(Created::New(_))),
+                "answered after the group sync"
+            );
+        });
+    }
+
+    /// A caller with a key of its own, for a Store's writes.
+    fn a_caller() -> Caller {
+        Caller {
+            key: Key::generate().expect("caller key").id(),
+        }
+    }
+
+    /// A vCon numbered `n`, with its body.
+    fn numbered(n: usize, subject: &str) -> (vcon::read::Inspection, Vec<u8>) {
+        vcon(&format!("01a07da8-c2bb-83e5-b9a2-27900000{n:04}"), subject)
+    }
+
+    /// The WAL of tenant `id`, whose syncs the crash filesystem counts.
+    fn wal_of(f: &Fixture, id: TenantId) -> PathBuf {
+        f.tenants_dir()
+            .join(id.to_string())
+            .join("catalog.sqlite-wal")
+    }
+
+    /// A served tenant, made, and its Store.
+    fn served(f: &Fixture, name: &str) -> (TenantId, Arc<crate::store::Store>) {
+        let id = f.tenants.create(Actor::Cli, name, None).expect("made");
+        (id, f.tenants.store(id).expect("its store"))
+    }
+
+    /// `writers` creates at once on one served tenant whose syncs are
+    /// held: every one of them waits for a sync of the WAL, none is
+    /// answered until the syncs go on, then each is. Returns the WAL syncs
+    /// made, from the hold on.
+    fn writers_at_once(writers: usize) -> usize {
+        let f = fixture();
+        let (id, store) = served(&f, "acme");
+        let caller = a_caller();
+        let vcons: Vec<_> = (0..writers).map(|n| numbered(n, "first")).collect();
+        let before = f.fs.syncs(&wal_of(&f, id));
+        f.fs.hold_syncs();
+        std::thread::scope(|t| {
+            let creating: Vec<_> = vcons
+                .iter()
+                .map(|(found, body)| t.spawn(|| store.create(&caller, found, body)))
+                .collect();
+            store.await_sync_waiters(writers);
+            for c in &creating {
+                assert!(!c.is_finished(), "no answer while the group sync is held");
+            }
+            f.fs.release_syncs();
+            for c in creating {
+                assert!(
+                    matches!(c.join().expect("ends"), Ok(Created::New(_))),
+                    "each answered after a sync that covers it"
+                );
+            }
+        });
+        f.fs.syncs(&wal_of(&f, id)) - before
+    }
+
+    // Success: every serving open syncs its tenants' commits in groups.
+
+    #[test]
+    fn a_registry_opened_in_a_data_directory_serves_for_group_sync() {
+        let f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        drop(f.tenants);
+        let tenants = Tenants::open_in(
+            f.dir.path(),
+            f.master.key(),
+            f.fs.clone(),
+            f.clock.clone(),
+            ObjectPlace::Local,
+            &Catalogs::Local,
+        )
+        .expect("opens as a server does");
+        assert_eq!(
+            synchronous(&tenants.store(id).expect("its store")),
+            1,
+            "the server's opener: NORMAL, a group sync"
+        );
+    }
+
+    #[test]
+    fn a_tenant_made_before_a_restart_is_served_for_group_sync() {
+        let mut f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        f.restart();
+        assert_eq!(
+            synchronous(&f.tenants.store(id).expect("its store")),
+            1,
+            "after the start: NORMAL"
+        );
+    }
+
+    #[test]
+    fn the_sweep_s_recovery_keeps_a_served_tenant_on_group_sync() {
+        let f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        assert_eq!(f.tenants.recover_all(), Ok(0), "every tenant recovered");
+        assert_eq!(
+            synchronous(&f.tenants.store(id).expect("its store")),
+            1,
+            "the sweep opens the tenant as the server does"
+        );
+    }
+
+    #[test]
+    fn one_writer_s_create_makes_two_group_syncs_of_its_tenant() {
+        let f = fixture();
+        let (id, store) = served(&f, "acme");
+        let (found, body) = numbered(1, "first");
+        let before = f.fs.syncs(&wal_of(&f, id));
+        store.create(&a_caller(), &found, &body).expect("stored");
+        assert_eq!(
+            f.fs.syncs(&wal_of(&f, id)) - before,
+            2,
+            "its pending row's commit and its version's, each synced after COMMIT"
+        );
+    }
+
+    #[test]
+    fn one_writer_waits_for_the_group_sync() {
+        let made = writers_at_once(1);
+        assert_eq!(made, 2, "one create: two commits, two syncs");
+    }
+
+    #[test]
+    fn two_writers_wait_for_the_group_sync_and_share_it() {
+        let made = writers_at_once(2);
+        assert!(
+            (2..=4).contains(&made),
+            "two creates: their syncs shared where they met, {made} made"
+        );
+    }
+
+    #[test]
+    fn eight_writers_wait_for_the_group_sync_and_share_it() {
+        let made = writers_at_once(8);
+        // The held sync covers the first commit; one more covers the other
+        // seven first commits; the last commits take at most one each.
+        assert!(
+            (2..=10).contains(&made),
+            "eight creates: fewer syncs than their sixteen commits, {made} made"
+        );
+    }
+
+    #[test]
+    fn a_served_tenant_s_replace_waits_for_the_group_sync() {
+        let f = fixture();
+        let (_, store) = served(&f, "acme");
+        let caller = a_caller();
+        let (found, body) = numbered(1, "first");
+        let Ok(Created::New(first)) = store.create(&caller, &found, &body) else {
+            panic!("a new vCon")
+        };
+        let (_, newer) = numbered(1, "second");
+        f.fs.hold_syncs();
+        std::thread::scope(|t| {
+            let replacing = t.spawn(|| store.replace(&caller, first, &found, &newer));
+            f.fs.await_held(1);
+            assert!(!replacing.is_finished(), "no answer while the sync is held");
+            f.fs.release_syncs();
+            assert!(replacing.join().expect("ends").is_ok(), "replaced");
+        });
+    }
+
+    #[test]
+    fn a_served_tenant_s_delete_waits_for_the_group_sync() {
+        let f = fixture();
+        let (_, store) = served(&f, "acme");
+        let caller = a_caller();
+        let (found, body) = numbered(1, "first");
+        store.create(&caller, &found, &body).expect("stored");
+        f.fs.hold_syncs();
+        std::thread::scope(|t| {
+            let deleting = t
+                .spawn(|| store.delete(&caller, found.uuid, crate::retention::Retention::Years(7)));
+            f.fs.await_held(1);
+            assert!(!deleting.is_finished(), "no answer while the sync is held");
+            f.fs.release_syncs();
+            assert_eq!(deleting.join().expect("ends"), Ok(()), "deleted");
+        });
+    }
+
+    #[test]
+    fn a_served_tenant_s_read_waits_for_the_group_sync_of_its_record() {
+        let f = fixture();
+        let (_, store) = served(&f, "acme");
+        let caller = a_caller();
+        let (found, body) = numbered(1, "first");
+        store.create(&caller, &found, &body).expect("stored");
+        f.fs.hold_syncs();
+        std::thread::scope(|t| {
+            let reading = t.spawn(|| store.get(&caller, found.uuid));
+            f.fs.await_held(1);
+            assert!(!reading.is_finished(), "no answer while the sync is held");
+            f.fs.release_syncs();
+            assert!(reading.join().expect("ends").is_ok(), "read");
+        });
+    }
+
+    // Failure: a served tenant's failed group sync is a commit whose
+    // outcome is unknown, answered Io, and the tenant is refused until the
+    // server starts again.
+
+    #[test]
+    fn a_served_tenant_whose_group_sync_fails_answers_io() {
+        let f = fixture();
+        let (_, store) = served(&f, "acme");
+        let (found, body) = numbered(1, "first");
+        f.fs.fail_syncs();
+        assert_eq!(
+            store.create(&a_caller(), &found, &body).map(|_| ()),
+            Err(StoreError::Io),
+            "CommitError::Unknown: the commit may or may not be kept"
+        );
+    }
+
+    #[test]
+    fn a_served_tenant_is_refused_after_a_failed_group_sync() {
+        let f = fixture();
+        let (_, store) = served(&f, "acme");
+        let caller = a_caller();
+        let (found, body) = numbered(1, "first");
+        f.fs.fail_syncs();
+        assert!(
+            store.create(&caller, &found, &body).is_err(),
+            "the sync failed"
+        );
+        f.fs.heal_syncs();
+        let (other, other_body) = numbered(2, "second");
+        assert_eq!(
+            store.create(&caller, &other, &other_body).map(|_| ()),
+            Err(StoreError::Io),
+            "poisoned until the catalog is opened again"
+        );
+    }
+
+    /// A served open syncs the tenant's WAL before it serves anything: a
+    /// WAL that cannot be synced leaves the tenant unserved.
+    #[test]
+    fn a_served_tenant_whose_wal_cannot_be_synced_at_open_is_not_served() {
+        let mut f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        f.restart();
+        f.fs.fail_syncs();
+        assert!(
+            f.tenants.store(id).is_err(),
+            "the open's sync of the WAL failed"
+        );
+    }
+
+    /// A create whose object cannot be written fails, and its tenant keeps
+    /// serving with its group sync.
+    #[test]
+    fn a_served_tenant_s_create_whose_object_fails_leaves_it_served() {
+        let f = fixture();
+        let (_, store) = served(&f, "acme");
+        let caller = a_caller();
+        let (found, body) = numbered(1, "first");
+        // The first change is the pending row's group sync; the second is
+        // the object's write, which fails.
+        f.fs.fail_from(f.fs.log().len() + 1);
+        assert!(
+            store.create(&caller, &found, &body).is_err(),
+            "the write failed"
+        );
+        f.fs.revive();
+        let (other, other_body) = numbered(2, "second");
+        assert!(
+            matches!(
+                store.create(&caller, &other, &other_body),
+                Ok(Created::New(_))
+            ),
+            "served again"
+        );
+        assert_eq!(synchronous(&store), 1, "still NORMAL");
+    }
+
+    #[test]
+    fn a_failed_group_sync_refuses_only_its_own_tenant() {
+        let f = fixture();
+        let (_, first) = served(&f, "acme");
+        let (_, second) = served(&f, "globex");
+        let caller = a_caller();
+        let (found, body) = numbered(1, "first");
+        f.fs.fail_syncs();
+        assert!(
+            first.create(&caller, &found, &body).is_err(),
+            "the sync failed"
+        );
+        f.fs.heal_syncs();
+        assert!(
+            matches!(second.create(&caller, &found, &body), Ok(Created::New(_))),
+            "another tenant has a WAL and a sync of its own"
+        );
+    }
+
+    #[test]
+    fn a_served_tenant_s_read_whose_record_sync_fails_is_refused() {
+        let f = fixture();
+        let (_, store) = served(&f, "acme");
+        let caller = a_caller();
+        let (found, body) = numbered(1, "first");
+        store.create(&caller, &found, &body).expect("stored");
+        f.fs.fail_syncs();
+        assert_eq!(
+            store.get(&caller, found.uuid).map(|_| ()),
+            Err(StoreError::Io),
+            "a read whose record may be lost is not answered"
+        );
+    }
+
+    #[test]
+    fn a_served_tenant_s_replace_whose_sync_fails_answers_io() {
+        let f = fixture();
+        let (_, store) = served(&f, "acme");
+        let caller = a_caller();
+        let (found, body) = numbered(1, "first");
+        let Ok(Created::New(first)) = store.create(&caller, &found, &body) else {
+            panic!("a new vCon")
+        };
+        let (_, newer) = numbered(1, "second");
+        f.fs.fail_syncs();
+        assert_eq!(
+            store.replace(&caller, first, &found, &newer).map(|_| ()),
+            Err(StoreError::Io),
+            "the replace's outcome is unknown"
+        );
+    }
+
+    #[test]
+    fn a_served_tenant_s_delete_whose_sync_fails_answers_io() {
+        let f = fixture();
+        let (_, store) = served(&f, "acme");
+        let caller = a_caller();
+        let (found, body) = numbered(1, "first");
+        store.create(&caller, &found, &body).expect("stored");
+        f.fs.fail_syncs();
+        assert_eq!(
+            store.delete(&caller, found.uuid, crate::retention::Retention::Years(7)),
+            Err(StoreError::Io),
+            "the delete's outcome is unknown"
+        );
+    }
+
+    #[test]
+    fn a_served_tenant_s_close_after_a_failed_group_sync_says_so() {
+        let f = fixture();
+        let (_, store) = served(&f, "acme");
+        let (found, body) = numbered(1, "first");
+        f.fs.fail_syncs();
+        assert!(
+            store.create(&a_caller(), &found, &body).is_err(),
+            "the sync failed"
+        );
+        assert_eq!(store.close(), Err(StoreError::Io), "a commit may be lost");
+    }
+
+    #[test]
+    fn a_restart_serves_a_tenant_again_after_its_failed_group_sync() {
+        let mut f = fixture();
+        let (id, store) = served(&f, "acme");
+        let caller = a_caller();
+        let (found, body) = numbered(1, "first");
+        f.fs.fail_syncs();
+        assert!(
+            store.create(&caller, &found, &body).is_err(),
+            "the sync failed"
+        );
+        drop(store);
+        f.fs.heal_syncs();
+        f.restart();
+        let store = f.tenants.store(id).expect("its store");
+        match store.get(&caller, found.uuid) {
+            Ok(stored) => assert_eq!(stored.body, body, "whole"),
+            Err(StoreError::NotFound) => {}
+            other => panic!("half a vCon after the restart: {other:?}"),
+        }
+        let (other, other_body) = numbered(2, "second");
+        assert!(
+            matches!(
+                store.create(&caller, &other, &other_body),
+                Ok(Created::New(_))
+            ),
+            "served again"
+        );
+    }
+
+    #[test]
+    fn the_sweep_counts_a_tenant_whose_recovery_sync_fails() {
+        let f = fixture();
+        f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        f.fs.fail_syncs();
+        assert_eq!(
+            f.tenants.recover_all(),
+            Ok(1),
+            "a tenant whose catalog cannot be synced is counted as not recovered"
+        );
+    }
+
+    // Edge: the openers beside a server, and more than one Store at once.
+
+    #[test]
+    fn a_registry_opened_beside_in_a_data_directory_syncs_inside_commit() {
+        let f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        drop(f.tenants);
+        let beside = Tenants::open_beside_in(
+            f.dir.path(),
+            f.master.key(),
+            f.fs.clone(),
+            f.clock.clone(),
+            ObjectPlace::Local,
+            &Catalogs::Local,
+        )
+        .expect("opens beside");
+        assert_eq!(
+            synchronous(&beside.store(id).expect("its store")),
+            2,
+            "FULL"
+        );
+    }
+
+    #[test]
+    fn a_tenant_s_store_asked_for_twice_is_one_store_on_group_sync() {
+        let f = fixture();
+        let (id, first) = served(&f, "acme");
+        let second = f.tenants.store(id).expect("its store again");
+        assert!(Arc::ptr_eq(&first, &second), "one Store per tenant");
+        assert_eq!(synchronous(&second), 1, "NORMAL");
+    }
+
+    #[test]
+    fn a_beside_tenant_s_create_waits_for_no_group_sync() {
+        let f = fixture();
+        let id = f.tenants.create(Actor::Cli, "acme", None).expect("made");
+        let wal = wal_of(&f, id);
+        drop(f.tenants);
+        let beside =
+            Tenants::open_beside(f.dir.path(), f.master.key(), f.fs.clone(), f.clock.clone())
+                .expect("opens beside");
+        let store = beside.store(id).expect("its store");
+        let (found, body) = numbered(1, "first");
+        let before = f.fs.syncs(&wal);
+        store.create(&a_caller(), &found, &body).expect("stored");
+        assert_eq!(
+            f.fs.syncs(&wal) - before,
+            0,
+            "FULL: SQLite syncs inside COMMIT, never through the group sync"
+        );
+    }
+
+    #[test]
+    fn two_served_tenants_each_have_a_group_sync_of_their_own() {
+        let f = fixture();
+        let (_, first) = served(&f, "acme");
+        let (_, second) = served(&f, "globex");
+        let caller = a_caller();
+        let (a, a_body) = numbered(1, "first");
+        let (b, b_body) = numbered(2, "second");
+        f.fs.hold_syncs();
+        std::thread::scope(|t| {
+            let one = t.spawn(|| first.create(&caller, &a, &a_body));
+            let two = t.spawn(|| second.create(&caller, &b, &b_body));
+            f.fs.await_held(2);
+            f.fs.release_syncs();
+            assert!(one.join().expect("ends").is_ok(), "the first tenant's");
+            assert!(two.join().expect("ends").is_ok(), "the second tenant's");
+        });
+    }
+
+    #[test]
+    fn a_served_and_a_beside_store_of_one_tenant_keep_their_own_settings() {
+        let f = fixture();
+        let (id, served_store) = served(&f, "acme");
+        let beside =
+            Tenants::open_beside(f.dir.path(), f.master.key(), f.fs.clone(), f.clock.clone())
+                .expect("opens beside");
+        let beside_store = beside.store(id).expect("its store");
+        assert_eq!(synchronous(&served_store), 1, "the server's: NORMAL");
+        assert_eq!(synchronous(&beside_store), 2, "the command's: FULL");
+    }
+
     #[test]
     fn an_unknown_tenant_has_no_store() {
         let f = fixture();

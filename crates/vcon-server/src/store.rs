@@ -1078,6 +1078,14 @@ impl Store {
         self.conn()
     }
 
+    /// In tests, waits until `n` threads wait for a sync of the catalog's
+    /// WAL (panics after 20 s); a catalog with no group sync returns at
+    /// once.
+    #[cfg(test)]
+    pub(crate) fn await_sync_waiters(&self, n: usize) {
+        self.catalog.await_sync_waiters(n);
+    }
+
     #[cfg(test)]
     pub(crate) fn records(&self) -> Vec<serde_json::Value> {
         crate::audit::testing::exported(&self.conn(), None)

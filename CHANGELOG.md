@@ -56,6 +56,18 @@ All notable changes to this project are recorded here. The format follows
   - Docs: [Schema
     versions](https://vcon-server.com/docs/postgres-catalog/#schema-versions)
 
+### Fixed
+
+- **A server with local object storage shares disk syncs between requests
+  again.**
+  - Was: In 0.4.18, every tenant commit synced inside the commit, one
+    request at a time, as before 0.4.17's shared sync.
+  - Effect: Each answered request is on disk as before; only the waiting
+    behind other requests' syncs is gone.
+  - Limit: Servers with objects in a bucket, or on PostgreSQL, were not
+    affected.
+  - Docs: [Durability](https://vcon-server.com/docs/durability/)
+
 ## [0.4.18] - 2026-11-26
 
 ### Added
