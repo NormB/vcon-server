@@ -663,20 +663,24 @@ fn the_smallest_version_is_named() {
     assert_eq!(order.unopened_error, Some(refusal(least)), "i32::MIN");
 }
 
-/// Version 0 is a new catalog's: on a catalog that holds tables, making
-/// them fails, and check prints SQLite's error, not "Io". This pins
-/// today's text; that such a catalog is damage to be refused is backlog
-/// item CATALOG-VERSION-0-WITH-TABLES.
+/// Version 0 is a new catalog's: one that holds tables is refused as
+/// damaged before anything is made in it (catalog::open), and check
+/// prints that refusal with the file, not SQLite's error on the first
+/// table that exists.
 #[test]
-fn a_catalog_with_tables_at_version_zero_names_sqlites_error() {
+fn a_catalog_with_tables_at_version_zero_is_named_as_damaged() {
     let f = fixture();
     let id = made(&f, "acme");
     at_version(&f, id, 0);
     let order = f.tenants.key_order().expect("read");
     let cause = order.unopened_error.expect("a cause");
     assert!(
-        cause.starts_with("sqlite failed: table vcon already exists"),
+        cause.contains("catalog.sqlite is damaged, or another program wrote it: it holds tables"),
         "{cause}"
+    );
+    assert!(
+        !cause.contains("already exists"),
+        "not SQLite's error: {cause}"
     );
 }
 

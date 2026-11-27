@@ -789,6 +789,84 @@ fn a_tenant_catalog_of_a_newer_schema_is_named_with_its_version_by_check_and_ser
     );
 }
 
+/// A tenant catalog that holds tables but reads schema version 0 (damage,
+/// or a version past 32 bits written by another program) is named as
+/// damaged, with its file, by `check`, by `serve`'s start and by a command
+/// on the tenant; before, it was taken for new and opening it failed on a
+/// table that already exists.
+#[test]
+fn a_tenant_catalog_with_tables_at_version_0_is_named_as_damaged_by_check_and_serve() {
+    let s = setup();
+    let tenant = s.ok(&["tenant", "create", "acme"])[0]["id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    set_catalog_schema(&s, &tenant, 0);
+    let file = s.data.join("tenants").join(&tenant).join("catalog.sqlite");
+    let damaged = format!(
+        "{} is damaged, or another program wrote it: it holds tables but no schema version",
+        file.display()
+    );
+    let check = s.run(&["check"]);
+    let serve = s.run(&["serve"]);
+    let removed = s.run(&["tenant", "remove", &tenant]);
+    assert_eq!(check.status.code(), Some(1), "{}", stderr(&check));
+    let report: Vec<Value> = String::from_utf8(check.stdout)
+        .expect("text")
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("a JSON line"))
+        .collect();
+    let problem = report[0]["problems"][0]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        problem.starts_with(&format!("its catalog cannot be opened: {damaged}")),
+        "check names the file and the damage: {problem}"
+    );
+    assert_eq!(serve.status.code(), Some(1), "{}", stderr(&serve));
+    assert!(
+        stderr(&serve).starts_with(&format!(
+            "vcon-server: 1 tenant catalog(s) cannot be opened: {damaged}"
+        )),
+        "serve's start names the file and the damage: {}",
+        stderr(&serve)
+    );
+    assert_eq!(removed.status.code(), Some(1), "{}", stderr(&removed));
+    assert_eq!(
+        s.ok(&["tenant", "list"]).len(),
+        1,
+        "the refused removal left the tenant"
+    );
+}
+
+/// A version written past 32 bits reads back as 0, and `check` names that
+/// catalog as damaged too, not as a version it does not know.
+#[test]
+fn a_tenant_catalog_at_2_to_the_32_is_named_as_damaged_by_check() {
+    let s = setup();
+    let tenant = s.ok(&["tenant", "create", "acme"])[0]["id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    set_catalog_schema(&s, &tenant, 1 << 32);
+    let check = s.run(&["check"]);
+    assert_eq!(check.status.code(), Some(1), "{}", stderr(&check));
+    let report: Vec<Value> = String::from_utf8(check.stdout)
+        .expect("text")
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("a JSON line"))
+        .collect();
+    let problem = report[0]["problems"][0]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        problem.contains("is damaged, or another program wrote it"),
+        "check names the damage: {problem}"
+    );
+}
+
 /// A page of the site's documentation, by its file name.
 fn docs_page(name: &str) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
