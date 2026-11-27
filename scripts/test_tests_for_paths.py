@@ -35,6 +35,33 @@ spec.loader.exec_module(tfp)
 LISTING = "ls-" + "files"
 SERVER = "crates/vcon-server/"
 
+# scripts/test-hooks.sh runs this file in its fixture repository, whose first
+# commit runs the whole hook: a stand-in crate named hook-fixture where the
+# server's crate is (scripts/test_check_test_runner.py accepts it the same
+# way). The fixture keeps none of the server's tests, so the facts RealTree
+# checks are about a tree it is not; CI and the commit hook check them in the
+# server's own tree. On 2026-11-27 its pre-push run refused the push for that.
+FIXTURE_PACKAGE = "hook-fixture"
+
+
+def package_of(manifest_text):
+    """The [package] name of a Cargo.toml text."""
+    import tomllib
+
+    return tomllib.loads(manifest_text)["package"]["name"]
+
+
+def tree_package(root=REPO):
+    return package_of((root / SERVER / "Cargo.toml").read_text(encoding="utf-8"))
+
+
+def is_server_tree(package):
+    """True for the server's tree, False for the hook tests' fixture; any other
+    name is an error, so a renamed crate cannot turn RealTree off unseen."""
+    if package not in ("vcon-server", FIXTURE_PACKAGE):
+        raise ValueError(f"{SERVER}Cargo.toml names {package!r}: neither vcon-server nor {FIXTURE_PACKAGE}")
+    return package == "vcon-server"
+
 SRC_WALK = """\
 use std::path::Path;
 fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
@@ -312,7 +339,7 @@ class Lib(unittest.TestCase):
 
     def test_success_a_binary_with_postgres_code_also_runs_with_the_postgres_feature(self):
         hook = (REPO / ".githooks" / "pre-commit").read_text(encoding="utf-8")
-        self.assertIn("scripts/nextest.sh run -p vcon-server --locked --features postgres", hook)
+        self.assertIn(f"scripts/nextest.sh run -p {tree_package()} --locked --features postgres", hook)
         t, target = t_of({SERVER + "tests/a.rs": '#[cfg(feature = "postgres")]\nmod pg;\n'}, SERVER + "tests/a.rs")
         self.assertEqual(tfp.commands(target, t), [
             "heavy-run --quick -- scripts/nextest.sh run -p vcon-server --locked --test a",
@@ -698,6 +725,28 @@ class HookCopy(unittest.TestCase):
                              (["crates/vcon/tests/a.rs"], SRC_WALK))
 
 
+class TreeKind(unittest.TestCase):
+    def test_success_the_server_manifest_is_the_server_tree(self):
+        self.assertTrue(is_server_tree(package_of('[package]\nname = "vcon-server"\nversion = "1.0.0"\n')))
+
+    def test_success_the_fixture_manifest_is_not_the_server_tree(self):
+        self.assertFalse(is_server_tree(package_of('[package]\nname = "hook-fixture"\n')))
+
+    def test_failure_another_package_name_is_an_error(self):
+        with self.assertRaisesRegex(ValueError, "names 'vcon-srv': neither vcon-server nor hook-fixture"):
+            is_server_tree("vcon-srv")
+
+    def test_edge_the_tree_this_file_is_in_names_one_of_the_two(self):
+        self.assertIn(tree_package(), ("vcon-server", FIXTURE_PACKAGE))
+
+    def test_edge_a_tree_with_the_servers_tests_is_the_server_tree(self):
+        # RealTree is skipped only where the server's tests are absent.
+        if (REPO / SERVER / "tests" / "stderr_rule.rs").is_file():
+            self.assertTrue(is_server_tree(tree_package()), "the server's tree reads as the fixture")
+
+
+@unittest.skipUnless(is_server_tree(tree_package()),
+                     "the hook tests' fixture (scripts/test-hooks.sh) is not the server's tree")
 class RealTree(unittest.TestCase):
     def test_success_each_listed_walker_is_whole_tree(self):
         for name in ("stderr_rule", "docs_pages", "licence_files"):
