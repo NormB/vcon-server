@@ -77,6 +77,7 @@ CI_ONLY = {
     "scripts/retry.sh": "repeats a download of a CI job; the hook downloads nothing",
     "scripts/fetch-pinned.sh": "downloads a pinned file for a CI job",
     "scripts/apt-mirror-setup.sh": "configures apt on the runner or in a container",
+    "scripts/apt-get-retry.sh": "is installed as apt-get in the release smoke job's container; the hook runs its tests, scripts/test_apt_get_retry.py",
     "scripts/dnf_install.py": "installs packages in the release build container",
     "scripts/release-build-env.sh": "prepares the release build container",
     "scripts/reproducible-build.sh build": "builds the release binary",

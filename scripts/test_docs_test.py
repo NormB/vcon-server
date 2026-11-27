@@ -2703,7 +2703,10 @@ class TerminalRules(unittest.TestCase):
     def test_an_apt_scenario_with_a_terminal_step_installs_nothing_more(self):
         # Debian's and Ubuntu's script(1) is in bsdutils, which every image has.
         steps = dt.parse(TERMINAL_PAGE, "p.md")
-        self.assertEqual(dt.runner_prelude(self.scenario("debian:trixie-slim", {"apt"}), steps), dt.APT_RETRIES)
+        self.assertEqual(
+            dt.runner_prelude(self.scenario("debian:trixie-slim", {"apt"}), steps),
+            dt.APT_RETRIES + dt.apt_get_retry_install() + "\n",
+        )
 
     def test_a_host_scenario_with_a_terminal_step_installs_nothing(self):
         steps = dt.parse(TERMINAL_PAGE, "p.md")
@@ -2991,7 +2994,8 @@ class PackageMirrors(unittest.TestCase):
 
         self.started("systemd", _docker=docker, pull_with_retry=lambda name: name)
         (dockerfile,) = dockerfiles
-        self.assertIn("RUN printf '%s\\tpriority:%s\\n' 'http://ftp.us.debian.org/debian' 1 'http://ftp.debian.org/debian' 2 > /etc/apt/docs-test-mirrors-0.list", dockerfile)
+        self.assertIn(f"RUN {dt.apt_get_retry_install()} \\\n && ", dockerfile, "apt-get runs an update again first")
+        self.assertIn(" && printf '%s\\tpriority:%s\\n' 'http://ftp.us.debian.org/debian' 1 'http://ftp.debian.org/debian' 2 > /etc/apt/docs-test-mirrors-0.list", dockerfile)
 
     def test_an_apt_container_gets_the_mirror_setup_before_the_pages(self):
         prelude = dt.runner_prelude(self.scenario("debian:trixie-slim"), (), {DEBIAN: ["http://a.example.com/debian"]})

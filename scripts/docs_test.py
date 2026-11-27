@@ -76,7 +76,10 @@ fail a page whose commands are right:
   priority, so apt asks the first one that answered and goes on to the next
   only when a download fails. Signatures are checked as before: only the
   host a file comes from changes. The page's own apt-get commands run as a
-  reader types them. If no mirror of a source answers, the run ends at once
+  reader types them, through scripts/apt-get-retry.sh, installed as
+  /usr/local/sbin/apt-get: an update that meets a mirror in the middle of a
+  sync runs again after a wait (on 2026-11-26 the one mirror left for
+  security.ubuntu.com was mid-sync, and apt had no other host). If no mirror of a source answers, the run ends at once
   with exit code 3 and says that the package mirrors are unreachable, so an
   outage is not read as a page's failure. On 2026-11-10 archive.ubuntu.com
   and security.ubuntu.com did not answer on port 80; `apt-get update` in
@@ -98,6 +101,7 @@ Usage:
 
 from __future__ import annotations
 
+import base64
 import dataclasses
 import ipaddress
 import json
@@ -368,7 +372,7 @@ SYSTEMD_IMAGE = "docs-test-systemd:trixie"
 def systemd_dockerfile(mirrors: dict) -> str:
     """The systemd image's Dockerfile, its packages read through `mirrors`
     (see apt_mirror_setup)."""
-    setup = "".join(f"{c} \\\n && " for c in apt_mirror_setup(mirrors))
+    setup = "".join(f"{c} \\\n && " for c in [apt_get_retry_install(), *apt_mirror_setup(mirrors)])
     limits = f"-o Acquire::Retries={APT_TRIES} -o Acquire::http::Timeout={APT_TIMEOUT}"
     return f"""FROM {pinned_image("debian:trixie-slim")}
 RUN {setup}apt-get update -qq {limits} \\
@@ -1129,6 +1133,23 @@ Acquire::https::Timeout "{APT_TIMEOUT}";
 DOCS_TEST_EOF
 """
 
+# An `apt-get update` that meets a mirror in the middle of a sync is run
+# again after a wait (scripts/apt-get-retry.sh says when and why). The
+# script is installed as apt-get where root's PATH finds it before
+# /usr/bin/apt-get, so a page's own `apt-get update` runs as typed.
+APT_GET_RETRY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "apt-get-retry.sh")
+APT_GET_RETRY_PATH = "/usr/local/sbin/apt-get"
+
+
+def apt_get_retry_install() -> str:
+    """One shell command that writes scripts/apt-get-retry.sh as
+    APT_GET_RETRY_PATH, made executable. The text goes as base64, so the
+    command is one line in the runner's setup and in a Dockerfile's RUN,
+    whatever the script holds."""
+    with open(APT_GET_RETRY, "rb") as f:
+        text = base64.b64encode(f.read()).decode()
+    return f"printf %s {text} | base64 -d > {APT_GET_RETRY_PATH} && chmod 0755 {APT_GET_RETRY_PATH}"
+
 # Each package source an image's apt reads (an origin), and the hosts that
 # hold the same files: the origin itself and at least one other, in the
 # order apt tries them. The table is a file of its own because
@@ -1370,7 +1391,12 @@ def runner_prelude(scenario: Scenario, steps: list[Block] | tuple = (), mirrors:
     if scenario.where == "host":
         return ""
     if "apt" in scenario.tags:
-        apt = APT_RETRIES + "".join(c + "\n" for c in apt_mirror_setup(mirrors or {}))
+        apt = (
+            APT_RETRIES
+            + apt_get_retry_install()
+            + "\n"
+            + "".join(c + "\n" for c in apt_mirror_setup(mirrors or {}))
+        )
         return apt + ACME_SETUP if "acme" in scenario.tags else apt
     if "dnf" in scenario.tags and any(b.terminal is not None for b in steps):
         return DNF_SCRIPT

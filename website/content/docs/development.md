@@ -859,7 +859,13 @@ right:
   of 5 seconds, and writes those that answer, in order, to a list that
   apt's `mirror+file:` method reads. The log names them in a line that
   starts `docs-test: packages from`. Signatures are checked as before. The
-  page's own `apt-get` commands are not changed. If no mirror of a source
+  page's own `apt-get` commands run as typed, through
+  `scripts/apt-get-retry.sh`, which the runner installs as
+  `/usr/local/sbin/apt-get`: an `apt-get update` that fails because a
+  mirror is in the middle of a sync (`Mirror sync in progress` or `Hash Sum
+  mismatch`) runs again after 15, 30 and 60 seconds, and each wait is
+  logged. On 2026-11-26 the one mirror left for a source was in the middle
+  of a sync, and apt had no other host to ask. If no mirror of a source
   answers, the run ends at once with exit code 3 and the message `the
   package mirrors are unreachable from this machine; this is not a failure
   of the pages`, with each address it tried.
@@ -975,7 +981,11 @@ same script with `--dry-run` (it asks and writes nothing) to choose its
 mirrors, so both choose by one rule. The script ends with exit code 3
 when no mirror of a source answers or none holds the newest release file
 of every suite, and with 4 when no source of the system is in the table,
-and changes nothing in either case.
+and changes nothing in either case. The job then installs
+`scripts/apt-get-retry.sh` as `/usr/local/sbin/apt-get`, as the how-to
+runner does, so its `apt-get update` runs again when a mirror is in the
+middle of a sync. `scripts/test_apt_get_retry.py` tests that rule with a
+fake `apt-get`.
 
 The rule keeps no mirror that is one release behind the source's own
 host. From outside, such a mirror looks the same as one in the middle of
