@@ -1,7 +1,7 @@
 # The image ClusterFuzzLite builds the fuzz targets in. The base image is
 # pinned by digest; its own nightly Rust is older than this workspace
 # needs, so the nightly named in fuzz/rust-toolchain.toml is installed.
-FROM gcr.io/oss-fuzz-base/base-builder-rust:v1@sha256:8d2315aeda612bc4176bf20057a72db2a7f61cdf4a8699829c147ab5af02d234
+FROM gcr.io/oss-fuzz-base/base-builder-rust:v1@sha256:53035c6f510f5f949828ab2cb70f551c3c37e43d94c26579228c9f1fa5fc6a1e
 COPY fuzz/rust-toolchain.toml /tmp/rust-toolchain.toml
 RUN channel="$(sed -n 's/^channel = "\(.*\)"$/\1/p' /tmp/rust-toolchain.toml)" \
  && test -n "$channel" \
