@@ -55,7 +55,7 @@ jobs:
       # file beside it, and this scan passes no override: it finds what
       # Scorecard finds. tests/osv_ignores.rs holds both.
       - name: Scan every lockfile
-        uses: google/osv-scanner-action/osv-scanner-action@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
+        uses: google/osv-scanner-action/osv-scanner-action@32d3cd482bdadfb38b186c0ad1b031902d55d932 # v2.7.1
         with:
           scan-args: |-
             --format=sarif
@@ -76,7 +76,7 @@ jobs:
       # always(): a scan that found something must still publish it.
       - name: Upload results
         if: always()
-        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        uses: github/codeql-action/upload-sarif@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
         with:
           sarif_file: osv.sarif
           category: osv-scanner
