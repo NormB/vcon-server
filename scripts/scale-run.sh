@@ -22,12 +22,26 @@
 # adds FILE's text to the end of the server's configuration (for example
 # a `[catalog]` and a `[storage]` section for PostgreSQL and S3, whose
 # database the caller has migrated).
+#
+# SCALE_SERVE_WRAP=FILE starts `serve` as `FILE SERVER serve ...`, for
+# example scripts/perf-serve.sh, which runs it under valgrind for the
+# performance gate (scripts/perf_gate.py). SCALE_START_SECONDS is how long
+# the server may take to say where it listens (default 10).
 set -euo pipefail
 
 [ "$#" -ge 4 ] || { echo "usage: $0 SERVER SCALE COUNT OUT [PARENT] [-- flags]" >&2; exit 2; }
 writers="${SCALE_WRITERS:-0}"
 case "$writers" in
   '' | *[!0-9]*) echo "scale-run: SCALE_WRITERS must be a number of writers, not \"$writers\"" >&2; exit 2 ;;
+esac
+wrap="${SCALE_SERVE_WRAP:-}"
+if [ -n "$wrap" ] && [ ! -x "$wrap" ]; then
+  echo "scale-run: SCALE_SERVE_WRAP names $wrap, which cannot be run" >&2
+  exit 2
+fi
+start_seconds="${SCALE_START_SECONDS:-10}"
+case "$start_seconds" in
+  '' | *[!0-9]* | 0) echo "scale-run: SCALE_START_SECONDS must be a number of seconds above 0, not \"$start_seconds\"" >&2; exit 2 ;;
 esac
 catalog="${SCALE_CATALOG:-}"
 if [ -n "$catalog" ] && [ ! -r "$catalog" ]; then
@@ -92,10 +106,12 @@ tenant="$("$server" tenant create scale "${config[@]}" | jq -r .id)"
 # before that failed the script under `set -e` (seen once in 40 runs of
 # scripts/test_contend_writes.py at load 17).
 : > "$work/server.log"
-"$server" serve "${config[@]}" 2>> "$work/server.log" &
+serve=("$server" serve "${config[@]}")
+if [ -n "$wrap" ]; then serve=("$wrap" "${serve[@]}"); fi
+"${serve[@]}" 2>> "$work/server.log" &
 pid=$!
 port=""
-for _ in $(seq 100); do
+for _ in $(seq $((start_seconds * 10))); do
   port="$(sed -n 's/.* serving listen=127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' "$work/server.log")"
   [ -n "$port" ] && break
   kill -0 "$pid" 2>/dev/null || { cat "$work/server.log" >&2; fail "the server stopped"; }

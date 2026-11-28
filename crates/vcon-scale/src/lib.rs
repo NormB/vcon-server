@@ -12,6 +12,7 @@ pub mod args;
 pub mod guard;
 pub mod host;
 pub mod mix;
+pub mod pages;
 pub mod report;
 pub mod rng;
 pub mod stats;

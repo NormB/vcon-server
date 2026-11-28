@@ -1259,6 +1259,97 @@ fn edge_no_results_is_no_table() {
     );
 }
 
+/// A list of `pages` pages, each page's `next` the cursor `c<n>`, the last
+/// none; it records the cursor each fetch was asked with.
+fn list_of(
+    pages: usize,
+    asked: &mut Vec<Option<String>>,
+) -> impl FnMut(Option<&str>) -> Result<Option<String>, String> + '_ {
+    move |cursor| {
+        asked.push(cursor.map(str::to_owned));
+        let at = cursor.map_or(0, |c| {
+            c[1..].parse::<usize>().expect("a cursor of this list")
+        });
+        Ok((at + 1 < pages).then(|| format!("c{}", at + 1)))
+    }
+}
+
+#[test]
+fn success_the_pages_follow_each_next() {
+    let mut asked = Vec::new();
+    let followed = vcon_scale::pages::follow(3, list_of(5, &mut asked));
+    assert_eq!(
+        followed,
+        vcon_scale::pages::Followed {
+            asked: 3,
+            error: None
+        },
+        "three pages"
+    );
+    assert_eq!(
+        asked,
+        [None, Some("c1".to_owned()), Some("c2".to_owned())],
+        "each from the one before"
+    );
+}
+
+#[test]
+fn success_after_the_last_page_the_newest_is_asked_again() {
+    // So the pages asked for are the pages given, whatever the list holds:
+    // the performance gate follows more pages than its vCons fill.
+    let mut asked = Vec::new();
+    let followed = vcon_scale::pages::follow(5, list_of(2, &mut asked));
+    assert_eq!(followed.asked, 5, "five pages of a list of two");
+    assert_eq!(
+        asked,
+        [
+            None,
+            Some("c1".to_owned()),
+            None,
+            Some("c1".to_owned()),
+            None
+        ],
+        "from the newest again after the last"
+    );
+}
+
+#[test]
+fn failure_a_page_that_fails_ends_the_following() {
+    let mut calls = 0;
+    let followed = vcon_scale::pages::follow(5, |_| {
+        calls += 1;
+        if calls == 2 {
+            Err("GET /vcons: 500".to_owned())
+        } else {
+            Ok(Some("c".to_owned()))
+        }
+    });
+    assert_eq!(
+        followed,
+        vcon_scale::pages::Followed {
+            asked: 2,
+            error: Some("GET /vcons: 500".to_owned())
+        },
+        "the failed page is counted and nothing after it is asked"
+    );
+}
+
+#[test]
+fn edge_no_pages_asks_nothing() {
+    let mut asked = Vec::new();
+    let followed = vcon_scale::pages::follow(0, list_of(2, &mut asked));
+    assert_eq!(followed.asked, 0, "none");
+    assert!(asked.is_empty(), "no request");
+}
+
+#[test]
+fn edge_an_empty_list_is_one_page_asked_again_and_again() {
+    let mut asked = Vec::new();
+    let followed = vcon_scale::pages::follow(3, list_of(1, &mut asked));
+    assert_eq!(asked, [None, None, None], "the newest page each time");
+    assert_eq!(followed.error, None, "no error");
+}
+
 #[test]
 fn edge_the_result_file_round_trips_through_text() {
     let j = report::to_json(&run());
